@@ -21,6 +21,14 @@ function fmt(ms: number) {
   return `${hh}:${mm}:${ss}`;
 }
 
+function makeId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const rand = Math.random().toString(16).slice(2);
+  return `id-${Date.now()}-${rand}`;
+}
+
 export default function MatchPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
@@ -62,7 +70,7 @@ export default function MatchPage() {
 
   const saveState = async (next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR;}>) => {
     const payload = {
-      state_id: crypto.randomUUID(),
+      state_id: makeId(),
       clock_ms: next?.clockMs ?? clockMs,
       running: next?.running ?? running,
       possession_team: next?.possessionTeam ?? possessionTeam,
@@ -193,7 +201,7 @@ export default function MatchPage() {
     await fetch(`${API_BASE}/matches/${id}/events/attack_lane`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event_id: crypto.randomUUID(), team: selectedTeam, lane, clock_ms: clockMs, user_id: userId }),
+      body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: clockMs, user_id: userId }),
     });
   };
 
@@ -211,7 +219,7 @@ export default function MatchPage() {
     await fetch(`${API_BASE}/matches/${id}/events/xg`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event_id: crypto.randomUUID(), team: xgTeam, xg, clock_ms: clockMs, user_id: userId }),
+      body: JSON.stringify({ event_id: makeId(), team: xgTeam, xg, clock_ms: clockMs, user_id: userId }),
     });
     setXgValue('0.10');
   };
