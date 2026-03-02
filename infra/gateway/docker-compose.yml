@@ -1,0 +1,43 @@
+services:
+  rtmp:
+    build:
+      context: ./nginx-rtmp
+      dockerfile: Dockerfile
+    container_name: gateway-rtmp
+    ports:
+      - "1935:1935"
+      - "8081:8081"
+    volumes:
+      - ./nginx-rtmp/nginx.conf:/etc/nginx/nginx.conf:ro
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: gateway-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - hls_data:/srv/hls:ro
+    depends_on:
+      - ffmpeg-runner
+
+  ffmpeg-runner:
+    build:
+      context: ./runner
+    container_name: gateway-ffmpeg
+    ports:
+      - "8090:8090"
+    environment:
+      GATEWAY_PUBLIC_HLS_BASE: ${GATEWAY_PUBLIC_HLS_BASE:-http://localhost:8080}
+      GATEWAY_PUBLIC_RTMP_SERVER: ${GATEWAY_PUBLIC_RTMP_SERVER:-rtmp://localhost:1935/live}
+      GATEWAY_RTMP_PULL_BASE: ${GATEWAY_RTMP_PULL_BASE:-rtmp://gateway-rtmp/live}
+    volumes:
+      - hls_data:/srv/hls
+      - ./scripts:/scripts
+      - ./matches.json:/data/matches.json
+    depends_on:
+      - rtmp
+    entrypoint: ["/bin/sh", "-c", "chmod +x /scripts/*.sh && uvicorn manager:app --host 0.0.0.0 --port 8090"]
+
+volumes:
+  hls_data:

@@ -1,0 +1,72 @@
+from typing import Any, Literal
+from uuid import UUID
+from pydantic import BaseModel, Field
+
+Team = Literal["HOME", "AWAY"]
+PossessionTeam = Literal["HOME", "AWAY", "NONE"]
+Lane = Literal["LEFT", "CENTER", "RIGHT"]
+AttackLR = Literal["L2R", "R2L"]
+IngestProtocol = Literal["SRT", "RTMP"]
+
+
+class CreateMatchRequest(BaseModel):
+    name: str
+    ingest_protocol: IngestProtocol | None = None
+    ingest_url: str | None = None
+    srt_url: str | None = None
+    hls_url: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class MatchResponse(BaseModel):
+    id: UUID
+    name: str
+    hls_url: str | None
+    metadata: dict[str, Any] | None = None
+    operator_id: str | None
+
+
+class AcquireLockRequest(BaseModel):
+    user_id: str
+    admin_takeover: bool = False
+
+
+class ReleaseLockRequest(BaseModel):
+    user_id: str | None = None
+    admin_takeover: bool = False
+
+
+class StateRequest(BaseModel):
+    state_id: UUID
+    clock_ms: int = Field(ge=0)
+    running: bool
+    possession_team: PossessionTeam
+    selected_team: Team
+    attack_lr: AttackLR
+    user_id: str | None = None
+
+
+class AttackLaneEventRequest(BaseModel):
+    event_id: UUID
+    clock_ms: int | None = Field(default=None, ge=0)
+    team: Team
+    lane: Lane
+    user_id: str | None = None
+
+
+class XGEventRequest(BaseModel):
+    event_id: UUID
+    clock_ms: int | None = Field(default=None, ge=0)
+    team: Team
+    xg: float = Field(ge=0)
+    user_id: str | None = None
+
+
+class AttachSrtRequest(BaseModel):
+    srt_url: str
+
+
+class AttachIngestRequest(BaseModel):
+    ingest_protocol: IngestProtocol | None = None
+    ingest_url: str | None = None
+    srt_url: str | None = None

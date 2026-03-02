@@ -1,0 +1,22 @@
+# Node / Next
+node_modules/
+**/node_modules/
+.next/
+out/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs / env
+*.log
+.env
+.env.*
+!.env.example

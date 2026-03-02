@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: app-postgres
+    environment:
+      POSTGRES_DB: live_admin
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ../../apps/api
+    container_name: app-api
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/live_admin
+      CORS_ORIGINS: "*"
+      GATEWAY_API_BASE: ${GATEWAY_API_BASE:-http://host.docker.internal:8090}
+      WEBHOOK_STATE_URL: ${WEBHOOK_STATE_URL:-}
+      WEBHOOK_EVENT_URL: ${WEBHOOK_EVENT_URL:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      OUTBOX_RETRY_MAX: ${OUTBOX_RETRY_MAX:-10}
+      OUTBOX_RETRY_BASE_SECONDS: ${OUTBOX_RETRY_BASE_SECONDS:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../../apps/web
+    container_name: app-web
+    environment:
+      NEXT_PUBLIC_API_BASE: /api
+      NEXT_PUBLIC_DEFAULT_HLS_URL: ${NEXT_PUBLIC_DEFAULT_HLS_URL:-}
+    depends_on:
+      - api
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: app-nginx
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+      - web
+
+volumes:
+  pg_data:
