@@ -14,8 +14,12 @@ export default function HlsPlayer({ src, paused = false }: Props) {
   const seekBy = (seconds: number) => {
     const video = ref.current;
     if (!video) return;
-    const base = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-    const next = Math.max(0, base + seconds);
+    if (!video.seekable || video.seekable.length === 0) return;
+
+    const start = video.seekable.start(0);
+    const end = video.seekable.end(video.seekable.length - 1);
+    const base = Number.isFinite(video.currentTime) ? video.currentTime : end;
+    const next = Math.min(end, Math.max(start, base + seconds));
     video.currentTime = next;
   };
 
