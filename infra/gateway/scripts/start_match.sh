@@ -21,12 +21,29 @@ LOG_FILE="${OUT_DIR}/ffmpeg.log"
 
 mkdir -p "$PID_DIR" "$OUT_DIR"
 
+is_match_pid() {
+  local pid="$1"
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  local cmd
+  cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+  [[ "$cmd" == *"ffmpeg"* && "$cmd" == *"/srv/hls/${MATCH_ID}/stream.m3u8"* ]]
+}
+
+# If the ffmpeg process already exists for this match, reuse it.
+existing_pid=$(pgrep -f "/srv/hls/${MATCH_ID}/stream.m3u8" | head -n1 || true)
+if [[ -n "${existing_pid:-}" ]] && is_match_pid "$existing_pid"; then
+  echo "$existing_pid" > "$PID_FILE"
+  echo "match ${MATCH_ID} already running with pid ${existing_pid}"
+  exit 0
+fi
+
 if [[ -f "$PID_FILE" ]]; then
   PID=$(cat "$PID_FILE")
-  if kill -0 "$PID" 2>/dev/null; then
+  if kill -0 "$PID" 2>/dev/null && is_match_pid "$PID"; then
     echo "match ${MATCH_ID} already running with pid ${PID}"
     exit 0
   fi
+  rm -f "$PID_FILE"
 fi
 
 nohup ffmpeg -hide_banner -loglevel warning -nostdin \
