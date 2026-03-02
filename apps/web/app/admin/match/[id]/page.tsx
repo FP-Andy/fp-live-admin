@@ -25,8 +25,12 @@ function makeId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  const rand = Math.random().toString(16).slice(2);
-  return `id-${Date.now()}-${rand}`;
+  // UUID v4 fallback for non-secure HTTP contexts.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export default function MatchPage() {
@@ -97,7 +101,7 @@ export default function MatchPage() {
     setDominance(d.bins || []);
     setOutbox(o || []);
 
-    if (s?.state && (!initializedRef.current || !runningRef.current)) {
+    if (s?.state && !initializedRef.current) {
       initializedRef.current = true;
       setClockMs(s.state.clock_ms || 0);
       setRunning(Boolean(s.state.running));
