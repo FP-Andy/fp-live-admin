@@ -5,9 +5,10 @@ import Hls from 'hls.js';
 
 type Props = {
   src: string;
+  paused?: boolean;
 };
 
-export default function HlsPlayer({ src }: Props) {
+export default function HlsPlayer({ src, paused = false }: Props) {
   const ref = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -32,5 +33,20 @@ export default function HlsPlayer({ src }: Props) {
     }
   }, [src]);
 
-  return <video ref={ref} controls autoPlay muted style={{ width: '100%', borderRadius: 8, background: '#000' }} />;
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+
+    if (paused) {
+      video.pause();
+      return;
+    }
+
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => undefined);
+    }
+  }, [paused, src]);
+
+  return <video ref={ref} controls autoPlay muted playsInline style={{ width: '100%', borderRadius: 8, background: '#000' }} />;
 }

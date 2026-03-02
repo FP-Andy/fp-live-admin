@@ -36,8 +36,9 @@ nohup ffmpeg -hide_banner -loglevel warning -nostdin \
   -c:a aac -ar 48000 -b:a 128k \
   -f hls \
   -hls_time 2 \
-  -hls_list_size 180 \
-  -hls_flags append_list+omit_endlist+independent_segments \
+  -hls_list_size 600 \
+  -hls_playlist_type event \
+  -hls_flags append_list+independent_segments \
   -hls_segment_filename "${OUT_DIR}/seg_%06d.ts" \
   "${OUT_DIR}/stream.m3u8" \
   >"$LOG_FILE" 2>&1 &

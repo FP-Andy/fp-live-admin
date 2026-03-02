@@ -33,6 +33,7 @@ export default function MatchPage() {
 
   const [clockMs, setClockMs] = useState(0);
   const [running, setRunning] = useState(false);
+  const [playerPaused, setPlayerPaused] = useState(false);
   const [possessionTeam, setPossessionTeam] = useState<PossessionTeam>('NONE');
   const [selectedTeam, setSelectedTeam] = useState<Team>('HOME');
   const [attackLR, setAttackLR] = useState<AttackLR>('L2R');
@@ -40,6 +41,7 @@ export default function MatchPage() {
 
   const [xgTeam, setXgTeam] = useState<Team>('HOME');
   const [xgValue, setXgValue] = useState('0.10');
+  const [copyMessage, setCopyMessage] = useState('');
 
   const perfRef = useRef<number | null>(null);
   const baseRef = useRef<number>(0);
@@ -137,12 +139,38 @@ export default function MatchPage() {
       baseRef.current = finalClock;
       perfRef.current = null;
       setRunning(false);
+      setPlayerPaused(true);
       await saveState({ clockMs: finalClock, running: false });
     } else {
       perfRef.current = performance.now();
       baseRef.current = clockMs;
       setRunning(true);
+      setPlayerPaused(false);
       await saveState({ running: true });
+    }
+  };
+
+  const copyText = async (value: string, label: string) => {
+    if (!value) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const t = document.createElement('textarea');
+        t.value = value;
+        t.style.position = 'fixed';
+        t.style.opacity = '0';
+        document.body.appendChild(t);
+        t.focus();
+        t.select();
+        document.execCommand('copy');
+        document.body.removeChild(t);
+      }
+      setCopyMessage(`${label} copied`);
+      setTimeout(() => setCopyMessage(''), 1500);
+    } catch {
+      setCopyMessage(`Failed to copy ${label.toLowerCase()}`);
+      setTimeout(() => setCopyMessage(''), 1500);
     }
   };
 
@@ -243,6 +271,9 @@ export default function MatchPage() {
   }, [running, selectedTeam, canWrite, possessionTeam, attackLR, userId, pendingLane]);
 
   const hlsSrc = match?.hls_url || DEFAULT_HLS;
+  const rtmpServer = match?.metadata?.rtmp?.server_url || '';
+  const streamKey = match?.metadata?.rtmp?.stream_key || id;
+  const pushUrl = match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
 
   return (
     <main className="container grid">
@@ -260,7 +291,19 @@ export default function MatchPage() {
       <div className="split">
         <div className="card grid">
           <h3>HLS Stream</h3>
-          {hlsSrc ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
+          {hlsSrc ? <HlsPlayer src={hlsSrc} paused={playerPaused} /> : <div className="muted">No HLS URL configured</div>}
+          <div className="grid" style={{ marginTop: 8 }}>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
+              <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
+            </div>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <span className="muted">Stream Key: {streamKey || 'N/A'}</span>
+              <button onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
+              <button onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
+            </div>
+            {copyMessage ? <div className="muted">{copyMessage}</div> : null}
+          </div>
         </div>
 
         <div className="grid">
