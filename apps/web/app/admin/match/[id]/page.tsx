@@ -383,8 +383,6 @@ export default function MatchPage() {
       ...d,
       minute: (d.start_ms / 60000).toFixed(1),
       dominance: value,
-      dominance_pos: value > 0 ? value : 0,
-      dominance_neg: value < 0 ? value : 0,
     };
   });
 
@@ -565,13 +563,18 @@ export default function MatchPage() {
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
             <ComposedChart data={dominanceChartData}>
+              <defs>
+                <linearGradient id="dominanceFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="50%" stopColor="#22c55e" stopOpacity={0.35} />
+                  <stop offset="50%" stopColor="#ef4444" stopOpacity={0.35} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="minute" />
               <YAxis domain={[-1, 1]} />
               <Tooltip />
               <ReferenceLine y={0} stroke="#6b7280" />
-              <Area type="monotone" dataKey="dominance_pos" stroke="none" fill="#22c55e" fillOpacity={0.35} />
-              <Area type="monotone" dataKey="dominance_neg" stroke="none" fill="#ef4444" fillOpacity={0.35} />
+              <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFill)" />
               <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
             </ComposedChart>
           </ResponsiveContainer>
