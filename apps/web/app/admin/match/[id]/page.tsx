@@ -437,8 +437,8 @@ export default function MatchPage() {
               <div style={{ position: 'absolute', inset: 0, border: '2px solid rgba(255,255,255,0.9)', borderRadius: 8 }} />
               <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: 'rgba(255,255,255,0.7)' }} />
               <div style={{ position: 'absolute', left: '50%', top: '50%', width: 64, height: 64, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.7)', transform: 'translate(-50%, -50%)' }} />
-              <div style={{ position: 'absolute', left: '10.5%', top: '20.35%', width: '15.71%', height: '59.29%', border: '1px solid rgba(255,255,255,0.8)' }} />
-              <div style={{ position: 'absolute', right: '10.5%', top: '20.35%', width: '15.71%', height: '59.29%', border: '1px solid rgba(255,255,255,0.8)' }} />
+              <div style={{ position: 'absolute', left: '0%', top: '20.35%', width: '15.71%', height: '59.29%', border: '1px solid rgba(255,255,255,0.8)' }} />
+              <div style={{ position: 'absolute', right: '0%', top: '20.35%', width: '15.71%', height: '59.29%', border: '1px solid rgba(255,255,255,0.8)' }} />
               <div style={{ position: 'absolute', left: '0%', top: '36.8%', width: '5.71%', height: '26.4%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', right: '0%', top: '36.8%', width: '5.71%', height: '26.4%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', left: '89.5%', top: '49%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
