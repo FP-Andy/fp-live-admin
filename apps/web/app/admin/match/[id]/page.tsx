@@ -392,71 +392,21 @@ export default function MatchPage() {
       </div>
 
       <div className="split">
-        <div className="card grid">
-          <h3>HLS Stream</h3>
-          {hlsSrc ? <HlsPlayer src={hlsSrc} paused={playerPaused} /> : <div className="muted">No HLS URL configured</div>}
-          <div className="grid" style={{ marginTop: 8 }}>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
-              <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
-            </div>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <span className="muted">Stream Key: {streamKey || 'N/A'}</span>
-              <button onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
-              <button onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
-            </div>
-            {copyMessage ? <div className="muted">{copyMessage}</div> : null}
-          </div>
-        </div>
-
         <div className="grid">
           <div className="card grid">
-            <h3>Timer</h3>
-            <div className="row">
-              <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
-              <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
-              <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
-            </div>
-          </div>
-
-          <div className="card grid">
-            <h3>Possession</h3>
-            <div className="row">
-              <span>Current:</span>
-              <button className={possessionTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>HOME <span className="kbd">Q</span></button>
-              <button className={possessionTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>AWAY <span className="kbd">W</span></button>
-              <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} onClick={() => changePossession('NONE')} disabled={!canWrite}>NONE</button>
-              <span>{possessionTeam}</span>
-            </div>
-            <div className="row">
-              <span>HOME {summary?.possession?.home_pct?.toFixed(1) || '0.0'}%</span>
-              <span>AWAY {summary?.possession?.away_pct?.toFixed(1) || '0.0'}%</span>
-            </div>
-          </div>
-
-          <div className="card grid">
-            <h3>Attack Direction Input (Event)</h3>
-            <div className="row">
-              <span>Team:</span>
-              <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => { setSelectedTeam('HOME'); setXgTeam('HOME'); saveState({ selectedTeam: 'HOME' }); }} disabled={!canWrite}>HOME <span className="kbd">1</span></button>
-              <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => { setSelectedTeam('AWAY'); setXgTeam('AWAY'); saveState({ selectedTeam: 'AWAY' }); }} disabled={!canWrite}>AWAY <span className="kbd">2</span></button>
-              <span>{selectedTeam}</span>
-            </div>
-            <div className="row">
-              <span>Lane select:</span>
-              <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
-              <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
-              <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
-              <span>selected={pendingLane}</span>
-            </div>
-            <div className="row">
-              <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
-              <button className="btn-active" onClick={toggleAttack} disabled={!canWrite}>Attack LR: {attackLR}</button>
-            </div>
-            <div className="muted">
-              HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
-              <br />
-              AWAY Lane(events): L {summary?.lanes?.away?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.away?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.away?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.away?.total_count || 0})
+            <h3>HLS Stream</h3>
+            {hlsSrc ? <HlsPlayer src={hlsSrc} paused={playerPaused} /> : <div className="muted">No HLS URL configured</div>}
+            <div className="grid" style={{ marginTop: 8 }}>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
+                <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <span className="muted">Stream Key: {streamKey || 'N/A'}</span>
+                <button onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
+                <button onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
+              </div>
+              {copyMessage ? <div className="muted">{copyMessage}</div> : null}
             </div>
           </div>
 
@@ -522,6 +472,82 @@ export default function MatchPage() {
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
           </div>
         </div>
+
+        <div className="grid">
+          <div className="card grid">
+            <h3>Timer</h3>
+            <div className="row">
+              <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
+              <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
+              <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
+            </div>
+          </div>
+
+          <div className="card grid">
+            <h3>Possession</h3>
+            <div className="row">
+              <span>Current:</span>
+              <button className={possessionTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>HOME <span className="kbd">Q</span></button>
+              <button className={possessionTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>AWAY <span className="kbd">W</span></button>
+              <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} onClick={() => changePossession('NONE')} disabled={!canWrite}>NONE</button>
+              <span>{possessionTeam}</span>
+            </div>
+            <div className="row">
+              <span>HOME {summary?.possession?.home_pct?.toFixed(1) || '0.0'}%</span>
+              <span>AWAY {summary?.possession?.away_pct?.toFixed(1) || '0.0'}%</span>
+            </div>
+          </div>
+
+          <div className="card grid">
+            <h3>Possession Timeline Log</h3>
+            <div className="row" style={{ marginBottom: 8 }}>
+              <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
+            </div>
+            <div
+              className="grid"
+              style={{
+                maxHeight: 220,
+                overflowY: 'auto',
+                paddingRight: 4,
+              }}
+            >
+              {possessionLogs.length === 0 ? (
+                <span className="muted">No logs yet</span>
+              ) : (
+                possessionLogs.map((line, idx) => (
+                  <span key={`${idx}-${line}`} className="muted">{line}</span>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="card grid">
+            <h3>Attack Direction Input (Event)</h3>
+            <div className="row">
+              <span>Team:</span>
+              <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => { setSelectedTeam('HOME'); setXgTeam('HOME'); saveState({ selectedTeam: 'HOME' }); }} disabled={!canWrite}>HOME <span className="kbd">1</span></button>
+              <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => { setSelectedTeam('AWAY'); setXgTeam('AWAY'); saveState({ selectedTeam: 'AWAY' }); }} disabled={!canWrite}>AWAY <span className="kbd">2</span></button>
+              <span>{selectedTeam}</span>
+            </div>
+            <div className="row">
+              <span>Lane select:</span>
+              <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
+              <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
+              <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
+              <span>selected={pendingLane}</span>
+            </div>
+            <div className="row">
+              <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
+              <button className="btn-active" onClick={toggleAttack} disabled={!canWrite}>Attack LR: {attackLR}</button>
+            </div>
+            <div className="muted">
+              HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
+              <br />
+              AWAY Lane(events): L {summary?.lanes?.away?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.away?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.away?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.away?.total_count || 0})
+            </div>
+          </div>
+
+        </div>
       </div>
 
       <div className="card">
@@ -549,22 +575,6 @@ export default function MatchPage() {
               <span className="muted">{new Date(e.created_at).toLocaleTimeString()}</span>
             </div>
           ))}
-        </div>
-      </div>
-
-      <div className="card">
-        <h3>Possession Timeline Log</h3>
-        <div className="row" style={{ marginBottom: 8 }}>
-          <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
-        </div>
-        <div className="grid">
-          {possessionLogs.length === 0 ? (
-            <span className="muted">No logs yet</span>
-          ) : (
-            possessionLogs.map((line, idx) => (
-              <span key={`${idx}-${line}`} className="muted">{line}</span>
-            ))
-          )}
         </div>
       </div>
 
