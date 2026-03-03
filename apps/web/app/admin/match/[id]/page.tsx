@@ -564,8 +564,10 @@ export default function MatchPage() {
             <ComposedChart data={dominanceChartData}>
               <defs>
                 <linearGradient id="dominanceFill" x1="0%" y1="0%" x2="0%" y2="100%" gradientUnits="userSpaceOnUse">
-                  <stop offset="50%" stopColor="#22c55e" stopOpacity={0.35} />
-                  <stop offset="50%" stopColor="#ef4444" stopOpacity={0.35} />
+                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.35} />
+                  <stop offset="49.999%" stopColor="#22c55e" stopOpacity={0.35} />
+                  <stop offset="50.001%" stopColor="#ef4444" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#ef4444" stopOpacity={0.35} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" />
