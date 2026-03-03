@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+import math
 import uuid
 from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -21,6 +22,7 @@ from .schemas import (
     MatchResponse,
     ReleaseLockRequest,
     StateRequest,
+    XGEstimateRequest,
     XGEventRequest,
 )
 from .services import apply_possession_segment, apply_xg_event, enqueue_outbox, latest_outbox, outbox_worker
@@ -137,9 +139,79 @@ def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
         raise HTTPException(status_code=403, detail="Operator lock held by another user")
 
 
+def _is_in_penalty_area(x: float, y: float) -> bool:
+    return (x > 88.5) and (13.84 < y < 54.16)
+
+
+def _normalize_shot_x(
+    team: str,
+    attack_lr: str,
+    start_x: float,
+) -> float:
+    home_dir = attack_lr
+    away_dir = "R2L" if attack_lr == "L2R" else "L2R"
+    team_dir = home_dir if team == "HOME" else away_dir
+    return start_x if team_dir == "L2R" else 105.0 - start_x
+
+
+def _estimate_xg(
+    team: str,
+    attack_lr: str,
+    start_x: float,
+    start_y: float,
+    is_header: bool,
+    is_weak_foot: bool,
+) -> dict:
+    shot_x_adj = _normalize_shot_x(team, attack_lr, start_x)
+    shot_y_adj = start_y
+
+    goal_x, goal_y = 105.0, 34.0
+    goal_post_left = 30.34
+    goal_post_right = 37.66
+
+    distance = math.sqrt((goal_x - shot_x_adj) ** 2 + (goal_y - shot_y_adj) ** 2)
+
+    dx_left = goal_x - shot_x_adj
+    dy_left = goal_post_left - shot_y_adj
+    dx_right = goal_x - shot_x_adj
+    dy_right = goal_post_right - shot_y_adj
+    angle_left = math.atan2(dy_left, dx_left)
+    angle_right = math.atan2(dy_right, dx_right)
+    angle = abs(angle_left - angle_right)
+
+    is_pa = 1 if _is_in_penalty_area(shot_x_adj, shot_y_adj) else 0
+    is_head = 1 if is_header else 0
+    is_weak = 1 if is_weak_foot else 0
+
+    exponent = 0.2 * distance - 2.0 * angle - 1.2 * is_pa + 1.5 * is_head + 0.8 * is_weak - 0.6
+    xg = 1.0 / (1.0 + math.exp(exponent))
+    xg = max(0.0, min(1.0, xg))
+
+    return {
+        "xg": round(xg, 3),
+        "distance": round(distance, 2),
+        "angle_rad": round(angle, 4),
+        "is_in_box": bool(is_pa),
+        "normalized_x": round(shot_x_adj, 2),
+        "normalized_y": round(shot_y_adj, 2),
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "time": datetime.utcnow().isoformat()}
+
+
+@app.post("/api/xg/estimate")
+def estimate_xg(body: XGEstimateRequest):
+    return _estimate_xg(
+        body.team,
+        body.attack_lr,
+        body.start_x,
+        body.start_y,
+        body.is_header,
+        body.is_weak_foot,
+    )
 
 
 @app.post("/api/matches", response_model=MatchResponse)

@@ -62,6 +62,15 @@ class XGEventRequest(BaseModel):
     user_id: str | None = None
 
 
+class XGEstimateRequest(BaseModel):
+    team: Team
+    attack_lr: AttackLR
+    start_x: float = Field(ge=0, le=105)
+    start_y: float = Field(ge=0, le=68)
+    is_header: bool = False
+    is_weak_foot: bool = False
+
+
 class AttachSrtRequest(BaseModel):
     srt_url: str
 
