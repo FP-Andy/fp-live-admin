@@ -377,13 +377,53 @@ export default function MatchPage() {
   const rtmpServer = match?.metadata?.rtmp?.server_url || '';
   const streamKey = match?.metadata?.rtmp?.stream_key || id;
   const pushUrl = match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
+  const dominanceBaseData = useMemo(
+    () =>
+      dominance.map((d) => ({
+        minuteVal: Number(d.start_ms || 0) / 60000,
+        dominance: Number(d.dominance || 0),
+      })),
+    [dominance]
+  );
+  const dominanceXAxisTicks = useMemo(
+    () => dominanceBaseData.map((d) => d.minuteVal),
+    [dominanceBaseData]
+  );
   const dominanceChartData = useMemo(() => {
-    return dominance.map((d) => ({
-      ...d,
-      minute: (Number(d.start_ms || 0) / 60000).toFixed(1),
-      dominance: Number(d.dominance || 0),
-    }));
-  }, [dominance]);
+    if (dominanceBaseData.length === 0) return [];
+    const out: Array<{
+      minuteVal: number;
+      dominance: number;
+      dominance_pos: number | null;
+      dominance_neg: number | null;
+    }> = [];
+
+    for (let i = 0; i < dominanceBaseData.length; i += 1) {
+      const cur = dominanceBaseData[i];
+      out.push({
+        minuteVal: cur.minuteVal,
+        dominance: cur.dominance,
+        dominance_pos: cur.dominance > 0 ? cur.dominance : null,
+        dominance_neg: cur.dominance < 0 ? cur.dominance : null,
+      });
+
+      if (i < dominanceBaseData.length - 1) {
+        const next = dominanceBaseData[i + 1];
+        if ((cur.dominance > 0 && next.dominance < 0) || (cur.dominance < 0 && next.dominance > 0)) {
+          const ratio = cur.dominance / (cur.dominance - next.dominance);
+          const crossMinute = cur.minuteVal + (next.minuteVal - cur.minuteVal) * ratio;
+          out.push({
+            minuteVal: crossMinute,
+            dominance: 0,
+            dominance_pos: null,
+            dominance_neg: null,
+          });
+        }
+      }
+    }
+
+    return out;
+  }, [dominanceBaseData]);
 
   return (
     <main className="container grid">
@@ -562,20 +602,19 @@ export default function MatchPage() {
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
             <ComposedChart data={dominanceChartData}>
-              <defs>
-                <linearGradient id="dominanceFill" x1="0%" y1="0%" x2="0%" y2="100%" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.35} />
-                  <stop offset="49.999%" stopColor="#22c55e" stopOpacity={0.35} />
-                  <stop offset="50.001%" stopColor="#ef4444" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="#ef4444" stopOpacity={0.35} />
-                </linearGradient>
-              </defs>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="minute" />
+              <XAxis
+                type="number"
+                dataKey="minuteVal"
+                ticks={dominanceXAxisTicks}
+                tickFormatter={(v) => Number(v).toFixed(1)}
+                domain={['dataMin', 'dataMax']}
+              />
               <YAxis domain={[-1, 1]} />
               <Tooltip />
               <ReferenceLine y={0} stroke="#6b7280" />
-              <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFill)" />
+              <Area type="linear" dataKey="dominance_pos" connectNulls={false} baseValue={0} stroke="none" fill="#22c55e" fillOpacity={0.35} />
+              <Area type="linear" dataKey="dominance_neg" connectNulls={false} baseValue={0} stroke="none" fill="#ef4444" fillOpacity={0.35} />
               <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
             </ComposedChart>
           </ResponsiveContainer>
