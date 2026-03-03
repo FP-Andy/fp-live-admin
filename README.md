@@ -46,7 +46,7 @@ docker exec gateway-ffmpeg /scripts/status.sh
 docker exec gateway-ffmpeg /scripts/stop_match.sh match001
 ```
 
-### Gateway manager API (권장)
+### Gateway manager API (로컬 테스트 예시)
 
 - `POST http://localhost:8090/matches/start` body:
   - SRT: `{ "match_id": "match001", "ingest_protocol": "SRT", "source_url": "srt://..." }`
@@ -62,7 +62,7 @@ docker exec gateway-ffmpeg /scripts/stop_match.sh match001
 - 스트림키(Stream Key): `<match_id>`
 - 전체 push URL: `rtmp://<gateway-host>:1935/live/<match_id>`
 
-### HLS 확인
+### HLS 확인 (로컬 테스트 예시)
 
 - 플레이리스트: `http://localhost:8080/hls/match001/stream.m3u8`
 
@@ -82,7 +82,7 @@ cd infra/app
 docker compose up -d --build
 ```
 
-접속:
+접속 (로컬 테스트):
 
 - 콘솔: `http://localhost:3000/admin/dashboard`
 - API health: `http://localhost:3000/health`
@@ -157,6 +157,7 @@ docker compose up -d --build
 ### Broadcast Partner API (`/api/v1`)
 
 - OpenAPI draft: `docs/openapi/broadcast-v1.yaml`
+- `GET /api/v1/matches`
 - `GET /api/v1/matches/{match_id}`
 - `GET /api/v1/matches/{match_id}/summary`
 - `GET /api/v1/matches/{match_id}/events?since=<ISO_DATETIME>&limit=200`
@@ -166,6 +167,8 @@ docker compose up -d --build
   - body: `{ "callback_url":"https://partner.example/hook", "events":["STATE","EVENT"], "secret":"optional", "active":true }`
 - `GET /api/v1/webhooks/subscriptions`
 - `DELETE /api/v1/webhooks/subscriptions/{subscription_id}`
+- 인증:
+  - `PARTNER_API_KEY`가 설정된 경우 `/api/v1/*` 요청에 `X-API-Key` 헤더 필수
 
 ---
 
@@ -206,6 +209,7 @@ docker compose up -d --build
 - `WEBHOOK_STATE_URL` (optional)
 - `WEBHOOK_EVENT_URL` (optional)
 - `WEBHOOK_SECRET` (optional, HMAC-SHA256 -> `X-Webhook-Signature`)
+- `PARTNER_API_KEY` (optional, set 시 `/api/v1/*`에 `X-API-Key` required)
 - `OUTBOX_RETRY_MAX` (default `10`)
 - `OUTBOX_RETRY_BASE_SECONDS` (default `5`)
 - `OUTBOX_RETRY_MAX_DELAY_SECONDS` (default `300`)
@@ -213,6 +217,7 @@ docker compose up -d --build
 동작:
 
 - state/event 저장 성공 -> outbox enqueue
+- webhook subscription(`POST /api/v1/webhooks/subscriptions`)에 등록된 endpoint들로 fan-out 전송
 - 워커가 전송 성공 시 outbox row 삭제
 - 실패 시 `attempts++`, `next_attempt_at`를 지수 백오프(+jitter)로 재설정
 - `4xx(429 제외)`는 non-retryable로 처리
@@ -348,6 +353,50 @@ server {
   - API 수평 확장 + 외부 Redis 락
   - Outbox 전용 worker 분리
   - SSE/WebSocket 전환
+
+---
+
+## 12) Broadcaster Handoff (중계사 전달용)
+
+아래 항목을 중계사에 전달하면 됩니다.
+
+1. Base URL
+   - App API: `https://<APP_HOST>` (또는 `http://<APP_IP>:3000`)
+2. 인증
+   - 헤더: `X-API-Key: <PARTNER_API_KEY>` (서버에 `PARTNER_API_KEY` 설정 시)
+3. 핵심 Pull API
+   - `GET /api/v1/matches`
+   - `GET /api/v1/matches/{match_id}`
+   - `GET /api/v1/matches/{match_id}/summary`
+   - `GET /api/v1/matches/{match_id}/events?since=<ISO_DATETIME>&limit=200`
+   - `GET /api/v1/matches/{match_id}/dominance?bin_seconds=180`
+   - `GET /api/v1/matches/{match_id}/timeline/possession`
+4. Webhook 구독
+   - `POST /api/v1/webhooks/subscriptions`
+   - body:
+     - `{ "callback_url":"https://partner.example/webhook", "events":["STATE","EVENT"], "secret":"<shared_secret>", "active":true }`
+5. Webhook 검증
+   - 헤더:
+     - `X-Webhook-Id`
+     - `X-Webhook-Event`
+     - `X-Webhook-Timestamp`
+     - `X-Webhook-Signature`
+   - 서명:
+     - `sha256=<hex(hmac(secret, "<timestamp>.<raw_json_payload>"))>`
+
+테스트 예시:
+
+```bash
+BASE_URL="http://<APP_IP>:3000"
+API_KEY="<PARTNER_API_KEY>"
+MATCH_ID="<MATCH_ID>"
+
+curl -sS "$BASE_URL/api/v1/matches" \
+  -H "X-API-Key: $API_KEY"
+
+curl -sS "$BASE_URL/api/v1/matches/$MATCH_ID/events?limit=50" \
+  -H "X-API-Key: $API_KEY"
+```
   - Postgres index/partition 고도화
 
 ---
