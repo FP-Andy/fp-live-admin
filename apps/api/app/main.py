@@ -740,6 +740,12 @@ def get_match_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), d
     return _serialize_match(row)
 
 
+@app.get("/api/v1/matches")
+def list_matches_v1(_auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    rows = db.query(Match).order_by(desc(Match.created_at)).all()
+    return [_serialize_match(r) for r in rows]
+
+
 @app.get("/api/v1/matches/{match_id}/summary")
 def summary_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
     return _build_match_summary(match_id, db)

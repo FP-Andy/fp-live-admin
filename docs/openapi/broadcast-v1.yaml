@@ -7,6 +7,12 @@ info:
 servers:
   - url: https://YOUR_HOST
 paths:
+  /api/v1/matches:
+    get:
+      summary: List matches
+      responses:
+        "200":
+          description: Match list
   /api/v1/matches/{match_id}:
     get:
       summary: Get match metadata
