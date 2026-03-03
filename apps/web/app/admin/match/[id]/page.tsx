@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
-import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
+import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
@@ -377,6 +377,16 @@ export default function MatchPage() {
   const rtmpServer = match?.metadata?.rtmp?.server_url || '';
   const streamKey = match?.metadata?.rtmp?.stream_key || id;
   const pushUrl = match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
+  const dominanceChartData = dominance.map((d) => {
+    const value = Number(d.dominance || 0);
+    return {
+      ...d,
+      minute: (d.start_ms / 60000).toFixed(1),
+      dominance: value,
+      dominance_pos: value > 0 ? value : 0,
+      dominance_neg: value < 0 ? value : 0,
+    };
+  });
 
   return (
     <main className="container grid">
@@ -554,14 +564,16 @@ export default function MatchPage() {
         <h3>Match Dominance (-1 ~ +1, 3-min bins)</h3>
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
-            <LineChart data={dominance.map((d) => ({ ...d, minute: (d.start_ms / 60000).toFixed(1) }))}>
+            <ComposedChart data={dominanceChartData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="minute" />
               <YAxis domain={[-1, 1]} />
               <Tooltip />
-              <ReferenceLine y={0} stroke="#999" />
+              <ReferenceLine y={0} stroke="#6b7280" />
+              <Area type="monotone" dataKey="dominance_pos" stroke="none" fill="#22c55e" fillOpacity={0.35} />
+              <Area type="monotone" dataKey="dominance_neg" stroke="none" fill="#ef4444" fillOpacity={0.35} />
               <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
-            </LineChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       </div>
