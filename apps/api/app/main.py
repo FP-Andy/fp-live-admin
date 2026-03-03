@@ -3,7 +3,7 @@ from datetime import datetime
 import math
 import uuid
 from uuid import UUID
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ import os
 import httpx
 
 from .db import Base, engine, get_db
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, Outbox
+from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, Outbox, WebhookSubscription
 from .schemas import (
     AcquireLockRequest,
     AttachIngestRequest,
@@ -22,6 +22,7 @@ from .schemas import (
     MatchResponse,
     ReleaseLockRequest,
     StateRequest,
+    WebhookSubscriptionCreateRequest,
     XGEstimateRequest,
     XGEventRequest,
 )
@@ -197,6 +198,192 @@ def _estimate_xg(
     }
 
 
+def _serialize_match(row: Match) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "hls_url": row.hls_url,
+        "metadata": row.metadata_json,
+        "operator_id": row.operator_id,
+    }
+
+
+def _enqueue_webhook_fanout(db: Session, kind: str, ref_id: UUID, payload: dict) -> None:
+    default_target = os.getenv("WEBHOOK_STATE_URL") if kind == "STATE" else os.getenv("WEBHOOK_EVENT_URL")
+    targets: set[str] = set()
+    if default_target:
+        targets.add(default_target)
+
+    subs = db.query(WebhookSubscription).filter(WebhookSubscription.active.is_(True)).all()
+    for sub in subs:
+        events = sub.events or []
+        if kind in events:
+            targets.add(sub.callback_url)
+
+    for target in targets:
+        enqueue_outbox(db, kind, ref_id, target, payload)
+
+
+def _build_match_summary(match_id: UUID, db: Session) -> dict:
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    last_state = (
+        db.query(State)
+        .filter(State.match_id == match_id)
+        .order_by(desc(State.created_at))
+        .first()
+    )
+    current_clock = last_state.clock_ms if last_state else 0
+
+    poss_rows = db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).all()
+    home_ms = 0
+    away_ms = 0
+    for seg in poss_rows:
+        end_ms = seg.end_ms if seg.end_ms is not None else current_clock
+        dur = max(0, end_ms - seg.start_ms)
+        if seg.team == "HOME":
+            home_ms += dur
+        elif seg.team == "AWAY":
+            away_ms += dur
+
+    poss_total = home_ms + away_ms
+    home_pct = (home_ms / poss_total * 100.0) if poss_total else 0.0
+    away_pct = (away_ms / poss_total * 100.0) if poss_total else 0.0
+
+    ev_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id)
+        .order_by(desc(Event.created_at))
+        .limit(50)
+        .all()
+    )
+
+    def lane_calc(team: str):
+        left = center = right = 0
+        current_lane = None
+        team_lane_events = [e for e in ev_rows if e.type == "ATTACK_LANE" and e.team == team]
+        for ev in team_lane_events:
+            if ev.lane == "LEFT":
+                left += 1
+            elif ev.lane == "CENTER":
+                center += 1
+            elif ev.lane == "RIGHT":
+                right += 1
+
+        for ev in ev_rows:
+            if ev.type != "ATTACK_LANE" or ev.team != team:
+                continue
+            current_lane = ev.lane
+            break
+
+        total = left + center + right
+        return {
+            "left_count": left,
+            "center_count": center,
+            "right_count": right,
+            "left_pct": (left / total * 100.0) if total else 0.0,
+            "center_pct": (center / total * 100.0) if total else 0.0,
+            "right_pct": (right / total * 100.0) if total else 0.0,
+            "total_count": total,
+            "current_lane": current_lane,
+        }
+
+    return {
+        "match": {
+            "id": str(match_obj.id),
+            "name": match_obj.name,
+            "hls_url": match_obj.hls_url,
+            "operator_id": match_obj.operator_id,
+        },
+        "state": {
+            "clock_ms": current_clock,
+            "running": last_state.running if last_state else False,
+            "possession_team": last_state.possession_team if last_state else "NONE",
+            "selected_team": last_state.selected_team if last_state else "HOME",
+            "attack_lr": last_state.attack_lr if last_state else "L2R",
+        },
+        "possession": {
+            "home_ms": home_ms,
+            "away_ms": away_ms,
+            "home_pct": home_pct,
+            "away_pct": away_pct,
+        },
+        "lanes": {
+            "home": lane_calc("HOME"),
+            "away": lane_calc("AWAY"),
+        },
+        "events": [
+            {
+                "id": str(e.id),
+                "type": e.type,
+                "clock_ms": e.clock_ms,
+                "team": e.team,
+                "lane": e.lane,
+                "xg": e.xg,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in ev_rows
+        ],
+    }
+
+
+def _build_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
+    if bin_seconds != 180:
+        raise HTTPException(status_code=400, detail="Only 180-second bins are supported in MVP")
+    rows = (
+        db.query(DominanceBin)
+        .filter(DominanceBin.match_id == match_id)
+        .order_by(DominanceBin.k)
+        .all()
+    )
+    return {
+        "bin_seconds": bin_seconds,
+        "bins": [
+            {
+                "k": r.k,
+                "start_ms": r.start_ms,
+                "end_ms": r.end_ms,
+                "home_poss_ms": r.home_poss_ms,
+                "away_poss_ms": r.away_poss_ms,
+                "home_xg": r.home_xg,
+                "away_xg": r.away_xg,
+                "dominance": r.dominance,
+            }
+            for r in rows
+        ],
+    }
+
+
+def _parse_iso_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail="Invalid 'since' ISO datetime") from ex
+
+
+def _fmt_clock_ms(ms: int) -> str:
+    s = max(0, ms // 1000)
+    hh = s // 3600
+    mm = (s % 3600) // 60
+    ss = s % 60
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def _require_partner_auth(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    required = os.getenv("PARTNER_API_KEY", "").strip()
+    if not required:
+        return
+    if x_api_key != required:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "time": datetime.utcnow().isoformat()}
@@ -231,13 +418,7 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db)):
     db.add(row)
     db.commit()
     db.refresh(row)
-    return {
-        "id": row.id,
-        "name": row.name,
-        "hls_url": row.hls_url,
-        "metadata": row.metadata_json,
-        "operator_id": row.operator_id,
-    }
+    return _serialize_match(row)
 
 
 @app.post("/api/matches/{match_id}/stream/srt")
@@ -304,16 +485,7 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 @app.get("/api/matches")
 def list_matches(db: Session = Depends(get_db)):
     rows = db.query(Match).order_by(desc(Match.created_at)).all()
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "hls_url": r.hls_url,
-            "metadata": r.metadata_json,
-            "operator_id": r.operator_id,
-        }
-        for r in rows
-    ]
+    return [_serialize_match(r) for r in rows]
 
 
 @app.get("/api/matches/{match_id}")
@@ -321,13 +493,7 @@ def get_match(match_id: UUID, db: Session = Depends(get_db)):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
-    return {
-        "id": row.id,
-        "name": row.name,
-        "hls_url": row.hls_url,
-        "metadata": row.metadata_json,
-        "operator_id": row.operator_id,
-    }
+    return _serialize_match(row)
 
 
 @app.delete("/api/matches/{match_id}")
@@ -449,7 +615,7 @@ def post_state(match_id: UUID, body: StateRequest, db: Session = Depends(get_db)
         "attack_lr": body.attack_lr,
         "created_at": datetime.utcnow().isoformat(),
     }
-    enqueue_outbox(db, "STATE", body.state_id, os.getenv("WEBHOOK_STATE_URL"), payload)
+    _enqueue_webhook_fanout(db, "STATE", body.state_id, payload)
 
     db.commit()
     return {"ok": True, "state_id": body.state_id}
@@ -499,7 +665,7 @@ def post_attack_lane(match_id: UUID, body: AttackLaneEventRequest, db: Session =
         "lane": body.lane,
         "created_at": datetime.utcnow().isoformat(),
     }
-    enqueue_outbox(db, "EVENT", body.event_id, os.getenv("WEBHOOK_EVENT_URL"), payload)
+    _enqueue_webhook_fanout(db, "EVENT", body.event_id, payload)
 
     db.commit()
     return {"ok": True, "event_id": body.event_id}
@@ -550,7 +716,7 @@ def post_xg(match_id: UUID, body: XGEventRequest, db: Session = Depends(get_db))
         "xg": body.xg,
         "created_at": datetime.utcnow().isoformat(),
     }
-    enqueue_outbox(db, "EVENT", body.event_id, os.getenv("WEBHOOK_EVENT_URL"), payload)
+    _enqueue_webhook_fanout(db, "EVENT", body.event_id, payload)
 
     db.commit()
     return {"ok": True, "event_id": body.event_id}
@@ -558,6 +724,82 @@ def post_xg(match_id: UUID, body: XGEventRequest, db: Session = Depends(get_db))
 
 @app.get("/api/matches/{match_id}/summary")
 def summary(match_id: UUID, db: Session = Depends(get_db)):
+    return _build_match_summary(match_id, db)
+
+
+@app.get("/api/matches/{match_id}/dominance")
+def dominance(match_id: UUID, bin_seconds: int = Query(default=180), db: Session = Depends(get_db)):
+    return _build_dominance(match_id, bin_seconds, db)
+
+
+@app.get("/api/v1/matches/{match_id}")
+def get_match_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = db.get(Match, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    return _serialize_match(row)
+
+
+@app.get("/api/v1/matches/{match_id}/summary")
+def summary_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    return _build_match_summary(match_id, db)
+
+
+@app.get("/api/v1/matches/{match_id}/dominance")
+def dominance_v1(
+    match_id: UUID,
+    _auth: None = Depends(_require_partner_auth),
+    bin_seconds: int = Query(default=180),
+    db: Session = Depends(get_db),
+):
+    return _build_dominance(match_id, bin_seconds, db)
+
+
+@app.get("/api/v1/matches/{match_id}/events")
+def events_v1(
+    match_id: UUID,
+    _auth: None = Depends(_require_partner_auth),
+    since: str | None = Query(default=None, description="ISO datetime, exclusive"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    since_dt = _parse_iso_dt(since)
+    q = db.query(Event).filter(Event.match_id == match_id)
+    base_seq = 0
+    if since_dt:
+        base_seq = db.query(Event).filter(Event.match_id == match_id, Event.created_at <= since_dt).count()
+        q = q.filter(Event.created_at > since_dt)
+
+    rows = q.order_by(Event.created_at.asc(), Event.id.asc()).limit(limit).all()
+    items = []
+    for idx, e in enumerate(rows, start=1):
+        items.append(
+            {
+                "sequence": base_seq + idx,
+                "event_id": str(e.id),
+                "match_id": str(match_id),
+                "type": e.type,
+                "clock_ms": e.clock_ms,
+                "team": e.team,
+                "lane": e.lane,
+                "xg": e.xg,
+                "created_at": e.created_at.isoformat(),
+            }
+        )
+
+    return {
+        "match_id": str(match_id),
+        "count": len(items),
+        "events": items,
+    }
+
+
+@app.get("/api/v1/matches/{match_id}/timeline/possession")
+def possession_timeline_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -569,125 +811,110 @@ def summary(match_id: UUID, db: Session = Depends(get_db)):
         .first()
     )
     current_clock = last_state.clock_ms if last_state else 0
+    rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc())
+        .all()
+    )
 
-    poss_rows = db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).all()
     home_ms = 0
     away_ms = 0
-    for seg in poss_rows:
+    timeline = []
+    for seg in rows:
         end_ms = seg.end_ms if seg.end_ms is not None else current_clock
-        dur = max(0, end_ms - seg.start_ms)
+        duration_ms = max(0, end_ms - seg.start_ms)
         if seg.team == "HOME":
-            home_ms += dur
+            home_ms += duration_ms
         elif seg.team == "AWAY":
-            away_ms += dur
+            away_ms += duration_ms
+        total = home_ms + away_ms
+        timeline.append(
+            {
+                "timeline": _fmt_clock_ms(end_ms),
+                "team": seg.team,
+                "start_ms": seg.start_ms,
+                "end_ms": end_ms,
+                "duration_ms": duration_ms,
+                "home_pct": (home_ms / total * 100.0) if total else 0.0,
+                "away_pct": (away_ms / total * 100.0) if total else 0.0,
+            }
+        )
 
-    poss_total = home_ms + away_ms
-    home_pct = (home_ms / poss_total * 100.0) if poss_total else 0.0
-    away_pct = (away_ms / poss_total * 100.0) if poss_total else 0.0
+    return {"match_id": str(match_id), "timeline": timeline}
 
-    def lane_calc(team: str):
-        left = center = right = 0
-        current_lane = None
-        team_lane_events = [e for e in ev_rows if e.type == "ATTACK_LANE" and e.team == team]
-        for ev in team_lane_events:
-            if ev.lane == "LEFT":
-                left += 1
-            elif ev.lane == "CENTER":
-                center += 1
-            elif ev.lane == "RIGHT":
-                right += 1
 
-        for ev in ev_rows:
-            if ev.type != "ATTACK_LANE" or ev.team != team:
-                continue
-            current_lane = ev.lane
-            break
+@app.post("/api/v1/webhooks/subscriptions")
+def create_webhook_subscription(
+    body: WebhookSubscriptionCreateRequest,
+    _auth: None = Depends(_require_partner_auth),
+    db: Session = Depends(get_db),
+):
+    events = sorted(set(body.events or ["STATE", "EVENT"]))
+    if not events:
+        raise HTTPException(status_code=400, detail="At least one event type is required")
 
-        total = left + center + right
-        return {
-            "left_count": left,
-            "center_count": center,
-            "right_count": right,
-            "left_pct": (left / total * 100.0) if total else 0.0,
-            "center_pct": (center / total * 100.0) if total else 0.0,
-            "right_pct": (right / total * 100.0) if total else 0.0,
-            "total_count": total,
-            "current_lane": current_lane,
+    existing = (
+        db.query(WebhookSubscription)
+        .filter(WebhookSubscription.callback_url == body.callback_url.strip())
+        .first()
+    )
+    if existing:
+        existing.events = events
+        existing.secret = body.secret
+        existing.active = body.active
+        db.commit()
+        db.refresh(existing)
+        sub = existing
+    else:
+        sub = WebhookSubscription(
+            callback_url=body.callback_url.strip(),
+            events=events,
+            secret=body.secret,
+            active=body.active,
+        )
+        db.add(sub)
+        db.commit()
+        db.refresh(sub)
+
+    return {
+        "id": str(sub.id),
+        "callback_url": sub.callback_url,
+        "events": sub.events,
+        "active": sub.active,
+        "created_at": sub.created_at.isoformat(),
+        "updated_at": sub.updated_at.isoformat(),
+    }
+
+
+@app.get("/api/v1/webhooks/subscriptions")
+def list_webhook_subscriptions(_auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    rows = db.query(WebhookSubscription).order_by(desc(WebhookSubscription.created_at)).all()
+    return [
+        {
+            "id": str(r.id),
+            "callback_url": r.callback_url,
+            "events": r.events or [],
+            "active": r.active,
+            "created_at": r.created_at.isoformat(),
+            "updated_at": r.updated_at.isoformat(),
         }
-
-    ev_rows = (
-        db.query(Event)
-        .filter(Event.match_id == match_id)
-        .order_by(desc(Event.created_at))
-        .limit(50)
-        .all()
-    )
-
-    return {
-        "match": {
-            "id": str(match_obj.id),
-            "name": match_obj.name,
-            "hls_url": match_obj.hls_url,
-            "operator_id": match_obj.operator_id,
-        },
-        "state": {
-            "clock_ms": current_clock,
-            "running": last_state.running if last_state else False,
-            "possession_team": last_state.possession_team if last_state else "NONE",
-            "selected_team": last_state.selected_team if last_state else "HOME",
-            "attack_lr": last_state.attack_lr if last_state else "L2R",
-        },
-        "possession": {
-            "home_ms": home_ms,
-            "away_ms": away_ms,
-            "home_pct": home_pct,
-            "away_pct": away_pct,
-        },
-        "lanes": {
-            "home": lane_calc("HOME"),
-            "away": lane_calc("AWAY"),
-        },
-        "events": [
-            {
-                "id": str(e.id),
-                "type": e.type,
-                "clock_ms": e.clock_ms,
-                "team": e.team,
-                "lane": e.lane,
-                "xg": e.xg,
-                "created_at": e.created_at.isoformat(),
-            }
-            for e in ev_rows
-        ],
-    }
+        for r in rows
+    ]
 
 
-@app.get("/api/matches/{match_id}/dominance")
-def dominance(match_id: UUID, bin_seconds: int = Query(default=180), db: Session = Depends(get_db)):
-    if bin_seconds != 180:
-        raise HTTPException(status_code=400, detail="Only 180-second bins are supported in MVP")
-    rows = (
-        db.query(DominanceBin)
-        .filter(DominanceBin.match_id == match_id)
-        .order_by(DominanceBin.k)
-        .all()
-    )
-    return {
-        "bin_seconds": bin_seconds,
-        "bins": [
-            {
-                "k": r.k,
-                "start_ms": r.start_ms,
-                "end_ms": r.end_ms,
-                "home_poss_ms": r.home_poss_ms,
-                "away_poss_ms": r.away_poss_ms,
-                "home_xg": r.home_xg,
-                "away_xg": r.away_xg,
-                "dominance": r.dominance,
-            }
-            for r in rows
-        ],
-    }
+@app.delete("/api/v1/webhooks/subscriptions/{subscription_id}")
+def delete_webhook_subscription(
+    subscription_id: UUID,
+    _auth: None = Depends(_require_partner_auth),
+    db: Session = Depends(get_db),
+):
+    row = db.get(WebhookSubscription, subscription_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "subscription_id": str(subscription_id)}
 
 
 @app.get("/api/outbox")

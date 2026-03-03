@@ -7,6 +7,7 @@ PossessionTeam = Literal["HOME", "AWAY", "NONE"]
 Lane = Literal["LEFT", "CENTER", "RIGHT"]
 AttackLR = Literal["L2R", "R2L"]
 IngestProtocol = Literal["SRT", "RTMP"]
+WebhookEventKind = Literal["STATE", "EVENT"]
 
 
 class CreateMatchRequest(BaseModel):
@@ -79,3 +80,19 @@ class AttachIngestRequest(BaseModel):
     ingest_protocol: IngestProtocol | None = None
     ingest_url: str | None = None
     srt_url: str | None = None
+
+
+class WebhookSubscriptionCreateRequest(BaseModel):
+    callback_url: str
+    events: list[WebhookEventKind] = Field(default_factory=lambda: ["STATE", "EVENT"])
+    secret: str | None = None
+    active: bool = True
+
+
+class WebhookSubscriptionResponse(BaseModel):
+    id: UUID
+    callback_url: str
+    events: list[WebhookEventKind]
+    active: bool
+    created_at: str
+    updated_at: str

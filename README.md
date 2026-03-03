@@ -154,6 +154,19 @@ docker compose up -d --build
 - `GET /api/matches/{match_id}/dominance?bin_seconds=180`
 - `GET /api/outbox`
 
+### Broadcast Partner API (`/api/v1`)
+
+- OpenAPI draft: `docs/openapi/broadcast-v1.yaml`
+- `GET /api/v1/matches/{match_id}`
+- `GET /api/v1/matches/{match_id}/summary`
+- `GET /api/v1/matches/{match_id}/events?since=<ISO_DATETIME>&limit=200`
+- `GET /api/v1/matches/{match_id}/dominance?bin_seconds=180`
+- `GET /api/v1/matches/{match_id}/timeline/possession`
+- `POST /api/v1/webhooks/subscriptions`
+  - body: `{ "callback_url":"https://partner.example/hook", "events":["STATE","EVENT"], "secret":"optional", "active":true }`
+- `GET /api/v1/webhooks/subscriptions`
+- `DELETE /api/v1/webhooks/subscriptions/{subscription_id}`
+
 ---
 
 ## 7) Domain Logic Summary
@@ -192,15 +205,24 @@ docker compose up -d --build
 
 - `WEBHOOK_STATE_URL` (optional)
 - `WEBHOOK_EVENT_URL` (optional)
-- `WEBHOOK_SECRET` (optional, HMAC-SHA256 -> `X-Signature`)
+- `WEBHOOK_SECRET` (optional, HMAC-SHA256 -> `X-Webhook-Signature`)
 - `OUTBOX_RETRY_MAX` (default `10`)
 - `OUTBOX_RETRY_BASE_SECONDS` (default `5`)
+- `OUTBOX_RETRY_MAX_DELAY_SECONDS` (default `300`)
 
 동작:
 
 - state/event 저장 성공 -> outbox enqueue
 - 워커가 전송 성공 시 outbox row 삭제
-- 실패 시 `attempts++`, `next_attempt_at`를 지수 백오프로 재설정
+- 실패 시 `attempts++`, `next_attempt_at`를 지수 백오프(+jitter)로 재설정
+- `4xx(429 제외)`는 non-retryable로 처리
+
+Webhook 서명 헤더:
+
+- `X-Webhook-Id`: outbox delivery id (uuid)
+- `X-Webhook-Event`: `STATE` or `EVENT`
+- `X-Webhook-Timestamp`: unix epoch seconds
+- `X-Webhook-Signature`: `sha256=<hex(hmac(secret, "<timestamp>.<raw_json_payload>"))>`
 
 ### Example payload
 

@@ -1,0 +1,121 @@
+openapi: 3.0.3
+info:
+  title: Fineplay Live Analytics Broadcast API
+  version: 1.0.0
+  description: |
+    API for broadcast partners. Use webhook push for realtime, and pull APIs for reconciliation.
+servers:
+  - url: https://YOUR_HOST
+paths:
+  /api/v1/matches/{match_id}:
+    get:
+      summary: Get match metadata
+      parameters:
+        - in: path
+          name: match_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Match metadata
+  /api/v1/matches/{match_id}/summary:
+    get:
+      summary: Get current summary snapshot
+      parameters:
+        - in: path
+          name: match_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Summary snapshot
+  /api/v1/matches/{match_id}/events:
+    get:
+      summary: Pull events incrementally
+      parameters:
+        - in: path
+          name: match_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: since
+          required: false
+          schema: { type: string, format: date-time }
+          description: Return events created after this timestamp.
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, default: 200, minimum: 1, maximum: 1000 }
+      responses:
+        "200":
+          description: Event list with monotonically increasing sequence in response.
+  /api/v1/matches/{match_id}/dominance:
+    get:
+      summary: Get dominance bins
+      parameters:
+        - in: path
+          name: match_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: bin_seconds
+          required: false
+          schema: { type: integer, default: 180, enum: [180] }
+      responses:
+        "200":
+          description: Dominance bins
+  /api/v1/matches/{match_id}/timeline/possession:
+    get:
+      summary: Get possession timeline entries
+      parameters:
+        - in: path
+          name: match_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Possession timeline
+  /api/v1/webhooks/subscriptions:
+    post:
+      summary: Create or update a webhook subscription by callback URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [callback_url]
+              properties:
+                callback_url: { type: string, format: uri }
+                events:
+                  type: array
+                  items: { type: string, enum: [STATE, EVENT] }
+                  default: [STATE, EVENT]
+                secret:
+                  type: string
+                  nullable: true
+                active: { type: boolean, default: true }
+      responses:
+        "200":
+          description: Subscription info
+    get:
+      summary: List webhook subscriptions
+      responses:
+        "200":
+          description: Subscription list
+  /api/v1/webhooks/subscriptions/{subscription_id}:
+    delete:
+      summary: Delete webhook subscription
+      parameters:
+        - in: path
+          name: subscription_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Deletion status
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

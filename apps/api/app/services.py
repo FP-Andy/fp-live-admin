@@ -3,12 +3,13 @@ import hashlib
 import hmac
 import json
 import os
+import random
 from datetime import datetime, timedelta
 from uuid import UUID
 import httpx
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
-from .models import DominanceBin, Outbox
+from .models import DominanceBin, Outbox, WebhookSubscription
 
 BIN_SIZE_MS = 180000
 
@@ -114,7 +115,8 @@ async def outbox_worker(stop_event: asyncio.Event) -> None:
 
     retry_max = int(os.getenv("OUTBOX_RETRY_MAX", "10"))
     retry_base = int(os.getenv("OUTBOX_RETRY_BASE_SECONDS", "5"))
-    secret = os.getenv("WEBHOOK_SECRET", "")
+    retry_cap = int(os.getenv("OUTBOX_RETRY_MAX_DELAY_SECONDS", "300"))
+    global_secret = os.getenv("WEBHOOK_SECRET", "")
 
     while not stop_event.is_set():
         db = SessionLocal()
@@ -133,22 +135,37 @@ async def outbox_worker(stop_event: asyncio.Event) -> None:
                 await asyncio.sleep(1)
                 continue
 
+            subs = db.query(WebhookSubscription).filter(WebhookSubscription.active.is_(True)).all()
+            secret_by_url = {s.callback_url: (s.secret or global_secret) for s in subs}
+
             async with httpx.AsyncClient(timeout=5.0) as client:
                 for row in rows:
                     payload_raw = json.dumps(row.payload, separators=(",", ":"), sort_keys=True)
                     headers = {"Content-Type": "application/json"}
+                    timestamp = str(int(datetime.utcnow().timestamp()))
+                    secret = secret_by_url.get(row.target_url) or global_secret
+                    headers["X-Webhook-Id"] = str(row.id)
+                    headers["X-Webhook-Event"] = row.kind
+                    headers["X-Webhook-Timestamp"] = timestamp
                     if secret:
-                        signature = hmac.new(secret.encode(), payload_raw.encode(), hashlib.sha256).hexdigest()
-                        headers["X-Signature"] = signature
+                        signing_input = f"{timestamp}.{payload_raw}"
+                        signature = hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).hexdigest()
+                        headers["X-Webhook-Signature"] = f"sha256={signature}"
 
                     try:
                         resp = await client.post(row.target_url, content=payload_raw, headers=headers)
+                        if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                            row.attempts = retry_max
+                            row.last_error = f"non-retryable HTTP {resp.status_code}: {resp.text[:300]}"
+                            db.commit()
+                            continue
                         resp.raise_for_status()
                         db.delete(row)
                         db.commit()
                     except Exception as ex:
                         row.attempts += 1
-                        delay = retry_base * (2 ** max(0, row.attempts - 1))
+                        delay = min(retry_base * (2 ** max(0, row.attempts - 1)), retry_cap)
+                        delay += random.uniform(0, 1.0)
                         row.next_attempt_at = datetime.utcnow() + timedelta(seconds=delay)
                         row.last_error = str(ex)[:1000]
                         db.commit()
