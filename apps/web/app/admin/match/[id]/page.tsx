@@ -390,39 +390,10 @@ export default function MatchPage() {
     [dominanceBaseData]
   );
   const dominanceChartData = useMemo(() => {
-    if (dominanceBaseData.length === 0) return [];
-    const out: Array<{
-      minuteVal: number;
-      dominance: number;
-      dominance_pos: number | null;
-      dominance_neg: number | null;
-    }> = [];
-
-    for (let i = 0; i < dominanceBaseData.length; i += 1) {
-      const cur = dominanceBaseData[i];
-      out.push({
-        minuteVal: cur.minuteVal,
-        dominance: cur.dominance,
-        dominance_pos: cur.dominance > 0 ? cur.dominance : null,
-        dominance_neg: cur.dominance < 0 ? cur.dominance : null,
-      });
-
-      if (i < dominanceBaseData.length - 1) {
-        const next = dominanceBaseData[i + 1];
-        if ((cur.dominance > 0 && next.dominance < 0) || (cur.dominance < 0 && next.dominance > 0)) {
-          const ratio = cur.dominance / (cur.dominance - next.dominance);
-          const crossMinute = cur.minuteVal + (next.minuteVal - cur.minuteVal) * ratio;
-          out.push({
-            minuteVal: crossMinute,
-            dominance: 0,
-            dominance_pos: null,
-            dominance_neg: null,
-          });
-        }
-      }
-    }
-
-    return out;
+    return dominanceBaseData.map((d) => ({
+      minuteVal: d.minuteVal,
+      dominance: d.dominance,
+    }));
   }, [dominanceBaseData]);
 
   return (
@@ -602,6 +573,12 @@ export default function MatchPage() {
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
             <ComposedChart data={dominanceChartData}>
+              <defs>
+                <linearGradient id="dominanceFillSingle" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#22c55e" stopOpacity={0.18} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 type="number"
@@ -613,8 +590,7 @@ export default function MatchPage() {
               <YAxis domain={[-1, 1]} />
               <Tooltip />
               <ReferenceLine y={0} stroke="#6b7280" />
-              <Area type="linear" dataKey="dominance_pos" connectNulls={false} baseValue={0} stroke="none" fill="#22c55e" fillOpacity={0.35} />
-              <Area type="linear" dataKey="dominance_neg" connectNulls={false} baseValue={0} stroke="none" fill="#ef4444" fillOpacity={0.35} />
+              <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingle)" />
               <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
             </ComposedChart>
           </ResponsiveContainer>
