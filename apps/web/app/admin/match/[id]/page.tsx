@@ -42,6 +42,7 @@ export default function MatchPage() {
   const [summary, setSummary] = useState<any>(null);
   const [dominance, setDominance] = useState<any[]>([]);
   const [outbox, setOutbox] = useState<any[]>([]);
+  const [possessionLogs, setPossessionLogs] = useState<string[]>([]);
 
   const [clockMs, setClockMs] = useState(0);
   const [running, setRunning] = useState(false);
@@ -64,6 +65,7 @@ export default function MatchPage() {
   const clockRef = useRef<number>(0);
   const runningRef = useRef<boolean>(false);
   const initializedRef = useRef<boolean>(false);
+  const lastPossessionLogSecondRef = useRef<number>(-1);
 
   useEffect(() => {
     clockRef.current = clockMs;
@@ -123,6 +125,28 @@ export default function MatchPage() {
     const t = setInterval(fetchAll, 1000);
     return () => clearInterval(t);
   }, [id]);
+
+  useEffect(() => {
+    const s = summary?.state;
+    const p = summary?.possession;
+    if (!s || !p) return;
+
+    const second = Math.floor((s.clock_ms || 0) / 1000);
+    if (second === lastPossessionLogSecondRef.current) return;
+    lastPossessionLogSecondRef.current = second;
+
+    const teamLabel =
+      s.possession_team === 'HOME'
+        ? 'Home'
+        : s.possession_team === 'AWAY'
+        ? 'Away'
+        : 'None';
+    const homePct = Math.round(Number(p.home_pct || 0));
+    const awayPct = Math.round(Number(p.away_pct || 0));
+    const line = `${fmt(second * 1000)} | ${teamLabel} | ${homePct} : ${awayPct}`;
+
+    setPossessionLogs((prev) => [line, ...prev].slice(0, 120));
+  }, [summary]);
 
   useEffect(() => {
     if (!running) return;
@@ -188,6 +212,33 @@ export default function MatchPage() {
       setCopyMessage(`Failed to copy ${label.toLowerCase()}`);
       setTimeout(() => setCopyMessage(''), 1500);
     }
+  };
+
+  const downloadPossessionCsv = () => {
+    if (possessionLogs.length === 0) return;
+    const header = 'timeline,team,home_pct,away_pct';
+    const rows = possessionLogs
+      .slice()
+      .reverse()
+      .map((line) => {
+        const parts = line.split('|').map((v) => v.trim());
+        const timeline = parts[0] || '';
+        const team = parts[1] || '';
+        const ratio = (parts[2] || '').split(':').map((v) => v.trim());
+        const homePct = ratio[0] || '';
+        const awayPct = ratio[1] || '';
+        return `${timeline},${team},${homePct},${awayPct}`;
+      });
+    const csv = [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `possession_timeline_${id}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const resetClock = async () => {
@@ -498,6 +549,22 @@ export default function MatchPage() {
               <span className="muted">{new Date(e.created_at).toLocaleTimeString()}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>Possession Timeline Log</h3>
+        <div className="row" style={{ marginBottom: 8 }}>
+          <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
+        </div>
+        <div className="grid">
+          {possessionLogs.length === 0 ? (
+            <span className="muted">No logs yet</span>
+          ) : (
+            possessionLogs.map((line, idx) => (
+              <span key={`${idx}-${line}`} className="muted">{line}</span>
+            ))
+          )}
         </div>
       </div>
 
