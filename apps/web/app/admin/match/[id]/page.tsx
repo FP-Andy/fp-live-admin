@@ -48,7 +48,6 @@ export default function MatchPage() {
 
   const [clockMs, setClockMs] = useState(0);
   const [running, setRunning] = useState(false);
-  const [playerPaused, setPlayerPaused] = useState(false);
   const [possessionTeam, setPossessionTeam] = useState<PossessionTeam>('NONE');
   const [selectedTeam, setSelectedTeam] = useState<Team>('HOME');
   const [attackLR, setAttackLR] = useState<AttackLR>('L2R');
@@ -76,6 +75,13 @@ export default function MatchPage() {
   useEffect(() => {
     runningRef.current = running;
   }, [running]);
+
+  useEffect(() => {
+    if (possessionTeam === 'HOME' || possessionTeam === 'AWAY') {
+      setSelectedTeam(possessionTeam);
+      setXgTeam(possessionTeam);
+    }
+  }, [possessionTeam]);
 
   const isOperator = useMemo(() => match?.operator_id && match.operator_id === userId, [match, userId]);
   const canWrite = useMemo(() => !match?.operator_id || match.operator_id === userId, [match, userId]);
@@ -181,13 +187,11 @@ export default function MatchPage() {
       baseRef.current = finalClock;
       perfRef.current = null;
       setRunning(false);
-      setPlayerPaused(true);
       await saveState({ clockMs: finalClock, running: false });
     } else {
       perfRef.current = performance.now();
       baseRef.current = clockMs;
       setRunning(true);
-      setPlayerPaused(false);
       await saveState({ running: true });
     }
   };
@@ -254,6 +258,12 @@ export default function MatchPage() {
   const changePossession = async (team: PossessionTeam) => {
     if (!canWrite) return;
     setPossessionTeam(team);
+    if (team === 'HOME' || team === 'AWAY') {
+      setSelectedTeam(team);
+      setXgTeam(team);
+      await saveState({ possessionTeam: team, selectedTeam: team });
+      return;
+    }
     await saveState({ possessionTeam: team });
   };
 
@@ -351,10 +361,12 @@ export default function MatchPage() {
         toggleRun();
       } else if (e.key === 'r' || e.key === 'R') {
         resetClock();
-      } else if (e.key === 'q' || e.key === 'Q' || e.key === 'ArrowLeft') {
+      } else if (e.key === 'q' || e.key === 'Q') {
         changePossession('HOME');
-      } else if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowRight') {
+      } else if (e.key === 'w' || e.key === 'W') {
         changePossession('AWAY');
+      } else if (e.key === 'e' || e.key === 'E') {
+        changePossession('NONE');
       } else if (e.key === '1') {
         setSelectedTeam('HOME');
         setXgTeam('HOME');
@@ -363,11 +375,11 @@ export default function MatchPage() {
         setSelectedTeam('AWAY');
         setXgTeam('AWAY');
         saveState({ selectedTeam: 'AWAY' });
-      } else if (e.key === 'a' || e.key === 'A') {
+      } else if (e.key === 'ArrowLeft') {
         setPendingLane('LEFT');
-      } else if (e.key === 's' || e.key === 'S') {
+      } else if (e.key === 'ArrowUp') {
         setPendingLane('CENTER');
-      } else if (e.key === 'd' || e.key === 'D') {
+      } else if (e.key === 'ArrowRight') {
         setPendingLane('RIGHT');
       } else if (e.key === 'Enter') {
         sendLane(pendingLane);
@@ -381,6 +393,8 @@ export default function MatchPage() {
   const rtmpServer = match?.metadata?.rtmp?.server_url || '';
   const streamKey = match?.metadata?.rtmp?.stream_key || id;
   const pushUrl = match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
+  const possessionLabel =
+    possessionTeam === 'HOME' ? 'Home' : possessionTeam === 'AWAY' ? 'Away' : 'Loose Ball';
   const dominanceBaseData = useMemo(
     () =>
       dominance.map((d) => ({
@@ -402,8 +416,20 @@ export default function MatchPage() {
 
   return (
     <main className="container grid">
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h2>{match?.name || 'Match'}</h2>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div className="grid" style={{ gap: 6 }}>
+          <h2 style={{ margin: 0 }}>{match?.name || 'Match'}</h2>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
+            <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <span className="muted">Stream Key: {streamKey || 'N/A'}</span>
+            <button onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
+            <button onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
+          </div>
+          {copyMessage ? <div className="muted">{copyMessage}</div> : null}
+        </div>
         <div className="row">
           <input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="user_id" />
           {!isOperator
@@ -414,24 +440,23 @@ export default function MatchPage() {
       </div>
 
       <div className="split">
-        <div className="grid">
+        <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
           <div className="card grid">
             <h3>HLS Stream</h3>
-            {hlsSrc ? <HlsPlayer src={hlsSrc} paused={playerPaused} /> : <div className="muted">No HLS URL configured</div>}
-            <div className="grid" style={{ marginTop: 8 }}>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
-                <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
-              </div>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <span className="muted">Stream Key: {streamKey || 'N/A'}</span>
-                <button onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
-                <button onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
-              </div>
-              {copyMessage ? <div className="muted">{copyMessage}</div> : null}
-            </div>
+            {hlsSrc ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
           </div>
 
+          <div className="card grid" style={{ minHeight: 110 }}>
+            <h3>Timer</h3>
+            <div className="row">
+              <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
+              <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
+              <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
           <div className="card grid">
             <h3>xG Input</h3>
             <div className="row">
@@ -461,19 +486,13 @@ export default function MatchPage() {
               <div style={{ position: 'absolute', left: '20.35%', top: '0%', width: '59.29%', height: '31.43%', border: '1px solid rgba(255,255,255,0.8)' }} />
               <div style={{ position: 'absolute', left: '36.53%', top: '0%', width: '26.94%', height: '10.48%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', left: '50%', top: '20.95%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
-              <div
-                style={{
-                  position: 'absolute',
-                  left: '50%',
-                  bottom: 0,
-                  width: '26.91%',
-                  height: '34.86%',
-                  border: '1px solid rgba(255,255,255,0.75)',
-                  borderBottom: 'none',
-                  borderRadius: '50% 50% 0 0 / 100% 100% 0 0',
-                  transform: 'translateX(-50%)',
-                }}
-              />
+              <svg
+                viewBox="0 0 68 52.5"
+                preserveAspectRatio="none"
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+              >
+                <path d="M24.85 52.5 A9.15 9.15 0 0 1 43.15 52.5" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="0.18" />
+              </svg>
               {shotPoint ? (
                 <div
                   style={{
@@ -500,30 +519,21 @@ export default function MatchPage() {
             </div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
           </div>
-        </div>
-
-        <div className="grid">
-          <div className="card grid">
-            <h3>Timer</h3>
-            <div className="row">
-              <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
-              <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
-              <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
-            </div>
-          </div>
 
           <div className="card grid">
             <h3>Possession</h3>
             <div className="row">
-              <span>Current:</span>
-              <button className={possessionTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>HOME <span className="kbd">Q</span></button>
-              <button className={possessionTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>AWAY <span className="kbd">W</span></button>
-              <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} onClick={() => changePossession('NONE')} disabled={!canWrite}>NONE</button>
-              <span>{possessionTeam}</span>
+              <span>Current: {possessionLabel}</span>
+            </div>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <span>Home</span>
+              <strong>{summary?.possession?.home_pct?.toFixed(2) || '0.00'}% : {summary?.possession?.away_pct?.toFixed(2) || '0.00'}%</strong>
+              <span>Away</span>
             </div>
             <div className="row">
-              <span>HOME {summary?.possession?.home_pct?.toFixed(1) || '0.0'}%</span>
-              <span>AWAY {summary?.possession?.away_pct?.toFixed(1) || '0.0'}%</span>
+              <button className={possessionTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>Home <span className="kbd">Q</span></button>
+              <button className={possessionTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>Away <span className="kbd">W</span></button>
+              <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} onClick={() => changePossession('NONE')} disabled={!canWrite}>Loose Ball <span className="kbd">E</span></button>
             </div>
           </div>
 
@@ -560,9 +570,9 @@ export default function MatchPage() {
             </div>
             <div className="row">
               <span>Lane select:</span>
-              <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
-              <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
-              <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
+              <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">←</span></button>
+              <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">↑</span></button>
+              <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">→</span></button>
               <span>selected={pendingLane}</span>
             </div>
             <div className="row">
