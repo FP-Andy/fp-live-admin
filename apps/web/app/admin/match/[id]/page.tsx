@@ -289,8 +289,9 @@ export default function MatchPage() {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-    const x = (px / rect.width) * HALF_PITCH_LENGTH;
-    const y = (py / rect.height) * PITCH_WIDTH;
+    // Rotated half-pitch mode (CCW 90deg visual): top is goal, bottom is half-line.
+    const y = (px / rect.width) * PITCH_WIDTH;
+    const x = (1 - py / rect.height) * HALF_PITCH_LENGTH;
     setShotPoint({ x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) });
     setXgEstimateMeta('');
   };
@@ -448,7 +449,7 @@ export default function MatchPage() {
                 position: 'relative',
                 width: '100%',
                 maxWidth: 520,
-                aspectRatio: '52.5 / 68',
+                aspectRatio: '68 / 52.5',
                 border: '1px solid #1f2937',
                 borderRadius: 8,
                 cursor: 'crosshair',
@@ -457,15 +458,15 @@ export default function MatchPage() {
               }}
             >
               <div style={{ position: 'absolute', inset: 0, border: '2px solid rgba(255,255,255,0.9)', borderRadius: 8 }} />
-              <div style={{ position: 'absolute', right: '0%', top: '20.35%', width: '15.71%', height: '59.29%', border: '1px solid rgba(255,255,255,0.8)' }} />
-              <div style={{ position: 'absolute', right: '0%', top: '36.8%', width: '5.71%', height: '26.4%', border: '1px solid rgba(255,255,255,0.75)' }} />
-              <div style={{ position: 'absolute', left: '89.5%', top: '49%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
+              <div style={{ position: 'absolute', left: '20.35%', top: '0%', width: '59.29%', height: '31.43%', border: '1px solid rgba(255,255,255,0.8)' }} />
+              <div style={{ position: 'absolute', left: '36.53%', top: '0%', width: '26.94%', height: '10.48%', border: '1px solid rgba(255,255,255,0.75)' }} />
+              <div style={{ position: 'absolute', left: '50%', top: '20.95%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
               {shotPoint ? (
                 <div
                   style={{
                     position: 'absolute',
-                    left: `${(shotPoint.x / HALF_PITCH_LENGTH) * 100}%`,
-                    top: `${(shotPoint.y / PITCH_WIDTH) * 100}%`,
+                    left: `${(shotPoint.y / PITCH_WIDTH) * 100}%`,
+                    top: `${(1 - shotPoint.x / HALF_PITCH_LENGTH) * 100}%`,
                     width: 10,
                     height: 10,
                     borderRadius: '50%',
@@ -475,10 +476,9 @@ export default function MatchPage() {
                   }}
                 />
               ) : null}
-              <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Half start</div>
-              <div style={{ position: 'absolute', right: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Goal</div>
-              <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>y=0</div>
-              <div style={{ position: 'absolute', left: 8, bottom: 20, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>Half pitch (52.5m x 68m)</div>
+              <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Goal Side</div>
+              <div style={{ position: 'absolute', right: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>Half line</div>
+              <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>68m x 52.5m (rotated)</div>
             </div>
             <div className="row" style={{ gap: 12 }}>
               <label><input type="checkbox" checked={isHeaderShot} onChange={(e) => setIsHeaderShot(e.target.checked)} /> Header</label>
