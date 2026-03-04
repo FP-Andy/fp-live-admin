@@ -7,6 +7,8 @@ import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, Refere
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
+const HALF_PITCH_LENGTH = 52.5;
+const PITCH_WIDTH = 68;
 
 type Team = 'HOME' | 'AWAY';
 type PossessionTeam = Team | 'NONE';
@@ -287,8 +289,8 @@ export default function MatchPage() {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-    const x = (px / rect.width) * 105;
-    const y = (py / rect.height) * 68;
+    const x = (px / rect.width) * HALF_PITCH_LENGTH;
+    const y = (py / rect.height) * PITCH_WIDTH;
     setShotPoint({ x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) });
     setXgEstimateMeta('');
   };
@@ -302,9 +304,10 @@ export default function MatchPage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        team: xgTeam,
-        attack_lr: attackLR,
-        start_x: shotPoint.x,
+        // Fixed half-pitch mode: always evaluate toward the same goal.
+        team: 'HOME',
+        attack_lr: 'L2R',
+        start_x: Number((HALF_PITCH_LENGTH + shotPoint.x).toFixed(2)),
         start_y: shotPoint.y,
         is_header: isHeaderShot,
         is_weak_foot: isWeakFootShot,
@@ -445,7 +448,7 @@ export default function MatchPage() {
                 position: 'relative',
                 width: '100%',
                 maxWidth: 520,
-                aspectRatio: '105 / 68',
+                aspectRatio: '52.5 / 68',
                 border: '1px solid #1f2937',
                 borderRadius: 8,
                 cursor: 'crosshair',
@@ -454,20 +457,15 @@ export default function MatchPage() {
               }}
             >
               <div style={{ position: 'absolute', inset: 0, border: '2px solid rgba(255,255,255,0.9)', borderRadius: 8 }} />
-              <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: 'rgba(255,255,255,0.7)' }} />
-              <div style={{ position: 'absolute', left: '50%', top: '50%', width: 64, height: 64, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.7)', transform: 'translate(-50%, -50%)' }} />
-              <div style={{ position: 'absolute', left: '0%', top: '20.35%', width: '15.71%', height: '59.29%', border: '1px solid rgba(255,255,255,0.8)' }} />
               <div style={{ position: 'absolute', right: '0%', top: '20.35%', width: '15.71%', height: '59.29%', border: '1px solid rgba(255,255,255,0.8)' }} />
-              <div style={{ position: 'absolute', left: '0%', top: '36.8%', width: '5.71%', height: '26.4%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', right: '0%', top: '36.8%', width: '5.71%', height: '26.4%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', left: '89.5%', top: '49%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
-              <div style={{ position: 'absolute', left: '10.5%', top: '49%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
               {shotPoint ? (
                 <div
                   style={{
                     position: 'absolute',
-                    left: `${(shotPoint.x / 105) * 100}%`,
-                    top: `${(shotPoint.y / 68) * 100}%`,
+                    left: `${(shotPoint.x / HALF_PITCH_LENGTH) * 100}%`,
+                    top: `${(shotPoint.y / PITCH_WIDTH) * 100}%`,
                     width: 10,
                     height: 10,
                     borderRadius: '50%',
@@ -477,10 +475,10 @@ export default function MatchPage() {
                   }}
                 />
               ) : null}
-              <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>0m</div>
-              <div style={{ position: 'absolute', right: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>105m</div>
+              <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Half start</div>
+              <div style={{ position: 'absolute', right: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Goal</div>
               <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>y=0</div>
-              <div style={{ position: 'absolute', left: 8, bottom: 20, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>y=68</div>
+              <div style={{ position: 'absolute', left: 8, bottom: 20, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>Half pitch (52.5m x 68m)</div>
             </div>
             <div className="row" style={{ gap: 12 }}>
               <label><input type="checkbox" checked={isHeaderShot} onChange={(e) => setIsHeaderShot(e.target.checked)} /> Header</label>
