@@ -454,13 +454,26 @@ export default function MatchPage() {
                 borderRadius: 8,
                 cursor: 'crosshair',
                 background:
-                  'repeating-linear-gradient(90deg, #3f7f3f 0 10%, #3a733a 10% 20%)',
+                  'repeating-linear-gradient(0deg, #3f7f3f 0 10%, #3a733a 10% 20%)',
               }}
             >
               <div style={{ position: 'absolute', inset: 0, border: '2px solid rgba(255,255,255,0.9)', borderRadius: 8 }} />
               <div style={{ position: 'absolute', left: '20.35%', top: '0%', width: '59.29%', height: '31.43%', border: '1px solid rgba(255,255,255,0.8)' }} />
               <div style={{ position: 'absolute', left: '36.53%', top: '0%', width: '26.94%', height: '10.48%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', left: '50%', top: '20.95%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  bottom: 0,
+                  width: '26.91%',
+                  height: '34.86%',
+                  border: '1px solid rgba(255,255,255,0.75)',
+                  borderBottom: 'none',
+                  borderRadius: '50% 50% 0 0 / 100% 100% 0 0',
+                  transform: 'translateX(-50%)',
+                }}
+              />
               {shotPoint ? (
                 <div
                   style={{
