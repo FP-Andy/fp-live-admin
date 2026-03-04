@@ -367,14 +367,6 @@ export default function MatchPage() {
         changePossession('AWAY');
       } else if (e.key === 'e' || e.key === 'E') {
         changePossession('NONE');
-      } else if (e.key === '1') {
-        setSelectedTeam('HOME');
-        setXgTeam('HOME');
-        saveState({ selectedTeam: 'HOME' });
-      } else if (e.key === '2') {
-        setSelectedTeam('AWAY');
-        setXgTeam('AWAY');
-        saveState({ selectedTeam: 'AWAY' });
       } else if (e.key === 'ArrowLeft') {
         setPendingLane('LEFT');
       } else if (e.key === 'ArrowUp') {
@@ -387,7 +379,7 @@ export default function MatchPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [running, selectedTeam, canWrite, possessionTeam, attackLR, userId, pendingLane]);
+  }, [running, canWrite, possessionTeam, attackLR, userId, pendingLane]);
 
   const hlsSrc = match?.hls_url || DEFAULT_HLS;
   const rtmpServer = match?.metadata?.rtmp?.server_url || '';
@@ -452,6 +444,35 @@ export default function MatchPage() {
               <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
               <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
               <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3>Match Dominance (-1 ~ +1, 3-min bins)</h3>
+            <div style={{ width: '100%', height: 280 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={dominanceChartData}>
+                  <defs>
+                    <linearGradient id="dominanceFillSingle" x1="0%" y1="0%" x2="0%" y2="100%">
+                      <stop offset="0%" stopColor="#22c55e" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="#22c55e" stopOpacity={0.18} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis
+                    type="number"
+                    dataKey="minuteVal"
+                    ticks={dominanceXAxisTicks}
+                    tickFormatter={(v) => Number(v).toFixed(1)}
+                    domain={['dataMin', 'dataMax']}
+                  />
+                  <YAxis domain={[-1, 1]} />
+                  <Tooltip />
+                  <ReferenceLine y={0} stroke="#6b7280" />
+                  <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingle)" />
+                  <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
+                </ComposedChart>
+              </ResponsiveContainer>
             </div>
           </div>
         </div>
@@ -520,43 +541,45 @@ export default function MatchPage() {
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
           </div>
 
-          <div className="card grid">
-            <h3>Possession</h3>
-            <div className="row">
-              <span>Current: {possessionLabel}</span>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="card grid" style={{ minHeight: 220 }}>
+              <h3>Possession</h3>
+              <div className="row">
+                <span>Current: {possessionLabel}</span>
+              </div>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <span>Home</span>
+                <strong>{summary?.possession?.home_pct?.toFixed(2) || '0.00'}% : {summary?.possession?.away_pct?.toFixed(2) || '0.00'}%</strong>
+                <span>Away</span>
+              </div>
+              <div className="row">
+                <button className={possessionTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>Home <span className="kbd">Q</span></button>
+                <button className={possessionTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>Away <span className="kbd">W</span></button>
+                <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} onClick={() => changePossession('NONE')} disabled={!canWrite}>Loose Ball <span className="kbd">E</span></button>
+              </div>
             </div>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <span>Home</span>
-              <strong>{summary?.possession?.home_pct?.toFixed(2) || '0.00'}% : {summary?.possession?.away_pct?.toFixed(2) || '0.00'}%</strong>
-              <span>Away</span>
-            </div>
-            <div className="row">
-              <button className={possessionTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>Home <span className="kbd">Q</span></button>
-              <button className={possessionTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>Away <span className="kbd">W</span></button>
-              <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} onClick={() => changePossession('NONE')} disabled={!canWrite}>Loose Ball <span className="kbd">E</span></button>
-            </div>
-          </div>
 
-          <div className="card grid">
-            <h3>Possession Timeline Log</h3>
-            <div className="row" style={{ marginBottom: 8 }}>
-              <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
-            </div>
-            <div
-              className="grid"
-              style={{
-                maxHeight: 220,
-                overflowY: 'auto',
-                paddingRight: 4,
-              }}
-            >
-              {possessionLogs.length === 0 ? (
-                <span className="muted">No logs yet</span>
-              ) : (
-                possessionLogs.map((line, idx) => (
-                  <span key={`${idx}-${line}`} className="muted">{line}</span>
-                ))
-              )}
+            <div className="card grid" style={{ minHeight: 220 }}>
+              <h3>Possession Timeline Log</h3>
+              <div className="row" style={{ marginBottom: 8 }}>
+                <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
+              </div>
+              <div
+                className="grid"
+                style={{
+                  height: 140,
+                  overflowY: 'auto',
+                  paddingRight: 4,
+                }}
+              >
+                {possessionLogs.length === 0 ? (
+                  <span className="muted">No logs yet</span>
+                ) : (
+                  possessionLogs.map((line, idx) => (
+                    <span key={`${idx}-${line}`} className="muted">{line}</span>
+                  ))
+                )}
+              </div>
             </div>
           </div>
 
@@ -564,8 +587,8 @@ export default function MatchPage() {
             <h3>Attack Direction Input (Event)</h3>
             <div className="row">
               <span>Team:</span>
-              <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => { setSelectedTeam('HOME'); setXgTeam('HOME'); saveState({ selectedTeam: 'HOME' }); }} disabled={!canWrite}>HOME <span className="kbd">1</span></button>
-              <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => { setSelectedTeam('AWAY'); setXgTeam('AWAY'); saveState({ selectedTeam: 'AWAY' }); }} disabled={!canWrite}>AWAY <span className="kbd">2</span></button>
+              <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>HOME <span className="kbd">Q</span></button>
+              <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>AWAY <span className="kbd">W</span></button>
               <span>{selectedTeam}</span>
             </div>
             <div className="row">
@@ -586,35 +609,6 @@ export default function MatchPage() {
             </div>
           </div>
 
-        </div>
-      </div>
-
-      <div className="card">
-        <h3>Match Dominance (-1 ~ +1, 3-min bins)</h3>
-        <div style={{ width: '100%', height: 280 }}>
-          <ResponsiveContainer>
-            <ComposedChart data={dominanceChartData}>
-              <defs>
-                <linearGradient id="dominanceFillSingle" x1="0%" y1="0%" x2="0%" y2="100%">
-                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.4} />
-                  <stop offset="100%" stopColor="#22c55e" stopOpacity={0.18} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                type="number"
-                dataKey="minuteVal"
-                ticks={dominanceXAxisTicks}
-                tickFormatter={(v) => Number(v).toFixed(1)}
-                domain={['dataMin', 'dataMax']}
-              />
-              <YAxis domain={[-1, 1]} />
-              <Tooltip />
-              <ReferenceLine y={0} stroke="#6b7280" />
-              <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingle)" />
-              <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
-            </ComposedChart>
-          </ResponsiveContainer>
         </div>
       </div>
 
