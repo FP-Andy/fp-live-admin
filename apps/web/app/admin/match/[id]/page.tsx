@@ -8,12 +8,13 @@ import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, Refere
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
 const HALF_PITCH_LENGTH = 52.5;
+const XG_VISIBLE_LENGTH = 40;
+const XG_VISIBLE_OFFSET = HALF_PITCH_LENGTH - XG_VISIBLE_LENGTH;
 const PITCH_WIDTH = 68;
 
 type Team = 'HOME' | 'AWAY';
 type PossessionTeam = Team | 'NONE';
 type Lane = 'LEFT' | 'CENTER' | 'RIGHT';
-type AttackLR = 'L2R' | 'R2L';
 
 function fmt(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -50,7 +51,6 @@ export default function MatchPage() {
   const [running, setRunning] = useState(false);
   const [possessionTeam, setPossessionTeam] = useState<PossessionTeam>('NONE');
   const [selectedTeam, setSelectedTeam] = useState<Team>('HOME');
-  const [attackLR, setAttackLR] = useState<AttackLR>('L2R');
   const [pendingLane, setPendingLane] = useState<Lane>('CENTER');
 
   const [xgTeam, setXgTeam] = useState<Team>('HOME');
@@ -86,14 +86,14 @@ export default function MatchPage() {
   const isOperator = useMemo(() => match?.operator_id && match.operator_id === userId, [match, userId]);
   const canWrite = useMemo(() => !match?.operator_id || match.operator_id === userId, [match, userId]);
 
-  const saveState = async (next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR;}>) => {
+  const saveState = async (next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team;}>) => {
     const payload = {
       state_id: makeId(),
       clock_ms: next?.clockMs ?? clockMs,
       running: next?.running ?? running,
       possession_team: next?.possessionTeam ?? possessionTeam,
       selected_team: next?.selectedTeam ?? selectedTeam,
-      attack_lr: next?.attackLR ?? attackLR,
+      attack_lr: 'L2R',
       user_id: userId,
     };
     await fetch(`${API_BASE}/matches/${id}/state`, {
@@ -122,7 +122,6 @@ export default function MatchPage() {
       setPossessionTeam(s.state.possession_team || 'NONE');
       setSelectedTeam(s.state.selected_team || 'HOME');
       setXgTeam(s.state.selected_team || 'HOME');
-      setAttackLR(s.state.attack_lr || 'L2R');
       baseRef.current = s.state.clock_ms || 0;
       perfRef.current = performance.now();
     }
@@ -177,7 +176,7 @@ export default function MatchPage() {
       }
     }, 1000);
     return () => clearInterval(t);
-  }, [running, possessionTeam, selectedTeam, attackLR, canWrite, userId]);
+  }, [running, possessionTeam, selectedTeam, canWrite, userId]);
 
   const toggleRun = async () => {
     if (!canWrite) return;
@@ -276,13 +275,6 @@ export default function MatchPage() {
     });
   };
 
-  const toggleAttack = async () => {
-    if (!canWrite) return;
-    const next = attackLR === 'L2R' ? 'R2L' : 'L2R';
-    setAttackLR(next);
-    await saveState({ attackLR: next });
-  };
-
   const submitXg = async () => {
     if (!canWrite) return;
     const xg = Number(xgValue);
@@ -299,9 +291,9 @@ export default function MatchPage() {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-    // Rotated half-pitch mode (CCW 90deg visual): top is goal, bottom is half-line.
+    // Rotated fixed-width zone (CCW 90deg visual): top is goal, bottom is 40m line.
     const y = (px / rect.width) * PITCH_WIDTH;
-    const x = (1 - py / rect.height) * HALF_PITCH_LENGTH;
+    const x = (1 - py / rect.height) * XG_VISIBLE_LENGTH;
     setShotPoint({ x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) });
     setXgEstimateMeta('');
   };
@@ -318,7 +310,7 @@ export default function MatchPage() {
         // Fixed half-pitch mode: always evaluate toward the same goal.
         team: 'HOME',
         attack_lr: 'L2R',
-        start_x: Number((HALF_PITCH_LENGTH + shotPoint.x).toFixed(2)),
+        start_x: Number((HALF_PITCH_LENGTH + XG_VISIBLE_OFFSET + shotPoint.x).toFixed(2)),
         start_y: shotPoint.y,
         is_header: isHeaderShot,
         is_weak_foot: isWeakFootShot,
@@ -367,11 +359,11 @@ export default function MatchPage() {
         changePossession('AWAY');
       } else if (e.key === 'e' || e.key === 'E') {
         changePossession('NONE');
-      } else if (e.key === 'ArrowLeft') {
+      } else if (e.key === 'a' || e.key === 'A') {
         setPendingLane('LEFT');
-      } else if (e.key === 'ArrowUp') {
+      } else if (e.key === 's' || e.key === 'S') {
         setPendingLane('CENTER');
-      } else if (e.key === 'ArrowRight') {
+      } else if (e.key === 'd' || e.key === 'D') {
         setPendingLane('RIGHT');
       } else if (e.key === 'Enter') {
         sendLane(pendingLane);
@@ -379,7 +371,7 @@ export default function MatchPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [running, canWrite, possessionTeam, attackLR, userId, pendingLane]);
+  }, [running, canWrite, possessionTeam, userId, pendingLane]);
 
   const hlsSrc = match?.hls_url || DEFAULT_HLS;
   const rtmpServer = match?.metadata?.rtmp?.server_url || '';
@@ -433,46 +425,36 @@ export default function MatchPage() {
 
       <div className="split">
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
-          <div className="card grid">
-            <h3>HLS Stream</h3>
-            {hlsSrc ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
-          </div>
-
-          <div className="card grid" style={{ minHeight: 110 }}>
-            <h3>Timer</h3>
-            <div className="row">
+          <div className="card">
+            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
+              <strong>Timer</strong>
               <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
               <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
               <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
             </div>
           </div>
 
-          <div className="card">
-            <h3>Match Dominance (-1 ~ +1, 3-min bins)</h3>
-            <div style={{ width: '100%', height: 280 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={dominanceChartData}>
-                  <defs>
-                    <linearGradient id="dominanceFillSingle" x1="0%" y1="0%" x2="0%" y2="100%">
-                      <stop offset="0%" stopColor="#22c55e" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="#22c55e" stopOpacity={0.18} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    type="number"
-                    dataKey="minuteVal"
-                    ticks={dominanceXAxisTicks}
-                    tickFormatter={(v) => Number(v).toFixed(1)}
-                    domain={['dataMin', 'dataMax']}
-                  />
-                  <YAxis domain={[-1, 1]} />
-                  <Tooltip />
-                  <ReferenceLine y={0} stroke="#6b7280" />
-                  <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingle)" />
-                  <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
-                </ComposedChart>
-              </ResponsiveContainer>
+          <div className="card grid">
+            <h3>HLS Stream</h3>
+            {hlsSrc ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
+          </div>
+
+          <div className="card grid" style={{ minHeight: 280 }}>
+            <h3>Recent Events</h3>
+            <div
+              className="grid"
+              style={{
+                height: 220,
+                overflowY: 'auto',
+                paddingRight: 4,
+              }}
+            >
+              {(summary?.events || []).slice(0, 40).map((e: any) => (
+                <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
+                  <span>{e.type} {e.team} @ {fmt(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''} {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}</span>
+                  <span className="muted">{new Date(e.created_at).toLocaleTimeString()}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -495,7 +477,7 @@ export default function MatchPage() {
                 position: 'relative',
                 width: '100%',
                 maxWidth: 520,
-                aspectRatio: '68 / 52.5',
+                aspectRatio: '68 / 40',
                 border: '1px solid #1f2937',
                 borderRadius: 8,
                 cursor: 'crosshair',
@@ -508,18 +490,17 @@ export default function MatchPage() {
               <div style={{ position: 'absolute', left: '36.53%', top: '0%', width: '26.94%', height: '10.48%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', left: '50%', top: '20.95%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
               <svg
-                viewBox="0 0 68 52.5"
+                viewBox="0 0 68 40"
                 preserveAspectRatio="none"
                 style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
               >
-                <path d="M24.85 52.5 A9.15 9.15 0 0 1 43.15 52.5" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="0.18" />
               </svg>
               {shotPoint ? (
                 <div
                   style={{
                     position: 'absolute',
                     left: `${(shotPoint.y / PITCH_WIDTH) * 100}%`,
-                    top: `${(1 - shotPoint.x / HALF_PITCH_LENGTH) * 100}%`,
+                    top: `${(1 - shotPoint.x / XG_VISIBLE_LENGTH) * 100}%`,
                     width: 10,
                     height: 10,
                     borderRadius: '50%',
@@ -530,8 +511,7 @@ export default function MatchPage() {
                 />
               ) : null}
               <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Goal Side</div>
-              <div style={{ position: 'absolute', right: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>Half line</div>
-              <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>68m x 52.5m (rotated)</div>
+              <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>68m x 40m (rotated)</div>
             </div>
             <div className="row" style={{ gap: 12 }}>
               <label><input type="checkbox" checked={isHeaderShot} onChange={(e) => setIsHeaderShot(e.target.checked)} /> Header</label>
@@ -542,7 +522,7 @@ export default function MatchPage() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div className="card grid" style={{ minHeight: 220 }}>
+            <div className="card grid" style={{ minHeight: 180, gap: 8 }}>
               <h3>Possession</h3>
               <div className="row">
                 <span>Current: {possessionLabel}</span>
@@ -559,7 +539,7 @@ export default function MatchPage() {
               </div>
             </div>
 
-            <div className="card grid" style={{ minHeight: 220 }}>
+            <div className="card grid" style={{ minHeight: 180, gap: 8 }}>
               <h3>Possession Timeline Log</h3>
               <div className="row" style={{ marginBottom: 8 }}>
                 <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
@@ -567,7 +547,7 @@ export default function MatchPage() {
               <div
                 className="grid"
                 style={{
-                  height: 140,
+                  height: 105,
                   overflowY: 'auto',
                   paddingRight: 4,
                 }}
@@ -593,14 +573,13 @@ export default function MatchPage() {
             </div>
             <div className="row">
               <span>Lane select:</span>
-              <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">←</span></button>
-              <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">↑</span></button>
-              <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">→</span></button>
+              <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
+              <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
+              <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
               <span>selected={pendingLane}</span>
             </div>
             <div className="row">
               <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
-              <button className="btn-active" onClick={toggleAttack} disabled={!canWrite}>Attack LR: {attackLR}</button>
             </div>
             <div className="muted">
               HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
@@ -613,14 +592,31 @@ export default function MatchPage() {
       </div>
 
       <div className="card">
-        <h3>Recent Events</h3>
-        <div className="grid">
-          {(summary?.events || []).slice(0, 20).map((e: any) => (
-            <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
-              <span>{e.type} {e.team} @ {fmt(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''} {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}</span>
-              <span className="muted">{new Date(e.created_at).toLocaleTimeString()}</span>
-            </div>
-          ))}
+        <h3>Match Dominance (-1 ~ +1, 3-min bins)</h3>
+        <div style={{ width: '100%', height: 280 }}>
+          <ResponsiveContainer>
+            <ComposedChart data={dominanceChartData}>
+              <defs>
+                <linearGradient id="dominanceFillSingle" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#22c55e" stopOpacity={0.18} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                type="number"
+                dataKey="minuteVal"
+                ticks={dominanceXAxisTicks}
+                tickFormatter={(v) => Number(v).toFixed(1)}
+                domain={['dataMin', 'dataMax']}
+              />
+              <YAxis domain={[-1, 1]} />
+              <Tooltip />
+              <ReferenceLine y={0} stroke="#6b7280" />
+              <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingle)" />
+              <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
+            </ComposedChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
