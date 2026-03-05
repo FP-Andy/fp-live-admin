@@ -31,6 +31,11 @@ services:
       GATEWAY_PUBLIC_HLS_BASE: ${GATEWAY_PUBLIC_HLS_BASE:-http://localhost:8080}
       GATEWAY_PUBLIC_RTMP_SERVER: ${GATEWAY_PUBLIC_RTMP_SERVER:-rtmp://localhost:1935/live}
       GATEWAY_RTMP_PULL_BASE: ${GATEWAY_RTMP_PULL_BASE:-rtmp://gateway-rtmp/live}
+      FFMPEG_VIDEO_MODE: ${FFMPEG_VIDEO_MODE:-copy}
+      HLS_TIME: ${HLS_TIME:-2}
+      HLS_LIST_SIZE: ${HLS_LIST_SIZE:-8}
+      HLS_DELETE_THRESHOLD: ${HLS_DELETE_THRESHOLD:-1}
+      HLS_FLAGS: ${HLS_FLAGS:-delete_segments+independent_segments+omit_endlist}
     volumes:
       - hls_data:/srv/hls
       - ./scripts:/scripts

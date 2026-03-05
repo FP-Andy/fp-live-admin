@@ -22,10 +22,12 @@ export default function HlsPlayer({ src, paused = false }: Props) {
 
     if (Hls.isSupported()) {
       const hls = new Hls({
-        liveSyncDurationCount: 6,
-        maxBufferLength: 60,
-        liveBackBufferLength: 360,
-        lowLatencyMode: false,
+        liveSyncDurationCount: 2,
+        liveMaxLatencyDurationCount: 4,
+        maxBufferLength: 10,
+        liveBackBufferLength: 30,
+        lowLatencyMode: true,
+        maxLiveSyncPlaybackRate: 1.2,
       });
       hls.loadSource(src);
       hls.attachMedia(video);

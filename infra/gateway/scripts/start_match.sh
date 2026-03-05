@@ -18,6 +18,11 @@ PID_DIR="/tmp/ffmpeg-pids"
 OUT_DIR="/srv/hls/${MATCH_ID}"
 PID_FILE="${PID_DIR}/${MATCH_ID}.pid"
 LOG_FILE="${OUT_DIR}/ffmpeg.log"
+FFMPEG_VIDEO_MODE="${FFMPEG_VIDEO_MODE:-copy}"
+HLS_TIME="${HLS_TIME:-2}"
+HLS_LIST_SIZE="${HLS_LIST_SIZE:-8}"
+HLS_DELETE_THRESHOLD="${HLS_DELETE_THRESHOLD:-1}"
+HLS_FLAGS="${HLS_FLAGS:-delete_segments+independent_segments+omit_endlist}"
 
 mkdir -p "$PID_DIR" "$OUT_DIR"
 
@@ -46,16 +51,23 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE"
 fi
 
+VIDEO_ARGS=(-c:v copy)
+if [[ "$FFMPEG_VIDEO_MODE" != "copy" ]]; then
+  VIDEO_ARGS=(-c:v libx264 -preset veryfast -tune zerolatency -g 50 -keyint_min 50 -sc_threshold 0)
+fi
+
 nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-  -fflags +genpts -i "$INPUT_URL" \
-  -c:v libx264 -preset veryfast -tune zerolatency \
-  -g 50 -keyint_min 50 -sc_threshold 0 \
+  -fflags +genpts+nobuffer -flags low_delay \
+  -analyzeduration 1M -probesize 1M \
+  -i "$INPUT_URL" \
+  "${VIDEO_ARGS[@]}" \
   -c:a aac -ar 48000 -b:a 128k \
   -f hls \
-  -hls_time 2 \
-  -hls_list_size 600 \
-  -hls_playlist_type event \
-  -hls_flags append_list+independent_segments \
+  -hls_time "$HLS_TIME" \
+  -hls_list_size "$HLS_LIST_SIZE" \
+  -hls_delete_threshold "$HLS_DELETE_THRESHOLD" \
+  -hls_allow_cache 0 \
+  -hls_flags "$HLS_FLAGS" \
   -hls_segment_filename "${OUT_DIR}/seg_%06d.ts" \
   "${OUT_DIR}/stream.m3u8" \
   >"$LOG_FILE" 2>&1 &
