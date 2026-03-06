@@ -70,6 +70,7 @@ export default function MatchPage() {
   const runningRef = useRef<boolean>(false);
   const initializedRef = useRef<boolean>(false);
   const lastPossessionLogSecondRef = useRef<number>(-1);
+  const fetchSeqRef = useRef<number>(0);
 
   useEffect(() => {
     clockRef.current = clockMs;
@@ -107,12 +108,14 @@ export default function MatchPage() {
   };
 
   const fetchAll = async () => {
+    const seq = ++fetchSeqRef.current;
     const [m, s, d, o] = await Promise.all([
       fetch(`${API_BASE}/matches/${id}`, { cache: 'no-store' }).then((r) => r.json()),
       fetch(`${API_BASE}/matches/${id}/summary`, { cache: 'no-store' }).then((r) => r.json()),
       fetch(`${API_BASE}/matches/${id}/dominance?bin_seconds=180`, { cache: 'no-store' }).then((r) => r.json()),
       fetch(`${API_BASE}/outbox`, { cache: 'no-store' }).then((r) => r.json()),
     ]);
+    if (seq !== fetchSeqRef.current) return;
     setMatch(m);
     setSummary(s);
     setDominance(d.bins || []);
@@ -142,7 +145,7 @@ export default function MatchPage() {
     if (!s || !p) return;
 
     const second = Math.floor((s.clock_ms || 0) / 1000);
-    if (second === lastPossessionLogSecondRef.current) return;
+    if (second <= lastPossessionLogSecondRef.current) return;
     lastPossessionLogSecondRef.current = second;
 
     const teamLabel =

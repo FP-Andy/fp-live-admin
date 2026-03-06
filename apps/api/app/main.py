@@ -238,17 +238,21 @@ def _enqueue_webhook_fanout(db: Session, kind: str, ref_id: UUID, payload: dict)
         enqueue_outbox(db, kind, ref_id, target, payload)
 
 
+def _latest_state(match_id: UUID, db: Session) -> State | None:
+    return (
+        db.query(State)
+        .filter(State.match_id == match_id)
+        .order_by(State.clock_ms.desc(), desc(State.created_at))
+        .first()
+    )
+
+
 def _build_match_summary(match_id: UUID, db: Session) -> dict:
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
 
-    last_state = (
-        db.query(State)
-        .filter(State.match_id == match_id)
-        .order_by(desc(State.created_at))
-        .first()
-    )
+    last_state = _latest_state(match_id, db)
     current_clock = last_state.clock_ms if last_state else 0
 
     poss_rows = db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).all()
@@ -375,12 +379,7 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
 
-    last_state = (
-        db.query(State)
-        .filter(State.match_id == match_id)
-        .order_by(desc(State.created_at))
-        .first()
-    )
+    last_state = _latest_state(match_id, db)
     aggregate_clock_ms = last_state.clock_ms if last_state else 0
 
     poss_rows = (
@@ -680,12 +679,7 @@ def get_match_result(match_id: UUID, db: Session = Depends(get_db)):
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
 
-    last_state = (
-        db.query(State)
-        .filter(State.match_id == match_id)
-        .order_by(desc(State.created_at))
-        .first()
-    )
+    last_state = _latest_state(match_id, db)
 
     clock_ms = last_state.clock_ms if last_state else 0
 
@@ -802,12 +796,16 @@ def post_state(match_id: UUID, body: StateRequest, db: Session = Depends(get_db)
     if existing:
         return {"ok": True, "idempotent": True, "state_id": existing.id}
 
-    prev = (
-        db.query(State)
-        .filter(State.match_id == match_id)
-        .order_by(desc(State.created_at))
-        .first()
-    )
+    prev = _latest_state(match_id, db)
+    if prev and body.clock_ms < prev.clock_ms:
+        # Ignore stale state packets arriving out-of-order to keep possession segments monotonic.
+        return {
+            "ok": True,
+            "ignored": True,
+            "reason": "stale_clock",
+            "state_id": body.state_id,
+            "latest_clock_ms": prev.clock_ms,
+        }
 
     prev_team = prev.possession_team if prev else "NONE"
     new_team = body.possession_team
@@ -819,7 +817,7 @@ def post_state(match_id: UUID, body: StateRequest, db: Session = Depends(get_db)
                 .filter(PossessionSegment.match_id == match_id)
                 .filter(PossessionSegment.team == prev_team)
                 .filter(PossessionSegment.end_ms.is_(None))
-                .order_by(desc(PossessionSegment.created_at))
+                .order_by(PossessionSegment.start_ms.desc(), desc(PossessionSegment.created_at))
                 .first()
             )
             if open_seg and body.clock_ms >= open_seg.start_ms:
@@ -874,12 +872,7 @@ def post_attack_lane(match_id: UUID, body: AttackLaneEventRequest, db: Session =
 
     clock_ms = body.clock_ms
     if clock_ms is None:
-        last_state = (
-            db.query(State)
-            .filter(State.match_id == match_id)
-            .order_by(desc(State.created_at))
-            .first()
-        )
+        last_state = _latest_state(match_id, db)
         if not last_state:
             raise HTTPException(status_code=400, detail="clock_ms missing and no state exists")
         clock_ms = last_state.clock_ms
@@ -924,12 +917,7 @@ def post_xg(match_id: UUID, body: XGEventRequest, db: Session = Depends(get_db))
 
     clock_ms = body.clock_ms
     if clock_ms is None:
-        last_state = (
-            db.query(State)
-            .filter(State.match_id == match_id)
-            .order_by(desc(State.created_at))
-            .first()
-        )
+        last_state = _latest_state(match_id, db)
         if not last_state:
             raise HTTPException(status_code=400, detail="clock_ms missing and no state exists")
         clock_ms = last_state.clock_ms
@@ -1050,12 +1038,7 @@ def possession_timeline_v1(match_id: UUID, _auth: None = Depends(_require_partne
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
 
-    last_state = (
-        db.query(State)
-        .filter(State.match_id == match_id)
-        .order_by(desc(State.created_at))
-        .first()
-    )
+    last_state = _latest_state(match_id, db)
     current_clock = last_state.clock_ms if last_state else 0
     rows = (
         db.query(PossessionSegment)
