@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import shutil
 from typing import Literal
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -12,6 +13,7 @@ HLS_BASE = os.getenv("GATEWAY_PUBLIC_HLS_BASE", "http://localhost:8080").rstrip(
 RTMP_SERVER = os.getenv("GATEWAY_PUBLIC_RTMP_SERVER", "rtmp://localhost:1935/live").rstrip("/")
 RTMP_PULL_BASE = os.getenv("GATEWAY_RTMP_PULL_BASE", "rtmp://gateway-rtmp/live").rstrip("/")
 SCRIPTS_DIR = Path("/scripts")
+HLS_DIR = Path("/srv/hls")
 
 
 class StartMatchRequest(BaseModel):
@@ -108,6 +110,16 @@ def stop_match(match_id: str):
     _validate_match_id(match_id)
     out = _run_script("stop_match.sh", match_id)
     return {"ok": True, "match_id": match_id, "message": out}
+
+
+@app.post("/matches/{match_id}/clear")
+def clear_match(match_id: str):
+    _validate_match_id(match_id)
+    _run_script("stop_match.sh", match_id)
+    target = HLS_DIR / match_id
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    return {"ok": True, "match_id": match_id, "message": "cleared"}
 
 
 @app.get("/matches/status")

@@ -122,6 +122,19 @@ def _gateway_stop_stream(match_id: UUID) -> None:
         return
 
 
+def _gateway_clear_stream(match_id: UUID) -> None:
+    gateway_base = os.getenv("GATEWAY_API_BASE", "http://host.docker.internal:8090").rstrip("/")
+    if not gateway_base:
+        raise HTTPException(status_code=500, detail="GATEWAY_API_BASE not configured")
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{gateway_base}/matches/{match_id}/clear")
+            resp.raise_for_status()
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"gateway clear failed: {ex}") from ex
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global worker_task
@@ -473,6 +486,15 @@ def attach_ingest_stream(match_id: UUID, body: AttachIngestRequest, db: Session 
         "hls_url": row.hls_url,
         "rtmp": metadata.get("rtmp"),
     }
+
+
+@app.post("/api/matches/{match_id}/stream/clear")
+def clear_match_stream(match_id: UUID, db: Session = Depends(get_db)):
+    row = db.get(Match, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _gateway_clear_stream(match_id)
+    return {"ok": True, "match_id": str(row.id)}
 
 
 @app.get("/api/matches/{match_id}/stream/rtmp-info")

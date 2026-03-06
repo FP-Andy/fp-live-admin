@@ -60,6 +60,7 @@ export default function MatchPage() {
   const [isWeakFootShot, setIsWeakFootShot] = useState(false);
   const [xgEstimateMeta, setXgEstimateMeta] = useState('');
   const [copyMessage, setCopyMessage] = useState('');
+  const [isClearingHls, setIsClearingHls] = useState(false);
 
   const perfRef = useRef<number | null>(null);
   const baseRef = useRef<number>(0);
@@ -287,6 +288,26 @@ export default function MatchPage() {
     setXgValue('0.10');
   };
 
+  const clearHls = async () => {
+    if (!canWrite || isClearingHls) return;
+    if (!window.confirm('기존 HLS 영상 파일을 정리할까요?')) return;
+    setIsClearingHls(true);
+    try {
+      const res = await fetch(`${API_BASE}/matches/${id}/stream/clear`, { method: 'POST' });
+      if (!res.ok) {
+        setCopyMessage('HLS clear failed');
+      } else {
+        setCopyMessage('HLS cleared');
+        await fetchAll();
+      }
+    } catch {
+      setCopyMessage('HLS clear failed');
+    } finally {
+      setIsClearingHls(false);
+      setTimeout(() => setCopyMessage(''), 1500);
+    }
+  };
+
   const onPitchClick = (e: { currentTarget: HTMLDivElement; clientX: number; clientY: number }) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
@@ -435,7 +456,12 @@ export default function MatchPage() {
           </div>
 
           <div className="card grid">
-            <h3>HLS Stream</h3>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <h3 style={{ margin: 0 }}>HLS Stream</h3>
+              <button onClick={clearHls} disabled={!canWrite || isClearingHls}>
+                {isClearingHls ? 'Clearing...' : 'Clear HLS'}
+              </button>
+            </div>
             {hlsSrc ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
           </div>
 
