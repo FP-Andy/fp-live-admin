@@ -96,3 +96,23 @@ class WebhookSubscriptionResponse(BaseModel):
     active: bool
     created_at: str
     updated_at: str
+
+
+class MatchResultPossession(BaseModel):
+    homePct: float
+    awayPct: float
+
+
+class MatchResultXg(BaseModel):
+    home: float
+    away: float
+
+
+class MatchResultResponse(BaseModel):
+    matchId: str
+    name: str
+    status: str
+    clockMs: int
+    possession: MatchResultPossession
+    xg: MatchResultXg
+    playedAt: str

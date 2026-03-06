@@ -19,6 +19,7 @@ from .schemas import (
     AttachSrtRequest,
     CreateMatchRequest,
     IngestProtocol,
+    MatchResultResponse,
     MatchResponse,
     ReleaseLockRequest,
     StateRequest,
@@ -494,6 +495,68 @@ def get_match(match_id: UUID, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     return _serialize_match(row)
+
+
+@app.get("/api/matches/{match_id}/result", response_model=MatchResultResponse)
+def get_match_result(match_id: UUID, db: Session = Depends(get_db)):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    last_state = (
+        db.query(State)
+        .filter(State.match_id == match_id)
+        .order_by(desc(State.created_at))
+        .first()
+    )
+
+    clock_ms = last_state.clock_ms if last_state else 0
+
+    if last_state is None:
+        status = "SCHEDULED"
+    elif last_state.running:
+        status = "LIVE"
+    elif clock_ms > 0:
+        status = "FINISHED"
+    else:
+        status = "SCHEDULED"
+
+    poss_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_id)
+        .all()
+    )
+    home_ms = 0
+    away_ms = 0
+    for seg in poss_rows:
+        end_ms = seg.end_ms if seg.end_ms is not None else clock_ms
+        dur = max(0, end_ms - seg.start_ms)
+        if seg.team == "HOME":
+            home_ms += dur
+        elif seg.team == "AWAY":
+            away_ms += dur
+
+    poss_total = home_ms + away_ms
+    home_pct = round(home_ms / poss_total * 100.0, 1) if poss_total else 0.0
+    away_pct = round(away_ms / poss_total * 100.0, 1) if poss_total else 0.0
+
+    xg_events = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG")
+        .all()
+    )
+    home_xg = round(sum(e.xg for e in xg_events if e.team == "HOME" and e.xg), 2)
+    away_xg = round(sum(e.xg for e in xg_events if e.team == "AWAY" and e.xg), 2)
+
+    return MatchResultResponse(
+        matchId=str(match_obj.id),
+        name=match_obj.name,
+        status=status,
+        clockMs=clock_ms,
+        possession={"homePct": home_pct, "awayPct": away_pct},
+        xg={"home": home_xg, "away": away_xg},
+        playedAt=match_obj.created_at.isoformat(),
+    )
 
 
 @app.delete("/api/matches/{match_id}")
