@@ -51,6 +51,9 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE"
 fi
 
+# Clean previous HLS artifacts so each new attach starts from a fresh playlist.
+rm -f "${OUT_DIR}/stream.m3u8" "${OUT_DIR}/seg_"*.ts "${OUT_DIR}/ffmpeg.log"
+
 VIDEO_ARGS=(-c:v copy)
 if [[ "$FFMPEG_VIDEO_MODE" != "copy" ]]; then
   VIDEO_ARGS=(-c:v libx264 -preset veryfast -tune zerolatency -g 50 -keyint_min 50 -sc_threshold 0)
