@@ -370,6 +370,129 @@ def _build_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
     }
 
 
+def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    last_state = (
+        db.query(State)
+        .filter(State.match_id == match_id)
+        .order_by(desc(State.created_at))
+        .first()
+    )
+    aggregate_clock_ms = last_state.clock_ms if last_state else 0
+
+    poss_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc())
+        .all()
+    )
+    home_ms = 0
+    away_ms = 0
+    for seg in poss_rows:
+        end_ms = seg.end_ms if seg.end_ms is not None else aggregate_clock_ms
+        dur = max(0, end_ms - seg.start_ms)
+        if seg.team == "HOME":
+            home_ms += dur
+        elif seg.team == "AWAY":
+            away_ms += dur
+    poss_total = home_ms + away_ms
+
+    lane_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "ATTACK_LANE")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+
+    def _lane_payload(team: str) -> dict:
+        team_rows = [r for r in lane_rows if r.team == team]
+        left = sum(1 for r in team_rows if r.lane == "LEFT")
+        center = sum(1 for r in team_rows if r.lane == "CENTER")
+        right = sum(1 for r in team_rows if r.lane == "RIGHT")
+        total = left + center + right
+        current_lane = team_rows[-1].lane if team_rows else None
+        return {
+            "match_name": match_obj.name,
+            "match_id": str(match_obj.id),
+            "aggregate_clock_ms": aggregate_clock_ms,
+            "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+            "team": team,
+            "direction": current_lane,
+            "direction_ratio": {
+                "left_pct": (left / total * 100.0) if total else 0.0,
+                "center_pct": (center / total * 100.0) if total else 0.0,
+                "right_pct": (right / total * 100.0) if total else 0.0,
+                "total_count": total,
+            },
+        }
+
+    xg_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+
+    dom_rows = (
+        db.query(DominanceBin)
+        .filter(DominanceBin.match_id == match_id)
+        .order_by(DominanceBin.k.asc())
+        .all()
+    )
+
+    return {
+        "match_name": match_obj.name,
+        "match_id": str(match_obj.id),
+        "aggregate_clock_ms": aggregate_clock_ms,
+        "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+        "possession": {
+            "match_name": match_obj.name,
+            "match_id": str(match_obj.id),
+            "aggregate_clock_ms": aggregate_clock_ms,
+            "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+            "home_pct": (home_ms / poss_total * 100.0) if poss_total else 0.0,
+            "away_pct": (away_ms / poss_total * 100.0) if poss_total else 0.0,
+        },
+        "attack_direction": [
+            _lane_payload("HOME"),
+            _lane_payload("AWAY"),
+        ],
+        "xg": [
+            {
+                "match_name": match_obj.name,
+                "match_id": str(match_obj.id),
+                "aggregate_clock_ms": aggregate_clock_ms,
+                "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+                "event_clock_ms": r.clock_ms,
+                "event_clock": _fmt_clock_ms(r.clock_ms),
+                "team": r.team,
+                "xg": r.xg,
+                "event_id": str(r.id),
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in xg_rows
+        ],
+        "match_dominance": {
+            "match_name": match_obj.name,
+            "match_id": str(match_obj.id),
+            "aggregate_clock_ms": aggregate_clock_ms,
+            "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+            "bin_seconds": 180,
+            "items": [
+                {
+                    "base_time_ms": r.start_ms,
+                    "base_time": _fmt_clock_ms(r.start_ms),
+                    "dominance": r.dominance,
+                }
+                for r in dom_rows
+            ],
+        },
+    }
+
+
 def _parse_iso_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -953,6 +1076,11 @@ def possession_timeline_v1(match_id: UUID, _auth: None = Depends(_require_partne
         )
 
     return {"match_id": str(match_id), "timeline": timeline}
+
+
+@app.get("/api/v1/matches/{match_id}/result")
+def partner_match_result_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    return _build_partner_match_result(match_id, db)
 
 
 @app.post("/api/v1/webhooks/subscriptions")

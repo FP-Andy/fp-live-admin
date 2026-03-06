@@ -163,6 +163,7 @@ docker compose up -d --build
 - `GET /api/v1/matches/{match_id}/events?since=<ISO_DATETIME>&limit=200`
 - `GET /api/v1/matches/{match_id}/dominance?bin_seconds=180`
 - `GET /api/v1/matches/{match_id}/timeline/possession`
+- `GET /api/v1/matches/{match_id}/result`
 - `POST /api/v1/webhooks/subscriptions`
   - body: `{ "callback_url":"https://partner.example/hook", "events":["STATE","EVENT"], "secret":"optional", "active":true }`
 - `GET /api/v1/webhooks/subscriptions`
@@ -367,10 +368,12 @@ server {
 3. 핵심 Pull API
    - `GET /api/v1/matches`
    - `GET /api/v1/matches/{match_id}`
-   - `GET /api/v1/matches/{match_id}/summary`
-   - `GET /api/v1/matches/{match_id}/events?since=<ISO_DATETIME>&limit=200`
-   - `GET /api/v1/matches/{match_id}/dominance?bin_seconds=180`
-   - `GET /api/v1/matches/{match_id}/timeline/possession`
+   - `GET /api/v1/matches/{match_id}/result` (중계 반영용 통합 데이터)
+   - 필요 시 보조 API:
+     - `GET /api/v1/matches/{match_id}/summary`
+     - `GET /api/v1/matches/{match_id}/events?since=<ISO_DATETIME>&limit=200`
+     - `GET /api/v1/matches/{match_id}/dominance?bin_seconds=180`
+     - `GET /api/v1/matches/{match_id}/timeline/possession`
 4. Webhook 구독
    - `POST /api/v1/webhooks/subscriptions`
    - body:
@@ -394,9 +397,21 @@ MATCH_ID="<MATCH_ID>"
 curl -sS "$BASE_URL/api/v1/matches" \
   -H "X-API-Key: $API_KEY"
 
-curl -sS "$BASE_URL/api/v1/matches/$MATCH_ID/events?limit=50" \
+curl -sS "$BASE_URL/api/v1/matches/$MATCH_ID/result" \
   -H "X-API-Key: $API_KEY"
 ```
+
+`/api/v1/matches/{match_id}/result` 응답은 아래 4개 묶음을 포함합니다.
+
+- `possession`
+  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `home_pct`, `away_pct`
+- `attack_direction` (HOME/AWAY 2개)
+  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `team`, `direction`, `direction_ratio`
+- `xg` (슈팅 이벤트 배열)
+  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `event_clock_ms`, `event_clock`, `team`, `xg`, `event_id`, `created_at`
+- `match_dominance`
+  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `bin_seconds`
+  - `items[]`: `base_time_ms`, `base_time`, `dominance`
   - Postgres index/partition 고도화
 
 ---

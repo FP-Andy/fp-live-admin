@@ -81,6 +81,23 @@ paths:
       responses:
         "200":
           description: Possession timeline
+  /api/v1/matches/{match_id}/result:
+    get:
+      summary: Get broadcast-ready integrated result snapshot
+      description: |
+        Returns integrated JSON for broadcaster use:
+        1) possession
+        2) attack_direction
+        3) xg events
+        4) match_dominance (3-min bins)
+      parameters:
+        - in: path
+          name: match_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Integrated result payload
   /api/v1/webhooks/subscriptions:
     post:
       summary: Create or update a webhook subscription by callback URL
