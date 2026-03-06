@@ -544,14 +544,26 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db)):
     row = Match(id=uuid.uuid4(), name=body.name, hls_url=body.hls_url, metadata_json=metadata)
 
     ingest_url, ingest_protocol = _resolve_ingest_fields(body.ingest_url, body.srt_url, body.ingest_protocol)
-    if ingest_url or ingest_protocol == "RTMP":
-        start_data = _gateway_start_stream(row.id, ingest_url, ingest_protocol)
-        row.hls_url = start_data["hls_url"]
-        metadata["ingest_protocol"] = start_data.get("ingest_protocol") or ingest_protocol
-        metadata["ingest_url"] = start_data.get("source_url") or ingest_url
-        if start_data.get("rtmp"):
-            metadata["rtmp"] = start_data["rtmp"]
+    if ingest_protocol:
+        metadata["ingest_protocol"] = ingest_protocol
+    if ingest_url:
+        metadata["ingest_url"] = ingest_url
 
+    if ingest_url or ingest_protocol == "RTMP":
+        try:
+            start_data = _gateway_start_stream(row.id, ingest_url, ingest_protocol)
+            row.hls_url = start_data["hls_url"]
+            metadata["ingest_protocol"] = start_data.get("ingest_protocol") or ingest_protocol
+            metadata["ingest_url"] = start_data.get("source_url") or ingest_url
+            if start_data.get("rtmp"):
+                metadata["rtmp"] = start_data["rtmp"]
+            metadata.pop("stream_attach_error", None)
+        except HTTPException as ex:
+            # Match creation must not fail even when gateway attachment fails.
+            # Operator can retry via the match page Attach RTMP/SRT controls.
+            metadata["stream_attach_error"] = str(ex.detail)
+
+    row.metadata_json = metadata
     db.add(row)
     db.commit()
     db.refresh(row)
