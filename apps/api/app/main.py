@@ -497,6 +497,26 @@ def clear_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     return {"ok": True, "match_id": str(row.id)}
 
 
+@app.post("/api/matches/{match_id}/stream/stop")
+def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
+    row = db.get(Match, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    gateway_base = os.getenv("GATEWAY_API_BASE", "http://host.docker.internal:8090").rstrip("/")
+    if not gateway_base:
+        raise HTTPException(status_code=500, detail="GATEWAY_API_BASE not configured")
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{gateway_base}/matches/{match_id}/stop")
+            resp.raise_for_status()
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"gateway stop failed: {ex}") from ex
+
+    return {"ok": True, "match_id": str(row.id)}
+
+
 @app.get("/api/matches/{match_id}/stream/rtmp-info")
 def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
     row = db.get(Match, match_id)

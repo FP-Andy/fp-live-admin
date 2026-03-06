@@ -60,6 +60,8 @@ export default function MatchPage() {
   const [isWeakFootShot, setIsWeakFootShot] = useState(false);
   const [xgEstimateMeta, setXgEstimateMeta] = useState('');
   const [copyMessage, setCopyMessage] = useState('');
+  const [isAttachingStream, setIsAttachingStream] = useState(false);
+  const [isStoppingStream, setIsStoppingStream] = useState(false);
   const [isClearingHls, setIsClearingHls] = useState(false);
 
   const perfRef = useRef<number | null>(null);
@@ -288,6 +290,41 @@ export default function MatchPage() {
     setXgValue('0.10');
   };
 
+  const attachRtmp = async () => {
+    if (!canWrite || isAttachingStream) return;
+    setIsAttachingStream(true);
+    try {
+      const res = await fetch(`${API_BASE}/matches/${id}/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ingest_protocol: 'RTMP' }),
+      });
+      setCopyMessage(res.ok ? 'Stream attached' : 'Stream attach failed');
+      await fetchAll();
+    } catch {
+      setCopyMessage('Stream attach failed');
+    } finally {
+      setIsAttachingStream(false);
+      setTimeout(() => setCopyMessage(''), 1500);
+    }
+  };
+
+  const stopStream = async () => {
+    if (!canWrite || isStoppingStream) return;
+    if (!window.confirm('이 매치 스트림을 중지할까요?')) return;
+    setIsStoppingStream(true);
+    try {
+      const res = await fetch(`${API_BASE}/matches/${id}/stream/stop`, { method: 'POST' });
+      setCopyMessage(res.ok ? 'Stream stopped' : 'Stream stop failed');
+      await fetchAll();
+    } catch {
+      setCopyMessage('Stream stop failed');
+    } finally {
+      setIsStoppingStream(false);
+      setTimeout(() => setCopyMessage(''), 1500);
+    }
+  };
+
   const clearHls = async () => {
     if (!canWrite || isClearingHls) return;
     if (!window.confirm('기존 HLS 영상 파일을 정리할까요?')) return;
@@ -458,9 +495,17 @@ export default function MatchPage() {
           <div className="card grid">
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <h3 style={{ margin: 0 }}>HLS Stream</h3>
-              <button onClick={clearHls} disabled={!canWrite || isClearingHls}>
-                {isClearingHls ? 'Clearing...' : 'Clear HLS'}
-              </button>
+              <div className="row">
+                <button onClick={attachRtmp} disabled={!canWrite || isAttachingStream}>
+                  {isAttachingStream ? 'Attaching...' : 'Attach RTMP'}
+                </button>
+                <button onClick={stopStream} disabled={!canWrite || isStoppingStream}>
+                  {isStoppingStream ? 'Stopping...' : 'Stop Stream'}
+                </button>
+                <button onClick={clearHls} disabled={!canWrite || isClearingHls}>
+                  {isClearingHls ? 'Clearing...' : 'Clear HLS'}
+                </button>
+              </div>
             </div>
             {hlsSrc ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
           </div>
