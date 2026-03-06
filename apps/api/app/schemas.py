@@ -82,6 +82,10 @@ class AttachIngestRequest(BaseModel):
     srt_url: str | None = None
 
 
+class PossessionResetRequest(BaseModel):
+    user_id: str | None = None
+
+
 class WebhookSubscriptionCreateRequest(BaseModel):
     callback_url: str
     events: list[WebhookEventKind] = Field(default_factory=lambda: ["STATE", "EVENT"])

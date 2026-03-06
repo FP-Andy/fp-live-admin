@@ -63,6 +63,7 @@ export default function MatchPage() {
   const [isAttachingStream, setIsAttachingStream] = useState(false);
   const [isStoppingStream, setIsStoppingStream] = useState(false);
   const [isClearingHls, setIsClearingHls] = useState(false);
+  const [isResettingPossession, setIsResettingPossession] = useState(false);
 
   const perfRef = useRef<number | null>(null);
   const baseRef = useRef<number>(0);
@@ -270,6 +271,34 @@ export default function MatchPage() {
       return;
     }
     await saveState({ possessionTeam: team });
+  };
+
+  const resetPossession = async () => {
+    if (!canWrite || isResettingPossession) return;
+    if (!window.confirm('점유율 집계를 0:0으로 초기화할까요?')) return;
+    setIsResettingPossession(true);
+    try {
+      const res = await fetch(`${API_BASE}/matches/${id}/possession/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId }),
+      });
+      if (!res.ok) {
+        setCopyMessage('Possession reset failed');
+      } else {
+        setPossessionLogs([]);
+        lastPossessionLogSecondRef.current = -1;
+        setPossessionTeam('NONE');
+        await saveState({ possessionTeam: 'NONE' });
+        setCopyMessage('Possession reset');
+        await fetchAll();
+      }
+    } catch {
+      setCopyMessage('Possession reset failed');
+    } finally {
+      setIsResettingPossession(false);
+      setTimeout(() => setCopyMessage(''), 1500);
+    }
   };
 
   const sendLane = async (lane: Lane) => {
@@ -598,7 +627,12 @@ export default function MatchPage() {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div className="card grid" style={{ minHeight: 180, gap: 8 }}>
-              <h3>Possession</h3>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0 }}>Possession</h3>
+                <button onClick={resetPossession} disabled={!canWrite || isResettingPossession}>
+                  {isResettingPossession ? 'Resetting...' : 'Reset'}
+                </button>
+              </div>
               <div className="row">
                 <span>Current: {possessionLabel}</span>
               </div>

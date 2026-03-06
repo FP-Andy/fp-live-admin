@@ -21,13 +21,14 @@ from .schemas import (
     IngestProtocol,
     MatchResultResponse,
     MatchResponse,
+    PossessionResetRequest,
     ReleaseLockRequest,
     StateRequest,
     WebhookSubscriptionCreateRequest,
     XGEstimateRequest,
     XGEventRequest,
 )
-from .services import apply_possession_segment, apply_xg_event, enqueue_outbox, latest_outbox, outbox_worker
+from .services import apply_possession_segment, apply_xg_event, enqueue_outbox, latest_outbox, outbox_worker, recompute_dominance
 
 app = FastAPI(title="Live Match Admin API")
 
@@ -648,6 +649,25 @@ def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"gateway stop failed: {ex}") from ex
 
+    return {"ok": True, "match_id": str(row.id)}
+
+
+@app.post("/api/matches/{match_id}/possession/reset")
+def reset_match_possession(match_id: UUID, body: PossessionResetRequest, db: Session = Depends(get_db)):
+    row = db.get(Match, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_write_lock(row, body.user_id)
+
+    db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).delete(synchronize_session=False)
+
+    bins = db.query(DominanceBin).filter(DominanceBin.match_id == match_id).all()
+    for b in bins:
+        b.home_poss_ms = 0
+        b.away_poss_ms = 0
+        recompute_dominance(b)
+
+    db.commit()
     return {"ok": True, "match_id": str(row.id)}
 
 
