@@ -118,11 +118,20 @@ export default function Dashboard() {
       <div className="card">
         <h3>Matches</h3>
         <div className="grid">
-          {matches.map((m) => (
-            <div key={m.id} className="row" style={{ justifyContent: 'space-between' }}>
+          {matches.map((m, idx) => (
+            <div
+              key={m.id}
+              className="row"
+              style={{
+                justifyContent: 'space-between',
+                borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
+                marginTop: idx === 0 ? 0 : 10,
+                paddingTop: idx === 0 ? 0 : 10,
+              }}
+            >
               <div>
-                <strong>{m.name}</strong>
-                <div style={{ fontSize: 16, fontWeight: 700, marginTop: 6 }}>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
+                <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
                   operator: {m.operator_id || 'none'}
                 </div>
               </div>
