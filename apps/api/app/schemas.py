@@ -44,6 +44,7 @@ class StateRequest(BaseModel):
     possession_team: PossessionTeam
     selected_team: Team
     attack_lr: AttackLR
+    allow_clock_rewind: bool = False
     user_id: str | None = None
 
 
@@ -60,6 +61,7 @@ class XGEventRequest(BaseModel):
     clock_ms: int | None = Field(default=None, ge=0)
     team: Team
     xg: float = Field(ge=0)
+    is_goal: bool = False
     user_id: str | None = None
 
 

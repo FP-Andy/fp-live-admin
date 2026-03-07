@@ -58,6 +58,7 @@ export default function MatchPage() {
   const [shotPoint, setShotPoint] = useState<{ x: number; y: number } | null>(null);
   const [isHeaderShot, setIsHeaderShot] = useState(false);
   const [isWeakFootShot, setIsWeakFootShot] = useState(false);
+  const [isGoalShot, setIsGoalShot] = useState(false);
   const [xgEstimateMeta, setXgEstimateMeta] = useState('');
   const [copyMessage, setCopyMessage] = useState('');
   const [isAttachingStream, setIsAttachingStream] = useState(false);
@@ -92,7 +93,9 @@ export default function MatchPage() {
   const isOperator = useMemo(() => match?.operator_id && match.operator_id === userId, [match, userId]);
   const canWrite = useMemo(() => !match?.operator_id || match.operator_id === userId, [match, userId]);
 
-  const saveState = async (next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team;}>) => {
+  const saveState = async (
+    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; allowClockRewind:boolean;}>
+  ) => {
     const payload = {
       state_id: makeId(),
       clock_ms: next?.clockMs ?? clockMs,
@@ -100,6 +103,7 @@ export default function MatchPage() {
       possession_team: next?.possessionTeam ?? possessionTeam,
       selected_team: next?.selectedTeam ?? selectedTeam,
       attack_lr: 'L2R',
+      allow_clock_rewind: Boolean(next?.allowClockRewind),
       user_id: userId,
     };
     await fetch(`${API_BASE}/matches/${id}/state`, {
@@ -258,8 +262,28 @@ export default function MatchPage() {
     if (!canWrite) return;
     setClockMs(0);
     baseRef.current = 0;
-    perfRef.current = performance.now();
-    await saveState({ clockMs: 0 });
+    perfRef.current = null;
+    setRunning(false);
+    await saveState({ clockMs: 0, running: false, allowClockRewind: true, possessionTeam: 'NONE' });
+  };
+
+  const setMatchClock = async (targetMs: number, label: string) => {
+    if (!canWrite) return;
+    if (!window.confirm(`타이머를 ${label}로 설정할까요?`)) return;
+    const currentMs = clockRef.current;
+    const rewinding = targetMs < currentMs;
+    setClockMs(targetMs);
+    baseRef.current = targetMs;
+    perfRef.current = null;
+    setRunning(false);
+    setPossessionTeam('NONE');
+    await saveState({
+      clockMs: targetMs,
+      running: false,
+      possessionTeam: 'NONE',
+      allowClockRewind: rewinding,
+    });
+    await fetchAll();
   };
 
   const changePossession = async (team: PossessionTeam) => {
@@ -342,9 +366,10 @@ export default function MatchPage() {
     await fetch(`${API_BASE}/matches/${id}/events/xg`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event_id: makeId(), team: xgTeam, xg, clock_ms: clockMs, user_id: userId }),
+      body: JSON.stringify({ event_id: makeId(), team: xgTeam, xg, is_goal: isGoalShot, clock_ms: clockMs, user_id: userId }),
     });
     setXgValue('0.10');
+    setIsGoalShot(false);
   };
 
   const attachRtmp = async () => {
@@ -546,6 +571,8 @@ export default function MatchPage() {
               <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
               <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
               <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
+              <button onClick={() => setMatchClock(0, '1H 00:00')} disabled={!canWrite}>1H 00:00</button>
+              <button onClick={() => setMatchClock(45 * 60 * 1000, '2H 45:00')} disabled={!canWrite}>2H 45:00</button>
             </div>
           </div>
 
@@ -650,6 +677,7 @@ export default function MatchPage() {
             <div className="row" style={{ gap: 12 }}>
               <label><input type="checkbox" checked={isHeaderShot} onChange={(e) => setIsHeaderShot(e.target.checked)} /> Header</label>
               <label><input type="checkbox" checked={isWeakFootShot} onChange={(e) => setIsWeakFootShot(e.target.checked)} /> Weak Foot</label>
+              <label><input type="checkbox" checked={isGoalShot} onChange={(e) => setIsGoalShot(e.target.checked)} /> Goal</label>
               <span className="muted">{shotPoint ? `shot=(${shotPoint.x}, ${shotPoint.y})` : 'Click pitch to set shot location'}</span>
             </div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}

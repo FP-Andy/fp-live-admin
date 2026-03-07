@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session
 from .models import DominanceBin, Outbox, WebhookSubscription
 
 BIN_SIZE_MS = 180000
+DOM_POSSESSION_WEIGHT = float(os.getenv("DOM_POSSESSION_WEIGHT", "0.35"))
+DOM_XG_WEIGHT = float(os.getenv("DOM_XG_WEIGHT", "0.65"))
+DOM_XG_SCALE = float(os.getenv("DOM_XG_SCALE", "1.8"))
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -21,8 +24,15 @@ def clamp(v: float, lo: float, hi: float) -> float:
 def recompute_dominance(bin_row: DominanceBin) -> None:
     total = bin_row.home_poss_ms + bin_row.away_poss_ms
     poss_balance = 0.0 if total == 0 else (bin_row.home_poss_ms - bin_row.away_poss_ms) / total
-    xg_balance = clamp(bin_row.home_xg - bin_row.away_xg, -1.0, 1.0)
-    bin_row.dominance = clamp(0.6 * poss_balance + 0.4 * xg_balance, -1.0, 1.0)
+    xg_balance = clamp((bin_row.home_xg - bin_row.away_xg) * DOM_XG_SCALE, -1.0, 1.0)
+    weight_sum = DOM_POSSESSION_WEIGHT + DOM_XG_WEIGHT
+    if weight_sum <= 0:
+        poss_w = 0.35
+        xg_w = 0.65
+    else:
+        poss_w = DOM_POSSESSION_WEIGHT / weight_sum
+        xg_w = DOM_XG_WEIGHT / weight_sum
+    bin_row.dominance = clamp(poss_w * poss_balance + xg_w * xg_balance, -1.0, 1.0)
     bin_row.updated_at = datetime.utcnow()
 
 

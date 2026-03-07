@@ -244,7 +244,7 @@ def _latest_state(match_id: UUID, db: Session) -> State | None:
     return (
         db.query(State)
         .filter(State.match_id == match_id)
-        .order_by(State.clock_ms.desc(), desc(State.created_at))
+        .order_by(desc(State.created_at))
         .first()
     )
 
@@ -838,7 +838,7 @@ def post_state(match_id: UUID, body: StateRequest, db: Session = Depends(get_db)
         return {"ok": True, "idempotent": True, "state_id": existing.id}
 
     prev = _latest_state(match_id, db)
-    if prev and body.clock_ms < prev.clock_ms:
+    if prev and body.clock_ms < prev.clock_ms and not body.allow_clock_rewind:
         # Ignore stale state packets arriving out-of-order to keep possession segments monotonic.
         return {
             "ok": True,
@@ -849,6 +849,21 @@ def post_state(match_id: UUID, body: StateRequest, db: Session = Depends(get_db)
         }
 
     prev_team = prev.possession_team if prev else "NONE"
+    if prev and body.clock_ms < prev.clock_ms and body.allow_clock_rewind:
+        # Controlled rewind (e.g., 2H starts at 45:00 after 1H stoppage). Close open segments
+        # at previous clock to keep durations non-negative, then restart segmentation from clean state.
+        open_segments = (
+            db.query(PossessionSegment)
+            .filter(PossessionSegment.match_id == match_id)
+            .filter(PossessionSegment.end_ms.is_(None))
+            .all()
+        )
+        for seg in open_segments:
+            if prev.clock_ms >= seg.start_ms:
+                seg.end_ms = prev.clock_ms
+                apply_possession_segment(db, match_id, seg.team, seg.start_ms, seg.end_ms)
+        prev_team = "NONE"
+
     new_team = body.possession_team
 
     if prev_team != new_team:
@@ -972,7 +987,9 @@ def post_xg(match_id: UUID, body: XGEventRequest, db: Session = Depends(get_db))
         xg=body.xg,
     )
     db.add(event)
-    apply_xg_event(db, match_id, body.team, clock_ms, body.xg)
+    goal_boost = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
+    dominance_xg = body.xg * goal_boost if body.is_goal else body.xg
+    apply_xg_event(db, match_id, body.team, clock_ms, dominance_xg)
 
     payload = {
         "kind": "EVENT",
