@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { scheduleItems } from './schedule-data';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 
@@ -28,6 +29,17 @@ export default function Dashboard() {
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('SRT');
   const [ingestUrl, setIngestUrl] = useState('');
   const [error, setError] = useState('');
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  });
 
   const load = async () => {
     try {
@@ -90,6 +102,27 @@ export default function Dashboard() {
     await load();
   };
 
+  const monthLabel = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}`;
+  const firstDay = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
+  const lastDay = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0);
+  const startWeekday = firstDay.getDay();
+  const dayCount = lastDay.getDate();
+
+  const countByDate = scheduleItems.reduce<Record<string, number>>((acc, item) => {
+    if (!item.date) return acc;
+    acc[item.date] = (acc[item.date] || 0) + 1;
+    return acc;
+  }, {});
+
+  const selectedMatches = scheduleItems
+    .filter((item) => item.date === selectedDate)
+    .sort((a, b) => a.time.localeCompare(b.time));
+
+  const dayCells: Array<number | null> = [];
+  for (let i = 0; i < startWeekday; i += 1) dayCells.push(null);
+  for (let day = 1; day <= dayCount; day += 1) dayCells.push(day);
+  while (dayCells.length % 7 !== 0) dayCells.push(null);
+
   return (
     <>
       <main className="container grid">
@@ -143,6 +176,82 @@ export default function Dashboard() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <h3 style={{ margin: 0 }}>Match Calendar</h3>
+            <div className="row">
+              <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
+                Prev
+              </button>
+              <div style={{ minWidth: 90, textAlign: 'center', fontWeight: 700 }}>{monthLabel}</div>
+              <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
+                Next
+              </button>
+            </div>
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
+              gap: 8,
+              marginTop: 12,
+            }}
+          >
+            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => (
+              <div key={w} className="muted" style={{ textAlign: 'center', fontWeight: 700 }}>{w}</div>
+            ))}
+            {dayCells.map((day, idx) => {
+              if (!day) return <div key={`empty-${idx}`} />;
+              const dateKey = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const count = countByDate[dateKey] || 0;
+              const isSelected = selectedDate === dateKey;
+              return (
+                <button
+                  key={dateKey}
+                  onClick={() => setSelectedDate(dateKey)}
+                  style={{
+                    width: '100%',
+                    minHeight: 56,
+                    border: isSelected ? '1px solid #38bdf8' : '1px solid #334155',
+                    background: isSelected ? '#0b3a57' : '#0f172a',
+                    borderRadius: 8,
+                    textAlign: 'left',
+                    padding: 8,
+                  }}
+                >
+                  <div style={{ fontWeight: 700 }}>{day}</div>
+                  <div className="muted" style={{ color: count > 0 ? '#7dd3fc' : undefined }}>
+                    {count > 0 ? `${count} match${count > 1 ? 'es' : ''}` : '-'}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Fixtures on {selectedDate}</div>
+            {selectedMatches.length === 0 ? (
+              <div className="muted">No fixtures</div>
+            ) : (
+              <div className="grid">
+                {selectedMatches.map((item, idx) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
+                      marginTop: idx === 0 ? 0 : 8,
+                      paddingTop: idx === 0 ? 0 : 8,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
+                    <div className="muted">{item.time} | {item.venue}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </main>
