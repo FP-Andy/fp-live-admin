@@ -91,58 +91,78 @@ export default function Dashboard() {
   };
 
   return (
-    <main className="container grid">
-      <div className="card">
-        <h2>Dashboard</h2>
-        <div className="row">
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Match name" />
-          <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')}>
-            <option value="SRT">SRT</option>
-            <option value="RTMP">RTMP</option>
-          </select>
-          <input
-            value={ingestUrl}
-            onChange={(e) => setIngestUrl(e.target.value)}
-            placeholder={
-              ingestProtocol === 'RTMP'
-                ? 'RTMP source URL (optional: empty => use match stream key)'
-                : 'SRT URL (optional)'
-            }
-            style={{ minWidth: 360 }}
-          />
-          <button className="btn-primary" onClick={createMatch}>Create Match</button>
+    <>
+      <main className="container grid">
+        <h1 style={{ margin: 0 }}>Live Match Admin</h1>
+        <div className="card">
+          <h2>Dashboard</h2>
+          <div className="row">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Match name" />
+            <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')}>
+              <option value="SRT">SRT</option>
+              <option value="RTMP">RTMP</option>
+            </select>
+            <input
+              value={ingestUrl}
+              onChange={(e) => setIngestUrl(e.target.value)}
+              placeholder={
+                ingestProtocol === 'RTMP'
+                  ? 'RTMP source URL (optional: empty => use match stream key)'
+                  : 'SRT URL (optional)'
+              }
+              style={{ minWidth: 360 }}
+            />
+            <button className="btn-primary" onClick={createMatch}>Create Match</button>
+          </div>
+          {error ? <p className="muted" style={{ color: '#fca5a5' }}>{error}</p> : null}
         </div>
-        {error ? <p className="muted" style={{ color: '#fca5a5' }}>{error}</p> : null}
-      </div>
 
-      <div className="card">
-        <h3>Matches</h3>
-        <div className="grid">
-          {matches.map((m, idx) => (
-            <div
-              key={m.id}
-              className="row"
-              style={{
-                justifyContent: 'space-between',
-                borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
-                marginTop: idx === 0 ? 0 : 10,
-                paddingTop: idx === 0 ? 0 : 10,
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
-                <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
-                  operator: {m.operator_id || 'none'}
+        <div className="card">
+          <h3>Matches</h3>
+          <div className="grid">
+            {matches.map((m, idx) => (
+              <div
+                key={m.id}
+                className="row"
+                style={{
+                  justifyContent: 'space-between',
+                  borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
+                  marginTop: idx === 0 ? 0 : 10,
+                  paddingTop: idx === 0 ? 0 : 10,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
+                  <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
+                    operator: {m.operator_id || 'none'}
+                  </div>
+                </div>
+                <div className="row">
+                  <Link href={`/admin/match/${m.id}`}>Open</Link>
+                  <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
                 </div>
               </div>
-              <div className="row">
-                <Link href={`/admin/match/${m.id}`}>Open</Link>
-                <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
-    </main>
+      </main>
+      <footer
+        style={{
+          marginTop: 24,
+          backgroundColor: '#1f2937',
+          color: '#e5e7eb',
+          padding: '20px 24px',
+          lineHeight: 1.7,
+          fontSize: 14,
+        }}
+      >
+        <div>(주)파인루터스</div>
+        <div>대표이사 : 이용근</div>
+        <div>사업자등록번호 : 804-59-00695</div>
+        <div>연락처 : 010-6343-1823</div>
+        <div>이메일 : official@fineplay.kr</div>
+        <div>카피라이트 파인루터스</div>
+      </footer>
+    </>
   );
 }
