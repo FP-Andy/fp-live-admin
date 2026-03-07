@@ -122,14 +122,9 @@ export default function Dashboard() {
             <div key={m.id} className="row" style={{ justifyContent: 'space-between' }}>
               <div>
                 <strong>{m.name}</strong>
-                <div className="muted">operator: {m.operator_id || 'none'}</div>
-                <div className="muted">hls: {m.hls_url || 'not attached'}</div>
-                <div className="muted">ingest: {m.metadata?.ingest_protocol || 'N/A'} {m.metadata?.ingest_url ? `(${m.metadata.ingest_url})` : ''}</div>
-                {m.metadata?.rtmp ? (
-                  <div className="muted">
-                    rtmp server: {m.metadata.rtmp.server_url} / key: {m.metadata.rtmp.stream_key}
-                  </div>
-                ) : null}
+                <div style={{ fontSize: 16, fontWeight: 700, marginTop: 6 }}>
+                  operator: {m.operator_id || 'none'}
+                </div>
               </div>
               <div className="row">
                 <Link href={`/admin/match/${m.id}`}>Open</Link>

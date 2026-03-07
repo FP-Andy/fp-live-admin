@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 
@@ -22,6 +23,12 @@ function fmt(ms: number) {
   const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
   const ss = String(s % 60).padStart(2, '0');
   return `${hh}:${mm}:${ss}`;
+}
+
+function formatCreatedAtKst(createdAt: string) {
+  const raw = /Z$|[+-]\d{2}:\d{2}$/.test(createdAt) ? createdAt : `${createdAt}Z`;
+  const d = new Date(raw);
+  return d.toLocaleTimeString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
 }
 
 function makeId() {
@@ -66,6 +73,7 @@ export default function MatchPage() {
   const [isClearingHls, setIsClearingHls] = useState(false);
   const [isResettingPossession, setIsResettingPossession] = useState(false);
   const [isResettingEvents, setIsResettingEvents] = useState(false);
+  const [secondHalfStartAbsMs, setSecondHalfStartAbsMs] = useState<number | null>(null);
 
   const perfRef = useRef<number | null>(null);
   const baseRef = useRef<number>(0);
@@ -75,6 +83,36 @@ export default function MatchPage() {
   const lastPossessionLogSecondRef = useRef<number>(-1);
   const fetchSeqRef = useRef<number>(0);
 
+  const displayClockLabel = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    if (secondHalfStartAbsMs != null && ms >= secondHalfStartAbsMs) {
+      const sec2h = Math.max(0, Math.floor((ms - secondHalfStartAbsMs) / 1000));
+      return fmt((45 * 60 + sec2h) * 1000);
+    }
+    if (totalSec > 45 * 60) {
+      const etSec = totalSec - 45 * 60;
+      const etMin = Math.floor(etSec / 60);
+      const etRem = String(etSec % 60).padStart(2, '0');
+      return `1H 45+${etMin}:${etRem}`;
+    }
+    return fmt(ms);
+  };
+
+  const formatDominanceTick = (minuteVal: number) => {
+    const ms = Math.round(Number(minuteVal) * 60000);
+    if (secondHalfStartAbsMs != null && ms >= secondHalfStartAbsMs) {
+      const sec2h = Math.max(0, Math.floor((ms - secondHalfStartAbsMs) / 1000));
+      const matchMin = 45 + Math.floor(sec2h / 60);
+      return String(matchMin);
+    }
+    const sec = Math.floor(ms / 1000);
+    if (sec > 45 * 60) {
+      const etMin = Math.floor((sec - 45 * 60) / 60);
+      return `45+${etMin}`;
+    }
+    return String(Math.floor(sec / 60));
+  };
+
   useEffect(() => {
     clockRef.current = clockMs;
   }, [clockMs]);
@@ -82,6 +120,26 @@ export default function MatchPage() {
   useEffect(() => {
     runningRef.current = running;
   }, [running]);
+
+  useEffect(() => {
+    if (!id) return;
+    const raw = window.localStorage.getItem(`secondHalfStartAbsMs:${id}`);
+    if (!raw) return;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) {
+      setSecondHalfStartAbsMs(n);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    const key = `secondHalfStartAbsMs:${id}`;
+    if (secondHalfStartAbsMs == null) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, String(secondHalfStartAbsMs));
+  }, [id, secondHalfStartAbsMs]);
 
   useEffect(() => {
     if (possessionTeam === 'HOME' || possessionTeam === 'AWAY') {
@@ -162,7 +220,7 @@ export default function MatchPage() {
         : 'None';
     const homePct = Math.round(Number(p.home_pct || 0));
     const awayPct = Math.round(Number(p.away_pct || 0));
-    const line = `${fmt(second * 1000)} | ${teamLabel} | ${homePct} : ${awayPct}`;
+    const line = `${displayClockLabel(second * 1000)} | ${teamLabel} | ${homePct} : ${awayPct}`;
 
     setPossessionLogs((prev) => [line, ...prev].slice(0, 120));
   }, [summary]);
@@ -258,31 +316,48 @@ export default function MatchPage() {
     URL.revokeObjectURL(url);
   };
 
+  const resetPossessionLogView = () => {
+    if (!window.confirm('Possession Timeline Log 표시 기록을 비울까요?')) return;
+    setPossessionLogs([]);
+    lastPossessionLogSecondRef.current = -1;
+  };
+
   const resetClock = async () => {
     if (!canWrite) return;
     setClockMs(0);
     baseRef.current = 0;
     perfRef.current = null;
     setRunning(false);
+    setSecondHalfStartAbsMs(null);
     await saveState({ clockMs: 0, running: false, allowClockRewind: true, possessionTeam: 'NONE' });
   };
 
-  const setMatchClock = async (targetMs: number, label: string) => {
+  const startFirstHalf = async () => {
     if (!canWrite) return;
-    if (!window.confirm(`타이머를 ${label}로 설정할까요?`)) return;
-    const currentMs = clockRef.current;
-    const rewinding = targetMs < currentMs;
-    setClockMs(targetMs);
-    baseRef.current = targetMs;
+    if (!window.confirm('타이머를 1H 00:00으로 설정할까요?')) return;
+    setClockMs(0);
+    baseRef.current = 0;
     perfRef.current = null;
     setRunning(false);
+    setSecondHalfStartAbsMs(null);
     setPossessionTeam('NONE');
     await saveState({
-      clockMs: targetMs,
+      clockMs: 0,
       running: false,
       possessionTeam: 'NONE',
-      allowClockRewind: rewinding,
+      allowClockRewind: true,
     });
+    await fetchAll();
+  };
+
+  const markSecondHalfStart = async () => {
+    if (!canWrite) return;
+    if (!window.confirm('지금 시점을 2H 시작(표시 45:00)으로 설정할까요?')) return;
+    const now = clockRef.current;
+    setSecondHalfStartAbsMs(now);
+    setRunning(false);
+    perfRef.current = null;
+    await saveState({ running: false, possessionTeam: 'NONE' });
     await fetchAll();
   };
 
@@ -491,8 +566,6 @@ export default function MatchPage() {
       if (e.code === 'Space') {
         e.preventDefault();
         toggleRun();
-      } else if (e.key === 'r' || e.key === 'R') {
-        resetClock();
       } else if (e.key === 'q' || e.key === 'Q') {
         changePossession('HOME');
       } else if (e.key === 'w' || e.key === 'W') {
@@ -555,6 +628,7 @@ export default function MatchPage() {
           {copyMessage ? <div className="muted">{copyMessage}</div> : null}
         </div>
         <div className="row">
+          <Link href="/admin/dashboard">Back to Dashboard</Link>
           <input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="user_id" />
           {!isOperator
             ? <button className="btn-primary" onClick={acquire}>Acquire Lock</button>
@@ -568,11 +642,11 @@ export default function MatchPage() {
           <div className="card">
             <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
               <strong>Timer</strong>
-              <strong style={{ fontSize: 24 }}>{fmt(clockMs)}</strong>
+              <strong style={{ fontSize: 24 }}>{displayClockLabel(clockMs)}</strong>
               <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
-              <button onClick={resetClock} disabled={!canWrite}>Reset <span className="kbd">R</span></button>
-              <button onClick={() => setMatchClock(0, '1H 00:00')} disabled={!canWrite}>1H 00:00</button>
-              <button onClick={() => setMatchClock(45 * 60 * 1000, '2H 45:00')} disabled={!canWrite}>2H 45:00</button>
+              <button onClick={resetClock} disabled={!canWrite}>Reset</button>
+              <button onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>
+              <button onClick={markSecondHalfStart} disabled={!canWrite}>Mark 2H 45:00</button>
             </div>
           </div>
 
@@ -611,8 +685,8 @@ export default function MatchPage() {
             >
               {(summary?.events || []).slice(0, 40).map((e: any) => (
                 <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
-                  <span>{e.type} {e.team} @ {fmt(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''} {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}</span>
-                  <span className="muted">{new Date(e.created_at).toLocaleTimeString()}</span>
+                  <span>{e.type} {e.team} @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''} {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}</span>
+                  <span className="muted">{formatCreatedAtKst(e.created_at)}</span>
                 </div>
               ))}
             </div>
@@ -710,6 +784,7 @@ export default function MatchPage() {
               <h3>Possession Timeline Log</h3>
               <div className="row" style={{ marginBottom: 8 }}>
                 <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
+                <button onClick={resetPossessionLogView} disabled={possessionLogs.length === 0}>Reset Log</button>
               </div>
               <div
                 className="grid"
@@ -774,7 +849,7 @@ export default function MatchPage() {
                 type="number"
                 dataKey="minuteVal"
                 ticks={dominanceXAxisTicks}
-                tickFormatter={(v) => Number(v).toFixed(1)}
+                tickFormatter={formatDominanceTick}
                 domain={['dataMin', 'dataMax']}
               />
               <YAxis domain={[-1, 1]} />
