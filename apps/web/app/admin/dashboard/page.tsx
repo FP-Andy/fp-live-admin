@@ -150,110 +150,117 @@ export default function Dashboard() {
           {error ? <p className="muted" style={{ color: '#fca5a5' }}>{error}</p> : null}
         </div>
 
-        <div className="card">
-          <h3>Matches</h3>
-          <div className="grid">
-            {matches.map((m, idx) => (
-              <div
-                key={m.id}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'flex-start',
-                  gap: 8,
-                  borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
-                  marginTop: idx === 0 ? 0 : 10,
-                  paddingTop: idx === 0 ? 0 : 10,
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
-                  <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
-                    operator: {m.operator_id || 'none'}
-                  </div>
-                </div>
-                <div className="row" style={{ marginTop: 2 }}>
-                  <Link href={`/admin/match/${m.id}`}>Open</Link>
-                  <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <h3 style={{ margin: 0 }}>Match Calendar</h3>
-            <div className="row">
-              <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
-                Prev
-              </button>
-              <div style={{ minWidth: 90, textAlign: 'center', fontWeight: 700 }}>{monthLabel}</div>
-              <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
-                Next
-              </button>
-            </div>
-          </div>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
-              gap: 8,
-              marginTop: 12,
-            }}
-          >
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => (
-              <div key={w} className="muted" style={{ textAlign: 'center', fontWeight: 700 }}>{w}</div>
-            ))}
-            {dayCells.map((day, idx) => {
-              if (!day) return <div key={`empty-${idx}`} />;
-              const dateKey = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const count = countByDate[dateKey] || 0;
-              const isSelected = selectedDate === dateKey;
-              return (
-                <button
-                  key={dateKey}
-                  onClick={() => setSelectedDate(dateKey)}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(460px, 1fr))',
+            gap: 12,
+            alignItems: 'start',
+          }}
+        >
+          <div className="card">
+            <h3>Matches</h3>
+            <div className="grid">
+              {matches.map((m, idx) => (
+                <div
+                  key={m.id}
+                  className="row"
                   style={{
-                    width: '100%',
-                    minHeight: 56,
-                    border: isSelected ? '1px solid #38bdf8' : '1px solid #334155',
-                    background: isSelected ? '#0b3a57' : '#0f172a',
-                    borderRadius: 8,
-                    textAlign: 'left',
-                    padding: 8,
+                    justifyContent: 'space-between',
+                    borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
+                    marginTop: idx === 0 ? 0 : 10,
+                    paddingTop: idx === 0 ? 0 : 10,
                   }}
                 >
-                  <div style={{ fontWeight: 700 }}>{day}</div>
-                  <div className="muted" style={{ color: count > 0 ? '#7dd3fc' : undefined }}>
-                    {count > 0 ? `${count} match${count > 1 ? 'es' : ''}` : '-'}
+                  <div>
+                    <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
+                    <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
+                      operator: {m.operator_id || 'none'}
+                    </div>
                   </div>
-                </button>
-              );
-            })}
+                  <div className="row">
+                    <Link href={`/admin/match/${m.id}`}>Open</Link>
+                    <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>Fixtures on {selectedDate}</div>
-            {selectedMatches.length === 0 ? (
-              <div className="muted">No fixtures</div>
-            ) : (
-              <div className="grid">
-                {selectedMatches.map((item, idx) => (
-                  <div
-                    key={item.id}
+          <div className="card">
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <h3 style={{ margin: 0 }}>Match Calendar</h3>
+              <div className="row">
+                <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
+                  Prev
+                </button>
+                <div style={{ minWidth: 90, textAlign: 'center', fontWeight: 700 }}>{monthLabel}</div>
+                <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
+                  Next
+                </button>
+              </div>
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => (
+                <div key={w} className="muted" style={{ textAlign: 'center', fontWeight: 700 }}>{w}</div>
+              ))}
+              {dayCells.map((day, idx) => {
+                if (!day) return <div key={`empty-${idx}`} />;
+                const dateKey = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const count = countByDate[dateKey] || 0;
+                const isSelected = selectedDate === dateKey;
+                return (
+                  <button
+                    key={dateKey}
+                    onClick={() => setSelectedDate(dateKey)}
                     style={{
-                      borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
-                      marginTop: idx === 0 ? 0 : 8,
-                      paddingTop: idx === 0 ? 0 : 8,
+                      width: '100%',
+                      minHeight: 56,
+                      border: isSelected ? '1px solid #38bdf8' : '1px solid #334155',
+                      background: isSelected ? '#0b3a57' : '#0f172a',
+                      borderRadius: 8,
+                      textAlign: 'left',
+                      padding: 8,
                     }}
                   >
-                    <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
-                    <div className="muted">{item.time} | {item.venue}</div>
-                  </div>
-                ))}
-              </div>
-            )}
+                    <div style={{ fontWeight: 700 }}>{day}</div>
+                    <div className="muted" style={{ color: count > 0 ? '#7dd3fc' : undefined }}>
+                      {count > 0 ? `${count} match${count > 1 ? 'es' : ''}` : '-'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>Fixtures on {selectedDate}</div>
+              {selectedMatches.length === 0 ? (
+                <div className="muted">No fixtures</div>
+              ) : (
+                <div className="grid">
+                  {selectedMatches.map((item, idx) => (
+                    <div
+                      key={item.id}
+                      style={{
+                        borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
+                        marginTop: idx === 0 ? 0 : 8,
+                        paddingTop: idx === 0 ? 0 : 8,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
+                      <div className="muted">{item.time} | {item.venue}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </main>
