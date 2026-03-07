@@ -64,6 +64,7 @@ export default function MatchPage() {
   const [isStoppingStream, setIsStoppingStream] = useState(false);
   const [isClearingHls, setIsClearingHls] = useState(false);
   const [isResettingPossession, setIsResettingPossession] = useState(false);
+  const [isResettingEvents, setIsResettingEvents] = useState(false);
 
   const perfRef = useRef<number | null>(null);
   const baseRef = useRef<number>(0);
@@ -297,6 +298,30 @@ export default function MatchPage() {
       setCopyMessage('Possession reset failed');
     } finally {
       setIsResettingPossession(false);
+      setTimeout(() => setCopyMessage(''), 1500);
+    }
+  };
+
+  const resetEvents = async () => {
+    if (!canWrite || isResettingEvents) return;
+    if (!window.confirm('공격방향/xG 이벤트를 모두 초기화할까요?')) return;
+    setIsResettingEvents(true);
+    try {
+      const res = await fetch(`${API_BASE}/matches/${id}/events/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId }),
+      });
+      if (!res.ok) {
+        setCopyMessage('Event reset failed');
+      } else {
+        setCopyMessage('Events reset');
+        await fetchAll();
+      }
+    } catch {
+      setCopyMessage('Event reset failed');
+    } finally {
+      setIsResettingEvents(false);
       setTimeout(() => setCopyMessage(''), 1500);
     }
   };
@@ -543,7 +568,12 @@ export default function MatchPage() {
           </div>
 
           <div className="card grid" style={{ minHeight: 280 }}>
-            <h3>Recent Events</h3>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0 }}>Recent Events</h3>
+              <button onClick={resetEvents} disabled={!canWrite || isResettingEvents}>
+                {isResettingEvents ? 'Resetting...' : 'Reset Events'}
+              </button>
+            </div>
             <div
               className="grid"
               style={{

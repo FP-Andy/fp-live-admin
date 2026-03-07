@@ -21,6 +21,7 @@ from .schemas import (
     IngestProtocol,
     MatchResultResponse,
     MatchResponse,
+    EventsResetRequest,
     PossessionResetRequest,
     ReleaseLockRequest,
     StateRequest,
@@ -669,6 +670,26 @@ def reset_match_possession(match_id: UUID, body: PossessionResetRequest, db: Ses
 
     db.commit()
     return {"ok": True, "match_id": str(row.id)}
+
+
+@app.post("/api/matches/{match_id}/events/reset")
+def reset_match_events(match_id: UUID, body: EventsResetRequest, db: Session = Depends(get_db)):
+    row = db.get(Match, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_write_lock(row, body.user_id)
+
+    event_count = db.query(Event).filter(Event.match_id == match_id).delete(synchronize_session=False)
+    db.query(LaneSegment).filter(LaneSegment.match_id == match_id).delete(synchronize_session=False)
+
+    bins = db.query(DominanceBin).filter(DominanceBin.match_id == match_id).all()
+    for b in bins:
+        b.home_xg = 0.0
+        b.away_xg = 0.0
+        recompute_dominance(b)
+
+    db.commit()
+    return {"ok": True, "match_id": str(row.id), "deleted_events": event_count}
 
 
 @app.get("/api/matches/{match_id}/stream/rtmp-info")

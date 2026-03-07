@@ -86,6 +86,10 @@ class PossessionResetRequest(BaseModel):
     user_id: str | None = None
 
 
+class EventsResetRequest(BaseModel):
+    user_id: str | None = None
+
+
 class WebhookSubscriptionCreateRequest(BaseModel):
     callback_url: str
     events: list[WebhookEventKind] = Field(default_factory=lambda: ["STATE", "EVENT"])
