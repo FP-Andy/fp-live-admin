@@ -156,9 +156,11 @@ export default function Dashboard() {
             {matches.map((m, idx) => (
               <div
                 key={m.id}
-                className="row"
                 style={{
-                  justifyContent: 'space-between',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  gap: 8,
                   borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
                   marginTop: idx === 0 ? 0 : 10,
                   paddingTop: idx === 0 ? 0 : 10,
@@ -170,7 +172,7 @@ export default function Dashboard() {
                     operator: {m.operator_id || 'none'}
                   </div>
                 </div>
-                <div className="row">
+                <div className="row" style={{ marginTop: 2 }}>
                   <Link href={`/admin/match/${m.id}`}>Open</Link>
                   <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
                 </div>
