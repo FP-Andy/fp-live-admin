@@ -117,6 +117,11 @@ export default function Dashboard() {
   const selectedMatches = scheduleItems
     .filter((item) => item.date === selectedDate)
     .sort((a, b) => a.time.localeCompare(b.time));
+  const attachedMatches = matches.filter((m) => {
+    const ingestUrl = m.metadata?.ingest_url || '';
+    const streamKey = m.metadata?.rtmp?.stream_key || '';
+    return ingestUrl.includes(`/live/${m.id}`) || streamKey === m.id;
+  });
 
   const dayCells: Array<number | null> = [];
   for (let i = 0; i < startWeekday; i += 1) dayCells.push(null);
@@ -262,6 +267,37 @@ export default function Dashboard() {
               )}
             </div>
           </div>
+        </div>
+
+        <div className="card">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <h3 style={{ margin: 0 }}>Attached Matches</h3>
+            <div className="muted">{attachedMatches.length} attached</div>
+          </div>
+          {attachedMatches.length === 0 ? (
+            <div className="muted" style={{ marginTop: 8 }}>No attached matches</div>
+          ) : (
+            <div className="grid" style={{ marginTop: 8 }}>
+              {attachedMatches.map((m, idx) => (
+                <div
+                  key={m.id}
+                  className="row"
+                  style={{
+                    justifyContent: 'space-between',
+                    borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
+                    marginTop: idx === 0 ? 0 : 8,
+                    paddingTop: idx === 0 ? 0 : 8,
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{m.name}</div>
+                    <div className="muted">{m.id}</div>
+                  </div>
+                  <Link href={`/admin/match/${m.id}`}>Open</Link>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </main>
       <footer
