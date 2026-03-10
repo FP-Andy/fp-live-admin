@@ -62,7 +62,7 @@ fi
 nohup ffmpeg -hide_banner -loglevel warning -nostdin \
   -fflags +genpts \
   -thread_queue_size 2048 \
-  -analyzeduration 1M -probesize 1M \
+  -analyzeduration 32M -probesize 32M \
   -i "$INPUT_URL" \
   "${VIDEO_ARGS[@]}" \
   -c:a aac -ar 48000 -b:a 128k \
