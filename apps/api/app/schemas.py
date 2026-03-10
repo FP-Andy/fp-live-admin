@@ -99,6 +99,15 @@ class WebhookSubscriptionCreateRequest(BaseModel):
     active: bool = True
 
 
+class LoginRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=40)
+
+
+class SessionUserResponse(BaseModel):
+    id: str
+    name: str
+
+
 class WebhookSubscriptionResponse(BaseModel):
     id: UUID
     callback_url: str

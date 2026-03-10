@@ -5,8 +5,8 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
+import { apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
 const HALF_PITCH_LENGTH = 52.5;
 const XG_VISIBLE_LENGTH = 40;
@@ -47,7 +47,7 @@ export default function MatchPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
 
-  const [userId, setUserId] = useState('analyst-1');
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
   const [match, setMatch] = useState<any>(null);
   const [summary, setSummary] = useState<any>(null);
   const [dominance, setDominance] = useState<any[]>([]);
@@ -148,8 +148,15 @@ export default function MatchPage() {
     }
   }, [possessionTeam]);
 
-  const isOperator = useMemo(() => match?.operator_id && match.operator_id === userId, [match, userId]);
-  const canWrite = useMemo(() => !match?.operator_id || match.operator_id === userId, [match, userId]);
+  useEffect(() => {
+    apiJson<SessionUser>('/session/me')
+      .then(setSessionUser)
+      .catch(() => setSessionUser(null));
+  }, []);
+
+  const userId = sessionUser?.id || '';
+  const isOperator = useMemo(() => Boolean(match?.operator_id && match.operator_id === userId), [match, userId]);
+  const canWrite = useMemo(() => Boolean(userId) && (!match?.operator_id || match.operator_id === userId), [match, userId]);
 
   const saveState = async (
     next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; allowClockRewind:boolean;}>
@@ -162,11 +169,9 @@ export default function MatchPage() {
       selected_team: next?.selectedTeam ?? selectedTeam,
       attack_lr: 'L2R',
       allow_clock_rewind: Boolean(next?.allowClockRewind),
-      user_id: userId,
     };
-    await fetch(`${API_BASE}/matches/${id}/state`, {
+    await apiFetch(`/matches/${id}/state`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
   };
@@ -174,10 +179,10 @@ export default function MatchPage() {
   const fetchAll = async () => {
     const seq = ++fetchSeqRef.current;
     const [m, s, d, o] = await Promise.all([
-      fetch(`${API_BASE}/matches/${id}`, { cache: 'no-store' }).then((r) => r.json()),
-      fetch(`${API_BASE}/matches/${id}/summary`, { cache: 'no-store' }).then((r) => r.json()),
-      fetch(`${API_BASE}/matches/${id}/dominance?bin_seconds=180`, { cache: 'no-store' }).then((r) => r.json()),
-      fetch(`${API_BASE}/outbox`, { cache: 'no-store' }).then((r) => r.json()),
+      apiJson<any>(`/matches/${id}`),
+      apiJson<any>(`/matches/${id}/summary`),
+      apiJson<any>(`/matches/${id}/dominance?bin_seconds=180`),
+      apiJson<any[]>(`/outbox`),
     ]);
     if (seq !== fetchSeqRef.current) return;
     setMatch(m);
@@ -246,7 +251,7 @@ export default function MatchPage() {
       }
     }, 1000);
     return () => clearInterval(t);
-  }, [running, possessionTeam, selectedTeam, canWrite, userId]);
+  }, [running, possessionTeam, selectedTeam, canWrite]);
 
   const toggleRun = async () => {
     if (!canWrite) return;
@@ -378,10 +383,9 @@ export default function MatchPage() {
     if (!window.confirm('점유율 집계를 0:0으로 초기화할까요?')) return;
     setIsResettingPossession(true);
     try {
-      const res = await fetch(`${API_BASE}/matches/${id}/possession/reset`, {
+      const res = await apiFetch(`/matches/${id}/possession/reset`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId }),
+        body: JSON.stringify({}),
       });
       if (!res.ok) {
         setCopyMessage('Possession reset failed');
@@ -406,10 +410,9 @@ export default function MatchPage() {
     if (!window.confirm('공격방향/xG 이벤트를 모두 초기화할까요?')) return;
     setIsResettingEvents(true);
     try {
-      const res = await fetch(`${API_BASE}/matches/${id}/events/reset`, {
+      const res = await apiFetch(`/matches/${id}/events/reset`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId }),
+        body: JSON.stringify({}),
       });
       if (!res.ok) {
         setCopyMessage('Event reset failed');
@@ -427,10 +430,9 @@ export default function MatchPage() {
 
   const sendLane = async (lane: Lane) => {
     if (!canWrite) return;
-    await fetch(`${API_BASE}/matches/${id}/events/attack_lane`, {
+    await apiFetch(`/matches/${id}/events/attack_lane`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: clockMs, user_id: userId }),
+      body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: clockMs }),
     });
   };
 
@@ -438,10 +440,9 @@ export default function MatchPage() {
     if (!canWrite) return;
     const xg = Number(xgValue);
     if (!Number.isFinite(xg) || xg < 0) return;
-    await fetch(`${API_BASE}/matches/${id}/events/xg`, {
+    await apiFetch(`/matches/${id}/events/xg`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event_id: makeId(), team: xgTeam, xg, is_goal: isGoalShot, clock_ms: clockMs, user_id: userId }),
+      body: JSON.stringify({ event_id: makeId(), team: xgTeam, xg, is_goal: isGoalShot, clock_ms: clockMs }),
     });
     setXgValue('0.10');
     setIsGoalShot(false);
@@ -451,9 +452,8 @@ export default function MatchPage() {
     if (!canWrite || isAttachingStream) return;
     setIsAttachingStream(true);
     try {
-      const res = await fetch(`${API_BASE}/matches/${id}/stream`, {
+      const res = await apiFetch(`/matches/${id}/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ingest_protocol: 'RTMP' }),
       });
       setCopyMessage(res.ok ? 'Stream attached' : 'Stream attach failed');
@@ -471,7 +471,7 @@ export default function MatchPage() {
     if (!window.confirm('이 매치 스트림을 중지할까요?')) return;
     setIsStoppingStream(true);
     try {
-      const res = await fetch(`${API_BASE}/matches/${id}/stream/stop`, { method: 'POST' });
+      const res = await apiFetch(`/matches/${id}/stream/stop`, { method: 'POST' });
       setCopyMessage(res.ok ? 'Stream stopped' : 'Stream stop failed');
       await fetchAll();
     } catch {
@@ -487,7 +487,7 @@ export default function MatchPage() {
     if (!window.confirm('기존 HLS 영상 파일을 정리할까요?')) return;
     setIsClearingHls(true);
     try {
-      const res = await fetch(`${API_BASE}/matches/${id}/stream/clear`, { method: 'POST' });
+      const res = await apiFetch(`/matches/${id}/stream/clear`, { method: 'POST' });
       if (!res.ok) {
         setCopyMessage('HLS clear failed');
       } else {
@@ -518,9 +518,8 @@ export default function MatchPage() {
       setXgEstimateMeta('Click on the pitch first');
       return;
     }
-    const res = await fetch(`${API_BASE}/xg/estimate`, {
+    const res = await apiFetch('/xg/estimate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         // Fixed half-pitch mode: always evaluate toward the same goal.
         team: 'HOME',
@@ -541,19 +540,17 @@ export default function MatchPage() {
   };
 
   const acquire = async () => {
-    await fetch(`${API_BASE}/matches/${id}/lock/acquire`, {
+    await apiFetch(`/matches/${id}/lock/acquire`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId }),
+      body: JSON.stringify({}),
     });
     await fetchAll();
   };
 
   const release = async () => {
-    await fetch(`${API_BASE}/matches/${id}/lock/release`, {
+    await apiFetch(`/matches/${id}/lock/release`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId }),
+      body: JSON.stringify({}),
     });
     await fetchAll();
   };
@@ -584,7 +581,7 @@ export default function MatchPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [running, canWrite, possessionTeam, userId, pendingLane]);
+  }, [running, canWrite, possessionTeam, pendingLane]);
 
   const hlsSrc = match?.hls_url || DEFAULT_HLS;
   const rtmpServer = match?.metadata?.rtmp?.server_url || '';
@@ -612,10 +609,11 @@ export default function MatchPage() {
   }, [dominanceBaseData]);
 
   return (
-    <main className="container grid">
+    <main className="page-stack">
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div className="grid" style={{ gap: 6 }}>
           <h2 style={{ margin: 0 }}>{match?.name || 'Match'}</h2>
+          <div className="muted">signed in as: {sessionUser?.name || 'Loading...'} {userId ? `(@${userId})` : ''}</div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
             <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
             <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
@@ -629,7 +627,6 @@ export default function MatchPage() {
         </div>
         <div className="row">
           <Link href="/admin/dashboard">Back to Dashboard</Link>
-          <input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="user_id" />
           {!isOperator
             ? <button className="btn-primary" onClick={acquire}>Acquire Lock</button>
             : <button className="btn-danger" onClick={release}>Release Lock</button>}

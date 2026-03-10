@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { scheduleItems } from './schedule-data';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
+import { apiFetch, apiJson } from '../../../lib/api';
 
 type Match = {
   id: string;
@@ -21,6 +20,10 @@ type Match = {
     };
   } | null;
   operator_id?: string | null;
+};
+
+type StreamStatus = {
+  running_match_ids?: string[];
 };
 
 export default function Dashboard() {
@@ -44,57 +47,44 @@ export default function Dashboard() {
 
   const load = async () => {
     try {
-      const [matchesRes, streamStatusRes] = await Promise.all([
-        fetch(`${API_BASE}/matches`, { cache: 'no-store' }),
-        fetch(`${API_BASE}/admin/streams/status`, { cache: 'no-store' }),
+      const [matchesData, streamStatusData] = await Promise.all([
+        apiJson<Match[]>('/matches'),
+        apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
       ]);
-
-      if (!matchesRes.ok) {
-        setMatches([]);
-        setRunningMatchIds([]);
-        setError(`API unavailable (${matchesRes.status}). Run API server or infra/app compose stack.`);
-        return;
-      }
-
-      const data = await matchesRes.json();
-      setMatches(Array.isArray(data) ? data : []);
-      if (streamStatusRes.ok) {
-        const statusData = await streamStatusRes.json();
-        setRunningMatchIds(Array.isArray(statusData.running_match_ids) ? statusData.running_match_ids : []);
-      } else {
-        setRunningMatchIds([]);
-      }
+      setMatches(Array.isArray(matchesData) ? matchesData : []);
+      setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
       setError('');
-    } catch {
+    } catch (loadError) {
       setMatches([]);
       setRunningMatchIds([]);
-      setError('API unavailable. Run API server or infra/app compose stack.');
+      setError(loadError instanceof Error ? loadError.message : 'API unavailable. Run API server or infra/app compose stack.');
     }
   };
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(load, 3000);
+    return () => clearInterval(timer);
   }, []);
 
   const createMatch = async () => {
     if (!name.trim()) return;
     setError('');
-    const res = await fetch(`${API_BASE}/matches`, {
+
+    const response = await apiFetch('/matches', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name,
         ingest_protocol: ingestProtocol,
         ingest_url: ingestUrl || null,
       }),
     });
-    if (!res.ok) {
-      const txt = await res.text();
-      setError(txt || 'Failed to create match');
+
+    if (!response.ok) {
+      setError((await response.text()) || 'Failed to create match');
       return;
     }
+
     setName('');
     setIngestUrl('');
     await load();
@@ -105,14 +95,15 @@ export default function Dashboard() {
     if (!ok) return;
 
     setError('');
-    const res = await fetch(`${API_BASE}/matches/${matchId}?stop_stream=true`, {
+    const response = await apiFetch(`/matches/${matchId}?stop_stream=true`, {
       method: 'DELETE',
     });
-    if (!res.ok) {
-      const txt = await res.text();
-      setError(txt || 'Failed to delete match');
+
+    if (!response.ok) {
+      setError((await response.text()) || 'Failed to delete match');
       return;
     }
+
     await load();
   };
 
@@ -131,134 +122,144 @@ export default function Dashboard() {
   const selectedMatches = scheduleItems
     .filter((item) => item.date === selectedDate)
     .sort((a, b) => a.time.localeCompare(b.time));
+
   const dayCells: Array<number | null> = [];
   for (let i = 0; i < startWeekday; i += 1) dayCells.push(null);
   for (let day = 1; day <= dayCount; day += 1) dayCells.push(day);
   while (dayCells.length % 7 !== 0) dayCells.push(null);
 
+  const liveCount = runningMatchIds.length;
+  const assignedCount = useMemo(() => matches.filter((match) => match.operator_id).length, [matches]);
+  const rtmpCount = useMemo(
+    () => matches.filter((match) => match.metadata?.ingest_protocol === 'RTMP').length,
+    [matches]
+  );
+
   return (
     <>
-      <main className="container grid">
-        <h1 style={{ margin: 0 }}>Live Match Admin</h1>
-        <div className="card">
-          <h2>Dashboard</h2>
-          <div className="row">
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Match name" />
-            <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')}>
-              <option value="SRT">SRT</option>
-              <option value="RTMP">RTMP</option>
-            </select>
-            <input
-              value={ingestUrl}
-              onChange={(e) => setIngestUrl(e.target.value)}
-              placeholder={
-                ingestProtocol === 'RTMP'
-                  ? 'RTMP source URL (optional: empty => use match stream key)'
-                  : 'SRT URL (optional)'
-              }
-              style={{ minWidth: 360 }}
-            />
-            <button className="btn-primary" onClick={createMatch}>Create Match</button>
-          </div>
-          {error ? <p className="muted" style={{ color: '#fca5a5' }}>{error}</p> : null}
-        </div>
+      <main className="page-stack">
+        <section className="page-hero">
+          <div className="hero-grid">
+            <div className="card grid">
+              <div className="section-heading">
+                <div>
+                  <div className="sidebar-eyebrow">Overview</div>
+                  <h2>운영 대시보드</h2>
+                </div>
+                <span className="status-pill running">Live {liveCount}</span>
+              </div>
+              <p style={{ margin: 0, color: '#cad7ea', lineHeight: 1.6 }}>
+                매치 생성, 현재 운영자 점유 상태, 송출 상태를 한 화면에서 확인할 수 있도록 구성했습니다.
+                새 매치는 현재 로그인한 운영자에게 자동으로 연결됩니다.
+              </p>
+              <div className="metric-strip">
+                <div className="metric-tile">
+                  <span className="muted">Total Matches</span>
+                  <strong>{matches.length}</strong>
+                </div>
+                <div className="metric-tile">
+                  <span className="muted">Assigned</span>
+                  <strong>{assignedCount}</strong>
+                </div>
+                <div className="metric-tile">
+                  <span className="muted">RTMP Pipelines</span>
+                  <strong>{rtmpCount}</strong>
+                </div>
+              </div>
+            </div>
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(460px, 1fr))',
-            gap: 12,
-            alignItems: 'start',
-          }}
-        >
+            <div className="card grid">
+              <div className="section-heading">
+                <div>
+                  <div className="sidebar-eyebrow">Create Match</div>
+                  <h3>새 경기 등록</h3>
+                </div>
+              </div>
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Match name" />
+              <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')}>
+                <option value="SRT">SRT</option>
+                <option value="RTMP">RTMP</option>
+              </select>
+              <input
+                value={ingestUrl}
+                onChange={(e) => setIngestUrl(e.target.value)}
+                placeholder={ingestProtocol === 'RTMP' ? 'RTMP source URL (optional)' : 'SRT URL (optional)'}
+              />
+              <button className="btn-primary" onClick={createMatch}>Create Match</button>
+              {error ? <p className="form-error" style={{ margin: 0 }}>{error}</p> : null}
+            </div>
+          </div>
+        </section>
+
+        <section className="dashboard-grid">
           <div className="card">
-            <h3>Matches</h3>
-            <div className="grid">
-              {matches.map((m, idx) => {
-                const isRunning = runningMatchIds.includes(m.id);
+            <div className="section-heading">
+              <div>
+                <div className="sidebar-eyebrow">Match List</div>
+                <h3>운영 중인 매치</h3>
+              </div>
+            </div>
+
+            <div className="match-list">
+              {matches.map((match) => {
+                const isRunning = runningMatchIds.includes(match.id);
                 return (
-                  <div
-                    key={m.id}
-                    className="row"
-                    style={{
-                      justifyContent: 'space-between',
-                      borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
-                      marginTop: idx === 0 ? 0 : 10,
-                      paddingTop: idx === 0 ? 0 : 10,
-                    }}
-                  >
-                    <div>
-                      <div className="row" style={{ gap: 10 }}>
-                        <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            padding: '2px 8px',
-                            borderRadius: 999,
-                            border: `1px solid ${isRunning ? '#22c55e' : '#475569'}`,
-                            color: isRunning ? '#86efac' : '#cbd5e1',
-                            background: isRunning ? 'rgba(20,83,45,0.45)' : 'rgba(51,65,85,0.45)',
-                          }}
-                        >
+                  <div key={match.id} className="match-item">
+                    <div className="grid" style={{ gap: 8 }}>
+                      <div className="row">
+                        <strong style={{ fontSize: 18 }}>{match.name}</strong>
+                        <span className={`status-pill ${isRunning ? 'running' : 'stopped'}`}>
                           {isRunning ? 'RUNNING' : 'STOPPED'}
                         </span>
                       </div>
-                      <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
-                        operator: {m.operator_id || 'none'}
+                      <div className="muted">operator: {match.operator_id || 'unassigned'}</div>
+                      <div className="muted">
+                        protocol: {match.metadata?.ingest_protocol || 'not set'}
+                        {match.hls_url ? ' / hls ready' : ' / hls pending'}
                       </div>
                     </div>
                     <div className="row">
-                      <Link href={`/admin/match/${m.id}`}>Open</Link>
-                      <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
+                      <Link href={`/admin/match/${match.id}`}>Open</Link>
+                      <button className="btn-danger" onClick={() => deleteMatch(match.id, match.name)}>Delete</button>
                     </div>
                   </div>
                 );
               })}
+              {matches.length === 0 ? <div className="muted">No matches yet.</div> : null}
             </div>
           </div>
 
           <div className="card">
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <h3 style={{ margin: 0 }}>Match Calendar</h3>
+            <div className="section-heading">
+              <h3>Match Calendar</h3>
               <div className="row">
                 <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
                   Prev
                 </button>
-                <div style={{ minWidth: 90, textAlign: 'center', fontWeight: 700 }}>{monthLabel}</div>
+                <strong style={{ minWidth: 90, textAlign: 'center' }}>{monthLabel}</strong>
                 <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
                   Next
                 </button>
               </div>
             </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
-                gap: 8,
-                marginTop: 12,
-              }}
-            >
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => (
-                <div key={w} className="muted" style={{ textAlign: 'center', fontWeight: 700 }}>{w}</div>
+
+            <div className="calendar-grid">
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((weekday) => (
+                <div key={weekday} className="muted" style={{ textAlign: 'center', fontWeight: 700 }}>{weekday}</div>
               ))}
-              {dayCells.map((day, idx) => {
-                if (!day) return <div key={`empty-${idx}`} />;
+
+              {dayCells.map((day, index) => {
+                if (!day) return <div key={`empty-${index}`} />;
+
                 const dateKey = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                 const count = countByDate[dateKey] || 0;
                 const isSelected = selectedDate === dateKey;
+
                 return (
                   <button
                     key={dateKey}
+                    className={`day-cell ${isSelected ? 'selected' : ''}`}
                     onClick={() => setSelectedDate(dateKey)}
-                    style={{
-                      width: '100%',
-                      minHeight: 56,
-                      border: isSelected ? '1px solid #38bdf8' : '1px solid #334155',
-                      background: isSelected ? '#0b3a57' : '#0f172a',
-                      borderRadius: 8,
-                      textAlign: 'left',
-                      padding: 8,
-                    }}
                   >
                     <div style={{ fontWeight: 700 }}>{day}</div>
                     <div className="muted" style={{ color: count > 0 ? '#7dd3fc' : undefined }}>
@@ -269,19 +270,19 @@ export default function Dashboard() {
               })}
             </div>
 
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: 16 }}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Fixtures on {selectedDate}</div>
               {selectedMatches.length === 0 ? (
                 <div className="muted">No fixtures</div>
               ) : (
                 <div className="grid">
-                  {selectedMatches.map((item, idx) => (
+                  {selectedMatches.map((item, index) => (
                     <div
                       key={item.id}
                       style={{
-                        borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
-                        marginTop: idx === 0 ? 0 : 8,
-                        paddingTop: idx === 0 ? 0 : 8,
+                        borderTop: index === 0 ? 'none' : '1px dashed rgba(148,163,184,0.24)',
+                        marginTop: index === 0 ? 0 : 8,
+                        paddingTop: index === 0 ? 0 : 8,
                       }}
                     >
                       <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
@@ -292,19 +293,10 @@ export default function Dashboard() {
               )}
             </div>
           </div>
-        </div>
-
+        </section>
       </main>
-      <footer
-        style={{
-          marginTop: 24,
-          backgroundColor: '#1f2937',
-          color: '#e5e7eb',
-          padding: '20px 24px',
-          lineHeight: 1.7,
-          fontSize: 14,
-        }}
-      >
+
+      <footer className="footer-panel">
         <div>(주)파인루터스</div>
         <div>대표이사 : 이용근</div>
         <div>사업자등록번호 : 804-59-00695</div>

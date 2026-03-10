@@ -1,9 +1,11 @@
 import asyncio
 from datetime import datetime
+import hashlib
+import hmac
 import math
 import uuid
 from uuid import UUID
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -11,7 +13,7 @@ import os
 import httpx
 
 from .db import Base, engine, get_db
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, Outbox, WebhookSubscription
+from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, Outbox, User, WebhookSubscription
 from .schemas import (
     AcquireLockRequest,
     AttachIngestRequest,
@@ -19,11 +21,13 @@ from .schemas import (
     AttachSrtRequest,
     CreateMatchRequest,
     IngestProtocol,
+    LoginRequest,
     MatchResultResponse,
     MatchResponse,
     EventsResetRequest,
     PossessionResetRequest,
     ReleaseLockRequest,
+    SessionUserResponse,
     StateRequest,
     WebhookSubscriptionCreateRequest,
     XGEstimateRequest,
@@ -44,6 +48,9 @@ app.add_middleware(
 
 worker_stop_event = asyncio.Event()
 worker_task: asyncio.Task | None = None
+SESSION_COOKIE_NAME = "live_admin_session"
+SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
+SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
 
 
 def _gateway_start_stream(
@@ -183,6 +190,63 @@ async def shutdown() -> None:
 def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
     if match_obj.operator_id and match_obj.operator_id != user_id:
         raise HTTPException(status_code=403, detail="Operator lock held by another user")
+
+
+def _slugify_user_id(name: str) -> str:
+    normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in name.strip())
+    compact = "-".join(part for part in normalized.split("-") if part)
+    return compact[:40] or f"user-{uuid.uuid4().hex[:8]}"
+
+
+def _sign_session_value(user_id: str) -> str:
+    signature = hmac.new(SESSION_SECRET.encode("utf-8"), user_id.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{user_id}.{signature}"
+
+
+def _verify_session_value(raw_value: str | None) -> str | None:
+    if not raw_value or "." not in raw_value:
+        return None
+    user_id, signature = raw_value.rsplit(".", 1)
+    expected = hmac.new(SESSION_SECRET.encode("utf-8"), user_id.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return user_id
+
+
+def _set_session_cookie(response: Response, user_id: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=_sign_session_value(user_id),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+
+
+def _get_session_user(
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    db: Session = Depends(get_db),
+) -> User | None:
+    user_id = _verify_session_value(session_cookie)
+    if not user_id:
+        return None
+    return db.get(User, user_id)
+
+
+def _require_session_user(user: User | None = Depends(_get_session_user)) -> User:
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) -> str | None:
+    return explicit_user_id or (session_user.id if session_user else None)
 
 
 def _is_in_penalty_area(x: float, y: float) -> bool:
@@ -556,6 +620,36 @@ def health() -> dict:
     return {"ok": True, "time": datetime.utcnow().isoformat()}
 
 
+@app.post("/api/session/login", response_model=SessionUserResponse)
+def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+    user_name = body.name.strip()
+    user_id = _slugify_user_id(user_name)
+
+    existing = db.get(User, user_id)
+    if existing:
+        existing.name = user_name
+        user = existing
+    else:
+        user = User(id=user_id, name=user_name)
+        db.add(user)
+
+    db.commit()
+    db.refresh(user)
+    _set_session_cookie(response, user.id)
+    return {"id": user.id, "name": user.name}
+
+
+@app.post("/api/session/logout")
+def logout(response: Response):
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/api/session/me", response_model=SessionUserResponse)
+def current_session(user: User = Depends(_require_session_user)):
+    return {"id": user.id, "name": user.name}
+
+
 @app.post("/api/xg/estimate")
 def estimate_xg(body: XGEstimateRequest):
     return _estimate_xg(
@@ -569,9 +663,15 @@ def estimate_xg(body: XGEstimateRequest):
 
 
 @app.post("/api/matches", response_model=MatchResponse)
-def create_match(body: CreateMatchRequest, db: Session = Depends(get_db)):
+def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
     metadata = dict(body.metadata or {})
-    row = Match(id=uuid.uuid4(), name=body.name, hls_url=body.hls_url, metadata_json=metadata)
+    row = Match(
+        id=uuid.uuid4(),
+        name=body.name,
+        hls_url=body.hls_url,
+        metadata_json=metadata,
+        operator_id=user.id if user else None,
+    )
 
     ingest_url, ingest_protocol = _resolve_ingest_fields(body.ingest_url, body.srt_url, body.ingest_protocol)
     if ingest_protocol:
@@ -683,11 +783,16 @@ def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.post("/api/matches/{match_id}/possession/reset")
-def reset_match_possession(match_id: UUID, body: PossessionResetRequest, db: Session = Depends(get_db)):
+def reset_match_possession(
+    match_id: UUID,
+    body: PossessionResetRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
-    _require_write_lock(row, body.user_id)
+    _require_write_lock(row, _resolve_user_id(body.user_id, session_user))
 
     db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).delete(synchronize_session=False)
 
@@ -702,11 +807,16 @@ def reset_match_possession(match_id: UUID, body: PossessionResetRequest, db: Ses
 
 
 @app.post("/api/matches/{match_id}/events/reset")
-def reset_match_events(match_id: UUID, body: EventsResetRequest, db: Session = Depends(get_db)):
+def reset_match_events(
+    match_id: UUID,
+    body: EventsResetRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
-    _require_write_lock(row, body.user_id)
+    _require_write_lock(row, _resolve_user_id(body.user_id, session_user))
 
     event_count = db.query(Event).filter(Event.match_id == match_id).delete(synchronize_session=False)
     db.query(LaneSegment).filter(LaneSegment.match_id == match_id).delete(synchronize_session=False)
@@ -834,24 +944,38 @@ def delete_match(match_id: UUID, stop_stream: bool = True, db: Session = Depends
 
 
 @app.post("/api/matches/{match_id}/lock/acquire")
-def acquire_lock(match_id: UUID, body: AcquireLockRequest, db: Session = Depends(get_db)):
+def acquire_lock(
+    match_id: UUID,
+    body: AcquireLockRequest | None = None,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
-    if row.operator_id and row.operator_id != body.user_id and not body.admin_takeover:
+    user_id = _resolve_user_id(body.user_id if body else None, session_user)
+    admin_takeover = body.admin_takeover if body else False
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if row.operator_id and row.operator_id != user_id and not admin_takeover:
         raise HTTPException(status_code=409, detail="Lock already acquired")
-    row.operator_id = body.user_id
+    row.operator_id = user_id
     db.commit()
     return {"ok": True, "operator_id": row.operator_id}
 
 
 @app.post("/api/matches/{match_id}/lock/release")
-def release_lock(match_id: UUID, body: ReleaseLockRequest | None = None, db: Session = Depends(get_db)):
+def release_lock(
+    match_id: UUID,
+    body: ReleaseLockRequest | None = None,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
 
-    user_id = body.user_id if body else None
+    user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
     if row.operator_id and row.operator_id != user_id and not admin_takeover:
         raise HTTPException(status_code=403, detail="Not lock owner")
@@ -861,11 +985,16 @@ def release_lock(match_id: UUID, body: ReleaseLockRequest | None = None, db: Ses
 
 
 @app.post("/api/matches/{match_id}/state")
-def post_state(match_id: UUID, body: StateRequest, db: Session = Depends(get_db)):
+def post_state(
+    match_id: UUID,
+    body: StateRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
-    _require_write_lock(match_obj, body.user_id)
+    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
 
     existing = db.get(State, body.state_id)
     if existing:
@@ -950,11 +1079,16 @@ def post_state(match_id: UUID, body: StateRequest, db: Session = Depends(get_db)
 
 
 @app.post("/api/matches/{match_id}/events/attack_lane")
-def post_attack_lane(match_id: UUID, body: AttackLaneEventRequest, db: Session = Depends(get_db)):
+def post_attack_lane(
+    match_id: UUID,
+    body: AttackLaneEventRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
-    _require_write_lock(match_obj, body.user_id)
+    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
 
     existing = db.get(Event, body.event_id)
     if existing:
@@ -995,11 +1129,16 @@ def post_attack_lane(match_id: UUID, body: AttackLaneEventRequest, db: Session =
 
 
 @app.post("/api/matches/{match_id}/events/xg")
-def post_xg(match_id: UUID, body: XGEventRequest, db: Session = Depends(get_db)):
+def post_xg(
+    match_id: UUID,
+    body: XGEventRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
-    _require_write_lock(match_obj, body.user_id)
+    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
 
     existing = db.get(Event, body.event_id)
     if existing:
