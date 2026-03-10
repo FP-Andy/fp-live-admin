@@ -303,15 +303,6 @@ export default function Dashboard() {
           </div>
         </section>
       </main>
-
-      <footer className="footer-panel">
-        <div>(주)파인루터스</div>
-        <div>대표이사 : 이용근</div>
-        <div>사업자등록번호 : 804-59-00695</div>
-        <div>연락처 : 010-6343-1823</div>
-        <div>이메일 : official@fineplay.kr</div>
-        <div>카피라이트 파인루터스</div>
-      </footer>
     </>
   );
 }

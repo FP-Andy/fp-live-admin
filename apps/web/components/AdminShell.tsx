@@ -62,6 +62,10 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
 
             <div className="sidebar-footer">
               <button onClick={logout}>Log Out</button>
+              <div className="sidebar-legal">
+                <div>파인루덴스</div>
+                <div>© 2026 Fine Ludens Co.,Ltd All rights reserved</div>
+              </div>
             </div>
           </>
         ) : null}
