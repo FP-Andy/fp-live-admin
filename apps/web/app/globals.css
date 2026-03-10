@@ -144,6 +144,11 @@ a:focus-visible {
   display: grid;
   grid-template-columns: 280px 1fr;
   min-height: 100vh;
+  transition: grid-template-columns 180ms ease;
+}
+
+.app-shell.collapsed {
+  grid-template-columns: 88px 1fr;
 }
 
 .sidebar {
@@ -157,6 +162,7 @@ a:focus-visible {
   border-right: 1px solid var(--line);
   background: rgba(6, 12, 21, 0.72);
   backdrop-filter: blur(18px);
+  transition: width 180ms ease, padding 180ms ease;
 }
 
 .sidebar.collapsed {

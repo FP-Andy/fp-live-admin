@@ -12,6 +12,7 @@ WebhookEventKind = Literal["STATE", "EVENT"]
 
 class CreateMatchRequest(BaseModel):
     name: str
+    assign_operator: bool = True
     ingest_protocol: IngestProtocol | None = None
     ingest_url: str | None = None
     srt_url: str | None = None

@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
   const [name, setName] = useState('');
+  const [assignOperator, setAssignOperator] = useState(true);
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('SRT');
   const [ingestUrl, setIngestUrl] = useState('');
   const [error, setError] = useState('');
@@ -75,6 +76,7 @@ export default function Dashboard() {
       method: 'POST',
       body: JSON.stringify({
         name,
+        assign_operator: assignOperator,
         ingest_protocol: ingestProtocol,
         ingest_url: ingestUrl || null,
       }),
@@ -86,6 +88,7 @@ export default function Dashboard() {
     }
 
     setName('');
+    setAssignOperator(true);
     setIngestUrl('');
     await load();
   };
@@ -176,6 +179,15 @@ export default function Dashboard() {
                 <option value="SRT">SRT</option>
                 <option value="RTMP">RTMP</option>
               </select>
+              <label className="row" style={{ justifyContent: 'flex-start' }}>
+                <input
+                  type="checkbox"
+                  checked={assignOperator}
+                  onChange={(e) => setAssignOperator(e.target.checked)}
+                  style={{ minHeight: 'auto', width: 18, height: 18 }}
+                />
+                <span>현재 로그인 계정을 operator로 지정</span>
+              </label>
               <input
                 value={ingestUrl}
                 onChange={(e) => setIngestUrl(e.target.value)}

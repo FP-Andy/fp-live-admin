@@ -670,7 +670,7 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
         name=body.name,
         hls_url=body.hls_url,
         metadata_json=metadata,
-        operator_id=user.id if user else None,
+        operator_id=user.id if user and body.assign_operator else None,
     )
 
     ingest_url, ingest_protocol = _resolve_ingest_fields(body.ingest_url, body.srt_url, body.ingest_protocol)
