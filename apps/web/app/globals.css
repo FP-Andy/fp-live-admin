@@ -1,17 +1,19 @@
 :root {
-  --bg: #09111f;
-  --bg-soft: #0f1b2d;
-  --panel: rgba(12, 22, 38, 0.86);
-  --panel-strong: #0e1726;
-  --line: rgba(148, 163, 184, 0.18);
-  --line-strong: rgba(148, 163, 184, 0.35);
-  --text: #e5eefb;
-  --muted: #97a8c2;
-  --accent: #4cc9f0;
-  --accent-strong: #1699d3;
+  --bg: #15110d;
+  --bg-soft: #1d1611;
+  --panel: rgba(24, 18, 13, 0.88);
+  --panel-strong: #18120d;
+  --line: rgba(255, 116, 0, 0.16);
+  --line-strong: rgba(255, 116, 0, 0.34);
+  --text: #f5eadf;
+  --muted: #c8ae94;
+  --accent: #ff7400;
+  --accent-strong: #ff8f2f;
   --success: #3ddc97;
   --danger: #ff6b6b;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  --button-dark: #222222;
+  --button-dark-strong: #2b2b2b;
 }
 
 * {
@@ -20,11 +22,11 @@
 
 html {
   min-height: 100%;
-  background-color: #07101c;
+  background-color: #130d08;
   background:
-    radial-gradient(circle at top left, rgba(76, 201, 240, 0.14), transparent 28%),
-    radial-gradient(circle at top right, rgba(61, 220, 151, 0.12), transparent 24%),
-    linear-gradient(180deg, #07101c 0%, #0a1627 46%, #09111f 100%);
+    radial-gradient(circle at top left, rgba(255, 116, 0, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(255, 164, 76, 0.12), transparent 24%),
+    linear-gradient(180deg, #130d08 0%, #1b130e 46%, #15110d 100%);
   overscroll-behavior-y: none;
 }
 
@@ -33,7 +35,7 @@ body {
   min-height: 100vh;
   font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--text);
-  background-color: #07101c;
+  background-color: #130d08;
   background: transparent;
   overscroll-behavior-y: none;
 }
@@ -49,7 +51,7 @@ select {
   font: inherit;
   border-radius: 14px;
   border: 1px solid var(--line);
-  background: rgba(15, 27, 45, 0.92);
+  background: rgba(34, 34, 34, 0.94);
   color: var(--text);
   padding: 11px 13px;
 }
@@ -90,8 +92,8 @@ a:focus-visible {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #1a6f9a, #2f98c5);
-  border-color: rgba(76, 201, 240, 0.4);
+  background: linear-gradient(135deg, #2a2a2a, #222222);
+  border-color: rgba(255, 116, 0, 0.3);
 }
 
 .btn-active {
@@ -101,7 +103,7 @@ a:focus-visible {
 }
 
 .btn-danger {
-  background: linear-gradient(135deg, #4f1e22, #6d262c);
+  background: linear-gradient(135deg, #432323, #5b2b2b);
   border-color: rgba(255, 107, 107, 0.35);
   color: #ffe3e3;
 }
@@ -140,7 +142,7 @@ a:focus-visible {
   padding: 2px 6px;
   border-radius: 999px;
   border: 1px solid var(--line-strong);
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(255, 116, 0, 0.12);
   font-size: 11px;
 }
 
@@ -164,7 +166,7 @@ a:focus-visible {
   height: 100vh;
   padding: 20px 18px;
   border-right: 1px solid var(--line);
-  background: rgba(6, 12, 21, 0.72);
+  background: rgba(16, 11, 8, 0.78);
   backdrop-filter: blur(18px);
   transition: width 180ms ease, padding 180ms ease;
 }
@@ -198,7 +200,7 @@ a:focus-visible {
 }
 
 .sidebar-eyebrow {
-  color: #7fbad8;
+  color: #ffb06b;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -226,7 +228,7 @@ a:focus-visible {
 .sidebar-nav a:hover {
   color: var(--text);
   border-color: var(--line);
-  background: rgba(76, 201, 240, 0.08);
+  background: rgba(255, 116, 0, 0.1);
 }
 
 .app-main {
@@ -256,7 +258,7 @@ a:focus-visible {
   padding: 10px 14px;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(12, 22, 38, 0.72);
+  background: rgba(24, 18, 13, 0.78);
 }
 
 .status-dot {
@@ -296,8 +298,8 @@ a:focus-visible {
 .metric-tile {
   padding: 16px;
   border-radius: 18px;
-  background: rgba(76, 201, 240, 0.06);
-  border: 1px solid rgba(76, 201, 240, 0.12);
+  background: rgba(255, 116, 0, 0.08);
+  border: 1px solid rgba(255, 116, 0, 0.14);
 }
 
 .metric-tile strong {
@@ -342,7 +344,7 @@ a:focus-visible {
 
 .login-copy p {
   max-width: 46ch;
-  color: #cad7ea;
+  color: #e7d1bc;
   font-size: 18px;
   line-height: 1.6;
 }
@@ -391,12 +393,12 @@ a:focus-visible {
   min-width: 120px;
   padding: 12px 16px;
   border-radius: 999px;
-  border: 1px solid rgba(76, 201, 240, 0.2);
-  background: rgba(76, 201, 240, 0.1);
+  border: 1px solid rgba(255, 116, 0, 0.22);
+  background: rgba(255, 116, 0, 0.1);
 }
 
 .home-link.secondary {
-  background: rgba(148, 163, 184, 0.08);
+  background: rgba(34, 34, 34, 0.7);
   border-color: var(--line);
   color: var(--text);
 }
@@ -450,7 +452,7 @@ a:focus-visible {
 }
 
 .status-pill.stopped {
-  color: #cad7ea;
+  color: #e7d1bc;
 }
 
 .dashboard-grid {
@@ -475,8 +477,8 @@ a:focus-visible {
 }
 
 .day-cell.selected {
-  background: rgba(76, 201, 240, 0.16);
-  border-color: rgba(76, 201, 240, 0.4);
+  background: rgba(255, 116, 0, 0.16);
+  border-color: rgba(255, 116, 0, 0.4);
 }
 
 @media (max-width: 1100px) {

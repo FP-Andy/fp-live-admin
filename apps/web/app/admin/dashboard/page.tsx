@@ -270,7 +270,7 @@ export default function Dashboard() {
                     onClick={() => setSelectedDate(dateKey)}
                   >
                     <div style={{ fontWeight: 700 }}>{day}</div>
-                    <div className="muted" style={{ color: count > 0 ? '#7dd3fc' : undefined }}>
+                    <div className="muted" style={{ color: count > 0 ? 'var(--accent)' : undefined }}>
                       {count > 0 ? `${count} match${count > 1 ? 'es' : ''}` : '-'}
                     </div>
                   </button>
@@ -288,7 +288,7 @@ export default function Dashboard() {
                     <div
                       key={item.id}
                       style={{
-                        borderTop: index === 0 ? 'none' : '1px dashed rgba(148,163,184,0.24)',
+                        borderTop: index === 0 ? 'none' : '1px dashed rgba(255,116,0,0.24)',
                         marginTop: index === 0 ? 0 : 8,
                         paddingTop: index === 0 ? 0 : 8,
                       }}
