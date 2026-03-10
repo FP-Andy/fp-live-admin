@@ -29,7 +29,7 @@ class MatchResponse(BaseModel):
 
 
 class AcquireLockRequest(BaseModel):
-    user_id: str
+    user_id: str | None = None
     admin_takeover: bool = False
 
 

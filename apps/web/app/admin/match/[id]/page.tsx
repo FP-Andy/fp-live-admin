@@ -540,18 +540,28 @@ export default function MatchPage() {
   };
 
   const acquire = async () => {
-    await apiFetch(`/matches/${id}/lock/acquire`, {
+    const response = await apiFetch(`/matches/${id}/lock/acquire`, {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    if (!response.ok) {
+      setCopyMessage('Lock acquire failed');
+      setTimeout(() => setCopyMessage(''), 1500);
+      return;
+    }
     await fetchAll();
   };
 
   const release = async () => {
-    await apiFetch(`/matches/${id}/lock/release`, {
+    const response = await apiFetch(`/matches/${id}/lock/release`, {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    if (!response.ok) {
+      setCopyMessage('Lock release failed');
+      setTimeout(() => setCopyMessage(''), 1500);
+      return;
+    }
     await fetchAll();
   };
 
