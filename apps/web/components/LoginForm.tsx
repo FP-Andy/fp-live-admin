@@ -41,7 +41,7 @@ export default function LoginForm({ nextPath }: { nextPath: string }) {
 
   return (
     <div className="card login-form">
-      <label htmlFor="name">Operator Name</label>
+      <div className="login-form-title">Sign In</div>
       <input
         id="name"
         value={name}
@@ -53,7 +53,7 @@ export default function LoginForm({ nextPath }: { nextPath: string }) {
         autoFocus
       />
       {error ? <div className="form-error">{error}</div> : null}
-      <button className="btn-primary" onClick={submit} disabled={submitting}>
+      <button className="btn-primary login-submit" onClick={submit} disabled={submitting}>
         {submitting ? 'Signing In...' : 'Sign In'}
       </button>
     </div>

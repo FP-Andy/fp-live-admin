@@ -148,10 +148,6 @@ export default function Dashboard() {
                 </div>
                 <span className="status-pill running">Live {liveCount}</span>
               </div>
-              <p style={{ margin: 0, color: '#cad7ea', lineHeight: 1.6 }}>
-                매치 생성, 현재 운영자 점유 상태, 송출 상태를 한 화면에서 확인할 수 있도록 구성했습니다.
-                새 매치는 현재 로그인한 운영자에게 자동으로 연결됩니다.
-              </p>
               <div className="metric-strip">
                 <div className="metric-tile">
                   <span className="muted">Total Matches</span>
