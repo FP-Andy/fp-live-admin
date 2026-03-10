@@ -172,15 +172,20 @@ a:focus-visible {
 
 .sidebar-brand,
 .sidebar-user,
-.sidebar-footer {
+.sidebar-footer,
+.sidebar-main {
   display: grid;
   gap: 6px;
-  margin-top: auto;
+}
+
+.sidebar-main {
+  gap: 20px;
 }
 
 .sidebar-legal {
   display: grid;
   gap: 4px;
+  margin-top: auto;
   padding-top: 14px;
   border-top: 1px solid var(--line);
   color: var(--muted);

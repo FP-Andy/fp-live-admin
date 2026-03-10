@@ -50,22 +50,29 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
 
         {sidebarOpen ? (
           <>
-            <div className="sidebar-user">
-              <div className="sidebar-eyebrow">Signed In</div>
-              <strong>{user?.name || 'Loading...'}</strong>
-              <span className="muted">@{user?.id || 'session'}</span>
+            <div className="sidebar-main">
+              <div className="sidebar-user">
+                <div className="sidebar-eyebrow">Signed In</div>
+                <strong>{user?.name || 'Loading...'}</strong>
+                <span className="muted">@{user?.id || 'session'}</span>
+              </div>
+
+              <nav className="sidebar-nav">
+                <Link className={pathname === '/admin/dashboard' ? 'active' : ''} href="/admin/dashboard">Dashboard</Link>
+              </nav>
+
+              <div className="sidebar-footer">
+                <button onClick={logout}>Log Out</button>
+              </div>
             </div>
 
-            <nav className="sidebar-nav">
-              <Link className={pathname === '/admin/dashboard' ? 'active' : ''} href="/admin/dashboard">Dashboard</Link>
-            </nav>
-
-            <div className="sidebar-footer">
-              <button onClick={logout}>Log Out</button>
-              <div className="sidebar-legal">
-                <div>파인루덴스</div>
-                <div>© 2026 Fine Ludens Co.,Ltd All rights reserved</div>
-              </div>
+            <div className="sidebar-legal">
+              <div>(주)파인루덴스</div>
+              <div>대표이사 : 이용근</div>
+              <div>사업자등록번호 : 804-59-00695</div>
+              <div>연락처 : 010-6343-1823</div>
+              <div>이메일 : official@fineplay.kr</div>
+              <div>© 2026 Fine Ludens Co., Ltd All rights reserved</div>
             </div>
           </>
         ) : null}
