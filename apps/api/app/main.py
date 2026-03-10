@@ -137,6 +137,35 @@ def _gateway_clear_stream(match_id: UUID) -> None:
         raise HTTPException(status_code=502, detail=f"gateway clear failed: {ex}") from ex
 
 
+def _gateway_status() -> dict:
+    gateway_base = os.getenv("GATEWAY_API_BASE", "http://host.docker.internal:8090").rstrip("/")
+    if not gateway_base:
+        raise HTTPException(status_code=500, detail="GATEWAY_API_BASE not configured")
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{gateway_base}/matches/status")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"gateway status failed: {ex}") from ex
+
+    lines = data.get("lines") or []
+    running_match_ids: list[str] = []
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        match = line.split(" ", 1)[0].strip()
+        if match and match != "no":
+            running_match_ids.append(match)
+
+    return {
+        "ok": True,
+        "lines": lines,
+        "running_match_ids": running_match_ids,
+    }
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global worker_task
@@ -704,6 +733,11 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 def list_matches(db: Session = Depends(get_db)):
     rows = db.query(Match).order_by(desc(Match.created_at)).all()
     return [_serialize_match(r) for r in rows]
+
+
+@app.get("/api/admin/streams/status")
+def get_admin_stream_status():
+    return _gateway_status()
 
 
 @app.get("/api/matches/{match_id}")

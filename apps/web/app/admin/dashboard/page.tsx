@@ -25,6 +25,7 @@ type Match = {
 
 export default function Dashboard() {
   const [matches, setMatches] = useState<Match[]>([]);
+  const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
   const [name, setName] = useState('');
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('SRT');
   const [ingestUrl, setIngestUrl] = useState('');
@@ -43,17 +44,30 @@ export default function Dashboard() {
 
   const load = async () => {
     try {
-      const res = await fetch(`${API_BASE}/matches`, { cache: 'no-store' });
-      if (!res.ok) {
+      const [matchesRes, streamStatusRes] = await Promise.all([
+        fetch(`${API_BASE}/matches`, { cache: 'no-store' }),
+        fetch(`${API_BASE}/admin/streams/status`, { cache: 'no-store' }),
+      ]);
+
+      if (!matchesRes.ok) {
         setMatches([]);
-        setError(`API unavailable (${res.status}). Run API server or infra/app compose stack.`);
+        setRunningMatchIds([]);
+        setError(`API unavailable (${matchesRes.status}). Run API server or infra/app compose stack.`);
         return;
       }
-      const data = await res.json();
+
+      const data = await matchesRes.json();
       setMatches(Array.isArray(data) ? data : []);
+      if (streamStatusRes.ok) {
+        const statusData = await streamStatusRes.json();
+        setRunningMatchIds(Array.isArray(statusData.running_match_ids) ? statusData.running_match_ids : []);
+      } else {
+        setRunningMatchIds([]);
+      }
       setError('');
     } catch {
       setMatches([]);
+      setRunningMatchIds([]);
       setError('API unavailable. Run API server or infra/app compose stack.');
     }
   };
@@ -117,11 +131,7 @@ export default function Dashboard() {
   const selectedMatches = scheduleItems
     .filter((item) => item.date === selectedDate)
     .sort((a, b) => a.time.localeCompare(b.time));
-  const attachedMatches = matches.filter((m) => {
-    const ingestUrl = m.metadata?.ingest_url || '';
-    const streamKey = m.metadata?.rtmp?.stream_key || '';
-    return ingestUrl.includes(`/live/${m.id}`) || streamKey === m.id;
-  });
+  const attachedMatches = matches.filter((m) => runningMatchIds.includes(m.id));
 
   const dayCells: Array<number | null> = [];
   for (let i = 0; i < startWeekday; i += 1) dayCells.push(null);
@@ -166,29 +176,46 @@ export default function Dashboard() {
           <div className="card">
             <h3>Matches</h3>
             <div className="grid">
-              {matches.map((m, idx) => (
-                <div
-                  key={m.id}
-                  className="row"
-                  style={{
-                    justifyContent: 'space-between',
-                    borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
-                    marginTop: idx === 0 ? 0 : 10,
-                    paddingTop: idx === 0 ? 0 : 10,
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
-                    <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
-                      operator: {m.operator_id || 'none'}
+              {matches.map((m, idx) => {
+                const isRunning = runningMatchIds.includes(m.id);
+                return (
+                  <div
+                    key={m.id}
+                    className="row"
+                    style={{
+                      justifyContent: 'space-between',
+                      borderTop: idx === 0 ? 'none' : '1px dashed rgba(148,163,184,0.45)',
+                      marginTop: idx === 0 ? 0 : 10,
+                      paddingTop: idx === 0 ? 0 : 10,
+                    }}
+                  >
+                    <div>
+                      <div className="row" style={{ gap: 10 }}>
+                        <div style={{ fontSize: 18, fontWeight: 700 }}>{m.name}</div>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: '2px 8px',
+                            borderRadius: 999,
+                            border: `1px solid ${isRunning ? '#22c55e' : '#475569'}`,
+                            color: isRunning ? '#86efac' : '#cbd5e1',
+                            background: isRunning ? 'rgba(20,83,45,0.45)' : 'rgba(51,65,85,0.45)',
+                          }}
+                        >
+                          {isRunning ? 'RUNNING' : 'STOPPED'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 400, color: '#7dd3fc', marginTop: 6 }}>
+                        operator: {m.operator_id || 'none'}
+                      </div>
+                    </div>
+                    <div className="row">
+                      <Link href={`/admin/match/${m.id}`}>Open</Link>
+                      <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
                     </div>
                   </div>
-                  <div className="row">
-                    <Link href={`/admin/match/${m.id}`}>Open</Link>
-                    <button className="btn-danger" onClick={() => deleteMatch(m.id, m.name)}>Delete</button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
