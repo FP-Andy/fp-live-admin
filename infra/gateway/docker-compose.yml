@@ -35,7 +35,7 @@ services:
       HLS_TIME: ${HLS_TIME:-2}
       HLS_LIST_SIZE: ${HLS_LIST_SIZE:-8}
       HLS_DELETE_THRESHOLD: ${HLS_DELETE_THRESHOLD:-1}
-      HLS_FLAGS: ${HLS_FLAGS:-delete_segments+independent_segments+omit_endlist}
+      HLS_FLAGS: ${HLS_FLAGS:-delete_segments+independent_segments+omit_endlist+temp_file}
     volumes:
       - hls_data:/srv/hls
       - ./scripts:/scripts

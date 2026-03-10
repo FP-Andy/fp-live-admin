@@ -22,7 +22,7 @@ FFMPEG_VIDEO_MODE="${FFMPEG_VIDEO_MODE:-copy}"
 HLS_TIME="${HLS_TIME:-2}"
 HLS_LIST_SIZE="${HLS_LIST_SIZE:-8}"
 HLS_DELETE_THRESHOLD="${HLS_DELETE_THRESHOLD:-1}"
-HLS_FLAGS="${HLS_FLAGS:-delete_segments+independent_segments+omit_endlist}"
+HLS_FLAGS="${HLS_FLAGS:-delete_segments+independent_segments+omit_endlist+temp_file}"
 
 mkdir -p "$PID_DIR" "$OUT_DIR"
 
@@ -60,7 +60,8 @@ if [[ "$FFMPEG_VIDEO_MODE" != "copy" ]]; then
 fi
 
 nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-  -fflags +genpts+nobuffer -flags low_delay \
+  -fflags +genpts \
+  -thread_queue_size 2048 \
   -analyzeduration 1M -probesize 1M \
   -i "$INPUT_URL" \
   "${VIDEO_ARGS[@]}" \
