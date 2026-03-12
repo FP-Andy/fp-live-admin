@@ -294,6 +294,8 @@ export default function Dashboard() {
                       }}
                     >
                       <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
+                      <div className="muted">홈 : {item.homeTeam}</div>
+                      <div className="muted">어웨이 : {item.awayTeam}</div>
                       <div className="muted">{item.time} | {item.venue}</div>
                     </div>
                   ))}

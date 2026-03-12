@@ -9,6 +9,28 @@ export type ScheduleItem = {
   awayTeam: string;
 };
 
+export type MatchTeams = {
+  homeTeam: string;
+  awayTeam: string;
+};
+
+export function parseMatchTeams(matchName: string): MatchTeams | null {
+  const [homeTeam, awayTeam] = matchName.split(/\s+vs\s+/i).map((part) => part.trim());
+  if (!homeTeam || !awayTeam) return null;
+  return { homeTeam, awayTeam };
+}
+
+export function resolveMatchTeams(matchName: string): MatchTeams | null {
+  const scheduledMatch = scheduleItems.find((item) => item.matchName === matchName);
+  if (scheduledMatch) {
+    return {
+      homeTeam: scheduledMatch.homeTeam,
+      awayTeam: scheduledMatch.awayTeam,
+    };
+  }
+  return parseMatchTeams(matchName);
+}
+
 export const scheduleItems: ScheduleItem[] = [
   {
     "id": "schedule-1",

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
+import { resolveMatchTeams } from '../../dashboard/schedule-data';
 
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
 const HALF_PITCH_LENGTH = 52.5;
@@ -599,6 +600,7 @@ export default function MatchPage() {
   const pushUrl = match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
   const possessionLabel =
     possessionTeam === 'HOME' ? 'Home' : possessionTeam === 'AWAY' ? 'Away' : 'Loose Ball';
+  const matchTeams = useMemo(() => resolveMatchTeams(match?.name || ''), [match?.name]);
   const dominanceBaseData = useMemo(
     () =>
       dominance.map((d) => ({
@@ -622,7 +624,17 @@ export default function MatchPage() {
     <main className="page-stack">
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div className="grid" style={{ gap: 6 }}>
-          <h2 style={{ margin: 0 }}>{match?.name || 'Match'}</h2>
+          <h2 style={{ margin: 0 }}>
+            {matchTeams
+              ? `(H) ${matchTeams.homeTeam} vs ${matchTeams.awayTeam} (A)`
+              : match?.name || 'Match'}
+          </h2>
+          {matchTeams ? (
+            <div className="grid" style={{ gap: 2 }}>
+              <div className="muted">홈 : {matchTeams.homeTeam}</div>
+              <div className="muted">어웨이 : {matchTeams.awayTeam}</div>
+            </div>
+          ) : null}
           <div className="muted">signed in as: {sessionUser?.name || 'Loading...'} {userId ? `(@${userId})` : ''}</div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
             <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
