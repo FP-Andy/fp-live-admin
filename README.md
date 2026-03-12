@@ -9,6 +9,7 @@
 - `apps/api/`: FastAPI + SQLAlchemy + Postgres
 - `apps/web/`: Next.js 운영 콘솔 (hls.js + Recharts)
 - `README.md`: 실행/배포/환경변수/키바인딩/웹훅/확장 가이드
+- `docs/match-export-csv.md`: 매치 단일 CSV export 컬럼 정의서
 
 ---
 
@@ -20,9 +21,11 @@
 - 데이터 흐름:
   1. 운영자가 `/admin/match/[id]`에서 타이머/소유권/레인/xG 입력
   2. API가 state/event 저장
+     - xG 이벤트는 `is_goal`, `shot_x`, `shot_y`, `is_header`, `is_weak_foot` 메타데이터까지 함께 저장
   3. 소유권 segment 종료 및 xG 입력 시 `dominance_bins`를 증분 업데이트
   4. 상태/이벤트 저장 직후 outbox에 webhook enqueue
   5. 백그라운드 워커가 webhook 전송 재시도(지수 백오프)
+  6. Match 페이지의 `Export Match Data` 버튼으로 단일 CSV 다운로드 가능
 
 ---
 
@@ -93,7 +96,8 @@ docker compose up -d --build
    - API가 gateway manager로 자동 시작 요청 후 `hls_url`을 저장
 2. Match 페이지 진입 후 lock 획득
 3. 타이머/소유권/레인/xG 조작
-4. 도미넌스 차트/이벤트/웹훅 outbox 상태 확인
+4. `Export Match Data`로 단일 CSV 다운로드
+5. 도미넌스 차트/이벤트/웹훅 outbox 상태 확인
 
 ---
 
@@ -101,18 +105,20 @@ docker compose up -d --build
 
 - 타이머
   - `Space`: Start/Pause
-  - `R`: Reset
 - 소유권
-  - `Q` 또는 `ArrowLeft`: HOME
-  - `W` 또는 `ArrowRight`: AWAY
-- 팀 선택
-  - `1`: HOME
-  - `2`: AWAY
+  - `Q`: HOME
+  - `W`: AWAY
+  - `E`: Loose Ball (`NONE`)
 - 공격 레인
   - `A`: LEFT 선택
   - `S`: CENTER 선택
   - `D`: RIGHT 선택
   - `Enter`: 선택된 lane 이벤트 1건 기록
+
+주의:
+
+- 현재 `Reset`, `1/2`, `ArrowLeft/ArrowRight` 키 바인딩은 구현되어 있지 않습니다.
+- 키 입력은 `input`, `textarea`, `select` 포커스 중에는 무시됩니다.
 
 ---
 
@@ -155,6 +161,12 @@ docker compose up -d --build
 - `GET /api/matches/{match_id}/export.csv`
 - `GET /api/outbox`
 
+`/api/matches/{match_id}/export.csv`:
+
+- 매치 단위 단일 CSV 파일을 반환
+- `record_type`으로 `MATCH_META`, `XG_EVENT`, `ATTACK_LANE_EVENT`, `POSSESSION_SEGMENT`, `DOMINANCE_BIN` 구분
+- 컬럼 정의: [docs/match-export-csv.md](docs/match-export-csv.md)
+
 ### Broadcast Partner API (`/api/v1`)
 
 - OpenAPI draft: `docs/openapi/broadcast-v1.yaml`
@@ -181,6 +193,7 @@ docker compose up -d --build
 - 클라이언트에서 `performance.now()` 기반으로 drift 최소화
 - 1초 간격으로 state 저장
 - `running=false`면 시간 증가 없음
+- `allow_clock_rewind=true`를 통해 하프타임 등 제어된 시계 되감기 허용
 
 ### Possession (segment)
 
@@ -195,12 +208,34 @@ docker compose up -d --build
 - lane은 연속 구간이 아니라 입력 이벤트 단위로 저장
 - 팀별 lane 비중은 이벤트 카운트 기반(`LEFT/CENTER/RIGHT` count ratio)
 
+### xG event
+
+- xG는 이벤트 단위로 저장
+- 저장 필드:
+  - `xg`
+  - `is_goal`
+  - `shot_x`, `shot_y`
+  - `is_header`, `is_weak_foot`
+- 프런트 피치 입력은 고정 half-pitch 기준 좌표를 `shot_x`, `shot_y`로 서버에 저장
+- `is_goal=true`인 경우 dominance 계산에는 `DOM_GOAL_XG_MULTIPLIER`가 적용된 값이 누적됨
+
 ### Dominance bins (incremental)
 
 - bin 크기 고정: `180000ms (3분)`
 - possession segment 종료 시, 해당 segment와 겹치는 bin들만 누적 업데이트
 - xG event 저장 시, 해당 bin의 home/away xG 누적 업데이트
-- `dominance = clamp(0.6*poss_balance + 0.4*xg_balance, -1, 1)`
+- `xg_balance = clamp((home_xg - away_xg) * DOM_XG_SCALE, -1, 1)`
+- `dominance = clamp(poss_w * poss_balance + xg_w * xg_balance, -1, 1)`
+- 기본 가중치:
+  - `DOM_POSSESSION_WEIGHT=0.35`
+  - `DOM_XG_WEIGHT=0.65`
+  - `DOM_XG_SCALE=1.8`
+
+### Runtime schema patch
+
+- API startup 시 `Base.metadata.create_all()` 이후 이벤트 테이블을 점검
+- 기존 운영 DB에 `is_goal`, `shot_x`, `shot_y`, `is_header`, `is_weak_foot` 컬럼이 없으면 자동 추가
+- 별도 migration 도구 없이 운영 반영이 가능하도록 구성
 
 ---
 
@@ -262,6 +297,11 @@ Event (XG):
   "clock_ms": 45000,
   "team": "HOME",
   "xg": 0.12,
+  "is_goal": false,
+  "shot_x": 88.5,
+  "shot_y": 34.0,
+  "is_header": false,
+  "is_weak_foot": false,
   "created_at": "2026-02-28T00:00:00"
 }
 ```
@@ -278,12 +318,14 @@ Event (XG):
    - `W` 5초
    - `Pause`
    - 기대: 점유율 HOME/AWAY 약 50/50
-4. `1`(HOME) -> `A` 3초 -> `S` 2초
+4. `Q`로 HOME 선택 후 `A` 3초 -> `S` 2초 -> `Enter`
    - 기대: HOME LEFT 약 60%, CENTER 약 40%
 5. xG `HOME 0.12` 입력
    - 기대: 해당 3분 bin `home_xg` 증가 + dominance 변동
-6. webhook URL을 정상 endpoint로 설정해 수신 확인
-7. 실패 URL로 설정해 outbox 재시도/`last_error` 확인
+6. `Goal`, `Header`, `Weak Foot`, 피치 클릭 좌표 저장 확인
+   - 기대: `/api/matches/{match_id}/summary`, `/api/v1/matches/{match_id}/events`, `export.csv`에 동일 값 노출
+7. webhook URL을 정상 endpoint로 설정해 수신 확인
+8. 실패 URL로 설정해 outbox 재시도/`last_error` 확인
 
 ---
 
@@ -409,11 +451,10 @@ curl -sS "$BASE_URL/api/v1/matches/$MATCH_ID/result" \
 - `attack_direction` (HOME/AWAY 2개)
   - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `team`, `direction`, `direction_ratio`
 - `xg` (슈팅 이벤트 배열)
-  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `event_clock_ms`, `event_clock`, `team`, `xg`, `event_id`, `created_at`
+  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `event_clock_ms`, `event_clock`, `team`, `xg`, `is_goal`, `shot_x`, `shot_y`, `is_header`, `is_weak_foot`, `event_id`, `created_at`
 - `match_dominance`
   - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `bin_seconds`
   - `items[]`: `base_time_ms`, `base_time`, `dominance`
-  - Postgres index/partition 고도화
 
 ---
 
@@ -424,3 +465,4 @@ curl -sS "$BASE_URL/api/v1/matches/$MATCH_ID/result" \
 - App compose: `infra/app/docker-compose.yml`
 - API app: `apps/api/app/main.py`
 - Web app: `apps/web/app/admin/match/[id]/page.tsx`
+- CSV definition: `docs/match-export-csv.md`
