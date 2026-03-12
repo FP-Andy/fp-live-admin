@@ -70,6 +70,11 @@ class Event(Base):
     team: Mapped[str] = mapped_column(String, nullable=False)
     lane: Mapped[str | None] = mapped_column(String, nullable=True)
     xg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_goal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    shot_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    shot_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_header: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_weak_foot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 

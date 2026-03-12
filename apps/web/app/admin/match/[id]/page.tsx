@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
@@ -74,6 +73,7 @@ export default function MatchPage() {
   const [isClearingHls, setIsClearingHls] = useState(false);
   const [isResettingPossession, setIsResettingPossession] = useState(false);
   const [isResettingEvents, setIsResettingEvents] = useState(false);
+  const [isExportingMatchData, setIsExportingMatchData] = useState(false);
   const [secondHalfStartAbsMs, setSecondHalfStartAbsMs] = useState<number | null>(null);
 
   const perfRef = useRef<number | null>(null);
@@ -97,6 +97,14 @@ export default function MatchPage() {
       return `1H 45+${etMin}:${etRem}`;
     }
     return fmt(ms);
+  };
+
+  const getShotCoordinates = () => {
+    if (!shotPoint) return null;
+    return {
+      shot_x: Number((HALF_PITCH_LENGTH + XG_VISIBLE_OFFSET + shotPoint.x).toFixed(2)),
+      shot_y: shotPoint.y,
+    };
   };
 
   const formatDominanceTick = (minuteVal: number) => {
@@ -322,6 +330,39 @@ export default function MatchPage() {
     URL.revokeObjectURL(url);
   };
 
+  const exportMatchData = async () => {
+    if (isExportingMatchData) return;
+    setIsExportingMatchData(true);
+    try {
+      const res = await apiFetch(`/matches/${id}/export.csv`, {
+        method: 'GET',
+        headers: {},
+      });
+      if (!res.ok) {
+        setCopyMessage(`Match export failed (${res.status})`);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const disposition = res.headers.get('content-disposition') || '';
+      const fileNameMatch = disposition.match(/filename="([^"]+)"/i);
+      a.href = url;
+      a.download = fileNameMatch?.[1] || `match_export_${id}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setCopyMessage('Match data exported');
+    } catch {
+      setCopyMessage('Match export failed');
+    } finally {
+      setIsExportingMatchData(false);
+      setTimeout(() => setCopyMessage(''), 1500);
+    }
+  };
+
   const resetPossessionLogView = () => {
     if (!window.confirm('Possession Timeline Log 표시 기록을 비울까요?')) return;
     setPossessionLogs([]);
@@ -441,9 +482,20 @@ export default function MatchPage() {
     if (!canWrite) return;
     const xg = Number(xgValue);
     if (!Number.isFinite(xg) || xg < 0) return;
+    const shotCoordinates = getShotCoordinates();
     await apiFetch(`/matches/${id}/events/xg`, {
       method: 'POST',
-      body: JSON.stringify({ event_id: makeId(), team: xgTeam, xg, is_goal: isGoalShot, clock_ms: clockMs }),
+      body: JSON.stringify({
+        event_id: makeId(),
+        team: xgTeam,
+        xg,
+        is_goal: isGoalShot,
+        clock_ms: clockMs,
+        shot_x: shotCoordinates?.shot_x ?? null,
+        shot_y: shotCoordinates?.shot_y ?? null,
+        is_header: isHeaderShot,
+        is_weak_foot: isWeakFootShot,
+      }),
     });
     setXgValue('0.10');
     setIsGoalShot(false);
@@ -515,7 +567,8 @@ export default function MatchPage() {
   };
 
   const estimateXgFromPitch = async () => {
-    if (!shotPoint) {
+    const shotCoordinates = getShotCoordinates();
+    if (!shotPoint || !shotCoordinates) {
       setXgEstimateMeta('Click on the pitch first');
       return;
     }
@@ -525,8 +578,8 @@ export default function MatchPage() {
         // Fixed half-pitch mode: always evaluate toward the same goal.
         team: 'HOME',
         attack_lr: 'L2R',
-        start_x: Number((HALF_PITCH_LENGTH + XG_VISIBLE_OFFSET + shotPoint.x).toFixed(2)),
-        start_y: shotPoint.y,
+        start_x: shotCoordinates.shot_x,
+        start_y: shotCoordinates.shot_y,
         is_header: isHeaderShot,
         is_weak_foot: isWeakFootShot,
       }),
@@ -648,7 +701,9 @@ export default function MatchPage() {
           {copyMessage ? <div className="muted">{copyMessage}</div> : null}
         </div>
         <div className="row">
-          <Link href="/admin/dashboard">Back to Dashboard</Link>
+          <button onClick={exportMatchData} disabled={isExportingMatchData}>
+            {isExportingMatchData ? 'Exporting...' : 'Export Match Data'}
+          </button>
           {!isOperator
             ? <button className="btn-primary" onClick={acquire}>Acquire Lock</button>
             : <button className="btn-danger" onClick={release}>Release Lock</button>}

@@ -63,6 +63,10 @@ class XGEventRequest(BaseModel):
     team: Team
     xg: float = Field(ge=0)
     is_goal: bool = False
+    shot_x: float | None = Field(default=None, ge=0, le=105)
+    shot_y: float | None = Field(default=None, ge=0, le=68)
+    is_header: bool = False
+    is_weak_foot: bool = False
     user_id: str | None = None
 
 

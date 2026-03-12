@@ -146,12 +146,13 @@ docker compose up -d --build
 - `POST /api/matches/{match_id}/events/attack_lane`
   - body: `{ event_id, clock_ms?, team, lane, user_id? }`
 - `POST /api/matches/{match_id}/events/xg`
-  - body: `{ event_id, clock_ms?, team, xg, user_id? }`
+  - body: `{ event_id, clock_ms?, team, xg, is_goal?, shot_x?, shot_y?, is_header?, is_weak_foot?, user_id? }`
 
 ### Query
 
 - `GET /api/matches/{match_id}/summary`
 - `GET /api/matches/{match_id}/dominance?bin_seconds=180`
+- `GET /api/matches/{match_id}/export.csv`
 - `GET /api/outbox`
 
 ### Broadcast Partner API (`/api/v1`)

@@ -1,13 +1,15 @@
 import asyncio
+import csv
 from datetime import datetime
 import hashlib
 import hmac
+import io
 import math
 import uuid
 from uuid import UUID
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import desc
+from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
 import os
 import httpx
@@ -51,6 +53,30 @@ worker_task: asyncio.Task | None = None
 SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
+
+
+def _ensure_runtime_schema() -> None:
+    inspector = inspect(engine)
+    event_columns = {column["name"] for column in inspector.get_columns("events")}
+    statements: list[str] = []
+
+    if "is_goal" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
+    if "shot_x" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN shot_x DOUBLE PRECISION")
+    if "shot_y" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN shot_y DOUBLE PRECISION")
+    if "is_header" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN is_header BOOLEAN NOT NULL DEFAULT FALSE")
+    if "is_weak_foot" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN is_weak_foot BOOLEAN NOT NULL DEFAULT FALSE")
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
 
 
 def _gateway_start_stream(
@@ -177,6 +203,7 @@ def _gateway_status() -> dict:
 async def startup() -> None:
     global worker_task
     Base.metadata.create_all(bind=engine)
+    _ensure_runtime_schema()
     worker_task = asyncio.create_task(outbox_worker(worker_stop_event))
 
 
@@ -435,6 +462,11 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
                 "team": e.team,
                 "lane": e.lane,
                 "xg": e.xg,
+                "is_goal": e.is_goal,
+                "shot_x": e.shot_x,
+                "shot_y": e.shot_y,
+                "is_header": e.is_header,
+                "is_weak_foot": e.is_weak_foot,
                 "created_at": e.created_at.isoformat(),
             }
             for e in ev_rows
@@ -564,6 +596,11 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
                 "event_clock": _fmt_clock_ms(r.clock_ms),
                 "team": r.team,
                 "xg": r.xg,
+                "is_goal": r.is_goal,
+                "shot_x": r.shot_x,
+                "shot_y": r.shot_y,
+                "is_header": r.is_header,
+                "is_weak_foot": r.is_weak_foot,
                 "event_id": str(r.id),
                 "created_at": r.created_at.isoformat(),
             }
@@ -605,6 +642,165 @@ def _fmt_clock_ms(ms: int) -> str:
     mm = (s % 3600) // 60
     ss = s % 60
     return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def _csv_safe(value: object | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.6f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _build_match_export_csv(match_id: UUID, db: Session) -> tuple[str, str]:
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    last_state = _latest_state(match_id, db)
+    current_clock_ms = last_state.clock_ms if last_state else 0
+    exported_at = datetime.utcnow().isoformat()
+
+    event_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id)
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc(), Event.id.asc())
+        .all()
+    )
+    possession_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc(), PossessionSegment.id.asc())
+        .all()
+    )
+    dominance_rows = (
+        db.query(DominanceBin)
+        .filter(DominanceBin.match_id == match_id)
+        .order_by(DominanceBin.k.asc())
+        .all()
+    )
+
+    headers = [
+        "record_type",
+        "match_id",
+        "match_name",
+        "exported_at",
+        "match_created_at",
+        "operator_id",
+        "current_clock_ms",
+        "current_clock_label",
+        "event_id",
+        "event_type",
+        "event_created_at",
+        "event_clock_ms",
+        "event_clock_label",
+        "team",
+        "lane",
+        "xg",
+        "is_goal",
+        "shot_x",
+        "shot_y",
+        "is_header",
+        "is_weak_foot",
+        "segment_id",
+        "segment_start_ms",
+        "segment_start_label",
+        "segment_end_ms",
+        "segment_end_label",
+        "segment_duration_ms",
+        "bin_k",
+        "bin_start_ms",
+        "bin_start_label",
+        "bin_end_ms",
+        "bin_end_label",
+        "home_poss_ms",
+        "away_poss_ms",
+        "home_xg",
+        "away_xg",
+        "dominance",
+    ]
+
+    base_row = {
+        "match_id": str(match_obj.id),
+        "match_name": match_obj.name,
+        "exported_at": exported_at,
+        "match_created_at": match_obj.created_at.isoformat(),
+        "operator_id": match_obj.operator_id or "",
+        "current_clock_ms": current_clock_ms,
+        "current_clock_label": _fmt_clock_ms(current_clock_ms),
+    }
+
+    records: list[dict[str, object | None]] = [
+        {
+            **base_row,
+            "record_type": "MATCH_META",
+        }
+    ]
+
+    for event in event_rows:
+        records.append(
+            {
+                **base_row,
+                "record_type": "XG_EVENT" if event.type == "XG" else "ATTACK_LANE_EVENT",
+                "event_id": str(event.id),
+                "event_type": event.type,
+                "event_created_at": event.created_at.isoformat(),
+                "event_clock_ms": event.clock_ms,
+                "event_clock_label": _fmt_clock_ms(event.clock_ms),
+                "team": event.team,
+                "lane": event.lane,
+                "xg": event.xg,
+                "is_goal": event.is_goal,
+                "shot_x": event.shot_x,
+                "shot_y": event.shot_y,
+                "is_header": event.is_header,
+                "is_weak_foot": event.is_weak_foot,
+            }
+        )
+
+    for segment in possession_rows:
+        segment_end_ms = segment.end_ms if segment.end_ms is not None else current_clock_ms
+        records.append(
+            {
+                **base_row,
+                "record_type": "POSSESSION_SEGMENT",
+                "segment_id": str(segment.id),
+                "team": segment.team,
+                "segment_start_ms": segment.start_ms,
+                "segment_start_label": _fmt_clock_ms(segment.start_ms),
+                "segment_end_ms": segment_end_ms,
+                "segment_end_label": _fmt_clock_ms(segment_end_ms),
+                "segment_duration_ms": max(0, segment_end_ms - segment.start_ms),
+            }
+        )
+
+    for bin_row in dominance_rows:
+        records.append(
+            {
+                **base_row,
+                "record_type": "DOMINANCE_BIN",
+                "bin_k": bin_row.k,
+                "bin_start_ms": bin_row.start_ms,
+                "bin_start_label": _fmt_clock_ms(bin_row.start_ms),
+                "bin_end_ms": bin_row.end_ms,
+                "bin_end_label": _fmt_clock_ms(bin_row.end_ms),
+                "home_poss_ms": bin_row.home_poss_ms,
+                "away_poss_ms": bin_row.away_poss_ms,
+                "home_xg": bin_row.home_xg,
+                "away_xg": bin_row.away_xg,
+                "dominance": bin_row.dominance,
+            }
+        )
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    for record in records:
+        writer.writerow({key: _csv_safe(record.get(key)) for key in headers})
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"match_export_{match_obj.id}_{timestamp}.csv"
+    return output.getvalue(), filename
 
 
 def _require_partner_auth(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
@@ -1158,6 +1354,11 @@ def post_xg(
         clock_ms=clock_ms,
         team=body.team,
         xg=body.xg,
+        is_goal=body.is_goal,
+        shot_x=body.shot_x,
+        shot_y=body.shot_y,
+        is_header=body.is_header,
+        is_weak_foot=body.is_weak_foot,
     )
     db.add(event)
     goal_boost = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
@@ -1173,6 +1374,11 @@ def post_xg(
         "clock_ms": clock_ms,
         "team": body.team,
         "xg": body.xg,
+        "is_goal": body.is_goal,
+        "shot_x": body.shot_x,
+        "shot_y": body.shot_y,
+        "is_header": body.is_header,
+        "is_weak_foot": body.is_weak_foot,
         "created_at": datetime.utcnow().isoformat(),
     }
     _enqueue_webhook_fanout(db, "EVENT", body.event_id, payload)
@@ -1189,6 +1395,18 @@ def summary(match_id: UUID, db: Session = Depends(get_db)):
 @app.get("/api/matches/{match_id}/dominance")
 def dominance(match_id: UUID, bin_seconds: int = Query(default=180), db: Session = Depends(get_db)):
     return _build_dominance(match_id, bin_seconds, db)
+
+
+@app.get("/api/matches/{match_id}/export.csv")
+def export_match_csv(match_id: UUID, db: Session = Depends(get_db)):
+    csv_content, filename = _build_match_export_csv(match_id, db)
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 @app.get("/api/v1/matches/{match_id}")
@@ -1252,6 +1470,11 @@ def events_v1(
                 "team": e.team,
                 "lane": e.lane,
                 "xg": e.xg,
+                "is_goal": e.is_goal,
+                "shot_x": e.shot_x,
+                "shot_y": e.shot_y,
+                "is_header": e.is_header,
+                "is_weak_foot": e.is_weak_foot,
                 "created_at": e.created_at.isoformat(),
             }
         )
