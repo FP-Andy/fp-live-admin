@@ -321,7 +321,7 @@ export default function Dashboard() {
                 const isRunning = runningMatchIds.includes(match.id);
                 return (
                   <div key={match.id} className="match-item">
-                    <div className="grid" style={{ gap: 8 }}>
+                    <div className="grid match-item-main" style={{ gap: 8 }}>
                       <div className="row" style={{ flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: 18 }}>{match.name}</strong>
                         <span className="status-pill">{match.competition_class || 'K3'}</span>
@@ -341,15 +341,17 @@ export default function Dashboard() {
                           : ''}
                       </div>
                     </div>
-                    <div className="row">
-                      <Link href={`/admin/match/${match.id}`}>{match.archived ? 'Open Read-Only' : 'Open'}</Link>
-                      <button onClick={() => exportMatch(match.id)}>Export CSV</button>
+                    <div className="match-actions">
+                      <Link className="button-link button-compact" href={`/admin/match/${match.id}`}>
+                        {match.archived ? 'Open Read-Only' : 'Open'}
+                      </Link>
+                      <button className="button-compact" onClick={() => exportMatch(match.id)}>Export CSV</button>
                       {match.archived ? (
-                        <button onClick={() => setArchived(match.id, false)}>Restore</button>
+                        <button className="button-compact" onClick={() => setArchived(match.id, false)}>Restore</button>
                       ) : (
                         <>
-                          <button onClick={() => setArchived(match.id, true)}>Archive</button>
-                          <button className="btn-danger" onClick={() => deleteMatch(match.id, match.name)}>Delete</button>
+                          <button className="button-compact" onClick={() => setArchived(match.id, true)}>Archive</button>
+                          <button className="btn-danger button-compact" onClick={() => deleteMatch(match.id, match.name)}>Delete</button>
                         </>
                       )}
                     </div>

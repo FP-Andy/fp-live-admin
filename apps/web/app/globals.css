@@ -56,6 +56,14 @@ select {
   padding: 11px 13px;
 }
 
+.button-link,
+.button-compact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
 input,
 select {
   min-height: 46px;
@@ -106,6 +114,29 @@ a:focus-visible {
   background: linear-gradient(135deg, #432323, #5b2b2b);
   border-color: rgba(255, 107, 107, 0.35);
   color: #ffe3e3;
+}
+
+.button-link {
+  min-height: 40px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(34, 34, 34, 0.94);
+  color: var(--text);
+  transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.button-link:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+.button-compact {
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  font-size: 13px;
 }
 
 .container {
@@ -285,13 +316,14 @@ a:focus-visible {
 
 .hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.9fr);
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
   gap: 18px;
+  align-items: stretch;
 }
 
 .metric-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -425,7 +457,7 @@ a:focus-visible {
   display: flex;
   justify-content: space-between;
   gap: 14px;
-  align-items: center;
+  align-items: flex-start;
   padding: 14px 0;
   border-top: 1px dashed rgba(148, 163, 184, 0.24);
 }
@@ -460,6 +492,20 @@ a:focus-visible {
   grid-template-columns: minmax(0, 1.1fr) minmax(340px, 0.9fr);
   gap: 18px;
   align-items: start;
+}
+
+.match-item-main {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.match-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
 }
 
 .calendar-grid {
@@ -502,7 +548,7 @@ a:focus-visible {
   }
 
   .metric-strip {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -519,5 +565,14 @@ a:focus-visible {
   .match-item {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .metric-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .match-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
