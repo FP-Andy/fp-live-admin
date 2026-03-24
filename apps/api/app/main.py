@@ -6,6 +6,7 @@ import hmac
 import io
 import math
 import uuid
+from urllib.parse import urlsplit
 from uuid import UUID
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,7 +36,7 @@ from .schemas import (
     XGEstimateRequest,
     XGEventRequest,
 )
-from .services import apply_possession_segment, apply_xg_event, enqueue_outbox, latest_outbox, outbox_worker, recompute_dominance
+from .services import apply_attack_event, apply_possession_segment, apply_xg_event, backfill_attack_scores, enqueue_outbox, latest_outbox, outbox_worker, recompute_dominance
 
 app = FastAPI(title="Live Match Admin API")
 
@@ -53,11 +54,28 @@ worker_task: asyncio.Task | None = None
 SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
+PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://live.fineludens.kr").rstrip("/")
+
+
+def _normalize_hls_url(hls_url: str | None) -> str | None:
+    if not hls_url:
+        return hls_url
+    if hls_url.startswith("/hls/"):
+        return f"{PUBLIC_HLS_BASE}{hls_url}"
+
+    parsed = urlsplit(hls_url)
+    if parsed.path.startswith("/hls/"):
+        normalized = f"{PUBLIC_HLS_BASE}{parsed.path}"
+        if parsed.query:
+            normalized = f"{normalized}?{parsed.query}"
+        return normalized
+    return hls_url
 
 
 def _ensure_runtime_schema() -> None:
     inspector = inspect(engine)
     event_columns = {column["name"] for column in inspector.get_columns("events")}
+    dominance_columns = {column["name"] for column in inspector.get_columns("dominance_bins")}
     statements: list[str] = []
 
     if "is_goal" not in event_columns:
@@ -70,6 +88,10 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE events ADD COLUMN is_header BOOLEAN NOT NULL DEFAULT FALSE")
     if "is_weak_foot" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_weak_foot BOOLEAN NOT NULL DEFAULT FALSE")
+    if "home_attack_score" not in dominance_columns:
+        statements.append("ALTER TABLE dominance_bins ADD COLUMN home_attack_score DOUBLE PRECISION NOT NULL DEFAULT 0")
+    if "away_attack_score" not in dominance_columns:
+        statements.append("ALTER TABLE dominance_bins ADD COLUMN away_attack_score DOUBLE PRECISION NOT NULL DEFAULT 0")
 
     if not statements:
         return
@@ -215,6 +237,8 @@ async def shutdown() -> None:
 
 
 def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
+    if _is_superuser(user_id):
+        return
     if match_obj.operator_id and match_obj.operator_id != user_id:
         raise HTTPException(status_code=403, detail="Operator lock held by another user")
 
@@ -276,6 +300,10 @@ def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) ->
     return explicit_user_id or (session_user.id if session_user else None)
 
 
+def _is_superuser(user_id: str | None) -> bool:
+    return user_id == "andy"
+
+
 def _is_in_penalty_area(x: float, y: float) -> bool:
     return (x > 88.5) and (13.84 < y < 54.16)
 
@@ -315,20 +343,37 @@ def _estimate_xg(
     angle_left = math.atan2(dy_left, dx_left)
     angle_right = math.atan2(dy_right, dx_right)
     angle = abs(angle_left - angle_right)
-
-    is_pa = 1 if _is_in_penalty_area(shot_x_adj, shot_y_adj) else 0
     is_head = 1 if is_header else 0
     is_weak = 1 if is_weak_foot else 0
+    dist_log = math.log1p(distance)
+    angle_log = math.log1p(angle)
+    header_dist_penalty = dist_log * is_head
+    goal_line_dist = goal_x - shot_x_adj
+    endline_penalty = 1.5 if goal_line_dist < 1.0 else 0.0
 
-    exponent = 0.2 * distance - 2.0 * angle - 1.2 * is_pa + 1.5 * is_head + 0.8 * is_weak - 0.6
+    exponent = (
+        1.00 * dist_log
+        - 2.00 * angle_log
+        + 0.70 * is_head
+        + 0.40 * is_weak
+        + 0.30 * header_dist_penalty
+        - 1.10
+        + endline_penalty
+    )
     xg = 1.0 / (1.0 + math.exp(exponent))
+
+    is_outside_goal_frame = shot_y_adj < goal_post_left or shot_y_adj > goal_post_right
+    if is_outside_goal_frame and shot_x_adj >= 104.5:
+        penalty_scale = max(0.1, min(goal_line_dist / 1.0, 1.0))
+        xg *= penalty_scale
+
     xg = max(0.0, min(1.0, xg))
 
     return {
         "xg": round(xg, 3),
         "distance": round(distance, 2),
         "angle_rad": round(angle, 4),
-        "is_in_box": bool(is_pa),
+        "is_in_box": bool(_is_in_penalty_area(shot_x_adj, shot_y_adj)),
         "normalized_x": round(shot_x_adj, 2),
         "normalized_y": round(shot_y_adj, 2),
     }
@@ -338,7 +383,7 @@ def _serialize_match(row: Match) -> dict:
     return {
         "id": row.id,
         "name": row.name,
-        "hls_url": row.hls_url,
+        "hls_url": _normalize_hls_url(row.hls_url),
         "metadata": row.metadata_json,
         "operator_id": row.operator_id,
     }
@@ -378,15 +423,7 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
     current_clock = last_state.clock_ms if last_state else 0
 
     poss_rows = db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).all()
-    home_ms = 0
-    away_ms = 0
-    for seg in poss_rows:
-        end_ms = seg.end_ms if seg.end_ms is not None else current_clock
-        dur = max(0, end_ms - seg.start_ms)
-        if seg.team == "HOME":
-            home_ms += dur
-        elif seg.team == "AWAY":
-            away_ms += dur
+    home_ms, away_ms = _accumulate_possession_ms(poss_rows, current_clock)
 
     poss_total = home_ms + away_ms
     home_pct = (home_ms / poss_total * 100.0) if poss_total else 0.0
@@ -434,7 +471,7 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
         "match": {
             "id": str(match_obj.id),
             "name": match_obj.name,
-            "hls_url": match_obj.hls_url,
+            "hls_url": _normalize_hls_url(match_obj.hls_url),
             "operator_id": match_obj.operator_id,
         },
         "state": {
@@ -477,12 +514,26 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
 def _build_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
     if bin_seconds != 180:
         raise HTTPException(status_code=400, detail="Only 180-second bins are supported in MVP")
+    attack_event_count = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "ATTACK_LANE")
+        .count()
+    )
     rows = (
         db.query(DominanceBin)
         .filter(DominanceBin.match_id == match_id)
         .order_by(DominanceBin.k)
         .all()
     )
+    if attack_event_count > 0 and sum(r.home_attack_score + r.away_attack_score for r in rows) == 0:
+        backfill_attack_scores(db, match_id)
+        db.commit()
+        rows = (
+            db.query(DominanceBin)
+            .filter(DominanceBin.match_id == match_id)
+            .order_by(DominanceBin.k)
+            .all()
+        )
     return {
         "bin_seconds": bin_seconds,
         "bins": [
@@ -494,6 +545,8 @@ def _build_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
                 "away_poss_ms": r.away_poss_ms,
                 "home_xg": r.home_xg,
                 "away_xg": r.away_xg,
+                "home_attack_score": r.home_attack_score,
+                "away_attack_score": r.away_attack_score,
                 "dominance": r.dominance,
             }
             for r in rows
@@ -642,6 +695,42 @@ def _fmt_clock_ms(ms: int) -> str:
     mm = (s % 3600) // 60
     ss = s % 60
     return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def _accumulate_possession_ms(poss_rows: list[PossessionSegment], current_clock_ms: int) -> tuple[int, int]:
+    home_ms = 0
+    away_ms = 0
+    ordered_rows = sorted(poss_rows, key=lambda seg: (seg.start_ms, seg.created_at, seg.id))
+
+    for idx, seg in enumerate(ordered_rows):
+        end_ms = seg.end_ms if seg.end_ms is not None else current_clock_ms
+        if idx + 1 < len(ordered_rows):
+            end_ms = min(end_ms, ordered_rows[idx + 1].start_ms)
+        dur = max(0, end_ms - seg.start_ms)
+        if seg.team == "HOME":
+            home_ms += dur
+        elif seg.team == "AWAY":
+            away_ms += dur
+
+    return home_ms, away_ms
+
+
+def _normalize_stale_open_possession_segments(match_id: UUID, db: Session) -> None:
+    poss_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc(), PossessionSegment.id.asc())
+        .all()
+    )
+
+    for idx, seg in enumerate(poss_rows[:-1]):
+        if seg.end_ms is not None:
+            continue
+        next_start_ms = poss_rows[idx + 1].start_ms
+        if next_start_ms < seg.start_ms:
+            continue
+        seg.end_ms = next_start_ms
+        apply_possession_segment(db, match_id, seg.team, seg.start_ms, seg.end_ms)
 
 
 def _csv_safe(value: object | None) -> str:
@@ -878,7 +967,7 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     if ingest_url or ingest_protocol == "RTMP":
         try:
             start_data = _gateway_start_stream(row.id, ingest_url, ingest_protocol)
-            row.hls_url = start_data["hls_url"]
+            row.hls_url = _normalize_hls_url(start_data["hls_url"])
             metadata["ingest_protocol"] = start_data.get("ingest_protocol") or ingest_protocol
             metadata["ingest_url"] = start_data.get("source_url") or ingest_url
             if start_data.get("rtmp"):
@@ -907,7 +996,7 @@ def attach_srt_stream(match_id: UUID, body: AttachSrtRequest, db: Session = Depe
     metadata["ingest_protocol"] = "SRT"
     metadata["ingest_url"] = body.srt_url
     row.metadata_json = metadata
-    row.hls_url = start_data["hls_url"]
+    row.hls_url = _normalize_hls_url(start_data["hls_url"])
     db.commit()
     db.refresh(row)
     return {
@@ -915,7 +1004,7 @@ def attach_srt_stream(match_id: UUID, body: AttachSrtRequest, db: Session = Depe
         "match_id": str(row.id),
         "ingest_url": body.srt_url,
         "ingest_protocol": "SRT",
-        "hls_url": row.hls_url,
+        "hls_url": _normalize_hls_url(row.hls_url),
     }
 
 
@@ -936,7 +1025,7 @@ def attach_ingest_stream(match_id: UUID, body: AttachIngestRequest, db: Session 
     if start_data.get("rtmp"):
         metadata["rtmp"] = start_data["rtmp"]
     row.metadata_json = metadata
-    row.hls_url = start_data["hls_url"]
+    row.hls_url = _normalize_hls_url(start_data["hls_url"])
     db.commit()
     db.refresh(row)
     return {
@@ -944,7 +1033,7 @@ def attach_ingest_stream(match_id: UUID, body: AttachIngestRequest, db: Session 
         "match_id": str(row.id),
         "ingest_protocol": metadata.get("ingest_protocol"),
         "ingest_url": metadata.get("ingest_url"),
-        "hls_url": row.hls_url,
+        "hls_url": _normalize_hls_url(row.hls_url),
         "rtmp": metadata.get("rtmp"),
     }
 
@@ -1021,6 +1110,8 @@ def reset_match_events(
     for b in bins:
         b.home_xg = 0.0
         b.away_xg = 0.0
+        b.home_attack_score = 0.0
+        b.away_attack_score = 0.0
         recompute_dominance(b)
 
     db.commit()
@@ -1078,15 +1169,7 @@ def get_match_result(match_id: UUID, db: Session = Depends(get_db)):
         .filter(PossessionSegment.match_id == match_id)
         .all()
     )
-    home_ms = 0
-    away_ms = 0
-    for seg in poss_rows:
-        end_ms = seg.end_ms if seg.end_ms is not None else clock_ms
-        dur = max(0, end_ms - seg.start_ms)
-        if seg.team == "HOME":
-            home_ms += dur
-        elif seg.team == "AWAY":
-            away_ms += dur
+    home_ms, away_ms = _accumulate_possession_ms(poss_rows, clock_ms)
 
     poss_total = home_ms + away_ms
     home_pct = round(home_ms / poss_total * 100.0, 1) if poss_total else 0.0
@@ -1153,7 +1236,7 @@ def acquire_lock(
     admin_takeover = body.admin_takeover if body else False
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-    if row.operator_id and row.operator_id != user_id and not admin_takeover:
+    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(user_id):
         raise HTTPException(status_code=409, detail="Lock already acquired")
     row.operator_id = user_id
     db.commit()
@@ -1173,7 +1256,7 @@ def release_lock(
 
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
-    if row.operator_id and row.operator_id != user_id and not admin_takeover:
+    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(user_id):
         raise HTTPException(status_code=403, detail="Not lock owner")
     row.operator_id = None
     db.commit()
@@ -1223,21 +1306,22 @@ def post_state(
                 apply_possession_segment(db, match_id, seg.team, seg.start_ms, seg.end_ms)
         prev_team = "NONE"
 
+    _normalize_stale_open_possession_segments(match_id, db)
+
     new_team = body.possession_team
 
     if prev_team != new_team:
-        if prev_team in ("HOME", "AWAY"):
-            open_seg = (
-                db.query(PossessionSegment)
-                .filter(PossessionSegment.match_id == match_id)
-                .filter(PossessionSegment.team == prev_team)
-                .filter(PossessionSegment.end_ms.is_(None))
-                .order_by(PossessionSegment.start_ms.desc(), desc(PossessionSegment.created_at))
-                .first()
-            )
-            if open_seg and body.clock_ms >= open_seg.start_ms:
-                open_seg.end_ms = body.clock_ms
-                apply_possession_segment(db, match_id, prev_team, open_seg.start_ms, open_seg.end_ms)
+        open_segments = (
+            db.query(PossessionSegment)
+            .filter(PossessionSegment.match_id == match_id)
+            .filter(PossessionSegment.end_ms.is_(None))
+            .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc(), PossessionSegment.id.asc())
+            .all()
+        )
+        for seg in open_segments:
+            if body.clock_ms >= seg.start_ms:
+                seg.end_ms = body.clock_ms
+                apply_possession_segment(db, match_id, seg.team, seg.start_ms, seg.end_ms)
 
         if new_team in ("HOME", "AWAY"):
             db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=body.clock_ms, end_ms=None))
@@ -1306,6 +1390,7 @@ def post_attack_lane(
         lane=body.lane,
     )
     db.add(event)
+    apply_attack_event(db, match_id, body.team, clock_ms)
 
     payload = {
         "kind": "EVENT",

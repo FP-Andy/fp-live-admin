@@ -16,6 +16,7 @@ const PITCH_WIDTH = 68;
 type Team = 'HOME' | 'AWAY';
 type PossessionTeam = Team | 'NONE';
 type Lane = 'LEFT' | 'CENTER' | 'RIGHT';
+type AttackLR = 'L2R' | 'R2L';
 
 function fmt(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -59,6 +60,7 @@ export default function MatchPage() {
   const [possessionTeam, setPossessionTeam] = useState<PossessionTeam>('NONE');
   const [selectedTeam, setSelectedTeam] = useState<Team>('HOME');
   const [pendingLane, setPendingLane] = useState<Lane>('CENTER');
+  const [attackLR, setAttackLR] = useState<AttackLR>('L2R');
 
   const [xgTeam, setXgTeam] = useState<Team>('HOME');
   const [xgValue, setXgValue] = useState('0.10');
@@ -164,19 +166,28 @@ export default function MatchPage() {
   }, []);
 
   const userId = sessionUser?.id || '';
-  const isOperator = useMemo(() => Boolean(match?.operator_id && match.operator_id === userId), [match, userId]);
-  const canWrite = useMemo(() => Boolean(userId) && (!match?.operator_id || match.operator_id === userId), [match, userId]);
+  const isSuperuser = userId === 'andy';
+  const isOperator = useMemo(() => isSuperuser || Boolean(match?.operator_id && match.operator_id === userId), [isSuperuser, match, userId]);
+  const canWrite = useMemo(() => Boolean(userId) && (isSuperuser || !match?.operator_id || match.operator_id === userId), [isSuperuser, match, userId]);
+
+  const getCurrentClockMs = () => {
+    if (perfRef.current == null) {
+      return clockRef.current;
+    }
+    return Math.floor(baseRef.current + (performance.now() - perfRef.current));
+  };
 
   const saveState = async (
-    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; allowClockRewind:boolean;}>
+    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>
   ) => {
+    const effectiveClockMs = next?.clockMs ?? getCurrentClockMs();
     const payload = {
       state_id: makeId(),
-      clock_ms: next?.clockMs ?? clockMs,
+      clock_ms: effectiveClockMs,
       running: next?.running ?? running,
       possession_team: next?.possessionTeam ?? possessionTeam,
       selected_team: next?.selectedTeam ?? selectedTeam,
-      attack_lr: 'L2R',
+      attack_lr: next?.attackLR ?? attackLR,
       allow_clock_rewind: Boolean(next?.allowClockRewind),
     };
     await apiFetch(`/matches/${id}/state`, {
@@ -187,17 +198,15 @@ export default function MatchPage() {
 
   const fetchAll = async () => {
     const seq = ++fetchSeqRef.current;
-    const [m, s, d, o] = await Promise.all([
+    const [m, s, d] = await Promise.all([
       apiJson<any>(`/matches/${id}`),
       apiJson<any>(`/matches/${id}/summary`),
       apiJson<any>(`/matches/${id}/dominance?bin_seconds=180`),
-      apiJson<any[]>(`/outbox`),
     ]);
     if (seq !== fetchSeqRef.current) return;
     setMatch(m);
     setSummary(s);
     setDominance(d.bins || []);
-    setOutbox(o || []);
 
     if (s?.state && !initializedRef.current) {
       initializedRef.current = true;
@@ -206,14 +215,28 @@ export default function MatchPage() {
       setPossessionTeam(s.state.possession_team || 'NONE');
       setSelectedTeam(s.state.selected_team || 'HOME');
       setXgTeam(s.state.selected_team || 'HOME');
+      setAttackLR((s.state.attack_lr || 'L2R') as AttackLR);
       baseRef.current = s.state.clock_ms || 0;
       perfRef.current = performance.now();
     }
   };
 
+  const fetchOutbox = async () => {
+    const data = await apiJson<any[]>(`/outbox`);
+    setOutbox(data || []);
+  };
+
   useEffect(() => {
     fetchAll();
     const t = setInterval(fetchAll, 1000);
+    return () => clearInterval(t);
+  }, [id]);
+
+  useEffect(() => {
+    fetchOutbox();
+    const t = setInterval(() => {
+      fetchOutbox().catch(() => undefined);
+    }, 5000);
     return () => clearInterval(t);
   }, [id]);
 
@@ -255,12 +278,12 @@ export default function MatchPage() {
 
   useEffect(() => {
     const t = setInterval(() => {
-      if (canWrite) {
+      if (canWrite && runningRef.current) {
         saveState({ clockMs: clockRef.current }).catch(() => undefined);
       }
     }, 1000);
     return () => clearInterval(t);
-  }, [running, possessionTeam, selectedTeam, canWrite]);
+  }, [running, possessionTeam, selectedTeam, attackLR, canWrite]);
 
   const toggleRun = async () => {
     if (!canWrite) return;
@@ -420,6 +443,20 @@ export default function MatchPage() {
     await saveState({ possessionTeam: team });
   };
 
+  const selectEventTeam = async (team: Team) => {
+    setSelectedTeam(team);
+    setXgTeam(team);
+    if (canWrite) {
+      await saveState({ selectedTeam: team });
+    }
+  };
+
+  const changeAttackDirection = async (direction: AttackLR) => {
+    if (!canWrite) return;
+    setAttackLR(direction);
+    await saveState({ attackLR: direction });
+  };
+
   const resetPossession = async () => {
     if (!canWrite || isResettingPossession) return;
     if (!window.confirm('점유율 집계를 0:0으로 초기화할까요?')) return;
@@ -575,7 +612,7 @@ export default function MatchPage() {
     const res = await apiFetch('/xg/estimate', {
       method: 'POST',
       body: JSON.stringify({
-        // Fixed half-pitch mode: always evaluate toward the same goal.
+        // Fixed half-pitch mode: coordinates are already normalized toward the attacking goal.
         team: 'HOME',
         attack_lr: 'L2R',
         start_x: shotCoordinates.shot_x,
@@ -791,9 +828,25 @@ export default function MatchPage() {
                 cursor: 'crosshair',
                 background:
                   'repeating-linear-gradient(0deg, #3f7f3f 0 10%, #3a733a 10% 20%)',
+                overflow: 'visible',
               }}
             >
               <div style={{ position: 'absolute', inset: 0, border: '2px solid rgba(255,255,255,0.9)', borderRadius: 8 }} />
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '44.62%',
+                  top: -12,
+                  width: '10.76%',
+                  height: 12,
+                  border: '2px solid rgba(255,255,255,0.95)',
+                  borderBottom: 'none',
+                  borderRadius: '6px 6px 0 0',
+                  background: 'rgba(255,255,255,0.05)',
+                  boxSizing: 'border-box',
+                  pointerEvents: 'none',
+                }}
+              />
               <div style={{ position: 'absolute', left: '20.35%', top: '0%', width: '59.29%', height: '41.25%', border: '1px solid rgba(255,255,255,0.8)' }} />
               <div style={{ position: 'absolute', left: '36.53%', top: '0%', width: '26.94%', height: '13.75%', border: '1px solid rgba(255,255,255,0.75)' }} />
               <div style={{ position: 'absolute', left: '50%', top: '27.5%', width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', transform: 'translate(-50%, -50%)' }} />
@@ -820,6 +873,7 @@ export default function MatchPage() {
                 />
               ) : null}
               <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Goal Side</div>
+              <div style={{ position: 'absolute', right: 8, top: 6, color: 'rgba(255,255,255,0.7)', fontSize: 10 }}>Goal frame shown</div>
               <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>68m x 40m (rotated)</div>
             </div>
             <div className="row" style={{ gap: 12 }}>
@@ -828,6 +882,7 @@ export default function MatchPage() {
               <label><input type="checkbox" checked={isGoalShot} onChange={(e) => setIsGoalShot(e.target.checked)} /> Goal</label>
               <span className="muted">{shotPoint ? `shot=(${shotPoint.x}, ${shotPoint.y})` : 'Click pitch to set shot location'}</span>
             </div>
+            <div className="muted">Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.</div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
           </div>
 
@@ -880,11 +935,17 @@ export default function MatchPage() {
           </div>
 
           <div className="card grid">
-            <h3>Attack Direction Input (Event)</h3>
+            <h3>Attack Input</h3>
+            <div className="row">
+              <span>Home attack:</span>
+              <button className={attackLR === 'L2R' ? 'btn-active' : ''} onClick={() => changeAttackDirection('L2R')} disabled={!canWrite}>L2R</button>
+              <button className={attackLR === 'R2L' ? 'btn-active' : ''} onClick={() => changeAttackDirection('R2L')} disabled={!canWrite}>R2L</button>
+              <span className="muted">Away {attackLR === 'L2R' ? 'R2L' : 'L2R'}</span>
+            </div>
             <div className="row">
               <span>Team:</span>
-              <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>HOME <span className="kbd">Q</span></button>
-              <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>AWAY <span className="kbd">W</span></button>
+              <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>HOME</button>
+              <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>AWAY</button>
               <span>{selectedTeam}</span>
             </div>
             <div className="row">

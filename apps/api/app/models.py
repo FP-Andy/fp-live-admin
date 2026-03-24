@@ -89,6 +89,8 @@ class DominanceBin(Base):
     away_poss_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     home_xg: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     away_xg: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    home_attack_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    away_attack_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     dominance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
