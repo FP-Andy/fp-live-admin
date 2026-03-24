@@ -701,9 +701,11 @@ export default function MatchPage() {
   }, [running, canWrite, possessionTeam, pendingLane]);
 
   const hlsSrc = match?.hls_url || DEFAULT_HLS;
+  const streamMode = match?.metadata?.stream_mode === 'MANUAL' ? 'MANUAL' : 'STREAM';
+  const hasStreamPlayer = streamMode === 'STREAM' && Boolean(hlsSrc);
   const rtmpServer = match?.metadata?.rtmp?.server_url || '';
-  const streamKey = match?.metadata?.rtmp?.stream_key || id;
-  const pushUrl = match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
+  const streamKey = streamMode === 'MANUAL' ? '' : match?.metadata?.rtmp?.stream_key || id;
+  const pushUrl = streamMode === 'MANUAL' ? '' : match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
   const possessionLabel =
     possessionTeam === 'HOME' ? 'Home' : possessionTeam === 'AWAY' ? 'Away' : 'Loose Ball';
   const matchTeams = useMemo(() => resolveMatchTeams(match?.name || ''), [match?.name]);
@@ -752,11 +754,14 @@ export default function MatchPage() {
           ) : null}
           <div className="muted">signed in as: {sessionUser?.name || 'Loading...'} {userId ? `(@${userId})` : ''}</div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="muted">RTMP Server: {rtmpServer || 'N/A'}</span>
+            <span className="muted">Mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}</span>
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <span className="muted">RTMP Server: {streamMode === 'MANUAL' ? 'Disabled' : rtmpServer || 'N/A'}</span>
             <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
           </div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="muted">Stream Key: {streamKey || 'N/A'}</span>
+            <span className="muted">Stream Key: {streamMode === 'MANUAL' ? 'Disabled' : streamKey || 'N/A'}</span>
             <button onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
             <button onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
           </div>
@@ -788,23 +793,25 @@ export default function MatchPage() {
             </div>
           </div>
 
-          <div className="card grid">
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <h3 style={{ margin: 0 }}>HLS Stream</h3>
-              <div className="row">
-                <button onClick={attachRtmp} disabled={!canWrite || isAttachingStream}>
-                  {isAttachingStream ? 'Attaching...' : 'Attach RTMP'}
-                </button>
-                <button onClick={stopStream} disabled={!canWrite || isStoppingStream}>
-                  {isStoppingStream ? 'Stopping...' : 'Stop Stream'}
-                </button>
-                <button onClick={clearHls} disabled={!canWrite || isClearingHls}>
-                  {isClearingHls ? 'Clearing...' : 'Clear HLS'}
-                </button>
+          {streamMode === 'STREAM' ? (
+            <div className="card grid">
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <h3 style={{ margin: 0 }}>HLS Stream</h3>
+                <div className="row">
+                  <button onClick={attachRtmp} disabled={!canWrite || isAttachingStream}>
+                    {isAttachingStream ? 'Attaching...' : 'Attach RTMP'}
+                  </button>
+                  <button onClick={stopStream} disabled={!canWrite || isStoppingStream}>
+                    {isStoppingStream ? 'Stopping...' : 'Stop Stream'}
+                  </button>
+                  <button onClick={clearHls} disabled={!canWrite || isClearingHls}>
+                    {isClearingHls ? 'Clearing...' : 'Clear HLS'}
+                  </button>
+                </div>
               </div>
+              {hasStreamPlayer ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
             </div>
-            {hlsSrc ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
-          </div>
+          ) : null}
 
           <div className="card grid" style={{ minHeight: 280 }}>
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
@@ -829,6 +836,39 @@ export default function MatchPage() {
               ))}
             </div>
           </div>
+
+          {streamMode === 'MANUAL' ? (
+            <div className="card grid">
+              <h3>Attack Input</h3>
+              <div className="row">
+                <span>Home attack:</span>
+                <button className={attackLR === 'L2R' ? 'btn-active' : ''} onClick={() => changeAttackDirection('L2R')} disabled={!canWrite}>L2R</button>
+                <button className={attackLR === 'R2L' ? 'btn-active' : ''} onClick={() => changeAttackDirection('R2L')} disabled={!canWrite}>R2L</button>
+                <span className="muted">Away {attackLR === 'L2R' ? 'R2L' : 'L2R'}</span>
+              </div>
+              <div className="row">
+                <span>Team:</span>
+                <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>HOME</button>
+                <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>AWAY</button>
+                <span>{selectedTeam}</span>
+              </div>
+              <div className="row">
+                <span>Lane select:</span>
+                <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
+                <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
+                <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
+                <span>selected={pendingLane}</span>
+              </div>
+              <div className="row">
+                <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
+              </div>
+              <div className="muted">
+                HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
+                <br />
+                AWAY Lane(events): L {summary?.lanes?.away?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.away?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.away?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.away?.total_count || 0})
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
@@ -961,36 +1001,38 @@ export default function MatchPage() {
             </div>
           </div>
 
-          <div className="card grid">
-            <h3>Attack Input</h3>
-            <div className="row">
-              <span>Home attack:</span>
-              <button className={attackLR === 'L2R' ? 'btn-active' : ''} onClick={() => changeAttackDirection('L2R')} disabled={!canWrite}>L2R</button>
-              <button className={attackLR === 'R2L' ? 'btn-active' : ''} onClick={() => changeAttackDirection('R2L')} disabled={!canWrite}>R2L</button>
-              <span className="muted">Away {attackLR === 'L2R' ? 'R2L' : 'L2R'}</span>
+          {streamMode === 'STREAM' ? (
+            <div className="card grid">
+              <h3>Attack Input</h3>
+              <div className="row">
+                <span>Home attack:</span>
+                <button className={attackLR === 'L2R' ? 'btn-active' : ''} onClick={() => changeAttackDirection('L2R')} disabled={!canWrite}>L2R</button>
+                <button className={attackLR === 'R2L' ? 'btn-active' : ''} onClick={() => changeAttackDirection('R2L')} disabled={!canWrite}>R2L</button>
+                <span className="muted">Away {attackLR === 'L2R' ? 'R2L' : 'L2R'}</span>
+              </div>
+              <div className="row">
+                <span>Team:</span>
+                <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>HOME</button>
+                <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>AWAY</button>
+                <span>{selectedTeam}</span>
+              </div>
+              <div className="row">
+                <span>Lane select:</span>
+                <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
+                <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
+                <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
+                <span>selected={pendingLane}</span>
+              </div>
+              <div className="row">
+                <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
+              </div>
+              <div className="muted">
+                HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
+                <br />
+                AWAY Lane(events): L {summary?.lanes?.away?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.away?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.away?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.away?.total_count || 0})
+              </div>
             </div>
-            <div className="row">
-              <span>Team:</span>
-              <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>HOME</button>
-              <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>AWAY</button>
-              <span>{selectedTeam}</span>
-            </div>
-            <div className="row">
-              <span>Lane select:</span>
-              <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
-              <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
-              <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
-              <span>selected={pendingLane}</span>
-            </div>
-            <div className="row">
-              <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
-            </div>
-            <div className="muted">
-              HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
-              <br />
-              AWAY Lane(events): L {summary?.lanes?.away?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.away?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.away?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.away?.total_count || 0})
-            </div>
-          </div>
+          ) : null}
 
         </div>
       </div>

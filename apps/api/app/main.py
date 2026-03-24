@@ -972,6 +972,7 @@ def estimate_xg(body: XGEstimateRequest):
 @app.post("/api/matches", response_model=MatchResponse)
 def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
     metadata = dict(body.metadata or {})
+    metadata["stream_mode"] = body.stream_mode
     row = Match(
         id=uuid.uuid4(),
         name=body.name,
@@ -987,7 +988,7 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     if ingest_url:
         metadata["ingest_url"] = ingest_url
 
-    if ingest_url or ingest_protocol == "RTMP":
+    if body.stream_mode == "STREAM" and (ingest_url or ingest_protocol == "RTMP"):
         try:
             start_data = _gateway_start_stream(row.id, ingest_url, ingest_protocol)
             row.hls_url = _normalize_hls_url(start_data["hls_url"])
@@ -1014,6 +1015,8 @@ def attach_srt_stream(match_id: UUID, body: AttachSrtRequest, db: Session = Depe
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
+    if (row.metadata_json or {}).get("stream_mode") == "MANUAL":
+        raise HTTPException(status_code=409, detail="Manual matches do not use streaming")
 
     start_data = _gateway_start_stream(match_id, body.srt_url, "SRT")
     metadata = dict(row.metadata_json or {})
@@ -1038,6 +1041,8 @@ def attach_ingest_stream(match_id: UUID, body: AttachIngestRequest, db: Session 
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
+    if (row.metadata_json or {}).get("stream_mode") == "MANUAL":
+        raise HTTPException(status_code=409, detail="Manual matches do not use streaming")
 
     ingest_url, ingest_protocol = _resolve_ingest_fields(body.ingest_url, body.srt_url, body.ingest_protocol)
     if not ingest_url and ingest_protocol != "RTMP":
@@ -1069,6 +1074,8 @@ def clear_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
+    if (row.metadata_json or {}).get("stream_mode") == "MANUAL":
+        raise HTTPException(status_code=409, detail="Manual matches do not use streaming")
     _gateway_clear_stream(match_id)
     return {"ok": True, "match_id": str(row.id)}
 
@@ -1079,6 +1086,8 @@ def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
+    if (row.metadata_json or {}).get("stream_mode") == "MANUAL":
+        raise HTTPException(status_code=409, detail="Manual matches do not use streaming")
 
     gateway_base = os.getenv("GATEWAY_API_BASE", "http://host.docker.internal:8090").rstrip("/")
     if not gateway_base:

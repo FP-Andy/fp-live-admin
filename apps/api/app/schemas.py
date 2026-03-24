@@ -7,12 +7,14 @@ PossessionTeam = Literal["HOME", "AWAY", "NONE"]
 Lane = Literal["LEFT", "CENTER", "RIGHT"]
 AttackLR = Literal["L2R", "R2L"]
 IngestProtocol = Literal["SRT", "RTMP"]
+StreamMode = Literal["STREAM", "MANUAL"]
 WebhookEventKind = Literal["STATE", "EVENT"]
 
 
 class CreateMatchRequest(BaseModel):
     name: str
     competition_class: str = Field(default="K3", min_length=1, max_length=20)
+    stream_mode: StreamMode = "STREAM"
     assign_operator: bool = True
     ingest_protocol: IngestProtocol | None = None
     ingest_url: str | None = None

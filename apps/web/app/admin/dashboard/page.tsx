@@ -14,6 +14,7 @@ type Match = {
   created_at: string;
   hls_url?: string;
   metadata?: {
+    stream_mode?: 'STREAM' | 'MANUAL';
     ingest_protocol?: 'SRT' | 'RTMP';
     ingest_url?: string;
     rtmp?: {
@@ -35,6 +36,7 @@ export default function Dashboard() {
   const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
   const [name, setName] = useState('');
   const [competitionClass, setCompetitionClass] = useState('K3');
+  const [streamMode, setStreamMode] = useState<'STREAM' | 'MANUAL'>('STREAM');
   const [assignOperator, setAssignOperator] = useState(true);
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('SRT');
   const [ingestUrl, setIngestUrl] = useState('');
@@ -84,9 +86,10 @@ export default function Dashboard() {
       body: JSON.stringify({
         name,
         competition_class: competitionClass,
+        stream_mode: streamMode,
         assign_operator: assignOperator,
-        ingest_protocol: ingestProtocol,
-        ingest_url: ingestUrl || null,
+        ingest_protocol: streamMode === 'STREAM' ? ingestProtocol : null,
+        ingest_url: streamMode === 'STREAM' ? (ingestUrl || null) : null,
       }),
     });
 
@@ -97,6 +100,7 @@ export default function Dashboard() {
 
     setName('');
     setCompetitionClass('K3');
+    setStreamMode('STREAM');
     setAssignOperator(true);
     setIngestUrl('');
     await load();
@@ -265,6 +269,10 @@ export default function Dashboard() {
                 <option value="K3">K3</option>
                 <option value="SUFA">SUFA</option>
               </select>
+              <select value={streamMode} onChange={(e) => setStreamMode(e.target.value as 'STREAM' | 'MANUAL')}>
+                <option value="STREAM">Stream + HLS Player</option>
+                <option value="MANUAL">Manual Field Mode (No HLS)</option>
+              </select>
               <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')}>
                 <option value="SRT">SRT</option>
                 <option value="RTMP">RTMP</option>
@@ -278,11 +286,15 @@ export default function Dashboard() {
                 />
                 <span>현재 로그인 계정을 operator로 지정</span>
               </label>
-              <input
-                value={ingestUrl}
-                onChange={(e) => setIngestUrl(e.target.value)}
-                placeholder={ingestProtocol === 'RTMP' ? 'RTMP source URL (optional)' : 'SRT URL (optional)'}
-              />
+              {streamMode === 'STREAM' ? (
+                <input
+                  value={ingestUrl}
+                  onChange={(e) => setIngestUrl(e.target.value)}
+                  placeholder={ingestProtocol === 'RTMP' ? 'RTMP source URL (optional)' : 'SRT URL (optional)'}
+                />
+              ) : (
+                <div className="muted">Manual Field Mode creates a match without HLS player or ingest stream.</div>
+              )}
               <button className="btn-primary" onClick={createMatch}>Create Match</button>
               {error ? <p className="form-error" style={{ margin: 0 }}>{error}</p> : null}
             </div>
@@ -331,8 +343,14 @@ export default function Dashboard() {
                       </div>
                       <div className="muted">operator: {match.operator_id || 'unassigned'}</div>
                       <div className="muted">
+                        mode: {match.metadata?.stream_mode === 'MANUAL' ? 'manual field' : 'stream'}
+                        {' / '}
                         protocol: {match.metadata?.ingest_protocol || 'not set'}
-                        {match.hls_url ? ' / hls ready' : ' / hls pending'}
+                        {match.metadata?.stream_mode === 'MANUAL'
+                          ? ' / no hls'
+                          : match.hls_url
+                          ? ' / hls ready'
+                          : ' / hls pending'}
                       </div>
                       <div className="muted">
                         created: {new Date(match.created_at).toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' })}
