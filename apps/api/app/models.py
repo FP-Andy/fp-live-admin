@@ -18,6 +18,9 @@ class Match(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    competition_class: Mapped[str] = mapped_column(String, nullable=False, default="K3")
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     hls_url: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     operator_id: Mapped[str | None] = mapped_column(String, nullable=True)

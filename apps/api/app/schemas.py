@@ -12,6 +12,7 @@ WebhookEventKind = Literal["STATE", "EVENT"]
 
 class CreateMatchRequest(BaseModel):
     name: str
+    competition_class: str = Field(default="K3", min_length=1, max_length=20)
     assign_operator: bool = True
     ingest_protocol: IngestProtocol | None = None
     ingest_url: str | None = None
@@ -23,9 +24,18 @@ class CreateMatchRequest(BaseModel):
 class MatchResponse(BaseModel):
     id: UUID
     name: str
+    competition_class: str
+    archived: bool
+    archived_at: str | None = None
+    created_at: str
     hls_url: str | None
     metadata: dict[str, Any] | None = None
     operator_id: str | None
+
+
+class ArchiveMatchRequest(BaseModel):
+    archived: bool = True
+    stop_stream: bool = True
 
 
 class AcquireLockRequest(BaseModel):

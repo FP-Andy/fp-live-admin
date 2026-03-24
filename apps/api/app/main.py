@@ -18,6 +18,7 @@ import httpx
 from .db import Base, engine, get_db
 from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, Outbox, User, WebhookSubscription
 from .schemas import (
+    ArchiveMatchRequest,
     AcquireLockRequest,
     AttachIngestRequest,
     AttackLaneEventRequest,
@@ -74,10 +75,17 @@ def _normalize_hls_url(hls_url: str | None) -> str | None:
 
 def _ensure_runtime_schema() -> None:
     inspector = inspect(engine)
+    match_columns = {column["name"] for column in inspector.get_columns("matches")}
     event_columns = {column["name"] for column in inspector.get_columns("events")}
     dominance_columns = {column["name"] for column in inspector.get_columns("dominance_bins")}
     statements: list[str] = []
 
+    if "competition_class" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN competition_class VARCHAR NOT NULL DEFAULT 'K3'")
+    if "archived" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE")
+    if "archived_at" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN archived_at TIMESTAMP NULL")
     if "is_goal" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
     if "shot_x" not in event_columns:
@@ -243,6 +251,11 @@ def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
         raise HTTPException(status_code=403, detail="Operator lock held by another user")
 
 
+def _require_match_not_archived(match_obj: Match) -> None:
+    if match_obj.archived:
+        raise HTTPException(status_code=409, detail="Archived matches are read-only")
+
+
 def _slugify_user_id(name: str) -> str:
     normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in name.strip())
     compact = "-".join(part for part in normalized.split("-") if part)
@@ -302,6 +315,11 @@ def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) ->
 
 def _is_superuser(user_id: str | None) -> bool:
     return user_id == "andy"
+
+
+def _normalize_competition_class(value: str | None) -> str:
+    normalized = (value or "K3").strip().upper()
+    return normalized or "K3"
 
 
 def _is_in_penalty_area(x: float, y: float) -> bool:
@@ -383,6 +401,10 @@ def _serialize_match(row: Match) -> dict:
     return {
         "id": row.id,
         "name": row.name,
+        "competition_class": _normalize_competition_class(row.competition_class),
+        "archived": bool(row.archived),
+        "archived_at": row.archived_at.isoformat() if row.archived_at else None,
+        "created_at": row.created_at.isoformat(),
         "hls_url": _normalize_hls_url(row.hls_url),
         "metadata": row.metadata_json,
         "operator_id": row.operator_id,
@@ -953,6 +975,7 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     row = Match(
         id=uuid.uuid4(),
         name=body.name,
+        competition_class=_normalize_competition_class(body.competition_class),
         hls_url=body.hls_url,
         metadata_json=metadata,
         operator_id=user.id if user and body.assign_operator else None,
@@ -990,6 +1013,7 @@ def attach_srt_stream(match_id: UUID, body: AttachSrtRequest, db: Session = Depe
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
 
     start_data = _gateway_start_stream(match_id, body.srt_url, "SRT")
     metadata = dict(row.metadata_json or {})
@@ -1013,6 +1037,7 @@ def attach_ingest_stream(match_id: UUID, body: AttachIngestRequest, db: Session 
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
 
     ingest_url, ingest_protocol = _resolve_ingest_fields(body.ingest_url, body.srt_url, body.ingest_protocol)
     if not ingest_url and ingest_protocol != "RTMP":
@@ -1043,6 +1068,7 @@ def clear_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
     _gateway_clear_stream(match_id)
     return {"ok": True, "match_id": str(row.id)}
 
@@ -1052,6 +1078,7 @@ def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
 
     gateway_base = os.getenv("GATEWAY_API_BASE", "http://host.docker.internal:8090").rstrip("/")
     if not gateway_base:
@@ -1077,6 +1104,7 @@ def reset_match_possession(
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
     _require_write_lock(row, _resolve_user_id(body.user_id, session_user))
 
     db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).delete(synchronize_session=False)
@@ -1101,6 +1129,7 @@ def reset_match_events(
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
     _require_write_lock(row, _resolve_user_id(body.user_id, session_user))
 
     event_count = db.query(Event).filter(Event.match_id == match_id).delete(synchronize_session=False)
@@ -1130,6 +1159,27 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 def list_matches(db: Session = Depends(get_db)):
     rows = db.query(Match).order_by(desc(Match.created_at)).all()
     return [_serialize_match(r) for r in rows]
+
+
+@app.post("/api/matches/{match_id}/archive")
+def archive_match(match_id: UUID, body: ArchiveMatchRequest, db: Session = Depends(get_db)):
+    row = db.get(Match, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    if body.archived:
+        if body.stop_stream:
+            _gateway_stop_stream(match_id)
+        row.archived = True
+        row.archived_at = datetime.utcnow()
+        row.operator_id = None
+    else:
+        row.archived = False
+        row.archived_at = None
+
+    db.commit()
+    db.refresh(row)
+    return _serialize_match(row)
 
 
 @app.get("/api/admin/streams/status")
@@ -1199,6 +1249,7 @@ def delete_match(match_id: UUID, stop_stream: bool = True, db: Session = Depends
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
 
     if stop_stream:
         _gateway_stop_stream(match_id)
@@ -1232,6 +1283,7 @@ def acquire_lock(
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
     if not user_id:
@@ -1253,6 +1305,7 @@ def release_lock(
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
 
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
@@ -1273,6 +1326,7 @@ def post_state(
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
     _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
 
     existing = db.get(State, body.state_id)
@@ -1368,6 +1422,7 @@ def post_attack_lane(
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
     _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
 
     existing = db.get(Event, body.event_id)
@@ -1419,6 +1474,7 @@ def post_xg(
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
     _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
 
     existing = db.get(Event, body.event_id)

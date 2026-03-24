@@ -8,6 +8,10 @@ import { apiFetch, apiJson } from '../../../lib/api';
 type Match = {
   id: string;
   name: string;
+  competition_class: string;
+  archived: boolean;
+  archived_at?: string | null;
+  created_at: string;
   hls_url?: string;
   metadata?: {
     ingest_protocol?: 'SRT' | 'RTMP';
@@ -30,10 +34,13 @@ export default function Dashboard() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
   const [name, setName] = useState('');
+  const [competitionClass, setCompetitionClass] = useState('K3');
   const [assignOperator, setAssignOperator] = useState(true);
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('SRT');
   const [ingestUrl, setIngestUrl] = useState('');
   const [error, setError] = useState('');
+  const [listMode, setListMode] = useState<'active' | 'archived'>('active');
+  const [classFilter, setClassFilter] = useState('ALL');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -76,6 +83,7 @@ export default function Dashboard() {
       method: 'POST',
       body: JSON.stringify({
         name,
+        competition_class: competitionClass,
         assign_operator: assignOperator,
         ingest_protocol: ingestProtocol,
         ingest_url: ingestUrl || null,
@@ -88,6 +96,7 @@ export default function Dashboard() {
     }
 
     setName('');
+    setCompetitionClass('K3');
     setAssignOperator(true);
     setIngestUrl('');
     await load();
@@ -108,6 +117,57 @@ export default function Dashboard() {
     }
 
     await load();
+  };
+
+  const setArchived = async (matchId: string, archived: boolean) => {
+    const prompt = archived
+      ? '이 경기를 보관할까요? 보관 후에는 상세 페이지가 read-only가 됩니다.'
+      : '이 경기를 다시 운영 목록으로 복원할까요?';
+    if (!window.confirm(prompt)) return;
+
+    setError('');
+    const response = await apiFetch(`/matches/${matchId}/archive`, {
+      method: 'POST',
+      body: JSON.stringify({
+        archived,
+        stop_stream: archived,
+      }),
+    });
+
+    if (!response.ok) {
+      setError((await response.text()) || (archived ? 'Failed to archive match' : 'Failed to restore match'));
+      return;
+    }
+
+    await load();
+  };
+
+  const exportMatch = async (matchId: string) => {
+    setError('');
+    try {
+      const res = await apiFetch(`/matches/${matchId}/export.csv`, {
+        method: 'GET',
+        headers: {},
+      });
+      if (!res.ok) {
+        setError((await res.text()) || 'Failed to export match');
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const disposition = res.headers.get('content-disposition') || '';
+      const fileNameMatch = disposition.match(/filename="([^"]+)"/i);
+      a.href = url;
+      a.download = fileNameMatch?.[1] || `match_export_${matchId}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setError('Failed to export match');
+    }
   };
 
   const monthLabel = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}`;
@@ -132,10 +192,32 @@ export default function Dashboard() {
   while (dayCells.length % 7 !== 0) dayCells.push(null);
 
   const liveCount = runningMatchIds.length;
-  const assignedCount = useMemo(() => matches.filter((match) => match.operator_id).length, [matches]);
+  const assignedCount = useMemo(() => matches.filter((match) => !match.archived && match.operator_id).length, [matches]);
   const rtmpCount = useMemo(
-    () => matches.filter((match) => match.metadata?.ingest_protocol === 'RTMP').length,
+    () => matches.filter((match) => !match.archived && match.metadata?.ingest_protocol === 'RTMP').length,
     [matches]
+  );
+  const activeMatches = useMemo(
+    () => matches.filter((match) => !match.archived),
+    [matches]
+  );
+  const archivedMatches = useMemo(
+    () => matches.filter((match) => match.archived),
+    [matches]
+  );
+  const availableClasses = useMemo(() => {
+    const classes = new Set(matches.map((match) => (match.competition_class || 'K3').toUpperCase()));
+    return ['ALL', ...Array.from(classes).sort()];
+  }, [matches]);
+  const filteredActiveMatches = useMemo(
+    () =>
+      activeMatches.filter((match) => classFilter === 'ALL' || (match.competition_class || 'K3').toUpperCase() === classFilter),
+    [activeMatches, classFilter]
+  );
+  const filteredArchivedMatches = useMemo(
+    () =>
+      archivedMatches.filter((match) => classFilter === 'ALL' || (match.competition_class || 'K3').toUpperCase() === classFilter),
+    [archivedMatches, classFilter]
   );
 
   return (
@@ -157,6 +239,10 @@ export default function Dashboard() {
                   <strong>{matches.length}</strong>
                 </div>
                 <div className="metric-tile">
+                  <span className="muted">Archived</span>
+                  <strong>{archivedMatches.length}</strong>
+                </div>
+                <div className="metric-tile">
                   <span className="muted">Assigned</span>
                   <strong>{assignedCount}</strong>
                 </div>
@@ -175,6 +261,10 @@ export default function Dashboard() {
                 </div>
               </div>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Match name" />
+              <select value={competitionClass} onChange={(e) => setCompetitionClass(e.target.value)}>
+                <option value="K3">K3</option>
+                <option value="SUFA">SUFA</option>
+              </select>
               <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')}>
                 <option value="SRT">SRT</option>
                 <option value="RTMP">RTMP</option>
@@ -204,20 +294,39 @@ export default function Dashboard() {
             <div className="section-heading">
               <div>
                 <div className="sidebar-eyebrow">Match List</div>
-                <h3>운영 중인 매치</h3>
+                <h3>{listMode === 'active' ? '운영 중인 매치' : '보관 매치'}</h3>
+              </div>
+            </div>
+
+            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 12 }}>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className={listMode === 'active' ? 'btn-active' : ''} onClick={() => setListMode('active')}>Active</button>
+                <button className={listMode === 'archived' ? 'btn-active' : ''} onClick={() => setListMode('archived')}>Archived</button>
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                {availableClasses.map((itemClass) => (
+                  <button
+                    key={itemClass}
+                    className={classFilter === itemClass ? 'btn-active' : ''}
+                    onClick={() => setClassFilter(itemClass)}
+                  >
+                    {itemClass}
+                  </button>
+                ))}
               </div>
             </div>
 
             <div className="match-list">
-              {matches.map((match) => {
+              {(listMode === 'active' ? filteredActiveMatches : filteredArchivedMatches).map((match) => {
                 const isRunning = runningMatchIds.includes(match.id);
                 return (
                   <div key={match.id} className="match-item">
                     <div className="grid" style={{ gap: 8 }}>
-                      <div className="row">
+                      <div className="row" style={{ flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: 18 }}>{match.name}</strong>
+                        <span className="status-pill">{match.competition_class || 'K3'}</span>
                         <span className={`status-pill ${isRunning ? 'running' : 'stopped'}`}>
-                          {isRunning ? 'RUNNING' : 'STOPPED'}
+                          {match.archived ? 'ARCHIVED' : isRunning ? 'RUNNING' : 'STOPPED'}
                         </span>
                       </div>
                       <div className="muted">operator: {match.operator_id || 'unassigned'}</div>
@@ -225,15 +334,33 @@ export default function Dashboard() {
                         protocol: {match.metadata?.ingest_protocol || 'not set'}
                         {match.hls_url ? ' / hls ready' : ' / hls pending'}
                       </div>
+                      <div className="muted">
+                        created: {new Date(match.created_at).toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' })}
+                        {match.archived_at
+                          ? ` / archived: ${new Date(match.archived_at).toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' })}`
+                          : ''}
+                      </div>
                     </div>
                     <div className="row">
-                      <Link href={`/admin/match/${match.id}`}>Open</Link>
-                      <button className="btn-danger" onClick={() => deleteMatch(match.id, match.name)}>Delete</button>
+                      <Link href={`/admin/match/${match.id}`}>{match.archived ? 'Open Read-Only' : 'Open'}</Link>
+                      <button onClick={() => exportMatch(match.id)}>Export CSV</button>
+                      {match.archived ? (
+                        <button onClick={() => setArchived(match.id, false)}>Restore</button>
+                      ) : (
+                        <>
+                          <button onClick={() => setArchived(match.id, true)}>Archive</button>
+                          <button className="btn-danger" onClick={() => deleteMatch(match.id, match.name)}>Delete</button>
+                        </>
+                      )}
                     </div>
                   </div>
                 );
               })}
-              {matches.length === 0 ? <div className="muted">No matches yet.</div> : null}
+              {(listMode === 'active' ? filteredActiveMatches.length : filteredArchivedMatches.length) === 0 ? (
+                <div className="muted">
+                  {listMode === 'active' ? 'No active matches for this class.' : 'No archived matches for this class.'}
+                </div>
+              ) : null}
             </div>
           </div>
 

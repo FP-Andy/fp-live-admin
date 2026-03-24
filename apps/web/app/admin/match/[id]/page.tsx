@@ -32,6 +32,13 @@ function formatCreatedAtKst(createdAt: string) {
   return d.toLocaleTimeString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
 }
 
+function formatDateTimeKst(value: string | null | undefined) {
+  if (!value) return '-';
+  const raw = /Z$|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`;
+  const d = new Date(raw);
+  return d.toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
+}
+
 function makeId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -166,9 +173,16 @@ export default function MatchPage() {
   }, []);
 
   const userId = sessionUser?.id || '';
+  const isArchived = Boolean(match?.archived);
   const isSuperuser = userId === 'andy';
-  const isOperator = useMemo(() => isSuperuser || Boolean(match?.operator_id && match.operator_id === userId), [isSuperuser, match, userId]);
-  const canWrite = useMemo(() => Boolean(userId) && (isSuperuser || !match?.operator_id || match.operator_id === userId), [isSuperuser, match, userId]);
+  const isOperator = useMemo(
+    () => !isArchived && (isSuperuser || Boolean(match?.operator_id && match.operator_id === userId)),
+    [isArchived, isSuperuser, match, userId]
+  );
+  const canWrite = useMemo(
+    () => !isArchived && Boolean(userId) && (isSuperuser || !match?.operator_id || match.operator_id === userId),
+    [isArchived, isSuperuser, match, userId]
+  );
 
   const getCurrentClockMs = () => {
     if (perfRef.current == null) {
@@ -631,6 +645,7 @@ export default function MatchPage() {
   };
 
   const acquire = async () => {
+    if (isArchived) return;
     const response = await apiFetch(`/matches/${id}/lock/acquire`, {
       method: 'POST',
       body: JSON.stringify({}),
@@ -644,6 +659,7 @@ export default function MatchPage() {
   };
 
   const release = async () => {
+    if (isArchived) return;
     const response = await apiFetch(`/matches/${id}/lock/release`, {
       method: 'POST',
       body: JSON.stringify({}),
@@ -719,10 +735,19 @@ export default function MatchPage() {
               ? `(H) ${matchTeams.homeTeam} vs ${matchTeams.awayTeam} (A)`
               : match?.name || 'Match'}
           </h2>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <span className="status-pill">{match?.competition_class || 'K3'}</span>
+            {isArchived ? <span className="status-pill stopped">ARCHIVED</span> : null}
+          </div>
           {matchTeams ? (
             <div className="grid" style={{ gap: 2 }}>
               <div className="muted">홈 : {matchTeams.homeTeam}</div>
               <div className="muted">어웨이 : {matchTeams.awayTeam}</div>
+            </div>
+          ) : null}
+          {isArchived ? (
+            <div className="muted">
+              Archived at {formatDateTimeKst(match?.archived_at)}. This page is read-only; export is still available.
             </div>
           ) : null}
           <div className="muted">signed in as: {sessionUser?.name || 'Loading...'} {userId ? `(@${userId})` : ''}</div>
@@ -742,9 +767,11 @@ export default function MatchPage() {
             {isExportingMatchData ? 'Exporting...' : 'Export Match Data'}
           </button>
           {!isOperator
-            ? <button className="btn-primary" onClick={acquire}>Acquire Lock</button>
-            : <button className="btn-danger" onClick={release}>Release Lock</button>}
-          <span className="muted">operator: {match?.operator_id || 'none'} / me: {canWrite ? 'write' : 'read-only'}</span>
+            ? <button className="btn-primary" onClick={acquire} disabled={isArchived}>Acquire Lock</button>
+            : <button className="btn-danger" onClick={release} disabled={isArchived}>Release Lock</button>}
+          <span className="muted">
+            operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
+          </span>
         </div>
       </div>
 
