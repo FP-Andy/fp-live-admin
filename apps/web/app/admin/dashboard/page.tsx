@@ -264,7 +264,7 @@ export default function Dashboard() {
                   <h3>새 경기 등록</h3>
                 </div>
               </div>
-              <div className="form-stack">
+              <div className="hero-form-grid">
                 <div className="field-stack">
                   <div className="field-label">경기 이름</div>
                   <div className="field-help">운영 목록과 상세 화면에 표시될 매치 이름입니다.</div>
@@ -330,7 +330,10 @@ export default function Dashboard() {
                   )}
                 </div>
               </div>
-              <button className="btn-primary" onClick={createMatch}>Create Match</button>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="field-help">생성 후에는 운영 목록에서 바로 열거나 보관/분류할 수 있습니다.</div>
+                <button className="btn-primary" onClick={createMatch}>Create Match</button>
+              </div>
               {error ? <p className="form-error" style={{ margin: 0 }}>{error}</p> : null}
             </div>
           </div>
