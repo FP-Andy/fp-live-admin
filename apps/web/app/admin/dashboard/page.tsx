@@ -229,7 +229,7 @@ export default function Dashboard() {
       <main className="page-stack">
         <section className="page-hero">
           <div className="hero-grid">
-            <div className="card grid">
+            <div className="card grid hero-card-compact">
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Overview</div>
@@ -257,44 +257,79 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="card grid">
+            <div className="card grid hero-card-wide">
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Create Match</div>
                   <h3>새 경기 등록</h3>
                 </div>
               </div>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Match name" />
-              <select value={competitionClass} onChange={(e) => setCompetitionClass(e.target.value)}>
-                <option value="K3">K3</option>
-                <option value="SUFA">SUFA</option>
-              </select>
-              <select value={streamMode} onChange={(e) => setStreamMode(e.target.value as 'STREAM' | 'MANUAL')}>
-                <option value="STREAM">Stream + HLS Player</option>
-                <option value="MANUAL">Manual Field Mode (No HLS)</option>
-              </select>
-              <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')}>
-                <option value="SRT">SRT</option>
-                <option value="RTMP">RTMP</option>
-              </select>
-              <label className="row" style={{ justifyContent: 'flex-start' }}>
-                <input
-                  type="checkbox"
-                  checked={assignOperator}
-                  onChange={(e) => setAssignOperator(e.target.checked)}
-                  style={{ minHeight: 'auto', width: 18, height: 18 }}
-                />
-                <span>현재 로그인 계정을 operator로 지정</span>
-              </label>
-              {streamMode === 'STREAM' ? (
-                <input
-                  value={ingestUrl}
-                  onChange={(e) => setIngestUrl(e.target.value)}
-                  placeholder={ingestProtocol === 'RTMP' ? 'RTMP source URL (optional)' : 'SRT URL (optional)'}
-                />
-              ) : (
-                <div className="muted">Manual Field Mode creates a match without HLS player or ingest stream.</div>
-              )}
+              <div className="form-stack">
+                <div className="field-stack">
+                  <div className="field-label">경기 이름</div>
+                  <div className="field-help">운영 목록과 상세 화면에 표시될 매치 이름입니다.</div>
+                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Match name" />
+                </div>
+
+                <div className="field-stack">
+                  <div className="field-label">대회 클래스</div>
+                  <div className="field-help">K3와 SUFA를 구분해 필터링할 때 사용합니다.</div>
+                  <select value={competitionClass} onChange={(e) => setCompetitionClass(e.target.value)}>
+                    <option value="K3">K3</option>
+                    <option value="SUFA">SUFA</option>
+                  </select>
+                </div>
+
+                <div className="field-stack">
+                  <div className="field-label">운영 모드</div>
+                  <div className="field-help">스트림과 HLS 플레이어가 필요한 매치인지, 현장 수기 운영용인지 선택합니다.</div>
+                  <select value={streamMode} onChange={(e) => setStreamMode(e.target.value as 'STREAM' | 'MANUAL')}>
+                    <option value="STREAM">Stream + HLS Player</option>
+                    <option value="MANUAL">Manual Field Mode (No HLS)</option>
+                  </select>
+                </div>
+
+                <div className="field-stack">
+                  <div className="field-label">입력 프로토콜</div>
+                  <div className="field-help">스트림 매치일 때 사용할 ingest 타입입니다.</div>
+                  <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')} disabled={streamMode !== 'STREAM'}>
+                    <option value="SRT">SRT</option>
+                    <option value="RTMP">RTMP</option>
+                  </select>
+                </div>
+
+                <div className="field-stack">
+                  <div className="field-label">Operator 지정</div>
+                  <div className="field-help">생성 직후 현재 로그인 계정을 작업 담당자로 잠글지 결정합니다.</div>
+                  <label className="row" style={{ justifyContent: 'flex-start' }}>
+                    <input
+                      type="checkbox"
+                      checked={assignOperator}
+                      onChange={(e) => setAssignOperator(e.target.checked)}
+                      style={{ minHeight: 'auto', width: 18, height: 18 }}
+                    />
+                    <span>현재 로그인 계정을 operator로 지정</span>
+                  </label>
+                </div>
+
+                <div className="field-stack">
+                  <div className="field-label">입력 주소</div>
+                  <div className="field-help">
+                    {streamMode === 'STREAM'
+                      ? '필요하면 SRT 또는 RTMP source URL을 바로 넣어 생성과 동시에 연결할 수 있습니다.'
+                      : 'Manual Field Mode는 스트림 없이 생성되므로 입력 주소가 필요하지 않습니다.'}
+                  </div>
+                  {streamMode === 'STREAM' ? (
+                    <input
+                      value={ingestUrl}
+                      onChange={(e) => setIngestUrl(e.target.value)}
+                      placeholder={ingestProtocol === 'RTMP' ? 'RTMP source URL (optional)' : 'SRT URL (optional)'}
+                    />
+                  ) : (
+                    <div className="muted">No ingest URL needed for manual matches.</div>
+                  )}
+                </div>
+              </div>
               <button className="btn-primary" onClick={createMatch}>Create Match</button>
               {error ? <p className="form-error" style={{ margin: 0 }}>{error}</p> : null}
             </div>

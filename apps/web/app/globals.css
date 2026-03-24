@@ -316,9 +316,17 @@ a:focus-visible {
 
 .hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  grid-template-columns: minmax(320px, 1.05fr) minmax(440px, 1.35fr);
   gap: 18px;
   align-items: stretch;
+}
+
+.hero-card-compact {
+  align-self: start;
+}
+
+.hero-card-wide {
+  min-width: 0;
 }
 
 .metric-strip {
@@ -337,7 +345,29 @@ a:focus-visible {
 .metric-tile strong {
   display: block;
   margin-top: 6px;
-  font-size: 24px;
+  font-size: 21px;
+}
+
+.form-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.field-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.field-label {
+  color: #ffbe86;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.field-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .split {
