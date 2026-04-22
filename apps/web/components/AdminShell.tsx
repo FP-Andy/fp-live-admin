@@ -3,13 +3,167 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { apiFetch, apiJson, type SessionUser } from '../lib/api';
+import { apiFetch, apiJson, displayRole, type SessionUser } from '../lib/api';
+import { clearFpaDraft, FPA_DRAFT_WARNING_MESSAGE, hasFpaDraft } from './FpaDraftGuard';
+
+type NavItem = {
+  href: string;
+  label: string;
+  icon: string;
+  match: (pathname: string) => boolean;
+};
+
+type NavSection = {
+  id: 'FLA' | 'FPA' | 'FCM';
+  label: string;
+  items: NavItem[];
+};
+
+const FLA_ITEMS: NavItem[] = [
+  {
+    href: '/admin/dashboard',
+    label: 'Dashboard',
+    icon: '▦',
+    match: (pathname) => pathname === '/admin/dashboard',
+  },
+  {
+    href: '/admin/media',
+    label: 'Media',
+    icon: '◉',
+    match: (pathname) => pathname.startsWith('/admin/media'),
+  },
+  {
+    href: '/admin/system',
+    label: 'System',
+    icon: '⚙',
+    match: (pathname) => pathname.startsWith('/admin/system'),
+  },
+];
+
+const FPA_ITEMS: NavItem[] = [
+  {
+    href: '/admin/fpa/live',
+    label: 'Live Logger',
+    icon: '⌁',
+    match: (pathname) => pathname.startsWith('/admin/fpa/live'),
+  },
+  {
+    href: '/admin/fpa/reports',
+    label: 'Visual Reports',
+    icon: '◌',
+    match: (pathname) => pathname.startsWith('/admin/fpa/reports'),
+  },
+  {
+    href: '/admin/fpa/settings',
+    label: 'Code Guide',
+    icon: '⋯',
+    match: (pathname) => pathname.startsWith('/admin/fpa/settings'),
+  },
+];
+
+const FCM_ITEMS: NavItem[] = [
+  {
+    href: '/admin/fcm/workspace',
+    label: 'Workspace',
+    icon: '▣',
+    match: (pathname) => pathname.startsWith('/admin/fcm/workspace'),
+  },
+  {
+    href: '/admin/fcm/match-status',
+    label: 'Match Status',
+    icon: '◎',
+    match: (pathname) => pathname.startsWith('/admin/fcm/match-status'),
+  },
+  {
+    href: '/admin/fcm/templates',
+    label: 'Templates',
+    icon: '◫',
+    match: (pathname) => pathname.startsWith('/admin/fcm/templates'),
+  },
+  {
+    href: '/admin/fcm/guide',
+    label: 'Guide',
+    icon: '⋯',
+    match: (pathname) => pathname.startsWith('/admin/fcm/guide'),
+  },
+];
+
+const NAV_SECTIONS: NavSection[] = [
+  { id: 'FLA', label: 'FLA', items: FLA_ITEMS },
+  { id: 'FPA', label: 'FPA', items: FPA_ITEMS },
+  { id: 'FCM', label: 'FCM', items: FCM_ITEMS },
+];
+
+function getPageMeta(pathname: string) {
+  if (pathname.startsWith('/admin/match/') && pathname.endsWith('/edit')) {
+    return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Event Editor' };
+  }
+  if (pathname.startsWith('/admin/match/')) {
+    return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Match Control' };
+  }
+  if (pathname.startsWith('/admin/media')) {
+    return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Media' };
+  }
+  if (pathname.startsWith('/admin/system')) {
+    return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'System' };
+  }
+  if (pathname.startsWith('/admin/fpa/live')) {
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Live Logger' };
+  }
+  if (pathname.startsWith('/admin/fpa/reports')) {
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Visual Reports' };
+  }
+  if (pathname.startsWith('/admin/fpa/settings')) {
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Code Guide' };
+  }
+  if (pathname.startsWith('/admin/fpa')) {
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'FPA' };
+  }
+  if (pathname.startsWith('/admin/fcm/match-status')) {
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Match Status' };
+  }
+  if (pathname.startsWith('/admin/fcm/workspace')) {
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Workspace' };
+  }
+  if (pathname.startsWith('/admin/fcm/templates')) {
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Templates' };
+  }
+  if (pathname.startsWith('/admin/fcm/guide')) {
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Guide' };
+  }
+  if (pathname.startsWith('/admin/fcm')) {
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'FCM' };
+  }
+  return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Dashboard' };
+}
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    FLA: true,
+    FPA: false,
+    FCM: false,
+  });
+  const currentPath = pathname || '/admin/dashboard';
+  const pageMeta = getPageMeta(currentPath);
+  const visibleSections = NAV_SECTIONS.map((section) => ({
+    ...section,
+    items:
+      section.id === 'FLA' && user?.role !== 'SUPERADMIN'
+        ? section.items.filter((item) => item.href === '/admin/dashboard')
+        : section.items,
+  })).filter((section) => section.items.length > 0);
+
+  useEffect(() => {
+    setExpandedSections((prev) => {
+      const next = { ...prev };
+      next[pageMeta.product] = true;
+      return next;
+    });
+  }, [pageMeta.product]);
 
   useEffect(() => {
     let active = true;
@@ -28,9 +182,21 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   }, [pathname, router]);
 
   const logout = async () => {
+    if (currentPath.startsWith('/admin/fpa') && hasFpaDraft()) {
+      const ok = window.confirm(FPA_DRAFT_WARNING_MESSAGE);
+      if (!ok) return;
+      clearFpaDraft();
+    }
     await apiFetch('/session/logout', { method: 'POST' });
     router.replace('/login');
     router.refresh();
+  };
+
+  const toggleSection = (sectionId: NavSection['id']) => {
+    setExpandedSections((prev) => ({
+      ...prev,
+      [sectionId]: !prev[sectionId],
+    }));
   };
 
   return (
@@ -42,8 +208,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           </button>
           {sidebarOpen ? (
             <div>
-              <div className="sidebar-eyebrow">Fineplay Console</div>
-              <strong>Live Admin</strong>
+              <div className="sidebar-eyebrow">Fine Play Console</div>
+              <strong>Multi-Product Ops</strong>
             </div>
           ) : null}
         </div>
@@ -54,11 +220,36 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
               <div className="sidebar-user">
                 <div className="sidebar-eyebrow">Signed In</div>
                 <strong>{user?.name || 'Loading...'}</strong>
-                <span className="muted">@{user?.id || 'session'}</span>
+                <span className="muted">@{user?.id || 'session'}{user?.role ? ` · ${displayRole(user.role)}` : ''}</span>
               </div>
 
               <nav className="sidebar-nav">
-                <Link className={pathname === '/admin/dashboard' ? 'active' : ''} href="/admin/dashboard">Dashboard</Link>
+                {visibleSections.map((section) => (
+                  <div className="sidebar-section" key={section.id}>
+                    <button
+                      className={`product-badge product-toggle ${pageMeta.product === section.id ? 'active' : ''}`}
+                      onClick={() => toggleSection(section.id)}
+                      type="button"
+                    >
+                      <span>{section.label}</span>
+                      <span className={`product-toggle-icon ${expandedSections[section.id] ? 'open' : ''}`}>⌄</span>
+                    </button>
+                    {expandedSections[section.id] ? (
+                      <div className="product-nav">
+                        {section.items.map((item) => (
+                          <Link
+                            className={item.match(currentPath) ? 'active' : ''}
+                            href={item.href}
+                            key={item.href}
+                          >
+                            <span className="nav-icon">{item.icon}</span>
+                            {item.label}
+                          </Link>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
               </nav>
 
               <div className="sidebar-footer">
@@ -81,12 +272,12 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       <div className="app-main">
         <header className="topbar">
           <div>
-            <div className="sidebar-eyebrow">Match Operations</div>
-            <h1>{pathname?.startsWith('/admin/match/') ? 'Match Control' : 'Dashboard'}</h1>
+            <div className="sidebar-eyebrow">{pageMeta.eyebrow}</div>
+            <h1>{pageMeta.title}</h1>
           </div>
           <div className="topbar-badge">
             <span className="status-dot" />
-            {user?.name || 'Session'}
+            {user?.name || 'Session'}{user?.role ? ` · ${displayRole(user.role)}` : ''}
           </div>
         </header>
 

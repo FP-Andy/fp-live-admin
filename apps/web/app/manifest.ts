@@ -2,14 +2,14 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Fine Play Live Admin',
-    short_name: 'Live Admin',
-    description: 'Production-oriented match operation console',
+    name: 'Fine Play Console',
+    short_name: 'FP Console',
+    description: 'Unified operations workspace for FLA and FPA',
     start_url: '/admin/dashboard',
     scope: '/',
     display: 'standalone',
-    background_color: '#101010',
-    theme_color: '#ff7400',
+    background_color: '#282828',
+    theme_color: '#282828',
     orientation: 'portrait',
     icons: [
       {

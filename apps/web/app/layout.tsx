@@ -3,13 +3,13 @@ import type { Metadata } from 'next';
 import PwaRegistrar from '../components/PwaRegistrar';
 
 export const metadata: Metadata = {
-  title: 'Live Match Admin',
-  description: 'Production-oriented match operation console',
+  title: 'Fine Play Console',
+  description: 'Unified operations workspace for FLA and FPA',
   manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'Live Admin',
+    title: 'Fine Play Console',
   },
   icons: {
     icon: '/icon.svg',
@@ -18,7 +18,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport = {
-  themeColor: '#ff7400',
+  themeColor: '#282828',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

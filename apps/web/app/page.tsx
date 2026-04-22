@@ -5,9 +5,9 @@ export default function Home() {
     <main className="login-page">
       <section className="login-panel" style={{ alignItems: 'center' }}>
         <div className="login-copy">
-          <div className="sidebar-eyebrow">Fineplay Broadcast Ops</div>
-          <h1>Live Match Admin</h1>
-          <p>현장 운영용 대시보드와 매치 컨트롤 화면으로 이동할 수 있습니다.</p>
+          <div className="sidebar-eyebrow">Fine Play Console</div>
+          <h1>FLA and FPA in one workspace</h1>
+          <p>FLA 운영 도구와 FPA 분석 도구를 하나의 콘솔에서 분리된 제품 구조로 다룹니다.</p>
           <div className="row">
             <Link className="home-link" href="/login">Login</Link>
             <Link className="home-link secondary" href="/admin/dashboard">Dashboard</Link>

@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
-import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
+import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
 import { resolveMatchTeams } from '../../dashboard/schedule-data';
 
@@ -13,10 +13,17 @@ const XG_VISIBLE_LENGTH = 40;
 const XG_VISIBLE_OFFSET = HALF_PITCH_LENGTH - XG_VISIBLE_LENGTH;
 const PITCH_WIDTH = 68;
 
+function regulationHalfMinutes(competitionClass?: string | null) {
+  const normalized = (competitionClass || '').trim().toUpperCase();
+  if (normalized.includes('SUFA')) return 20;
+  return 45;
+}
+
 type Team = 'HOME' | 'AWAY';
 type PossessionTeam = Team | 'NONE';
 type Lane = 'LEFT' | 'CENTER' | 'RIGHT';
 type AttackLR = 'L2R' | 'R2L';
+type ShotPaceBand = 'LOW' | 'MID' | 'HIGH';
 
 function fmt(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -59,6 +66,7 @@ export default function MatchPage() {
   const [match, setMatch] = useState<any>(null);
   const [summary, setSummary] = useState<any>(null);
   const [dominance, setDominance] = useState<any[]>([]);
+  const [dominanceMeta, setDominanceMeta] = useState<any>(null);
   const [outbox, setOutbox] = useState<any[]>([]);
   const [possessionLogs, setPossessionLogs] = useState<string[]>([]);
 
@@ -71,11 +79,18 @@ export default function MatchPage() {
 
   const [xgTeam, setXgTeam] = useState<Team>('HOME');
   const [xgValue, setXgValue] = useState('0.10');
+  const [xgotValue, setXgotValue] = useState('0.000');
   const [shotPoint, setShotPoint] = useState<{ x: number; y: number } | null>(null);
+  const [isOnTargetShot, setIsOnTargetShot] = useState(false);
+  const [goalmouthPoint, setGoalmouthPoint] = useState<{ x: number; y: number } | null>(null);
   const [isHeaderShot, setIsHeaderShot] = useState(false);
   const [isWeakFootShot, setIsWeakFootShot] = useState(false);
   const [isGoalShot, setIsGoalShot] = useState(false);
+  const [isUnderPressureShot, setIsUnderPressureShot] = useState(false);
+  const [isOneOnOneShot, setIsOneOnOneShot] = useState(false);
+  const [shotPaceBand, setShotPaceBand] = useState<ShotPaceBand>('MID');
   const [xgEstimateMeta, setXgEstimateMeta] = useState('');
+  const [xgotEstimateMeta, setXgotEstimateMeta] = useState('');
   const [copyMessage, setCopyMessage] = useState('');
   const [isAttachingStream, setIsAttachingStream] = useState(false);
   const [isStoppingStream, setIsStoppingStream] = useState(false);
@@ -116,12 +131,39 @@ export default function MatchPage() {
     };
   };
 
+  const getGoalmouthCoordinates = () => {
+    if (!goalmouthPoint) return null;
+    return {
+      goalmouth_x: Number(goalmouthPoint.x.toFixed(3)),
+      goalmouth_y: Number(goalmouthPoint.y.toFixed(3)),
+    };
+  };
+
   const formatDominanceTick = (minuteVal: number) => {
     const ms = Math.round(Number(minuteVal) * 60000);
-    if (secondHalfStartAbsMs != null && ms >= secondHalfStartAbsMs) {
-      const sec2h = Math.max(0, Math.floor((ms - secondHalfStartAbsMs) / 1000));
-      const matchMin = 45 + Math.floor(sec2h / 60);
-      return String(matchMin);
+    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class);
+    const baseHalfMs = baseHalfMinutes * 60000;
+    if (dominanceMeta?.split_halves) {
+      const halfGapMs = Number(dominanceMeta.half_gap_ms || 0);
+      const firstHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 1)?.duration_ms || 0);
+      const secondHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 2)?.duration_ms || 0);
+      if (firstHalfDurationMs > 0 && ms === firstHalfDurationMs) {
+        const extraMinutes = Math.round((firstHalfDurationMs - baseHalfMs) / 60000);
+        return extraMinutes > 0 ? `${baseHalfMinutes}+${extraMinutes}` : String(baseHalfMinutes);
+      }
+      if (ms >= firstHalfDurationMs + halfGapMs) {
+        const secondHalfMs = ms - firstHalfDurationMs - halfGapMs;
+        if (secondHalfDurationMs > 0 && secondHalfMs === secondHalfDurationMs) {
+          const extraMinutes = Math.round((secondHalfDurationMs - baseHalfMs) / 60000);
+          return extraMinutes > 0 ? `${baseHalfMinutes}+${extraMinutes}` : String(baseHalfMinutes);
+        }
+        return String(Math.floor(secondHalfMs / 60000));
+      }
+      return String(Math.floor(ms / 60000));
+    }
+    if (dominanceSecondHalfStartMs != null && ms >= dominanceSecondHalfStartMs) {
+      const sec2h = Math.max(0, Math.floor((ms - dominanceSecondHalfStartMs) / 1000));
+      return String(Math.floor(sec2h / 60));
     }
     const sec = Math.floor(ms / 1000);
     if (sec > 45 * 60) {
@@ -167,6 +209,20 @@ export default function MatchPage() {
   }, [possessionTeam]);
 
   useEffect(() => {
+    if (isGoalShot && !isOnTargetShot) {
+      setIsOnTargetShot(true);
+    }
+  }, [isGoalShot, isOnTargetShot]);
+
+  useEffect(() => {
+    if (!isOnTargetShot) {
+      setGoalmouthPoint(null);
+      setXgotValue('0.000');
+      setXgotEstimateMeta('');
+    }
+  }, [isOnTargetShot]);
+
+  useEffect(() => {
     apiJson<SessionUser>('/session/me')
       .then(setSessionUser)
       .catch(() => setSessionUser(null));
@@ -174,7 +230,7 @@ export default function MatchPage() {
 
   const userId = sessionUser?.id || '';
   const isArchived = Boolean(match?.archived);
-  const isSuperuser = userId === 'andy';
+  const isSuperuser = sessionUser?.role === 'SUPERADMIN';
   const isOperator = useMemo(
     () => !isArchived && (isSuperuser || Boolean(match?.operator_id && match.operator_id === userId)),
     [isArchived, isSuperuser, match, userId]
@@ -185,7 +241,7 @@ export default function MatchPage() {
   );
 
   const getCurrentClockMs = () => {
-    if (perfRef.current == null) {
+    if (!runningRef.current || perfRef.current == null) {
       return clockRef.current;
     }
     return Math.floor(baseRef.current + (performance.now() - perfRef.current));
@@ -215,12 +271,13 @@ export default function MatchPage() {
     const [m, s, d] = await Promise.all([
       apiJson<any>(`/matches/${id}`),
       apiJson<any>(`/matches/${id}/summary`),
-      apiJson<any>(`/matches/${id}/dominance?bin_seconds=180`),
+      apiJson<any>(`/matches/${id}/dominance?bin_seconds=180&split_halves=true`),
     ]);
     if (seq !== fetchSeqRef.current) return;
     setMatch(m);
     setSummary(s);
     setDominance(d.bins || []);
+    setDominanceMeta(d);
 
     if (s?.state && !initializedRef.current) {
       initializedRef.current = true;
@@ -231,7 +288,7 @@ export default function MatchPage() {
       setXgTeam(s.state.selected_team || 'HOME');
       setAttackLR((s.state.attack_lr || 'L2R') as AttackLR);
       baseRef.current = s.state.clock_ms || 0;
-      perfRef.current = performance.now();
+      perfRef.current = s.state.running ? performance.now() : null;
     }
   };
 
@@ -258,6 +315,7 @@ export default function MatchPage() {
     const s = summary?.state;
     const p = summary?.possession;
     if (!s || !p) return;
+    if (!s.running) return;
 
     const second = Math.floor((s.clock_ms || 0) / 1000);
     if (second <= lastPossessionLogSecondRef.current) return;
@@ -441,6 +499,10 @@ export default function MatchPage() {
     setSecondHalfStartAbsMs(now);
     setRunning(false);
     perfRef.current = null;
+    await apiFetch(`/matches/${id}/markers`, {
+      method: 'POST',
+      body: JSON.stringify({ marker_type: 'HALFTIME_START', clock_ms: now }),
+    });
     await saveState({ running: false, possessionTeam: 'NONE' });
     await fetchAll();
   };
@@ -476,10 +538,19 @@ export default function MatchPage() {
     if (!window.confirm('점유율 집계를 0:0으로 초기화할까요?')) return;
     setIsResettingPossession(true);
     try {
-      const res = await apiFetch(`/matches/${id}/possession/reset`, {
+      let res = await apiFetch(`/matches/${id}/possession/reset`, {
         method: 'POST',
         body: JSON.stringify({}),
       });
+      if (res.status === 409) {
+        const detail = await res.text();
+        const confirmLive = window.confirm(`${detail}\n\n계속 초기화할까요?`);
+        if (!confirmLive) return;
+        res = await apiFetch(`/matches/${id}/possession/reset?confirm_live_action=true`, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      }
       if (!res.ok) {
         setCopyMessage('Possession reset failed');
       } else {
@@ -503,10 +574,19 @@ export default function MatchPage() {
     if (!window.confirm('공격방향/xG 이벤트를 모두 초기화할까요?')) return;
     setIsResettingEvents(true);
     try {
-      const res = await apiFetch(`/matches/${id}/events/reset`, {
+      let res = await apiFetch(`/matches/${id}/events/reset`, {
         method: 'POST',
         body: JSON.stringify({}),
       });
+      if (res.status === 409) {
+        const detail = await res.text();
+        const confirmLive = window.confirm(`${detail}\n\n계속 초기화할까요?`);
+        if (!confirmLive) return;
+        res = await apiFetch(`/matches/${id}/events/reset?confirm_live_action=true`, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      }
       if (!res.ok) {
         setCopyMessage('Event reset failed');
       } else {
@@ -534,22 +614,50 @@ export default function MatchPage() {
     const xg = Number(xgValue);
     if (!Number.isFinite(xg) || xg < 0) return;
     const shotCoordinates = getShotCoordinates();
-    await apiFetch(`/matches/${id}/events/xg`, {
+    const goalmouthCoordinates = getGoalmouthCoordinates();
+    if (isOnTargetShot && !goalmouthCoordinates) {
+      setXgotEstimateMeta('Click the goalmouth map for an on-target shot');
+      return;
+    }
+    const res = await apiFetch(`/matches/${id}/events/xg`, {
       method: 'POST',
       body: JSON.stringify({
         event_id: makeId(),
         team: xgTeam,
         xg,
         is_goal: isGoalShot,
+        is_on_target: isOnTargetShot,
         clock_ms: clockMs,
         shot_x: shotCoordinates?.shot_x ?? null,
         shot_y: shotCoordinates?.shot_y ?? null,
+        goalmouth_x: goalmouthCoordinates?.goalmouth_x ?? null,
+        goalmouth_y: goalmouthCoordinates?.goalmouth_y ?? null,
         is_header: isHeaderShot,
         is_weak_foot: isWeakFootShot,
+        under_pressure: isUnderPressureShot,
+        one_on_one: isOneOnOneShot,
+        shot_pace_band: shotPaceBand,
       }),
     });
+    const data = await res.json().catch(() => null);
     setXgValue('0.10');
+    setXgotValue(data?.xgot_meta ? Number(data.xgot_meta.xgot).toFixed(3) : '0.000');
+    setShotPoint(null);
+    setIsOnTargetShot(false);
+    setGoalmouthPoint(null);
+    setIsHeaderShot(false);
+    setIsWeakFootShot(false);
     setIsGoalShot(false);
+    setIsUnderPressureShot(false);
+    setIsOneOnOneShot(false);
+    setShotPaceBand('MID');
+    setXgEstimateMeta('');
+    setXgotEstimateMeta(
+      data?.xgot_meta
+        ? `xGOT=${data.xgot_meta.xgot} | delta=${data.xgot_meta.delta >= 0 ? '+' : ''}${data.xgot_meta.delta} | ${data.xgot_meta.label}`
+        : ''
+    );
+    await fetchAll();
   };
 
   const attachRtmp = async () => {
@@ -617,6 +725,16 @@ export default function MatchPage() {
     setXgEstimateMeta('');
   };
 
+  const onGoalmouthClick = (e: { currentTarget: HTMLDivElement; clientX: number; clientY: number }) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const x = Math.max(0, Math.min(1, px / rect.width));
+    const y = Math.max(0, Math.min(1, 1 - py / rect.height));
+    setGoalmouthPoint({ x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) });
+    setXgotEstimateMeta('');
+  };
+
   const estimateXgFromPitch = async () => {
     const shotCoordinates = getShotCoordinates();
     if (!shotPoint || !shotCoordinates) {
@@ -642,6 +760,47 @@ export default function MatchPage() {
     const data = await res.json();
     setXgValue(String(data.xg));
     setXgEstimateMeta(`xG=${data.xg} | dist=${data.distance}m | ${data.is_in_box ? 'in-box' : 'out-box'}`);
+  };
+
+  const estimateXgotFromGoalmouth = async () => {
+    const xg = Number(xgValue);
+    const goalmouthCoordinates = getGoalmouthCoordinates();
+    if (!Number.isFinite(xg) || xg < 0) {
+      setXgotEstimateMeta('Enter a valid xG first');
+      return;
+    }
+    if (!isOnTargetShot) {
+      setXgotEstimateMeta('Turn on On Target first');
+      return;
+    }
+    if (!goalmouthCoordinates) {
+      setXgotEstimateMeta('Click the goalmouth map first');
+      return;
+    }
+    const res = await apiFetch('/xgot/estimate', {
+      method: 'POST',
+      body: JSON.stringify({
+        xg,
+        is_on_target: isOnTargetShot,
+        goalmouth_x: goalmouthCoordinates.goalmouth_x,
+        goalmouth_y: goalmouthCoordinates.goalmouth_y,
+        is_goal: isGoalShot,
+        is_header: isHeaderShot,
+        is_weak_foot: isWeakFootShot,
+        under_pressure: isUnderPressureShot,
+        one_on_one: isOneOnOneShot,
+        shot_pace_band: shotPaceBand,
+      }),
+    });
+    if (!res.ok) {
+      setXgotEstimateMeta(`Estimate failed (${res.status})`);
+      return;
+    }
+    const data = await res.json();
+    setXgotValue(Number(data.xgot).toFixed(3));
+    setXgotEstimateMeta(
+      `xGOT=${data.xgot} | delta=${data.delta >= 0 ? '+' : ''}${data.delta} | ${data.label}`
+    );
   };
 
   const acquire = async () => {
@@ -712,25 +871,82 @@ export default function MatchPage() {
   const dominanceBaseData = useMemo(
     () =>
       dominance.map((d) => ({
-        minuteVal: Number(d.start_ms || 0) / 60000,
+        startMs: Number(d.start_ms || 0),
+        minuteVal: Number((d.chart_start_ms ?? d.start_ms) || 0) / 60000,
+        endMinuteVal: Number((d.chart_end_ms ?? d.end_ms) || 0) / 60000,
         dominance: Number(d.dominance || 0),
+        midpointMinuteVal: Number((d.chart_midpoint_ms ?? ((d.start_ms + d.end_ms) / 2)) || 0) / 60000,
+        annotations: d.annotations,
       })),
     [dominance]
   );
   const dominanceXAxisTicks = useMemo(
-    () => dominanceBaseData.map((d) => d.minuteVal),
-    [dominanceBaseData]
+    () => {
+      const ticks = dominanceBaseData.map((d) => d.minuteVal);
+      if (!dominanceMeta?.split_halves) return ticks;
+      const halfGapMs = Number(dominanceMeta.half_gap_ms || 0);
+      const firstHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 1)?.duration_ms || 0);
+      const secondHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 2)?.duration_ms || 0);
+      if (firstHalfDurationMs > 0) ticks.push(firstHalfDurationMs / 60000);
+      if (secondHalfDurationMs > 0) {
+        ticks.push((firstHalfDurationMs + halfGapMs + secondHalfDurationMs) / 60000);
+      }
+      return Array.from(new Set(ticks)).sort((a, b) => a - b);
+    },
+    [dominanceBaseData, dominanceMeta]
   );
   const dominanceChartData = useMemo(() => {
-    return dominanceBaseData.map((d) => ({
-      minuteVal: d.minuteVal,
+    const lastIndex = dominanceBaseData.length - 1;
+    return dominanceBaseData.map((d, index) => ({
+      startMs: d.startMs,
+      minuteVal: index === lastIndex && d.endMinuteVal > d.minuteVal ? d.endMinuteVal : d.minuteVal,
+      endMinuteVal: d.endMinuteVal,
       dominance: d.dominance,
+      midpointMinuteVal: d.midpointMinuteVal,
+      annotations: d.annotations,
     }));
   }, [dominanceBaseData]);
+  const dominanceSeriesData = useMemo(() => {
+    const points: Array<{
+      minuteVal: number;
+      dominance: number;
+      positiveDominance: number | null;
+      negativeDominance: number | null;
+    }> = [];
+    dominanceChartData.forEach((point, index) => {
+      if (index > 0) {
+        const prev = dominanceChartData[index - 1];
+        if ((prev.dominance < 0 && point.dominance > 0) || (prev.dominance > 0 && point.dominance < 0)) {
+          const ratio = (0 - prev.dominance) / (point.dominance - prev.dominance);
+          const crossMinuteVal = prev.minuteVal + (point.minuteVal - prev.minuteVal) * ratio;
+          points.push({
+            minuteVal: crossMinuteVal,
+            dominance: 0,
+            positiveDominance: 0,
+            negativeDominance: 0,
+          });
+        }
+      }
+      points.push({
+        minuteVal: point.minuteVal,
+        dominance: point.dominance,
+        positiveDominance: point.dominance > 0 ? point.dominance : point.dominance === 0 ? 0 : null,
+        negativeDominance: point.dominance < 0 ? point.dominance : point.dominance === 0 ? 0 : null,
+      });
+    });
+    return points;
+  }, [dominanceChartData]);
+  const dominanceSecondHalfStartMs = useMemo(() => {
+    const htBin = dominance.find((bin) => Array.isArray(bin.annotations?.markers) && bin.annotations.markers.includes('HT'));
+    if (htBin?.start_ms != null) {
+      return Number(htBin.start_ms);
+    }
+    return secondHalfStartAbsMs;
+  }, [dominance, secondHalfStartAbsMs]);
 
   return (
     <main className="page-stack">
-      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div className="card card-hero row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div className="grid" style={{ gap: 6 }}>
           <h2 style={{ margin: 0 }}>
             {matchTeams
@@ -739,7 +955,8 @@ export default function MatchPage() {
           </h2>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
             <span className="status-pill">{match?.competition_class || 'K3'}</span>
-            {isArchived ? <span className="status-pill stopped">ARCHIVED</span> : null}
+            {isArchived ? <span className="status-pill archived">ARCHIVED</span> : null}
+            {!isArchived ? <span className={`status-pill ${running ? 'running' : 'stopped'}`}>{running ? 'RUNNING' : 'PAUSED'}</span> : null}
           </div>
           {matchTeams ? (
             <div className="grid" style={{ gap: 2 }}>
@@ -748,31 +965,35 @@ export default function MatchPage() {
             </div>
           ) : null}
           {isArchived ? (
-            <div className="muted">
+            <div className="panel-note">
               Archived at {formatDateTimeKst(match?.archived_at)}. This page is read-only; export is still available.
             </div>
           ) : null}
-          <div className="muted">signed in as: {sessionUser?.name || 'Loading...'} {userId ? `(@${userId})` : ''}</div>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="muted">Mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}</span>
+          <div className="match-meta-group">
+            <span className="meta-chip">signed in: {sessionUser?.name || 'Loading...'} {userId ? `(@${userId})` : ''}</span>
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : 'warning'}`}>
+              mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}
+            </span>
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+              RTMP Server: {streamMode === 'MANUAL' ? 'Disabled' : rtmpServer || 'N/A'}
+            </span>
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+              Stream Key: {streamMode === 'MANUAL' ? 'Disabled' : streamKey || 'N/A'}
+            </span>
           </div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="muted">RTMP Server: {streamMode === 'MANUAL' ? 'Disabled' : rtmpServer || 'N/A'}</span>
-            <button onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
-          </div>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="muted">Stream Key: {streamMode === 'MANUAL' ? 'Disabled' : streamKey || 'N/A'}</span>
-            <button onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
-            <button onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
+            <button className="btn-secondary" onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
+            <button className="btn-secondary" onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
+            <button className="btn-secondary" onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
           </div>
           {copyMessage ? <div className="muted">{copyMessage}</div> : null}
         </div>
         <div className="row">
-          <button onClick={exportMatchData} disabled={isExportingMatchData}>
+          <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
             {isExportingMatchData ? 'Exporting...' : 'Export Match Data'}
           </button>
           {!isOperator
-            ? <button className="btn-primary" onClick={acquire} disabled={isArchived}>Acquire Lock</button>
+            ? <button className="btn-secondary" onClick={acquire} disabled={isArchived}>Acquire Lock</button>
             : <button className="btn-danger" onClick={release} disabled={isArchived}>Release Lock</button>}
           <span className="muted">
             operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
@@ -782,29 +1003,29 @@ export default function MatchPage() {
 
       <div className="split">
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
-          <div className="card">
+          <div className="card card-panel">
             <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
               <strong>Timer</strong>
               <strong style={{ fontSize: 24 }}>{displayClockLabel(clockMs)}</strong>
               <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
-              <button onClick={resetClock} disabled={!canWrite}>Reset</button>
-              <button onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>
-              <button onClick={markSecondHalfStart} disabled={!canWrite}>Mark 2H 45:00</button>
+              <button className="btn-secondary" onClick={resetClock} disabled={!canWrite}>Reset</button>
+              <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>
+              <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>Mark 2H 45:00</button>
             </div>
           </div>
 
           {streamMode === 'STREAM' ? (
-            <div className="card grid">
+            <div className="card card-utility grid">
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <h3 style={{ margin: 0 }}>HLS Stream</h3>
                 <div className="row">
-                  <button onClick={attachRtmp} disabled={!canWrite || isAttachingStream}>
+                  <button className="btn-secondary" onClick={attachRtmp} disabled={!canWrite || isAttachingStream}>
                     {isAttachingStream ? 'Attaching...' : 'Attach RTMP'}
                   </button>
-                  <button onClick={stopStream} disabled={!canWrite || isStoppingStream}>
+                  <button className="btn-danger" onClick={stopStream} disabled={!canWrite || isStoppingStream}>
                     {isStoppingStream ? 'Stopping...' : 'Stop Stream'}
                   </button>
-                  <button onClick={clearHls} disabled={!canWrite || isClearingHls}>
+                  <button className="btn-secondary" onClick={clearHls} disabled={!canWrite || isClearingHls}>
                     {isClearingHls ? 'Clearing...' : 'Clear HLS'}
                   </button>
                 </div>
@@ -813,10 +1034,10 @@ export default function MatchPage() {
             </div>
           ) : null}
 
-          <div className="card grid" style={{ minHeight: 280 }}>
+          <div className="card card-utility grid" style={{ minHeight: 280 }}>
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
               <h3 style={{ margin: 0 }}>Recent Events</h3>
-              <button onClick={resetEvents} disabled={!canWrite || isResettingEvents}>
+              <button className="btn-danger" onClick={resetEvents} disabled={!canWrite || isResettingEvents}>
                 {isResettingEvents ? 'Resetting...' : 'Reset Events'}
               </button>
             </div>
@@ -830,7 +1051,12 @@ export default function MatchPage() {
             >
               {(summary?.events || []).slice(0, 40).map((e: any) => (
                 <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
-                  <span>{e.type} {e.team} @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''} {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}</span>
+                  <span>
+                    {e.type} {e.team} @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''}{' '}
+                    {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}{' '}
+                    {typeof e.xgot === 'number' ? `xgot=${e.xgot}` : ''}{' '}
+                    {e.is_on_target ? 'on-target' : ''}
+                  </span>
                   <span className="muted">{formatCreatedAtKst(e.created_at)}</span>
                 </div>
               ))}
@@ -838,7 +1064,7 @@ export default function MatchPage() {
           </div>
 
           {streamMode === 'MANUAL' ? (
-            <div className="card grid">
+            <div className="card card-panel grid">
               <h3>Attack Input</h3>
               <div className="row">
                 <span>Home attack:</span>
@@ -872,32 +1098,227 @@ export default function MatchPage() {
         </div>
 
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
-          <div className="card grid">
-            <h3>xG Input</h3>
-            <div className="row">
-              <select value={xgTeam} onChange={(e) => setXgTeam(e.target.value as Team)}>
-                <option value="HOME">HOME</option>
-                <option value="AWAY">AWAY</option>
-              </select>
-              <input value={xgValue} onChange={(e) => setXgValue(e.target.value)} placeholder="xG" />
-              <button onClick={estimateXgFromPitch} disabled={!canWrite}>Estimate xG (Pitch)</button>
-              <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>Record xG</button>
+          <div className="card card-panel grid">
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <h3 style={{ margin: 0 }}>xG Input</h3>
+                <select value={xgTeam} onChange={(e) => setXgTeam(e.target.value as Team)}>
+                  <option value="HOME">HOME</option>
+                  <option value="AWAY">AWAY</option>
+                </select>
+                <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>Record xG</button>
+              </div>
+            </div>
+            <div className="grid" style={{ gap: 10 }}>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                <span style={{ minWidth: 40, fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>xG</span>
+                <input value={xgValue} onChange={(e) => setXgValue(e.target.value)} placeholder="xG" style={{ minWidth: 120 }} />
+                  <button className="btn-secondary" onClick={estimateXgFromPitch} disabled={!canWrite}>Estimate xG</button>
+              </div>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                <span style={{ minWidth: 62, fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>xGOT</span>
+                <input value={xgotValue} readOnly placeholder="xGOT" style={{ minWidth: 120, opacity: 0.95 }} />
+                <button className="btn-secondary" onClick={estimateXgotFromGoalmouth} disabled={!canWrite}>Estimate xGOT</button>
+              </div>
             </div>
             <div
-              onClick={onPitchClick}
               style={{
                 position: 'relative',
                 width: '100%',
                 maxWidth: 520,
-                aspectRatio: '68 / 40',
-                border: '1px solid #1f2937',
-                borderRadius: 8,
-                cursor: 'crosshair',
-                background:
-                  'repeating-linear-gradient(0deg, #3f7f3f 0 10%, #3a733a 10% 20%)',
-                overflow: 'visible',
+                justifySelf: 'center',
+                marginTop: isOnTargetShot ? 132 : 4,
               }}
             >
+              {isOnTargetShot ? (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: -128,
+                    transform: 'translateX(-50%)',
+                    width: 520,
+                    maxWidth: 'min(520px, 96vw)',
+                    zIndex: 2,
+                  }}
+                >
+                  <div style={{ position: 'relative', width: '100%', minHeight: 108 }}>
+                    <div
+                      className="grid"
+                      style={{
+                        gap: 6,
+                        alignContent: 'end',
+                        position: 'absolute',
+                        left: 0,
+                        bottom: 0,
+                        width: 96,
+                      }}
+                    >
+                      <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>Shot Speed</span>
+                      <select
+                        value={shotPaceBand}
+                        onChange={(e) => setShotPaceBand(e.target.value as ShotPaceBand)}
+                        disabled={!canWrite}
+                        style={{ width: '100%' }}
+                      >
+                        <option value="LOW">Slow</option>
+                        <option value="MID">Normal</option>
+                        <option value="HIGH">Fast</option>
+                      </select>
+                    </div>
+                    <div
+                      onClick={onGoalmouthClick}
+                      style={{
+                        position: 'relative',
+                        width: 300,
+                        maxWidth: 'min(300px, 58vw)',
+                        aspectRatio: '3.2 / 1.15',
+                        cursor: 'crosshair',
+                        margin: '0 auto',
+                      }}
+                    >
+                      {goalmouthPoint ? (
+                        <div
+                          className="muted"
+                          style={{
+                            position: 'absolute',
+                            left: 10,
+                            bottom: 8,
+                            fontSize: 11,
+                            whiteSpace: 'nowrap',
+                            zIndex: 5,
+                          }}
+                        >
+                          goalmouth=({goalmouthPoint.x.toFixed(3)}, {goalmouthPoint.y.toFixed(3)})
+                        </div>
+                      ) : null}
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          border: '4px solid rgba(255,255,255,0.95)',
+                          borderBottomWidth: 2,
+                          borderRadius: '8px 8px 0 0',
+                          background:
+                            'linear-gradient(180deg, rgba(20,52,109,0.72) 0%, rgba(20,52,109,0.3) 44%, rgba(255,255,255,0.03) 100%)',
+                          boxShadow: '0 10px 28px rgba(15,23,42,0.32)',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            backgroundImage:
+                              'linear-gradient(rgba(255,255,255,0.58) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)',
+                            backgroundSize: '8.5% 16%',
+                            transform: 'perspective(260px) rotateX(14deg) scaleY(1.04)',
+                            transformOrigin: 'top center',
+                            opacity: 0.9,
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '-6%',
+                            top: '5%',
+                            bottom: '11%',
+                            width: '9%',
+                            borderLeft: '4px solid rgba(255,255,255,0.95)',
+                            borderTop: '4px solid rgba(255,255,255,0.75)',
+                            borderBottom: '2px solid rgba(255,255,255,0.16)',
+                            transform: 'skewY(14deg)',
+                            opacity: 0.92,
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            right: '-6%',
+                            top: '5%',
+                            bottom: '11%',
+                            width: '9%',
+                            borderRight: '4px solid rgba(255,255,255,0.95)',
+                            borderTop: '4px solid rgba(255,255,255,0.75)',
+                            borderBottom: '2px solid rgba(255,255,255,0.16)',
+                            transform: 'skewY(-14deg)',
+                            opacity: 0.92,
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '33.33%',
+                            top: 0,
+                            bottom: 0,
+                            borderLeft: '1px dashed rgba(255,255,255,0.42)',
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '66.66%',
+                            top: 0,
+                            bottom: 0,
+                            borderLeft: '1px dashed rgba(255,255,255,0.42)',
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: 0,
+                            right: 0,
+                            top: '50%',
+                            borderTop: '1px dashed rgba(255,255,255,0.42)',
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            height: '15%',
+                            background: 'linear-gradient(180deg, rgba(101,163,13,0.14), rgba(101,163,13,0.38))',
+                          }}
+                        />
+                        {goalmouthPoint ? (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              left: `${goalmouthPoint.x * 100}%`,
+                              top: `${(1 - goalmouthPoint.y) * 100}%`,
+                              width: 14,
+                              height: 14,
+                              borderRadius: '50%',
+                              background: '#f97316',
+                              border: '2px solid white',
+                              transform: 'translate(-50%, -50%)',
+                              boxShadow: '0 0 0 5px rgba(249,115,22,0.18)',
+                              zIndex: 4,
+                            }}
+                          />
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              <div
+                onClick={onPitchClick}
+                style={{
+                  position: 'relative',
+                  width: '100%',
+                  maxWidth: 520,
+                  aspectRatio: '68 / 40',
+                  border: '1px solid #1f2937',
+                  borderRadius: 8,
+                  cursor: 'crosshair',
+                  background:
+                    'repeating-linear-gradient(0deg, #3f7f3f 0 10%, #3a733a 10% 20%)',
+                  overflow: 'visible',
+                }}
+              >
               <div style={{ position: 'absolute', inset: 0, border: '2px solid rgba(255,255,255,0.9)', borderRadius: 8 }} />
               <div
                 style={{
@@ -940,24 +1361,29 @@ export default function MatchPage() {
                 />
               ) : null}
               <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Goal Side</div>
-              <div style={{ position: 'absolute', right: 8, top: 6, color: 'rgba(255,255,255,0.7)', fontSize: 10 }}>Goal frame shown</div>
+              <div style={{ position: 'absolute', right: 8, top: 6, color: 'rgba(255,255,255,0.7)', fontSize: 10 }}>
+                {isOnTargetShot ? 'Goalmouth zoom active' : 'Turn on On Target to place shot'}
+              </div>
               <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>68m x 40m (rotated)</div>
             </div>
-            <div className="row" style={{ gap: 12 }}>
-              <label><input type="checkbox" checked={isHeaderShot} onChange={(e) => setIsHeaderShot(e.target.checked)} /> Header</label>
-              <label><input type="checkbox" checked={isWeakFootShot} onChange={(e) => setIsWeakFootShot(e.target.checked)} /> Weak Foot</label>
-              <label><input type="checkbox" checked={isGoalShot} onChange={(e) => setIsGoalShot(e.target.checked)} /> Goal</label>
+            </div>
+            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+              <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>On Target</button>
+              <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>Goal</button>
+              <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>Header</button>
+              <button className={isWeakFootShot ? 'btn-active' : ''} onClick={() => setIsWeakFootShot((prev) => !prev)} disabled={!canWrite}>Weak Foot</button>
               <span className="muted">{shotPoint ? `shot=(${shotPoint.x}, ${shotPoint.y})` : 'Click pitch to set shot location'}</span>
             </div>
             <div className="muted">Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.</div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
+            {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}</div> : null}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div className="card grid" style={{ minHeight: 180, gap: 8 }}>
+            <div className="card card-panel grid" style={{ minHeight: 180, gap: 8 }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ margin: 0 }}>Possession</h3>
-                <button onClick={resetPossession} disabled={!canWrite || isResettingPossession}>
+                <button className="btn-danger" onClick={resetPossession} disabled={!canWrite || isResettingPossession}>
                   {isResettingPossession ? 'Resetting...' : 'Reset'}
                 </button>
               </div>
@@ -976,11 +1402,11 @@ export default function MatchPage() {
               </div>
             </div>
 
-            <div className="card grid" style={{ minHeight: 180, gap: 8 }}>
+            <div className="card card-utility grid" style={{ minHeight: 180, gap: 8 }}>
               <h3>Possession Timeline Log</h3>
               <div className="row" style={{ marginBottom: 8 }}>
-                <button onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
-                <button onClick={resetPossessionLogView} disabled={possessionLogs.length === 0}>Reset Log</button>
+                <button className="btn-success" onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
+                <button className="btn-secondary" onClick={resetPossessionLogView} disabled={possessionLogs.length === 0}>Reset Log</button>
               </div>
               <div
                 className="grid"
@@ -1002,7 +1428,7 @@ export default function MatchPage() {
           </div>
 
           {streamMode === 'STREAM' ? (
-            <div className="card grid">
+            <div className="card card-panel grid">
               <h3>Attack Input</h3>
               <div className="row">
                 <span>Home attack:</span>
@@ -1037,18 +1463,22 @@ export default function MatchPage() {
         </div>
       </div>
 
-      <div className="card">
+      <div className="card card-utility">
         <h3>Match Dominance (-1 ~ +1, 3-min bins)</h3>
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
             <ComposedChart data={dominanceChartData}>
               <defs>
                 <linearGradient id="dominanceFillSingle" x1="0%" y1="0%" x2="0%" y2="100%">
-                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.4} />
-                  <stop offset="100%" stopColor="#22c55e" stopOpacity={0.18} />
+                  <stop offset="0%" stopColor="#f97316" stopOpacity={0.42} />
+                  <stop offset="100%" stopColor="#f97316" stopOpacity={0.18} />
+                </linearGradient>
+                <linearGradient id="dominanceFillSingleAway" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#2563eb" stopOpacity={0.18} />
+                  <stop offset="100%" stopColor="#2563eb" stopOpacity={0.42} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.10)" />
               <XAxis
                 type="number"
                 dataKey="minuteVal"
@@ -1056,17 +1486,103 @@ export default function MatchPage() {
                 tickFormatter={formatDominanceTick}
                 domain={['dataMin', 'dataMax']}
               />
-              <YAxis domain={[-1, 1]} />
+              <YAxis domain={[-1.2, 1.2]} ticks={[-1, -0.5, 0, 0.5, 1]} />
               <Tooltip />
-              <ReferenceLine y={0} stroke="#6b7280" />
-              <Area type="monotone" dataKey="dominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingle)" />
-              <Line type="monotone" dataKey="dominance" stroke="#10b981" dot />
+              {dominanceMeta?.split_halves && dominanceMeta?.ht_chart_ms != null ? (
+                <ReferenceLine
+                  x={Number(dominanceMeta.ht_chart_ms) / 60000}
+                  stroke="#fbbf24"
+                  strokeDasharray="6 4"
+                  label={{ value: 'HT', position: 'top', fill: '#fbbf24', fontSize: 12 }}
+                />
+              ) : null}
+              {dominanceChartData.map((bin) => {
+                const goalSummary = bin.annotations?.goal_summary;
+                const hasHt = !dominanceMeta?.split_halves && Boolean(bin.annotations?.markers?.includes('HT'));
+                const homeGoalLabel = goalSummary?.home ? `⚽ HOME${goalSummary.home > 1 ? ` x${goalSummary.home}` : ''}` : '';
+                const awayGoalLabel = goalSummary?.away ? `⚽ AWAY${goalSummary.away > 1 ? ` x${goalSummary.away}` : ''}` : '';
+                const homeGoalX = bin.minuteVal - (goalSummary?.home && goalSummary?.away ? 0.08 : 0);
+                const awayGoalX = bin.minuteVal + (goalSummary?.home && goalSummary?.away ? 0.08 : 0);
+                return (
+                  <Fragment key={`dominance-annotation-${bin.minuteVal}`}>
+                    {hasHt ? (
+                      <ReferenceLine
+                        x={bin.midpointMinuteVal}
+                        stroke="#fbbf24"
+                        strokeDasharray="6 4"
+                        label={{ value: 'HT', position: 'top', fill: '#fbbf24', fontSize: 12 }}
+                      />
+                    ) : null}
+                    {homeGoalLabel ? (
+                      <>
+                        <ReferenceLine
+                          segment={[
+                            { x: homeGoalX, y: 1 },
+                            { x: homeGoalX, y: 0 },
+                          ]}
+                          stroke="#f97316"
+                          strokeDasharray="4 4"
+                          ifOverflow="extendDomain"
+                        />
+                        <ReferenceDot
+                          x={homeGoalX}
+                          y={1}
+                          r={0}
+                          fill="transparent"
+                          stroke="transparent"
+                          ifOverflow="extendDomain"
+                          label={{
+                            value: homeGoalLabel,
+                            position: 'top',
+                            fill: '#f97316',
+                            fontSize: 12,
+                            offset: hasHt ? 18 : 6,
+                          }}
+                        />
+                      </>
+                    ) : null}
+                    {awayGoalLabel ? (
+                      <>
+                        <ReferenceLine
+                          segment={[
+                            { x: awayGoalX, y: 0 },
+                            { x: awayGoalX, y: -1 },
+                          ]}
+                          stroke="#2563eb"
+                          strokeDasharray="4 4"
+                          ifOverflow="extendDomain"
+                        />
+                        <ReferenceDot
+                          x={awayGoalX}
+                          y={-1}
+                          r={0}
+                          fill="transparent"
+                          stroke="transparent"
+                          ifOverflow="extendDomain"
+                          label={{
+                            value: awayGoalLabel,
+                            position: 'bottom',
+                            fill: '#60a5fa',
+                            fontSize: 12,
+                            offset: 6,
+                          }}
+                        />
+                      </>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+              <Area type="monotone" data={dominanceSeriesData} dataKey="positiveDominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingle)" connectNulls />
+              <Area type="monotone" data={dominanceSeriesData} dataKey="negativeDominance" baseValue={0} stroke="none" fill="url(#dominanceFillSingleAway)" connectNulls />
+              <Line type="monotone" data={dominanceSeriesData} dataKey="positiveDominance" stroke="#f97316" strokeWidth={3} dot={false} connectNulls />
+              <Line type="monotone" data={dominanceSeriesData} dataKey="negativeDominance" stroke="#2563eb" strokeWidth={3} dot={false} connectNulls />
+              <ReferenceLine y={0} stroke="#ffffff" strokeWidth={2} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      <div className="card">
+      <div className="card card-utility">
         <h3>Outbox / Webhook Status</h3>
         <div className="grid">
           {outbox.slice(0, 20).map((o) => (

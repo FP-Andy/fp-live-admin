@@ -27,6 +27,12 @@ paths:
   /api/v1/matches/{match_id}/summary:
     get:
       summary: Get current summary snapshot
+      description: |
+        Returns the current match snapshot including possession, lane ratios,
+        current state, and a recent event list. XG events in the recent event
+        list may include xGOT-related fields such as `xgot`, `is_on_target`,
+        `goalmouth_x`, `goalmouth_y`, `under_pressure`, `one_on_one`, and
+        `shot_pace_band`.
       parameters:
         - in: path
           name: match_id
@@ -38,6 +44,10 @@ paths:
   /api/v1/matches/{match_id}/events:
     get:
       summary: Pull events incrementally
+      description: |
+        Returns match events in ascending creation order. XG events may include
+        `xgot`, `is_on_target`, `goalmouth_x`, `goalmouth_y`,
+        `under_pressure`, `one_on_one`, and `shot_pace_band`.
       parameters:
         - in: path
           name: match_id
@@ -58,6 +68,10 @@ paths:
   /api/v1/matches/{match_id}/dominance:
     get:
       summary: Get dominance bins
+      description: |
+        Returns 3-minute dominance bins. Existing fields remain stable, and bins
+        may optionally include `annotations.goal_summary` and
+        `annotations.markers` for non-breaking enrichment.
       parameters:
         - in: path
           name: match_id
@@ -90,6 +104,12 @@ paths:
         2) attack_direction
         3) xg events
         4) match_dominance (3-min bins)
+        
+        The `xg` event array may include xGOT-related fields such as `xgot`,
+        `is_on_target`, `goalmouth_x`, `goalmouth_y`, `under_pressure`,
+        `one_on_one`, and `shot_pace_band`.
+        Dominance bin items may optionally include
+        `annotations.goal_summary` and `annotations.markers`.
       parameters:
         - in: path
           name: match_id

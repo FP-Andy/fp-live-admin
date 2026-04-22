@@ -7,12 +7,17 @@ import { apiFetch } from '../lib/api';
 export default function LoginForm({ nextPath }: { nextPath: string }) {
   const router = useRouter();
   const [name, setName] = useState('');
+  const [accessKey, setAccessKey] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
     if (!name.trim()) {
       setError('이름을 입력하세요.');
+      return;
+    }
+    if (!accessKey.trim()) {
+      setError('액세스 키를 입력하세요.');
       return;
     }
 
@@ -22,7 +27,7 @@ export default function LoginForm({ nextPath }: { nextPath: string }) {
     try {
       const response = await apiFetch('/session/login', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, access_key: accessKey }),
       });
 
       if (!response.ok) {
@@ -51,6 +56,16 @@ export default function LoginForm({ nextPath }: { nextPath: string }) {
         }}
         placeholder="예: Andy Kim"
         autoFocus
+      />
+      <input
+        id="access-key"
+        type="password"
+        value={accessKey}
+        onChange={(e) => setAccessKey(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit();
+        }}
+        placeholder="운영팀 액세스 키"
       />
       {error ? <div className="form-error">{error}</div> : null}
       <button className="btn-primary login-submit" onClick={submit} disabled={submitting}>

@@ -9,11 +9,16 @@ AttackLR = Literal["L2R", "R2L"]
 IngestProtocol = Literal["SRT", "RTMP"]
 StreamMode = Literal["STREAM", "MANUAL"]
 WebhookEventKind = Literal["STATE", "EVENT"]
+UserRole = Literal["OPERATOR", "SUPERADMIN"]
+MarkerType = Literal["HALFTIME_START"]
+TimelineItemKind = Literal["EVENT", "MARKER"]
+EditableEventType = Literal["ATTACK_LANE", "XG", "HALFTIME_START"]
 
 
 class CreateMatchRequest(BaseModel):
     name: str
     competition_class: str = Field(default="K3", min_length=1, max_length=20)
+    round_number: int = Field(default=1, ge=1, le=99)
     stream_mode: StreamMode = "STREAM"
     assign_operator: bool = True
     ingest_protocol: IngestProtocol | None = None
@@ -27,12 +32,36 @@ class MatchResponse(BaseModel):
     id: UUID
     name: str
     competition_class: str
+    round_number: int
     archived: bool
     archived_at: str | None = None
     created_at: str
     hls_url: str | None
     metadata: dict[str, Any] | None = None
     operator_id: str | None
+
+
+class FcmSubmissionUpsertRequest(BaseModel):
+    team_side: Literal["HOME", "AWAY"] = "HOME"
+    player_id: str = Field(min_length=1, max_length=40)
+    player_name: str = Field(min_length=1, max_length=80)
+    team_name: str = Field(default="", max_length=80)
+    selected_stats: list[str] = Field(min_length=1, max_length=5)
+
+
+class FcmSubmissionResponse(BaseModel):
+    id: UUID
+    match_id: UUID
+    competition_class: str
+    round_number: int
+    team_side: Literal["HOME", "AWAY"]
+    team_name: str = ""
+    player_id: str
+    player_name: str = ""
+    selected_stats: list[str]
+    submitted_by: str | None = None
+    created_at: str
+    updated_at: str
 
 
 class ArchiveMatchRequest(BaseModel):
@@ -75,10 +104,16 @@ class XGEventRequest(BaseModel):
     team: Team
     xg: float = Field(ge=0)
     is_goal: bool = False
+    is_on_target: bool = False
     shot_x: float | None = Field(default=None, ge=0, le=105)
     shot_y: float | None = Field(default=None, ge=0, le=68)
+    goalmouth_x: float | None = Field(default=None, ge=0, le=1)
+    goalmouth_y: float | None = Field(default=None, ge=0, le=1)
     is_header: bool = False
     is_weak_foot: bool = False
+    under_pressure: bool = False
+    one_on_one: bool = False
+    shot_pace_band: Literal["LOW", "MID", "HIGH"] = "MID"
     user_id: str | None = None
 
 
@@ -89,6 +124,25 @@ class XGEstimateRequest(BaseModel):
     start_y: float = Field(ge=0, le=68)
     is_header: bool = False
     is_weak_foot: bool = False
+
+
+class XGOTEstimateRequest(BaseModel):
+    xg: float = Field(ge=0, le=1)
+    is_on_target: bool = False
+    goalmouth_x: float | None = Field(default=None, ge=0, le=1)
+    goalmouth_y: float | None = Field(default=None, ge=0, le=1)
+    is_goal: bool = False
+    is_header: bool = False
+    is_weak_foot: bool = False
+    under_pressure: bool = False
+    one_on_one: bool = False
+    shot_pace_band: Literal["LOW", "MID", "HIGH"] = "MID"
+
+
+class MatchMarkerRequest(BaseModel):
+    clock_ms: int | None = Field(default=None, ge=0)
+    marker_type: MarkerType = "HALFTIME_START"
+    user_id: str | None = None
 
 
 class AttachSrtRequest(BaseModel):
@@ -109,6 +163,56 @@ class EventsResetRequest(BaseModel):
     user_id: str | None = None
 
 
+class TimelineEditorUpsertRequest(BaseModel):
+    kind: TimelineItemKind
+    type: EditableEventType
+    clock_ms: int = Field(ge=0)
+    team: Team | None = None
+    lane: Lane | None = None
+    xg: float | None = Field(default=None, ge=0)
+    is_goal: bool = False
+    is_on_target: bool = False
+    shot_x: float | None = Field(default=None, ge=0, le=105)
+    shot_y: float | None = Field(default=None, ge=0, le=68)
+    goalmouth_x: float | None = Field(default=None, ge=0, le=1)
+    goalmouth_y: float | None = Field(default=None, ge=0, le=1)
+    is_header: bool = False
+    is_weak_foot: bool = False
+    under_pressure: bool = False
+    one_on_one: bool = False
+    shot_pace_band: Literal["LOW", "MID", "HIGH"] = "MID"
+
+
+class TimelineEditorListItem(BaseModel):
+    item_id: str
+    kind: TimelineItemKind
+    type: EditableEventType
+    clock_ms: int
+    team: Team | None = None
+    lane: Lane | None = None
+    xg: float | None = None
+    xgot: float | None = None
+    is_goal: bool = False
+    is_on_target: bool = False
+    shot_x: float | None = None
+    shot_y: float | None = None
+    goalmouth_x: float | None = None
+    goalmouth_y: float | None = None
+    is_header: bool = False
+    is_weak_foot: bool = False
+    under_pressure: bool = False
+    one_on_one: bool = False
+    shot_pace_band: Literal["LOW", "MID", "HIGH"] | None = None
+    created_at: str
+
+
+class TimelineEditorListResponse(BaseModel):
+    items: list[TimelineEditorListItem]
+    total: int
+    limit: int
+    offset: int
+
+
 class WebhookSubscriptionCreateRequest(BaseModel):
     callback_url: str
     events: list[WebhookEventKind] = Field(default_factory=lambda: ["STATE", "EVENT"])
@@ -118,11 +222,13 @@ class WebhookSubscriptionCreateRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     name: str = Field(min_length=2, max_length=40)
+    access_key: str = Field(min_length=4, max_length=200)
 
 
 class SessionUserResponse(BaseModel):
     id: str
     name: str
+    role: UserRole
 
 
 class WebhookSubscriptionResponse(BaseModel):

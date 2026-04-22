@@ -1,23 +1,92 @@
-# Live Admin System (SRT/RTMP->HLS Gateway + Match Ops App)
+# Fine Play Console (SRT/RTMP->HLS Gateway + Multi-Product Ops Console)
 
 로컬에서 `docker compose`로 즉시 실행 가능하며, VPS 배포(nginx/https 옵션)까지 고려한 구조입니다.
+
+## Production Access
+
+- 운영 콘솔 URL: `https://console.fineludens.kr/login`
+- 운영 앱 서버 고정 IP: `3.217.232.253`
+- 운영 미디어 서버 고정 IP: `3.227.35.90`
+- 운영 북마크/로그인 안내는 `live.fineludens.kr` 대신 `console.fineludens.kr` 기준으로 통일
+
+## Media Server Remote Control
+
+`System Control`에서 슈퍼어드민이 media EC2를 켜고 끌 수 있도록 앱은 외부 control endpoint를 호출하도록 설계되어 있습니다.
+
+- `MEDIA_CONTROL_URL`
+  - 필수
+  - AWS Lambda Function URL 또는 별도 control API 주소
+- `MEDIA_CONTROL_TOKEN`
+  - 선택
+  - Bearer 토큰으로 전달
+- `MEDIA_INSTANCE_ID`
+  - 선택
+  - 제어 대상 EC2 instance id
+- `MEDIA_INSTANCE_NAME`
+  - 선택
+  - 기본값: `live-admin-media`
+
+control endpoint 요청 형식:
+
+```json
+{
+  "action": "status" | "start" | "stop",
+  "instance_id": "i-xxxxxxxx",
+  "instance_name": "live-admin-media",
+  "confirmed_live_action": false
+}
+```
+
+예상 응답 형식:
+
+```json
+{
+  "ok": true,
+  "state": "running",
+  "instance_id": "i-xxxxxxxx",
+  "instance_name": "live-admin-media",
+  "public_ip": "3.227.35.90",
+  "private_ip": "172.31.95.167",
+  "provider": "aws",
+  "detail": "optional"
+}
+```
 
 ## 1) Repository Layout
 
 - `infra/gateway/`: SRT/RTMP ingest -> HLS origin 게이트웨이 (`nginx` + `nginx-rtmp` + `ffmpeg-runner` + match scripts + manager API)
 - `infra/app/`: 앱 스택 compose (`api`, `web`, `postgres`, `nginx` reverse proxy)
 - `apps/api/`: FastAPI + SQLAlchemy + Postgres
-- `apps/web/`: Next.js 운영 콘솔 (hls.js + Recharts)
+- `apps/web/`: Next.js 기반 `Fine Play Console`
+  - `FLA`: Live match operations
+  - `FPA`: Football performance analysis
 - `README.md`: 실행/배포/환경변수/키바인딩/웹훅/확장 가이드
 - `docs/match-export-csv.md`: 매치 단일 CSV export 컬럼 정의서
 
 ---
 
-## 2) Architecture
+## 2) Product Structure
+
+- `Fine Play Console`
+  - `FLA`
+    - `Dashboard`
+    - `Media`
+    - `System`
+    - `Match Control`
+    - `Event Editor`
+  - `FPA`
+    - `Live Logger`
+    - `File Analyzer`
+    - `Visual Reports`
+    - `Code Guide`
+
+---
+
+## 3) Architecture
 
 - 영상 트래픽 분리:
   - Gateway 서버: SRT 입력 수신 후 경기별 HLS 출력
-  - App 서버: UI/API/DB만 처리
+  - App 서버: `Fine Play Console` UI/API/DB 처리
 - 데이터 흐름:
   1. 운영자가 `/admin/match/[id]`에서 타이머/소유권/레인/xG 입력
   2. API가 state/event 저장
@@ -26,10 +95,11 @@
   4. 상태/이벤트 저장 직후 outbox에 webhook enqueue
   5. 백그라운드 워커가 webhook 전송 재시도(지수 백오프)
   6. Match 페이지의 `Export Match Data` 버튼으로 단일 CSV 다운로드 가능
+  7. `/admin/fpa/*`에서 FPA 전용 입력/분석/시각화 수행 가능
 
 ---
 
-## 3) Local Run: Gateway
+## 4) Local Run: Gateway
 
 ```bash
 cd infra/gateway
@@ -78,7 +148,7 @@ HLS 설정:
 
 ---
 
-## 4) Local Run: App
+## 5) Local Run: App
 
 ```bash
 cd infra/app
@@ -87,8 +157,17 @@ docker compose up -d --build
 
 접속 (로컬 테스트):
 
-- 콘솔: `http://localhost:3000/admin/dashboard`
-- API health: `http://localhost:3000/health`
+- 권장 로그인 URL: `https://127.0.0.1/login`
+- FLA dashboard: `https://127.0.0.1/admin/dashboard`
+- FPA live logger: `https://127.0.0.1/admin/fpa/live`
+- FPA file analyzer: `https://127.0.0.1/admin/fpa/analyzer`
+- FPA visual reports: `https://127.0.0.1/admin/fpa/reports`
+- API health: `https://127.0.0.1/health`
+
+주의:
+
+- 로컬 확인은 `http://127.0.0.1:3000/...`보다 `https://127.0.0.1/...` 사용 권장
+- self-signed 인증서 경고가 뜨면 로컬 테스트용으로 진행 허용 필요
 
 ### 기본 흐름
 
@@ -99,9 +178,24 @@ docker compose up -d --build
 4. `Export Match Data`로 단일 CSV 다운로드
 5. 도미넌스 차트/이벤트/웹훅 outbox 상태 확인
 
+### FPA 운영 흐름
+
+1. `Live Logger`
+   - 필드 이미지 위에서 좌표를 직접 클릭
+   - 필드 좌표는 `105 x 68` 기준
+   - 원점은 원본 FPA와 동일하게 좌하단 `(0,0)`
+   - `Home/Away` 전환 시 `Direction` 자동 반전
+   - `-1/+1` 버튼과 방향키는 `1분` 단위 시간 조절
+   - `Enter`로 제출, 우클릭으로 마지막 좌표 제거
+2. `File Analyzer`
+   - 업로드 분석은 원본 FPA와 동일하게 `Data` 시트를 기준으로 처리
+   - 같은 업로드 파일로 분석 엑셀 다운로드와 선수별 시각화 생성 가능
+3. `Visual Reports`
+   - 별도 화면에서 파일 기반 패스맵/히트맵 생성 가능
+
 ---
 
-## 5) Key Bindings
+## 6) Key Bindings
 
 - 타이머
   - `Space`: Start/Pause
@@ -114,6 +208,10 @@ docker compose up -d --build
   - `S`: CENTER 선택
   - `D`: RIGHT 선택
   - `Enter`: 선택된 lane 이벤트 1건 기록
+- FPA Live Logger
+  - `Enter`: stat input 제출
+  - `ArrowUp`, `ArrowRight`: `+1분`
+  - `ArrowDown`, `ArrowLeft`: `-1분`
 
 주의:
 
@@ -122,7 +220,7 @@ docker compose up -d --build
 
 ---
 
-## 6) API Spec
+## 7) API Spec
 
 ### Matches / Lock
 
@@ -149,10 +247,14 @@ docker compose up -d --build
 
 - `POST /api/matches/{match_id}/state`
   - body: `{ state_id, clock_ms, running, possession_team, selected_team, attack_lr, user_id? }`
+- `POST /api/matches/{match_id}/markers`
+  - body: `{ marker_type: "HALFTIME_START", clock_ms?, user_id? }`
 - `POST /api/matches/{match_id}/events/attack_lane`
   - body: `{ event_id, clock_ms?, team, lane, user_id? }`
 - `POST /api/matches/{match_id}/events/xg`
-  - body: `{ event_id, clock_ms?, team, xg, is_goal?, shot_x?, shot_y?, is_header?, is_weak_foot?, user_id? }`
+  - body: `{ event_id, clock_ms?, team, xg, is_goal?, is_on_target?, shot_x?, shot_y?, goalmouth_x?, goalmouth_y?, is_header?, is_weak_foot?, under_pressure?, one_on_one?, shot_pace_band?, user_id? }`
+- `POST /api/xg/estimate`
+- `POST /api/xgot/estimate`
 
 ### Query
 
@@ -160,6 +262,27 @@ docker compose up -d --build
 - `GET /api/matches/{match_id}/dominance?bin_seconds=180`
 - `GET /api/matches/{match_id}/export.csv`
 - `GET /api/outbox`
+
+### FPA
+
+- `POST /api/fpa/logs/generate`
+- `POST /api/fpa/analyze/export`
+- `POST /api/fpa/analyze/upload`
+- `POST /api/fpa/players/extract`
+- `POST /api/fpa/analyze/visualize`
+
+FPA endpoint 메모:
+
+- `logs/generate`
+  - live logger 입력을 원본 FPA 형식의 로그 문자열과 row preview로 변환
+- `analyze/export`
+  - live logger 누적 로그를 분석 workbook으로 생성
+- `analyze/upload`
+  - 업로드 파일의 `Data` 시트를 다시 분석 workbook으로 생성
+- `players/extract`
+  - 업로드 파일에서 선수 목록 추출
+- `analyze/visualize`
+  - 업로드 파일과 `player_id` 기준으로 pass map / heatmap 생성
 
 `/api/matches/{match_id}/export.csv`:
 
@@ -186,7 +309,7 @@ docker compose up -d --build
 
 ---
 
-## 7) Domain Logic Summary
+## 8) Domain Logic Summary
 
 ### Timer
 
@@ -213,10 +336,16 @@ docker compose up -d --build
 - xG는 이벤트 단위로 저장
 - 저장 필드:
   - `xg`
+  - `xgot`
   - `is_goal`
+  - `is_on_target`
   - `shot_x`, `shot_y`
+  - `goalmouth_x`, `goalmouth_y`
   - `is_header`, `is_weak_foot`
+  - `under_pressure`, `one_on_one`
+  - `shot_pace_band`
 - 프런트 피치 입력은 고정 half-pitch 기준 좌표를 `shot_x`, `shot_y`로 서버에 저장
+- 온타깃 슈팅은 goalmouth 좌표와 보조 메타를 함께 저장하고 `xgot`을 계산한다
 - `is_goal=true`인 경우 dominance 계산에는 `DOM_GOAL_XG_MULTIPLIER`가 적용된 값이 누적됨
 
 ### Dominance bins (incremental)
@@ -230,6 +359,13 @@ docker compose up -d --build
   - `DOM_POSSESSION_WEIGHT=0.35`
   - `DOM_XG_WEIGHT=0.65`
   - `DOM_XG_SCALE=1.8`
+- 기존 bin 필드는 유지하면서, 선택적으로 `annotations` 메타가 추가될 수 있다
+- `annotations.goal_summary`
+  - 해당 3분 bin 안의 골 수 요약
+  - 예: `{ "home": 1, "away": 0, "total": 1 }`
+- `annotations.markers`
+  - 해당 bin에 포함된 경기 마커 배열
+  - 현재는 `HT` 지원
 
 ### Runtime schema patch
 
@@ -451,10 +587,20 @@ curl -sS "$BASE_URL/api/v1/matches/$MATCH_ID/result" \
 - `attack_direction` (HOME/AWAY 2개)
   - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `team`, `direction`, `direction_ratio`
 - `xg` (슈팅 이벤트 배열)
-  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `event_clock_ms`, `event_clock`, `team`, `xg`, `is_goal`, `shot_x`, `shot_y`, `is_header`, `is_weak_foot`, `event_id`, `created_at`
+  - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `event_clock_ms`, `event_clock`, `team`, `xg`, `xgot`, `is_goal`, `is_on_target`, `shot_x`, `shot_y`, `goalmouth_x`, `goalmouth_y`, `is_header`, `is_weak_foot`, `under_pressure`, `one_on_one`, `shot_pace_band`, `event_id`, `created_at`
 - `match_dominance`
   - `match_name`, `match_id`, `aggregate_clock_ms`, `aggregate_clock`, `bin_seconds`
   - `items[]`: `base_time_ms`, `base_time`, `dominance`
+  - 선택적 `annotations.goal_summary`, `annotations.markers` 포함 가능
+
+`/api/v1`의 xG 관련 응답에는 현재 `xgot`과 온타깃/골문 메타데이터가 포함됩니다.
+
+- `GET /api/v1/matches/{match_id}/events`
+  - 각 이벤트에 `xgot`, `is_on_target`, `goalmouth_x`, `goalmouth_y`, `under_pressure`, `one_on_one`, `shot_pace_band` 포함
+- `GET /api/v1/matches/{match_id}/summary`
+  - 최근 이벤트 목록에 위 xGOT 관련 필드 포함
+- `GET /api/v1/matches/{match_id}/result`
+  - `xg[]` 배열에 위 xGOT 관련 필드 포함
 
 ---
 

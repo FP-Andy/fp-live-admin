@@ -4,6 +4,7 @@ services:
       context: ./nginx-rtmp
       dockerfile: Dockerfile
     container_name: gateway-rtmp
+    restart: unless-stopped
     ports:
       - "1935:1935"
       - "8081:8081"
@@ -13,6 +14,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     container_name: gateway-nginx
+    restart: unless-stopped
     ports:
       - "8080:80"
     volumes:
@@ -25,6 +27,7 @@ services:
     build:
       context: ./runner
     container_name: gateway-ffmpeg
+    restart: unless-stopped
     ports:
       - "8090:8090"
     environment:

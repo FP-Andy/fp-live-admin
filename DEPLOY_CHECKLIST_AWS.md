@@ -61,7 +61,7 @@
 
 ## 3) 도메인 연결
 
-- [ ] `admin.yourdomain.com` -> 앱 서버 공인 IP
+- [ ] `console.yourdomain.com` -> 앱 서버 공인 IP
 - [ ] `rtmp.yourdomain.com` -> 영상 서버 공인 IP
 - [ ] `hls.yourdomain.com` -> 영상 서버 공인 IP
 
@@ -162,12 +162,12 @@ curl -sS http://127.0.0.1:3000/api/matches
 
 권장: Nginx + Let's Encrypt(certbot)
 
-- [ ] 앱 서버에 `admin.yourdomain.com` SSL 적용
+- [ ] 앱 서버에 `console.yourdomain.com` SSL 적용
 - [ ] 필요 시 `hls.yourdomain.com` SSL 적용
 
 검증:
 
-- [ ] `https://admin.yourdomain.com/admin/dashboard` 접속 가능
+- [ ] `https://console.yourdomain.com/admin/dashboard` 접속 가능
 
 ---
 
@@ -218,4 +218,3 @@ cd infra/gateway && docker compose ps
 curl -sS http://127.0.0.1:8090/health
 curl -sS http://127.0.0.1:8081/health
 ```
-

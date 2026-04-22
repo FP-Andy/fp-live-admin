@@ -5,10 +5,12 @@ import hashlib
 import hmac
 import io
 import math
+import re
 import uuid
-from urllib.parse import urlsplit
+from pathlib import Path
+from urllib.parse import quote, urlsplit
 from uuid import UUID
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
@@ -16,7 +18,19 @@ import os
 import httpx
 
 from .db import Base, engine, get_db
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, Outbox, User, WebhookSubscription
+from .fcm_cards import build_card_image, build_cards_zip, find_template_path
+from .fpa import (
+    analyze_card_workbook,
+    build_analysis_workbook,
+    build_visual_reports,
+    build_visual_reports_archive,
+    extract_players,
+    generate_log_entry,
+    import_logs_from_workbook,
+    parse_logs_to_dataframe,
+)
+from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaVisualizeResponse
+from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -28,16 +42,25 @@ from .schemas import (
     LoginRequest,
     MatchResultResponse,
     MatchResponse,
+    MatchMarkerRequest,
     EventsResetRequest,
+    FcmSubmissionResponse,
+    FcmSubmissionUpsertRequest,
     PossessionResetRequest,
     ReleaseLockRequest,
     SessionUserResponse,
     StateRequest,
+    TimelineEditorListItem,
+    TimelineEditorListResponse,
+    TimelineEditorUpsertRequest,
     WebhookSubscriptionCreateRequest,
     XGEstimateRequest,
     XGEventRequest,
+    XGOTEstimateRequest,
+    UserRole,
 )
 from .services import apply_attack_event, apply_possession_segment, apply_xg_event, backfill_attack_scores, enqueue_outbox, latest_outbox, outbox_worker, recompute_dominance
+from .xg import estimate_xg as shared_estimate_xg, is_in_penalty_area as shared_is_in_penalty_area, normalize_shot_x as shared_normalize_shot_x
 
 app = FastAPI(title="Live Match Admin API")
 
@@ -55,7 +78,18 @@ worker_task: asyncio.Task | None = None
 SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
-PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://live.fineludens.kr").rstrip("/")
+PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://console.fineludens.kr").rstrip("/")
+MEDIA_CONTROL_URL = os.getenv("MEDIA_CONTROL_URL", "").strip()
+MEDIA_CONTROL_TOKEN = os.getenv("MEDIA_CONTROL_TOKEN", "").strip()
+MEDIA_INSTANCE_ID = os.getenv("MEDIA_INSTANCE_ID", "").strip()
+MEDIA_INSTANCE_NAME = os.getenv("MEDIA_INSTANCE_NAME", "live-admin-media").strip() or "live-admin-media"
+FCM_RUNTIME_DIR = Path(os.getenv("FCM_RUNTIME_DIR", "/app/runtime/fcm")).resolve()
+
+DOM_POSSESSION_WEIGHT = float(os.getenv("DOM_POSSESSION_WEIGHT", "0.35"))
+DOM_XG_WEIGHT = float(os.getenv("DOM_XG_WEIGHT", "0.65"))
+DOM_ATTACK_WEIGHT = float(os.getenv("DOM_ATTACK_WEIGHT", "0.25"))
+DOM_XG_SCALE = float(os.getenv("DOM_XG_SCALE", "1.8"))
+DOM_GOAL_XG_MULTIPLIER = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
 
 
 def _normalize_hls_url(hls_url: str | None) -> str | None:
@@ -73,40 +107,98 @@ def _normalize_hls_url(hls_url: str | None) -> str | None:
     return hls_url
 
 
+def _normalize_fcm_team_side(team_side: str) -> str:
+    normalized_side = team_side.strip().upper()
+    if normalized_side not in {"HOME", "AWAY"}:
+        raise HTTPException(status_code=400, detail="team_side must be HOME or AWAY")
+    return normalized_side
+
+
+def _fcm_workbook_path(match_id: UUID, team_side: str) -> Path:
+    FCM_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    return FCM_RUNTIME_DIR / f"{match_id}_{team_side.lower()}.xlsx"
+
+
+def _fcm_shared_workbook_path(match_id: UUID) -> Path:
+    FCM_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    return FCM_RUNTIME_DIR / f"{match_id}_shared.xlsx"
+
+
 def _ensure_runtime_schema() -> None:
     inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    user_columns = {column["name"] for column in inspector.get_columns("users")}
     match_columns = {column["name"] for column in inspector.get_columns("matches")}
     event_columns = {column["name"] for column in inspector.get_columns("events")}
     dominance_columns = {column["name"] for column in inspector.get_columns("dominance_bins")}
+    fcm_submission_columns = {column["name"] for column in inspector.get_columns("fcm_submissions")} if "fcm_submissions" in table_names else set()
     statements: list[str] = []
 
+    if "role" not in user_columns:
+        statements.append("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'OPERATOR'")
     if "competition_class" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN competition_class VARCHAR NOT NULL DEFAULT 'K3'")
+    if "round_number" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN round_number INTEGER NOT NULL DEFAULT 1")
     if "archived" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE")
     if "archived_at" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN archived_at TIMESTAMP NULL")
+    if "fcm_submissions" in table_names and "team_side" not in fcm_submission_columns:
+        statements.append("ALTER TABLE fcm_submissions ADD COLUMN team_side VARCHAR NOT NULL DEFAULT 'HOME'")
+    if "fcm_submissions" in table_names and "player_name" not in fcm_submission_columns:
+        statements.append("ALTER TABLE fcm_submissions ADD COLUMN player_name VARCHAR NOT NULL DEFAULT ''")
     if "is_goal" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
     if "shot_x" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN shot_x DOUBLE PRECISION")
     if "shot_y" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN shot_y DOUBLE PRECISION")
+    if "xgot" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN xgot DOUBLE PRECISION")
+    if "is_on_target" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN is_on_target BOOLEAN NOT NULL DEFAULT FALSE")
+    if "goalmouth_x" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN goalmouth_x DOUBLE PRECISION")
+    if "goalmouth_y" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN goalmouth_y DOUBLE PRECISION")
     if "is_header" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_header BOOLEAN NOT NULL DEFAULT FALSE")
     if "is_weak_foot" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_weak_foot BOOLEAN NOT NULL DEFAULT FALSE")
+    if "under_pressure" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN under_pressure BOOLEAN NOT NULL DEFAULT FALSE")
+    if "one_on_one" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN one_on_one BOOLEAN NOT NULL DEFAULT FALSE")
+    if "shot_pace_band" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN shot_pace_band VARCHAR")
     if "home_attack_score" not in dominance_columns:
         statements.append("ALTER TABLE dominance_bins ADD COLUMN home_attack_score DOUBLE PRECISION NOT NULL DEFAULT 0")
     if "away_attack_score" not in dominance_columns:
         statements.append("ALTER TABLE dominance_bins ADD COLUMN away_attack_score DOUBLE PRECISION NOT NULL DEFAULT 0")
 
-    if not statements:
+    unique_match_constraint_names: list[str] = []
+    unique_match_index_names: list[str] = []
+    if "fcm_submissions" in table_names:
+        for constraint in inspector.get_unique_constraints("fcm_submissions"):
+            cols = constraint.get("column_names") or []
+            if cols == ["match_id"] and constraint.get("name"):
+                unique_match_constraint_names.append(constraint["name"])
+        for index in inspector.get_indexes("fcm_submissions"):
+            cols = index.get("column_names") or []
+            if index.get("unique") and cols == ["match_id"] and index.get("name"):
+                unique_match_index_names.append(index["name"])
+
+    if not statements and not unique_match_constraint_names and not unique_match_index_names:
         return
 
     with engine.begin() as conn:
         for statement in statements:
             conn.execute(text(statement))
+        for constraint_name in unique_match_constraint_names:
+            conn.execute(text(f'ALTER TABLE fcm_submissions DROP CONSTRAINT IF EXISTS "{constraint_name}"'))
+        for index_name in unique_match_index_names:
+            conn.execute(text(f'DROP INDEX IF EXISTS "{index_name}"'))
 
 
 def _gateway_start_stream(
@@ -229,6 +321,89 @@ def _gateway_status() -> dict:
     }
 
 
+def _media_control_request(action: str, *, confirmed_live_action: bool = False) -> dict:
+    if not MEDIA_CONTROL_URL:
+        raise HTTPException(status_code=503, detail="MEDIA_CONTROL_URL not configured")
+
+    headers: dict[str, str] = {}
+    if MEDIA_CONTROL_TOKEN:
+        headers["Authorization"] = f"Bearer {MEDIA_CONTROL_TOKEN}"
+
+    payload = {
+        "action": action,
+        "instance_id": MEDIA_INSTANCE_ID or None,
+        "instance_name": MEDIA_INSTANCE_NAME,
+        "confirmed_live_action": confirmed_live_action,
+    }
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(MEDIA_CONTROL_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"media control failed: {ex}") from ex
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="media control returned invalid response")
+    return data
+
+
+def _media_control_status() -> dict:
+    try:
+        data = _media_control_request("status")
+    except HTTPException as ex:
+        return {
+            "configured": bool(MEDIA_CONTROL_URL),
+            "ok": False,
+            "state": "unknown",
+            "detail": ex.detail,
+            "instance_id": MEDIA_INSTANCE_ID or None,
+            "instance_name": MEDIA_INSTANCE_NAME,
+        }
+
+    return {
+        "configured": bool(MEDIA_CONTROL_URL),
+        "ok": bool(data.get("ok", True)),
+        "state": data.get("state") or "unknown",
+        "detail": data.get("detail"),
+        "instance_id": data.get("instance_id") or MEDIA_INSTANCE_ID or None,
+        "instance_name": data.get("instance_name") or MEDIA_INSTANCE_NAME,
+        "public_ip": data.get("public_ip"),
+        "private_ip": data.get("private_ip"),
+        "provider": data.get("provider") or "aws",
+    }
+
+
+def _probe_hls_url(hls_url: str | None) -> dict:
+    normalized_url = _normalize_hls_url(hls_url)
+    if not normalized_url:
+        return {
+            "ok": False,
+            "status_code": None,
+            "detail": "No HLS URL configured",
+            "checked_at": datetime.utcnow().isoformat(),
+        }
+
+    try:
+        with httpx.Client(timeout=4.0, follow_redirects=True) as client:
+            response = client.get(normalized_url)
+            ok = response.status_code == 200
+            return {
+                "ok": ok,
+                "status_code": response.status_code,
+                "detail": "HLS playlist reachable" if ok else f"HLS returned {response.status_code}",
+                "checked_at": datetime.utcnow().isoformat(),
+            }
+    except Exception as ex:
+        return {
+            "ok": False,
+            "status_code": None,
+            "detail": str(ex),
+            "checked_at": datetime.utcnow().isoformat(),
+        }
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global worker_task
@@ -254,6 +429,13 @@ def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
 def _require_match_not_archived(match_obj: Match) -> None:
     if match_obj.archived:
         raise HTTPException(status_code=409, detail="Archived matches are read-only")
+
+
+def _require_archived_editor_access(match_obj: Match, user: User) -> None:
+    if not _is_superuser(user):
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    if not match_obj.archived:
+        raise HTTPException(status_code=409, detail="Event editor is available for archived matches only")
 
 
 def _slugify_user_id(name: str) -> str:
@@ -309,12 +491,45 @@ def _require_session_user(user: User | None = Depends(_get_session_user)) -> Use
     return user
 
 
+def _require_superuser(user: User = Depends(_require_session_user)) -> User:
+    if not _is_superuser(user):
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    return user
+
+
 def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) -> str | None:
     return explicit_user_id or (session_user.id if session_user else None)
 
 
-def _is_superuser(user_id: str | None) -> bool:
-    return user_id == "andy"
+def _is_superuser(user: User | str | None) -> bool:
+    if isinstance(user, User):
+        return (user.role or "OPERATOR") == "SUPERADMIN"
+    return False
+
+
+def _sha256_hex(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _matches_configured_key(raw_value: str, plain_env: str, hash_env: str) -> bool:
+    plain = os.getenv(plain_env, "").strip()
+    hashed = os.getenv(hash_env, "").strip().lower()
+    if plain and hmac.compare_digest(raw_value, plain):
+        return True
+    if hashed and hmac.compare_digest(_sha256_hex(raw_value), hashed):
+        return True
+    return False
+
+
+def _resolve_login_role(access_key: str) -> UserRole:
+    key = access_key.strip()
+    if not key:
+        raise HTTPException(status_code=401, detail="Access key required")
+    if _matches_configured_key(key, "SUPERADMIN_ACCESS_KEY", "SUPERADMIN_ACCESS_KEY_HASH"):
+        return "SUPERADMIN"
+    if _matches_configured_key(key, "OPERATOR_ACCESS_KEY", "OPERATOR_ACCESS_KEY_HASH"):
+        return "OPERATOR"
+    raise HTTPException(status_code=401, detail="Invalid access key")
 
 
 def _normalize_competition_class(value: str | None) -> str:
@@ -322,8 +537,11 @@ def _normalize_competition_class(value: str | None) -> str:
     return normalized or "K3"
 
 
+MATCH_NAME_PATTERN = re.compile(r"^\[(?P<class>[A-Z0-9-]+) \| (?P<round>\d+)R\] (?P<home>.+) vs (?P<away>.+)$")
+
+
 def _is_in_penalty_area(x: float, y: float) -> bool:
-    return (x > 88.5) and (13.84 < y < 54.16)
+    return shared_is_in_penalty_area(x, y)
 
 
 def _normalize_shot_x(
@@ -331,10 +549,7 @@ def _normalize_shot_x(
     attack_lr: str,
     start_x: float,
 ) -> float:
-    home_dir = attack_lr
-    away_dir = "R2L" if attack_lr == "L2R" else "L2R"
-    team_dir = home_dir if team == "HOME" else away_dir
-    return start_x if team_dir == "L2R" else 105.0 - start_x
+    return shared_normalize_shot_x(team, attack_lr, start_x)
 
 
 def _estimate_xg(
@@ -345,55 +560,80 @@ def _estimate_xg(
     is_header: bool,
     is_weak_foot: bool,
 ) -> dict:
-    shot_x_adj = _normalize_shot_x(team, attack_lr, start_x)
-    shot_y_adj = start_y
+    return shared_estimate_xg(team, attack_lr, start_x, start_y, is_header, is_weak_foot)
 
-    goal_x, goal_y = 105.0, 34.0
-    goal_post_left = 30.34
-    goal_post_right = 37.66
 
-    distance = math.sqrt((goal_x - shot_x_adj) ** 2 + (goal_y - shot_y_adj) ** 2)
+def _estimate_xgot(
+    xg: float,
+    *,
+    is_on_target: bool,
+    goalmouth_x: float | None,
+    goalmouth_y: float | None,
+    is_goal: bool,
+    is_header: bool,
+    is_weak_foot: bool,
+    under_pressure: bool,
+    one_on_one: bool,
+    shot_pace_band: str,
+) -> dict:
+    clipped_xg = max(0.0, min(1.0, xg))
+    if not is_on_target or goalmouth_x is None or goalmouth_y is None:
+        return {
+            "xgot": 0.0,
+            "corner_factor": 0.0,
+            "placement_factor": 0.0,
+            "height_factor": 0.0,
+            "pace_factor": 0.0,
+            "delta": round(-clipped_xg, 3),
+            "label": "off-target",
+        }
 
-    dx_left = goal_x - shot_x_adj
-    dy_left = goal_post_left - shot_y_adj
-    dx_right = goal_x - shot_x_adj
-    dy_right = goal_post_right - shot_y_adj
-    angle_left = math.atan2(dy_left, dx_left)
-    angle_right = math.atan2(dy_right, dx_right)
-    angle = abs(angle_left - angle_right)
-    is_head = 1 if is_header else 0
-    is_weak = 1 if is_weak_foot else 0
-    dist_log = math.log1p(distance)
-    angle_log = math.log1p(angle)
-    header_dist_penalty = dist_log * is_head
-    goal_line_dist = goal_x - shot_x_adj
-    endline_penalty = 1.5 if goal_line_dist < 1.0 else 0.0
+    gx = max(0.0, min(1.0, goalmouth_x))
+    gy = max(0.0, min(1.0, goalmouth_y))
+    lateral_offset = abs(gx - 0.5) / 0.5
+    height_factor = gy
+    corner_factor = min(1.0, math.sqrt((lateral_offset ** 2 + height_factor ** 2) / 2.0))
+    placement_factor = 0.65 * lateral_offset + 0.35 * height_factor
 
-    exponent = (
-        1.00 * dist_log
-        - 2.00 * angle_log
-        + 0.70 * is_head
-        + 0.40 * is_weak
-        + 0.30 * header_dist_penalty
-        - 1.10
-        + endline_penalty
+    # Speed should not boost keeper-zone shots uniformly.
+    # Weight speed by a fan-shaped distribution radiating from the center-bottom
+    # of the goalmouth so upper corners benefit more than central low shots.
+    radial_distance = min(1.0, math.sqrt((lateral_offset ** 2 + height_factor ** 2) / 2.0))
+    fan_weight = min(1.0, 0.55 * height_factor + 0.25 * lateral_offset + 0.20 * radial_distance)
+    pace_lookup = {"LOW": -0.03, "MID": 0.0, "HIGH": 0.05}
+    pace_factor = pace_lookup.get(shot_pace_band, 0.0) * fan_weight
+
+    score = (
+        clipped_xg * 0.58
+        + corner_factor * 0.24
+        + placement_factor * 0.14
+        + pace_factor
+        + (0.05 if one_on_one else 0.0)
+        - (0.04 if under_pressure else 0.0)
+        - (0.03 if is_header else 0.0)
+        - (0.02 if is_weak_foot else 0.0)
     )
-    xg = 1.0 / (1.0 + math.exp(exponent))
+    if is_goal:
+        score += 0.03
 
-    is_outside_goal_frame = shot_y_adj < goal_post_left or shot_y_adj > goal_post_right
-    if is_outside_goal_frame and shot_x_adj >= 104.5:
-        penalty_scale = max(0.1, min(goal_line_dist / 1.0, 1.0))
-        xg *= penalty_scale
-
-    xg = max(0.0, min(1.0, xg))
+    xgot = max(0.0, min(1.0, score))
+    label = "central"
+    if corner_factor >= 0.78:
+        label = "top-corner threat"
+    elif placement_factor >= 0.6:
+        label = "well-placed"
+    elif gy <= 0.25 and lateral_offset <= 0.2:
+        label = "keeper-zone"
 
     return {
-        "xg": round(xg, 3),
-        "distance": round(distance, 2),
-        "angle_rad": round(angle, 4),
-        "is_in_box": bool(_is_in_penalty_area(shot_x_adj, shot_y_adj)),
-        "normalized_x": round(shot_x_adj, 2),
-        "normalized_y": round(shot_y_adj, 2),
+        "xgot": round(xgot, 3),
+        "corner_factor": round(corner_factor, 3),
+        "placement_factor": round(placement_factor, 3),
+        "height_factor": round(height_factor, 3),
+        "fan_weight": round(fan_weight, 3),
+        "pace_factor": round(pace_factor, 3),
+        "delta": round(xgot - clipped_xg, 3),
+        "label": label,
     }
 
 
@@ -402,6 +642,7 @@ def _serialize_match(row: Match) -> dict:
         "id": row.id,
         "name": row.name,
         "competition_class": _normalize_competition_class(row.competition_class),
+        "round_number": int(row.round_number or 1),
         "archived": bool(row.archived),
         "archived_at": row.archived_at.isoformat() if row.archived_at else None,
         "created_at": row.created_at.isoformat(),
@@ -409,6 +650,205 @@ def _serialize_match(row: Match) -> dict:
         "metadata": row.metadata_json,
         "operator_id": row.operator_id,
     }
+
+
+def _serialize_fcm_submission(row: FcmSubmission) -> dict:
+    return {
+        "id": row.id,
+        "match_id": row.match_id,
+        "competition_class": _normalize_competition_class(row.competition_class),
+        "round_number": int(row.round_number or 1),
+        "team_side": row.team_side,
+        "team_name": row.team_name or "",
+        "player_id": row.player_id,
+        "player_name": row.player_name or "",
+        "selected_stats": list(row.selected_stats or []),
+        "submitted_by": row.submitted_by,
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _audit(
+    db: Session,
+    action: str,
+    target_type: str,
+    *,
+    actor: User | None = None,
+    target_id: str | None = None,
+    match_id: UUID | str | None = None,
+    severity: str = "INFO",
+    details: dict | None = None,
+) -> None:
+    db.add(
+        AuditLog(
+            actor_id=actor.id if actor else None,
+            actor_name=actor.name if actor else None,
+            actor_role=actor.role if actor else None,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            match_id=str(match_id) if match_id else None,
+            severity=severity,
+            details=details or {},
+        )
+    )
+
+
+def _serialize_timeline_item(item: Event | MatchMarker) -> TimelineEditorListItem:
+    if isinstance(item, Event):
+        return TimelineEditorListItem(
+            item_id=str(item.id),
+            kind="EVENT",
+            type=item.type,
+            clock_ms=item.clock_ms,
+            team=item.team,
+            lane=item.lane,
+            xg=item.xg,
+            xgot=item.xgot,
+            is_goal=bool(item.is_goal),
+            is_on_target=bool(item.is_on_target),
+            shot_x=item.shot_x,
+            shot_y=item.shot_y,
+            goalmouth_x=item.goalmouth_x,
+            goalmouth_y=item.goalmouth_y,
+            is_header=bool(item.is_header),
+            is_weak_foot=bool(item.is_weak_foot),
+            under_pressure=bool(item.under_pressure),
+            one_on_one=bool(item.one_on_one),
+            shot_pace_band=item.shot_pace_band,
+            created_at=item.created_at.isoformat(),
+        )
+    return TimelineEditorListItem(
+        item_id=str(item.id),
+        kind="MARKER",
+        type=item.marker_type,
+        clock_ms=item.clock_ms,
+        created_at=item.created_at.isoformat(),
+    )
+
+
+def _rebuild_match_projections(match_id: UUID, db: Session) -> None:
+    db.query(DominanceBin).filter(DominanceBin.match_id == match_id).delete()
+    db.flush()
+
+    possession_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc(), PossessionSegment.id.asc())
+        .all()
+    )
+    for seg in possession_rows:
+        if seg.end_ms is None:
+            continue
+        apply_possession_segment(db, match_id, seg.team, seg.start_ms, seg.end_ms)
+
+    xg_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc(), Event.id.asc())
+        .all()
+    )
+    goal_boost = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
+    for event in xg_rows:
+        dominance_xg = (event.xg or 0.0) * goal_boost if event.is_goal else (event.xg or 0.0)
+        apply_xg_event(db, match_id, event.team, event.clock_ms, dominance_xg)
+
+    backfill_attack_scores(db, match_id)
+
+
+def _apply_editor_item_updates(
+    *,
+    event: Event | None,
+    marker: MatchMarker | None,
+    body: TimelineEditorUpsertRequest,
+) -> dict | None:
+    if body.kind == "EVENT" and body.type == "ATTACK_LANE":
+        if body.team is None or body.lane is None:
+            raise HTTPException(status_code=400, detail="ATTACK_LANE requires team and lane")
+        assert event is not None
+        event.type = "ATTACK_LANE"
+        event.clock_ms = body.clock_ms
+        event.team = body.team
+        event.lane = body.lane
+        event.xg = None
+        event.xgot = None
+        event.is_goal = False
+        event.is_on_target = False
+        event.shot_x = None
+        event.shot_y = None
+        event.goalmouth_x = None
+        event.goalmouth_y = None
+        event.is_header = False
+        event.is_weak_foot = False
+        event.under_pressure = False
+        event.one_on_one = False
+        event.shot_pace_band = None
+        return None
+
+    if body.kind == "EVENT" and body.type == "XG":
+        if body.team is None or body.xg is None:
+            raise HTTPException(status_code=400, detail="XG event requires team and xg")
+        assert event is not None
+        xgot_meta = _estimate_xgot(
+            body.xg,
+            is_on_target=body.is_on_target,
+            goalmouth_x=body.goalmouth_x,
+            goalmouth_y=body.goalmouth_y,
+            is_goal=body.is_goal,
+            is_header=body.is_header,
+            is_weak_foot=body.is_weak_foot,
+            under_pressure=body.under_pressure,
+            one_on_one=body.one_on_one,
+            shot_pace_band=body.shot_pace_band,
+        )
+        event.type = "XG"
+        event.clock_ms = body.clock_ms
+        event.team = body.team
+        event.lane = None
+        event.xg = body.xg
+        event.xgot = xgot_meta["xgot"]
+        event.is_goal = body.is_goal
+        event.is_on_target = body.is_on_target
+        event.shot_x = body.shot_x
+        event.shot_y = body.shot_y
+        event.goalmouth_x = body.goalmouth_x
+        event.goalmouth_y = body.goalmouth_y
+        event.is_header = body.is_header
+        event.is_weak_foot = body.is_weak_foot
+        event.under_pressure = body.under_pressure
+        event.one_on_one = body.one_on_one
+        event.shot_pace_band = body.shot_pace_band
+        return xgot_meta
+
+    if body.kind == "MARKER" and body.type == "HALFTIME_START":
+        assert marker is not None
+        marker.marker_type = "HALFTIME_START"
+        marker.clock_ms = body.clock_ms
+        return None
+
+    raise HTTPException(status_code=400, detail="Unsupported timeline item type")
+
+
+def _match_is_live(match_id: UUID, db: Session) -> bool:
+    last_state = _latest_state(match_id, db)
+    return bool(last_state and last_state.running)
+
+
+def _guard_live_dangerous_action(
+    match_obj: Match,
+    db: Session,
+    *,
+    confirm_live_action: bool,
+    action_label: str,
+) -> None:
+    if confirm_live_action:
+        return
+    if _match_is_live(match_obj.id, db):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{action_label} blocked while match clock is running. Retry with explicit live-action confirmation.",
+        )
 
 
 def _enqueue_webhook_fanout(db: Session, kind: str, ref_id: UUID, payload: dict) -> None:
@@ -425,6 +865,46 @@ def _enqueue_webhook_fanout(db: Session, kind: str, ref_id: UUID, payload: dict)
 
     for target in targets:
         enqueue_outbox(db, kind, ref_id, target, payload)
+
+
+def _build_dominance_annotations(
+    rows: list[DominanceBin],
+    *,
+    goal_rows: list[Event],
+    marker_rows: list[MatchMarker],
+    bin_seconds: int,
+) -> dict[int, dict]:
+    bin_size_ms = bin_seconds * 1000
+    annotations_by_k: dict[int, dict] = {}
+
+    for event in goal_rows:
+        k = event.clock_ms // bin_size_ms
+        entry = annotations_by_k.setdefault(k, {"goal_summary": {"home": 0, "away": 0, "total": 0}, "markers": []})
+        if event.team == "HOME":
+            entry["goal_summary"]["home"] += 1
+        elif event.team == "AWAY":
+            entry["goal_summary"]["away"] += 1
+        entry["goal_summary"]["total"] += 1
+
+    for marker in marker_rows:
+        k = marker.clock_ms // bin_size_ms
+        entry = annotations_by_k.setdefault(k, {"goal_summary": {"home": 0, "away": 0, "total": 0}, "markers": []})
+        if marker.marker_type == "HALFTIME_START" and "HT" not in entry["markers"]:
+            entry["markers"].append("HT")
+
+    cleaned: dict[int, dict] = {}
+    valid_keys = {row.k for row in rows}
+    for k, entry in annotations_by_k.items():
+        if k not in valid_keys:
+            continue
+        payload: dict = {}
+        if entry["goal_summary"]["total"] > 0:
+            payload["goal_summary"] = entry["goal_summary"]
+        if entry["markers"]:
+            payload["markers"] = entry["markers"]
+        if payload:
+            cleaned[k] = payload
+    return cleaned
 
 
 def _latest_state(match_id: UUID, db: Session) -> State | None:
@@ -458,11 +938,16 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
         .limit(50)
         .all()
     )
+    lane_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "ATTACK_LANE")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc(), Event.id.asc())
+        .all()
+    )
 
     def lane_calc(team: str):
         left = center = right = 0
-        current_lane = None
-        team_lane_events = [e for e in ev_rows if e.type == "ATTACK_LANE" and e.team == team]
+        team_lane_events = [e for e in lane_rows if e.team == team]
         for ev in team_lane_events:
             if ev.lane == "LEFT":
                 left += 1
@@ -470,12 +955,6 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
                 center += 1
             elif ev.lane == "RIGHT":
                 right += 1
-
-        for ev in ev_rows:
-            if ev.type != "ATTACK_LANE" or ev.team != team:
-                continue
-            current_lane = ev.lane
-            break
 
         total = left + center + right
         return {
@@ -486,7 +965,7 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
             "center_pct": (center / total * 100.0) if total else 0.0,
             "right_pct": (right / total * 100.0) if total else 0.0,
             "total_count": total,
-            "current_lane": current_lane,
+            "current_lane": team_lane_events[-1].lane if team_lane_events else None,
         }
 
     return {
@@ -521,11 +1000,18 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
                 "team": e.team,
                 "lane": e.lane,
                 "xg": e.xg,
+                "xgot": e.xgot,
                 "is_goal": e.is_goal,
+                "is_on_target": e.is_on_target,
                 "shot_x": e.shot_x,
                 "shot_y": e.shot_y,
+                "goalmouth_x": e.goalmouth_x,
+                "goalmouth_y": e.goalmouth_y,
                 "is_header": e.is_header,
                 "is_weak_foot": e.is_weak_foot,
+                "under_pressure": e.under_pressure,
+                "one_on_one": e.one_on_one,
+                "shot_pace_band": e.shot_pace_band,
                 "created_at": e.created_at.isoformat(),
             }
             for e in ev_rows
@@ -533,7 +1019,223 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
     }
 
 
-def _build_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _compute_dominance_value(
+    *,
+    home_poss_ms: int,
+    away_poss_ms: int,
+    home_xg: float,
+    away_xg: float,
+    home_attack_score: float,
+    away_attack_score: float,
+) -> float:
+    poss_total = home_poss_ms + away_poss_ms
+    poss_balance = 0.0 if poss_total == 0 else (home_poss_ms - away_poss_ms) / poss_total
+    xg_balance = _clamp((home_xg - away_xg) * DOM_XG_SCALE, -1.0, 1.0)
+    attack_total = home_attack_score + away_attack_score
+    attack_balance = 0.0 if attack_total == 0 else (home_attack_score - away_attack_score) / attack_total
+    weight_sum = DOM_POSSESSION_WEIGHT + DOM_XG_WEIGHT + DOM_ATTACK_WEIGHT
+    if weight_sum <= 0:
+        poss_w = 0.35
+        xg_w = 0.65
+        attack_w = 0.0
+    else:
+        poss_w = DOM_POSSESSION_WEIGHT / weight_sum
+        xg_w = DOM_XG_WEIGHT / weight_sum
+        attack_w = DOM_ATTACK_WEIGHT / weight_sum
+    return _clamp(
+        poss_w * poss_balance + xg_w * xg_balance + attack_w * attack_balance,
+        -1.0,
+        1.0,
+    )
+
+
+def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
+    if bin_seconds != 180:
+        raise HTTPException(status_code=400, detail="Only 180-second bins are supported in MVP")
+
+    bin_size_ms = bin_seconds * 1000
+    last_state = _latest_state(match_id, db)
+    current_clock_ms = last_state.clock_ms if last_state else 0
+
+    possession_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc(), PossessionSegment.id.asc())
+        .all()
+    )
+    xg_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc(), Event.id.asc())
+        .all()
+    )
+    attack_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "ATTACK_LANE")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc(), Event.id.asc())
+        .all()
+    )
+    marker_rows = (
+        db.query(MatchMarker)
+        .filter(MatchMarker.match_id == match_id)
+        .order_by(MatchMarker.clock_ms.asc(), MatchMarker.created_at.asc(), MatchMarker.id.asc())
+        .all()
+    )
+
+    max_clock_ms = max(
+        [
+            current_clock_ms,
+            *[seg.end_ms or current_clock_ms for seg in possession_rows],
+            *[seg.start_ms for seg in possession_rows],
+            *[row.clock_ms for row in xg_rows],
+            *[row.clock_ms for row in attack_rows],
+            *[row.clock_ms for row in marker_rows],
+        ],
+        default=0,
+    )
+
+    halftime_marker = next((marker for marker in marker_rows if marker.marker_type == "HALFTIME_START"), None)
+    halftime_start_ms = halftime_marker.clock_ms if halftime_marker else None
+
+    periods: list[dict] = []
+    first_half_end_ms = halftime_start_ms if halftime_start_ms is not None else max_clock_ms
+    periods.append({"period": 1, "start_ms": 0, "end_ms": max(0, first_half_end_ms)})
+    if halftime_start_ms is not None and max_clock_ms > halftime_start_ms:
+        periods.append({"period": 2, "start_ms": halftime_start_ms, "end_ms": max_clock_ms})
+
+    bins: list[dict] = []
+    half_gap_ms = bin_size_ms
+    chart_cursor_ms = 0
+    ht_chart_ms: int | None = None
+    half_payloads: list[dict] = []
+
+    for index, period in enumerate(periods):
+        period_start_ms = period["start_ms"]
+        period_end_ms = period["end_ms"]
+        period_duration_ms = max(0, period_end_ms - period_start_ms)
+        half_payloads.append({"period": period["period"], "duration_ms": period_duration_ms})
+        if period_duration_ms <= 0:
+            if index == 0 and len(periods) > 1:
+                ht_chart_ms = chart_cursor_ms + half_gap_ms // 2
+                chart_cursor_ms += half_gap_ms
+            continue
+
+        rel_start_ms = 0
+        while rel_start_ms < period_duration_ms:
+            rel_end_ms = min(rel_start_ms + bin_size_ms, period_duration_ms)
+            abs_start_ms = period_start_ms + rel_start_ms
+            abs_end_ms = period_start_ms + rel_end_ms
+
+            home_poss_ms = 0
+            away_poss_ms = 0
+            for seg in possession_rows:
+                seg_end_ms = seg.end_ms if seg.end_ms is not None else current_clock_ms
+                overlap = max(0, min(abs_end_ms, seg_end_ms) - max(abs_start_ms, seg.start_ms))
+                if overlap <= 0:
+                    continue
+                if seg.team == "HOME":
+                    home_poss_ms += overlap
+                elif seg.team == "AWAY":
+                    away_poss_ms += overlap
+
+            home_xg = 0.0
+            away_xg = 0.0
+            for event in xg_rows:
+                if abs_start_ms <= event.clock_ms < abs_end_ms:
+                    dominance_xg = (event.xg or 0.0) * DOM_GOAL_XG_MULTIPLIER if event.is_goal else (event.xg or 0.0)
+                    if event.team == "HOME":
+                        home_xg += dominance_xg
+                    elif event.team == "AWAY":
+                        away_xg += dominance_xg
+
+            home_attack_score = 0.0
+            away_attack_score = 0.0
+            for event in attack_rows:
+                if abs_start_ms <= event.clock_ms < abs_end_ms:
+                    if event.team == "HOME":
+                        home_attack_score += 1.0
+                    elif event.team == "AWAY":
+                        away_attack_score += 1.0
+
+            annotations: dict = {}
+            home_goals = 0
+            away_goals = 0
+            for event in xg_rows:
+                if event.is_goal and abs_start_ms <= event.clock_ms < abs_end_ms:
+                    if event.team == "HOME":
+                        home_goals += 1
+                    elif event.team == "AWAY":
+                        away_goals += 1
+            if home_goals or away_goals:
+                annotations["goal_summary"] = {
+                    "home": home_goals,
+                    "away": away_goals,
+                    "total": home_goals + away_goals,
+                }
+
+            markers: list[str] = []
+            for marker in marker_rows:
+                if abs_start_ms <= marker.clock_ms < abs_end_ms and marker.marker_type == "HALFTIME_START":
+                    markers.append("HT")
+            if markers:
+                annotations["markers"] = markers
+
+            chart_start_ms = chart_cursor_ms + rel_start_ms
+            chart_end_ms = chart_cursor_ms + rel_end_ms
+            payload = {
+                "k": len(bins),
+                "period": period["period"],
+                "start_ms": abs_start_ms,
+                "end_ms": abs_end_ms,
+                "display_start_ms": rel_start_ms,
+                "display_end_ms": rel_end_ms,
+                "chart_start_ms": chart_start_ms,
+                "chart_end_ms": chart_end_ms,
+                "chart_midpoint_ms": chart_start_ms + ((chart_end_ms - chart_start_ms) // 2),
+                "home_poss_ms": home_poss_ms,
+                "away_poss_ms": away_poss_ms,
+                "home_xg": home_xg,
+                "away_xg": away_xg,
+                "home_attack_score": home_attack_score,
+                "away_attack_score": away_attack_score,
+                "dominance": _compute_dominance_value(
+                    home_poss_ms=home_poss_ms,
+                    away_poss_ms=away_poss_ms,
+                    home_xg=home_xg,
+                    away_xg=away_xg,
+                    home_attack_score=home_attack_score,
+                    away_attack_score=away_attack_score,
+                ),
+            }
+            if annotations:
+                payload["annotations"] = annotations
+            bins.append(payload)
+            rel_start_ms = rel_end_ms
+
+        chart_cursor_ms += period_duration_ms
+        if index == 0 and len(periods) > 1:
+            ht_chart_ms = chart_cursor_ms + half_gap_ms // 2
+            chart_cursor_ms += half_gap_ms
+
+    result = {
+        "bin_seconds": bin_seconds,
+        "split_halves": True,
+        "half_gap_ms": half_gap_ms if len(periods) > 1 else 0,
+        "halves": half_payloads,
+        "bins": bins,
+    }
+    if ht_chart_ms is not None:
+        result["ht_chart_ms"] = ht_chart_ms
+    return result
+
+
+def _build_dominance(match_id: UUID, bin_seconds: int, db: Session, *, split_halves: bool = False) -> dict:
+    if split_halves:
+        return _build_split_halves_dominance(match_id, bin_seconds, db)
     if bin_seconds != 180:
         raise HTTPException(status_code=400, detail="Only 180-second bins are supported in MVP")
     attack_event_count = (
@@ -556,6 +1258,24 @@ def _build_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
             .order_by(DominanceBin.k)
             .all()
         )
+    goal_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG", Event.is_goal.is_(True))
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc(), Event.id.asc())
+        .all()
+    )
+    marker_rows = (
+        db.query(MatchMarker)
+        .filter(MatchMarker.match_id == match_id)
+        .order_by(MatchMarker.clock_ms.asc(), MatchMarker.created_at.asc(), MatchMarker.id.asc())
+        .all()
+    )
+    annotations_by_k = _build_dominance_annotations(
+        rows,
+        goal_rows=goal_rows,
+        marker_rows=marker_rows,
+        bin_seconds=bin_seconds,
+    )
     return {
         "bin_seconds": bin_seconds,
         "bins": [
@@ -570,6 +1290,7 @@ def _build_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
                 "home_attack_score": r.home_attack_score,
                 "away_attack_score": r.away_attack_score,
                 "dominance": r.dominance,
+                **({"annotations": annotations_by_k[r.k]} if r.k in annotations_by_k else {}),
             }
             for r in rows
         ],
@@ -643,6 +1364,19 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
         .order_by(DominanceBin.k.asc())
         .all()
     )
+    marker_rows = (
+        db.query(MatchMarker)
+        .filter(MatchMarker.match_id == match_id)
+        .order_by(MatchMarker.clock_ms.asc(), MatchMarker.created_at.asc(), MatchMarker.id.asc())
+        .all()
+    )
+    goal_rows = [r for r in xg_rows if r.is_goal]
+    annotations_by_k = _build_dominance_annotations(
+        dom_rows,
+        goal_rows=goal_rows,
+        marker_rows=marker_rows,
+        bin_seconds=180,
+    )
 
     return {
         "match_name": match_obj.name,
@@ -671,11 +1405,18 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
                 "event_clock": _fmt_clock_ms(r.clock_ms),
                 "team": r.team,
                 "xg": r.xg,
+                "xgot": r.xgot,
                 "is_goal": r.is_goal,
+                "is_on_target": r.is_on_target,
                 "shot_x": r.shot_x,
                 "shot_y": r.shot_y,
+                "goalmouth_x": r.goalmouth_x,
+                "goalmouth_y": r.goalmouth_y,
                 "is_header": r.is_header,
                 "is_weak_foot": r.is_weak_foot,
+                "under_pressure": r.under_pressure,
+                "one_on_one": r.one_on_one,
+                "shot_pace_band": r.shot_pace_band,
                 "event_id": str(r.id),
                 "created_at": r.created_at.isoformat(),
             }
@@ -692,6 +1433,7 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
                     "base_time_ms": r.start_ms,
                     "base_time": _fmt_clock_ms(r.start_ms),
                     "dominance": r.dominance,
+                    **({"annotations": annotations_by_k[r.k]} if r.k in annotations_by_k else {}),
                 }
                 for r in dom_rows
             ],
@@ -808,11 +1550,18 @@ def _build_match_export_csv(match_id: UUID, db: Session) -> tuple[str, str]:
         "team",
         "lane",
         "xg",
+        "xgot",
         "is_goal",
+        "is_on_target",
         "shot_x",
         "shot_y",
+        "goalmouth_x",
+        "goalmouth_y",
         "is_header",
         "is_weak_foot",
+        "under_pressure",
+        "one_on_one",
+        "shot_pace_band",
         "segment_id",
         "segment_start_ms",
         "segment_start_label",
@@ -861,11 +1610,18 @@ def _build_match_export_csv(match_id: UUID, db: Session) -> tuple[str, str]:
                 "team": event.team,
                 "lane": event.lane,
                 "xg": event.xg,
+                "xgot": event.xgot,
                 "is_goal": event.is_goal,
+                "is_on_target": event.is_on_target,
                 "shot_x": event.shot_x,
                 "shot_y": event.shot_y,
+                "goalmouth_x": event.goalmouth_x,
+                "goalmouth_y": event.goalmouth_y,
                 "is_header": event.is_header,
                 "is_weak_foot": event.is_weak_foot,
+                "under_pressure": event.under_pressure,
+                "one_on_one": event.one_on_one,
+                "shot_pace_band": event.shot_pace_band,
             }
         )
 
@@ -931,19 +1687,23 @@ def health() -> dict:
 def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user_name = body.name.strip()
     user_id = _slugify_user_id(user_name)
+    role = _resolve_login_role(body.access_key)
 
     existing = db.get(User, user_id)
     if existing:
         existing.name = user_name
+        existing.role = role
         user = existing
     else:
-        user = User(id=user_id, name=user_name)
+        user = User(id=user_id, name=user_name, role=role)
         db.add(user)
 
     db.commit()
     db.refresh(user)
     _set_session_cookie(response, user.id)
-    return {"id": user.id, "name": user.name}
+    _audit(db, "SESSION_LOGIN", "session", actor=user, target_id=user.id, severity="INFO")
+    db.commit()
+    return {"id": user.id, "name": user.name, "role": user.role}
 
 
 @app.post("/api/session/logout")
@@ -954,7 +1714,7 @@ def logout(response: Response):
 
 @app.get("/api/session/me", response_model=SessionUserResponse)
 def current_session(user: User = Depends(_require_session_user)):
-    return {"id": user.id, "name": user.name}
+    return {"id": user.id, "name": user.name, "role": user.role}
 
 
 @app.post("/api/xg/estimate")
@@ -969,14 +1729,339 @@ def estimate_xg(body: XGEstimateRequest):
     )
 
 
+@app.post("/api/xgot/estimate")
+def estimate_xgot(body: XGOTEstimateRequest):
+    return _estimate_xgot(
+        body.xg,
+        is_on_target=body.is_on_target,
+        goalmouth_x=body.goalmouth_x,
+        goalmouth_y=body.goalmouth_y,
+        is_goal=body.is_goal,
+        is_header=body.is_header,
+        is_weak_foot=body.is_weak_foot,
+        under_pressure=body.under_pressure,
+        one_on_one=body.one_on_one,
+        shot_pace_band=body.shot_pace_band,
+    )
+
+
+@app.post("/api/fpa/logs/generate", response_model=FpaGenerateLogResponse)
+def generate_fpa_log(body: FpaGenerateLogRequest):
+    try:
+        return generate_log_entry(
+            stat_input=body.stat_input,
+            dots=[dot.model_dump() for dot in body.dots],
+            half=body.half,
+            team=body.team,
+            direction=body.direction,
+            timeline=body.timeline,
+        )
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/api/fpa/analyze/export")
+def export_fpa_logs(body: FpaExportLogsRequest):
+    if not body.logs:
+        raise HTTPException(status_code=400, detail="No logs to process")
+    try:
+        df = parse_logs_to_dataframe(body.logs, body.match_id, body.teamid_h, body.teamid_a)
+        workbook = build_analysis_workbook(df)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+    headers = {"Content-Disposition": 'attachment; filename="fpa_live_analyzed_data.xlsx"'}
+    return Response(
+        content=workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@app.post("/api/fpa/analyze/upload")
+async def analyze_fpa_file(file: UploadFile = File(...)):
+    try:
+        workbook = build_analysis_workbook(await file.read())
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+    filename = (file.filename or "uploaded").rsplit(".", 1)[0]
+    headers = {"Content-Disposition": f'attachment; filename="{filename}_analyzed.xlsx"'}
+    return Response(
+        content=workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@app.post("/api/fpa/players/extract", response_model=FpaPlayersResponse)
+async def extract_fpa_players(file: UploadFile = File(...)):
+    try:
+        return {"players": extract_players(await file.read())}
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@app.post("/api/fpa/logs/import", response_model=FpaImportLogsResponse)
+async def import_fpa_logs(file: UploadFile = File(...)):
+    try:
+        return import_logs_from_workbook(await file.read())
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/api/fcm/analyze", response_model=FcmAnalyzeWorkbookResponse)
+async def analyze_fcm_workbook(
+    file: UploadFile = File(...),
+    match_id: UUID | None = Form(default=None),
+    team_side: str | None = Form(default=None),
+):
+    try:
+        file_bytes = await file.read()
+        if match_id:
+            _fcm_shared_workbook_path(match_id).write_bytes(file_bytes)
+            if team_side:
+                workbook_path = _fcm_workbook_path(match_id, _normalize_fcm_team_side(team_side))
+                workbook_path.write_bytes(file_bytes)
+        return analyze_card_workbook(file_bytes)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@app.get("/api/fcm/submissions", response_model=list[FcmSubmissionResponse])
+def list_fcm_submissions(db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    rows = db.query(FcmSubmission).order_by(desc(FcmSubmission.updated_at)).all()
+    return [_serialize_fcm_submission(row) for row in rows]
+
+
+@app.get("/api/fcm/generate")
+def generate_fcm_cards(
+    league: str = Query(...),
+    round: int = Query(..., ge=1, le=99),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    normalized_league = _normalize_competition_class(league)
+    rows = (
+        db.query(FcmSubmission)
+        .filter(FcmSubmission.competition_class == normalized_league, FcmSubmission.round_number == round)
+        .order_by(FcmSubmission.match_id.asc(), FcmSubmission.team_side.asc(), desc(FcmSubmission.updated_at))
+        .all()
+    )
+
+    latest_rows: dict[tuple[UUID, str], FcmSubmission] = {}
+    for row in rows:
+        latest_rows[(row.match_id, row.team_side)] = row
+
+    generated_cards: list[tuple[str, bytes]] = []
+    skipped: list[str] = []
+
+    for row in latest_rows.values():
+        template_path = find_template_path(row.team_name or "")
+        if not template_path:
+            skipped.append(f"{row.team_name}: 배경 템플릿 없음")
+            continue
+
+        workbook_path = _fcm_workbook_path(row.match_id, row.team_side)
+        shared_workbook_path = _fcm_shared_workbook_path(row.match_id)
+        if workbook_path.exists():
+            workbook_bytes = workbook_path.read_bytes()
+        elif shared_workbook_path.exists():
+            workbook_bytes = shared_workbook_path.read_bytes()
+        else:
+            workbook_bytes = None
+
+        try:
+            card_bytes = build_card_image(
+                background_path=template_path,
+                player_id=row.player_id,
+                player_name=row.player_name or row.player_id,
+                selected_stats=list(row.selected_stats or []),
+                workbook_bytes=workbook_bytes,
+            )
+        except Exception as ex:
+            skipped.append(f"{row.team_name}: {ex}")
+            continue
+
+        filename = f"{normalized_league}-{round}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
+        generated_cards.append((filename, card_bytes))
+
+    if not generated_cards:
+        detail = "생성 가능한 카드가 없습니다."
+        if skipped:
+            detail = f"{detail} {' / '.join(skipped[:3])}"
+        raise HTTPException(status_code=409, detail=detail)
+
+    zip_bytes = build_cards_zip(generated_cards)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{normalized_league}-{round}R_cards.zip"'},
+    )
+
+
+@app.get("/api/fcm/matches/{match_id}/submissions", response_model=list[FcmSubmissionResponse])
+def get_fcm_submissions(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    rows = (
+        db.query(FcmSubmission)
+        .filter(FcmSubmission.match_id == match_id)
+        .order_by(FcmSubmission.team_side.asc(), desc(FcmSubmission.updated_at))
+        .all()
+    )
+    return [_serialize_fcm_submission(row) for row in rows]
+
+
+@app.get("/api/fcm/matches/{match_id}/submission", response_model=FcmSubmissionResponse)
+def get_fcm_submission(
+    match_id: UUID,
+    team_side: str = Query(default="HOME"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    normalized_side = team_side.strip().upper()
+    if normalized_side not in {"HOME", "AWAY"}:
+        raise HTTPException(status_code=400, detail="team_side must be HOME or AWAY")
+    row = (
+        db.query(FcmSubmission)
+        .filter(FcmSubmission.match_id == match_id, FcmSubmission.team_side == normalized_side)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="FCM submission not found")
+    return _serialize_fcm_submission(row)
+
+
+@app.post("/api/fcm/matches/{match_id}/submission", response_model=FcmSubmissionResponse)
+def upsert_fcm_submission(
+    match_id: UUID,
+    body: FcmSubmissionUpsertRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    match_row = db.get(Match, match_id)
+    if not match_row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if not match_row.archived:
+        raise HTTPException(status_code=409, detail="FCM submissions are available for archived matches only")
+
+    selected_stats = [item.strip() for item in body.selected_stats if item and item.strip()]
+    if not selected_stats:
+        raise HTTPException(status_code=400, detail="At least one stat must be selected")
+    if len(selected_stats) > 5:
+        raise HTTPException(status_code=400, detail="You can submit at most 5 stats")
+
+    normalized_side = _normalize_fcm_team_side(body.team_side)
+
+    row = (
+        db.query(FcmSubmission)
+        .filter(FcmSubmission.match_id == match_id, FcmSubmission.team_side == normalized_side)
+        .first()
+    )
+    if not row:
+        row = FcmSubmission(
+            match_id=match_id,
+            competition_class=_normalize_competition_class(match_row.competition_class),
+            round_number=int(match_row.round_number or 1),
+            team_side=normalized_side,
+        )
+        db.add(row)
+
+    metadata = match_row.metadata_json or {}
+    row.competition_class = _normalize_competition_class(match_row.competition_class)
+    row.round_number = int(match_row.round_number or 1)
+    row.team_side = normalized_side
+    row.team_name = body.team_name.strip() or ""
+    row.player_id = body.player_id.strip()
+    row.player_name = body.player_name.strip()
+    row.selected_stats = selected_stats
+    row.submitted_by = user.id
+    row.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(row)
+
+    _audit(
+        db,
+        "FCM_SUBMISSION_UPSERT",
+        "FCM_SUBMISSION",
+        actor=user,
+        target_id=str(row.id),
+        match_id=str(match_id),
+        details={
+            "competition_class": row.competition_class,
+            "round_number": row.round_number,
+            "team_side": row.team_side,
+            "team_name": row.team_name,
+            "player_id": row.player_id,
+            "player_name": row.player_name,
+            "selected_stats": selected_stats,
+            "home_team": metadata.get("home_team"),
+            "away_team": metadata.get("away_team"),
+        },
+    )
+    db.commit()
+    return _serialize_fcm_submission(row)
+
+
+@app.post("/api/fpa/analyze/visualize", response_model=FpaVisualizeResponse)
+async def visualize_fpa_file(file: UploadFile = File(...), player_id: str = Form(...), report_title: str = Form(default="FPA Visual Reports")):
+    try:
+        return build_visual_reports(await file.read(), player_id, report_title=report_title)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@app.post("/api/fpa/analyze/visualize/archive")
+async def download_fpa_visual_archive(file: UploadFile = File(...), report_title: str = Form(default="FPA Visual Reports")):
+    try:
+        archive_bytes = build_visual_reports_archive(await file.read(), report_title=report_title)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+    raw_title = (report_title or "").strip()
+    fallback_stem = (file.filename or "fpa").rsplit(".", 1)[0]
+    base_stem = raw_title if raw_title else fallback_stem
+    safe_ascii_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", base_stem)
+    safe_ascii_stem = safe_ascii_stem.strip("_") or "fpa"
+    utf8_stem = base_stem
+    encoded_utf8 = quote(f"{utf8_stem}_visual_reports.zip")
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{safe_ascii_stem}_visual_reports.zip"; '
+            f"filename*=UTF-8''{encoded_utf8}"
+        )
+    }
+    return Response(content=archive_bytes, media_type="application/zip", headers=headers)
+
+
 @app.post("/api/matches", response_model=MatchResponse)
 def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
+    normalized_class = _normalize_competition_class(body.competition_class)
+    name_match = MATCH_NAME_PATTERN.match(body.name.strip())
+    if not name_match:
+        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
+    if name_match.group("class") != normalized_class:
+        raise HTTPException(status_code=400, detail="Competition class does not match match name format")
+    if int(name_match.group("round")) != body.round_number:
+        raise HTTPException(status_code=400, detail="Round number does not match match name format")
+
+    home_team = name_match.group("home").strip()
+    away_team = name_match.group("away").strip()
     metadata = dict(body.metadata or {})
     metadata["stream_mode"] = body.stream_mode
+    metadata["home_team"] = home_team
+    metadata["away_team"] = away_team
     row = Match(
         id=uuid.uuid4(),
         name=body.name,
-        competition_class=_normalize_competition_class(body.competition_class),
+        competition_class=normalized_class,
+        round_number=body.round_number,
         hls_url=body.hls_url,
         metadata_json=metadata,
         operator_id=user.id if user and body.assign_operator else None,
@@ -1069,7 +2154,7 @@ def attach_ingest_stream(match_id: UUID, body: AttachIngestRequest, db: Session 
 
 
 @app.post("/api/matches/{match_id}/stream/clear")
-def clear_match_stream(match_id: UUID, db: Session = Depends(get_db)):
+def clear_match_stream(match_id: UUID, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -1077,11 +2162,13 @@ def clear_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     if (row.metadata_json or {}).get("stream_mode") == "MANUAL":
         raise HTTPException(status_code=409, detail="Manual matches do not use streaming")
     _gateway_clear_stream(match_id)
+    _audit(db, "STREAM_CLEAR", "match", actor=user, target_id=str(row.id), match_id=row.id, severity="WARN")
+    db.commit()
     return {"ok": True, "match_id": str(row.id)}
 
 
 @app.post("/api/matches/{match_id}/stream/stop")
-def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
+def stop_match_stream(match_id: UUID, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -1100,6 +2187,8 @@ def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"gateway stop failed: {ex}") from ex
 
+    _audit(db, "STREAM_STOP", "match", actor=user, target_id=str(row.id), match_id=row.id, severity="WARN")
+    db.commit()
     return {"ok": True, "match_id": str(row.id)}
 
 
@@ -1107,6 +2196,7 @@ def stop_match_stream(match_id: UUID, db: Session = Depends(get_db)):
 def reset_match_possession(
     match_id: UUID,
     body: PossessionResetRequest,
+    confirm_live_action: bool = Query(default=False),
     db: Session = Depends(get_db),
     session_user: User | None = Depends(_get_session_user),
 ):
@@ -1114,7 +2204,9 @@ def reset_match_possession(
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
-    _require_write_lock(row, _resolve_user_id(body.user_id, session_user))
+    _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Possession reset")
+    resolved_user_id = _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(row, resolved_user_id)
 
     db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).delete(synchronize_session=False)
 
@@ -1125,6 +2217,17 @@ def reset_match_possession(
         recompute_dominance(b)
 
     db.commit()
+    _audit(
+        db,
+        "POSSESSION_RESET",
+        "match",
+        actor=session_user,
+        target_id=str(row.id),
+        match_id=row.id,
+        severity="WARN",
+        details={"confirmed_live_action": confirm_live_action, "requested_by": resolved_user_id},
+    )
+    db.commit()
     return {"ok": True, "match_id": str(row.id)}
 
 
@@ -1132,6 +2235,7 @@ def reset_match_possession(
 def reset_match_events(
     match_id: UUID,
     body: EventsResetRequest,
+    confirm_live_action: bool = Query(default=False),
     db: Session = Depends(get_db),
     session_user: User | None = Depends(_get_session_user),
 ):
@@ -1139,7 +2243,9 @@ def reset_match_events(
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
-    _require_write_lock(row, _resolve_user_id(body.user_id, session_user))
+    _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Event reset")
+    resolved_user_id = _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(row, resolved_user_id)
 
     event_count = db.query(Event).filter(Event.match_id == match_id).delete(synchronize_session=False)
     db.query(LaneSegment).filter(LaneSegment.match_id == match_id).delete(synchronize_session=False)
@@ -1152,6 +2258,17 @@ def reset_match_events(
         b.away_attack_score = 0.0
         recompute_dominance(b)
 
+    db.commit()
+    _audit(
+        db,
+        "EVENTS_RESET",
+        "match",
+        actor=session_user,
+        target_id=str(row.id),
+        match_id=row.id,
+        severity="WARN",
+        details={"confirmed_live_action": confirm_live_action, "deleted_events": event_count, "requested_by": resolved_user_id},
+    )
     db.commit()
     return {"ok": True, "match_id": str(row.id), "deleted_events": event_count}
 
@@ -1171,12 +2288,19 @@ def list_matches(db: Session = Depends(get_db)):
 
 
 @app.post("/api/matches/{match_id}/archive")
-def archive_match(match_id: UUID, body: ArchiveMatchRequest, db: Session = Depends(get_db)):
+def archive_match(
+    match_id: UUID,
+    body: ArchiveMatchRequest,
+    confirm_live_action: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    user: User | None = Depends(_get_session_user),
+):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
 
     if body.archived:
+        _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Archive")
         if body.stop_stream:
             _gateway_stop_stream(match_id)
         row.archived = True
@@ -1188,12 +2312,338 @@ def archive_match(match_id: UUID, body: ArchiveMatchRequest, db: Session = Depen
 
     db.commit()
     db.refresh(row)
+    _audit(
+        db,
+        "MATCH_ARCHIVE" if body.archived else "MATCH_RESTORE",
+        "match",
+        actor=user,
+        target_id=str(row.id),
+        match_id=row.id,
+        severity="WARN" if body.archived else "INFO",
+        details={"confirmed_live_action": confirm_live_action, "stop_stream": body.stop_stream},
+    )
+    db.commit()
     return _serialize_match(row)
 
 
 @app.get("/api/admin/streams/status")
 def get_admin_stream_status():
     return _gateway_status()
+
+
+@app.get("/api/admin/system")
+def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    try:
+        gateway_status = _gateway_status()
+    except HTTPException:
+        gateway_status = {"ok": False, "lines": [], "running_match_ids": []}
+    media_server = _media_control_status()
+
+    matches = db.query(Match).all()
+    active_matches = [row for row in matches if not row.archived]
+    streaming_matches = [row for row in active_matches if (row.metadata_json or {}).get("stream_mode") != "MANUAL"]
+    manual_matches = [row for row in active_matches if (row.metadata_json or {}).get("stream_mode") == "MANUAL"]
+    live_matches = [row for row in active_matches if _match_is_live(row.id, db)]
+
+    alerts: list[dict] = []
+    if not gateway_status.get("ok"):
+        alerts.append({"severity": "HIGH", "title": "Gateway offline", "message": "Media page에서 gateway 상태와 HLS probe를 먼저 확인하세요."})
+    if gateway_status.get("running_match_ids") and not streaming_matches:
+        alerts.append({"severity": "MEDIUM", "title": "Orphan stream risk", "message": "실행 중 스트림은 있는데 활성 STREAM 매치 목록이 비어 있습니다."})
+    if manual_matches and not streaming_matches:
+        alerts.append({"severity": "INFO", "title": "Manual-only day candidate", "message": "현재 MANUAL 매치만 남아 있으면 media 서버 종료 검토가 가능합니다."})
+
+    recent_audits = (
+        db.query(AuditLog)
+        .order_by(desc(AuditLog.created_at))
+        .limit(12)
+        .all()
+    )
+
+    return {
+        "ok": True,
+        "time": datetime.utcnow().isoformat(),
+        "streams_enabled": bool(os.getenv("GATEWAY_API_BASE", "").strip()),
+        "gateway_base": os.getenv("GATEWAY_API_BASE", "").strip() or None,
+        "public_hls_base": PUBLIC_HLS_BASE,
+        "media_server": media_server,
+        "health": {
+            "gateway_ok": bool(gateway_status.get("ok")),
+            "running_streams": len(gateway_status.get("running_match_ids") or []),
+            "active_matches": len(active_matches),
+            "live_matches": len(live_matches),
+            "streaming_matches": len(streaming_matches),
+            "manual_matches": len(manual_matches),
+        },
+        "alerts": alerts,
+        "recent_audits": [
+            {
+                "id": str(item.id),
+                "actor_id": item.actor_id,
+                "actor_name": item.actor_name,
+                "actor_role": item.actor_role,
+                "action": item.action,
+                "target_type": item.target_type,
+                "target_id": item.target_id,
+                "match_id": item.match_id,
+                "severity": item.severity,
+                "details": item.details or {},
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in recent_audits
+        ],
+    }
+
+
+@app.get("/api/admin/ec2/media-status")
+def get_media_server_status(_user: User = Depends(_require_superuser)):
+    return {
+        "ok": True,
+        "media_server": _media_control_status(),
+    }
+
+
+@app.post("/api/admin/ec2/media-start")
+def start_media_server(db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    data = _media_control_request("start")
+    _audit(
+        db,
+        "MEDIA_EC2_START",
+        "system",
+        actor=user,
+        target_id=MEDIA_INSTANCE_ID or MEDIA_INSTANCE_NAME,
+        severity="WARN",
+        details=data,
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "media_server": _media_control_status(),
+        "result": data,
+    }
+
+
+@app.post("/api/admin/ec2/media-stop")
+def stop_media_server(confirm_live_action: bool = Query(default=False), db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    try:
+        gateway_status = _gateway_status()
+    except HTTPException:
+        gateway_status = {"ok": False, "lines": [], "running_match_ids": []}
+
+    active_matches = db.query(Match).all()
+    streaming_matches = [
+        row for row in active_matches
+        if (not row.archived) and (row.metadata_json or {}).get("stream_mode") != "MANUAL"
+    ]
+    running_streams = gateway_status.get("running_match_ids") or []
+
+    if (running_streams or streaming_matches) and not confirm_live_action:
+        raise HTTPException(
+            status_code=409,
+            detail="Media server stop blocked while running streams or active STREAM matches exist. Retry with explicit live-action confirmation.",
+        )
+
+    data = _media_control_request("stop", confirmed_live_action=confirm_live_action)
+    _audit(
+        db,
+        "MEDIA_EC2_STOP",
+        "system",
+        actor=user,
+        target_id=MEDIA_INSTANCE_ID or MEDIA_INSTANCE_NAME,
+        severity="WARN",
+        details={
+            **data,
+            "confirmed_live_action": confirm_live_action,
+            "running_streams": len(running_streams),
+            "streaming_matches": len(streaming_matches),
+        },
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "media_server": _media_control_status(),
+        "result": data,
+    }
+
+
+@app.get("/api/admin/media")
+def get_admin_media(db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    rows = db.query(Match).order_by(desc(Match.created_at)).all()
+    try:
+        stream_status = _gateway_status()
+    except HTTPException:
+        stream_status = {
+            "ok": False,
+            "lines": [],
+            "running_match_ids": [],
+        }
+
+    matches_payload: list[dict] = []
+    for row in rows:
+        serialized = _serialize_match(row)
+        metadata = dict(serialized.get("metadata") or {})
+        if not row.archived and metadata.get("stream_mode") != "MANUAL":
+            metadata["hls_probe"] = _probe_hls_url(row.hls_url)
+        serialized["metadata"] = metadata
+        matches_payload.append(serialized)
+
+    return {
+        "ok": True,
+        "time": datetime.utcnow().isoformat(),
+        "gateway": {
+            "configured": bool(os.getenv("GATEWAY_API_BASE", "").strip()),
+            "base": os.getenv("GATEWAY_API_BASE", "").strip() or None,
+            "status_ok": bool(stream_status.get("ok")),
+            "lines": stream_status.get("lines") or [],
+            "running_match_ids": stream_status.get("running_match_ids") or [],
+        },
+        "matches": matches_payload,
+    }
+
+
+@app.post("/api/admin/media/stop-all")
+def stop_all_media_streams(confirm_live_action: bool = Query(default=False), db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    try:
+        stream_status = _gateway_status()
+    except HTTPException as ex:
+        raise HTTPException(status_code=502, detail=f"gateway status failed: {ex.detail}") from ex
+
+    if (stream_status.get("running_match_ids") or []) and not confirm_live_action:
+        raise HTTPException(status_code=409, detail="Stop All Streams blocked while live streams exist. Retry with explicit live-action confirmation.")
+
+    stopped_match_ids: list[str] = []
+    for raw_match_id in stream_status.get("running_match_ids") or []:
+        try:
+            match_id = UUID(raw_match_id)
+        except Exception:
+            continue
+        _gateway_stop_stream(match_id)
+        stopped_match_ids.append(str(match_id))
+
+    _audit(
+        db,
+        "STREAM_STOP_ALL",
+        "system",
+        actor=user,
+        target_id="gateway",
+        severity="WARN",
+        details={"count": len(stopped_match_ids), "confirmed_live_action": confirm_live_action},
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "stopped_match_ids": stopped_match_ids,
+        "count": len(stopped_match_ids),
+    }
+
+
+@app.post("/api/admin/media/{match_id}/reattach")
+def reattach_media_stream(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    row = db.get(Match, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(row)
+
+    metadata = dict(row.metadata_json or {})
+    if metadata.get("stream_mode") == "MANUAL":
+        raise HTTPException(status_code=409, detail="Manual matches do not use streaming")
+
+    ingest_protocol = metadata.get("ingest_protocol")
+    ingest_url = metadata.get("ingest_url")
+    if not ingest_protocol:
+        raise HTTPException(status_code=400, detail="No ingest protocol stored for this match")
+    if ingest_protocol != "RTMP" and not ingest_url:
+        raise HTTPException(status_code=400, detail="No ingest URL stored for this match")
+
+    # Re-attach must force a fresh ffmpeg process because the gateway start
+    # script intentionally reuses an existing match PID when one is already running.
+    _gateway_stop_stream(row.id)
+    start_data = _gateway_start_stream(row.id, ingest_url, ingest_protocol)
+    metadata["ingest_protocol"] = start_data.get("ingest_protocol") or ingest_protocol
+    metadata["ingest_url"] = start_data.get("source_url") or ingest_url
+    if start_data.get("rtmp"):
+        metadata["rtmp"] = start_data["rtmp"]
+    metadata.pop("stream_attach_error", None)
+    row.metadata_json = metadata
+    row.hls_url = _normalize_hls_url(start_data.get("hls_url"))
+    db.commit()
+    db.refresh(row)
+    _audit(db, "STREAM_REATTACH", "match", actor=_user, target_id=str(row.id), match_id=row.id, severity="WARN")
+    db.commit()
+
+    return {
+        "ok": True,
+        "match": _serialize_match(row),
+    }
+
+
+@app.post("/api/admin/media/seed-demo")
+def seed_demo_media_matches(db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    demo_matches = [
+        {
+            "name": "Demo Stream | RTMP 정상 예시",
+            "competition_class": "K3",
+            "round_number": 1,
+            "metadata": {
+                "stream_mode": "STREAM",
+                "ingest_protocol": "RTMP",
+                "rtmp": {
+                    "server_url": "rtmp://rtmp.yourdomain.com/live",
+                    "stream_key": "demo-rtmp-ok",
+                    "push_url": "rtmp://rtmp.yourdomain.com/live/demo-rtmp-ok",
+                },
+            },
+            "hls_url": f"{PUBLIC_HLS_BASE}/hls/demo-rtmp-ok/stream.m3u8",
+        },
+        {
+            "name": "Demo Stream | HLS 200 실패 예시",
+            "competition_class": "K3",
+            "round_number": 1,
+            "metadata": {
+                "stream_mode": "STREAM",
+                "ingest_protocol": "SRT",
+                "ingest_url": "srt://demo-source",
+                "stream_attach_error": "최근 attach 이후 HLS 200 OK가 안 뜬 상황 예시",
+            },
+            "hls_url": f"{PUBLIC_HLS_BASE}/hls/demo-hls-fail/stream.m3u8",
+        },
+        {
+            "name": "Demo Manual | 현장 수동 운영",
+            "competition_class": "K3",
+            "round_number": 1,
+            "metadata": {
+                "stream_mode": "MANUAL",
+                "demo_media": True,
+            },
+            "hls_url": None,
+        },
+    ]
+
+    created_ids: list[str] = []
+    for item in demo_matches:
+        existing = db.query(Match).filter(Match.name == item["name"]).first()
+        if existing:
+            continue
+        row = Match(
+            id=uuid.uuid4(),
+            name=item["name"],
+            competition_class=item["competition_class"],
+            round_number=item["round_number"],
+            hls_url=item["hls_url"],
+            metadata_json=item["metadata"],
+            operator_id=user.id,
+        )
+        db.add(row)
+        created_ids.append(str(row.id))
+
+    db.commit()
+    _audit(db, "DEMO_MATCHES_SEEDED", "system", actor=user, target_id="demo-media", severity="INFO", details={"count": len(created_ids)})
+    db.commit()
+    return {
+        "ok": True,
+        "created_ids": created_ids,
+        "count": len(created_ids),
+    }
 
 
 @app.get("/api/matches/{match_id}")
@@ -1254,11 +2704,18 @@ def get_match_result(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/matches/{match_id}")
-def delete_match(match_id: UUID, stop_stream: bool = True, db: Session = Depends(get_db)):
+def delete_match(
+    match_id: UUID,
+    stop_stream: bool = True,
+    confirm_live_action: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    user: User | None = Depends(_get_session_user),
+):
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
+    _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Delete")
 
     if stop_stream:
         _gateway_stop_stream(match_id)
@@ -1277,6 +2734,17 @@ def delete_match(match_id: UUID, stop_stream: bool = True, db: Session = Depends
             db.delete(row_outbox)
 
     db.delete(row)
+    db.commit()
+    _audit(
+        db,
+        "MATCH_DELETE",
+        "match",
+        actor=user,
+        target_id=str(match_id),
+        match_id=match_id,
+        severity="WARN",
+        details={"confirmed_live_action": confirm_live_action, "stop_stream": stop_stream},
+    )
     db.commit()
 
     return {"ok": True, "deleted_match_id": str(match_id), "stream_stop_requested": stop_stream}
@@ -1297,9 +2765,20 @@ def acquire_lock(
     admin_takeover = body.admin_takeover if body else False
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(user_id):
+    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(session_user):
         raise HTTPException(status_code=409, detail="Lock already acquired")
     row.operator_id = user_id
+    db.commit()
+    _audit(
+        db,
+        "LOCK_ACQUIRE",
+        "match",
+        actor=session_user,
+        target_id=str(row.id),
+        match_id=row.id,
+        severity="INFO",
+        details={"operator_id": row.operator_id, "admin_takeover": admin_takeover},
+    )
     db.commit()
     return {"ok": True, "operator_id": row.operator_id}
 
@@ -1318,9 +2797,20 @@ def release_lock(
 
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
-    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(user_id):
+    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(session_user):
         raise HTTPException(status_code=403, detail="Not lock owner")
     row.operator_id = None
+    db.commit()
+    _audit(
+        db,
+        "LOCK_RELEASE",
+        "match",
+        actor=session_user,
+        target_id=str(row.id),
+        match_id=row.id,
+        severity="INFO",
+        details={"admin_takeover": admin_takeover},
+    )
     db.commit()
     return {"ok": True}
 
@@ -1421,6 +2911,65 @@ def post_state(
     return {"ok": True, "state_id": body.state_id}
 
 
+@app.post("/api/matches/{match_id}/markers")
+def post_match_marker(
+    match_id: UUID,
+    body: MatchMarkerRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+
+    clock_ms = body.clock_ms
+    if clock_ms is None:
+        last_state = _latest_state(match_id, db)
+        if not last_state:
+            raise HTTPException(status_code=400, detail="clock_ms missing and no state exists")
+        clock_ms = last_state.clock_ms
+
+    marker = (
+        db.query(MatchMarker)
+        .filter(MatchMarker.match_id == match_id, MatchMarker.marker_type == body.marker_type)
+        .order_by(MatchMarker.created_at.asc(), MatchMarker.id.asc())
+        .first()
+    )
+    if marker:
+        marker.clock_ms = clock_ms
+        marker.updated_at = datetime.utcnow()
+    else:
+        marker = MatchMarker(match_id=match_id, marker_type=body.marker_type, clock_ms=clock_ms)
+        db.add(marker)
+
+    db.commit()
+    db.refresh(marker)
+    _audit(
+        db,
+        "MATCH_MARKER_SET",
+        "match",
+        actor=session_user,
+        target_id=str(match_id),
+        match_id=match_id,
+        severity="INFO",
+        details={"marker_type": body.marker_type, "clock_ms": clock_ms},
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "marker": {
+            "id": str(marker.id),
+            "match_id": str(match_id),
+            "marker_type": marker.marker_type,
+            "clock_ms": marker.clock_ms,
+            "created_at": marker.created_at.isoformat(),
+            "updated_at": marker.updated_at.isoformat(),
+        },
+    }
+
+
 @app.post("/api/matches/{match_id}/events/attack_lane")
 def post_attack_lane(
     match_id: UUID,
@@ -1497,6 +3046,19 @@ def post_xg(
             raise HTTPException(status_code=400, detail="clock_ms missing and no state exists")
         clock_ms = last_state.clock_ms
 
+    xgot_meta = _estimate_xgot(
+        body.xg,
+        is_on_target=body.is_on_target,
+        goalmouth_x=body.goalmouth_x,
+        goalmouth_y=body.goalmouth_y,
+        is_goal=body.is_goal,
+        is_header=body.is_header,
+        is_weak_foot=body.is_weak_foot,
+        under_pressure=body.under_pressure,
+        one_on_one=body.one_on_one,
+        shot_pace_band=body.shot_pace_band,
+    )
+
     event = Event(
         id=body.event_id,
         match_id=match_id,
@@ -1504,11 +3066,18 @@ def post_xg(
         clock_ms=clock_ms,
         team=body.team,
         xg=body.xg,
+        xgot=xgot_meta["xgot"],
         is_goal=body.is_goal,
+        is_on_target=body.is_on_target,
         shot_x=body.shot_x,
         shot_y=body.shot_y,
+        goalmouth_x=body.goalmouth_x,
+        goalmouth_y=body.goalmouth_y,
         is_header=body.is_header,
         is_weak_foot=body.is_weak_foot,
+        under_pressure=body.under_pressure,
+        one_on_one=body.one_on_one,
+        shot_pace_band=body.shot_pace_band,
     )
     db.add(event)
     goal_boost = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
@@ -1524,17 +3093,189 @@ def post_xg(
         "clock_ms": clock_ms,
         "team": body.team,
         "xg": body.xg,
+        "xgot": xgot_meta["xgot"],
         "is_goal": body.is_goal,
+        "is_on_target": body.is_on_target,
         "shot_x": body.shot_x,
         "shot_y": body.shot_y,
+        "goalmouth_x": body.goalmouth_x,
+        "goalmouth_y": body.goalmouth_y,
         "is_header": body.is_header,
         "is_weak_foot": body.is_weak_foot,
+        "under_pressure": body.under_pressure,
+        "one_on_one": body.one_on_one,
+        "shot_pace_band": body.shot_pace_band,
         "created_at": datetime.utcnow().isoformat(),
     }
     _enqueue_webhook_fanout(db, "EVENT", body.event_id, payload)
 
     db.commit()
-    return {"ok": True, "event_id": body.event_id}
+    return {"ok": True, "event_id": body.event_id, "xgot": xgot_meta["xgot"], "xgot_meta": xgot_meta}
+
+
+@app.get("/api/admin/matches/{match_id}/timeline-items", response_model=TimelineEditorListResponse)
+def list_timeline_items(
+    match_id: UUID,
+    type: str | None = Query(default=None),
+    team: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_archived_editor_access(match_obj, user)
+
+    normalized_type = (type or "").strip().upper() or None
+    normalized_team = (team or "").strip().upper() or None
+
+    event_query = db.query(Event).filter(Event.match_id == match_id)
+    if normalized_type in {"ATTACK_LANE", "XG"}:
+        event_query = event_query.filter(Event.type == normalized_type)
+    if normalized_team in {"HOME", "AWAY"}:
+        event_query = event_query.filter(Event.team == normalized_team)
+    event_rows = event_query.all()
+
+    marker_rows: list[MatchMarker] = []
+    if normalized_team is None and normalized_type in {None, "HALFTIME_START"}:
+        marker_rows = db.query(MatchMarker).filter(MatchMarker.match_id == match_id).all()
+
+    items = [_serialize_timeline_item(row) for row in event_rows]
+    items.extend(_serialize_timeline_item(row) for row in marker_rows)
+    items.sort(key=lambda item: (item.clock_ms, item.created_at, item.item_id), reverse=True)
+
+    total = len(items)
+    return TimelineEditorListResponse(items=items[offset:offset + limit], total=total, limit=limit, offset=offset)
+
+
+@app.post("/api/admin/matches/{match_id}/timeline-items")
+def create_timeline_item(
+    match_id: UUID,
+    body: TimelineEditorUpsertRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_archived_editor_access(match_obj, user)
+
+    if body.kind == "EVENT":
+        event = Event(id=uuid.uuid4(), match_id=match_id, type="ATTACK_LANE", clock_ms=body.clock_ms, team=body.team or "HOME")
+        db.add(event)
+        xgot_meta = _apply_editor_item_updates(event=event, marker=None, body=body)
+        target_id = str(event.id)
+        result = {"ok": True, "item_id": target_id, "kind": "EVENT", "xgot_meta": xgot_meta}
+    else:
+        marker = MatchMarker(match_id=match_id, marker_type="HALFTIME_START", clock_ms=body.clock_ms)
+        db.add(marker)
+        _apply_editor_item_updates(event=None, marker=marker, body=body)
+        target_id = str(marker.id)
+        result = {"ok": True, "item_id": target_id, "kind": "MARKER"}
+
+    _rebuild_match_projections(match_id, db)
+    _audit(
+        db,
+        "TIMELINE_ITEM_CREATE",
+        "match",
+        actor=user,
+        target_id=target_id,
+        match_id=match_id,
+        severity="WARN",
+        details={"kind": body.kind, "type": body.type, "clock_ms": body.clock_ms},
+    )
+    db.commit()
+    return result
+
+
+@app.patch("/api/admin/matches/{match_id}/timeline-items/{item_kind}/{item_id}")
+def update_timeline_item(
+    match_id: UUID,
+    item_kind: str,
+    item_id: UUID,
+    body: TimelineEditorUpsertRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_archived_editor_access(match_obj, user)
+
+    normalized_kind = item_kind.strip().upper()
+    if normalized_kind == "EVENT":
+        event = db.get(Event, item_id)
+        if not event or event.match_id != match_id:
+            raise HTTPException(status_code=404, detail="Event not found")
+        xgot_meta = _apply_editor_item_updates(event=event, marker=None, body=body)
+    elif normalized_kind == "MARKER":
+        marker = db.get(MatchMarker, item_id)
+        if not marker or marker.match_id != match_id:
+            raise HTTPException(status_code=404, detail="Marker not found")
+        xgot_meta = _apply_editor_item_updates(event=None, marker=marker, body=body)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported item kind")
+
+    _rebuild_match_projections(match_id, db)
+    _audit(
+        db,
+        "TIMELINE_ITEM_UPDATE",
+        "match",
+        actor=user,
+        target_id=str(item_id),
+        match_id=match_id,
+        severity="WARN",
+        details={"kind": body.kind, "type": body.type, "clock_ms": body.clock_ms},
+    )
+    db.commit()
+    return {"ok": True, "item_id": str(item_id), "kind": normalized_kind, "xgot_meta": xgot_meta}
+
+
+@app.delete("/api/admin/matches/{match_id}/timeline-items/{item_kind}/{item_id}")
+def delete_timeline_item(
+    match_id: UUID,
+    item_kind: str,
+    item_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_archived_editor_access(match_obj, user)
+
+    normalized_kind = item_kind.strip().upper()
+    item_type = ""
+    if normalized_kind == "EVENT":
+        event = db.get(Event, item_id)
+        if not event or event.match_id != match_id:
+            raise HTTPException(status_code=404, detail="Event not found")
+        item_type = event.type
+        db.delete(event)
+    elif normalized_kind == "MARKER":
+        marker = db.get(MatchMarker, item_id)
+        if not marker or marker.match_id != match_id:
+            raise HTTPException(status_code=404, detail="Marker not found")
+        item_type = marker.marker_type
+        db.delete(marker)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported item kind")
+
+    _rebuild_match_projections(match_id, db)
+    _audit(
+        db,
+        "TIMELINE_ITEM_DELETE",
+        "match",
+        actor=user,
+        target_id=str(item_id),
+        match_id=match_id,
+        severity="WARN",
+        details={"kind": normalized_kind, "type": item_type},
+    )
+    db.commit()
+    return {"ok": True, "item_id": str(item_id), "kind": normalized_kind}
 
 
 @app.get("/api/matches/{match_id}/summary")
@@ -1543,8 +3284,13 @@ def summary(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.get("/api/matches/{match_id}/dominance")
-def dominance(match_id: UUID, bin_seconds: int = Query(default=180), db: Session = Depends(get_db)):
-    return _build_dominance(match_id, bin_seconds, db)
+def dominance(
+    match_id: UUID,
+    bin_seconds: int = Query(default=180),
+    split_halves: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    return _build_dominance(match_id, bin_seconds, db, split_halves=split_halves)
 
 
 @app.get("/api/matches/{match_id}/export.csv")
@@ -1583,9 +3329,10 @@ def dominance_v1(
     match_id: UUID,
     _auth: None = Depends(_require_partner_auth),
     bin_seconds: int = Query(default=180),
+    split_halves: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    return _build_dominance(match_id, bin_seconds, db)
+    return _build_dominance(match_id, bin_seconds, db, split_halves=split_halves)
 
 
 @app.get("/api/v1/matches/{match_id}/events")
@@ -1620,11 +3367,18 @@ def events_v1(
                 "team": e.team,
                 "lane": e.lane,
                 "xg": e.xg,
+                "xgot": e.xgot,
                 "is_goal": e.is_goal,
+                "is_on_target": e.is_on_target,
                 "shot_x": e.shot_x,
                 "shot_y": e.shot_y,
+                "goalmouth_x": e.goalmouth_x,
+                "goalmouth_y": e.goalmouth_y,
                 "is_header": e.is_header,
                 "is_weak_foot": e.is_weak_foot,
+                "under_pressure": e.under_pressure,
+                "one_on_one": e.one_on_one,
+                "shot_pace_band": e.shot_pace_band,
                 "created_at": e.created_at.isoformat(),
             }
         )

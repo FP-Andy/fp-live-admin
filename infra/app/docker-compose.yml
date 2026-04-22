@@ -18,6 +18,10 @@ services:
     build:
       context: ../../apps/api
     container_name: app-api
+    volumes:
+      - ../../templetes:/app/templetes:ro
+      - ../../assets/fonts:/app/assets/fonts:ro
+      - ../../runtime:/app/runtime
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/live_admin
       CORS_ORIGINS: "*"
@@ -27,6 +31,14 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       OUTBOX_RETRY_MAX: ${OUTBOX_RETRY_MAX:-10}
       OUTBOX_RETRY_BASE_SECONDS: ${OUTBOX_RETRY_BASE_SECONDS:-5}
+      OPERATOR_ACCESS_KEY: ${OPERATOR_ACCESS_KEY:-}
+      OPERATOR_ACCESS_KEY_HASH: ${OPERATOR_ACCESS_KEY_HASH:-}
+      SUPERADMIN_ACCESS_KEY: ${SUPERADMIN_ACCESS_KEY:-}
+      SUPERADMIN_ACCESS_KEY_HASH: ${SUPERADMIN_ACCESS_KEY_HASH:-}
+      MEDIA_CONTROL_URL: ${MEDIA_CONTROL_URL:-}
+      MEDIA_CONTROL_TOKEN: ${MEDIA_CONTROL_TOKEN:-}
+      MEDIA_INSTANCE_ID: ${MEDIA_INSTANCE_ID:-}
+      MEDIA_INSTANCE_NAME: ${MEDIA_INSTANCE_NAME:-live-admin-media}
     depends_on:
       postgres:
         condition: service_healthy

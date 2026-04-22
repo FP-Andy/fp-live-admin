@@ -11,6 +11,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False, default="OPERATOR")
 
 
 class Match(Base):
@@ -19,12 +20,30 @@ class Match(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
     competition_class: Mapped[str] = mapped_column(String, nullable=False, default="K3")
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     hls_url: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     operator_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class FcmSubmission(Base):
+    __tablename__ = "fcm_submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("matches.id"), nullable=False, index=True)
+    competition_class: Mapped[str] = mapped_column(String, nullable=False, default="K3")
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    team_side: Mapped[str] = mapped_column(String, nullable=False, default="HOME")
+    team_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    player_id: Mapped[str] = mapped_column(String, nullable=False)
+    player_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    selected_stats: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    submitted_by: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
 class State(Base):
@@ -73,11 +92,18 @@ class Event(Base):
     team: Mapped[str] = mapped_column(String, nullable=False)
     lane: Mapped[str | None] = mapped_column(String, nullable=True)
     xg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    xgot: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_goal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_on_target: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     shot_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     shot_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    goalmouth_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    goalmouth_y: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_header: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_weak_foot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    under_pressure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    one_on_one: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    shot_pace_band: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -96,6 +122,17 @@ class DominanceBin(Base):
     away_attack_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     dominance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class MatchMarker(Base):
+    __tablename__ = "match_markers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("matches.id"), index=True)
+    marker_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    clock_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
 class Outbox(Base):
@@ -122,3 +159,19 @@ class WebhookSubscription(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    actor_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    actor_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String, nullable=True)
+    action: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    match_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    severity: Mapped[str] = mapped_column(String, nullable=False, default="INFO")
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

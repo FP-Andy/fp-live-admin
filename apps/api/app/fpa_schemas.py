@@ -1,0 +1,59 @@
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class FpaDot(BaseModel):
+    meter_x: float = Field(ge=0, le=105)
+    meter_y: float = Field(ge=0, le=68)
+
+
+class FpaGenerateLogRequest(BaseModel):
+    stat_input: str = Field(min_length=1, max_length=80)
+    dots: list[FpaDot] = Field(default_factory=list)
+    half: str = Field(min_length=1, max_length=20)
+    team: Literal["home", "away"]
+    direction: Literal["left", "right"]
+    timeline: str = Field(min_length=1, max_length=20)
+
+
+class FpaGenerateLogResponse(BaseModel):
+    log_text: str
+    log_data: dict[str, str]
+
+
+class FpaExportLogsRequest(BaseModel):
+    logs: list[str] = Field(default_factory=list)
+    match_id: str = ""
+    teamid_h: str = ""
+    teamid_a: str = ""
+
+
+class FpaVisualizeResponse(BaseModel):
+    pass_map: str | None
+    heatmap: str | None
+    combined_map: str | None
+
+
+class FpaPlayersResponse(BaseModel):
+    players: list[str]
+
+
+class FpaImportLogsResponse(BaseModel):
+    logs: list[str]
+    rows: list[dict[str, str]]
+    match_id: str = ""
+    teamid_h: str = ""
+    teamid_a: str = ""
+
+
+class FcmAnalyzedPlayer(BaseModel):
+    player_id: str
+    team: str = ""
+    ranking_score: float = 0
+    candidates: list[str] = Field(default_factory=list)
+
+
+class FcmAnalyzeWorkbookResponse(BaseModel):
+    players: list[FcmAnalyzedPlayer] = Field(default_factory=list)
+    recommended_player_id: str | None = None

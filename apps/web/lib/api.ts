@@ -3,7 +3,13 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 export type SessionUser = {
   id: string;
   name: string;
+  role: 'OPERATOR' | 'SUPERADMIN';
 };
+
+export function displayRole(role: SessionUser['role'] | string | null | undefined) {
+  if (role === 'SUPERADMIN') return 'ADMIN';
+  return role || '';
+}
 
 export async function apiFetch(input: string, init?: RequestInit) {
   return fetch(`${API_BASE}${input}`, {
