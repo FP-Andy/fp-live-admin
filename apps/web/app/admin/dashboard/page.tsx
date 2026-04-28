@@ -10,6 +10,8 @@ type Match = {
   name: string;
   competition_class: string;
   round_number: number;
+  first_half_minutes: number;
+  second_half_minutes: number;
   archived: boolean;
   archived_at?: string | null;
   created_at: string;
@@ -32,9 +34,18 @@ type StreamStatus = {
   running_match_ids?: string[];
 };
 
+type CompetitionClass = {
+  code: string;
+  name: string;
+  first_half_minutes: number;
+  second_half_minutes: number;
+  created_at: string;
+};
+
 export default function Dashboard() {
   const PAGE_SIZE = 7;
   const [matches, setMatches] = useState<Match[]>([]);
+  const [competitionClasses, setCompetitionClasses] = useState<CompetitionClass[]>([]);
   const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
   const [homeTeam, setHomeTeam] = useState('');
   const [awayTeam, setAwayTeam] = useState('');
@@ -48,6 +59,12 @@ export default function Dashboard() {
   const [classFilter, setClassFilter] = useState('ALL');
   const [activePage, setActivePage] = useState(1);
   const [archivedPage, setArchivedPage] = useState(1);
+  const [isClassModalOpen, setIsClassModalOpen] = useState(false);
+  const [newClassCode, setNewClassCode] = useState('');
+  const [newClassName, setNewClassName] = useState('');
+  const [newClassFirstHalf, setNewClassFirstHalf] = useState(45);
+  const [newClassSecondHalf, setNewClassSecondHalf] = useState(45);
+  const [classModalError, setClassModalError] = useState('');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -62,11 +79,13 @@ export default function Dashboard() {
 
   const load = async () => {
     try {
-      const [matchesData, streamStatusData] = await Promise.all([
+      const [matchesData, classData, streamStatusData] = await Promise.all([
         apiJson<Match[]>('/matches'),
+        apiJson<CompetitionClass[]>('/competition-classes'),
         apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
       ]);
       setMatches(Array.isArray(matchesData) ? matchesData : []);
+      setCompetitionClasses(Array.isArray(classData) ? classData : []);
       setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
       setError('');
     } catch (loadError) {
@@ -120,6 +139,43 @@ export default function Dashboard() {
     setStreamMode('STREAM');
     setAssignOperator(true);
     setIngestProtocol('RTMP');
+    await load();
+  };
+
+  const createCompetitionClass = async () => {
+    const code = newClassCode.trim().toUpperCase();
+    const name = newClassName.trim() || code;
+    if (!code) {
+      setClassModalError('대회 코드를 입력하세요.');
+      return;
+    }
+    if (!/^[A-Z0-9-]+$/.test(code)) {
+      setClassModalError("대회 코드는 영문 대문자, 숫자, '-'만 사용할 수 있습니다.");
+      return;
+    }
+    setClassModalError('');
+
+    const response = await apiFetch('/competition-classes', {
+      method: 'POST',
+      body: JSON.stringify({
+        code,
+        name,
+        first_half_minutes: newClassFirstHalf,
+        second_half_minutes: newClassSecondHalf,
+      }),
+    });
+
+    if (!response.ok) {
+      setClassModalError((await response.text()) || 'Failed to create competition class');
+      return;
+    }
+
+    setCompetitionClass(code);
+    setNewClassCode('');
+    setNewClassName('');
+    setNewClassFirstHalf(45);
+    setNewClassSecondHalf(45);
+    setIsClassModalOpen(false);
     await load();
   };
 
@@ -235,6 +291,22 @@ export default function Dashboard() {
   while (dayCells.length % 7 !== 0) dayCells.push(null);
 
   const liveCount = runningMatchIds.length;
+  const selectedCompetition = useMemo(
+    () => competitionClasses.find((item) => item.code === competitionClass),
+    [competitionClasses, competitionClass]
+  );
+  const competitionOptions = useMemo(() => {
+    if (competitionClasses.length > 0) return competitionClasses;
+    return [
+      { code: 'K3', name: 'K3', first_half_minutes: 45, second_half_minutes: 45, created_at: '' },
+      { code: 'WK', name: 'WK', first_half_minutes: 45, second_half_minutes: 45, created_at: '' },
+      { code: 'CUSTOM', name: 'CUSTOM', first_half_minutes: 45, second_half_minutes: 45, created_at: '' },
+      { code: 'SUFA-S', name: 'SUFA-S', first_half_minutes: 20, second_half_minutes: 20, created_at: '' },
+      { code: 'SUFA-A', name: 'SUFA-A', first_half_minutes: 20, second_half_minutes: 20, created_at: '' },
+      { code: 'SUFA-B', name: 'SUFA-B', first_half_minutes: 20, second_half_minutes: 20, created_at: '' },
+      { code: 'SUFA-L', name: 'SUFA-L', first_half_minutes: 20, second_half_minutes: 20, created_at: '' },
+    ];
+  }, [competitionClasses]);
   const assignedCount = useMemo(() => matches.filter((match) => !match.archived && match.operator_id).length, [matches]);
   const rtmpCount = useMemo(
     () => matches.filter((match) => !match.archived && match.metadata?.ingest_protocol === 'RTMP').length,
@@ -249,9 +321,12 @@ export default function Dashboard() {
     [matches]
   );
   const availableClasses = useMemo(() => {
-    const classes = new Set(matches.map((match) => (match.competition_class || 'K3').toUpperCase()));
+    const classes = new Set([
+      ...competitionOptions.map((item) => item.code),
+      ...matches.map((match) => (match.competition_class || 'K3').toUpperCase()),
+    ]);
     return ['ALL', ...Array.from(classes).sort()];
-  }, [matches]);
+  }, [competitionOptions, matches]);
   const filteredActiveMatches = useMemo(
     () =>
       activeMatches.filter((match) => classFilter === 'ALL' || (match.competition_class || 'K3').toUpperCase() === classFilter),
@@ -336,18 +411,19 @@ export default function Dashboard() {
                   <div className="sidebar-eyebrow">Create Match</div>
                   <h3>새 경기 등록</h3>
                 </div>
+                <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(true)}>
+                  대회 생성
+                </button>
               </div>
               <div className="hero-form-grid compact">
                 <div className="field-stack field-stack-short">
                   <div className="field-label">대회</div>
                   <select value={competitionClass} onChange={(e) => setCompetitionClass(e.target.value)}>
-                    <option value="K3">K3</option>
-                    <option value="WK">WK</option>
-                    <option value="CUSTOM">CUSTOM</option>
-                    <option value="SUFA-S">SUFA-S</option>
-                    <option value="SUFA-A">SUFA-A</option>
-                    <option value="SUFA-B">SUFA-B</option>
-                    <option value="SUFA-L">SUFA-L</option>
+                    {competitionOptions.map((item) => (
+                      <option key={item.code} value={item.code}>
+                        {item.code}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -408,6 +484,9 @@ export default function Dashboard() {
                   </div>
                 </div>
               </div>
+              <div className="muted dashboard-class-time">
+                경기 시간: 전반 {selectedCompetition?.first_half_minutes || 45}분 / 후반 {selectedCompetition?.second_half_minutes || 45}분
+              </div>
               <div className="row hero-actions-compact">
                 <button className="btn-primary" onClick={createMatch}>Create Match</button>
               </div>
@@ -430,16 +509,15 @@ export default function Dashboard() {
                 <button className={listMode === 'active' ? 'btn-active' : ''} onClick={() => setListMode('active')}>Active</button>
                 <button className={listMode === 'archived' ? 'btn-active' : ''} onClick={() => setListMode('archived')}>Archived</button>
               </div>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                {availableClasses.map((itemClass) => (
-                  <button
-                    key={itemClass}
-                    className={classFilter === itemClass ? 'btn-active' : ''}
-                    onClick={() => setClassFilter(itemClass)}
-                  >
-                    {itemClass}
-                  </button>
-                ))}
+              <div className="field-stack dashboard-filter-select">
+                <span className="field-label">대회 필터</span>
+                <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
+                  {availableClasses.map((itemClass) => (
+                    <option key={itemClass} value={itemClass}>
+                      {itemClass === 'ALL' ? '전체' : itemClass}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -609,6 +687,65 @@ export default function Dashboard() {
           </div>
         </section>
       </main>
+      {isClassModalOpen ? (
+        <div className="fcm-modal-backdrop" role="dialog" aria-modal="true" aria-label="대회 생성">
+          <div className="card card-panel fcm-modal competition-modal">
+            <div className="section-heading">
+              <div>
+                <div className="sidebar-eyebrow">Competition</div>
+                <h3>대회 생성</h3>
+              </div>
+              <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(false)}>닫기</button>
+            </div>
+
+            <div className="competition-modal-grid">
+              <div className="field-stack">
+                <div className="field-label">대회 코드</div>
+                <input
+                  value={newClassCode}
+                  onChange={(e) => setNewClassCode(e.target.value.toUpperCase())}
+                  placeholder="예: SUFA-C"
+                />
+              </div>
+              <div className="field-stack">
+                <div className="field-label">표시 이름</div>
+                <input
+                  value={newClassName}
+                  onChange={(e) => setNewClassName(e.target.value)}
+                  placeholder="예: SUFA-C"
+                />
+              </div>
+              <div className="field-stack">
+                <div className="field-label">전반 시간(분)</div>
+                <input
+                  min={1}
+                  max={120}
+                  step={1}
+                  type="number"
+                  value={newClassFirstHalf}
+                  onChange={(e) => setNewClassFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                />
+              </div>
+              <div className="field-stack">
+                <div className="field-label">후반 시간(분)</div>
+                <input
+                  min={1}
+                  max={120}
+                  step={1}
+                  type="number"
+                  value={newClassSecondHalf}
+                  onChange={(e) => setNewClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                />
+              </div>
+            </div>
+
+            {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
+            <div className="row hero-actions-compact">
+              <button className="btn-primary" onClick={createCompetitionClass}>Create Competition</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

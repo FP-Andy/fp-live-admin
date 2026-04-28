@@ -33,12 +33,29 @@ class MatchResponse(BaseModel):
     name: str
     competition_class: str
     round_number: int
+    first_half_minutes: int
+    second_half_minutes: int
     archived: bool
     archived_at: str | None = None
     created_at: str
     hls_url: str | None
     metadata: dict[str, Any] | None = None
     operator_id: str | None
+
+
+class CompetitionClassCreateRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1, max_length=60)
+    first_half_minutes: int = Field(default=45, ge=1, le=120)
+    second_half_minutes: int = Field(default=45, ge=1, le=120)
+
+
+class CompetitionClassResponse(BaseModel):
+    code: str
+    name: str
+    first_half_minutes: int
+    second_half_minutes: int
+    created_at: str
 
 
 class FcmSubmissionUpsertRequest(BaseModel):
@@ -64,9 +81,24 @@ class FcmSubmissionResponse(BaseModel):
     updated_at: str
 
 
+class FcmTemplateResponse(BaseModel):
+    id: UUID
+    name: str
+    match_regex: str
+    image_url: str
+    priority: int
+    active: bool
+    created_at: str
+    updated_at: str
+
+
 class ArchiveMatchRequest(BaseModel):
     archived: bool = True
     stop_stream: bool = True
+
+
+class UpdateArchivedMatchRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
 
 
 class AcquireLockRequest(BaseModel):

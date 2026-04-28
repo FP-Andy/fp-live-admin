@@ -61,11 +61,11 @@ DEFAULT_PASS_STYLES = {
 
 @dataclass(frozen=True)
 class PitchTheme:
-    pitch_color: str = "grass"
+    pitch_color: str = "none"
     line_color: str = "white"
     line_alpha: float = 1.0
     linewidth: float = 2.2
-    stripe: bool = True
+    stripe: bool = False
     shade_middle: bool = False
     line_zorder: int = 1
     tight_layout: bool = True
@@ -109,10 +109,10 @@ class PassMapStyle:
     figsize: tuple[float, float] = (5.8, 3.9)
     dpi: int = 220
     transparent: bool = True
-    arrow_width: float = 3.2
-    headwidth: float = 9.6
-    headlength: float = 11.0
-    headaxislength: float = 9.2
+    arrow_width: float = 4.8
+    headwidth: float = 5.8
+    headlength: float = 6.6
+    headaxislength: float = 5.2
     minlength: float = 0.6
     pass_styles: dict = field(default_factory=lambda: DEFAULT_PASS_STYLES.copy())
 

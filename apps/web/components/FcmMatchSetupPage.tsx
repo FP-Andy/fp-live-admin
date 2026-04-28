@@ -59,6 +59,7 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
   const [selectedPlayerId, setSelectedPlayerId] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [selectedStats, setSelectedStats] = useState<string[]>([]);
+  const [customStat, setCustomStat] = useState('');
   const [teamSide, setTeamSide] = useState<TeamSide>('HOME');
   const [savedSubmissions, setSavedSubmissions] = useState<FcmSubmission[]>([]);
   const [status, setStatus] = useState('');
@@ -130,6 +131,25 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
       if (prev.length >= 5) return prev;
       return [...prev, candidate];
     });
+  };
+
+  const addCustomStat = () => {
+    const nextStat = customStat.trim();
+    if (!nextStat) {
+      setStatus('추가할 커스텀 스탯을 입력하세요.');
+      return;
+    }
+    if (selectedStats.includes(nextStat)) {
+      setStatus('이미 선택된 스탯입니다.');
+      return;
+    }
+    if (selectedStats.length >= 5) {
+      setStatus('주요스탯은 최대 5개까지 선택할 수 있습니다.');
+      return;
+    }
+    setSelectedStats((prev) => [...prev, nextStat]);
+    setCustomStat('');
+    setStatus('커스텀 스탯이 추가되었습니다.');
   };
 
   const analyzeMatch = async () => {
@@ -291,6 +311,7 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
                   setSelectedPlayerId(next?.player_id || '');
                   setPlayerName(next?.player_name || '');
                   setSelectedStats(next?.selected_stats || []);
+                  setCustomStat('');
                   setStatus('');
                 }}
                 type="button"
@@ -305,6 +326,7 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
                   setSelectedPlayerId(next?.player_id || '');
                   setPlayerName(next?.player_name || '');
                   setSelectedStats(next?.selected_stats || []);
+                  setCustomStat('');
                   setStatus('');
                 }}
                 type="button"
@@ -360,6 +382,7 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
                   const nextPlayer = analyzedPlayers.find((player) => player.player_id === nextPlayerId);
                   setSelectedPlayerId(nextPlayerId);
                   setSelectedStats((nextPlayer?.candidates || []).slice(0, 5));
+                  setCustomStat('');
                 }}
               >
                 {analyzedPlayers.length === 0 ? <option value="">분석 후 선수 선택</option> : null}
@@ -398,6 +421,33 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
               })}
             </div>
             {statCandidates.length === 0 ? <p className="field-help">매치 분석 후 후보가 표시됩니다.</p> : null}
+
+            <div className="fcm-custom-stat">
+              <label className="field-stack">
+                <span className="field-label">커스텀 스탯</span>
+                <input
+                  maxLength={80}
+                  onChange={(event) => setCustomStat(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      addCustomStat();
+                    }
+                  }}
+                  placeholder="예: 압박 회피 후 전진 패스 4회"
+                  type="text"
+                  value={customStat}
+                />
+              </label>
+              <button
+                className="btn-secondary"
+                disabled={!customStat.trim() || selectedStats.length >= 5}
+                onClick={addCustomStat}
+                type="button"
+              >
+                추가
+              </button>
+            </div>
           </section>
         </div>
       </section>

@@ -13,12 +13,10 @@ export type RawMatchRecord = {
   } | null;
 };
 
-export type FcmLeagueKey = 'K3' | 'WK';
-
 export type FcmEligibleMatch = {
   id: string;
   name: string;
-  competitionClass: FcmLeagueKey;
+  competitionClass: string;
   roundNumber: number;
   archivedAt?: string | null;
   createdAt?: string | null;
@@ -29,10 +27,9 @@ export type FcmEligibleMatch = {
 
 const MATCH_NAME_PATTERN = /^\[(?<competition>[A-Z0-9-]+)\s\|\s(?<round>\d+)R\]\s(?<home>.+)\svs\s(?<away>.+)$/;
 
-function normalizeCompetitionClass(value?: string | null): FcmLeagueKey | null {
+function normalizeCompetitionClass(value?: string | null): string | null {
   const normalized = (value || '').trim().toUpperCase();
-  if (normalized === 'K3' || normalized === 'WK') return normalized;
-  return null;
+  return normalized || null;
 }
 
 function parseMatchName(name: string) {

@@ -21,11 +21,23 @@ class Match(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     competition_class: Mapped[str] = mapped_column(String, nullable=False, default="K3")
     round_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_half_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
+    second_half_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     hls_url: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     operator_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CompetitionClass(Base):
+    __tablename__ = "competition_classes"
+
+    code: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    first_half_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
+    second_half_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -42,6 +54,19 @@ class FcmSubmission(Base):
     player_name: Mapped[str] = mapped_column(String, nullable=False, default="")
     selected_stats: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     submitted_by: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+
+
+class FcmTemplate(Base):
+    __tablename__ = "fcm_templates"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    match_regex: Mapped[str] = mapped_column(String, nullable=False)
+    image_path: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 

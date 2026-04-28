@@ -5,7 +5,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../lib/api';
 import { RawMatchRecord, getEligibleFcmMatches } from '../lib/fcm';
 
-const LEAGUE_FILTERS = ['ALL', 'K3', 'WK'];
+type CompetitionClass = {
+  code: string;
+  name: string;
+  first_half_minutes: number;
+  second_half_minutes: number;
+  created_at: string;
+};
 
 function formatDateTime(value?: string | null) {
   if (!value) return '미보관';
@@ -17,7 +23,9 @@ function formatDateTime(value?: string | null) {
 
 export default function FcmMatchStatusPage() {
   const [matches, setMatches] = useState<RawMatchRecord[]>([]);
+  const [competitionClasses, setCompetitionClasses] = useState<CompetitionClass[]>([]);
   const [classFilter, setClassFilter] = useState('ALL');
+  const [roundFilter, setRoundFilter] = useState('ALL');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -27,9 +35,13 @@ export default function FcmMatchStatusPage() {
 
     const load = async () => {
       try {
-        const data = await apiJson<RawMatchRecord[]>('/matches');
+        const [matchData, classData] = await Promise.all([
+          apiJson<RawMatchRecord[]>('/matches'),
+          apiJson<CompetitionClass[]>('/competition-classes').catch(() => []),
+        ]);
         if (!active) return;
-        setMatches(Array.isArray(data) ? data : []);
+        setMatches(Array.isArray(matchData) ? matchData : []);
+        setCompetitionClasses(Array.isArray(classData) ? classData : []);
         setError('');
       } catch (loadError) {
         if (!active) return;
@@ -47,12 +59,34 @@ export default function FcmMatchStatusPage() {
   }, []);
 
   const archivedMatches = useMemo(() => getEligibleFcmMatches(matches), [matches]);
+  const classFilterOptions = useMemo(() => {
+    const codes = new Set([
+      ...competitionClasses.map((item) => item.code),
+      ...archivedMatches.map((match) => match.competitionClass),
+    ]);
+    return ['ALL', ...Array.from(codes).sort()];
+  }, [archivedMatches, competitionClasses]);
+  const roundFilterOptions = useMemo(() => {
+    const source = classFilter === 'ALL'
+      ? archivedMatches
+      : archivedMatches.filter((match) => match.competitionClass === classFilter);
+    const rounds = Array.from(new Set(source.map((match) => match.roundNumber).filter((round) => Number.isFinite(round) && round > 0)))
+      .sort((a, b) => b - a);
+    return ['ALL', ...rounds.map((round) => String(round))];
+  }, [archivedMatches, classFilter]);
+
+  useEffect(() => {
+    if (!roundFilterOptions.includes(roundFilter)) {
+      setRoundFilter('ALL');
+    }
+  }, [roundFilter, roundFilterOptions]);
 
   const filteredMatches = useMemo(() => {
     const lowered = query.trim().toLowerCase();
     return archivedMatches.filter((match) => {
       const className = match.competitionClass;
       const classOk = classFilter === 'ALL' || className === classFilter;
+      const roundOk = roundFilter === 'ALL' || String(match.roundNumber) === roundFilter;
       const queryOk =
         !lowered ||
         match.name.toLowerCase().includes(lowered) ||
@@ -61,25 +95,24 @@ export default function FcmMatchStatusPage() {
         match.homeTeam.toLowerCase().includes(lowered) ||
         match.awayTeam.toLowerCase().includes(lowered) ||
         (match.operatorId || '').toLowerCase().includes(lowered);
-      return classOk && queryOk;
+      return classOk && roundOk && queryOk;
     });
-  }, [archivedMatches, classFilter, query]);
+  }, [archivedMatches, classFilter, query, roundFilter]);
 
   const summary = useMemo(() => {
-    const k3 = archivedMatches.filter((match) => match.competitionClass === 'K3').length;
-    const wk = archivedMatches.filter((match) => match.competitionClass === 'WK').length;
+    const classCount = new Set(archivedMatches.map((match) => match.competitionClass)).size;
     return {
       total: archivedMatches.length,
-      k3,
-      wk,
+      classCount,
       ready: filteredMatches.length,
+      selected: classFilter === 'ALL' ? archivedMatches.length : archivedMatches.filter((match) => match.competitionClass === classFilter).length,
     };
-  }, [archivedMatches, filteredMatches]);
+  }, [archivedMatches, classFilter, filteredMatches]);
 
   return (
     <div className="page-stack">
       <section className="grid" style={{ gridTemplateColumns: '1.05fr 1.95fr' }}>
-        <aside className="card card-panel">
+        <aside className="card card-panel fcm-filter-panel">
           <div className="section-heading">
             <div>
               <div className="sidebar-eyebrow">필터</div>
@@ -98,19 +131,29 @@ export default function FcmMatchStatusPage() {
           </label>
 
           <div className="fvc-sidebar-section">
-            <div className="field-label">리그 필터</div>
-            <div className="fcm-filter-row">
-              {LEAGUE_FILTERS.map((filter) => (
-                <button
-                  key={filter}
-                  className={classFilter === filter ? 'btn-active' : 'btn-ghost'}
-                  onClick={() => setClassFilter(filter)}
-                  type="button"
-                >
-                  {filter === 'ALL' ? '전체' : filter}
-                </button>
-              ))}
-            </div>
+            <label className="field-stack">
+              <span className="field-label">대회 필터</span>
+              <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
+                {classFilterOptions.map((filter) => (
+                  <option key={filter} value={filter}>
+                    {filter === 'ALL' ? '전체' : filter}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="fvc-sidebar-section">
+            <label className="field-stack">
+              <span className="field-label">라운드 필터</span>
+              <select value={roundFilter} onChange={(event) => setRoundFilter(event.target.value)}>
+                {roundFilterOptions.map((filter) => (
+                  <option key={filter} value={filter}>
+                    {filter === 'ALL' ? '전체 라운드' : `${filter}라운드`}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         </aside>
 
@@ -122,12 +165,12 @@ export default function FcmMatchStatusPage() {
                 <strong>{summary.total}</strong>
               </div>
               <div className="metric-tile tech">
-                <div className="sidebar-eyebrow">K3</div>
-                <strong>{summary.k3}</strong>
+                <div className="sidebar-eyebrow">대회 수</div>
+                <strong>{summary.classCount}</strong>
               </div>
               <div className="metric-tile success">
-                <div className="sidebar-eyebrow">WK</div>
-                <strong>{summary.wk}</strong>
+                <div className="sidebar-eyebrow">선택 대회</div>
+                <strong>{summary.selected}</strong>
               </div>
               <div className="metric-tile">
                 <div className="sidebar-eyebrow">현재 필터 결과</div>

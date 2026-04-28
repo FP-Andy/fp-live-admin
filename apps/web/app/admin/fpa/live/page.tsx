@@ -21,9 +21,18 @@ type LogPreview = {
   Tags: string;
 };
 
+function extractReceiveCoord(logText?: string) {
+  if (!logText) return '';
+  const matches = Array.from(logText.matchAll(/Pos\((.+?), (.+?)\)/g));
+  if (matches.length < 2) return '';
+  const [, x, y] = matches[matches.length - 1];
+  return `Pos(${x}, ${y})`;
+}
+
 export default function FpaLivePage() {
   const didHydrateRef = useRef(false);
   const pitchRef = useRef<HTMLDivElement | null>(null);
+  const logBodyRef = useRef<HTMLDivElement | null>(null);
   const statInputRef = useRef<HTMLInputElement | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [half, setHalf] = useState<'1H' | '2H'>('1H');
@@ -119,6 +128,12 @@ export default function FpaLivePage() {
     window.dispatchEvent(new CustomEvent(FPA_DRAFT_EVENT, { detail: { hasDraft: true } }));
   }, [direction, dots, half, logs, matchId, rows, selectedRowIndex, statInput, team, teamIdA, teamIdH, timeline]);
 
+  useEffect(() => {
+    const logBody = logBodyRef.current;
+    if (!logBody) return;
+    logBody.scrollTop = logBody.scrollHeight;
+  }, [rows.length]);
+
   const pitchDots = useMemo(
     () =>
       dots.map((dot, index) => ({
@@ -141,7 +156,7 @@ export default function FpaLivePage() {
       screen_x: Number(((x / rect.width) * 1050).toFixed(2)),
       screen_y: Number(((y / rect.height) * 680).toFixed(2)),
     };
-    setDots((prev) => [...prev.slice(-1), nextDot]);
+    setDots((prev) => [...prev, nextDot]);
     statInputRef.current?.focus();
   };
 
@@ -406,11 +421,12 @@ export default function FpaLivePage() {
                 <span>Team</span>
                 <span>Player</span>
                 <span>Action</span>
+                <span>Tags</span>
                 <span>Receiver</span>
                 <span>Pos</span>
-                <span>Tags</span>
+                <span>Receive Pos</span>
               </div>
-              <div className="fpa-log-body">
+              <div className="fpa-log-body" ref={logBodyRef}>
                 {rows.map((row, index) => (
                   <div
                     className={`fpa-log-entry ${selectedRowIndex === index ? 'selected' : ''}`}
@@ -423,9 +439,10 @@ export default function FpaLivePage() {
                     <span>{row.Team}</span>
                     <span>{row.Player}</span>
                     <span>{row.Action}</span>
+                    <span>{row.Tags || '-'}</span>
                     <span>{row.Receiver || '-'}</span>
                     <span>{row.Coord}</span>
-                    <span>{row.Tags || '-'}</span>
+                    <span>{extractReceiveCoord(logs[index]) || '-'}</span>
                   </div>
                 ))}
               </div>

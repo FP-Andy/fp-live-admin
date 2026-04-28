@@ -3,9 +3,15 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { API_BASE, apiJson } from '../lib/api';
-import { FcmLeagueKey, RawMatchRecord, getEligibleFcmMatches } from '../lib/fcm';
+import { RawMatchRecord, getEligibleFcmMatches } from '../lib/fcm';
 
-const LEAGUES: FcmLeagueKey[] = ['K3', 'WK'];
+type CompetitionClass = {
+  code: string;
+  name: string;
+  first_half_minutes: number;
+  second_half_minutes: number;
+  created_at: string;
+};
 
 type FcmSubmission = {
   id: string;
@@ -31,24 +37,28 @@ function formatDateTime(value?: string | null) {
 }
 
 export default function FvcWorkspacePage() {
-  const [league, setLeague] = useState<FcmLeagueKey>('K3');
+  const [league, setLeague] = useState('K3');
   const [round, setRound] = useState<number>(1);
   const [matches, setMatches] = useState<RawMatchRecord[]>([]);
+  const [competitionClasses, setCompetitionClasses] = useState<CompetitionClass[]>([]);
   const [submissions, setSubmissions] = useState<FcmSubmission[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [generatingCardKey, setGeneratingCardKey] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
 
     Promise.all([
       apiJson<RawMatchRecord[]>('/matches'),
+      apiJson<CompetitionClass[]>('/competition-classes').catch(() => []),
       apiJson<FcmSubmission[]>('/fcm/submissions').catch(() => []),
     ])
-      .then(([matchData, submissionData]) => {
+      .then(([matchData, classData, submissionData]) => {
         if (!active) return;
         setMatches(Array.isArray(matchData) ? matchData : []);
+        setCompetitionClasses(Array.isArray(classData) ? classData : []);
         setSubmissions(Array.isArray(submissionData) ? submissionData : []);
         setError('');
       })
@@ -68,19 +78,32 @@ export default function FvcWorkspacePage() {
   }, []);
 
   const eligibleMatches = useMemo(() => getEligibleFcmMatches(matches), [matches]);
+  const leagueOptions = useMemo(() => {
+    const codes = new Set([
+      ...competitionClasses.map((item) => item.code),
+      ...eligibleMatches.map((match) => match.competitionClass),
+    ]);
+    return Array.from(codes).sort();
+  }, [competitionClasses, eligibleMatches]);
 
   const roundsByLeague = useMemo(() => {
-    const base = { K3: [] as number[], WK: [] as number[] };
+    const base: Record<string, number[]> = {};
     eligibleMatches.forEach((match) => {
+      if (!base[match.competitionClass]) base[match.competitionClass] = [];
       base[match.competitionClass].push(match.roundNumber);
     });
-    return {
-      K3: Array.from(new Set(base.K3)).sort((a, b) => b - a),
-      WK: Array.from(new Set(base.WK)).sort((a, b) => b - a),
-    };
+    return Object.fromEntries(
+      Object.entries(base).map(([key, values]) => [key, Array.from(new Set(values)).sort((a, b) => b - a)]),
+    );
   }, [eligibleMatches]);
 
-  const rounds = roundsByLeague[league];
+  const rounds = roundsByLeague[league] || [];
+
+  useEffect(() => {
+    if (leagueOptions.length > 0 && !leagueOptions.includes(league)) {
+      setLeague(leagueOptions[0]);
+    }
+  }, [league, leagueOptions]);
 
   useEffect(() => {
     if (rounds.length === 0) {
@@ -146,6 +169,38 @@ export default function FvcWorkspacePage() {
     }
   };
 
+  const handleGenerateSingle = async (submission: FcmSubmission) => {
+    const cardKey = `${submission.match_id}:${submission.team_side}`;
+    setGeneratingCardKey(cardKey);
+    setError('');
+    try {
+      const params = new URLSearchParams({
+        league,
+        round: String(round),
+        match_id: submission.match_id,
+        team_side: submission.team_side,
+      });
+      const response = await fetch(`${API_BASE}/fcm/generate?${params.toString()}`, { credentials: 'include' });
+      if (!response.ok) {
+        throw new Error((await response.text()) || '카드 생성에 실패했습니다.');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${league}-${round}R-${submission.team_name}-${submission.player_id}-${submission.player_name}.png`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : '카드 생성에 실패했습니다.');
+    } finally {
+      setGeneratingCardKey(null);
+    }
+  };
+
   return (
     <div className="page-stack">
       <section className="fvc-workspace">
@@ -153,19 +208,20 @@ export default function FvcWorkspacePage() {
           <div className="sidebar-eyebrow">Card Builder</div>
 
           <div className="fvc-sidebar-section">
-            <div className="field-label">리그 선택</div>
-            <div className="fvc-toggle-grid">
-              {LEAGUES.map((item) => (
-                <button
-                  key={item}
-                  className={league === item ? 'btn-active' : 'btn-ghost'}
-                  onClick={() => setLeague(item)}
-                  type="button"
-                >
-                  {item === 'K3' ? 'K3리그' : 'WK리그'}
-                </button>
-              ))}
-            </div>
+            <label className="field-stack">
+              <span className="field-label">대회 선택</span>
+              <select
+                value={leagueOptions.includes(league) ? league : ''}
+                onChange={(event) => setLeague(event.target.value)}
+              >
+                {leagueOptions.length === 0 ? <option value="">선택 가능한 대회 없음</option> : null}
+                {leagueOptions.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <div className="fvc-sidebar-section">
@@ -260,6 +316,7 @@ export default function FvcWorkspacePage() {
                         <span>제출자</span>
                         <span>상세</span>
                         <span>상태</span>
+                        <span>생성</span>
                       </div>
 
                       {[
@@ -280,6 +337,18 @@ export default function FvcWorkspacePage() {
                             <span className={`status-pill ${row.submission ? 'running' : 'warning'}`}>
                               {row.submission ? 'Ready' : 'Pending'}
                             </span>
+                          </span>
+                          <span>
+                            <button
+                              className="btn-success button-compact"
+                              disabled={!row.submission || generatingCardKey === `${match.id}:${row.side}`}
+                              onClick={() => {
+                                if (row.submission) handleGenerateSingle(row.submission);
+                              }}
+                              type="button"
+                            >
+                              {generatingCardKey === `${match.id}:${row.side}` ? '생성 중' : '생성'}
+                            </button>
                           </span>
                         </div>
                       ))}

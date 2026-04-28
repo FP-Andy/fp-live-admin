@@ -104,6 +104,37 @@ def is_progressive_pass(start_x: Any, end_x: Any) -> Any:
     return end_x - start_x >= 10
 
 
+def _format_path_points(points: list[tuple[float, float]]) -> str:
+    return ";".join(f"{round(x, 2)},{round(y, 2)}" for x, y in points)
+
+
+def _parse_path_points(value: Any) -> list[tuple[float, float]]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    points: list[tuple[float, float]] = []
+    for raw_point in text.split(";"):
+        parts = [part.strip() for part in raw_point.split(",", 1)]
+        if len(parts) != 2:
+            continue
+        try:
+            points.append((float(parts[0]), float(parts[1])))
+        except ValueError:
+            continue
+    return points
+
+
+def _path_distance(points: list[tuple[float, float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+    return float(
+        sum(
+            np.sqrt((points[index][0] - points[index - 1][0]) ** 2 + (points[index][1] - points[index - 1][1]) ** 2)
+            for index in range(1, len(points))
+        )
+    )
+
+
 def analyze_pass_data(df: pd.DataFrame) -> pd.DataFrame:
     coord_cols = ["StartX", "StartY", "EndX", "EndY"]
     for col in coord_cols:
@@ -120,6 +151,10 @@ def analyze_pass_data(df: pd.DataFrame) -> pd.DataFrame:
 
     distance = np.sqrt((df["EndX_adj"] - df["StartX_adj"]) ** 2 + (df["EndY_adj"] - df["StartY_adj"]) ** 2)
     df["Distance"] = distance
+    if "PathDistance" in df.columns:
+        path_distance = pd.to_numeric(df["PathDistance"], errors="coerce")
+        is_dribble = df.get("Action", "").astype(str) == "Dribble"
+        df.loc[is_dribble & path_distance.notna() & (path_distance > 0), "Distance"] = path_distance
     df["Pass_Distance"] = np.select(
         [distance < 20, (distance >= 20) & (distance < 40), distance >= 40],
         ["short", "middle", "long"],
@@ -812,9 +847,15 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         if action_match:
             log_dict["Player"], log_dict["Action"], log_dict["Receiver"] = action_match.groups()
             log_dict["Receiver"] = log_dict["Receiver"] if log_dict["Receiver"] else ""
-        log_dict["EndX"], log_dict["EndY"], log_dict["Tags"] = "", "", ""
+        log_dict["EndX"], log_dict["EndY"], log_dict["PathPoints"], log_dict["PathPointCount"], log_dict["PathDistance"], log_dict["Tags"] = "", "", "", "", "", ""
         for part in parts[6:]:
-            if "Pos" in part:
+            if part.startswith("Path("):
+                path_text = part.removeprefix("Path(").removesuffix(")")
+                path_points = _parse_path_points(path_text)
+                log_dict["PathPoints"] = _format_path_points(path_points)
+                log_dict["PathPointCount"] = len(path_points) if path_points else ""
+                log_dict["PathDistance"] = round(_path_distance(path_points), 2) if path_points else ""
+            elif "Pos" in part:
                 end_pos_match = re.search(r"Pos\((.+?), (.+?)\)", part)
                 if end_pos_match:
                     log_dict["EndX"], log_dict["EndY"] = end_pos_match.groups()
@@ -828,7 +869,26 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         team_val = str(log.get("Team", "")).strip().lower()
         log["TeamID"] = teamid_h if team_val == "home" else teamid_a
 
-    columns = ["No", "MatchID", "TeamID", "Half", "Team", "Direction", "Time", "Player", "Receiver", "Action", "StartX", "StartY", "EndX", "EndY", "Tags"]
+    columns = [
+        "No",
+        "MatchID",
+        "TeamID",
+        "Half",
+        "Team",
+        "Direction",
+        "Time",
+        "Player",
+        "Receiver",
+        "Action",
+        "StartX",
+        "StartY",
+        "EndX",
+        "EndY",
+        "PathPoints",
+        "PathPointCount",
+        "PathDistance",
+        "Tags",
+    ]
     return pd.DataFrame(parsed_logs).reindex(columns=columns)
 
 
@@ -867,8 +927,25 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
         else:
             tags_list.append("Fail")
 
-    requires_two_dots = (base_action_code in TWO_DOT_ACTION_CODES or action_code_raw in TWO_DOT_ACTION_CODES or player_to) and action_code_raw != "sv"
-    if requires_two_dots:
+    is_dribble = action_name == "Dribble"
+    path_points: list[tuple[float, float]] = []
+    path_distance = 0.0
+    if is_dribble:
+        if len(dots) < 2:
+            raise ValueError("드리블은 좌표 2개 이상이 필요합니다.")
+        path_points = [(float(dot["meter_x"]), float(dot["meter_y"])) for dot in dots]
+        start_x, start_y = path_points[0]
+        end_x, end_y = path_points[-1]
+        start_x_adj = FIELD_W - start_x if direction == "left" else start_x
+        path_distance = _path_distance(path_points)
+        action_str = f"{player_from} {action_name}"
+        log_text = (
+            f"{half} | {team} | {direction} | {timeline} | Pos({start_x}, {start_y}) | {action_str} | "
+            f"Pos({end_x}, {end_y}) | Path({_format_path_points(path_points)})"
+        )
+    else:
+        requires_two_dots = (base_action_code in TWO_DOT_ACTION_CODES or action_code_raw in TWO_DOT_ACTION_CODES or player_to) and action_code_raw != "sv"
+    if not is_dribble and requires_two_dots:
         if len(dots) < 2:
             raise ValueError("좌표 2개가 필요합니다.")
         start_pos, end_pos = dots[-2], dots[-1]
@@ -882,14 +959,15 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
         if player_to:
             action_str += f" to {player_to}"
         log_text = f"{half} | {team} | {direction} | {timeline} | Pos({start_x}, {start_y}) | {action_str} | Pos({end_x}, {end_y})"
-    else:
+    elif not is_dribble:
         if len(dots) < 1:
             raise ValueError("좌표 1개가 필요합니다.")
         start_pos = dots[-1]
         start_x, start_y = float(start_pos["meter_x"]), float(start_pos["meter_y"])
+        start_x_adj = FIELD_W - start_x if direction == "left" else start_x
         log_text = f"{half} | {team} | {direction} | {timeline} | Pos({start_x}, {start_y}) | {player_from} {action_name}"
 
-    if is_in_penalty_area(start_x, start_y) and "In-box" not in tags_list:
+    if is_in_penalty_area(start_x_adj, start_y) and "In-box" not in tags_list:
         tags_list.append("In-box")
     elif action_name in ["Goal", "Shot On Target", "Shot", "Blocked Shot"] and "Out-box" not in tags_list:
         tags_list.append("Out-box")
@@ -908,6 +986,9 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
             "Receiver": player_to,
             "Coord": f"Pos({start_x}, {start_y})",
             "Tags": ", ".join(deduped_tags) if deduped_tags else "",
+            "PathPoints": _format_path_points(path_points) if path_points else "",
+            "PathPointCount": str(len(path_points)) if path_points else "",
+            "PathDistance": str(round(path_distance, 2)) if path_points else "",
         },
     }
 
@@ -1482,6 +1563,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
         start_y = clean_value(row.get("StartY", ""))
         end_x = clean_value(row.get("EndX", ""))
         end_y = clean_value(row.get("EndY", ""))
+        path_points = clean_value(row.get("PathPoints", ""))
         tags = clean_value(row.get("Tags", ""))
         team_id = clean_value(row.get("TeamID", ""))
 
@@ -1504,6 +1586,8 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
         ]
         if end_x and end_y:
             log_parts.append(f"Pos({end_x}, {end_y})")
+        if path_points:
+            log_parts.append(f"Path({path_points})")
         if tags:
             log_parts.append(f"Tags: {tags}")
         logs.append(" | ".join(log_parts))
@@ -1516,6 +1600,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "Receiver": receiver,
                 "Coord": f"Pos({start_x}, {start_y})",
                 "Tags": tags,
+                "PathPoints": path_points,
             }
         )
 

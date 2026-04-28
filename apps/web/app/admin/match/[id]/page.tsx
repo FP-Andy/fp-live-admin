@@ -13,7 +13,10 @@ const XG_VISIBLE_LENGTH = 40;
 const XG_VISIBLE_OFFSET = HALF_PITCH_LENGTH - XG_VISIBLE_LENGTH;
 const PITCH_WIDTH = 68;
 
-function regulationHalfMinutes(competitionClass?: string | null) {
+function regulationHalfMinutes(competitionClass?: string | null, firstHalfMinutes?: number | null) {
+  if (Number.isFinite(Number(firstHalfMinutes)) && Number(firstHalfMinutes) > 0) {
+    return Number(firstHalfMinutes);
+  }
   const normalized = (competitionClass || '').trim().toUpperCase();
   if (normalized.includes('SUFA')) return 20;
   return 45;
@@ -110,15 +113,17 @@ export default function MatchPage() {
 
   const displayClockLabel = (ms: number) => {
     const totalSec = Math.floor(ms / 1000);
+    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
+    const baseHalfSec = baseHalfMinutes * 60;
     if (secondHalfStartAbsMs != null && ms >= secondHalfStartAbsMs) {
       const sec2h = Math.max(0, Math.floor((ms - secondHalfStartAbsMs) / 1000));
-      return fmt((45 * 60 + sec2h) * 1000);
+      return fmt((baseHalfSec + sec2h) * 1000);
     }
-    if (totalSec > 45 * 60) {
-      const etSec = totalSec - 45 * 60;
+    if (totalSec > baseHalfSec) {
+      const etSec = totalSec - baseHalfSec;
       const etMin = Math.floor(etSec / 60);
       const etRem = String(etSec % 60).padStart(2, '0');
-      return `1H 45+${etMin}:${etRem}`;
+      return `1H ${baseHalfMinutes}+${etMin}:${etRem}`;
     }
     return fmt(ms);
   };
@@ -141,7 +146,7 @@ export default function MatchPage() {
 
   const formatDominanceTick = (minuteVal: number) => {
     const ms = Math.round(Number(minuteVal) * 60000);
-    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class);
+    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
     const baseHalfMs = baseHalfMinutes * 60000;
     if (dominanceMeta?.split_halves) {
       const halfGapMs = Number(dominanceMeta.half_gap_ms || 0);
@@ -166,9 +171,9 @@ export default function MatchPage() {
       return String(Math.floor(sec2h / 60));
     }
     const sec = Math.floor(ms / 1000);
-    if (sec > 45 * 60) {
-      const etMin = Math.floor((sec - 45 * 60) / 60);
-      return `45+${etMin}`;
+    if (sec > baseHalfMs / 1000) {
+      const etMin = Math.floor((sec - baseHalfMs / 1000) / 60);
+      return `${baseHalfMinutes}+${etMin}`;
     }
     return String(Math.floor(sec / 60));
   };
@@ -494,7 +499,8 @@ export default function MatchPage() {
 
   const markSecondHalfStart = async () => {
     if (!canWrite) return;
-    if (!window.confirm('지금 시점을 2H 시작(표시 45:00)으로 설정할까요?')) return;
+    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
+    if (!window.confirm(`지금 시점을 2H 시작(표시 ${baseHalfMinutes}:00)으로 설정할까요?`)) return;
     const now = clockRef.current;
     setSecondHalfStartAbsMs(now);
     setRunning(false);
@@ -1010,7 +1016,9 @@ export default function MatchPage() {
               <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
               <button className="btn-secondary" onClick={resetClock} disabled={!canWrite}>Reset</button>
               <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>
-              <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>Mark 2H 45:00</button>
+              <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>
+                Mark 2H {regulationHalfMinutes(match?.competition_class, match?.first_half_minutes)}:00
+              </button>
             </div>
           </div>
 
@@ -1371,7 +1379,7 @@ export default function MatchPage() {
               <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>On Target</button>
               <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>Goal</button>
               <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>Header</button>
-              <button className={isWeakFootShot ? 'btn-active' : ''} onClick={() => setIsWeakFootShot((prev) => !prev)} disabled={!canWrite}>Weak Foot</button>
+              <button className={isWeakFootShot ? 'btn-active' : ''} onClick={() => setIsWeakFootShot((prev) => !prev)} disabled={!canWrite}>Difficult</button>
               <span className="muted">{shotPoint ? `shot=(${shotPoint.x}, ${shotPoint.y})` : 'Click pitch to set shot location'}</span>
             </div>
             <div className="muted">Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.</div>

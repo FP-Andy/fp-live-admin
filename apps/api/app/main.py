@@ -16,9 +16,10 @@ from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
 import os
 import httpx
+from PIL import Image
 
-from .db import Base, engine, get_db
-from .fcm_cards import build_card_image, build_cards_zip, find_template_path
+from .db import Base, SessionLocal, engine, get_db
+from .fcm_cards import TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
 from .fpa import (
     analyze_card_workbook,
     build_analysis_workbook,
@@ -30,13 +31,15 @@ from .fpa import (
     parse_logs_to_dataframe,
 )
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaVisualizeResponse
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission
+from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
     AttachIngestRequest,
     AttackLaneEventRequest,
     AttachSrtRequest,
+    CompetitionClassCreateRequest,
+    CompetitionClassResponse,
     CreateMatchRequest,
     IngestProtocol,
     LoginRequest,
@@ -44,6 +47,7 @@ from .schemas import (
     MatchResponse,
     MatchMarkerRequest,
     EventsResetRequest,
+    FcmTemplateResponse,
     FcmSubmissionResponse,
     FcmSubmissionUpsertRequest,
     PossessionResetRequest,
@@ -53,6 +57,7 @@ from .schemas import (
     TimelineEditorListItem,
     TimelineEditorListResponse,
     TimelineEditorUpsertRequest,
+    UpdateArchivedMatchRequest,
     WebhookSubscriptionCreateRequest,
     XGEstimateRequest,
     XGEventRequest,
@@ -84,6 +89,7 @@ MEDIA_CONTROL_TOKEN = os.getenv("MEDIA_CONTROL_TOKEN", "").strip()
 MEDIA_INSTANCE_ID = os.getenv("MEDIA_INSTANCE_ID", "").strip()
 MEDIA_INSTANCE_NAME = os.getenv("MEDIA_INSTANCE_NAME", "live-admin-media").strip() or "live-admin-media"
 FCM_RUNTIME_DIR = Path(os.getenv("FCM_RUNTIME_DIR", "/app/runtime/fcm")).resolve()
+FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
 
 DOM_POSSESSION_WEIGHT = float(os.getenv("DOM_POSSESSION_WEIGHT", "0.35"))
 DOM_XG_WEIGHT = float(os.getenv("DOM_XG_WEIGHT", "0.65"))
@@ -140,6 +146,10 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE matches ADD COLUMN competition_class VARCHAR NOT NULL DEFAULT 'K3'")
     if "round_number" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN round_number INTEGER NOT NULL DEFAULT 1")
+    if "first_half_minutes" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN first_half_minutes INTEGER NOT NULL DEFAULT 45")
+    if "second_half_minutes" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN second_half_minutes INTEGER NOT NULL DEFAULT 45")
     if "archived" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE")
     if "archived_at" not in match_columns:
@@ -199,6 +209,73 @@ def _ensure_runtime_schema() -> None:
             conn.execute(text(f'ALTER TABLE fcm_submissions DROP CONSTRAINT IF EXISTS "{constraint_name}"'))
         for index_name in unique_match_index_names:
             conn.execute(text(f'DROP INDEX IF EXISTS "{index_name}"'))
+
+
+def _default_half_minutes_for_class(code: str | None) -> tuple[int, int]:
+    normalized = _normalize_competition_class(code)
+    if "SUFA" in normalized:
+        return 20, 20
+    return 45, 45
+
+
+def _seed_competition_classes(db: Session) -> None:
+    defaults = [
+        ("K3", "K3", 45, 45),
+        ("WK", "WK", 45, 45),
+        ("CUSTOM", "CUSTOM", 45, 45),
+        ("SUFA-S", "SUFA-S", 20, 20),
+        ("SUFA-A", "SUFA-A", 20, 20),
+        ("SUFA-B", "SUFA-B", 20, 20),
+        ("SUFA-L", "SUFA-L", 20, 20),
+    ]
+    existing = {row.code for row in db.query(CompetitionClass).all()}
+    for code, name, first_half_minutes, second_half_minutes in defaults:
+        if code in existing:
+            continue
+        db.add(
+            CompetitionClass(
+                code=code,
+                name=name,
+                first_half_minutes=first_half_minutes,
+                second_half_minutes=second_half_minutes,
+            )
+        )
+    db.commit()
+
+
+def _seed_existing_fcm_templates(db: Session) -> None:
+    if not TEMPLATE_DIR.exists():
+        return
+
+    existing_paths = {row.image_path for row in db.query(FcmTemplate.image_path).all()}
+    existing_names = {row.name for row in db.query(FcmTemplate.name).all()}
+    candidates = sorted(TEMPLATE_DIR.glob("*.png"))
+
+    for index, path in enumerate(candidates, start=1):
+        name = f"{path.stem} 기본 템플릿"
+        path_text = str(path)
+        if path_text in existing_paths or name in existing_names:
+            continue
+        db.add(
+            FcmTemplate(
+                name=name,
+                match_regex=re.escape(path.stem),
+                image_path=path_text,
+                priority=100 + index,
+                active=True,
+            )
+        )
+    db.commit()
+
+
+def _serialize_competition_class(row: CompetitionClass) -> dict:
+    return {
+        "code": row.code,
+        "name": row.name,
+        "first_half_minutes": int(row.first_half_minutes or 45),
+        "second_half_minutes": int(row.second_half_minutes or row.first_half_minutes or 45),
+        "created_at": row.created_at.isoformat(),
+    }
 
 
 def _gateway_start_stream(
@@ -409,6 +486,12 @@ async def startup() -> None:
     global worker_task
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
+    db = SessionLocal()
+    try:
+        _seed_competition_classes(db)
+        _seed_existing_fcm_templates(db)
+    finally:
+        db.close()
     worker_task = asyncio.create_task(outbox_worker(worker_stop_event))
 
 
@@ -638,11 +721,14 @@ def _estimate_xgot(
 
 
 def _serialize_match(row: Match) -> dict:
+    default_first_half, default_second_half = _default_half_minutes_for_class(row.competition_class)
     return {
         "id": row.id,
         "name": row.name,
         "competition_class": _normalize_competition_class(row.competition_class),
         "round_number": int(row.round_number or 1),
+        "first_half_minutes": int(row.first_half_minutes or default_first_half),
+        "second_half_minutes": int(row.second_half_minutes or default_second_half),
         "archived": bool(row.archived),
         "archived_at": row.archived_at.isoformat() if row.archived_at else None,
         "created_at": row.created_at.isoformat(),
@@ -667,6 +753,68 @@ def _serialize_fcm_submission(row: FcmSubmission) -> dict:
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
+
+
+def _serialize_fcm_template(row: FcmTemplate) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "match_regex": row.match_regex,
+        "image_url": f"/api/fcm/templates/{row.id}/image",
+        "priority": int(row.priority or 100),
+        "active": bool(row.active),
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _find_registered_template_path(db: Session, team_name: str) -> Path | None:
+    rows = (
+        db.query(FcmTemplate)
+        .filter(FcmTemplate.active == True)  # noqa: E712
+        .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
+        .all()
+    )
+    for row in rows:
+        try:
+            if re.search(row.match_regex, team_name or "", flags=re.IGNORECASE):
+                path = Path(row.image_path)
+                if path.exists():
+                    return path
+        except re.error:
+            continue
+    return None
+
+
+def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_number: int) -> tuple[str, bytes]:
+    template_path = _find_registered_template_path(db, row.team_name or "") or find_template_path(row.team_name or "")
+    if not template_path:
+        raise ValueError(f"{row.team_name}: 배경 템플릿 없음")
+
+    workbook_path = _fcm_workbook_path(row.match_id, row.team_side)
+    shared_workbook_path = _fcm_shared_workbook_path(row.match_id)
+    if workbook_path.exists():
+        workbook_bytes = workbook_path.read_bytes()
+    elif shared_workbook_path.exists():
+        workbook_bytes = shared_workbook_path.read_bytes()
+    else:
+        workbook_bytes = None
+
+    card_bytes = build_card_image(
+        background_path=template_path,
+        player_id=row.player_id,
+        player_name=row.player_name or row.player_id,
+        selected_stats=list(row.selected_stats or []),
+        workbook_bytes=workbook_bytes,
+    )
+    filename = f"{league}-{round_number}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
+    return filename, card_bytes
+
+
+def _attachment_header(filename: str, fallback: str = "download") -> str:
+    encoded = quote(filename)
+    safe_fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", fallback).strip("_") or "download"
+    return f"attachment; filename=\"{safe_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def _audit(
@@ -1838,57 +1986,124 @@ def list_fcm_submissions(db: Session = Depends(get_db), _user: User = Depends(_r
     return [_serialize_fcm_submission(row) for row in rows]
 
 
+@app.get("/api/fcm/templates", response_model=list[FcmTemplateResponse])
+def list_fcm_templates(db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    rows = db.query(FcmTemplate).order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc()).all()
+    return [_serialize_fcm_template(row) for row in rows]
+
+
+@app.post("/api/fcm/templates", response_model=FcmTemplateResponse)
+async def create_fcm_template(
+    name: str = Form(...),
+    match_regex: str = Form(...),
+    priority: int = Form(default=100),
+    active: bool = Form(default=True),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    clean_name = name.strip()
+    clean_regex = match_regex.strip()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Template name is required")
+    try:
+        re.compile(clean_regex)
+    except re.error as ex:
+        raise HTTPException(status_code=400, detail=f"Invalid regex: {ex}") from ex
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg"}:
+        raise HTTPException(status_code=400, detail="Template image must be PNG or JPG")
+
+    FCM_TEMPLATE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    template_id = uuid.uuid4()
+    image_path = FCM_TEMPLATE_RUNTIME_DIR / f"{template_id}{suffix}"
+    image_bytes = await file.read()
+    try:
+        Image.open(io.BytesIO(image_bytes)).verify()
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid image") from ex
+    image_path.write_bytes(image_bytes)
+
+    row = FcmTemplate(
+        id=template_id,
+        name=clean_name,
+        match_regex=clean_regex,
+        image_path=str(image_path),
+        priority=max(1, priority),
+        active=active,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_fcm_template(row)
+
+
+@app.get("/api/fcm/templates/{template_id}/image")
+def get_fcm_template_image(template_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    row = db.get(FcmTemplate, template_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found")
+    path = Path(row.image_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Template image not found")
+    media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return Response(content=path.read_bytes(), media_type=media_type)
+
+
 @app.get("/api/fcm/generate")
 def generate_fcm_cards(
     league: str = Query(...),
     round: int = Query(..., ge=1, le=99),
+    match_id: UUID | None = Query(default=None),
+    team_side: str | None = Query(default=None),
     db: Session = Depends(get_db),
     _user: User = Depends(_require_session_user),
 ):
     normalized_league = _normalize_competition_class(league)
-    rows = (
-        db.query(FcmSubmission)
-        .filter(FcmSubmission.competition_class == normalized_league, FcmSubmission.round_number == round)
-        .order_by(FcmSubmission.match_id.asc(), FcmSubmission.team_side.asc(), desc(FcmSubmission.updated_at))
-        .all()
+    query = db.query(FcmSubmission).filter(
+        FcmSubmission.competition_class == normalized_league,
+        FcmSubmission.round_number == round,
     )
+    if match_id:
+        query = query.filter(FcmSubmission.match_id == match_id)
+    normalized_side = None
+    if team_side:
+        normalized_side = _normalize_fcm_team_side(team_side)
+        query = query.filter(FcmSubmission.team_side == normalized_side)
+
+    rows = query.order_by(FcmSubmission.match_id.asc(), FcmSubmission.team_side.asc(), desc(FcmSubmission.updated_at)).all()
+
+    if match_id and normalized_side:
+        row = rows[0] if rows else None
+        if not row:
+            raise HTTPException(status_code=404, detail="FCM submission not found")
+        try:
+            filename, card_bytes = _build_fcm_card_payload(db, row, normalized_league, round)
+        except ValueError as ex:
+            raise HTTPException(status_code=409, detail=str(ex)) from ex
+        except Exception as ex:
+            raise HTTPException(status_code=500, detail=str(ex)) from ex
+        return Response(
+            content=card_bytes,
+            media_type="image/png",
+            headers={"Content-Disposition": _attachment_header(filename, "fcm_card.png")},
+        )
 
     latest_rows: dict[tuple[UUID, str], FcmSubmission] = {}
     for row in rows:
-        latest_rows[(row.match_id, row.team_side)] = row
+        key = (row.match_id, row.team_side)
+        if key not in latest_rows:
+            latest_rows[key] = row
 
     generated_cards: list[tuple[str, bytes]] = []
     skipped: list[str] = []
 
     for row in latest_rows.values():
-        template_path = find_template_path(row.team_name or "")
-        if not template_path:
-            skipped.append(f"{row.team_name}: 배경 템플릿 없음")
-            continue
-
-        workbook_path = _fcm_workbook_path(row.match_id, row.team_side)
-        shared_workbook_path = _fcm_shared_workbook_path(row.match_id)
-        if workbook_path.exists():
-            workbook_bytes = workbook_path.read_bytes()
-        elif shared_workbook_path.exists():
-            workbook_bytes = shared_workbook_path.read_bytes()
-        else:
-            workbook_bytes = None
-
         try:
-            card_bytes = build_card_image(
-                background_path=template_path,
-                player_id=row.player_id,
-                player_name=row.player_name or row.player_id,
-                selected_stats=list(row.selected_stats or []),
-                workbook_bytes=workbook_bytes,
-            )
+            generated_cards.append(_build_fcm_card_payload(db, row, normalized_league, round))
         except Exception as ex:
             skipped.append(f"{row.team_name}: {ex}")
-            continue
-
-        filename = f"{normalized_league}-{round}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
-        generated_cards.append((filename, card_bytes))
 
     if not generated_cards:
         detail = "생성 가능한 카드가 없습니다."
@@ -1900,7 +2115,12 @@ def generate_fcm_cards(
     return Response(
         content=zip_bytes,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{normalized_league}-{round}R_cards.zip"'},
+        headers={
+            "Content-Disposition": _attachment_header(
+                f"{normalized_league}-{round}R_cards.zip",
+                f"{normalized_league}-{round}R_cards.zip",
+            )
+        },
     )
 
 
@@ -2040,9 +2260,41 @@ async def download_fpa_visual_archive(file: UploadFile = File(...), report_title
     return Response(content=archive_bytes, media_type="application/zip", headers=headers)
 
 
+@app.get("/api/competition-classes", response_model=list[CompetitionClassResponse])
+def list_competition_classes(db: Session = Depends(get_db)):
+    rows = db.query(CompetitionClass).order_by(CompetitionClass.code.asc()).all()
+    return [_serialize_competition_class(row) for row in rows]
+
+
+@app.post("/api/competition-classes", response_model=CompetitionClassResponse)
+def create_competition_class(body: CompetitionClassCreateRequest, db: Session = Depends(get_db)):
+    code = _normalize_competition_class(body.code)
+    name = body.name.strip()
+    if not re.fullmatch(r"[A-Z0-9-]+", code):
+        raise HTTPException(status_code=400, detail="Competition class code can use A-Z, 0-9, and '-' only")
+
+    existing = db.get(CompetitionClass, code)
+    if existing:
+        raise HTTPException(status_code=409, detail="Competition class already exists")
+
+    row = CompetitionClass(
+        code=code,
+        name=name,
+        first_half_minutes=body.first_half_minutes,
+        second_half_minutes=body.second_half_minutes,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_competition_class(row)
+
+
 @app.post("/api/matches", response_model=MatchResponse)
 def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
     normalized_class = _normalize_competition_class(body.competition_class)
+    competition = db.get(CompetitionClass, normalized_class)
+    if not competition:
+        raise HTTPException(status_code=400, detail="Unknown competition class")
     name_match = MATCH_NAME_PATTERN.match(body.name.strip())
     if not name_match:
         raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
@@ -2057,11 +2309,15 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     metadata["stream_mode"] = body.stream_mode
     metadata["home_team"] = home_team
     metadata["away_team"] = away_team
+    metadata["first_half_minutes"] = competition.first_half_minutes
+    metadata["second_half_minutes"] = competition.second_half_minutes
     row = Match(
         id=uuid.uuid4(),
         name=body.name,
         competition_class=normalized_class,
         round_number=body.round_number,
+        first_half_minutes=competition.first_half_minutes,
+        second_half_minutes=competition.second_half_minutes,
         hls_url=body.hls_url,
         metadata_json=metadata,
         operator_id=user.id if user and body.assign_operator else None,
@@ -3111,6 +3367,54 @@ def post_xg(
 
     db.commit()
     return {"ok": True, "event_id": body.event_id, "xgot": xgot_meta["xgot"], "xgot_meta": xgot_meta}
+
+
+@app.patch("/api/admin/matches/{match_id}", response_model=MatchResponse)
+def update_archived_match(
+    match_id: UUID,
+    body: UpdateArchivedMatchRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_archived_editor_access(match_obj, user)
+
+    next_name = body.name.strip()
+    name_match = MATCH_NAME_PATTERN.match(next_name)
+    if not name_match:
+        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
+
+    next_class = _normalize_competition_class(name_match.group("class"))
+    if not db.get(CompetitionClass, next_class):
+        raise HTTPException(status_code=400, detail="Unknown competition class")
+    next_round = int(name_match.group("round"))
+    home_team = name_match.group("home").strip()
+    away_team = name_match.group("away").strip()
+
+    previous_name = match_obj.name
+    metadata = dict(match_obj.metadata_json or {})
+    metadata["home_team"] = home_team
+    metadata["away_team"] = away_team
+    match_obj.name = next_name
+    match_obj.competition_class = next_class
+    match_obj.round_number = next_round
+    match_obj.metadata_json = metadata
+
+    _audit(
+        db,
+        "MATCH_RENAME",
+        "match",
+        actor=user,
+        target_id=str(match_obj.id),
+        match_id=match_obj.id,
+        severity="INFO",
+        details={"previous_name": previous_name, "next_name": next_name},
+    )
+    db.commit()
+    db.refresh(match_obj)
+    return _serialize_match(match_obj)
 
 
 @app.get("/api/admin/matches/{match_id}/timeline-items", response_model=TimelineEditorListResponse)

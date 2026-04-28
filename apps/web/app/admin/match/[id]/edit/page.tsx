@@ -11,7 +11,10 @@ const XG_VISIBLE_LENGTH = 40;
 const XG_VISIBLE_OFFSET = HALF_PITCH_LENGTH - XG_VISIBLE_LENGTH;
 const PITCH_WIDTH = 68;
 
-function regulationHalfMinutes(competitionClass?: string | null) {
+function regulationHalfMinutes(competitionClass?: string | null, firstHalfMinutes?: number | null) {
+  if (Number.isFinite(Number(firstHalfMinutes)) && Number(firstHalfMinutes) > 0) {
+    return Number(firstHalfMinutes);
+  }
   const normalized = (competitionClass || '').trim().toUpperCase();
   if (normalized.includes('SUFA')) return 20;
   return 45;
@@ -37,6 +40,8 @@ type MatchInfo = {
   archived: boolean;
   archived_at?: string | null;
   competition_class?: string;
+  first_half_minutes?: number;
+  second_half_minutes?: number;
 };
 
 type TimelineItem = {
@@ -233,6 +238,8 @@ export default function MatchEventEditorPage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [matchNameDraft, setMatchNameDraft] = useState('');
+  const [matchNameSaving, setMatchNameSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<'ALL' | 'ATTACK_LANE' | 'XG' | 'HALFTIME_START'>('ALL');
   const [filterTeam, setFilterTeam] = useState<'ALL' | 'HOME' | 'AWAY'>('ALL');
@@ -318,7 +325,7 @@ export default function MatchEventEditorPage() {
 
   const fmtMinuteTick = (minuteVal: number) => {
     const ms = Math.round(Number(minuteVal) * 60000);
-    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class);
+    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
     const baseHalfMs = baseHalfMinutes * 60000;
     if (dominanceMeta?.split_halves) {
       const halfGapMs = Number(dominanceMeta.half_gap_ms || 0);
@@ -364,6 +371,7 @@ export default function MatchEventEditorPage() {
     ]);
     setSessionUser(user);
     setMatch(matchData);
+    setMatchNameDraft(matchData.name || '');
     if (user.role !== 'SUPERADMIN' || !matchData.archived) {
       setItems([]);
       setDominanceBins([]);
@@ -610,6 +618,36 @@ export default function MatchEventEditorPage() {
     }
   };
 
+  const saveMatchName = async () => {
+    if (!canEdit || matchNameSaving) return;
+    const nextName = matchNameDraft.trim();
+    if (!nextName) {
+      setError('Match name is required');
+      return;
+    }
+    setMatchNameSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await apiFetch(`/admin/matches/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: nextName }),
+      });
+      if (!response.ok) {
+        setError((await response.text()) || 'Match name update failed');
+        return;
+      }
+      const nextMatch = await response.json() as MatchInfo;
+      setMatch(nextMatch);
+      setMatchNameDraft(nextMatch.name || nextName);
+      setMessage('Match name updated');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Match name update failed');
+    } finally {
+      setMatchNameSaving(false);
+    }
+  };
+
   const remove = async () => {
     if (!selectedItem || !canEdit || busy) return;
     if (!window.confirm('이 항목을 삭제할까요?')) return;
@@ -653,6 +691,31 @@ export default function MatchEventEditorPage() {
         </div>
         <div className="muted">
           {match?.name || 'Loading match...'} {match?.archived_at ? `· archived ${new Date(match.archived_at).toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' })}` : ''}
+        </div>
+        <div className="archived-match-title-editor">
+          <label className="grid" style={{ gap: 4 }}>
+            <span className="muted">Match Title</span>
+            <input
+              disabled={!canEdit || matchNameSaving}
+              onChange={(event) => setMatchNameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void saveMatchName();
+                }
+              }}
+              placeholder="[K3 | 1R] HOME vs AWAY"
+              value={matchNameDraft}
+            />
+          </label>
+          <button
+            className="btn-primary"
+            disabled={!canEdit || matchNameSaving || matchNameDraft.trim() === (match?.name || '').trim()}
+            onClick={saveMatchName}
+            type="button"
+          >
+            {matchNameSaving ? 'Saving' : 'Save Title'}
+          </button>
         </div>
         {!canEdit && !error ? (
           <div className="form-error">Archived matches can be edited by admin only.</div>
@@ -909,7 +972,7 @@ export default function MatchEventEditorPage() {
                     <button className={form.is_goal ? 'btn-active' : ''} onClick={() => setForm((prev) => ({ ...prev, is_goal: !prev.is_goal }))}>Goal</button>
                     <button className={form.is_on_target ? 'btn-active' : ''} onClick={() => setForm((prev) => ({ ...prev, is_on_target: !prev.is_on_target }))}>On Target</button>
                     <button className={form.is_header ? 'btn-active' : ''} onClick={() => setForm((prev) => ({ ...prev, is_header: !prev.is_header }))}>Header</button>
-                    <button className={form.is_weak_foot ? 'btn-active' : ''} onClick={() => setForm((prev) => ({ ...prev, is_weak_foot: !prev.is_weak_foot }))}>Weak Foot</button>
+                    <button className={form.is_weak_foot ? 'btn-active' : ''} onClick={() => setForm((prev) => ({ ...prev, is_weak_foot: !prev.is_weak_foot }))}>Difficult</button>
                   </div>
                   <div
                     style={{

@@ -59,7 +59,7 @@ const tagRows = [
   ['p', 'Progressive', '진전 패스'],
   ['c', 'Counter Attack', '역습'],
   ['sw', 'Switch', '사이드 전환'],
-  ['wf', 'Weak Foot', '약발'],
+  ['wf', 'Difficult', '어려운 자세'],
   ['ft', 'First Time', '원터치'],
 ] as const;
 
@@ -74,10 +74,10 @@ const autoTags = [
 const examples = [
   ['10ss8', '10번 선수가 8번 선수에게 패스 성공', '좌표 2개, 자동 태그 Success'],
   ['7ss9.k', '7번 선수가 9번 선수에게 키패스', '좌표 2개, Success + Key'],
-  ['11ddd.wf', '11번 선수가 약발로 골', '좌표 1개, Success + Weak Foot'],
+  ['11ddd.wf', '11번 선수가 어려운 자세에서 골', '좌표 1개, Success + Difficult'],
   ['9ddd.h', '9번 선수가 헤더 골', '좌표 1개, Success + Header'],
   ['3c', '3번 선수가 크로스를 시도했지만 실패', '좌표 2개, Fail'],
-  ['10ddd.c.wf', '10번 선수가 역습 상황에서 약발 골', 'Counter Attack + Weak Foot'],
+  ['10ddd.c.wf', '10번 선수가 역습 상황에서 어려운 자세로 골', 'Counter Attack + Difficult'],
 ] as const;
 
 const scoringRows = [
@@ -204,7 +204,7 @@ export default function FpaSettingsPage() {
         <GuideList
           items={[
             '`10ss8.k` → 10번 선수가 8번 선수에게 패스 성공, Key 태그 추가',
-            '`9dd.wf` → 9번 선수가 약발로 유효 슈팅',
+            '`9dd.wf` → 9번 선수가 어려운 자세에서 유효 슈팅',
             '`7d` → 7번 선수가 슈팅',
             '수신 선수가 없는 1점 액션은 선수번호와 액션코드만으로 입력 가능합니다.',
           ]}
