@@ -22,6 +22,14 @@ __pycache__/
 # Runtime-generated certbot material
 infra/app/certbot/conf/
 
+# Local exports, throwaway bundles, and uploaded runtime data
+runtime/
+docs/backups/
+docs/html-export/
+FPA_Streamlit_App-main/
+*.bundle
+filed.png
+
 # Logs / env
 *.log
 .env

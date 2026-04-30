@@ -2,6 +2,14 @@
 
 로컬에서 `docker compose`로 즉시 실행 가능하며, VPS 배포(nginx/https 옵션)까지 고려한 구조입니다.
 
+## Collaboration Baseline
+
+- 기준 브랜치: `main`
+- 현재 제품 범위: `FLA`, `FPA`, `FCM`
+- 작업 브랜치는 `main`에서 새로 만들고, 기능 단위 PR 또는 명시적 merge로 합치는 것을 권장합니다.
+- 로컬 업로드 파일, 카드 생성 결과, HTML export, 백업 patch는 Git에 올리지 않습니다.
+- 운영 서버 작업트리는 과거 수동 배포 이력이 있어 dirty 상태일 수 있으므로, 운영 반영 전에는 서버에서 `git status --short`와 백업을 먼저 확인합니다.
+
 ## Production Access
 
 - 운영 콘솔 URL: `https://console.fineludens.kr/login`
@@ -60,6 +68,7 @@ control endpoint 요청 형식:
 - `apps/web/`: Next.js 기반 `Fine Play Console`
   - `FLA`: Live match operations
   - `FPA`: Football performance analysis
+  - `FCM`: FinePlay Card Marker
 - `README.md`: 실행/배포/환경변수/키바인딩/웹훅/확장 가이드
 - `docs/match-export-csv.md`: 매치 단일 CSV export 컬럼 정의서
 
@@ -76,9 +85,13 @@ control endpoint 요청 형식:
     - `Event Editor`
   - `FPA`
     - `Live Logger`
-    - `File Analyzer`
     - `Visual Reports`
     - `Code Guide`
+  - `FCM`
+    - `Workspace`
+    - `Match Status`
+    - `Templates`
+    - `Guide`
 
 ---
 
@@ -96,6 +109,7 @@ control endpoint 요청 형식:
   5. 백그라운드 워커가 webhook 전송 재시도(지수 백오프)
   6. Match 페이지의 `Export Match Data` 버튼으로 단일 CSV 다운로드 가능
   7. `/admin/fpa/*`에서 FPA 전용 입력/분석/시각화 수행 가능
+  8. `/admin/fcm/*`에서 archived match 기반 선수 카드 생성 가능
 
 ---
 
@@ -160,8 +174,10 @@ docker compose up -d --build
 - 권장 로그인 URL: `https://127.0.0.1/login`
 - FLA dashboard: `https://127.0.0.1/admin/dashboard`
 - FPA live logger: `https://127.0.0.1/admin/fpa/live`
-- FPA file analyzer: `https://127.0.0.1/admin/fpa/analyzer`
 - FPA visual reports: `https://127.0.0.1/admin/fpa/reports`
+- FCM workspace: `https://127.0.0.1/admin/fcm/workspace`
+- FCM match status: `https://127.0.0.1/admin/fcm/match-status`
+- FCM templates: `https://127.0.0.1/admin/fcm/templates`
 - API health: `https://127.0.0.1/health`
 
 주의:
@@ -187,11 +203,18 @@ docker compose up -d --build
    - `Home/Away` 전환 시 `Direction` 자동 반전
    - `-1/+1` 버튼과 방향키는 `1분` 단위 시간 조절
    - `Enter`로 제출, 우클릭으로 마지막 좌표 제거
-2. `File Analyzer`
-   - 업로드 분석은 원본 FPA와 동일하게 `Data` 시트를 기준으로 처리
-   - 같은 업로드 파일로 분석 엑셀 다운로드와 선수별 시각화 생성 가능
-3. `Visual Reports`
+2. `Visual Reports`
    - 별도 화면에서 파일 기반 패스맵/히트맵 생성 가능
+
+### FCM 운영 흐름
+
+1. `Match Status`
+   - archived match를 라운드/대회 기준으로 선택
+   - FPA 엑셀 업로드 후 주요 스탯과 선수 정보를 팀별로 제출
+2. `Templates`
+   - 팀명 Regex, 우선순위, 활성 상태로 카드 템플릿 매칭 규칙 관리
+3. `Workspace`
+   - HOME/AWAY 제출 상태를 확인하고 Ready row별 카드 PNG 또는 일괄 ZIP 생성
 
 ---
 
