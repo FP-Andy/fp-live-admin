@@ -24,6 +24,7 @@ services:
       - ../../templetes:/app/templetes:ro
       - ../../assets/fonts:/app/assets/fonts:ro
       - ../../runtime:/app/runtime
+      - ../../models:/app/models:ro
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/live_admin
       CORS_ORIGINS: "*"
@@ -41,6 +42,9 @@ services:
       MEDIA_CONTROL_TOKEN: ${MEDIA_CONTROL_TOKEN:-}
       MEDIA_INSTANCE_ID: ${MEDIA_INSTANCE_ID:-}
       MEDIA_INSTANCE_NAME: ${MEDIA_INSTANCE_NAME:-live-admin-media}
+      HIGHLIGHT_RUNTIME_DIR: /app/runtime/highlight
+      YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-/app/models/best-8.pt}
+      XGB_MODEL_PATH: ${XGB_MODEL_PATH:-/app/models/highlight_model.xgb}
     depends_on:
       postgres:
         condition: service_healthy

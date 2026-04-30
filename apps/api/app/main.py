@@ -10,7 +10,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from uuid import UUID
-from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
+from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
@@ -31,7 +32,7 @@ from .fpa import (
     parse_logs_to_dataframe,
 )
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaVisualizeResponse
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate
+from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -90,6 +91,26 @@ MEDIA_INSTANCE_ID = os.getenv("MEDIA_INSTANCE_ID", "").strip()
 MEDIA_INSTANCE_NAME = os.getenv("MEDIA_INSTANCE_NAME", "live-admin-media").strip() or "live-admin-media"
 FCM_RUNTIME_DIR = Path(os.getenv("FCM_RUNTIME_DIR", "/app/runtime/fcm")).resolve()
 FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
+
+HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "/app/models/best-8.pt")
+XGB_MODEL_PATH = os.getenv("XGB_MODEL_PATH", "/app/models/highlight_model.xgb")
+
+_yolo_model: object | None = None
+_xgb_model: object | None = None
+
+
+def _load_highlight_models() -> None:
+    global _yolo_model, _xgb_model
+    if not Path(YOLO_MODEL_PATH).exists():
+        return
+    try:
+        from .highlight_pipeline import load_models
+        _yolo_model, _xgb_model = load_models(YOLO_MODEL_PATH, XGB_MODEL_PATH)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Highlight models failed to load: %s", exc)
+
 
 DOM_POSSESSION_WEIGHT = float(os.getenv("DOM_POSSESSION_WEIGHT", "0.35"))
 DOM_XG_WEIGHT = float(os.getenv("DOM_XG_WEIGHT", "0.65"))
@@ -486,12 +507,18 @@ async def startup() -> None:
     global worker_task
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
+    HIGHLIGHT_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    (HIGHLIGHT_RUNTIME_DIR / "uploads").mkdir(exist_ok=True)
+    (HIGHLIGHT_RUNTIME_DIR / "jobs").mkdir(exist_ok=True)
+    (HIGHLIGHT_RUNTIME_DIR / "exports").mkdir(exist_ok=True)
     db = SessionLocal()
     try:
         _seed_competition_classes(db)
         _seed_existing_fcm_templates(db)
     finally:
         db.close()
+    import asyncio as _asyncio
+    _asyncio.get_event_loop().run_in_executor(None, _load_highlight_models)
     worker_task = asyncio.create_task(outbox_worker(worker_stop_event))
 
 
@@ -3829,3 +3856,422 @@ def outbox_debug(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+# ── Highlight endpoints ────────────────────────────────────────────────────
+
+import json as _json
+import shutil as _shutil
+import threading as _threading
+import numpy as _np
+
+
+class _NpEncoder(_json.JSONEncoder):
+    def default(self, o: object) -> object:
+        if isinstance(o, _np.integer):
+            return int(o)
+        if isinstance(o, _np.floating):
+            return float(o)
+        if isinstance(o, _np.ndarray):
+            return o.tolist()
+        return super().default(o)
+
+
+def _hl_job_dir(job_id: str) -> Path:
+    return HIGHLIGHT_RUNTIME_DIR / "jobs" / job_id
+
+
+def _hl_clips_dir(job_id: str) -> Path:
+    return _hl_job_dir(job_id) / "clips"
+
+
+def _hl_update_job(db: Session, job_id: str, **kwargs: object) -> HighlightJob | None:
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        return None
+    for k, v in kwargs.items():
+        setattr(job, k, v)
+    job.updated_at = datetime.utcnow()
+    db.commit()
+    return job
+
+
+def _serialize_hl_job(job: HighlightJob) -> dict:
+    return {
+        "id": job.id,
+        "status": job.status,
+        "mode": job.mode,
+        "original_filename": job.original_filename,
+        "error_message": job.error_message,
+        "job_metadata": job.job_metadata or {},
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+    }
+
+
+def _run_ai_analysis(job_id: str, video_path: str, highlight_count: int) -> None:
+    db = SessionLocal()
+    try:
+        _hl_update_job(db, job_id, status="processing")
+        if _yolo_model is None:
+            _hl_update_job(db, job_id, status="error", error_message="YOLO 모델이 로드되지 않았습니다.")
+            return
+
+        from .highlight_pipeline import (
+            run_highlight_pipeline,
+            CLIP_DURATION_BEFORE,
+            CLIP_DURATION_AFTER,
+        )
+
+        clips_dir = str(_hl_clips_dir(job_id))
+        result = run_highlight_pipeline(
+            video_path=video_path,
+            output_dir=clips_dir,
+            yolo_model=_yolo_model,
+            xgb_model=_xgb_model,
+            highlight_count=highlight_count,
+        )
+
+        if not result.success:
+            _hl_update_job(db, job_id, status="error", error_message=result.message)
+            return
+
+        fps_val = float(result.fps or 30.0)
+        clip_files = [Path(p).name for p in (result.clip_paths or [])]
+        clip_scores_by_name: dict[str, float] = {}
+        clip_features_by_name: dict[str, str] = {}
+        clip_feature_stats_by_name: dict[str, dict] = {}
+        clip_timestamps: dict[str, dict] = {}
+
+        frames = result.highlight_frames or []
+        feats = result.clip_features or []
+        feat_stats = result.clip_feature_stats or {}
+        scores = result.clip_scores or {}
+
+        for i, name in enumerate(clip_files):
+            frame = frames[i] if i < len(frames) else None
+            if frame is not None:
+                anchor_sec = frame / fps_val
+                clip_timestamps[name] = {
+                    "start": round(max(0.0, anchor_sec - CLIP_DURATION_BEFORE), 1),
+                    "end": round(anchor_sec + CLIP_DURATION_AFTER, 1),
+                }
+                clip_scores_by_name[name] = scores.get(frame, 0.0)
+                if frame in feat_stats:
+                    clip_feature_stats_by_name[name] = feat_stats[frame]
+            if i < len(feats):
+                clip_features_by_name[name] = feats[i]
+
+        metadata = {
+            "clips": clip_files,
+            "selected": {},
+            "clip_scores": clip_scores_by_name,
+            "clip_features": clip_features_by_name,
+            "clip_feature_stats": clip_feature_stats_by_name,
+            "clip_timestamps": clip_timestamps,
+            "message": result.message,
+        }
+        safe_meta = _json.loads(_json.dumps(metadata, cls=_NpEncoder))
+        # delete original video after successful analysis
+        try:
+            Path(video_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        _hl_update_job(db, job_id, status="done", upload_path=None,
+                       clips_dir=clips_dir, job_metadata=safe_meta)
+    except Exception as exc:
+        _hl_update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
+def _run_log_analysis(
+    job_id: str,
+    video_path: str,
+    log_data: list[dict],
+    second_half_start_sec: float,
+    highlight_count: int,
+) -> None:
+    db = SessionLocal()
+    try:
+        _hl_update_job(db, job_id, status="processing")
+        if _yolo_model is None:
+            _hl_update_job(db, job_id, status="error", error_message="YOLO 모델이 로드되지 않았습니다.")
+            return
+
+        from .highlight_pipeline import (
+            run_log_pipeline,
+            CLIP_DURATION_BEFORE,
+            CLIP_DURATION_AFTER,
+            LOG_CLIP_BEFORE,
+            LOG_CLIP_AFTER,
+            LOG_CLIP_MINUTE_SPAN,
+        )
+
+        clips_dir = str(_hl_clips_dir(job_id))
+        result = run_log_pipeline(
+            video_path=video_path,
+            log_data=log_data,
+            second_half_start_sec=second_half_start_sec,
+            output_dir=clips_dir,
+            target_count=highlight_count,
+            yolo_model=_yolo_model,
+            xgb_model=_xgb_model,
+        )
+
+        if not result.success:
+            _hl_update_job(db, job_id, status="error", error_message=result.message)
+            return
+
+        fps_val = float(result.fps or 30.0)
+        clip_files = [Path(p).name for p in (result.clip_paths or [])]
+        clip_timestamps: dict[str, dict] = {}
+
+        for meta in (result.events or []):
+            if meta.get("source") == "log":
+                name = meta["clip"]
+                video_sec = float(meta.get("video_sec", 0))
+                clip_timestamps[name] = {
+                    "start": round(max(0.0, video_sec - LOG_CLIP_MINUTE_SPAN - LOG_CLIP_BEFORE), 1),
+                    "end": round(video_sec + LOG_CLIP_AFTER, 1),
+                }
+
+        log_clip_names = set(clip_timestamps.keys())
+        ai_names = [n for n in clip_files if n not in log_clip_names]
+        ai_frames = result.highlight_frames or []
+        for i, name in enumerate(ai_names):
+            frame = ai_frames[i] if i < len(ai_frames) else None
+            if frame is not None:
+                anchor_sec = frame / fps_val
+                clip_timestamps[name] = {
+                    "start": round(max(0.0, anchor_sec - CLIP_DURATION_BEFORE), 1),
+                    "end": round(anchor_sec + CLIP_DURATION_AFTER, 1),
+                }
+
+        metadata = {
+            "clips": clip_files,
+            "selected": {},
+            "clip_scores": result.clip_scores,
+            "clip_features": result.clip_features,
+            "clip_feature_stats": result.clip_feature_stats,
+            "clip_timestamps": clip_timestamps,
+            "events": result.events,
+            "message": result.message,
+        }
+        safe_meta = _json.loads(_json.dumps(metadata, cls=_NpEncoder))
+        try:
+            Path(video_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        _hl_update_job(db, job_id, status="done", upload_path=None,
+                       clips_dir=clips_dir, job_metadata=safe_meta)
+    except Exception as exc:
+        _hl_update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
+@app.post("/api/highlight/jobs")
+async def create_highlight_job(
+    background_tasks: BackgroundTasks,
+    video: UploadFile = File(...),
+    mode: str = Form("ai"),
+    highlight_count: int = Form(40),
+    second_half_start_sec: float = Form(0.0),
+    log_data_json: str = Form("[]"),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if mode not in ("ai", "log_ai"):
+        raise HTTPException(status_code=400, detail="mode must be 'ai' or 'log_ai'")
+
+    job_id = str(uuid.uuid4())
+    upload_dir = HIGHLIGHT_RUNTIME_DIR / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
+    upload_path = upload_dir / f"{job_id}{suffix}"
+
+    content = await video.read()
+    upload_path.write_bytes(content)
+
+    job = HighlightJob(
+        id=job_id,
+        status="queued",
+        mode=mode,
+        original_filename=video.filename or "video.mp4",
+        upload_path=str(upload_path),
+    )
+    db.add(job)
+    db.commit()
+
+    if mode == "ai":
+        _threading.Thread(
+            target=_run_ai_analysis,
+            args=(job_id, str(upload_path), highlight_count),
+            daemon=True,
+        ).start()
+    else:
+        try:
+            log_data = _json.loads(log_data_json)
+        except Exception:
+            log_data = []
+        _threading.Thread(
+            target=_run_log_analysis,
+            args=(job_id, str(upload_path), log_data, second_half_start_sec, highlight_count),
+            daemon=True,
+        ).start()
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/highlight/jobs")
+def list_highlight_jobs(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    rows = (db.query(HighlightJob)
+            .order_by(desc(HighlightJob.created_at))
+            .limit(limit).all())
+    return [_serialize_hl_job(r) for r in rows]
+
+
+@app.get("/api/highlight/jobs/{job_id}")
+def get_highlight_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _serialize_hl_job(job)
+
+
+@app.get("/api/highlight/jobs/{job_id}/clips/{clip_name}")
+def serve_highlight_clip(
+    job_id: str,
+    clip_name: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    clip_path = _hl_clips_dir(job_id) / clip_name
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return FileResponse(str(clip_path), media_type="video/mp4")
+
+
+@app.post("/api/highlight/jobs/{job_id}/export")
+def export_highlight_job(
+    job_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail="Job is not completed yet")
+
+    selected: list[str] = body.get("selected", [])
+    order: list[str] = body.get("order", selected)
+    if not selected:
+        raise HTTPException(status_code=400, detail="No clips selected")
+
+    clips_dir = _hl_clips_dir(job_id)
+    clip_paths = []
+    for name in order:
+        if name in selected:
+            p = clips_dir / name
+            if p.exists():
+                clip_paths.append(str(p))
+
+    if not clip_paths:
+        raise HTTPException(status_code=400, detail="None of the selected clips exist")
+
+    exports_dir = HIGHLIGHT_RUNTIME_DIR / "exports"
+    exports_dir.mkdir(exist_ok=True)
+    export_path = exports_dir / f"{job_id}_export.mp4"
+
+    clips: list = []
+    merged = None
+    try:
+        from moviepy import VideoFileClip, concatenate_videoclips
+        clips = [VideoFileClip(p) for p in clip_paths]
+        merged = concatenate_videoclips(clips)
+        merged.write_videofile(str(export_path), codec="libx264", audio_codec="aac",
+                               temp_audiofile=f"temp-audio-export-{job_id}.m4a",
+                               remove_temp=True, logger=None)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
+    finally:
+        if merged is not None:
+            merged.close()
+        for c in clips:
+            c.close()
+
+    _hl_update_job(db, job_id, export_path=str(export_path))
+    return {"ok": True, "export_ready": True}
+
+
+@app.get("/api/highlight/jobs/{job_id}/export/download")
+def download_highlight_export(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job or not job.export_path:
+        raise HTTPException(status_code=404, detail="Export not found")
+    export_path = Path(job.export_path)
+    if not export_path.exists():
+        raise HTTPException(status_code=404, detail="Export file missing")
+    filename = f"highlight_{job_id[:8]}.mp4"
+    return FileResponse(str(export_path), media_type="video/mp4",
+                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.delete("/api/highlight/jobs/{job_id}")
+def delete_highlight_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_dir = _hl_job_dir(job_id)
+    if job_dir.exists():
+        _shutil.rmtree(job_dir, ignore_errors=True)
+
+    if job.upload_path:
+        try:
+            Path(job.upload_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if job.export_path:
+        try:
+            Path(job.export_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    db.delete(job)
+    db.commit()
+    return {"ok": True}
