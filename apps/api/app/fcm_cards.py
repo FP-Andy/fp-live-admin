@@ -186,6 +186,8 @@ def _coerce_pitch_coordinates(
     if max_x <= 1.2 and max_y <= 1.2:
         coords[x_col] = coords[x_col] * pitch_length
         coords[y_col] = coords[y_col] * pitch_width
+    elif max_x <= pitch_length + 0.5 and max_y <= pitch_width + 0.5:
+        pass
     elif max_x <= 100.5 and max_y <= 100.5:
         coords[x_col] = coords[x_col] * (pitch_length / 100.0)
         coords[y_col] = coords[y_col] * (pitch_width / 100.0)
@@ -311,22 +313,9 @@ def _render_reference_passmap(workbook_bytes: bytes, player_id: str) -> Image.Im
     if passes.empty:
         return None
 
-    passes["EndX_adj"] = pd.to_numeric(passes["EndX_adj"], errors="coerce")
-    passes["EndY_adj"] = pd.to_numeric(passes["EndY_adj"], errors="coerce")
-    end_coords = passes.dropna(subset=["EndX_adj", "EndY_adj"]).copy()
+    end_coords = _coerce_pitch_coordinates(passes, "EndX_adj", "EndY_adj")
     if end_coords.empty:
         return None
-
-    max_end_x = end_coords["EndX_adj"].max()
-    max_end_y = end_coords["EndY_adj"].max()
-    if max_end_x <= 1.2 and max_end_y <= 1.2:
-        end_coords["EndX_adj"] = end_coords["EndX_adj"] * 105.0
-        end_coords["EndY_adj"] = end_coords["EndY_adj"] * 68.0
-    elif max_end_x <= 100.5 and max_end_y <= 100.5:
-        end_coords["EndX_adj"] = end_coords["EndX_adj"] * (105.0 / 100.0)
-        end_coords["EndY_adj"] = end_coords["EndY_adj"] * (68.0 / 100.0)
-    end_coords["EndX_adj"] = end_coords["EndX_adj"].clip(0, 105.0)
-    end_coords["EndY_adj"] = end_coords["EndY_adj"].clip(0, 68.0)
     end_coords["pass_category"] = end_coords["Tags"].apply(_classify_pass_tag)
 
     style = PassMapStyle()
