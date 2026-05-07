@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 CLIP_DURATION_BEFORE = 15   # seconds before anchor frame
 CLIP_DURATION_AFTER = 10    # seconds after anchor frame
 MIN_SECONDS_BETWEEN_CLIPS = 15
+SCORE_THRESHOLD = 0.2
 
 # log-mode constants (kept identical to log_extract.py)
 LOG_CLIP_BEFORE = 10
@@ -397,8 +398,10 @@ class XHScoreCalculator:
         return feat_df
 
     def _compute_rule_score(self, feat_df: pd.DataFrame) -> pd.DataFrame:
-        max_dist = feat_df["f_dist_centroid_to_goal"].max() + 1e-5
-        inv_dist_centroid = (1.0 - feat_df["f_dist_centroid_to_goal"] / max_dist).clip(lower=0)
+        # 골대 미탐지(fillna(0)) 프레임은 실제 거리=0이 불가 → where(> 0)으로 NaN 처리 후 fillna(0.0)
+        dist_centroid = feat_df["f_dist_centroid_to_goal"].where(feat_df["f_dist_centroid_to_goal"] > 0)
+        max_dist = dist_centroid.max() + 1e-5
+        inv_dist_centroid = (1.0 - dist_centroid / max_dist).clip(lower=0).fillna(0.0)
         window_size = int(self.fps * 4 + 1)
         visible_in_window = feat_df["f_goalpost_visible"].rolling(window=window_size, center=True).max().fillna(0)
         visibility_factor = (visible_in_window > 0).astype(float) * 0.7 + 0.3
@@ -415,10 +418,11 @@ class XHScoreCalculator:
         feat_df.loc[cond1_strong, "bonus_score"] = 0.7
 
         base_vision = (
-            inv_dist_centroid * 0.4 +
+            inv_dist_centroid * 0.35 +
             feat_df["player_density"] * 0.25 +
-            feat_df["f_ball_accel"] * 0.2 +
-            feat_df["f_ball_speed"] * 0.1 +
+            feat_df["f_ball_accel"] * 0.20 +
+            feat_df["f_ball_dir_change"] * 0.10 +
+            feat_df["f_ball_speed"] * 0.05 +
             feat_df["f_players_near_ball"] * 0.05
         )
         vision_score = (base_vision + feat_df["bonus_score"]).clip(upper=1.0)
@@ -647,10 +651,11 @@ def run_highlight_pipeline(
     clip_paths = _create_clips(video_path, highlight_frames, fps, output_dir)
 
     _RULE_CONTRIB = {
-        "inv_dist_centroid_masked": 0.40,
+        "inv_dist_centroid_masked": 0.35,
         "player_density": 0.25,
         "f_ball_accel": 0.20,
-        "f_ball_speed": 0.10,
+        "f_ball_dir_change": 0.10,
+        "f_ball_speed": 0.05,
         "f_players_near_ball": 0.05,
     }
     model_loaded = xgb_model is not None
@@ -832,6 +837,7 @@ class _HighlightExtractor:
         anchored_candidates = [
             {"frame": int(xh_df.loc[p_idx, "frame"]), "score": xh_df.loc[p_idx, "smoothed_score"]}
             for p_idx in peaks
+            if xh_df.loc[p_idx, "smoothed_score"] >= SCORE_THRESHOLD
         ]
 
         if not anchored_candidates:
