@@ -10,10 +10,122 @@ type JobMetadata = {
   selected?: Record<string, boolean>;
   clip_scores?: Record<string, number>;
   clip_features?: Record<string, string>;
+  clip_feature_stats?: Record<string, Record<string, number>>;
   clip_timestamps?: Record<string, ClipTimestamp>;
   events?: Array<{ clip: string; source: string; event_type?: string }>;
   message?: string;
 };
+
+const FEATURE_LABELS: Record<string, string> = {
+  inv_dist_centroid_masked: '공격 집중도',
+  player_density: '선수 밀집도',
+  f_ball_accel: '공 가속도',
+  f_ball_speed: '공 속도',
+  f_ball_dir_change: '공 방향전환',
+  f_players_near_ball: '공 주변 선수',
+  f_audio: '관중 환호',
+  inv_dist_centroid_masked_max: '공격 집중 (피크)',
+  inv_dist_centroid_masked_mean: '공격 집중 (평균)',
+  f_ball_speed_max: '공 속도 (피크)',
+  f_ball_speed_anchor: '공 속도 (순간)',
+  f_ball_accel_std: '공 가속 변동성',
+  f_goalpost_visible_mean: '골대 시야 확보율',
+  f_ball_dir_change_max: '공 방향전환 (피크)',
+  f_ball_dir_change_mean: '공 방향전환 (평균)',
+  f_possession_switches_mean: '점유권 전환 빈도',
+  f_sprint_count_max: '스프린트 선수 수',
+  f_ball_to_goal_width_ratio_mean: '공-골대 근접도',
+  f_goal_bbox_width_norm_mean: '골대 확대 수준',
+  f_players_near_ball_max: '공 근처 선수 (피크)',
+};
+
+function ShapChart({ stats, compact = false }: { stats: Record<string, number>; compact?: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !stats) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const W = canvas.offsetWidth || canvas.width;
+    const H = canvas.offsetHeight || canvas.height;
+    canvas.width = W;
+    canvas.height = H;
+    ctx.clearRect(0, 0, W, H);
+
+    const entries = Object.entries(stats)
+      .map(([k, v]) => ({ key: k, val: v }))
+      .sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
+
+    const shown = compact ? entries.slice(0, 5) : entries;
+    if (!shown.length) return;
+
+    const maxAbs = Math.max(...shown.map((e) => Math.abs(e.val)), 1e-9);
+    const rowH = Math.floor(H / shown.length);
+    const labelW = compact ? 88 : 140;
+    const barAreaW = W - labelW - 8;
+    const midX = labelW + barAreaW * 0.5;
+
+    ctx.font = `${compact ? 10 : 12}px system-ui, sans-serif`;
+
+    shown.forEach((e, i) => {
+      const y = i * rowH;
+      const barLen = (Math.abs(e.val) / maxAbs) * (barAreaW * 0.45);
+      const isPos = e.val >= 0;
+      const label = FEATURE_LABELS[e.key] || e.key;
+      const pct = (e.val * 100).toFixed(1);
+
+      ctx.fillStyle = '#c9b7a7';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, labelW - 4, y + rowH * 0.5);
+
+      const barX = isPos ? midX : midX - barLen;
+      const barY = y + rowH * 0.2;
+      const barH = rowH * 0.6;
+      ctx.fillStyle = isPos ? '#ff8a1d' : '#6ab4f5';
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(barX, barY, barLen, barH, 2);
+      } else {
+        ctx.rect(barX, barY, barLen, barH);
+      }
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(midX, y);
+      ctx.lineTo(midX, y + rowH);
+      ctx.stroke();
+
+      if (!compact) {
+        ctx.fillStyle = isPos ? '#ffb37c' : '#90c8f8';
+        ctx.textAlign = isPos ? 'left' : 'right';
+        ctx.fillText(
+          `${isPos ? '+' : ''}${pct}%`,
+          isPos ? midX + barLen + 3 : midX - barLen - 3,
+          y + rowH * 0.5,
+        );
+      }
+    });
+  }, [stats, compact]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        display: 'block',
+        width: '100%',
+        height: compact ? 80 : 200,
+        marginTop: 8,
+        borderRadius: 6,
+        background: 'rgba(0,0,0,0.25)',
+      }}
+    />
+  );
+}
 
 type HighlightJob = {
   id: string;
@@ -458,6 +570,7 @@ export default function HighlightPage() {
                 const ts = meta.clip_timestamps?.[clip];
                 const score = meta.clip_scores?.[clip] ?? 0;
                 const feat = meta.clip_features?.[clip] ?? '';
+                const shapStats = meta.clip_feature_stats?.[clip];
                 const evMeta = meta.events?.find((e) => e.clip === clip);
                 const isLog = evMeta?.source === 'log';
 
@@ -512,9 +625,10 @@ export default function HighlightPage() {
                           ⏱ {fmtTime(ts.start)} ~ {fmtTime(ts.end)}
                         </div>
                       )}
-                      {feat && (
+                      {feat && !shapStats && (
                         <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>{feat}</div>
                       )}
+                      {shapStats && <ShapChart stats={shapStats} compact />}
                     </div>
                   </div>
                 );
