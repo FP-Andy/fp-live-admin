@@ -1196,12 +1196,42 @@ a:focus-visible {
 }
 
 .fcm-selection-slot {
+  position: relative;
   display: grid;
   gap: 6px;
   padding: 16px 18px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.fcm-selection-slot.is-selected {
+  padding-right: 42px;
+}
+
+.fcm-selection-remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fcm-selection-remove:hover,
+.fcm-selection-remove:focus-visible {
+  border-color: rgba(255, 156, 143, 0.55);
+  background: rgba(255, 113, 94, 0.16);
+  color: #fff;
 }
 
 .fcm-selection-slot strong {

@@ -133,6 +133,11 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
     });
   };
 
+  const removeSelectedStat = (index: number) => {
+    setSelectedStats((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+    setStatus('선택한 스탯을 제거했습니다.');
+  };
+
   const addCustomStat = () => {
     const nextStat = customStat.trim();
     if (!nextStat) {
@@ -269,12 +274,25 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
         </div>
 
         <div className="fcm-selection-grid fcm-selection-grid-wide">
-          {submittedSlots.map((slot, index) => (
-            <div className="fcm-selection-slot" key={`${slot}-${index}`}>
-              <span className="sidebar-eyebrow">STAT {index + 1}</span>
-              <strong>{slot}</strong>
-            </div>
-          ))}
+          {submittedSlots.map((slot, index) => {
+            const hasSelectedStat = index < selectedStats.length;
+            return (
+              <div className={`fcm-selection-slot ${hasSelectedStat ? 'is-selected' : ''}`} key={`${slot}-${index}`}>
+                {hasSelectedStat ? (
+                  <button
+                    aria-label={`STAT ${index + 1} 제거`}
+                    className="fcm-selection-remove"
+                    onClick={() => removeSelectedStat(index)}
+                    type="button"
+                  >
+                    ×
+                  </button>
+                ) : null}
+                <span className="sidebar-eyebrow">STAT {index + 1}</span>
+                <strong>{slot}</strong>
+              </div>
+            );
+          })}
         </div>
         {savedSubmission ? (
           <p className="field-help" style={{ margin: 0 }}>
