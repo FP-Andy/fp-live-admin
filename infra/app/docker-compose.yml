@@ -9,6 +9,8 @@ services:
       POSTGRES_PASSWORD: postgres
     volumes:
       - pg_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -41,6 +43,7 @@ services:
       MEDIA_CONTROL_TOKEN: ${MEDIA_CONTROL_TOKEN:-}
       MEDIA_INSTANCE_ID: ${MEDIA_INSTANCE_ID:-}
       MEDIA_INSTANCE_NAME: ${MEDIA_INSTANCE_NAME:-live-admin-media}
+      HIGHLIGHT_RUNTIME_DIR: /app/runtime/highlight
     depends_on:
       postgres:
         condition: service_healthy

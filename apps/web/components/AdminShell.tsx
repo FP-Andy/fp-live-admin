@@ -14,7 +14,7 @@ type NavItem = {
 };
 
 type NavSection = {
-  id: 'FLA' | 'FPA' | 'FCM';
+  id: 'FLA' | 'FPA' | 'FCM' | 'FHL';
   label: string;
   items: NavItem[];
 };
@@ -37,6 +37,15 @@ const FLA_ITEMS: NavItem[] = [
     label: 'System',
     icon: '⚙',
     match: (pathname) => pathname.startsWith('/admin/system'),
+  },
+];
+
+const FHL_ITEMS: NavItem[] = [
+  {
+    href: '/admin/highlight',
+    label: 'Highlight',
+    icon: '▶',
+    match: (pathname) => pathname.startsWith('/admin/highlight'),
   },
 ];
 
@@ -90,6 +99,7 @@ const FCM_ITEMS: NavItem[] = [
 
 const NAV_SECTIONS: NavSection[] = [
   { id: 'FLA', label: 'FLA', items: FLA_ITEMS },
+  { id: 'FHL', label: 'FHL', items: FHL_ITEMS },
   { id: 'FPA', label: 'FPA', items: FPA_ITEMS },
   { id: 'FCM', label: 'FCM', items: FCM_ITEMS },
 ];
@@ -103,6 +113,9 @@ function getPageMeta(pathname: string) {
   }
   if (pathname.startsWith('/admin/media')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Media' };
+  }
+  if (pathname.startsWith('/admin/highlight')) {
+    return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Highlight' };
   }
   if (pathname.startsWith('/admin/system')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'System' };
@@ -144,6 +157,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     FLA: true,
+    FHL: false,
     FPA: false,
     FCM: false,
   });
@@ -154,6 +168,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
     items:
       section.id === 'FLA' && user?.role !== 'SUPERADMIN'
         ? section.items.filter((item) => item.href === '/admin/dashboard')
+        : section.id === 'FHL' && user?.role !== 'SUPERADMIN'
+          ? []
         : section.items,
   })).filter((section) => section.items.length > 0);
 

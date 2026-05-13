@@ -1,0 +1,18 @@
+services:
+  highlight-worker:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile.worker
+    container_name: app-highlight-worker
+    restart: unless-stopped
+    gpus: all
+    volumes:
+      - ${HIGHLIGHT_RUNTIME_HOST_DIR:-../../runtime}:/app/runtime
+      - ${HIGHLIGHT_MODELS_HOST_DIR:-../../models}:/app/models:ro
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      HIGHLIGHT_RUNTIME_DIR: /app/runtime/highlight
+      HIGHLIGHT_WORKER_POLL_SECONDS: ${HIGHLIGHT_WORKER_POLL_SECONDS:-5}
+      HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS: ${HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS:-1}
+      YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-/app/models/best-8.pt}
+      XGB_MODEL_PATH: ${XGB_MODEL_PATH:-/app/models/highlight_model.xgb}

@@ -200,3 +200,19 @@ class AuditLog(Base):
     severity: Mapped[str] = mapped_column(String, nullable=False, default="INFO")
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class HighlightJob(Base):
+    __tablename__ = "highlight_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="ai")
+    original_filename: Mapped[str] = mapped_column(String, nullable=False, default="")
+    upload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    clips_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    export_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

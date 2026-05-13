@@ -4,13 +4,16 @@ from datetime import datetime
 import hashlib
 import hmac
 import io
+import json
 import math
 import re
+import shutil
 import uuid
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from uuid import UUID
-from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
+from fastapi import Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
@@ -31,7 +34,8 @@ from .fpa import (
     parse_logs_to_dataframe,
 )
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaVisualizeResponse
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate
+from .highlight_jobs import delete_job_files, ensure_highlight_runtime_dirs, exports_dir, safe_clip_path, serialize_job, update_job, upload_dir
+from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -486,6 +490,7 @@ async def startup() -> None:
     global worker_task
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
+    ensure_highlight_runtime_dirs()
     db = SessionLocal()
     try:
         _seed_competition_classes(db)
@@ -3829,3 +3834,207 @@ def outbox_debug(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+@app.post("/api/highlight/jobs")
+async def create_highlight_job(
+    video: UploadFile = File(...),
+    mode: str = Form("ai"),
+    highlight_count: int = Form(40),
+    second_half_start_sec: float = Form(0.0),
+    log_data_json: str = Form("[]"),
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = db.get(User, user_id)
+    if not user or not _is_superuser(user):
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    if mode not in {"ai", "log_ai"}:
+        raise HTTPException(status_code=400, detail="mode must be 'ai' or 'log_ai'")
+
+    try:
+        log_data = json.loads(log_data_json) if mode == "log_ai" else []
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid log_data_json: {exc}") from exc
+    if not isinstance(log_data, list):
+        raise HTTPException(status_code=400, detail="log_data_json must be an array")
+
+    job_id = str(uuid.uuid4())
+    suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
+    upload_path = upload_dir() / f"{job_id}{suffix}"
+    try:
+        with upload_path.open("wb") as out_file:
+            shutil.copyfileobj(video.file, out_file)
+    finally:
+        await video.close()
+
+    metadata = {
+        "highlight_count": max(1, min(int(highlight_count), 100)),
+        "second_half_start_sec": second_half_start_sec,
+        "log_data": log_data,
+        "worker": {"mode": "external", "queued_at": datetime.utcnow().isoformat()},
+    }
+    job = HighlightJob(
+        id=job_id,
+        status="queued",
+        mode=mode,
+        original_filename=video.filename or "video.mp4",
+        upload_path=str(upload_path),
+        job_metadata=metadata,
+    )
+    db.add(job)
+    db.commit()
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/highlight/jobs")
+def list_highlight_jobs(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    rows = db.query(HighlightJob).order_by(desc(HighlightJob.created_at)).limit(limit).all()
+    return [serialize_job(row) for row in rows]
+
+
+@app.get("/api/highlight/jobs/{job_id}")
+def get_highlight_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return serialize_job(job)
+
+
+@app.get("/api/highlight/jobs/{job_id}/clips/{clip_name}")
+def serve_highlight_clip(
+    job_id: str,
+    clip_name: str,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not db.get(HighlightJob, job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        clip_path = safe_clip_path(job_id, clip_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return FileResponse(str(clip_path), media_type="video/mp4")
+
+
+@app.post("/api/highlight/jobs/{job_id}/export")
+def export_highlight_job(
+    job_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail="Job is not completed yet")
+
+    selected = body.get("selected", [])
+    order = body.get("order", selected)
+    if not isinstance(selected, list) or not selected:
+        raise HTTPException(status_code=400, detail="No clips selected")
+    if not isinstance(order, list):
+        raise HTTPException(status_code=400, detail="Invalid clip order")
+
+    selected_set = {str(name) for name in selected}
+    clip_paths: list[str] = []
+    for raw_name in order:
+        name = str(raw_name)
+        if name not in selected_set:
+            continue
+        try:
+            path = safe_clip_path(job_id, name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if path.exists():
+            clip_paths.append(str(path))
+
+    if not clip_paths:
+        raise HTTPException(status_code=400, detail="None of the selected clips exist")
+
+    export_path = exports_dir() / f"{job_id}_export.mp4"
+    clips: list = []
+    merged = None
+    try:
+        from moviepy import VideoFileClip, concatenate_videoclips
+
+        clips = [VideoFileClip(path) for path in clip_paths]
+        merged = concatenate_videoclips(clips)
+        merged.write_videofile(
+            str(export_path),
+            codec="libx264",
+            audio_codec="aac",
+            temp_audiofile=f"temp-audio-export-{job_id}.m4a",
+            remove_temp=True,
+            logger=None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
+    finally:
+        if merged is not None:
+            merged.close()
+        for clip in clips:
+            clip.close()
+
+    update_job(db, job_id, export_path=str(export_path))
+    return {"ok": True, "export_ready": True}
+
+
+@app.get("/api/highlight/jobs/{job_id}/export/download")
+def download_highlight_export(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job or not job.export_path:
+        raise HTTPException(status_code=404, detail="Export not found")
+    export_path = Path(job.export_path)
+    if not export_path.exists():
+        raise HTTPException(status_code=404, detail="Export file missing")
+    filename = f"highlight_{job_id[:8]}.mp4"
+    return FileResponse(
+        str(export_path),
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/api/highlight/jobs/{job_id}")
+def delete_highlight_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    delete_job_files(job)
+    db.delete(job)
+    db.commit()
+    return {"ok": True}
