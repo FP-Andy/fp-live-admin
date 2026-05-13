@@ -20,6 +20,18 @@ type SystemInfo = {
     private_ip?: string | null;
     provider?: string | null;
   };
+  highlight_worker: {
+    configured: boolean;
+    ok: boolean;
+    state: string;
+    detail?: string | null;
+    instance_id?: string | null;
+    instance_name?: string | null;
+    public_ip?: string | null;
+    private_ip?: string | null;
+    provider?: string | null;
+    active_jobs?: number;
+  };
   health: {
     gateway_ok: boolean;
     running_streams: number;
@@ -27,6 +39,7 @@ type SystemInfo = {
     live_matches: number;
     streaming_matches: number;
     manual_matches: number;
+    active_highlight_jobs: number;
   };
   alerts: Array<{
     severity: 'HIGH' | 'MEDIUM' | 'INFO';
@@ -52,7 +65,7 @@ export default function SystemPage() {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [error, setError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submittingAction, setSubmittingAction] = useState('');
 
   const load = async () => {
     const [user, info] = await Promise.all([
@@ -82,7 +95,7 @@ export default function SystemPage() {
   }, []);
 
   const runMediaAction = async (action: 'start' | 'stop') => {
-    if (isSubmitting) return;
+    if (submittingAction) return;
 
     const isStop = action === 'stop';
     if (isStop) {
@@ -90,7 +103,7 @@ export default function SystemPage() {
       if (!ok) return;
     }
 
-    setIsSubmitting(true);
+    setSubmittingAction(`media-${action}`);
     setActionMessage('');
     setError('');
     try {
@@ -102,7 +115,7 @@ export default function SystemPage() {
         const detail = await response.text();
         const confirmLive = window.confirm(`${detail}\n\n그래도 중지할까요?`);
         if (!confirmLive) {
-          setIsSubmitting(false);
+          setSubmittingAction('');
           return;
         }
         response = await apiFetch(`/admin/ec2/media-stop?confirm_live_action=true`, {
@@ -119,7 +132,50 @@ export default function SystemPage() {
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : `Media ${action} failed`);
     } finally {
-      setIsSubmitting(false);
+      setSubmittingAction('');
+    }
+  };
+
+  const runHighlightWorkerAction = async (action: 'start' | 'stop') => {
+    if (submittingAction) return;
+
+    const isStop = action === 'stop';
+    if (isStop) {
+      const activeJobs = systemInfo?.highlight_worker?.active_jobs || 0;
+      const ok = window.confirm(`FHL GPU worker를 중지할까요?${activeJobs ? ` 현재 대기/처리 중인 작업 ${activeJobs}개가 있습니다.` : ''}`);
+      if (!ok) return;
+    }
+
+    setSubmittingAction(`highlight-${action}`);
+    setActionMessage('');
+    setError('');
+    try {
+      let response = await apiFetch(`/admin/ec2/highlight-worker-${action}`, {
+        method: 'POST',
+      });
+
+      if (response.status === 409 && isStop) {
+        const detail = await response.text();
+        const confirmLive = window.confirm(`${detail}\n\n그래도 중지할까요?`);
+        if (!confirmLive) {
+          setSubmittingAction('');
+          return;
+        }
+        response = await apiFetch(`/admin/ec2/highlight-worker-stop?confirm_live_action=true`, {
+          method: 'POST',
+        });
+      }
+
+      if (!response.ok) {
+        throw new Error((await response.text()) || `FHL GPU worker ${action} failed`);
+      }
+
+      await load();
+      setActionMessage(action === 'start' ? 'FHL GPU worker start 요청을 보냈습니다.' : 'FHL GPU worker stop 요청을 보냈습니다.');
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : `FHL GPU worker ${action} failed`);
+    } finally {
+      setSubmittingAction('');
     }
   };
 
@@ -180,6 +236,14 @@ export default function SystemPage() {
             <span className="muted">Media EC2</span>
             <strong>{systemInfo?.media_server?.state || 'unknown'}</strong>
           </div>
+          <div className="metric-tile tech">
+            <span className="muted">FHL GPU</span>
+            <strong>{systemInfo?.highlight_worker?.state || 'unknown'}</strong>
+          </div>
+          <div className="metric-tile">
+            <span className="muted">FHL Jobs</span>
+            <strong>{systemInfo?.health.active_highlight_jobs ?? 0}</strong>
+          </div>
         </div>
       </section>
 
@@ -207,13 +271,49 @@ export default function SystemPage() {
               안전 가드: RUNNING 스트림 또는 STREAM 경기 존재 시 stop 요청은 기본 차단되며, 슈퍼어드민 확인 후에만 강제 실행됩니다.
             </div>
             {actionMessage ? <div className="muted">{actionMessage}</div> : null}
-            {systemInfo?.media_server?.detail ? <div className="muted">detail: {systemInfo.media_server.detail}</div> : null}
+              {systemInfo?.media_server?.detail ? <div className="muted">detail: {systemInfo.media_server.detail}</div> : null}
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <button type="button" className="btn-primary" onClick={() => runMediaAction('start')} disabled={isSubmitting}>
-                {isSubmitting ? 'Working...' : 'Start Media Server'}
+              <button type="button" className="btn-primary" onClick={() => runMediaAction('start')} disabled={Boolean(submittingAction)}>
+                {submittingAction === 'media-start' ? 'Working...' : 'Start Media Server'}
               </button>
-              <button type="button" className="btn-danger" onClick={() => runMediaAction('stop')} disabled={isSubmitting}>
-                {isSubmitting ? 'Working...' : 'Stop Media Server'}
+              <button type="button" className="btn-danger" onClick={() => runMediaAction('stop')} disabled={Boolean(submittingAction)}>
+                {submittingAction === 'media-stop' ? 'Working...' : 'Stop Media Server'}
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="card card-panel grid">
+        <div className="section-heading">
+          <div>
+            <div className="sidebar-eyebrow">Infra</div>
+            <h3 style={{ margin: 0 }}>FHL GPU Worker Control</h3>
+          </div>
+          <span className={`status-pill ${systemInfo?.highlight_worker?.ok ? 'running' : 'stopped'}`}>
+            {systemInfo?.highlight_worker?.configured ? (systemInfo?.highlight_worker?.state || 'unknown') : 'not configured'}
+          </span>
+        </div>
+        {!systemInfo?.highlight_worker?.configured ? (
+          <div className="muted">
+            <code>HIGHLIGHT_WORKER_CONTROL_URL</code> 환경변수가 설정되지 않아 웹에서 FHL GPU worker를 제어할 수 없습니다.
+          </div>
+        ) : (
+          <>
+            <div className="muted">
+              provider: {systemInfo?.highlight_worker?.provider || 'aws'} · instance: {systemInfo?.highlight_worker?.instance_name || '-'} · public IP:{' '}
+              {systemInfo?.highlight_worker?.public_ip || '-'} · private IP: {systemInfo?.highlight_worker?.private_ip || '-'}
+            </div>
+            <div className="muted">
+              대기/처리 중 FHL 작업: {systemInfo?.highlight_worker?.active_jobs || 0}개. 작업이 있으면 stop 요청은 기본 차단됩니다.
+            </div>
+            {systemInfo?.highlight_worker?.detail ? <div className="muted">detail: {systemInfo.highlight_worker.detail}</div> : null}
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <button type="button" className="btn-primary" onClick={() => runHighlightWorkerAction('start')} disabled={Boolean(submittingAction)}>
+                {submittingAction === 'highlight-start' ? 'Working...' : 'Start FHL GPU Worker'}
+              </button>
+              <button type="button" className="btn-danger" onClick={() => runHighlightWorkerAction('stop')} disabled={Boolean(submittingAction)}>
+                {submittingAction === 'highlight-stop' ? 'Working...' : 'Stop FHL GPU Worker'}
               </button>
             </div>
           </>

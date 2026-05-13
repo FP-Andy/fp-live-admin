@@ -92,6 +92,10 @@ MEDIA_CONTROL_URL = os.getenv("MEDIA_CONTROL_URL", "").strip()
 MEDIA_CONTROL_TOKEN = os.getenv("MEDIA_CONTROL_TOKEN", "").strip()
 MEDIA_INSTANCE_ID = os.getenv("MEDIA_INSTANCE_ID", "").strip()
 MEDIA_INSTANCE_NAME = os.getenv("MEDIA_INSTANCE_NAME", "live-admin-media").strip() or "live-admin-media"
+HIGHLIGHT_WORKER_CONTROL_URL = os.getenv("HIGHLIGHT_WORKER_CONTROL_URL", "").strip()
+HIGHLIGHT_WORKER_CONTROL_TOKEN = os.getenv("HIGHLIGHT_WORKER_CONTROL_TOKEN", "").strip()
+HIGHLIGHT_WORKER_INSTANCE_ID = os.getenv("HIGHLIGHT_WORKER_INSTANCE_ID", "").strip()
+HIGHLIGHT_WORKER_INSTANCE_NAME = os.getenv("HIGHLIGHT_WORKER_INSTANCE_NAME", "fhl-gpu-worker").strip() or "fhl-gpu-worker"
 FCM_RUNTIME_DIR = Path(os.getenv("FCM_RUNTIME_DIR", "/app/runtime/fcm")).resolve()
 FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
 
@@ -450,6 +454,60 @@ def _media_control_status() -> dict:
         "detail": data.get("detail"),
         "instance_id": data.get("instance_id") or MEDIA_INSTANCE_ID or None,
         "instance_name": data.get("instance_name") or MEDIA_INSTANCE_NAME,
+        "public_ip": data.get("public_ip"),
+        "private_ip": data.get("private_ip"),
+        "provider": data.get("provider") or "aws",
+    }
+
+
+def _highlight_worker_control_request(action: str, *, confirmed_live_action: bool = False) -> dict:
+    if not HIGHLIGHT_WORKER_CONTROL_URL:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_WORKER_CONTROL_URL not configured")
+
+    headers: dict[str, str] = {}
+    if HIGHLIGHT_WORKER_CONTROL_TOKEN:
+        headers["Authorization"] = f"Bearer {HIGHLIGHT_WORKER_CONTROL_TOKEN}"
+
+    payload = {
+        "action": action,
+        "instance_id": HIGHLIGHT_WORKER_INSTANCE_ID or None,
+        "instance_name": HIGHLIGHT_WORKER_INSTANCE_NAME,
+        "confirmed_live_action": confirmed_live_action,
+    }
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(HIGHLIGHT_WORKER_CONTROL_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"highlight worker control failed: {ex}") from ex
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="highlight worker control returned invalid response")
+    return data
+
+
+def _highlight_worker_control_status() -> dict:
+    try:
+        data = _highlight_worker_control_request("status")
+    except HTTPException as ex:
+        return {
+            "configured": bool(HIGHLIGHT_WORKER_CONTROL_URL),
+            "ok": False,
+            "state": "unknown",
+            "detail": ex.detail,
+            "instance_id": HIGHLIGHT_WORKER_INSTANCE_ID or None,
+            "instance_name": HIGHLIGHT_WORKER_INSTANCE_NAME,
+        }
+
+    return {
+        "configured": bool(HIGHLIGHT_WORKER_CONTROL_URL),
+        "ok": bool(data.get("ok", True)),
+        "state": data.get("state") or "unknown",
+        "detail": data.get("detail"),
+        "instance_id": data.get("instance_id") or HIGHLIGHT_WORKER_INSTANCE_ID or None,
+        "instance_name": data.get("instance_name") or HIGHLIGHT_WORKER_INSTANCE_NAME,
         "public_ip": data.get("public_ip"),
         "private_ip": data.get("private_ip"),
         "provider": data.get("provider") or "aws",
@@ -2599,6 +2657,12 @@ def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_requi
     except HTTPException:
         gateway_status = {"ok": False, "lines": [], "running_match_ids": []}
     media_server = _media_control_status()
+    highlight_worker = _highlight_worker_control_status()
+    active_highlight_jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.status.in_(["queued", "processing"]))
+        .count()
+    )
 
     matches = db.query(Match).all()
     active_matches = [row for row in matches if not row.archived]
@@ -2628,6 +2692,10 @@ def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_requi
         "gateway_base": os.getenv("GATEWAY_API_BASE", "").strip() or None,
         "public_hls_base": PUBLIC_HLS_BASE,
         "media_server": media_server,
+        "highlight_worker": {
+            **highlight_worker,
+            "active_jobs": active_highlight_jobs,
+        },
         "health": {
             "gateway_ok": bool(gateway_status.get("ok")),
             "running_streams": len(gateway_status.get("running_match_ids") or []),
@@ -2635,6 +2703,7 @@ def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_requi
             "live_matches": len(live_matches),
             "streaming_matches": len(streaming_matches),
             "manual_matches": len(manual_matches),
+            "active_highlight_jobs": active_highlight_jobs,
         },
         "alerts": alerts,
         "recent_audits": [
@@ -2723,6 +2792,77 @@ def stop_media_server(confirm_live_action: bool = Query(default=False), db: Sess
     return {
         "ok": True,
         "media_server": _media_control_status(),
+        "result": data,
+    }
+
+
+@app.get("/api/admin/ec2/highlight-worker-status")
+def get_highlight_worker_status(db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    active_jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.status.in_(["queued", "processing"]))
+        .count()
+    )
+    return {
+        "ok": True,
+        "highlight_worker": {
+            **_highlight_worker_control_status(),
+            "active_jobs": active_jobs,
+        },
+    }
+
+
+@app.post("/api/admin/ec2/highlight-worker-start")
+def start_highlight_worker(db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    data = _highlight_worker_control_request("start")
+    _audit(
+        db,
+        "HIGHLIGHT_WORKER_EC2_START",
+        "system",
+        actor=user,
+        target_id=HIGHLIGHT_WORKER_INSTANCE_ID or HIGHLIGHT_WORKER_INSTANCE_NAME,
+        severity="WARN",
+        details=data,
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "highlight_worker": _highlight_worker_control_status(),
+        "result": data,
+    }
+
+
+@app.post("/api/admin/ec2/highlight-worker-stop")
+def stop_highlight_worker(confirm_live_action: bool = Query(default=False), db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    active_jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.status.in_(["queued", "processing"]))
+        .count()
+    )
+    if active_jobs and not confirm_live_action:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Highlight worker stop blocked while {active_jobs} queued or processing jobs exist. Retry with explicit confirmation.",
+        )
+
+    data = _highlight_worker_control_request("stop", confirmed_live_action=confirm_live_action)
+    _audit(
+        db,
+        "HIGHLIGHT_WORKER_EC2_STOP",
+        "system",
+        actor=user,
+        target_id=HIGHLIGHT_WORKER_INSTANCE_ID or HIGHLIGHT_WORKER_INSTANCE_NAME,
+        severity="WARN",
+        details={
+            **data,
+            "confirmed_live_action": confirm_live_action,
+            "active_highlight_jobs": active_jobs,
+        },
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "highlight_worker": _highlight_worker_control_status(),
         "result": data,
     }
 
