@@ -157,6 +157,25 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
     setStatus('커스텀 스탯이 추가되었습니다.');
   };
 
+  const applyAnalyzeResult = (data: AnalyzeResponse, statusPrefix = '분석') => {
+      const players = data.players || [];
+      const teamPlayers = players.filter((player) => (player.team || '').trim() === currentTeamName.trim());
+      const candidatePool = teamPlayers.length ? teamPlayers : players;
+      const fallbackPlayerId = savedSubmission?.player_id || data.recommended_player_id || candidatePool[0]?.player_id || '';
+      const recommendedPlayer = candidatePool.find((player) => player.player_id === fallbackPlayerId) || candidatePool[0];
+      const recommendedPlayerId = recommendedPlayer?.player_id || fallbackPlayerId;
+
+      setAnalyzedPlayers(candidatePool);
+      setSelectedPlayerId(recommendedPlayerId);
+      setPlayerName(savedSubmission?.player_name || '');
+      setSelectedStats(
+        savedSubmission?.selected_stats?.length
+          ? savedSubmission.selected_stats.slice(0, 5)
+          : (recommendedPlayer?.candidates || []).slice(0, 5),
+      );
+      setStatus(players.length ? `${statusPrefix}: 선수 ${players.length}명 분석 완료` : '분석 결과가 없습니다.');
+  };
+
   const analyzeMatch = async () => {
     if (!uploads.workbook) {
       setStatus('먼저 FPA 데이터를 업로드하세요.');
@@ -183,25 +202,24 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
         return;
       }
 
-      const data = await response.json() as AnalyzeResponse;
-      const players = data.players || [];
-      const teamPlayers = players.filter((player) => (player.team || '').trim() === currentTeamName.trim());
-      const candidatePool = teamPlayers.length ? teamPlayers : players;
-      const fallbackPlayerId = savedSubmission?.player_id || data.recommended_player_id || candidatePool[0]?.player_id || '';
-      const recommendedPlayer = candidatePool.find((player) => player.player_id === fallbackPlayerId) || candidatePool[0];
-      const recommendedPlayerId = recommendedPlayer?.player_id || fallbackPlayerId;
-
-      setAnalyzedPlayers(candidatePool);
-      setSelectedPlayerId(recommendedPlayerId);
-      setPlayerName(savedSubmission?.player_name || '');
-      setSelectedStats(
-        savedSubmission?.selected_stats?.length
-          ? savedSubmission.selected_stats.slice(0, 5)
-          : (recommendedPlayer?.candidates || []).slice(0, 5),
-      );
-      setStatus(players.length ? `선수 ${players.length}명 분석 완료` : '분석 결과가 없습니다.');
+      applyAnalyzeResult(await response.json() as AnalyzeResponse, '파일 분석');
     } catch (loadError) {
       setStatus(loadError instanceof Error ? loadError.message : '매치 분석 실패');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const analyzeSavedFpaLogs = async () => {
+    setBusy(true);
+    setStatus('저장된 FPA 로그 반영 중');
+    try {
+      const response = await apiJson<AnalyzeResponse>(`/fcm/matches/${matchId}/analyze-fpa-logs`, {
+        method: 'POST',
+      });
+      applyAnalyzeResult(response, 'FPA 로그 반영');
+    } catch (loadError) {
+      setStatus(loadError instanceof Error ? loadError.message : '저장된 FPA 로그 반영 실패');
     } finally {
       setBusy(false);
     }
@@ -371,6 +389,9 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
             <div className="fcm-inline-actions">
               <button className="btn-secondary" disabled={!uploads.workbook || busy} onClick={analyzeMatch} type="button">
                 {busy ? '분석 중' : '매치 분석'}
+              </button>
+              <button className="btn-secondary" disabled={busy} onClick={analyzeSavedFpaLogs} type="button">
+                FPA 로그 반영하기
               </button>
               <Link className="button-link button-compact" href="/admin/fcm/match-status">
                 Match Status로 돌아가기

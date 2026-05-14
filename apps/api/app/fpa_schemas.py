@@ -47,6 +47,22 @@ class FpaImportLogsResponse(BaseModel):
     teamid_a: str = ""
 
 
+class FpaSavedLogsRequest(BaseModel):
+    logs: list[str] = Field(default_factory=list)
+    rows: list[dict[str, str]] = Field(default_factory=list)
+    teamid_h: str = ""
+    teamid_a: str = ""
+
+
+class FpaSavedLogsResponse(BaseModel):
+    match_id: str
+    logs: list[str] = Field(default_factory=list)
+    rows: list[dict[str, str]] = Field(default_factory=list)
+    teamid_h: str = ""
+    teamid_a: str = ""
+    updated_at: str | None = None
+
+
 class FcmAnalyzedPlayer(BaseModel):
     player_id: str
     team: str = ""

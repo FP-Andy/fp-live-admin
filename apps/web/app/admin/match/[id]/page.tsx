@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine, ResponsiveContainer } from 'recharts';
-import { apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
+import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
 import { resolveMatchTeams } from '../../dashboard/schedule-data';
 
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
@@ -27,6 +27,7 @@ type PossessionTeam = Team | 'NONE';
 type Lane = 'LEFT' | 'CENTER' | 'RIGHT';
 type AttackLR = 'L2R' | 'R2L';
 type ShotPaceBand = 'LOW' | 'MID' | 'HIGH';
+type LineupPlayer = { number: string; position?: string; name: string; label?: string };
 
 function fmt(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -83,6 +84,16 @@ export default function MatchPage() {
   const [xgTeam, setXgTeam] = useState<Team>('HOME');
   const [xgValue, setXgValue] = useState('0.10');
   const [xgotValue, setXgotValue] = useState('0.000');
+  const [xgPlayerKey, setXgPlayerKey] = useState('');
+  const [lineupFirstSide, setLineupFirstSide] = useState<Team>('HOME');
+  const [isUploadingLineup, setIsUploadingLineup] = useState(false);
+  const [manualLineupSide, setManualLineupSide] = useState<Team>('HOME');
+  const [manualLineupNumber, setManualLineupNumber] = useState('');
+  const [manualLineupPosition, setManualLineupPosition] = useState('');
+  const [manualLineupName, setManualLineupName] = useState('');
+  const [isSavingManualLineup, setIsSavingManualLineup] = useState(false);
+  const [isManualLineupOpen, setIsManualLineupOpen] = useState(false);
+  const lineupInputRef = useRef<HTMLInputElement | null>(null);
   const [shotPoint, setShotPoint] = useState<{ x: number; y: number } | null>(null);
   const [isOnTargetShot, setIsOnTargetShot] = useState(false);
   const [goalmouthPoint, setGoalmouthPoint] = useState<{ x: number; y: number } | null>(null);
@@ -110,6 +121,13 @@ export default function MatchPage() {
   const initializedRef = useRef<boolean>(false);
   const lastPossessionLogSecondRef = useRef<number>(-1);
   const fetchSeqRef = useRef<number>(0);
+
+  const lineups = (match?.metadata?.lineups?.teams || {}) as Partial<Record<Team, LineupPlayer[]>>;
+  const xgPlayerOptions = useMemo(() => lineups[xgTeam] || [], [lineups, xgTeam]);
+  const selectedXgPlayer = useMemo(
+    () => xgPlayerOptions.find((player) => `${player.number}|${player.name}` === xgPlayerKey) || null,
+    [xgPlayerOptions, xgPlayerKey]
+  );
 
   const displayClockLabel = (ms: number) => {
     const totalSec = Math.floor(ms / 1000);
@@ -212,6 +230,10 @@ export default function MatchPage() {
       setXgTeam(possessionTeam);
     }
   }, [possessionTeam]);
+
+  useEffect(() => {
+    setXgPlayerKey('');
+  }, [xgTeam, match?.metadata?.lineup_pdf_uploaded_at, match?.metadata?.lineup_manual_updated_at]);
 
   useEffect(() => {
     if (isGoalShot && !isOnTargetShot) {
@@ -615,6 +637,96 @@ export default function MatchPage() {
     });
   };
 
+  const uploadLineupPdf = async (file: File | null) => {
+    if (!file || !canWrite || isUploadingLineup) return;
+    setIsUploadingLineup(true);
+    setCopyMessage('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('first_team_side', lineupFirstSide);
+      const response = await fetch(`${API_BASE}/matches/${id}/lineup/pdf`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || 'Lineup upload failed');
+      }
+      const data = await response.json();
+      setMatch(data.match);
+      const homeCount = data.lineups?.teams?.HOME?.length || 0;
+      const awayCount = data.lineups?.teams?.AWAY?.length || 0;
+      setCopyMessage(`Lineup loaded: HOME ${homeCount}, AWAY ${awayCount}`);
+    } catch (error) {
+      setCopyMessage(error instanceof Error ? error.message : 'Lineup upload failed');
+    } finally {
+      setIsUploadingLineup(false);
+      if (lineupInputRef.current) lineupInputRef.current.value = '';
+      setTimeout(() => setCopyMessage(''), 2500);
+    }
+  };
+
+  const saveManualLineupPlayer = async () => {
+    if (!canWrite || isSavingManualLineup) return;
+    const number = manualLineupNumber.trim();
+    const name = manualLineupName.trim();
+    if (!number || !name) {
+      setCopyMessage('Manual lineup needs number and name');
+      setTimeout(() => setCopyMessage(''), 2000);
+      return;
+    }
+    setIsSavingManualLineup(true);
+    setCopyMessage('');
+    try {
+      const response = await apiFetch(`/matches/${id}/lineup/manual/player`, {
+        method: 'POST',
+        body: JSON.stringify({
+          side: manualLineupSide,
+          number,
+          position: manualLineupPosition || null,
+          name,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || 'Manual lineup save failed');
+      }
+      const data = await response.json();
+      setMatch(data.match);
+      setManualLineupNumber('');
+      setManualLineupName('');
+      setCopyMessage(`Manual player saved: ${manualLineupSide} No.${number} ${name}`);
+    } catch (error) {
+      setCopyMessage(error instanceof Error ? error.message : 'Manual lineup save failed');
+    } finally {
+      setIsSavingManualLineup(false);
+      setTimeout(() => setCopyMessage(''), 2500);
+    }
+  };
+
+  const deleteManualLineupPlayer = async (side: Team, number: string) => {
+    if (!canWrite || isSavingManualLineup) return;
+    setIsSavingManualLineup(true);
+    setCopyMessage('');
+    try {
+      const response = await apiFetch(`/matches/${id}/lineup/manual/player/delete`, {
+        method: 'POST',
+        body: JSON.stringify({ side, number }),
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || 'Manual lineup delete failed');
+      }
+      const data = await response.json();
+      setMatch(data.match);
+      setCopyMessage(`Manual player removed: ${side} No.${number}`);
+    } catch (error) {
+      setCopyMessage(error instanceof Error ? error.message : 'Manual lineup delete failed');
+    } finally {
+      setIsSavingManualLineup(false);
+      setTimeout(() => setCopyMessage(''), 2500);
+    }
+  };
+
   const submitXg = async () => {
     if (!canWrite) return;
     const xg = Number(xgValue);
@@ -631,6 +743,8 @@ export default function MatchPage() {
         event_id: makeId(),
         team: xgTeam,
         xg,
+        player_name: selectedXgPlayer?.name || null,
+        player_number: selectedXgPlayer?.number || null,
         is_goal: isGoalShot,
         is_on_target: isOnTargetShot,
         clock_ms: clockMs,
@@ -647,6 +761,7 @@ export default function MatchPage() {
     });
     const data = await res.json().catch(() => null);
     setXgValue('0.10');
+    setXgPlayerKey('');
     setXgotValue(data?.xgot_meta ? Number(data.xgot_meta.xgot).toFixed(3) : '0.000');
     setShotPoint(null);
     setIsOnTargetShot(false);
@@ -994,18 +1109,140 @@ export default function MatchPage() {
           </div>
           {copyMessage ? <div className="muted">{copyMessage}</div> : null}
         </div>
-        <div className="row">
-          <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
-            {isExportingMatchData ? 'Exporting...' : 'Export Match Data'}
-          </button>
-          {!isOperator
-            ? <button className="btn-secondary" onClick={acquire} disabled={isArchived}>Acquire Lock</button>
-            : <button className="btn-danger" onClick={release} disabled={isArchived}>Release Lock</button>}
-          <span className="muted">
-            operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
-          </span>
+        <div className="grid" style={{ gap: 118, minWidth: 'min(660px, 100%)', justifyItems: 'stretch' }}>
+          <div className="row" style={{ justifyContent: 'flex-end' }}>
+            <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
+              {isExportingMatchData ? 'Exporting...' : 'Export Match Data'}
+            </button>
+            {!isOperator
+              ? <button className="btn-secondary" onClick={acquire} disabled={isArchived}>Acquire Lock</button>
+              : <button className="btn-danger" onClick={release} disabled={isArchived}>Release Lock</button>}
+            <span className="muted">
+              operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
+            </span>
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
+            <span className="muted">Lineup PDF first team</span>
+            <select value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team)} disabled={!canWrite || isUploadingLineup}>
+              <option value="HOME">HOME</option>
+              <option value="AWAY">AWAY</option>
+            </select>
+            <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
+              {isUploadingLineup ? 'Parsing...' : 'Upload Lineup PDF'}
+            </button>
+            <input
+              ref={lineupInputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              style={{ display: 'none' }}
+              onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
+            />
+            <span className="muted">
+              roster: H {(lineups.HOME || []).length} / A {(lineups.AWAY || []).length}
+            </span>
+            <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
+              Manual Lineup
+            </button>
+          </div>
         </div>
       </div>
+
+      {isManualLineupOpen ? (
+        <div className="fcm-modal-backdrop" role="presentation" onClick={() => setIsManualLineupOpen(false)}>
+          <div
+            aria-modal="true"
+            className="card card-panel fcm-modal lineup-modal"
+            role="dialog"
+            aria-label="Manual lineup"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="section-heading">
+              <div>
+                <div className="sidebar-eyebrow">Lineup Fallback</div>
+                <h3>Manual Lineup</h3>
+              </div>
+              <button className="button-compact btn-secondary" onClick={() => setIsManualLineupOpen(false)}>Close</button>
+            </div>
+
+            <div className="lineup-entry-row">
+              <select value={manualLineupSide} onChange={(event) => setManualLineupSide(event.target.value as Team)} disabled={!canWrite || isSavingManualLineup}>
+                <option value="HOME">HOME</option>
+                <option value="AWAY">AWAY</option>
+              </select>
+              <input
+                value={manualLineupNumber}
+                onChange={(event) => setManualLineupNumber(event.target.value.replace(/\D/g, '').slice(0, 3))}
+                placeholder="No."
+                inputMode="numeric"
+                disabled={!canWrite || isSavingManualLineup}
+              />
+              <select value={manualLineupPosition} onChange={(event) => setManualLineupPosition(event.target.value)} disabled={!canWrite || isSavingManualLineup}>
+                <option value="">POS</option>
+                <option value="GK">GK</option>
+                <option value="DF">DF</option>
+                <option value="MF">MF</option>
+                <option value="FW">FW</option>
+              </select>
+              <input
+                value={manualLineupName}
+                onChange={(event) => setManualLineupName(event.target.value)}
+                placeholder="Player name"
+                disabled={!canWrite || isSavingManualLineup}
+              />
+              <button className="btn-secondary" onClick={saveManualLineupPlayer} disabled={!canWrite || isSavingManualLineup}>
+                {isSavingManualLineup ? 'Saving...' : 'Add Player'}
+              </button>
+            </div>
+
+            <div className="lineup-table-grid">
+              {(['HOME', 'AWAY'] as Team[]).map((side) => (
+                <div className="lineup-table-panel" key={side}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong>{side}</strong>
+                    <span className="muted">{(lineups[side] || []).length} players</span>
+                  </div>
+                  <div className="fcm-guide-table-wrap lineup-table-wrap">
+                    <table className="fcm-guide-table lineup-table">
+                      <thead>
+                        <tr>
+                          <th>No.</th>
+                          <th>POS</th>
+                          <th>Name</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(lineups[side] || []).length ? (
+                          (lineups[side] || []).map((player) => (
+                            <tr key={`${side}-${player.number}-${player.name}`}>
+                              <td>{player.number}</td>
+                              <td>{player.position || '-'}</td>
+                              <td>{player.name}</td>
+                              <td>
+                                <button
+                                  className="button-compact btn-danger"
+                                  onClick={() => deleteManualLineupPlayer(side, player.number)}
+                                  disabled={!canWrite || isSavingManualLineup}
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={4} className="muted">No players yet</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="split">
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
@@ -1063,6 +1300,7 @@ export default function MatchPage() {
                     {e.type} {e.team} @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''}{' '}
                     {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}{' '}
                     {typeof e.xgot === 'number' ? `xgot=${e.xgot}` : ''}{' '}
+                    {e.player_name ? `No.${e.player_number || '-'} ${e.player_name}` : ''}{' '}
                     {e.is_on_target ? 'on-target' : ''}
                   </span>
                   <span className="muted">{formatCreatedAtKst(e.created_at)}</span>
@@ -1113,6 +1351,14 @@ export default function MatchPage() {
                 <select value={xgTeam} onChange={(e) => setXgTeam(e.target.value as Team)}>
                   <option value="HOME">HOME</option>
                   <option value="AWAY">AWAY</option>
+                </select>
+                <select value={xgPlayerKey} onChange={(e) => setXgPlayerKey(e.target.value)} disabled={!xgPlayerOptions.length}>
+                  <option value="">{xgPlayerOptions.length ? 'Select player' : 'No lineup'}</option>
+                  {xgPlayerOptions.map((player) => (
+                    <option key={`${player.number}|${player.name}`} value={`${player.number}|${player.name}`}>
+                      No.{player.number} {player.name}
+                    </option>
+                  ))}
                 </select>
                 <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>Record xG</button>
               </div>

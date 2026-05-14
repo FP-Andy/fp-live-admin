@@ -13,3 +13,4 @@ matplotlib==3.9.2
 mplsoccer==1.4.0
 scipy==1.14.1
 moviepy==2.0.0
+pypdf==5.1.0

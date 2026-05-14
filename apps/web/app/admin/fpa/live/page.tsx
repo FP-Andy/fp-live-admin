@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { API_BASE, apiFetch } from '../../../../lib/api';
+import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
 import { FPA_DRAFT_EVENT, FPA_DRAFT_STORAGE_KEY } from '../../../../components/FpaDraftGuard';
 
 type PitchDot = {
@@ -20,6 +20,28 @@ type LogPreview = {
   Coord: string;
   Tags: string;
 };
+
+type Match = {
+  id: string;
+  name: string;
+  competition_class: string;
+  round_number: number;
+  archived: boolean;
+  created_at: string;
+  metadata?: {
+    home_team?: string;
+    away_team?: string;
+  } | null;
+};
+
+function parseMatchTeams(match: Match) {
+  const metadataHome = match.metadata?.home_team?.trim();
+  const metadataAway = match.metadata?.away_team?.trim();
+  if (metadataHome && metadataAway) return { home: metadataHome, away: metadataAway };
+  const cleaned = match.name.replace(/^\[[^\]]+\]\s*/, '');
+  const [home, away] = cleaned.split(/\s+vs\s+/i).map((part) => part.trim());
+  return { home: home || 'Home', away: away || 'Away' };
+}
 
 function extractReceiveCoord(logText?: string) {
   if (!logText) return '';
@@ -49,6 +71,8 @@ export default function FpaLivePage() {
   const [teamIdA, setTeamIdA] = useState('Away');
   const [status, setStatus] = useState('실시간 입력 준비됨');
   const [busy, setBusy] = useState(false);
+  const [availableMatches, setAvailableMatches] = useState<Match[]>([]);
+  const [matchPickerOpen, setMatchPickerOpen] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined' || didHydrateRef.current) return;
@@ -293,6 +317,80 @@ export default function FpaLivePage() {
     }
   };
 
+  const openMatchPicker = async () => {
+    setMatchPickerOpen(true);
+    setStatus('경기 목록 불러오는 중');
+    try {
+      const data = await apiJson<Match[]>('/matches');
+      setAvailableMatches(Array.isArray(data) ? data : []);
+      setStatus('경기 선택 준비됨');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '경기 목록 불러오기 실패');
+    }
+  };
+
+  const loadMatch = async (match: Match) => {
+    setBusy(true);
+    setStatus('경기와 저장된 FPA 로그 불러오는 중');
+    try {
+      const teams = parseMatchTeams(match);
+      setMatchId(match.id);
+      setTeamIdH(teams.home);
+      setTeamIdA(teams.away);
+
+      const saved = await apiJson<{
+        logs: string[];
+        rows: LogPreview[];
+        teamid_h: string;
+        teamid_a: string;
+      }>(`/fpa/matches/${match.id}/logs`);
+      setLogs(saved.logs || []);
+      setRows(saved.rows || []);
+      setSelectedRowIndex((saved.rows || []).length ? 0 : null);
+      if (saved.teamid_h) setTeamIdH(saved.teamid_h);
+      if (saved.teamid_a) setTeamIdA(saved.teamid_a);
+      setMatchPickerOpen(false);
+      setStatus(saved.logs?.length ? `저장된 FPA 로그 ${saved.logs.length}건 불러오기 완료` : '경기 정보 불러오기 완료');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '경기 불러오기 실패');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveLogsToMatch = async () => {
+    if (!logs.length) {
+      setStatus('저장할 로그가 없습니다');
+      return;
+    }
+    if (!matchId || matchId === 'ID') {
+      setStatus('FLA 경기 불러오기 후 저장할 수 있습니다');
+      return;
+    }
+    setBusy(true);
+    setStatus('FPA 로그 DB 저장 중');
+    try {
+      const response = await apiFetch(`/fpa/matches/${matchId}/logs`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          logs,
+          rows,
+          teamid_h: teamIdH,
+          teamid_a: teamIdA,
+        }),
+      });
+      if (!response.ok) {
+        setStatus((await response.text()) || 'FPA 로그 저장 실패');
+        return;
+      }
+      setStatus(`FPA 로그 ${logs.length}건 저장 완료`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'FPA 로그 저장 실패');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const removeSelectedLog = () => {
     if (selectedRowIndex == null) return;
     setLogs((prev) => prev.filter((_, index) => index !== selectedRowIndex));
@@ -367,6 +465,46 @@ export default function FpaLivePage() {
 
   return (
     <div className="page-stack">
+      {matchPickerOpen ? (
+        <div className="fcm-modal-backdrop" role="presentation" onClick={() => setMatchPickerOpen(false)}>
+          <div className="card card-panel fcm-modal fpa-match-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="section-heading">
+              <div>
+                <div className="sidebar-eyebrow">FLA Match</div>
+                <h3>경기 불러오기</h3>
+              </div>
+              <button className="button-compact btn-secondary" onClick={() => setMatchPickerOpen(false)}>닫기</button>
+            </div>
+            <div className="fcm-guide-table-wrap fpa-match-table-wrap">
+              <table className="fcm-guide-table">
+                <thead>
+                  <tr>
+                    <th>대회</th>
+                    <th>경기</th>
+                    <th>상태</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {availableMatches.map((match) => (
+                    <tr key={match.id}>
+                      <td>{match.competition_class}</td>
+                      <td>{match.name}</td>
+                      <td>{match.archived ? 'Archived' : 'Active'}</td>
+                      <td>
+                        <button className="button-compact btn-secondary" disabled={busy} onClick={() => loadMatch(match)}>
+                          불러오기
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <section className="fpa-live-shell">
         <div className="fpa-live-brand">
           <span className="fpa-live-brandmark">F</span>
@@ -410,8 +548,14 @@ export default function FpaLivePage() {
                 <button onClick={() => importInputRef.current?.click()} type="button">
                   수정 및 불러오기
                 </button>
+                <button onClick={openMatchPicker} type="button">
+                  경기 불러오기
+                </button>
                 <button className="primary" disabled={!logs.length || busy} onClick={exportWorkbook} type="button">
                   분석 및 내보내기
+                </button>
+                <button className="primary" disabled={!logs.length || busy || !matchId || matchId === 'ID'} onClick={saveLogsToMatch} type="button">
+                  저장
                 </button>
               </div>
             </div>

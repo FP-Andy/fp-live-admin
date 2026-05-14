@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 import os
 import httpx
 from PIL import Image
+from pypdf import PdfReader
 
 from .db import Base, SessionLocal, engine, get_db
 from .fcm_cards import TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
@@ -33,9 +34,9 @@ from .fpa import (
     import_logs_from_workbook,
     parse_logs_to_dataframe,
 )
-from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaVisualizeResponse
+from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
 from .highlight_jobs import delete_job_files, ensure_highlight_runtime_dirs, exports_dir, safe_clip_path, serialize_job, update_job, upload_dir
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, HighlightJob
+from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -46,6 +47,8 @@ from .schemas import (
     CompetitionClassResponse,
     CreateMatchRequest,
     IngestProtocol,
+    LineupManualPlayerDeleteRequest,
+    LineupManualPlayerRequest,
     LoginRequest,
     MatchResultResponse,
     MatchResponse,
@@ -190,6 +193,10 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE events ADD COLUMN one_on_one BOOLEAN NOT NULL DEFAULT FALSE")
     if "shot_pace_band" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN shot_pace_band VARCHAR")
+    if "player_name" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN player_name VARCHAR")
+    if "player_number" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN player_number VARCHAR")
     if "home_attack_score" not in dominance_columns:
         statements.append("ALTER TABLE dominance_bins ADD COLUMN home_attack_score DOUBLE PRECISION NOT NULL DEFAULT 0")
     if "away_attack_score" not in dominance_columns:
@@ -818,6 +825,34 @@ def _serialize_fcm_submission(row: FcmSubmission) -> dict:
     }
 
 
+def _serialize_fpa_saved_log(row: FpaSavedLog | None, match_id: UUID) -> dict:
+    if not row:
+        return {
+            "match_id": str(match_id),
+            "logs": [],
+            "rows": [],
+            "teamid_h": "",
+            "teamid_a": "",
+            "updated_at": None,
+        }
+    return {
+        "match_id": str(row.match_id),
+        "logs": list(row.logs or []),
+        "rows": list(row.rows or []),
+        "teamid_h": row.teamid_h or "",
+        "teamid_a": row.teamid_a or "",
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
+    logs = list(row.logs or [])
+    if not logs:
+        raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
+    df = parse_logs_to_dataframe(logs, str(row.match_id), row.teamid_h or "", row.teamid_a or "")
+    return build_analysis_workbook(df)
+
+
 def _serialize_fcm_template(row: FcmTemplate) -> dict:
     return {
         "id": row.id,
@@ -917,6 +952,8 @@ def _serialize_timeline_item(item: Event | MatchMarker) -> TimelineEditorListIte
             lane=item.lane,
             xg=item.xg,
             xgot=item.xgot,
+            player_name=item.player_name,
+            player_number=item.player_number,
             is_goal=bool(item.is_goal),
             is_on_target=bool(item.is_on_target),
             shot_x=item.shot_x,
@@ -984,6 +1021,8 @@ def _apply_editor_item_updates(
         event.lane = body.lane
         event.xg = None
         event.xgot = None
+        event.player_name = None
+        event.player_number = None
         event.is_goal = False
         event.is_on_target = False
         event.shot_x = None
@@ -1019,6 +1058,8 @@ def _apply_editor_item_updates(
         event.lane = None
         event.xg = body.xg
         event.xgot = xgot_meta["xgot"]
+        event.player_name = (body.player_name or "").strip() or None
+        event.player_number = (body.player_number or "").strip() or None
         event.is_goal = body.is_goal
         event.is_on_target = body.is_on_target
         event.shot_x = body.shot_x
@@ -1212,6 +1253,7 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
                 "lane": e.lane,
                 "xg": e.xg,
                 "xgot": e.xgot,
+                **_event_player_payload(e),
                 "is_goal": e.is_goal,
                 "is_on_target": e.is_on_target,
                 "shot_x": e.shot_x,
@@ -1541,6 +1583,7 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
     )
 
     def _lane_payload(team: str) -> dict:
+        match_aggregate_clock_ms = _normalize_match_clock_ms(aggregate_clock_ms, _clock_normalization_context(match_id, db))
         team_rows = [r for r in lane_rows if r.team == team]
         left = sum(1 for r in team_rows if r.lane == "LEFT")
         center = sum(1 for r in team_rows if r.lane == "CENTER")
@@ -1550,8 +1593,10 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
         return {
             "match_name": match_obj.name,
             "match_id": str(match_obj.id),
-            "aggregate_clock_ms": aggregate_clock_ms,
-            "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+            "aggregate_clock_ms": match_aggregate_clock_ms,
+            "aggregate_clock": _fmt_clock_ms(match_aggregate_clock_ms),
+            "raw_aggregate_clock_ms": aggregate_clock_ms,
+            "raw_aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
             "team": team,
             "direction": current_lane,
             "direction_ratio": {
@@ -1588,17 +1633,23 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
         marker_rows=marker_rows,
         bin_seconds=180,
     )
+    clock_context = _clock_normalization_context(match_id, db)
+    match_aggregate_clock_ms = _normalize_match_clock_ms(aggregate_clock_ms, clock_context)
 
     return {
         "match_name": match_obj.name,
         "match_id": str(match_obj.id),
-        "aggregate_clock_ms": aggregate_clock_ms,
-        "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+        "aggregate_clock_ms": match_aggregate_clock_ms,
+        "aggregate_clock": _fmt_clock_ms(match_aggregate_clock_ms),
+        "raw_aggregate_clock_ms": aggregate_clock_ms,
+        "raw_aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
         "possession": {
             "match_name": match_obj.name,
             "match_id": str(match_obj.id),
-            "aggregate_clock_ms": aggregate_clock_ms,
-            "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+            "aggregate_clock_ms": match_aggregate_clock_ms,
+            "aggregate_clock": _fmt_clock_ms(match_aggregate_clock_ms),
+            "raw_aggregate_clock_ms": aggregate_clock_ms,
+            "raw_aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
             "home_pct": (home_ms / poss_total * 100.0) if poss_total else 0.0,
             "away_pct": (away_ms / poss_total * 100.0) if poss_total else 0.0,
         },
@@ -1610,13 +1661,18 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
             {
                 "match_name": match_obj.name,
                 "match_id": str(match_obj.id),
-                "aggregate_clock_ms": aggregate_clock_ms,
-                "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
-                "event_clock_ms": r.clock_ms,
-                "event_clock": _fmt_clock_ms(r.clock_ms),
+                "aggregate_clock_ms": match_aggregate_clock_ms,
+                "aggregate_clock": _fmt_clock_ms(match_aggregate_clock_ms),
+                "raw_aggregate_clock_ms": aggregate_clock_ms,
+                "raw_aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+                "event_clock_ms": _normalize_match_clock_ms(r.clock_ms, clock_context),
+                "event_clock": _fmt_clock_ms(_normalize_match_clock_ms(r.clock_ms, clock_context)),
+                "raw_event_clock_ms": r.clock_ms,
+                "raw_event_clock": _fmt_clock_ms(r.clock_ms),
                 "team": r.team,
                 "xg": r.xg,
                 "xgot": r.xgot,
+                **_event_player_payload(r),
                 "is_goal": r.is_goal,
                 "is_on_target": r.is_on_target,
                 "shot_x": r.shot_x,
@@ -1636,8 +1692,10 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
         "match_dominance": {
             "match_name": match_obj.name,
             "match_id": str(match_obj.id),
-            "aggregate_clock_ms": aggregate_clock_ms,
-            "aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
+            "aggregate_clock_ms": match_aggregate_clock_ms,
+            "aggregate_clock": _fmt_clock_ms(match_aggregate_clock_ms),
+            "raw_aggregate_clock_ms": aggregate_clock_ms,
+            "raw_aggregate_clock": _fmt_clock_ms(aggregate_clock_ms),
             "bin_seconds": 180,
             "items": [
                 {
@@ -1670,6 +1728,223 @@ def _fmt_clock_ms(ms: int) -> str:
     mm = (s % 3600) // 60
     ss = s % 60
     return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def _clock_normalization_context(match_id: UUID, db: Session) -> dict:
+    match_obj = db.get(Match, match_id)
+    base_first_half = int(match_obj.first_half_minutes if match_obj else 45) * 60_000
+    base_second_half = int(match_obj.second_half_minutes if match_obj else 45) * 60_000
+    marker = (
+        db.query(MatchMarker)
+        .filter(MatchMarker.match_id == match_id, MatchMarker.marker_type == "HALFTIME_START")
+        .order_by(MatchMarker.clock_ms.asc(), MatchMarker.created_at.asc(), MatchMarker.id.asc())
+        .first()
+    )
+    return {
+        "first_half_ms": base_first_half,
+        "second_half_ms": base_second_half,
+        "halftime_start_ms": marker.clock_ms if marker else None,
+    }
+
+
+def _normalize_match_clock_ms(clock_ms: int, context: dict) -> int:
+    raw_ms = max(0, int(clock_ms or 0))
+    first_half_ms = int(context.get("first_half_ms") or 45 * 60_000)
+    second_half_ms = int(context.get("second_half_ms") or 45 * 60_000)
+    halftime_start_ms = context.get("halftime_start_ms")
+    if halftime_start_ms is not None and raw_ms >= int(halftime_start_ms):
+        normalized = first_half_ms + max(0, raw_ms - int(halftime_start_ms))
+    else:
+        normalized = raw_ms
+    return min(normalized, first_half_ms + second_half_ms)
+
+
+def _event_player_payload(event: Event) -> dict:
+    player_number = (event.player_number or "").strip()
+    player_name = (event.player_name or "").strip()
+    return {
+        "team_side": "H" if event.team == "HOME" else "A" if event.team == "AWAY" else event.team,
+        "player_number": player_number or None,
+        "player_name": player_name or None,
+    }
+
+
+def _parse_lineup_pdf(file_bytes: bytes, *, first_team_side: str = "HOME") -> dict:
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not read lineup PDF: {ex}") from ex
+
+    sections = re.split(r"선발출전선수\(총경기시간:\d+분\)", text)
+    if len(sections) < 3:
+        raise HTTPException(status_code=400, detail="Could not find two lineup sections in PDF")
+
+    def normalize_player_line(line: str) -> dict | None:
+        line = re.sub(r"\s*\(주장\)\s*", " ", line).strip()
+        match = re.match(r"^(?P<number>\d{1,3})\s+(?P<position>GK|DF|MF|FW)\s+(?P<name>[가-힣A-Za-z.'· -]+?)(?:\s+\d.*)?$", line)
+        if not match:
+            return None
+        number = match.group("number").strip()
+        raw_name = match.group("name").strip()
+        name = raw_name.strip()
+        if not name:
+            return None
+        return {
+            "number": number,
+            "position": match.group("position"),
+            "name": name,
+            "label": f"No.{number} {name}",
+        }
+
+    def parse_starters(section: str) -> list[dict]:
+        players_by_number: dict[str, dict] = {}
+        in_player_table = False
+        collected = False
+        for raw_line in section.splitlines():
+            line = re.sub(r"\s+", " ", raw_line).strip()
+            if not line:
+                continue
+            if line.replace(" ", "").startswith("배번포지션선수이름"):
+                in_player_table = True
+                continue
+            if not in_player_table:
+                continue
+            player = normalize_player_line(line)
+            if player:
+                players_by_number[player["number"]] = player
+                collected = True
+            elif collected:
+                break
+        return sorted(players_by_number.values(), key=lambda item: int(item["number"]))
+
+    candidate_header_pattern = r"후보선수\s+배번\s*포지션\s*선수이름\s*득점\s*도움\s*경고\s*퇴장\s*PSO"
+
+    def parse_candidate_blocks(full_text: str) -> list[list[dict]]:
+        blocks: list[list[dict]] = []
+        for match in re.finditer(rf"{candidate_header_pattern}(?P<body>.*?)(?:교체선수|자책골|지도자/임원|$)", full_text, re.S):
+            players_by_number: dict[str, dict] = {}
+            for raw_line in match.group("body").splitlines():
+                line = re.sub(r"\s+", " ", raw_line).strip()
+                player = normalize_player_line(line)
+                if player:
+                    players_by_number[player["number"]] = player
+            blocks.append(sorted(players_by_number.values(), key=lambda item: int(item["number"])))
+        return blocks[:2]
+
+    def parse_continuation_blocks(full_text: str) -> list[list[dict]]:
+        blocks: list[list[dict]] = []
+        for match in re.finditer(candidate_header_pattern, full_text):
+            players: list[dict] = []
+            for raw_line in reversed(full_text[: match.start()].splitlines()):
+                line = re.sub(r"\s+", " ", raw_line).strip()
+                player = normalize_player_line(line)
+                if player:
+                    players.append(player)
+                    continue
+                if players:
+                    break
+            blocks.append(list(reversed(players)))
+        return blocks[:2]
+
+    first_side = first_team_side.strip().upper()
+    if first_side not in {"HOME", "AWAY"}:
+        first_side = "HOME"
+    second_side = "AWAY" if first_side == "HOME" else "HOME"
+    candidate_blocks = parse_candidate_blocks(text)
+    continuation_blocks = parse_continuation_blocks(text)
+    lineups = {
+        first_side: parse_starters(sections[1]) + (continuation_blocks[0] if len(continuation_blocks) > 0 else []) + (candidate_blocks[0] if len(candidate_blocks) > 0 else []),
+        second_side: parse_starters(sections[2]) + (continuation_blocks[1] if len(continuation_blocks) > 1 else []) + (candidate_blocks[1] if len(candidate_blocks) > 1 else []),
+    }
+    for side, players in lineups.items():
+        deduped = {player["number"]: player for player in players}
+        lineups[side] = sorted(deduped.values(), key=lambda item: int(item["number"]))
+    return {
+        "source": "match_record_pdf",
+        "first_team_side": first_side,
+        "teams": {
+            "HOME": lineups.get("HOME", []),
+            "AWAY": lineups.get("AWAY", []),
+        },
+    }
+
+
+def _empty_lineup(source: str = "manual") -> dict:
+    return {
+        "source": source,
+        "teams": {
+            "HOME": [],
+            "AWAY": [],
+        },
+    }
+
+
+def _normalize_lineup_player(number: str, name: str, position: str | None = None) -> dict:
+    normalized_number = re.sub(r"\D", "", number or "")
+    normalized_name = re.sub(r"\s+", " ", name or "").strip()
+    normalized_position = (position or "").strip().upper()
+    if not normalized_number:
+        raise HTTPException(status_code=400, detail="Player number is required")
+    if int(normalized_number) < 0:
+        raise HTTPException(status_code=400, detail="Invalid player number")
+    if not normalized_name:
+        raise HTTPException(status_code=400, detail="Player name is required")
+    if normalized_position not in {"GK", "DF", "MF", "FW"}:
+        normalized_position = ""
+    player = {
+        "number": normalized_number,
+        "name": normalized_name,
+        "label": f"No.{normalized_number} {normalized_name}",
+    }
+    if normalized_position:
+        player["position"] = normalized_position
+    return player
+
+
+def _lineup_sort_key(player: dict) -> tuple[int, str]:
+    number = re.sub(r"\D", "", str(player.get("number") or ""))
+    return (int(number) if number else 999, str(player.get("name") or ""))
+
+
+def _upsert_manual_lineup_player(match_obj: Match, body: LineupManualPlayerRequest) -> dict:
+    metadata = dict(match_obj.metadata_json or {})
+    lineup = dict(metadata.get("lineups") or _empty_lineup())
+    teams = dict(lineup.get("teams") or {})
+    for side in ("HOME", "AWAY"):
+        teams[side] = list(teams.get(side) or [])
+
+    player = _normalize_lineup_player(body.number, body.name, body.position)
+    side_players = [item for item in teams[body.side] if str(item.get("number") or "") != player["number"]]
+    side_players.append(player)
+    teams[body.side] = sorted(side_players, key=_lineup_sort_key)
+    lineup["teams"] = teams
+    if lineup.get("source") not in {"match_record_pdf", "manual", "manual_or_pdf"}:
+        lineup["source"] = "manual"
+    elif lineup.get("source") == "match_record_pdf":
+        lineup["source"] = "manual_or_pdf"
+    metadata["lineups"] = lineup
+    metadata["lineup_manual_updated_at"] = datetime.utcnow().isoformat()
+    match_obj.metadata_json = metadata
+    return lineup
+
+
+def _delete_manual_lineup_player(match_obj: Match, body: LineupManualPlayerDeleteRequest) -> dict:
+    metadata = dict(match_obj.metadata_json or {})
+    lineup = dict(metadata.get("lineups") or _empty_lineup())
+    teams = dict(lineup.get("teams") or {})
+    for side in ("HOME", "AWAY"):
+        teams[side] = list(teams.get(side) or [])
+
+    normalized_number = re.sub(r"\D", "", body.number or "")
+    if not normalized_number:
+        raise HTTPException(status_code=400, detail="Player number is required")
+    teams[body.side] = [item for item in teams[body.side] if str(item.get("number") or "") != normalized_number]
+    lineup["teams"] = teams
+    metadata["lineups"] = lineup
+    metadata["lineup_manual_updated_at"] = datetime.utcnow().isoformat()
+    match_obj.metadata_json = metadata
+    return lineup
 
 
 def _accumulate_possession_ms(poss_rows: list[PossessionSegment], current_clock_ms: int) -> tuple[int, int]:
@@ -1759,6 +2034,9 @@ def _build_match_export_csv(match_id: UUID, db: Session) -> tuple[str, str]:
         "event_clock_ms",
         "event_clock_label",
         "team",
+        "team_side",
+        "player_number",
+        "player_name",
         "lane",
         "xg",
         "xgot",
@@ -1822,6 +2100,9 @@ def _build_match_export_csv(match_id: UUID, db: Session) -> tuple[str, str]:
                 "lane": event.lane,
                 "xg": event.xg,
                 "xgot": event.xgot,
+                "team_side": "H" if event.team == "HOME" else "A" if event.team == "AWAY" else event.team,
+                "player_number": event.player_number or "",
+                "player_name": event.player_name or "",
                 "is_goal": event.is_goal,
                 "is_on_target": event.is_on_target,
                 "shot_x": event.shot_x,
@@ -2023,6 +2304,65 @@ async def import_fpa_logs(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+@app.get("/api/fpa/matches/{match_id}/logs", response_model=FpaSavedLogsResponse)
+def get_fpa_saved_logs(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    if not db.get(Match, match_id):
+        raise HTTPException(status_code=404, detail="Match not found")
+    return _serialize_fpa_saved_log(db.get(FpaSavedLog, match_id), match_id)
+
+
+@app.put("/api/fpa/matches/{match_id}/logs", response_model=FpaSavedLogsResponse)
+def save_fpa_logs(
+    match_id: UUID,
+    body: FpaSavedLogsRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    if not db.get(Match, match_id):
+        raise HTTPException(status_code=404, detail="Match not found")
+    row = db.get(FpaSavedLog, match_id)
+    if not row:
+        row = FpaSavedLog(match_id=match_id)
+        db.add(row)
+    row.logs = list(body.logs or [])
+    row.rows = list(body.rows or [])
+    row.teamid_h = body.teamid_h.strip()
+    row.teamid_a = body.teamid_a.strip()
+    row.saved_by = user.id
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    return _serialize_fpa_saved_log(row, match_id)
+
+
+@app.get("/api/fpa/matches/{match_id}/logs/export.xlsx")
+def export_fpa_saved_logs(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    row = db.get(FpaSavedLog, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
+    workbook = _build_fpa_workbook_from_saved_log(row)
+    headers = {"Content-Disposition": _attachment_header(f"fpa_{match_id}_analyzed.xlsx", "fpa_analyzed.xlsx")}
+    return Response(
+        content=workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@app.get("/api/data-hub/matches")
+def list_data_hub_matches(db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    matches = db.query(Match).order_by(desc(Match.created_at)).all()
+    fpa_ids = {str(row.match_id) for row in db.query(FpaSavedLog).all() if row.logs}
+    return [
+        {
+            **_serialize_match(match),
+            "has_fla_data": True,
+            "has_fpa_logs": str(match.id) in fpa_ids,
+        }
+        for match in matches
+    ]
+
+
 @app.post("/api/fcm/analyze", response_model=FcmAnalyzeWorkbookResponse)
 async def analyze_fcm_workbook(
     file: UploadFile = File(...),
@@ -2041,6 +2381,24 @@ async def analyze_fcm_workbook(
         raise HTTPException(status_code=400, detail=str(ex)) from ex
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@app.post("/api/fcm/matches/{match_id}/analyze-fpa-logs", response_model=FcmAnalyzeWorkbookResponse)
+def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    row = db.get(FpaSavedLog, match_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
+    try:
+        workbook = _build_fpa_workbook_from_saved_log(row)
+        _fcm_shared_workbook_path(match_id).write_bytes(workbook)
+        return analyze_card_workbook(workbook)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
 
 
 @app.get("/api/fcm/submissions", response_model=list[FcmSubmissionResponse])
@@ -3055,6 +3413,83 @@ def get_match(match_id: UUID, db: Session = Depends(get_db)):
     return _serialize_match(row)
 
 
+@app.post("/api/matches/{match_id}/lineup/pdf")
+async def upload_match_lineup_pdf(
+    match_id: UUID,
+    file: UploadFile = File(...),
+    first_team_side: str = Form(default="HOME"),
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Lineup upload must be a PDF")
+
+    lineup = _parse_lineup_pdf(await file.read(), first_team_side=first_team_side)
+    metadata = dict(match_obj.metadata_json or {})
+    metadata["lineups"] = lineup
+    metadata["lineup_pdf_filename"] = file.filename or ""
+    metadata["lineup_pdf_uploaded_at"] = datetime.utcnow().isoformat()
+    match_obj.metadata_json = metadata
+    db.commit()
+    db.refresh(match_obj)
+    return {
+        "ok": True,
+        "lineups": lineup,
+        "match": _serialize_match(match_obj),
+    }
+
+
+@app.post("/api/matches/{match_id}/lineup/manual/player")
+def upsert_match_lineup_manual_player(
+    match_id: UUID,
+    body: LineupManualPlayerRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+
+    lineup = _upsert_manual_lineup_player(match_obj, body)
+    db.commit()
+    db.refresh(match_obj)
+    return {
+        "ok": True,
+        "lineups": lineup,
+        "match": _serialize_match(match_obj),
+    }
+
+
+@app.post("/api/matches/{match_id}/lineup/manual/player/delete")
+def delete_match_lineup_manual_player(
+    match_id: UUID,
+    body: LineupManualPlayerDeleteRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+
+    lineup = _delete_manual_lineup_player(match_obj, body)
+    db.commit()
+    db.refresh(match_obj)
+    return {
+        "ok": True,
+        "lineups": lineup,
+        "match": _serialize_match(match_obj),
+    }
+
+
 @app.get("/api/matches/{match_id}/result", response_model=MatchResultResponse)
 def get_match_result(match_id: UUID, db: Session = Depends(get_db)):
     match_obj = db.get(Match, match_id)
@@ -3405,6 +3840,8 @@ def post_attack_lane(
     )
     db.add(event)
     apply_attack_event(db, match_id, body.team, clock_ms)
+    clock_context = _clock_normalization_context(match_id, db)
+    match_clock_ms = _normalize_match_clock_ms(clock_ms, clock_context)
 
     payload = {
         "kind": "EVENT",
@@ -3412,8 +3849,12 @@ def post_attack_lane(
         "idempotency_key": str(body.event_id),
         "match_id": str(match_id),
         "type": "ATTACK_LANE",
-        "clock_ms": clock_ms,
+        "clock_ms": match_clock_ms,
+        "clock": _fmt_clock_ms(match_clock_ms),
+        "raw_clock_ms": clock_ms,
+        "raw_clock": _fmt_clock_ms(clock_ms),
         "team": body.team,
+        "team_side": "H" if body.team == "HOME" else "A",
         "lane": body.lane,
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -3468,6 +3909,8 @@ def post_xg(
         team=body.team,
         xg=body.xg,
         xgot=xgot_meta["xgot"],
+        player_name=(body.player_name or "").strip() or None,
+        player_number=(body.player_number or "").strip() or None,
         is_goal=body.is_goal,
         is_on_target=body.is_on_target,
         shot_x=body.shot_x,
@@ -3484,6 +3927,8 @@ def post_xg(
     goal_boost = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
     dominance_xg = body.xg * goal_boost if body.is_goal else body.xg
     apply_xg_event(db, match_id, body.team, clock_ms, dominance_xg)
+    clock_context = _clock_normalization_context(match_id, db)
+    match_clock_ms = _normalize_match_clock_ms(clock_ms, clock_context)
 
     payload = {
         "kind": "EVENT",
@@ -3491,10 +3936,16 @@ def post_xg(
         "idempotency_key": str(body.event_id),
         "match_id": str(match_id),
         "type": "XG",
-        "clock_ms": clock_ms,
+        "clock_ms": match_clock_ms,
+        "clock": _fmt_clock_ms(match_clock_ms),
+        "raw_clock_ms": clock_ms,
+        "raw_clock": _fmt_clock_ms(clock_ms),
         "team": body.team,
+        "team_side": "H" if body.team == "HOME" else "A",
         "xg": body.xg,
         "xgot": xgot_meta["xgot"],
+        "player_name": (body.player_name or "").strip() or None,
+        "player_number": (body.player_number or "").strip() or None,
         "is_goal": body.is_goal,
         "is_on_target": body.is_on_target,
         "shot_x": body.shot_x,
@@ -3804,16 +4255,22 @@ def events_v1(
         q = q.filter(Event.created_at > since_dt)
 
     rows = q.order_by(Event.created_at.asc(), Event.id.asc()).limit(limit).all()
+    clock_context = _clock_normalization_context(match_id, db)
     items = []
     for idx, e in enumerate(rows, start=1):
+        match_clock_ms = _normalize_match_clock_ms(e.clock_ms, clock_context)
         items.append(
             {
                 "sequence": base_seq + idx,
                 "event_id": str(e.id),
                 "match_id": str(match_id),
                 "type": e.type,
-                "clock_ms": e.clock_ms,
+                "clock_ms": match_clock_ms,
+                "clock": _fmt_clock_ms(match_clock_ms),
+                "raw_clock_ms": e.clock_ms,
+                "raw_clock": _fmt_clock_ms(e.clock_ms),
                 "team": e.team,
+                **_event_player_payload(e),
                 "lane": e.lane,
                 "xg": e.xg,
                 "xgot": e.xgot,
@@ -3857,8 +4314,11 @@ def possession_timeline_v1(match_id: UUID, _auth: None = Depends(_require_partne
     home_ms = 0
     away_ms = 0
     timeline = []
+    clock_context = _clock_normalization_context(match_id, db)
     for seg in rows:
         end_ms = seg.end_ms if seg.end_ms is not None else current_clock
+        start_match_ms = _normalize_match_clock_ms(seg.start_ms, clock_context)
+        end_match_ms = _normalize_match_clock_ms(end_ms, clock_context)
         duration_ms = max(0, end_ms - seg.start_ms)
         if seg.team == "HOME":
             home_ms += duration_ms
@@ -3867,10 +4327,12 @@ def possession_timeline_v1(match_id: UUID, _auth: None = Depends(_require_partne
         total = home_ms + away_ms
         timeline.append(
             {
-                "timeline": _fmt_clock_ms(end_ms),
+                "timeline": _fmt_clock_ms(end_match_ms),
                 "team": seg.team,
-                "start_ms": seg.start_ms,
-                "end_ms": end_ms,
+                "start_ms": start_match_ms,
+                "end_ms": end_match_ms,
+                "raw_start_ms": seg.start_ms,
+                "raw_end_ms": end_ms,
                 "duration_ms": duration_ms,
                 "home_pct": (home_ms / total * 100.0) if total else 0.0,
                 "away_pct": (away_ms / total * 100.0) if total else 0.0,

@@ -42,6 +42,63 @@ type CompetitionClass = {
   created_at: string;
 };
 
+const TEAM_OPTIONS_BY_CLASS: Record<string, string[]> = {
+  K3: [
+    'FC강릉',
+    'FC목포',
+    '경주한수원FC',
+    '당진시민축구단',
+    '대전코레일FC',
+    '부산교통공사축구단',
+    '시흥시민축구단',
+    '양평FC',
+    '여주FC',
+    '울산시민축구단',
+    '전북현대모터스',
+    '창원FC',
+    '춘천시민축구단',
+    '포천시민축구단',
+  ],
+  WK: [
+    '강진SWANSWFC',
+    '경주한수원WFC',
+    '상무여자축구단',
+    '서울시청',
+    '세종스포츠토토여자축구단',
+    '수원FC위민',
+    '인천현대제철',
+    '화천 KSPO 여자축구단',
+  ],
+  'SUFA-S': [
+    '서울시립대 아마축구부',
+    '연세대 WTF',
+    '한양대 라이언',
+    '중앙대 청우회',
+    '한체대 태풍',
+    '숭실대 SSC',
+    '연세대 FC연세',
+  ],
+  'SUFA-A': [
+    '고려대 아마추어축구부',
+    '서강대 서강축구반',
+    '동국대 FC TOTO',
+    '서울시립대 AZURE',
+    '한체대 FC 리히트',
+  ],
+  'SUFA-B': [
+    '한국외대 야생마FC',
+    '한양대 한백사',
+    '성균관대 성균축구단',
+    '상명대 캐논',
+  ],
+  'SUFA-L': [
+    '서울대 SNUWFC',
+    '이화여대 FC콕',
+    '동국대 FC 엘레펜테',
+    '숙명여대 FC숙명',
+  ],
+};
+
 export default function Dashboard() {
   const PAGE_SIZE = 7;
   const [matches, setMatches] = useState<Match[]>([]);
@@ -110,7 +167,11 @@ export default function Dashboard() {
 
   const createMatch = async () => {
     if (!homeTeam.trim() || !awayTeam.trim()) {
-      setError('홈팀과 어웨이팀을 모두 입력하세요.');
+      setError('홈팀과 어웨이팀을 모두 선택하거나 입력하세요.');
+      return;
+    }
+    if (homeTeam.trim() === awayTeam.trim()) {
+      setError('홈팀과 어웨이팀은 서로 달라야 합니다.');
       return;
     }
     setError('');
@@ -140,6 +201,12 @@ export default function Dashboard() {
     setAssignOperator(true);
     setIngestProtocol('RTMP');
     await load();
+  };
+
+  const handleCompetitionClassChange = (nextClass: string) => {
+    setCompetitionClass(nextClass);
+    setHomeTeam('');
+    setAwayTeam('');
   };
 
   const createCompetitionClass = async () => {
@@ -241,34 +308,6 @@ export default function Dashboard() {
     await load();
   };
 
-  const exportMatch = async (matchId: string) => {
-    setError('');
-    try {
-      const res = await apiFetch(`/matches/${matchId}/export.csv`, {
-        method: 'GET',
-        headers: {},
-      });
-      if (!res.ok) {
-        setError((await res.text()) || 'Failed to export match');
-        return;
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const disposition = res.headers.get('content-disposition') || '';
-      const fileNameMatch = disposition.match(/filename="([^"]+)"/i);
-      a.href = url;
-      a.download = fileNameMatch?.[1] || `match_export_${matchId}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch {
-      setError('Failed to export match');
-    }
-  };
-
   const monthLabel = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}`;
   const firstDay = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
   const lastDay = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0);
@@ -307,6 +346,8 @@ export default function Dashboard() {
       { code: 'SUFA-L', name: 'SUFA-L', first_half_minutes: 20, second_half_minutes: 20, created_at: '' },
     ];
   }, [competitionClasses]);
+  const selectedTeamOptions = TEAM_OPTIONS_BY_CLASS[competitionClass] || [];
+  const usesTeamDropdown = selectedTeamOptions.length > 0;
   const assignedCount = useMemo(() => matches.filter((match) => !match.archived && match.operator_id).length, [matches]);
   const rtmpCount = useMemo(
     () => matches.filter((match) => !match.archived && match.metadata?.ingest_protocol === 'RTMP').length,
@@ -418,7 +459,7 @@ export default function Dashboard() {
               <div className="hero-form-grid compact">
                 <div className="field-stack field-stack-short">
                   <div className="field-label">대회</div>
-                  <select value={competitionClass} onChange={(e) => setCompetitionClass(e.target.value)}>
+                  <select value={competitionClass} onChange={(e) => handleCompetitionClassChange(e.target.value)}>
                     {competitionOptions.map((item) => (
                       <option key={item.code} value={item.code}>
                         {item.code}
@@ -440,12 +481,34 @@ export default function Dashboard() {
 
                 <div className="field-stack field-stack-wide">
                   <div className="field-label">홈</div>
-                  <input value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)} placeholder="예: 당진" />
+                  {usesTeamDropdown ? (
+                    <select value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)}>
+                      <option value="">홈팀 선택</option>
+                      {selectedTeamOptions.map((team) => (
+                        <option key={team} value={team} disabled={team === awayTeam}>
+                          {team}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)} placeholder="예: 당진" />
+                  )}
                 </div>
 
                 <div className="field-stack field-stack-wide">
                   <div className="field-label">어웨이</div>
-                  <input value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)} placeholder="예: 경주" />
+                  {usesTeamDropdown ? (
+                    <select value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)}>
+                      <option value="">어웨이팀 선택</option>
+                      {selectedTeamOptions.map((team) => (
+                        <option key={team} value={team} disabled={team === homeTeam}>
+                          {team}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)} placeholder="예: 경주" />
+                  )}
                 </div>
 
                 <div className="field-stack field-stack-short">
@@ -573,7 +636,6 @@ export default function Dashboard() {
                           Edit Events
                         </Link>
                       ) : null}
-                      <button className="button-compact btn-success" onClick={() => exportMatch(match.id)}>Export CSV</button>
                       {match.archived ? (
                         <button className="button-compact btn-secondary" onClick={() => setArchived(match.id, false)}>Restore</button>
                       ) : (

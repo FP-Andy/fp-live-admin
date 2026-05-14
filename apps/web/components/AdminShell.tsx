@@ -19,6 +19,13 @@ type NavSection = {
   items: NavItem[];
 };
 
+const DATA_HUB_ITEM: NavItem = {
+  href: '/admin/data-hub',
+  label: 'Data Hub',
+  icon: '⇩',
+  match: (pathname) => pathname.startsWith('/admin/data-hub'),
+};
+
 const FLA_ITEMS: NavItem[] = [
   {
     href: '/admin/dashboard',
@@ -141,6 +148,9 @@ function getPageMeta(pathname: string) {
   if (pathname.startsWith('/admin/fcm/templates')) {
     return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Templates' };
   }
+  if (pathname.startsWith('/admin/data-hub')) {
+    return { product: 'DATA', eyebrow: 'Shared Match Data', title: 'Data Hub' };
+  }
   if (pathname.startsWith('/admin/fcm/guide')) {
     return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Guide' };
   }
@@ -155,12 +165,6 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   const router = useRouter();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
-    FLA: true,
-    FHL: false,
-    FPA: false,
-    FCM: false,
-  });
   const currentPath = pathname || '/admin/dashboard';
   const pageMeta = getPageMeta(currentPath);
   const visibleSections = NAV_SECTIONS.map((section) => ({
@@ -172,14 +176,6 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           ? []
         : section.items,
   })).filter((section) => section.items.length > 0);
-
-  useEffect(() => {
-    setExpandedSections((prev) => {
-      const next = { ...prev };
-      next[pageMeta.product] = true;
-      return next;
-    });
-  }, [pageMeta.product]);
 
   useEffect(() => {
     let active = true;
@@ -206,13 +202,6 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
     await apiFetch('/session/logout', { method: 'POST' });
     router.replace('/login');
     router.refresh();
-  };
-
-  const toggleSection = (sectionId: NavSection['id']) => {
-    setExpandedSections((prev) => ({
-      ...prev,
-      [sectionId]: !prev[sectionId],
-    }));
   };
 
   return (
@@ -242,15 +231,14 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
               <nav className="sidebar-nav">
                 {visibleSections.map((section) => (
                   <div className="sidebar-section" key={section.id}>
-                    <button
+                    <Link
                       className={`product-badge product-toggle ${pageMeta.product === section.id ? 'active' : ''}`}
-                      onClick={() => toggleSection(section.id)}
-                      type="button"
+                      href={section.items[0]?.href || '/admin/dashboard'}
                     >
                       <span>{section.label}</span>
-                      <span className={`product-toggle-icon ${expandedSections[section.id] ? 'open' : ''}`}>⌄</span>
-                    </button>
-                    {expandedSections[section.id] ? (
+                      <span className={`product-toggle-icon ${pageMeta.product === section.id ? 'open' : ''}`}>⌄</span>
+                    </Link>
+                    {pageMeta.product === section.id ? (
                       <div className="product-nav">
                         {section.items.map((item) => (
                           <Link
@@ -266,6 +254,15 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
                     ) : null}
                   </div>
                 ))}
+                <Link
+                  className={`product-badge data-hub-nav-item ${DATA_HUB_ITEM.match(currentPath) ? 'active' : ''}`}
+                  href={DATA_HUB_ITEM.href}
+                >
+                  <span>
+                    <span className="nav-icon">{DATA_HUB_ITEM.icon}</span>
+                    {DATA_HUB_ITEM.label}
+                  </span>
+                </Link>
               </nav>
 
               <div className="sidebar-footer">

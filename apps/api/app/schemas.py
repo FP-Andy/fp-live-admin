@@ -58,6 +58,18 @@ class CompetitionClassResponse(BaseModel):
     created_at: str
 
 
+class LineupManualPlayerRequest(BaseModel):
+    side: Team
+    number: str = Field(min_length=1, max_length=3)
+    position: Literal["GK", "DF", "MF", "FW"] | None = None
+    name: str = Field(min_length=1, max_length=80)
+
+
+class LineupManualPlayerDeleteRequest(BaseModel):
+    side: Team
+    number: str = Field(min_length=1, max_length=3)
+
+
 class FcmSubmissionUpsertRequest(BaseModel):
     team_side: Literal["HOME", "AWAY"] = "HOME"
     player_id: str = Field(min_length=1, max_length=40)
@@ -135,6 +147,8 @@ class XGEventRequest(BaseModel):
     clock_ms: int | None = Field(default=None, ge=0)
     team: Team
     xg: float = Field(ge=0)
+    player_name: str | None = Field(default=None, max_length=80)
+    player_number: str | None = Field(default=None, max_length=20)
     is_goal: bool = False
     is_on_target: bool = False
     shot_x: float | None = Field(default=None, ge=0, le=105)
@@ -202,6 +216,8 @@ class TimelineEditorUpsertRequest(BaseModel):
     team: Team | None = None
     lane: Lane | None = None
     xg: float | None = Field(default=None, ge=0)
+    player_name: str | None = Field(default=None, max_length=80)
+    player_number: str | None = Field(default=None, max_length=20)
     is_goal: bool = False
     is_on_target: bool = False
     shot_x: float | None = Field(default=None, ge=0, le=105)
@@ -224,6 +240,8 @@ class TimelineEditorListItem(BaseModel):
     lane: Lane | None = None
     xg: float | None = None
     xgot: float | None = None
+    player_name: str | None = None
+    player_number: str | None = None
     is_goal: bool = False
     is_on_target: bool = False
     shot_x: float | None = None

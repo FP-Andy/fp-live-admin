@@ -71,6 +71,18 @@ class FcmTemplate(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
+class FpaSavedLog(Base):
+    __tablename__ = "fpa_saved_logs"
+
+    match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("matches.id"), primary_key=True)
+    logs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    rows: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
+    teamid_h: Mapped[str] = mapped_column(String, nullable=False, default="")
+    teamid_a: Mapped[str] = mapped_column(String, nullable=False, default="")
+    saved_by: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+
+
 class State(Base):
     __tablename__ = "states"
 
@@ -118,6 +130,8 @@ class Event(Base):
     lane: Mapped[str | None] = mapped_column(String, nullable=True)
     xg: Mapped[float | None] = mapped_column(Float, nullable=True)
     xgot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    player_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    player_number: Mapped[str | None] = mapped_column(String, nullable=True)
     is_goal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_on_target: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     shot_x: Mapped[float | None] = mapped_column(Float, nullable=True)
