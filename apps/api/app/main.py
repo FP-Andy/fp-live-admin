@@ -3558,6 +3558,9 @@ def delete_match(
     if stop_stream:
         _gateway_stop_stream(match_id)
 
+    db.query(FcmSubmission).filter(FcmSubmission.match_id == match_id).delete(synchronize_session=False)
+    db.query(FpaSavedLog).filter(FpaSavedLog.match_id == match_id).delete(synchronize_session=False)
+    db.query(MatchMarker).filter(MatchMarker.match_id == match_id).delete(synchronize_session=False)
     db.query(LaneSegment).filter(LaneSegment.match_id == match_id).delete(synchronize_session=False)
     db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).delete(synchronize_session=False)
     db.query(State).filter(State.match_id == match_id).delete(synchronize_session=False)

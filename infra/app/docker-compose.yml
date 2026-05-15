@@ -22,6 +22,8 @@ services:
       context: ../../apps/api
     container_name: app-api
     restart: unless-stopped
+    extra_hosts:
+      - "stream.fineludens.kr:3.227.35.90"
     volumes:
       - ../../templetes:/app/templetes:ro
       - ../../assets/fonts:/app/assets/fonts:ro
