@@ -15,6 +15,7 @@
 - 운영 콘솔 URL: `https://console.fineludens.kr/login`
 - 운영 앱 서버 고정 IP: `3.217.232.253`
 - 운영 미디어 서버 고정 IP: `3.227.35.90`
+- HLS 직접 분리 목표 도메인: `https://stream.fineludens.kr` (DNS/HTTPS 준비 후 `PUBLIC_HLS_BASE`, `GATEWAY_PUBLIC_HLS_BASE`로 전환)
 - 운영 북마크/로그인 안내는 `live.fineludens.kr` 대신 `console.fineludens.kr` 기준으로 통일
 
 ## Media Server Remote Control

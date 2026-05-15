@@ -82,3 +82,27 @@
 - 미디어 서버 고정 IP: `3.227.35.90`
 - 운영 콘솔 URL: `https://console.fineludens.kr/login`
 - 기존 `live.fineludens.kr` 안내는 점진적으로 `console.fineludens.kr`로 교체
+
+## HLS 직접 분리 전환 기준
+
+동시 STREAM 경기가 많아질 때 앱 서버가 HLS 프록시까지 떠안지 않도록, HLS 시청 주소는 미디어 서버 직접 도메인으로 분리하는 것이 목표다.
+
+현재 안전 기준:
+
+- 이미 공유된 RTMP 서버와 스트림키는 유지한다.
+- 경기 재생용 HLS 주소만 `console.fineludens.kr/hls/...`에서 별도 stream 도메인으로 옮긴다.
+- 콘솔 사용 방식, FLA 기록, FPA/FCM/API 흐름은 바꾸지 않는다.
+
+전환 전 필수 조건:
+
+1. `stream.fineludens.kr` DNS를 미디어 서버 고정 IP `3.227.35.90`으로 연결한다.
+2. 미디어 서버에서 `stream.fineludens.kr` HTTPS 인증서를 발급한다.
+3. 미디어 gateway의 `GATEWAY_PUBLIC_HLS_BASE`를 `https://stream.fineludens.kr`로 설정한다.
+4. 앱 서버의 `PUBLIC_HLS_BASE`를 `https://stream.fineludens.kr`로 설정한다.
+5. 테스트 경기 1건에서 HLS URL이 `https://stream.fineludens.kr/hls/<match_id>/stream.m3u8`로 내려오는지 확인한다.
+
+주의:
+
+- HTTPS 콘솔에서 `http://3.227.35.90:8080/hls/...` 같은 HTTP HLS를 직접 재생하면 브라우저 mixed-content 정책에 막힐 수 있다.
+- 따라서 DNS와 HTTPS가 준비되기 전에는 `PUBLIC_HLS_BASE`를 media 서버 HTTP 주소로 바꾸지 않는다.
+- 기존에 공유된 RTMP stream key는 match id 기반이므로, 경기를 새로 만들거나 RTMP 정보를 재생성하지 않는 한 변경하지 않는다.

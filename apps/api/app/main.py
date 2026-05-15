@@ -91,6 +91,8 @@ SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
 PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://console.fineludens.kr").rstrip("/")
+GATEWAY_STATUS_TIMEOUT_SECONDS = float(os.getenv("GATEWAY_STATUS_TIMEOUT_SECONDS", "1.0"))
+HLS_PROBE_TIMEOUT_SECONDS = float(os.getenv("HLS_PROBE_TIMEOUT_SECONDS", "1.5"))
 MEDIA_CONTROL_URL = os.getenv("MEDIA_CONTROL_URL", "").strip()
 MEDIA_CONTROL_TOKEN = os.getenv("MEDIA_CONTROL_TOKEN", "").strip()
 MEDIA_INSTANCE_ID = os.getenv("MEDIA_INSTANCE_ID", "").strip()
@@ -390,7 +392,7 @@ def _gateway_status() -> dict:
         raise HTTPException(status_code=500, detail="GATEWAY_API_BASE not configured")
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=GATEWAY_STATUS_TIMEOUT_SECONDS) as client:
             resp = client.get(f"{gateway_base}/matches/status")
             resp.raise_for_status()
             data = resp.json()
@@ -532,7 +534,7 @@ def _probe_hls_url(hls_url: str | None) -> dict:
         }
 
     try:
-        with httpx.Client(timeout=4.0, follow_redirects=True) as client:
+        with httpx.Client(timeout=HLS_PROBE_TIMEOUT_SECONDS, follow_redirects=True) as client:
             response = client.get(normalized_url)
             ok = response.status_code == 200
             return {

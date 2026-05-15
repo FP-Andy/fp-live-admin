@@ -65,6 +65,8 @@
 - [ ] `rtmp.yourdomain.com` -> 영상 서버 공인 IP
 - [ ] `hls.yourdomain.com` -> 영상 서버 공인 IP
 
+운영에서 HLS 트래픽을 앱 서버와 분리하려면 `hls.yourdomain.com` 또는 `stream.yourdomain.com`은 반드시 영상 서버 공인 IP로 연결하고 HTTPS 인증서를 별도로 준비한다. HTTPS 콘솔에서 HTTP HLS 주소를 직접 재생하면 브라우저 정책에 막힐 수 있으므로, 앱 서버의 `PUBLIC_HLS_BASE`와 영상 서버의 `GATEWAY_PUBLIC_HLS_BASE`는 HTTPS HLS 도메인으로 맞춘다.
+
 DNS 전파는 수분~수시간 걸릴 수 있음.
 
 ---
