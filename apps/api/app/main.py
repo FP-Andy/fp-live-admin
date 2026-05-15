@@ -1949,6 +1949,27 @@ def _delete_manual_lineup_player(match_obj: Match, body: LineupManualPlayerDelet
     return lineup
 
 
+def _swap_lineup_sides(match_obj: Match) -> dict:
+    metadata = dict(match_obj.metadata_json or {})
+    lineup = dict(metadata.get("lineups") or _empty_lineup())
+    teams = dict(lineup.get("teams") or {})
+    home_players = list(teams.get("HOME") or [])
+    away_players = list(teams.get("AWAY") or [])
+    if not home_players and not away_players:
+        raise HTTPException(status_code=400, detail="No lineup players to swap")
+
+    teams["HOME"] = sorted(away_players, key=_lineup_sort_key)
+    teams["AWAY"] = sorted(home_players, key=_lineup_sort_key)
+    lineup["teams"] = teams
+    first_side = str(lineup.get("first_team_side") or "").upper()
+    if first_side in {"HOME", "AWAY"}:
+        lineup["first_team_side"] = "AWAY" if first_side == "HOME" else "HOME"
+    metadata["lineups"] = lineup
+    metadata["lineup_manual_updated_at"] = datetime.utcnow().isoformat()
+    match_obj.metadata_json = metadata
+    return lineup
+
+
 def _accumulate_possession_ms(poss_rows: list[PossessionSegment], current_clock_ms: int) -> tuple[int, int]:
     home_ms = 0
     away_ms = 0
@@ -3483,6 +3504,28 @@ def delete_match_lineup_manual_player(
     _require_write_lock(match_obj, _resolve_user_id(None, session_user))
 
     lineup = _delete_manual_lineup_player(match_obj, body)
+    db.commit()
+    db.refresh(match_obj)
+    return {
+        "ok": True,
+        "lineups": lineup,
+        "match": _serialize_match(match_obj),
+    }
+
+
+@app.post("/api/matches/{match_id}/lineup/swap")
+def swap_match_lineup_sides(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+
+    lineup = _swap_lineup_sides(match_obj)
     db.commit()
     db.refresh(match_obj)
     return {

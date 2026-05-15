@@ -87,6 +87,7 @@ export default function MatchPage() {
   const [xgPlayerKey, setXgPlayerKey] = useState('');
   const [lineupFirstSide, setLineupFirstSide] = useState<Team>('HOME');
   const [isUploadingLineup, setIsUploadingLineup] = useState(false);
+  const [isSwappingLineup, setIsSwappingLineup] = useState(false);
   const [manualLineupSide, setManualLineupSide] = useState<Team>('HOME');
   const [manualLineupNumber, setManualLineupNumber] = useState('');
   const [manualLineupPosition, setManualLineupPosition] = useState('');
@@ -123,6 +124,7 @@ export default function MatchPage() {
   const fetchSeqRef = useRef<number>(0);
 
   const lineups = (match?.metadata?.lineups?.teams || {}) as Partial<Record<Team, LineupPlayer[]>>;
+  const hasLineupPlayers = Boolean((lineups.HOME || []).length || (lineups.AWAY || []).length);
   const xgPlayerOptions = useMemo(() => lineups[xgTeam] || [], [lineups, xgTeam]);
   const selectedXgPlayer = useMemo(
     () => xgPlayerOptions.find((player) => `${player.number}|${player.name}` === xgPlayerKey) || null,
@@ -667,6 +669,28 @@ export default function MatchPage() {
     }
   };
 
+  const swapLineupSides = async () => {
+    if (!canWrite || isSwappingLineup || !hasLineupPlayers) return;
+    setIsSwappingLineup(true);
+    setCopyMessage('');
+    try {
+      const response = await apiFetch(`/matches/${id}/lineup/swap`, { method: 'POST' });
+      if (!response.ok) {
+        throw new Error((await response.text()) || 'Lineup swap failed');
+      }
+      const data = await response.json();
+      setMatch(data.match);
+      const homeCount = data.lineups?.teams?.HOME?.length || 0;
+      const awayCount = data.lineups?.teams?.AWAY?.length || 0;
+      setCopyMessage(`Lineup swapped: HOME ${homeCount}, AWAY ${awayCount}`);
+    } catch (error) {
+      setCopyMessage(error instanceof Error ? error.message : 'Lineup swap failed');
+    } finally {
+      setIsSwappingLineup(false);
+      setTimeout(() => setCopyMessage(''), 2500);
+    }
+  };
+
   const saveManualLineupPlayer = async () => {
     if (!canWrite || isSavingManualLineup) return;
     const number = manualLineupNumber.trim();
@@ -1140,6 +1164,9 @@ export default function MatchPage() {
             <span className="muted">
               roster: H {(lineups.HOME || []).length} / A {(lineups.AWAY || []).length}
             </span>
+            <button className="btn-secondary" onClick={swapLineupSides} disabled={!canWrite || isSwappingLineup || !hasLineupPlayers}>
+              {isSwappingLineup ? 'Swapping...' : 'Swap H/A'}
+            </button>
             <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
               Manual Lineup
             </button>
