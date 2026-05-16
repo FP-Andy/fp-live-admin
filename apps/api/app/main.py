@@ -8,6 +8,7 @@ import json
 import math
 import re
 import shutil
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -109,6 +110,8 @@ DOM_XG_WEIGHT = float(os.getenv("DOM_XG_WEIGHT", "0.65"))
 DOM_ATTACK_WEIGHT = float(os.getenv("DOM_ATTACK_WEIGHT", "0.25"))
 DOM_XG_SCALE = float(os.getenv("DOM_XG_SCALE", "1.8"))
 DOM_GOAL_XG_MULTIPLIER = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
+DOMINANCE_CACHE_TTL_SECONDS = float(os.getenv("DOMINANCE_CACHE_TTL_SECONDS", "3.0"))
+_dominance_response_cache: dict[tuple[str, int, bool], tuple[float, dict]] = {}
 
 
 def _normalize_hls_url(hls_url: str | None) -> str | None:
@@ -4238,7 +4241,16 @@ def dominance(
     split_halves: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    return _build_dominance(match_id, bin_seconds, db, split_halves=split_halves)
+    cache_key = (str(match_id), bin_seconds, split_halves)
+    now = time.monotonic()
+    if DOMINANCE_CACHE_TTL_SECONDS > 0:
+        cached = _dominance_response_cache.get(cache_key)
+        if cached and now - cached[0] <= DOMINANCE_CACHE_TTL_SECONDS:
+            return cached[1]
+    result = _build_dominance(match_id, bin_seconds, db, split_halves=split_halves)
+    if DOMINANCE_CACHE_TTL_SECONDS > 0:
+        _dominance_response_cache[cache_key] = (now, result)
+    return result
 
 
 @app.get("/api/matches/{match_id}/export.csv")
