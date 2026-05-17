@@ -3,5 +3,6 @@ torch==2.4.1
 torchvision==0.19.1
 ultralytics==8.3.161
 xgboost==2.1.1
+scikit-learn==1.5.2
 opencv-python-headless==4.10.0.84
 Pillow==10.4.0
