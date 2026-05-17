@@ -4537,6 +4537,12 @@ async def create_highlight_job(
         "second_half_start_sec": second_half_start_sec,
         "log_data": log_data,
         "worker": {"mode": "external", "queued_at": datetime.utcnow().isoformat()},
+        "progress": {
+            "phase": "queued",
+            "percent": 0,
+            "detail": "작업 대기 중",
+            "updated_at": datetime.utcnow().isoformat(),
+        },
     }
     job = HighlightJob(
         id=job_id,

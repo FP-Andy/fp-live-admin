@@ -4,6 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE, apiJson } from '../../../lib/api';
 
 type ClipTimestamp = { start: number; end: number };
+type JobProgress = {
+  phase?: string;
+  percent?: number;
+  detail?: string;
+  updated_at?: string;
+};
 
 type JobMetadata = {
   clips?: string[];
@@ -14,6 +20,7 @@ type JobMetadata = {
   clip_timestamps?: Record<string, ClipTimestamp>;
   events?: Array<{ clip: string; source: string; event_type?: string }>;
   message?: string;
+  progress?: JobProgress;
 };
 
 const FEATURE_LABELS: Record<string, string> = {
@@ -161,6 +168,7 @@ export default function HighlightPage() {
   const [selectedClips, setSelectedClips] = useState<Record<string, boolean>>({});
   const [clipOrder, setClipOrder] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [exportReady, setExportReady] = useState(false);
   const [status, setStatus] = useState('');
@@ -182,6 +190,12 @@ export default function HighlightPage() {
   useEffect(() => {
     loadJobs();
   }, [loadJobs]);
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
 
   const startPolling = useCallback((jobId: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -217,6 +231,29 @@ export default function HighlightPage() {
     reader.readAsText(file);
   };
 
+  const uploadHighlightJob = (form: FormData) => new Promise<{ job_id: string }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/highlight/jobs`);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      setUploadProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (err) {
+          reject(err);
+        }
+      } else {
+        reject(new Error(xhr.responseText || `Upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(form);
+  });
+
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     const file = fileInputRef.current?.files?.[0];
@@ -226,6 +263,7 @@ export default function HighlightPage() {
     }
 
     setUploading(true);
+    setUploadProgress(0);
     setStatus('업로드 중...');
     setActiveJob(null);
     setSelectedClips({});
@@ -240,13 +278,8 @@ export default function HighlightPage() {
     form.append('log_data_json', logDataJson || '[]');
 
     try {
-      const res = await fetch(`${API_BASE}/highlight/jobs`, {
-        method: 'POST',
-        credentials: 'include',
-        body: form,
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as { job_id: string };
+      const data = await uploadHighlightJob(form);
+      setUploadProgress(100);
       setStatus('분석 시작됨 — 완료까지 수분~수십분 소요됩니다.');
       const job = await apiJson<HighlightJob>(`/highlight/jobs/${data.job_id}`);
       setActiveJob(job);
@@ -312,6 +345,9 @@ export default function HighlightPage() {
   };
 
   const meta = activeJob?.job_metadata || {};
+  const progress = meta.progress || {};
+  const processingPercent = Math.max(0, Math.min(Number(progress.percent || 0), 100));
+  const progressLabel = progress.detail || (activeJob?.status === 'queued' ? '분석 대기 중...' : '하이라이트 추출 중...');
   const clips = activeJob?.status === 'done' ? (clipOrder.length ? clipOrder : meta.clips || []) : [];
   const selectedCount = Object.values(selectedClips).filter(Boolean).length;
 
@@ -416,6 +452,26 @@ export default function HighlightPage() {
             </button>
           </form>
 
+          {uploading && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginBottom: 5 }}>
+                <span>업로드 진행률</span>
+                <strong style={{ color: 'var(--text)' }}>{uploadProgress}%</strong>
+              </div>
+              <div style={{ height: 8, borderRadius: 999, background: 'var(--button-dark)', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: `${uploadProgress}%`,
+                    height: '100%',
+                    borderRadius: 999,
+                    background: 'var(--accent)',
+                    transition: 'width 160ms ease',
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           {status && (
             <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>{status}</div>
           )}
@@ -485,15 +541,32 @@ export default function HighlightPage() {
         {/* progress / status bar */}
         {activeJob && (activeJob.status === 'queued' || activeJob.status === 'processing') && (
           <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 24, border: '1px solid var(--border-ghost)' }}>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>PROCESSING</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>PROCESSING</div>
+              <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: 700 }}>{processingPercent}%</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
               <div style={{
                 width: 12, height: 12, borderRadius: '50%',
-                background: 'var(--accent)', animation: 'pulse 1.2s ease-in-out infinite',
+                background: 'var(--accent)', animation: 'pulse 1.2s ease-in-out infinite', flex: '0 0 auto',
               }} />
-              <span style={{ fontSize: 13, color: 'var(--text)' }}>
-                {activeJob.status === 'queued' ? '분석 대기 중...' : 'YOLO 탐지 + 스코어 계산 중 (수분~수십분 소요)'}
-              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: 'var(--text)' }}>{progressLabel}</div>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
+                  {activeJob.status === 'queued' ? '작업은 대기열에 있으며 페이지를 나가도 유지됩니다.' : 'GPU 워커가 백그라운드에서 처리 중입니다. 페이지를 나가도 계속 진행됩니다.'}
+                </div>
+              </div>
+            </div>
+            <div style={{ height: 10, borderRadius: 999, background: 'var(--button-dark)', overflow: 'hidden' }}>
+              <div
+                style={{
+                  width: `${processingPercent}%`,
+                  height: '100%',
+                  borderRadius: 999,
+                  background: 'var(--accent)',
+                  transition: 'width 220ms ease',
+                }}
+              />
             </div>
           </div>
         )}

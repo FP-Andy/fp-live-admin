@@ -89,6 +89,23 @@ def _json_safe(value: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(value, cls=NpEncoder))
 
 
+def _progress_payload(phase: str, percent: int, detail: str | None = None) -> dict[str, Any]:
+    return {
+        "phase": phase,
+        "percent": max(0, min(int(percent), 100)),
+        "detail": detail or "",
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _update_progress(db: Session, job: HighlightJob, phase: str, percent: int, detail: str | None = None) -> None:
+    metadata = dict(job.job_metadata or {})
+    metadata["progress"] = _progress_payload(phase, percent, detail)
+    updated = update_job(db, job.id, job_metadata=_json_safe(metadata))
+    if updated:
+        job.job_metadata = updated.job_metadata
+
+
 def _delete_upload(video_path: str) -> None:
     if not DELETE_UPLOAD_AFTER_SUCCESS:
         return
@@ -104,7 +121,16 @@ def run_analysis_for_job(job_id: str, yolo_model: object, xgb_model: object | No
         job = db.get(HighlightJob, job_id)
         if not job:
             return
-        update_job(db, job_id, status="processing", error_message=None)
+        update_job(
+            db,
+            job_id,
+            status="processing",
+            error_message=None,
+            job_metadata=_json_safe({
+                **(job.job_metadata or {}),
+                "progress": _progress_payload("starting", 1, "작업 준비 중"),
+            }),
+        )
 
         if yolo_model is None:
             update_job(db, job_id, status="error", error_message="YOLO 모델이 로드되지 않았습니다.")
@@ -141,6 +167,13 @@ def _run_ai_analysis(
         yolo_model=yolo_model,
         xgb_model=xgb_model,
         highlight_count=highlight_count,
+        progress_callback=lambda payload: _update_progress(
+            db,
+            job,
+            str(payload.get("phase") or "processing"),
+            int(payload.get("percent") or 0),
+            str(payload.get("detail") or ""),
+        ),
     )
 
     if not result.success:
@@ -175,6 +208,7 @@ def _run_ai_analysis(
 
     metadata = {
         **(job.job_metadata or {}),
+        "progress": _progress_payload("done", 100, "하이라이트 추출 완료"),
         "clips": clip_files,
         "selected": {},
         "clip_scores": clip_scores_by_name,
@@ -213,6 +247,13 @@ def _run_log_analysis(
         target_count=highlight_count,
         yolo_model=yolo_model,
         xgb_model=xgb_model,
+        progress_callback=lambda payload: _update_progress(
+            db,
+            job,
+            str(payload.get("phase") or "processing"),
+            int(payload.get("percent") or 0),
+            str(payload.get("detail") or ""),
+        ),
     )
 
     if not result.success:
@@ -246,6 +287,7 @@ def _run_log_analysis(
 
     merged_metadata = {
         **metadata,
+        "progress": _progress_payload("done", 100, "하이라이트 추출 완료"),
         "clips": clip_files,
         "selected": {},
         "clip_scores": result.clip_scores,

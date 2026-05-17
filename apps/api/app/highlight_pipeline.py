@@ -12,7 +12,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -508,7 +508,10 @@ class XHScoreCalculator:
 
 # ── YOLO detection ────────────────────────────────────────────────────────
 
-def _detect_objects(video_path: str, yolo_model: Any) -> tuple[pd.DataFrame, float]:
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _detect_objects(video_path: str, yolo_model: Any, progress_callback: ProgressCallback | None = None) -> tuple[pd.DataFrame, float]:
     import torch
 
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -560,6 +563,8 @@ def _detect_objects(video_path: str, yolo_model: Any) -> tuple[pd.DataFrame, flo
         if pct // 10 > logged_pct // 10:
             logged_pct = pct
             logger.info("Detection progress: %d%%", pct)
+            if progress_callback:
+                progress_callback({"phase": "detecting_objects", "percent": min(65, 5 + int(pct * 0.6)), "detail": f"YOLO 탐지 {pct}%"})
 
     return pd.DataFrame(all_detections), float(fps)
 
@@ -591,7 +596,13 @@ def _get_audio_features(video_path: str, fps: float) -> pd.DataFrame | None:
         return None
 
 
-def _create_clips(video_path: str, frames: list[int], fps: float, output_dir: str) -> list[str]:
+def _create_clips(
+    video_path: str,
+    frames: list[int],
+    fps: float,
+    output_dir: str,
+    progress_callback: ProgressCallback | None = None,
+) -> list[str]:
     from moviepy import VideoFileClip
 
     output_path = Path(output_dir)
@@ -614,6 +625,9 @@ def _create_clips(video_path: str, frames: list[int], fps: float, output_dir: st
                              temp_audiofile=f"temp-audio-{i}.m4a", remove_temp=True, logger=None)
         created.append(out)
         logger.info("Clip %d/%d created: %s", i + 1, len(frames), out)
+        if progress_callback:
+            clip_pct = int(((i + 1) / max(len(frames), 1)) * 19)
+            progress_callback({"phase": "creating_clips", "percent": min(99, 80 + clip_pct), "detail": f"클립 생성 {i + 1}/{len(frames)}"})
     video.close()
     return created
 
@@ -627,28 +641,39 @@ def run_highlight_pipeline(
     xgb_model: Any = None,
     highlight_count: int = 40,
     exclude_intervals: list[tuple[float, float]] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> HighlightRunResult:
     logger.info("Starting AI highlight pipeline for %s", video_path)
 
-    detections_df, fps = _detect_objects(video_path, yolo_model)
+    if progress_callback:
+        progress_callback({"phase": "detecting_objects", "percent": 5, "detail": "YOLO 탐지 시작"})
+    detections_df, fps = _detect_objects(video_path, yolo_model, progress_callback)
     if detections_df.empty:
         return HighlightRunResult(False, "탐지된 객체가 없습니다.")
 
+    if progress_callback:
+        progress_callback({"phase": "audio_scoring", "percent": 68, "detail": "오디오 분석 중"})
     audio_df = _get_audio_features(video_path, fps)
     if audio_df is not None:
         detections_df = pd.merge(detections_df, audio_df, on="frame", how="left").fillna(0)
     else:
         detections_df["f_audio"] = 0.0
 
+    if progress_callback:
+        progress_callback({"phase": "scoring", "percent": 74, "detail": "하이라이트 점수 계산 중"})
     calculator = XHScoreCalculator(XH_WEIGHTS, fps, xgb_model)
     xh_df = calculator.calculate_xh_score(detections_df)
 
+    if progress_callback:
+        progress_callback({"phase": "selecting_clips", "percent": 78, "detail": "하이라이트 구간 선택 중"})
     extractor = _HighlightExtractor(fps)
     highlight_frames = extractor.extract_auto(xh_df, highlight_count, MIN_SECONDS_BETWEEN_CLIPS, exclude_intervals)
     if not highlight_frames:
         return HighlightRunResult(False, "하이라이트 구간을 찾지 못했습니다.")
 
-    clip_paths = _create_clips(video_path, highlight_frames, fps, output_dir)
+    if progress_callback:
+        progress_callback({"phase": "creating_clips", "percent": 80, "detail": "클립 생성 시작"})
+    clip_paths = _create_clips(video_path, highlight_frames, fps, output_dir, progress_callback)
 
     _RULE_CONTRIB = {
         "inv_dist_centroid_masked": 0.35,
@@ -708,6 +733,7 @@ def run_log_pipeline(
     target_count: int = 40,
     yolo_model: Any = None,
     xgb_model: Any = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> LogExtractResult:
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -722,6 +748,9 @@ def run_log_pipeline(
     events_meta: list[dict] = []
 
     for i, ev in enumerate(events):
+        if progress_callback:
+            pct = 5 + int((i / max(len(events), 1)) * 20)
+            progress_callback({"phase": "creating_log_clips", "percent": pct, "detail": f"로그 클립 생성 {i + 1}/{len(events)}"})
         start = max(0.0, ev.video_sec - LOG_CLIP_MINUTE_SPAN - LOG_CLIP_BEFORE)
         end = ev.video_sec + LOG_CLIP_AFTER
         if video_duration:
@@ -768,6 +797,7 @@ def run_log_pipeline(
                 xgb_model=xgb_model,
                 highlight_count=remaining,
                 exclude_intervals=exclude_intervals,
+                progress_callback=progress_callback,
             )
             if ai_result.success and ai_result.clip_paths:
                 for p in ai_result.clip_paths:
