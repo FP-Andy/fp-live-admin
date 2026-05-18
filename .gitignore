@@ -24,6 +24,14 @@ infra/app/certbot/conf/
 
 # Local exports, throwaway bundles, and uploaded runtime data
 runtime/
+
+# BGM audio files — deploy manually to /app/runtime/highlight/bgm/ on server
+*.mp3
+*.wav
+*.ogg
+*.m4a
+*.aac
+*.flac
 docs/backups/
 docs/html-export/
 FPA_Streamlit_App-main/

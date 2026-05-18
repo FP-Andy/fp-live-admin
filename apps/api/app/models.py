@@ -209,6 +209,7 @@ class HighlightJob(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="uploading", index=True)
     mode: Mapped[str] = mapped_column(String, nullable=False, default="ai")  # "ai" | "log_ai"
     original_filename: Mapped[str] = mapped_column(String, nullable=False, default="")
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
     upload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     clips_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
     export_path: Mapped[str | None] = mapped_column(Text, nullable=True)

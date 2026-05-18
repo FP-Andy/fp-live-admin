@@ -45,7 +45,19 @@ const FHL_ITEMS: NavItem[] = [
     href: '/admin/highlight',
     label: 'Highlight',
     icon: '▶',
-    match: (pathname) => pathname.startsWith('/admin/highlight'),
+    match: (pathname) => pathname === '/admin/highlight' || (pathname.startsWith('/admin/highlight') && !pathname.startsWith('/admin/highlight/editor')),
+  },
+  {
+    href: '/admin/highlight/editor',
+    label: 'Editor',
+    icon: '✂',
+    match: (pathname) => pathname.startsWith('/admin/highlight/editor'),
+  },
+  {
+    href: '/admin/highlight/files',
+    label: 'Files',
+    icon: '◫',
+    match: (pathname) => pathname.startsWith('/admin/highlight/files'),
   },
 ];
 
@@ -113,6 +125,12 @@ function getPageMeta(pathname: string) {
   }
   if (pathname.startsWith('/admin/media')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Media' };
+  }
+  if (pathname.startsWith('/admin/highlight/editor')) {
+    return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Editor' };
+  }
+  if (pathname.startsWith('/admin/highlight/files')) {
+    return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Files' };
   }
   if (pathname.startsWith('/admin/highlight')) {
     return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Highlight' };

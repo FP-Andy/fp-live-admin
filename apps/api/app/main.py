@@ -95,6 +95,9 @@ FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "/app/models/best-8.pt")
 XGB_MODEL_PATH = os.getenv("XGB_MODEL_PATH", "/app/models/highlight_model.xgb")
+HIGHLIGHT_BGM_DIR = Path(os.getenv("HIGHLIGHT_BGM_DIR", str(HIGHLIGHT_RUNTIME_DIR / "bgm")))
+HIGHLIGHT_BGM_DIR.mkdir(parents=True, exist_ok=True)
+_BGM_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 
 _yolo_model: object | None = None
 _xgb_model: object | None = None
@@ -219,6 +222,11 @@ def _ensure_runtime_schema() -> None:
             cols = index.get("column_names") or []
             if index.get("unique") and cols == ["match_id"] and index.get("name"):
                 unique_match_index_names.append(index["name"])
+
+    if "highlight_jobs" in table_names:
+        hl_columns = {col["name"] for col in inspector.get_columns("highlight_jobs")}
+        if "display_name" not in hl_columns:
+            statements.append("ALTER TABLE highlight_jobs ADD COLUMN display_name VARCHAR NULL")
 
     if not statements and not unique_match_constraint_names and not unique_match_index_names:
         return
@@ -3902,6 +3910,8 @@ def _serialize_hl_job(job: HighlightJob) -> dict:
         "status": job.status,
         "mode": job.mode,
         "original_filename": job.original_filename,
+        "display_name": job.display_name or None,
+        "export_path": job.export_path or None,
         "error_message": job.error_message,
         "job_metadata": job.job_metadata or {},
         "created_at": job.created_at.isoformat(),
@@ -4079,6 +4089,7 @@ async def create_highlight_job(
     highlight_count: int = Form(40),
     second_half_start_sec: float = Form(0.0),
     log_data_json: str = Form("[]"),
+    display_name: str = Form(""),
     db: Session = Depends(get_db),
     _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
 ):
@@ -4101,6 +4112,7 @@ async def create_highlight_job(
         status="queued",
         mode=mode,
         original_filename=video.filename or "video.mp4",
+        display_name=display_name.strip() or None,
         upload_path=str(upload_path),
     )
     db.add(job)
@@ -4169,6 +4181,108 @@ def serve_highlight_clip(
     return FileResponse(str(clip_path), media_type="video/mp4")
 
 
+def _hl_apply_transitions(clips: list, t: float) -> tuple[list, float]:
+    if t <= 0 or len(clips) <= 1:
+        return clips, 0.0
+    from moviepy import vfx
+    min_dur = min(c.duration for c in clips)
+    t = min(t, min_dur / 2.5)
+    result = []
+    for i, clip in enumerate(clips):
+        effects = []
+        if i > 0:
+            effects.append(vfx.CrossFadeIn(t))
+        if i < len(clips) - 1:
+            effects.append(vfx.CrossFadeOut(t))
+        result.append(clip.with_effects(effects) if effects else clip)
+    return result, -t
+
+
+def _hl_mix_bgm(merged_clip, bgm_name: str, bgm_volume: float):
+    bgm_path = HIGHLIGHT_BGM_DIR / bgm_name
+    if not bgm_path.exists() or bgm_path.suffix.lower() not in _BGM_EXTENSIONS:
+        return merged_clip
+    from moviepy import AudioFileClip, CompositeAudioClip, concatenate_audioclips, vfx
+    total_dur = merged_clip.duration
+    bgm_raw = AudioFileClip(str(bgm_path))
+    if bgm_raw.duration < total_dur:
+        loops = int(total_dur / bgm_raw.duration) + 1
+        bgm_raw = concatenate_audioclips([bgm_raw] * loops)
+    bgm_clip = bgm_raw.subclipped(0, total_dur)
+    fade_dur = min(2.0, total_dur * 0.1)
+    bgm_clip = bgm_clip.with_effects([vfx.AudioFadeOut(fade_dur)])
+    bgm_clip = bgm_clip.with_volume_scaled(max(0.0, min(bgm_volume, 2.0)))
+    if merged_clip.audio is not None:
+        mixed = CompositeAudioClip([merged_clip.audio, bgm_clip])
+    else:
+        mixed = bgm_clip
+    return merged_clip.with_audio(mixed)
+
+
+@app.get("/api/highlight/bgm")
+def list_highlight_bgm(
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    tracks = sorted(
+        f.name for f in HIGHLIGHT_BGM_DIR.iterdir()
+        if f.is_file() and f.suffix.lower() in _BGM_EXTENSIONS
+    )
+    return {"tracks": tracks}
+
+
+@app.post("/api/highlight/jobs/{job_id}/clips/{clip_name}/trim")
+def trim_highlight_clip(
+    job_id: str,
+    clip_name: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if "/" in clip_name or "\\" in clip_name:
+        raise HTTPException(status_code=400, detail="Invalid clip name")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    clip_path = _hl_clips_dir(job_id) / clip_name
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    start = max(0.0, float(body.get("start", 0.0)))
+    end = float(body.get("end", 0.0))
+
+    from moviepy import VideoFileClip
+    video = VideoFileClip(str(clip_path))
+    if end <= 0 or end > video.duration:
+        end = video.duration
+    if start >= end:
+        video.close()
+        raise HTTPException(status_code=400, detail="start must be less than end")
+
+    try:
+        try:
+            clip = video.subclipped(start, end)
+        except AttributeError:
+            clip = video.subclip(start, end)
+        clip.write_videofile(
+            str(clip_path), codec="libx264", audio_codec="aac",
+            temp_audiofile=f"temp-trim-{job_id}.m4a", remove_temp=True, logger=None,
+        )
+    finally:
+        video.close()
+
+    meta = dict(job.job_metadata or {})
+    trimmed = dict(meta.get("trimmed", {}))
+    trimmed[clip_name] = {"start": round(start, 2), "end": round(end, 2)}
+    meta["trimmed"] = trimmed
+    _hl_update_job(db, job_id, job_metadata=meta)
+    return {"ok": True, "clip_name": clip_name, "start": start, "end": end}
+
+
 @app.post("/api/highlight/jobs/{job_id}/export")
 def export_highlight_job(
     job_id: str,
@@ -4185,9 +4299,19 @@ def export_highlight_job(
         raise HTTPException(status_code=409, detail="Job is not completed yet")
 
     selected: list[str] = body.get("selected", [])
-    order: list[str] = body.get("order", selected)
+    order: list[str] = body.get("order", [])
+    transition_sec = max(0.0, min(float(body.get("transition_sec", 0.5)), 1.5))
+    audio_volume = max(0.0, min(float(body.get("audio_volume", 1.0)), 2.0))
+    bgm_name: str = body.get("bgm_name", "")
+    bgm_volume = max(0.0, min(float(body.get("bgm_volume", 0.3)), 2.0))
+
     if not selected:
         raise HTTPException(status_code=400, detail="No clips selected")
+
+    # 순서 미지정 시 clip_timestamps.start 기준 시간순 정렬
+    if not order:
+        ts = (job.job_metadata or {}).get("clip_timestamps") or {}
+        order = sorted(selected, key=lambda n: ts.get(n, {}).get("start", float("inf")))
 
     clips_dir = _hl_clips_dir(job_id)
     clip_paths = []
@@ -4209,7 +4333,12 @@ def export_highlight_job(
     try:
         from moviepy import VideoFileClip, concatenate_videoclips
         clips = [VideoFileClip(p) for p in clip_paths]
-        merged = concatenate_videoclips(clips)
+        transition_clips, padding = _hl_apply_transitions(clips, transition_sec)
+        merged = concatenate_videoclips(transition_clips, padding=padding, method="compose")
+        if audio_volume != 1.0 and merged.audio is not None:
+            merged = merged.with_volume_scaled(audio_volume)
+        if bgm_name:
+            merged = _hl_mix_bgm(merged, bgm_name, bgm_volume)
         merged.write_videofile(str(export_path), codec="libx264", audio_codec="aac",
                                temp_audiofile=f"temp-audio-export-{job_id}.m4a",
                                remove_temp=True, logger=None)
@@ -4244,6 +4373,185 @@ def download_highlight_export(
                          headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+def _hl_image_cards_dir(job_id: str) -> Path:
+    d = _hl_job_dir(job_id) / "image_cards"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+_IMAGE_CARD_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+
+
+@app.post("/api/highlight/jobs/{job_id}/image-cards")
+async def upload_highlight_image_card(
+    job_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not db.get(HighlightJob, job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일이 없습니다.")
+    safe_name = Path(file.filename).name
+    if Path(safe_name).suffix.lower() not in _IMAGE_CARD_EXTS:
+        raise HTTPException(status_code=400, detail="이미지 파일만 가능합니다 (jpg/png/gif/bmp/webp).")
+    saved = _hl_image_cards_dir(job_id) / safe_name
+    import shutil as _shutil2
+    with saved.open("wb") as f:
+        _shutil2.copyfileobj(file.file, f)
+    return {"ok": True, "name": safe_name}
+
+
+@app.get("/api/highlight/jobs/{job_id}/image-cards")
+def list_highlight_image_cards(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not db.get(HighlightJob, job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    d = _hl_image_cards_dir(job_id)
+    cards = sorted(f.name for f in d.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_CARD_EXTS)
+    return {"cards": cards}
+
+
+@app.get("/api/highlight/jobs/{job_id}/image-cards/{filename}")
+def serve_highlight_image_card(
+    job_id: str,
+    filename: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    p = _hl_image_cards_dir(job_id) / filename
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Image card not found")
+    return FileResponse(str(p))
+
+
+@app.post("/api/highlight/jobs/{job_id}/export/timeline")
+def export_highlight_timeline(
+    job_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """타임라인 (영상 클립 + 이미지 카드 혼합) → 최종 영상 합치기."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    timeline: list[dict] = body.get("timeline", [])
+    if not timeline:
+        raise HTTPException(status_code=400, detail="타임라인이 비어 있습니다.")
+
+    transition_sec = max(0.0, min(float(body.get("transition_sec", 0.5)), 1.5))
+    audio_volume = max(0.0, min(float(body.get("audio_volume", 1.0)), 2.0))
+    bgm_name: str = body.get("bgm_name", "")
+    bgm_volume = max(0.0, min(float(body.get("bgm_volume", 0.3)), 2.0))
+
+    from moviepy import VideoFileClip, ImageClip, concatenate_videoclips
+
+    # 첫 번째 영상 클립에서 해상도·fps 결정
+    video_size = None
+    fps = 30.0
+    for item in timeline:
+        if item.get("type") == "clip":
+            p = _hl_clips_dir(job_id) / item["name"]
+            if p.exists():
+                tmp = VideoFileClip(str(p))
+                video_size = tmp.size
+                fps = float(tmp.fps or 30.0)
+                tmp.close()
+                break
+
+    if video_size is None:
+        raise HTTPException(status_code=400, detail="영상 클립이 최소 1개 필요합니다.")
+
+    final_clips: list = []
+    try:
+        for item in timeline:
+            itype = item.get("type")
+            name = item.get("name", "")
+            if "/" in name or "\\" in name:
+                raise HTTPException(status_code=400, detail=f"잘못된 파일명: {name}")
+
+            if itype == "clip":
+                p = _hl_clips_dir(job_id) / name
+                if not p.exists():
+                    raise HTTPException(status_code=404, detail=f"클립 없음: {name}")
+                final_clips.append(VideoFileClip(str(p)))
+
+            elif itype == "image":
+                p = _hl_image_cards_dir(job_id) / name
+                if not p.exists():
+                    raise HTTPException(status_code=404, detail=f"이미지 없음: {name}")
+                duration = max(0.5, min(float(item.get("duration", 3.0)), 60.0))
+                img_clip = ImageClip(str(p), duration=duration)
+                try:
+                    img_clip = img_clip.resized(video_size)
+                except AttributeError:
+                    img_clip = img_clip.resize(video_size)
+                img_clip = img_clip.with_fps(fps)
+                final_clips.append(img_clip)
+            else:
+                raise HTTPException(status_code=400, detail=f"알 수 없는 타입: {itype}")
+
+        transition_clips, padding = _hl_apply_transitions(final_clips, transition_sec)
+        merged = concatenate_videoclips(transition_clips, padding=padding, method="compose")
+
+        if audio_volume != 1.0 and merged.audio is not None:
+            merged = merged.with_volume_scaled(audio_volume)
+        if bgm_name:
+            merged = _hl_mix_bgm(merged, bgm_name, bgm_volume)
+
+        exports_dir = HIGHLIGHT_RUNTIME_DIR / "exports"
+        exports_dir.mkdir(exist_ok=True)
+        export_path = exports_dir / f"{job_id}_timeline.mp4"
+        merged.write_videofile(
+            str(export_path), codec="libx264", audio_codec="aac",
+            temp_audiofile=f"temp-timeline-{job_id}.m4a", remove_temp=True, logger=None,
+        )
+        merged.close()
+    finally:
+        for c in final_clips:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    _hl_update_job(db, job_id, export_path=str(export_path))
+    return {"ok": True, "export_ready": True}
+
+
+@app.patch("/api/highlight/jobs/{job_id}/display-name")
+def rename_highlight_job(
+    job_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    name = (body.get("display_name") or "").strip() or None
+    job.display_name = name
+    db.commit()
+    return {"ok": True, "display_name": job.display_name}
+
+
 @app.delete("/api/highlight/jobs/{job_id}")
 def delete_highlight_job(
     job_id: str,
@@ -4274,4 +4582,45 @@ def delete_highlight_job(
 
     db.delete(job)
     db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/highlight/jobs/{job_id}/clips/{clip_name}")
+def delete_highlight_clip(
+    job_id: str,
+    clip_name: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    clip_path = _hl_clips_dir(job_id) / clip_name
+    clip_path.unlink(missing_ok=True)
+    meta = dict(job.job_metadata or {})
+    clips = [c for c in (meta.get("clips") or []) if c != clip_name]
+    meta["clips"] = clips
+    _hl_update_job(db, job_id, job_metadata=meta)
+    return {"ok": True}
+
+
+@app.delete("/api/highlight/jobs/{job_id}/export")
+def delete_highlight_export(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.export_path:
+        try:
+            Path(job.export_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        _hl_update_job(db, job_id, export_path=None)
     return {"ok": True}
