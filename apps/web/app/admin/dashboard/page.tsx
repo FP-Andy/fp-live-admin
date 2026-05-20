@@ -136,6 +136,7 @@ export default function Dashboard() {
   const [activePage, setActivePage] = useState(1);
   const [archivedPage, setArchivedPage] = useState(1);
   const [isClassModalOpen, setIsClassModalOpen] = useState(false);
+  const [classModalMode, setClassModalMode] = useState<'create' | 'edit'>('create');
   const [newClassCode, setNewClassCode] = useState('');
   const [newClassName, setNewClassName] = useState('');
   const [newClassFirstHalf, setNewClassFirstHalf] = useState(45);
@@ -243,6 +244,12 @@ export default function Dashboard() {
     setAwayTeam('');
   };
 
+  const openCompetitionClassModal = () => {
+    setClassModalMode('create');
+    setClassModalError('');
+    setIsClassModalOpen(true);
+  };
+
   const createCompetitionClass = async () => {
     const code = newClassCode.trim().toUpperCase();
     const name = newClassName.trim() || code;
@@ -281,11 +288,12 @@ export default function Dashboard() {
   };
 
   const startEditCompetitionClass = (item: CompetitionClass) => {
+    setClassModalError('');
+    setClassModalMode('edit');
     setEditingClassCode(item.code);
     setEditingClassName(item.name);
     setEditingClassFirstHalf(item.first_half_minutes);
     setEditingClassSecondHalf(item.second_half_minutes);
-    setClassModalError('');
   };
 
   const cancelEditCompetitionClass = () => {
@@ -293,15 +301,18 @@ export default function Dashboard() {
     setEditingClassName('');
     setEditingClassFirstHalf(45);
     setEditingClassSecondHalf(45);
+    setClassModalError('');
+  };
+
+  const switchCompetitionClassMode = (mode: 'create' | 'edit') => {
+    setClassModalMode(mode);
+    setClassModalError('');
+    if (mode === 'create') cancelEditCompetitionClass();
   };
 
   const updateCompetitionClass = async () => {
     if (!editingClassCode) return;
-    const name = editingClassName.trim();
-    if (!name) {
-      setClassModalError('표시 이름을 입력하세요.');
-      return;
-    }
+    const name = editingClassName.trim() || editingClassCode;
     setClassModalError('');
 
     const response = await apiFetch(`/competition-classes/${encodeURIComponent(editingClassCode)}`, {
@@ -530,7 +541,7 @@ export default function Dashboard() {
                   <div className="sidebar-eyebrow">Create Match</div>
                   <h3>{sport === 'BASKETBALL' ? '농구 경기 등록' : '새 경기 등록'}</h3>
                 </div>
-                {sport === 'FOOTBALL' ? <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(true)}>
+                {sport === 'FOOTBALL' ? <button className="button-compact btn-secondary" onClick={openCompetitionClassModal}>
                   대회 관리
                 </button> : null}
               </div>
@@ -872,122 +883,149 @@ export default function Dashboard() {
               <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(false)}>닫기</button>
             </div>
 
-            <div className="sidebar-eyebrow">Create</div>
-            <div className="competition-modal-grid">
-              <div className="field-stack">
-                <div className="field-label">대회 코드</div>
-                <input
-                  value={newClassCode}
-                  onChange={(e) => setNewClassCode(e.target.value.toUpperCase())}
-                  placeholder="예: SUFA-C"
-                />
-              </div>
-              <div className="field-stack">
-                <div className="field-label">표시 이름</div>
-                <input
-                  value={newClassName}
-                  onChange={(e) => setNewClassName(e.target.value)}
-                  placeholder="예: SUFA-C"
-                />
-              </div>
-              <div className="field-stack">
-                <div className="field-label">전반 시간(분)</div>
-                <input
-                  min={1}
-                  max={120}
-                  step={1}
-                  type="number"
-                  value={newClassFirstHalf}
-                  onChange={(e) => setNewClassFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
-                />
-              </div>
-              <div className="field-stack">
-                <div className="field-label">후반 시간(분)</div>
-                <input
-                  min={1}
-                  max={120}
-                  step={1}
-                  type="number"
-                  value={newClassSecondHalf}
-                  onChange={(e) => setNewClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
-                />
-              </div>
+            <div className="fpa-segmented competition-modal-tabs">
+              <button
+                className={classModalMode === 'create' ? 'active' : ''}
+                onClick={() => switchCompetitionClassMode('create')}
+              >
+                생성
+              </button>
+              <button
+                className={classModalMode === 'edit' ? 'active' : ''}
+                onClick={() => switchCompetitionClassMode('edit')}
+              >
+                편집
+              </button>
             </div>
 
-            <div className="row hero-actions-compact">
-              <button className="btn-primary" onClick={createCompetitionClass}>Create Competition</button>
+            <div className="competition-modal-body">
+              {classModalMode === 'create' ? (
+                <div className="competition-modal-section">
+                  <div className="competition-modal-grid">
+                    <div className="field-stack">
+                      <div className="field-label">대회 코드</div>
+                      <input
+                        value={newClassCode}
+                        onChange={(e) => setNewClassCode(e.target.value.toUpperCase())}
+                        placeholder="예: SUFA-C"
+                      />
+                    </div>
+                    <div className="field-stack">
+                      <div className="field-label">표시 이름</div>
+                      <input
+                        value={newClassName}
+                        onChange={(e) => setNewClassName(e.target.value)}
+                        placeholder="예: SUFA-C"
+                      />
+                    </div>
+                    <div className="field-stack">
+                      <div className="field-label">전반 시간(분)</div>
+                      <input
+                        min={1}
+                        max={120}
+                        step={1}
+                        type="number"
+                        value={newClassFirstHalf}
+                        onChange={(e) => setNewClassFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                      />
+                    </div>
+                    <div className="field-stack">
+                      <div className="field-label">후반 시간(분)</div>
+                      <input
+                        min={1}
+                        max={120}
+                        step={1}
+                        type="number"
+                        value={newClassSecondHalf}
+                        onChange={(e) => setNewClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                      />
+                    </div>
+                  </div>
+
+                  {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
+                  <div className="row hero-actions-compact">
+                    <button className="btn-primary" onClick={createCompetitionClass}>Create Competition</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="competition-modal-section">
+                  <div className="fcm-guide-table-wrap competition-class-table-wrap">
+                    <table className="fcm-guide-table competition-class-table">
+                      <thead>
+                        <tr>
+                          <th>코드</th>
+                          <th>이름</th>
+                          <th>시간</th>
+                          <th>관리</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {competitionOptions.map((item) => (
+                          <tr key={item.code}>
+                            <td>{item.code}</td>
+                            <td>{item.name}</td>
+                            <td>{item.first_half_minutes} / {item.second_half_minutes}분</td>
+                            <td>
+                              <button className="button-compact btn-secondary" onClick={() => startEditCompetitionClass(item)}>
+                                수정
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {editingClassCode ? (
+                    <div className="competition-edit-panel">
+                      <div className="section-heading">
+                        <div>
+                          <div className="sidebar-eyebrow">{editingClassCode}</div>
+                          <h3>대회 정보 수정</h3>
+                        </div>
+                        <button className="button-compact btn-secondary" onClick={cancelEditCompetitionClass}>취소</button>
+                      </div>
+                      <div className="competition-modal-grid">
+                        <div className="field-stack">
+                          <div className="field-label">표시 이름</div>
+                          <input
+                            value={editingClassName}
+                            onChange={(e) => setEditingClassName(e.target.value)}
+                          />
+                        </div>
+                        <div className="field-stack">
+                          <div className="field-label">전반 시간(분)</div>
+                          <input
+                            min={1}
+                            max={120}
+                            step={1}
+                            type="number"
+                            value={editingClassFirstHalf}
+                            onChange={(e) => setEditingClassFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                          />
+                        </div>
+                        <div className="field-stack">
+                          <div className="field-label">후반 시간(분)</div>
+                          <input
+                            min={1}
+                            max={120}
+                            step={1}
+                            type="number"
+                            value={editingClassSecondHalf}
+                            onChange={(e) => setEditingClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                          />
+                        </div>
+                        <div className="field-stack" style={{ justifyContent: 'end' }}>
+                          <button className="btn-primary" onClick={updateCompetitionClass}>Save Changes</button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
+                </div>
+              )}
             </div>
-
-            <div className="sidebar-eyebrow" style={{ marginTop: 16 }}>Edit</div>
-            <div className="fcm-guide-table-wrap">
-              <table className="fcm-guide-table">
-                <thead>
-                  <tr>
-                    <th>코드</th>
-                    <th>표시 이름</th>
-                    <th>전반</th>
-                    <th>후반</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {competitionOptions.map((item) => (
-                    <tr key={item.code}>
-                      <td>{item.code}</td>
-                      <td>{item.name}</td>
-                      <td>{item.first_half_minutes}분</td>
-                      <td>{item.second_half_minutes}분</td>
-                      <td>
-                        <button className="button-compact btn-secondary" onClick={() => startEditCompetitionClass(item)}>
-                          수정
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {editingClassCode ? (
-              <div className="competition-modal-grid">
-                <div className="field-stack">
-                  <div className="field-label">수정 대상</div>
-                  <input value={editingClassCode} readOnly />
-                </div>
-                <div className="field-stack">
-                  <div className="field-label">표시 이름</div>
-                  <input value={editingClassName} onChange={(e) => setEditingClassName(e.target.value)} />
-                </div>
-                <div className="field-stack">
-                  <div className="field-label">전반 시간(분)</div>
-                  <input
-                    min={1}
-                    max={120}
-                    step={1}
-                    type="number"
-                    value={editingClassFirstHalf}
-                    onChange={(e) => setEditingClassFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
-                  />
-                </div>
-                <div className="field-stack">
-                  <div className="field-label">후반 시간(분)</div>
-                  <input
-                    min={1}
-                    max={120}
-                    step={1}
-                    type="number"
-                    value={editingClassSecondHalf}
-                    onChange={(e) => setEditingClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
-                  />
-                </div>
-                <div className="row hero-actions-compact">
-                  <button className="btn-primary" onClick={updateCompetitionClass}>Save Changes</button>
-                  <button className="btn-secondary" onClick={cancelEditCompetitionClass}>Cancel</button>
-                </div>
-              </div>
-            ) : null}
-
-            {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
           </div>
         </div>
       ) : null}
