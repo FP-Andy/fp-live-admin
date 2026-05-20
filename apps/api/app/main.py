@@ -1,6 +1,6 @@
 import asyncio
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import io
@@ -11,6 +11,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 from fastapi import Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
@@ -46,6 +47,7 @@ from .schemas import (
     AttachSrtRequest,
     CompetitionClassCreateRequest,
     CompetitionClassResponse,
+    CompetitionClassUpdateRequest,
     CreateMatchRequest,
     IngestProtocol,
     LineupManualPlayerDeleteRequest,
@@ -158,6 +160,8 @@ def _ensure_runtime_schema() -> None:
 
     if "role" not in user_columns:
         statements.append("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'OPERATOR'")
+    if "sport" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN sport VARCHAR NOT NULL DEFAULT 'FOOTBALL'")
     if "competition_class" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN competition_class VARCHAR NOT NULL DEFAULT 'K3'")
     if "round_number" not in match_columns:
@@ -795,9 +799,16 @@ def _estimate_xgot(
     }
 
 
-def _serialize_match(row: Match) -> dict:
+def _normalize_sport(value: str | None) -> str:
+    normalized = (value or "FOOTBALL").strip().upper()
+    if normalized not in {"FOOTBALL", "BASKETBALL"}:
+        raise HTTPException(status_code=400, detail="sport must be FOOTBALL or BASKETBALL")
+    return normalized
+
+
+def _serialize_match(row: Match, include_sport: bool = True) -> dict:
     default_first_half, default_second_half = _default_half_minutes_for_class(row.competition_class)
-    return {
+    payload = {
         "id": row.id,
         "name": row.name,
         "competition_class": _normalize_competition_class(row.competition_class),
@@ -811,6 +822,23 @@ def _serialize_match(row: Match) -> dict:
         "metadata": row.metadata_json,
         "operator_id": row.operator_id,
     }
+    if include_sport:
+        payload["sport"] = _normalize_sport(getattr(row, "sport", None))
+    return payload
+
+
+def _require_football_match_for_partner(match_id: UUID, db: Session) -> Match:
+    row = db.get(Match, match_id)
+    if not row or _normalize_sport(getattr(row, "sport", None)) != "FOOTBALL":
+        raise HTTPException(status_code=404, detail="Match not found")
+    return row
+
+
+def _require_basketball_match_for_partner(match_id: UUID, db: Session) -> Match:
+    row = db.get(Match, match_id)
+    if not row or _normalize_sport(getattr(row, "sport", None)) != "BASKETBALL":
+        raise HTTPException(status_code=404, detail="Match not found")
+    return row
 
 
 def _serialize_fcm_submission(row: FcmSubmission) -> dict:
@@ -1122,6 +1150,173 @@ def _enqueue_webhook_fanout(db: Session, kind: str, ref_id: UUID, payload: dict)
 
     for target in targets:
         enqueue_outbox(db, kind, ref_id, target, payload)
+
+
+def _serialize_webhook_subscription(row: WebhookSubscription) -> dict:
+    return {
+        "id": str(row.id),
+        "callback_url": row.callback_url,
+        "events": row.events or [],
+        "active": row.active,
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _basketball_fla_state(match_obj: Match) -> dict:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    state = metadata.get("basketball_fla") if isinstance(metadata.get("basketball_fla"), dict) else {}
+    return state
+
+
+def _basketball_events(match_obj: Match) -> list[dict]:
+    events = _basketball_fla_state(match_obj).get("events")
+    return events if isinstance(events, list) else []
+
+
+def _basketball_lineups(match_obj: Match) -> dict:
+    state_lineups = _basketball_fla_state(match_obj).get("lineups")
+    if isinstance(state_lineups, dict):
+        return {
+            "HOME": state_lineups.get("HOME") if isinstance(state_lineups.get("HOME"), list) else [],
+            "AWAY": state_lineups.get("AWAY") if isinstance(state_lineups.get("AWAY"), list) else [],
+        }
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    teams = metadata.get("lineups", {}).get("teams", {}) if isinstance(metadata.get("lineups"), dict) else {}
+    return {
+        "HOME": teams.get("HOME") if isinstance(teams.get("HOME"), list) else [],
+        "AWAY": teams.get("AWAY") if isinstance(teams.get("AWAY"), list) else [],
+    }
+
+
+def _basketball_timer(match_obj: Match) -> dict:
+    state_timer = _basketball_fla_state(match_obj).get("timer")
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    period_count = int(metadata.get("period_count") or 4)
+    period_minutes = int(metadata.get("period_minutes") or 10)
+    if isinstance(state_timer, dict):
+        return {
+            "period": int(state_timer.get("period") or 1),
+            "clock": str(state_timer.get("clock") or f"{period_minutes:02d}:00"),
+            "running": bool(state_timer.get("running") or False),
+            "period_count": period_count,
+            "period_minutes": period_minutes,
+        }
+    return {
+        "period": 1,
+        "clock": f"{period_minutes:02d}:00",
+        "running": False,
+        "period_count": period_count,
+        "period_minutes": period_minutes,
+    }
+
+
+def _basketball_score(events: list[dict]) -> dict:
+    if not events:
+        return {"home": 0, "away": 0}
+    last = events[-1] if isinstance(events[-1], dict) else {}
+    return {"home": int(last.get("homeScoreAfter") or 0), "away": int(last.get("awayScoreAfter") or 0)}
+
+
+def _basketball_rebound_stats(events: list[dict]) -> dict:
+    stats = {
+        "HOME": {"ar": 0, "dr": 0, "ra": 0},
+        "AWAY": {"ar": 0, "dr": 0, "ra": 0},
+    }
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "REBOUND":
+            continue
+        team = event.get("team")
+        rebound_type = event.get("reboundType")
+        allowed_team = event.get("reboundAllowedTeam")
+        if team in stats and rebound_type == "AR":
+            stats[team]["ar"] += 1
+        if team in stats and rebound_type == "DR":
+            stats[team]["dr"] += 1
+        if allowed_team in stats:
+            stats[allowed_team]["ra"] += 1
+    return stats
+
+
+def _basketball_event_created_at(event: dict) -> str | None:
+    raw = event.get("timestamp")
+    try:
+        return datetime.utcfromtimestamp(float(raw) / 1000.0).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _serialize_basketball_event(match_id: UUID, event: dict, sequence: int) -> dict:
+    if not isinstance(event, dict):
+        event = {}
+    event_id = str(event.get("id") or "")
+    event_type = str(event.get("type") or "")
+    return {
+        "sequence": sequence,
+        "event_id": event_id,
+        "match_id": str(match_id),
+        "sport": "BASKETBALL",
+        "type": event_type,
+        "team": event.get("team"),
+        "player_number": event.get("playerNumber"),
+        "period": event.get("period"),
+        "clock": event.get("clock"),
+        "timestamp": event.get("timestamp"),
+        "created_at": _basketball_event_created_at(event),
+        "zone_id": event.get("zoneId"),
+        "shot_result": event.get("shotResult"),
+        "points": event.get("points"),
+        "rebound_type": event.get("reboundType"),
+        "rebound_allowed_team": event.get("reboundAllowedTeam"),
+        "x": event.get("x"),
+        "y": event.get("y"),
+        "home_score_after": int(event.get("homeScoreAfter") or 0),
+        "away_score_after": int(event.get("awayScoreAfter") or 0),
+        "margin_after": int(event.get("marginAfter") or 0),
+    }
+
+
+def _build_basketball_state(match_obj: Match) -> dict:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    events = _basketball_events(match_obj)
+    score = _basketball_score(events)
+    last_event = _serialize_basketball_event(match_obj.id, events[-1], len(events)) if events else None
+    return {
+        "match_id": str(match_obj.id),
+        "sport": "BASKETBALL",
+        "name": match_obj.name,
+        "home": {"name": metadata.get("home_team") or "HOME", "score": score["home"]},
+        "away": {"name": metadata.get("away_team") or "AWAY", "score": score["away"]},
+        "timer": _basketball_timer(match_obj),
+        "lineups": _basketball_lineups(match_obj),
+        "stats": {"rebounds": _basketball_rebound_stats(events)},
+        "event_count": len(events),
+        "last_event": last_event,
+        "updated_at": _basketball_fla_state(match_obj).get("updated_at"),
+    }
+
+
+def _build_basketball_margin_flow(match_obj: Match) -> dict:
+    events = _basketball_events(match_obj)
+    points = []
+    for sequence, event in enumerate(events, start=1):
+        if not isinstance(event, dict) or event.get("type") != "SHOT" or event.get("shotResult") != "MADE":
+            continue
+        points.append(
+            {
+                "sequence": sequence,
+                "event_id": str(event.get("id") or ""),
+                "team": event.get("team"),
+                "period": event.get("period"),
+                "clock": event.get("clock"),
+                "points": event.get("points"),
+                "home_score_after": int(event.get("homeScoreAfter") or 0),
+                "away_score_after": int(event.get("awayScoreAfter") or 0),
+                "margin_after": int(event.get("marginAfter") or 0),
+                "created_at": _basketball_event_created_at(event),
+            }
+        )
+    return {"match_id": str(match_obj.id), "points": points}
 
 
 def _build_dominance_annotations(
@@ -1725,6 +1920,14 @@ def _parse_iso_dt(value: str | None) -> datetime | None:
         return datetime.fromisoformat(raw)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail="Invalid 'since' ISO datetime") from ex
+
+
+def _as_naive_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _fmt_clock_ms(ms: int) -> str:
@@ -2376,8 +2579,11 @@ def export_fpa_saved_logs(match_id: UUID, db: Session = Depends(get_db), _user: 
 
 
 @app.get("/api/data-hub/matches")
-def list_data_hub_matches(db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
-    matches = db.query(Match).order_by(desc(Match.created_at)).all()
+def list_data_hub_matches(sport: str | None = Query(default=None), db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    query = db.query(Match)
+    if sport:
+        query = query.filter(Match.sport == _normalize_sport(sport))
+    matches = query.order_by(desc(Match.created_at)).all()
     fpa_ids = {str(row.match_id) for row in db.query(FpaSavedLog).all() if row.logs}
     return [
         {
@@ -2713,6 +2919,116 @@ def list_competition_classes(db: Session = Depends(get_db)):
     return [_serialize_competition_class(row) for row in rows]
 
 
+@app.get("/api/basketball/court.svg")
+def basketball_court_svg(
+    court_type: str = Query(default="nba", pattern="^(nba|wnba|ncaa|fiba)$"),
+    orientation: str = Query(default="vu", pattern="^(v|h|hl|hr|vu|vd)$"),
+):
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+        from mplbasketball import Court
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"mplbasketball unavailable: {ex}") from ex
+
+    court = Court(court_type=court_type, origin="top-left", units="ft")
+    fig, ax = court.draw(
+        orientation=orientation,
+        showaxis=False,
+        court_color="#d6a24f",
+        paint_color="none",
+        line_color="white",
+        line_width=0.22,
+        pad=0,
+    )
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    output = io.StringIO()
+    fig.savefig(output, format="svg", bbox_inches="tight", pad_inches=0, transparent=True)
+    plt.close(fig)
+    svg = output.getvalue()
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.get("/api/matches/{match_id}/basketball-state")
+def get_basketball_state(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    state = metadata.get("basketball_fla") if isinstance(metadata.get("basketball_fla"), dict) else {}
+    return {
+        "events": state.get("events") if isinstance(state.get("events"), list) else [],
+        "lineups": state.get("lineups") if isinstance(state.get("lineups"), dict) else None,
+        "timer": state.get("timer") if isinstance(state.get("timer"), dict) else None,
+        "updated_at": state.get("updated_at"),
+    }
+
+
+@app.put("/api/matches/{match_id}/basketball-state")
+def put_basketball_state(
+    match_id: UUID,
+    body: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, user.id)
+
+    events = body.get("events")
+    lineups = body.get("lineups")
+    timer = body.get("timer")
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="events must be a list")
+    if lineups is not None and not isinstance(lineups, dict):
+        raise HTTPException(status_code=400, detail="lineups must be an object")
+    if timer is not None and not isinstance(timer, dict):
+        raise HTTPException(status_code=400, detail="timer must be an object")
+
+    metadata = dict(match_obj.metadata_json or {})
+    previous_state = metadata.get("basketball_fla") if isinstance(metadata.get("basketball_fla"), dict) else {}
+    previous_event_ids = {
+        str(event.get("id"))
+        for event in previous_state.get("events", [])
+        if isinstance(event, dict) and event.get("id")
+    }
+    metadata["basketball_fla"] = {
+        **previous_state,
+        "events": events,
+        "lineups": lineups,
+        "timer": timer,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    match_obj.metadata_json = metadata
+    has_new_events = False
+    for sequence, event in enumerate(events, start=1):
+        if not isinstance(event, dict) or not event.get("id") or str(event.get("id")) in previous_event_ids:
+            continue
+        has_new_events = True
+        try:
+            ref_id = UUID(str(event.get("id")))
+        except ValueError:
+            ref_id = uuid.uuid4()
+        _enqueue_webhook_fanout(db, "BASKETBALL_EVENT", ref_id, _serialize_basketball_event(match_obj.id, event, sequence))
+    if has_new_events:
+        _enqueue_webhook_fanout(db, "BASKETBALL_STATE", match_obj.id, _build_basketball_state(match_obj))
+    db.commit()
+    return {"ok": True, "match_id": str(match_obj.id), "event_count": len(events), "updated_at": metadata["basketball_fla"]["updated_at"]}
+
+
 @app.post("/api/competition-classes", response_model=CompetitionClassResponse)
 def create_competition_class(body: CompetitionClassCreateRequest, db: Session = Depends(get_db)):
     code = _normalize_competition_class(body.code)
@@ -2736,35 +3052,63 @@ def create_competition_class(body: CompetitionClassCreateRequest, db: Session = 
     return _serialize_competition_class(row)
 
 
+@app.put("/api/competition-classes/{code}", response_model=CompetitionClassResponse)
+def update_competition_class(code: str, body: CompetitionClassUpdateRequest, db: Session = Depends(get_db)):
+    normalized_code = _normalize_competition_class(code)
+    row = db.get(CompetitionClass, normalized_code)
+    if not row:
+        raise HTTPException(status_code=404, detail="Competition class not found")
+
+    row.name = body.name.strip()
+    row.first_half_minutes = body.first_half_minutes
+    row.second_half_minutes = body.second_half_minutes
+    db.commit()
+    db.refresh(row)
+    return _serialize_competition_class(row)
+
+
 @app.post("/api/matches", response_model=MatchResponse)
 def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
+    sport = _normalize_sport(body.sport)
     normalized_class = _normalize_competition_class(body.competition_class)
     competition = db.get(CompetitionClass, normalized_class)
-    if not competition:
+    if sport == "FOOTBALL" and not competition:
         raise HTTPException(status_code=400, detail="Unknown competition class")
-    name_match = MATCH_NAME_PATTERN.match(body.name.strip())
-    if not name_match:
-        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
-    if name_match.group("class") != normalized_class:
-        raise HTTPException(status_code=400, detail="Competition class does not match match name format")
-    if int(name_match.group("round")) != body.round_number:
-        raise HTTPException(status_code=400, detail="Round number does not match match name format")
 
-    home_team = name_match.group("home").strip()
-    away_team = name_match.group("away").strip()
+    name_match = MATCH_NAME_PATTERN.match(body.name.strip())
+    if name_match:
+        if name_match.group("class") != normalized_class:
+            raise HTTPException(status_code=400, detail="Competition class does not match match name format")
+        if int(name_match.group("round")) != body.round_number:
+            raise HTTPException(status_code=400, detail="Round number does not match match name format")
+        home_team = name_match.group("home").strip()
+        away_team = name_match.group("away").strip()
+    elif sport == "BASKETBALL":
+        raw_teams = body.name.strip().split(" vs ")
+        if len(raw_teams) != 2 or not raw_teams[0].strip() or not raw_teams[1].strip():
+            raise HTTPException(status_code=400, detail="Basketball match name must include 'HOME vs AWAY'")
+        home_team = raw_teams[0].strip()
+        away_team = raw_teams[1].strip()
+    else:
+        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
+
+    first_half_minutes = competition.first_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
+    second_half_minutes = competition.second_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
     metadata = dict(body.metadata or {})
+    metadata["sport"] = sport
     metadata["stream_mode"] = body.stream_mode
     metadata["home_team"] = home_team
     metadata["away_team"] = away_team
-    metadata["first_half_minutes"] = competition.first_half_minutes
-    metadata["second_half_minutes"] = competition.second_half_minutes
+    metadata["first_half_minutes"] = first_half_minutes
+    metadata["second_half_minutes"] = second_half_minutes
     row = Match(
         id=uuid.uuid4(),
         name=body.name,
+        sport=sport,
         competition_class=normalized_class,
         round_number=body.round_number,
-        first_half_minutes=competition.first_half_minutes,
-        second_half_minutes=competition.second_half_minutes,
+        first_half_minutes=first_half_minutes,
+        second_half_minutes=second_half_minutes,
         hls_url=body.hls_url,
         metadata_json=metadata,
         operator_id=user.id if user and body.assign_operator else None,
@@ -2776,7 +3120,7 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     if ingest_url:
         metadata["ingest_url"] = ingest_url
 
-    if body.stream_mode == "STREAM" and (ingest_url or ingest_protocol == "RTMP"):
+    if sport == "FOOTBALL" and body.stream_mode == "STREAM" and (ingest_url or ingest_protocol == "RTMP"):
         try:
             start_data = _gateway_start_stream(row.id, ingest_url, ingest_protocol)
             row.hls_url = _normalize_hls_url(start_data["hls_url"])
@@ -2985,8 +3329,11 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.get("/api/matches")
-def list_matches(db: Session = Depends(get_db)):
-    rows = db.query(Match).order_by(desc(Match.created_at)).all()
+def list_matches(sport: str | None = Query(default=None), db: Session = Depends(get_db)):
+    query = db.query(Match)
+    if sport:
+        query = query.filter(Match.sport == _normalize_sport(sport))
+    rows = query.order_by(desc(Match.created_at)).all()
     return [_serialize_match(r) for r in rows]
 
 
@@ -4267,20 +4614,19 @@ def export_match_csv(match_id: UUID, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/matches/{match_id}")
 def get_match_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
-    row = db.get(Match, match_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Match not found")
-    return _serialize_match(row)
+    row = _require_football_match_for_partner(match_id, db)
+    return _serialize_match(row, include_sport=False)
 
 
 @app.get("/api/v1/matches")
 def list_matches_v1(_auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
-    rows = db.query(Match).order_by(desc(Match.created_at)).all()
-    return [_serialize_match(r) for r in rows]
+    rows = db.query(Match).filter(Match.sport == "FOOTBALL").order_by(desc(Match.created_at)).all()
+    return [_serialize_match(r, include_sport=False) for r in rows]
 
 
 @app.get("/api/v1/matches/{match_id}/summary")
 def summary_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    _require_football_match_for_partner(match_id, db)
     return _build_match_summary(match_id, db)
 
 
@@ -4292,6 +4638,7 @@ def dominance_v1(
     split_halves: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
+    _require_football_match_for_partner(match_id, db)
     return _build_dominance(match_id, bin_seconds, db, split_halves=split_halves)
 
 
@@ -4303,11 +4650,9 @@ def events_v1(
     limit: int = Query(default=200, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
-    match_obj = db.get(Match, match_id)
-    if not match_obj:
-        raise HTTPException(status_code=404, detail="Match not found")
+    _require_football_match_for_partner(match_id, db)
 
-    since_dt = _parse_iso_dt(since)
+    since_dt = _as_naive_utc(_parse_iso_dt(since))
     q = db.query(Event).filter(Event.match_id == match_id)
     base_seq = 0
     if since_dt:
@@ -4358,9 +4703,7 @@ def events_v1(
 
 @app.get("/api/v1/matches/{match_id}/timeline/possession")
 def possession_timeline_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
-    match_obj = db.get(Match, match_id)
-    if not match_obj:
-        raise HTTPException(status_code=404, detail="Match not found")
+    _require_football_match_for_partner(match_id, db)
 
     last_state = _latest_state(match_id, db)
     current_clock = last_state.clock_ms if last_state else 0
@@ -4404,7 +4747,149 @@ def possession_timeline_v1(match_id: UUID, _auth: None = Depends(_require_partne
 
 @app.get("/api/v1/matches/{match_id}/result")
 def partner_match_result_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    _require_football_match_for_partner(match_id, db)
     return _build_partner_match_result(match_id, db)
+
+
+@app.get("/api/v1/basketball/matches")
+def list_basketball_matches_v1(_auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    rows = db.query(Match).filter(Match.sport == "BASKETBALL").order_by(desc(Match.created_at)).all()
+    return [_serialize_match(row) for row in rows]
+
+
+@app.get("/api/v1/basketball/matches/{match_id}")
+def get_basketball_match_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = _require_basketball_match_for_partner(match_id, db)
+    return _serialize_match(row)
+
+
+@app.get("/api/v1/basketball/matches/{match_id}/state")
+def basketball_state_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = _require_basketball_match_for_partner(match_id, db)
+    return _build_basketball_state(row)
+
+
+@app.get("/api/v1/basketball/matches/{match_id}/events")
+def basketball_events_v1(
+    match_id: UUID,
+    _auth: None = Depends(_require_partner_auth),
+    since: str | None = Query(default=None, description="ISO datetime, exclusive"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    row = _require_basketball_match_for_partner(match_id, db)
+    since_dt = _parse_iso_dt(since)
+    raw_events = _basketball_events(row)
+    items = []
+    base_seq = 0
+    for sequence, event in enumerate(raw_events, start=1):
+        created_at_raw = _basketball_event_created_at(event) if isinstance(event, dict) else None
+        created_at = _as_naive_utc(_parse_iso_dt(created_at_raw)) if created_at_raw else None
+        if since_dt and created_at and created_at <= since_dt:
+            base_seq = sequence
+            continue
+        if since_dt and not created_at:
+            continue
+        items.append(_serialize_basketball_event(match_id, event, sequence))
+        if len(items) >= limit:
+            break
+    return {"match_id": str(match_id), "count": len(items), "base_sequence": base_seq, "events": items}
+
+
+@app.get("/api/v1/basketball/matches/{match_id}/summary")
+def basketball_summary_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = _require_basketball_match_for_partner(match_id, db)
+    state = _build_basketball_state(row)
+    return {
+        "match_id": str(row.id),
+        "sport": "BASKETBALL",
+        "home": state["home"],
+        "away": state["away"],
+        "timer": state["timer"],
+        "stats": state["stats"],
+        "event_count": state["event_count"],
+        "updated_at": state["updated_at"],
+    }
+
+
+@app.get("/api/v1/basketball/matches/{match_id}/margin-flow")
+def basketball_margin_flow_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = _require_basketball_match_for_partner(match_id, db)
+    return _build_basketball_margin_flow(row)
+
+
+@app.get("/api/v1/basketball/matches/{match_id}/result")
+def basketball_result_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = _require_basketball_match_for_partner(match_id, db)
+    return {
+        "match": _serialize_match(row),
+        "state": _build_basketball_state(row),
+        "events": basketball_events_v1(match_id, _auth, None, 1000, db),
+        "margin_flow": _build_basketball_margin_flow(row),
+    }
+
+
+@app.post("/api/v1/basketball/webhooks/subscriptions")
+def create_basketball_webhook_subscription(
+    body: dict[str, Any] = Body(default_factory=dict),
+    _auth: None = Depends(_require_partner_auth),
+    db: Session = Depends(get_db),
+):
+    callback_url = str(body.get("callback_url") or "").strip()
+    if not callback_url:
+        raise HTTPException(status_code=400, detail="callback_url is required")
+    events = body.get("events") or ["BASKETBALL_EVENT"]
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="events must be a list")
+    normalized_events = sorted({str(event).strip().upper() for event in events if str(event).strip()})
+    allowed_events = {"BASKETBALL_STATE", "BASKETBALL_EVENT"}
+    if not normalized_events or any(event not in allowed_events for event in normalized_events):
+        raise HTTPException(status_code=400, detail="events must contain BASKETBALL_STATE and/or BASKETBALL_EVENT")
+
+    existing = db.query(WebhookSubscription).filter(WebhookSubscription.callback_url == callback_url).first()
+    if existing:
+        existing.events = normalized_events
+        existing.secret = body.get("secret")
+        existing.active = bool(body.get("active", True))
+        db.commit()
+        db.refresh(existing)
+        return _serialize_webhook_subscription(existing)
+
+    sub = WebhookSubscription(
+        callback_url=callback_url,
+        events=normalized_events,
+        secret=body.get("secret"),
+        active=bool(body.get("active", True)),
+    )
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    return _serialize_webhook_subscription(sub)
+
+
+@app.get("/api/v1/basketball/webhooks/subscriptions")
+def list_basketball_webhook_subscriptions(_auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    basketball_events = {"BASKETBALL_STATE", "BASKETBALL_EVENT"}
+    rows = db.query(WebhookSubscription).order_by(desc(WebhookSubscription.created_at)).all()
+    return [
+        _serialize_webhook_subscription(row)
+        for row in rows
+        if basketball_events.intersection(set(row.events or []))
+    ]
+
+
+@app.delete("/api/v1/basketball/webhooks/subscriptions/{subscription_id}")
+def delete_basketball_webhook_subscription(
+    subscription_id: UUID,
+    _auth: None = Depends(_require_partner_auth),
+    db: Session = Depends(get_db),
+):
+    row = db.get(WebhookSubscription, subscription_id)
+    if not row or not {"BASKETBALL_STATE", "BASKETBALL_EVENT"}.intersection(set(row.events or [])):
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "subscription_id": str(subscription_id)}
 
 
 @app.post("/api/v1/webhooks/subscriptions")

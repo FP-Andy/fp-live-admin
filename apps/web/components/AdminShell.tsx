@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiFetch, apiJson, displayRole, type SessionUser } from '../lib/api';
 import { clearFpaDraft, FPA_DRAFT_WARNING_MESSAGE, hasFpaDraft } from './FpaDraftGuard';
+import { SportProvider, SPORTS, useSportContext, type Sport } from './SportContext';
 
 type NavItem = {
   href: string;
@@ -44,6 +45,16 @@ const FLA_ITEMS: NavItem[] = [
     label: 'System',
     icon: '⚙',
     match: (pathname) => pathname.startsWith('/admin/system'),
+  },
+];
+
+const BASKETBALL_FLA_ITEMS: NavItem[] = [
+  FLA_ITEMS[0],
+  {
+    href: '/admin/basketball/visualization',
+    label: 'Visualization',
+    icon: '◌',
+    match: (pathname) => pathname.startsWith('/admin/basketball/visualization'),
   },
 ];
 
@@ -118,6 +129,12 @@ function getPageMeta(pathname: string) {
   if (pathname.startsWith('/admin/match/')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Match Control' };
   }
+  if (pathname.startsWith('/admin/basketball/visualization')) {
+    return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Visualization' };
+  }
+  if (pathname.startsWith('/admin/basketball/')) {
+    return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Match Control' };
+  }
   if (pathname.startsWith('/admin/media')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Media' };
   }
@@ -160,22 +177,26 @@ function getPageMeta(pathname: string) {
   return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Dashboard' };
 }
 
-export default function AdminShell({ children }: { children: React.ReactNode }) {
+function AdminShellContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { sport, setSport } = useSportContext();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const pendingSportChangeRef = useRef<Sport | null>(null);
   const currentPath = pathname || '/admin/dashboard';
   const pageMeta = getPageMeta(currentPath);
-  const visibleSections = NAV_SECTIONS.map((section) => ({
-    ...section,
-    items:
-      section.id === 'FLA' && user?.role !== 'SUPERADMIN'
-        ? section.items.filter((item) => item.href === '/admin/dashboard')
-        : section.id === 'FHL' && user?.role !== 'SUPERADMIN'
-          ? []
-        : section.items,
-  })).filter((section) => section.items.length > 0);
+  const visibleSections = NAV_SECTIONS.map((section) => {
+    let items = section.items;
+    if (sport === 'BASKETBALL') {
+      items = section.id === 'FLA' ? BASKETBALL_FLA_ITEMS : [];
+    } else if (section.id === 'FLA' && user?.role !== 'SUPERADMIN') {
+      items = section.items.filter((item) => item.href === '/admin/dashboard');
+    } else if (section.id === 'FHL' && user?.role !== 'SUPERADMIN') {
+      items = [];
+    }
+    return { ...section, items };
+  }).filter((section) => section.items.length > 0);
 
   useEffect(() => {
     let active = true;
@@ -193,6 +214,19 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
     };
   }, [pathname, router]);
 
+  useEffect(() => {
+    if (pendingSportChangeRef.current) return;
+    if (currentPath.startsWith('/admin/basketball') && sport !== 'BASKETBALL') {
+      setSport('BASKETBALL');
+    }
+  }, [currentPath, setSport, sport]);
+
+  useEffect(() => {
+    if (currentPath === '/admin/dashboard') {
+      pendingSportChangeRef.current = null;
+    }
+  }, [currentPath]);
+
   const logout = async () => {
     if (currentPath.startsWith('/admin/fpa') && hasFpaDraft()) {
       const ok = window.confirm(FPA_DRAFT_WARNING_MESSAGE);
@@ -202,6 +236,16 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
     await apiFetch('/session/logout', { method: 'POST' });
     router.replace('/login');
     router.refresh();
+  };
+
+  const changeSport = (nextSport: Sport) => {
+    pendingSportChangeRef.current = nextSport;
+    setSport(nextSport);
+    if (currentPath !== '/admin/dashboard') {
+      router.push('/admin/dashboard');
+    } else {
+      pendingSportChangeRef.current = null;
+    }
   };
 
   return (
@@ -226,6 +270,20 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
                 <div className="sidebar-eyebrow">Signed In</div>
                 <strong>{user?.name || 'Loading...'}</strong>
                 <span className="muted">@{user?.id || 'session'}{user?.role ? ` · ${displayRole(user.role)}` : ''}</span>
+              </div>
+
+              <div className="sidebar-sport-switcher">
+                <div className="sidebar-eyebrow">Sport Context</div>
+                <select
+                  className="sport-switcher-select"
+                  value={sport}
+                  onChange={(event) => changeSport(event.target.value as Sport)}
+                  aria-label="Sport context"
+                >
+                  {SPORTS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
               </div>
 
               <nav className="sidebar-nav">
@@ -288,14 +346,31 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             <div className="sidebar-eyebrow">{pageMeta.eyebrow}</div>
             <h1>{pageMeta.title}</h1>
           </div>
-          <div className="topbar-badge">
-            <span className="status-dot" />
-            {user?.name || 'Session'}{user?.role ? ` · ${displayRole(user.role)}` : ''}
+          <div className="topbar-actions">
+            {(currentPath.startsWith('/admin/basketball/match/') || (currentPath.startsWith('/admin/match/') && !currentPath.endsWith('/edit'))) ? (
+              <Link className="button-link button-compact btn-secondary" href="/admin/dashboard">Dashboard</Link>
+            ) : null}
+            <div className="topbar-badge sport-context-badge">
+              <span className="status-dot" />
+              {SPORTS.find((item) => item.value === sport)?.label || 'Football'}
+            </div>
+            <div className="topbar-badge">
+              <span className="status-dot" />
+              {user?.name || 'Session'}{user?.role ? ` · ${displayRole(user.role)}` : ''}
+            </div>
           </div>
         </header>
 
         <div className="app-content">{children}</div>
       </div>
     </div>
+  );
+}
+
+export default function AdminShell({ children }: { children: React.ReactNode }) {
+  return (
+    <SportProvider>
+      <AdminShellContent>{children}</AdminShellContent>
+    </SportProvider>
   );
 }

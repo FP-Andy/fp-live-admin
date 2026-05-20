@@ -4,10 +4,12 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { scheduleItems } from './schedule-data';
 import { apiFetch, apiJson } from '../../../lib/api';
+import { useSportContext, type Sport } from '../../../components/SportContext';
 
 type Match = {
   id: string;
   name: string;
+  sport?: Sport;
   competition_class: string;
   round_number: number;
   first_half_minutes: number;
@@ -70,37 +72,52 @@ const TEAM_OPTIONS_BY_CLASS: Record<string, string[]> = {
     '화천 KSPO 여자축구단',
   ],
   'SUFA-S': [
+    '고려대 FC DREAM',
     '서울시립대 아마축구부',
-    '연세대 WTF',
-    '한양대 라이언',
-    '중앙대 청우회',
-    '한체대 태풍',
     '숭실대 SSC',
     '연세대 FC연세',
+    '연세대 WTF',
+    '중앙대 청우회',
+    '한양대 라이언',
+    '한체대 태풍',
   ],
   'SUFA-A': [
     '고려대 아마추어축구부',
-    '서강대 서강축구반',
+    '광운대 KWPE',
     '동국대 FC TOTO',
     '서울시립대 AZURE',
+    '서강대 서강축구반',
+    '중앙대 FC BASTARD',
+    '한체대 FC LABAMBA',
     '한체대 FC 리히트',
   ],
   'SUFA-B': [
+    '건국대 N:TROPY',
+    '상명대 캐논',
+    '서강대 KLASSIKER',
+    '서울과기대 FC CTRL',
+    '서울과기대 FC GAIA',
+    '성균관대 성균축구단',
     '한국외대 야생마FC',
     '한양대 한백사',
-    '성균관대 성균축구단',
-    '상명대 캐논',
   ],
   'SUFA-L': [
-    '서울대 SNUWFC',
-    '이화여대 FC콕',
+    '고려대 FC ELISE',
+    '국민대 한마음 레이디스',
     '동국대 FC 엘레펜테',
+    '서울대 SNUWFC',
+    '서울시립대 WFC.BETA',
     '숙명여대 FC숙명',
+    '연세대 W-KICKS',
+    '이화여대 ESSA',
+    '이화여대 FC콕',
+    '한체대 FC천마',
   ],
 };
 
 export default function Dashboard() {
   const PAGE_SIZE = 7;
+  const { sport } = useSportContext();
   const [matches, setMatches] = useState<Match[]>([]);
   const [competitionClasses, setCompetitionClasses] = useState<CompetitionClass[]>([]);
   const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
@@ -109,7 +126,9 @@ export default function Dashboard() {
   const [competitionClass, setCompetitionClass] = useState('K3');
   const [roundNumber, setRoundNumber] = useState(1);
   const [streamMode, setStreamMode] = useState<'STREAM' | 'MANUAL'>('STREAM');
-  const [assignOperator, setAssignOperator] = useState(true);
+  const [basketballPeriodCount, setBasketballPeriodCount] = useState(4);
+  const [basketballPeriodMinutes, setBasketballPeriodMinutes] = useState(10);
+  const [assignOperator, setAssignOperator] = useState(false);
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('RTMP');
   const [error, setError] = useState('');
   const [listMode, setListMode] = useState<'active' | 'archived'>('active');
@@ -121,6 +140,10 @@ export default function Dashboard() {
   const [newClassName, setNewClassName] = useState('');
   const [newClassFirstHalf, setNewClassFirstHalf] = useState(45);
   const [newClassSecondHalf, setNewClassSecondHalf] = useState(45);
+  const [editingClassCode, setEditingClassCode] = useState('');
+  const [editingClassName, setEditingClassName] = useState('');
+  const [editingClassFirstHalf, setEditingClassFirstHalf] = useState(45);
+  const [editingClassSecondHalf, setEditingClassSecondHalf] = useState(45);
   const [classModalError, setClassModalError] = useState('');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -137,7 +160,7 @@ export default function Dashboard() {
   const load = async () => {
     try {
       const [matchesData, classData, streamStatusData] = await Promise.all([
-        apiJson<Match[]>('/matches'),
+        apiJson<Match[]>(`/matches?sport=${sport}`),
         apiJson<CompetitionClass[]>('/competition-classes'),
         apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
       ]);
@@ -156,14 +179,15 @@ export default function Dashboard() {
     load();
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
-  }, []);
+  }, [sport]);
 
   const generatedMatchName = useMemo(() => {
     const home = homeTeam.trim();
     const away = awayTeam.trim();
     if (!home || !away) return '';
+    if (sport === 'BASKETBALL') return `[BASKETBALL | ${roundNumber}R] ${home} vs ${away}`;
     return `[${competitionClass} | ${roundNumber}R] ${home} vs ${away}`;
-  }, [competitionClass, roundNumber, homeTeam, awayTeam]);
+  }, [sport, competitionClass, roundNumber, homeTeam, awayTeam]);
 
   const createMatch = async () => {
     if (!homeTeam.trim() || !awayTeam.trim()) {
@@ -180,11 +204,19 @@ export default function Dashboard() {
       method: 'POST',
       body: JSON.stringify({
         name: generatedMatchName,
-        competition_class: competitionClass,
+        sport,
+        competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : competitionClass,
         round_number: roundNumber,
-        stream_mode: streamMode,
+        stream_mode: sport === 'BASKETBALL' ? 'MANUAL' : streamMode,
         assign_operator: assignOperator,
-        ingest_protocol: streamMode === 'STREAM' ? ingestProtocol : null,
+        ingest_protocol: sport === 'FOOTBALL' && streamMode === 'STREAM' ? ingestProtocol : null,
+        metadata: sport === 'BASKETBALL'
+          ? {
+              period_count: basketballPeriodCount,
+              period_minutes: basketballPeriodMinutes,
+              shot_clock_seconds: 24,
+            }
+          : undefined,
       }),
     });
 
@@ -198,7 +230,9 @@ export default function Dashboard() {
     setCompetitionClass('K3');
     setRoundNumber(1);
     setStreamMode('STREAM');
-    setAssignOperator(true);
+    setBasketballPeriodCount(4);
+    setBasketballPeriodMinutes(10);
+    setAssignOperator(false);
     setIngestProtocol('RTMP');
     await load();
   };
@@ -243,6 +277,48 @@ export default function Dashboard() {
     setNewClassFirstHalf(45);
     setNewClassSecondHalf(45);
     setIsClassModalOpen(false);
+    await load();
+  };
+
+  const startEditCompetitionClass = (item: CompetitionClass) => {
+    setEditingClassCode(item.code);
+    setEditingClassName(item.name);
+    setEditingClassFirstHalf(item.first_half_minutes);
+    setEditingClassSecondHalf(item.second_half_minutes);
+    setClassModalError('');
+  };
+
+  const cancelEditCompetitionClass = () => {
+    setEditingClassCode('');
+    setEditingClassName('');
+    setEditingClassFirstHalf(45);
+    setEditingClassSecondHalf(45);
+  };
+
+  const updateCompetitionClass = async () => {
+    if (!editingClassCode) return;
+    const name = editingClassName.trim();
+    if (!name) {
+      setClassModalError('표시 이름을 입력하세요.');
+      return;
+    }
+    setClassModalError('');
+
+    const response = await apiFetch(`/competition-classes/${encodeURIComponent(editingClassCode)}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name,
+        first_half_minutes: editingClassFirstHalf,
+        second_half_minutes: editingClassSecondHalf,
+      }),
+    });
+
+    if (!response.ok) {
+      setClassModalError((await response.text()) || 'Failed to update competition class');
+      return;
+    }
+
+    cancelEditCompetitionClass();
     await load();
   };
 
@@ -314,13 +390,15 @@ export default function Dashboard() {
   const startWeekday = firstDay.getDay();
   const dayCount = lastDay.getDate();
 
-  const countByDate = scheduleItems.reduce<Record<string, number>>((acc, item) => {
+  const visibleScheduleItems = sport === 'FOOTBALL' ? scheduleItems : [];
+
+  const countByDate = visibleScheduleItems.reduce<Record<string, number>>((acc, item) => {
     if (!item.date) return acc;
     acc[item.date] = (acc[item.date] || 0) + 1;
     return acc;
   }, {});
 
-  const selectedMatches = scheduleItems
+  const selectedMatches = visibleScheduleItems
     .filter((item) => item.date === selectedDate)
     .sort((a, b) => a.time.localeCompare(b.time));
 
@@ -392,7 +470,7 @@ export default function Dashboard() {
   useEffect(() => {
     setActivePage(1);
     setArchivedPage(1);
-  }, [classFilter, listMode]);
+  }, [classFilter, listMode, sport]);
 
   useEffect(() => {
     if (activePage > activePageCount) setActivePage(activePageCount);
@@ -422,7 +500,7 @@ export default function Dashboard() {
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Overview</div>
-                  <h2>운영 대시보드</h2>
+                  <h2>{sport === 'BASKETBALL' ? '농구 운영 대시보드' : '운영 대시보드'}</h2>
                 </div>
                 <span className="status-pill running">Live {liveCount}</span>
               </div>
@@ -441,7 +519,7 @@ export default function Dashboard() {
                 </div>
                 <div className="metric-tile">
                   <span className="muted">RTMP Pipelines</span>
-                  <strong>{rtmpCount}</strong>
+                  <strong>{sport === 'FOOTBALL' ? rtmpCount : 0}</strong>
                 </div>
               </div>
             </div>
@@ -450,14 +528,14 @@ export default function Dashboard() {
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Create Match</div>
-                  <h3>새 경기 등록</h3>
+                  <h3>{sport === 'BASKETBALL' ? '농구 경기 등록' : '새 경기 등록'}</h3>
                 </div>
-                <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(true)}>
-                  대회 생성
-                </button>
+                {sport === 'FOOTBALL' ? <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(true)}>
+                  대회 관리
+                </button> : null}
               </div>
-              <div className="hero-form-grid compact">
-                <div className="field-stack field-stack-short">
+              <div className={`hero-form-grid compact ${sport === 'BASKETBALL' ? 'basketball-create-form' : ''}`}>
+                {sport === 'FOOTBALL' ? <div className="field-stack field-stack-short">
                   <div className="field-label">대회</div>
                   <select value={competitionClass} onChange={(e) => handleCompetitionClassChange(e.target.value)}>
                     {competitionOptions.map((item) => (
@@ -466,7 +544,7 @@ export default function Dashboard() {
                       </option>
                     ))}
                   </select>
-                </div>
+                </div> : null}
 
                 <div className="field-stack field-stack-round">
                   <div className="field-label">라운드</div>
@@ -481,7 +559,7 @@ export default function Dashboard() {
 
                 <div className="field-stack field-stack-wide">
                   <div className="field-label">홈</div>
-                  {usesTeamDropdown ? (
+                  {sport === 'FOOTBALL' && usesTeamDropdown ? (
                     <select value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)}>
                       <option value="">홈팀 선택</option>
                       {selectedTeamOptions.map((team) => (
@@ -491,13 +569,13 @@ export default function Dashboard() {
                       ))}
                     </select>
                   ) : (
-                    <input value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)} placeholder="예: 당진" />
+                    <input value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)} placeholder={sport === 'BASKETBALL' ? '예: Home Hoops' : '예: 당진'} />
                   )}
                 </div>
 
                 <div className="field-stack field-stack-wide">
                   <div className="field-label">어웨이</div>
-                  {usesTeamDropdown ? (
+                  {sport === 'FOOTBALL' && usesTeamDropdown ? (
                     <select value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)}>
                       <option value="">어웨이팀 선택</option>
                       {selectedTeamOptions.map((team) => (
@@ -507,27 +585,54 @@ export default function Dashboard() {
                       ))}
                     </select>
                   ) : (
-                    <input value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)} placeholder="예: 경주" />
+                    <input value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)} placeholder={sport === 'BASKETBALL' ? '예: Away Five' : '예: 경주'} />
                   )}
                 </div>
 
-                <div className="field-stack field-stack-short">
+                {sport === 'FOOTBALL' ? <div className="field-stack field-stack-short">
                   <div className="field-label">운영모드</div>
                   <select value={streamMode} onChange={(e) => setStreamMode(e.target.value as 'STREAM' | 'MANUAL')}>
                     <option value="STREAM">STREAM</option>
                     <option value="MANUAL">MANUAL</option>
                   </select>
-                </div>
+                </div> : null}
 
-                <div className="field-stack field-stack-short">
+                {sport === 'FOOTBALL' ? <div className="field-stack field-stack-short">
                   <div className="field-label">프로토콜</div>
                   <select value={ingestProtocol} onChange={(e) => setIngestProtocol(e.target.value as 'SRT' | 'RTMP')} disabled={streamMode !== 'STREAM'}>
                     <option value="RTMP">RTMP</option>
                     <option value="SRT">SRT</option>
                   </select>
-                </div>
+                </div> : null}
 
-                <div className="field-stack">
+                {sport === 'BASKETBALL' ? (
+                  <>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">쿼터 수</div>
+                      <input
+                        min={1}
+                        max={8}
+                        step={1}
+                        type="number"
+                        value={basketballPeriodCount}
+                        onChange={(e) => setBasketballPeriodCount(Math.max(1, Math.min(8, Number(e.target.value) || 4)))}
+                      />
+                    </div>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">쿼터 시간</div>
+                      <input
+                        min={1}
+                        max={15}
+                        step={1}
+                        type="number"
+                        value={basketballPeriodMinutes}
+                        onChange={(e) => setBasketballPeriodMinutes(Math.max(1, Math.min(15, Number(e.target.value) || 10)))}
+                      />
+                    </div>
+                  </>
+                ) : null}
+
+                <div className="field-stack field-stack-operator">
                   <div className="field-label">operator 상속</div>
                   <label className="row operator-toggle-inline">
                     <input
@@ -540,16 +645,20 @@ export default function Dashboard() {
                   </label>
                 </div>
 
-                <div className="field-stack">
+                <div className="field-stack field-stack-generated">
                   <div className="field-label">생성이름</div>
                   <div className="kbd dashboard-generated-name">
-                    {generatedMatchName || `[${competitionClass} | ${roundNumber}R] 홈팀 vs 어웨이팀`}
+                    {generatedMatchName || (sport === 'BASKETBALL' ? `[BASKETBALL | ${roundNumber}R] 홈팀 vs 어웨이팀` : `[${competitionClass} | ${roundNumber}R] 홈팀 vs 어웨이팀`)}
                   </div>
                 </div>
               </div>
-              <div className="muted dashboard-class-time">
+              {sport === 'FOOTBALL' ? <div className="muted dashboard-class-time">
                 경기 시간: 전반 {selectedCompetition?.first_half_minutes || 45}분 / 후반 {selectedCompetition?.second_half_minutes || 45}분
-              </div>
+              </div> : (
+                <div className="muted dashboard-class-time">
+                  경기 시간: {basketballPeriodCount}Q × {basketballPeriodMinutes}분 · 수동 기록 MVP
+                </div>
+              )}
               <div className="row hero-actions-compact">
                 <button className="btn-primary" onClick={createMatch}>Create Match</button>
               </div>
@@ -573,7 +682,7 @@ export default function Dashboard() {
                 <button className={listMode === 'archived' ? 'btn-active' : ''} onClick={() => setListMode('archived')}>Archived</button>
               </div>
               <div className="field-stack dashboard-filter-select">
-                <span className="field-label">대회 필터</span>
+                <span className="field-label">{sport === 'BASKETBALL' ? '종목 필터' : '대회 필터'}</span>
                 <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
                   {availableClasses.map((itemClass) => (
                     <option key={itemClass} value={itemClass}>
@@ -593,6 +702,7 @@ export default function Dashboard() {
                       <div className="row" style={{ flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: 18 }}>{match.name}</strong>
                         <span className="status-pill">{match.competition_class || 'K3'}</span>
+                        <span className="status-pill tech">{match.sport === 'BASKETBALL' ? 'BASKETBALL' : 'FOOTBALL'}</span>
                         <span className="status-pill warning">R{match.round_number || 1}</span>
                         <span className={`status-pill ${match.archived ? 'archived' : isRunning ? 'running' : 'stopped'}`}>
                           {match.archived ? 'ARCHIVED' : isRunning ? 'RUNNING' : 'STOPPED'}
@@ -601,19 +711,21 @@ export default function Dashboard() {
                       <div className="muted">operator: {match.operator_id || 'unassigned'}</div>
                       <div className="match-meta-group">
                         <span className={`meta-chip ${match.metadata?.stream_mode === 'MANUAL' ? 'warning' : ''}`}>
-                          mode: {match.metadata?.stream_mode === 'MANUAL' ? 'manual field' : 'stream'}
+                          mode: {match.sport === 'BASKETBALL' ? 'manual court' : match.metadata?.stream_mode === 'MANUAL' ? 'manual field' : 'stream'}
                         </span>
                         <span className={`meta-chip ${match.metadata?.ingest_protocol ? 'tech' : ''}`}>
-                          protocol: {match.metadata?.ingest_protocol || 'not set'}
+                          protocol: {match.sport === 'BASKETBALL' ? 'n/a' : match.metadata?.ingest_protocol || 'not set'}
                         </span>
                         <span className={`meta-chip ${
-                          match.metadata?.stream_mode === 'MANUAL'
+                          match.sport === 'BASKETBALL' || match.metadata?.stream_mode === 'MANUAL'
                             ? ''
                             : match.hls_url
                               ? 'success'
                               : 'warning'
                         }`}>
-                          {match.metadata?.stream_mode === 'MANUAL'
+                          {match.sport === 'BASKETBALL'
+                            ? 'no stream'
+                            : match.metadata?.stream_mode === 'MANUAL'
                             ? 'no hls'
                             : match.hls_url
                               ? 'hls ready'
@@ -628,7 +740,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <div className="match-actions">
-                      <Link className="button-link button-compact btn-primary" href={`/admin/match/${match.id}`}>
+                      <Link className="button-link button-compact btn-primary" href={match.sport === 'BASKETBALL' ? `/admin/basketball/match/${match.id}` : `/admin/match/${match.id}`}>
                         {match.archived ? 'Open Read-Only' : 'Open'}
                       </Link>
                       {match.archived ? (
@@ -682,84 +794,85 @@ export default function Dashboard() {
           </div>
 
           <div className="card card-utility">
-            <div className="section-heading">
-              <h3>Match Calendar</h3>
-              <div className="row">
-                <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
-                  Prev
-                </button>
-                <strong style={{ minWidth: 90, textAlign: 'center' }}>{monthLabel}</strong>
-                <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
-                  Next
-                </button>
-              </div>
-            </div>
-
-            <div className="calendar-grid">
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((weekday) => (
-                <div key={weekday} className="muted" style={{ textAlign: 'center', fontWeight: 700 }}>{weekday}</div>
-              ))}
-
-              {dayCells.map((day, index) => {
-                if (!day) return <div key={`empty-${index}`} />;
-
-                const dateKey = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                const count = countByDate[dateKey] || 0;
-                const isSelected = selectedDate === dateKey;
-
-                return (
-                  <button
-                    key={dateKey}
-                    className={`day-cell ${isSelected ? 'selected' : ''}`}
-                    onClick={() => setSelectedDate(dateKey)}
-                  >
-                    <div style={{ fontWeight: 700 }}>{day}</div>
-                    <div className="muted" style={{ color: count > 0 ? 'var(--accent)' : undefined }}>
-                      {count > 0 ? `${count} match${count > 1 ? 'es' : ''}` : '-'}
-                    </div>
+              <div className="section-heading">
+                <h3>Match Calendar</h3>
+                <div className="row">
+                  <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
+                    Prev
                   </button>
-                );
-              })}
-            </div>
-
-            <div style={{ marginTop: 16 }}>
-              <div style={{ fontWeight: 700, marginBottom: 8 }}>Fixtures on {selectedDate}</div>
-              {selectedMatches.length === 0 ? (
-                <div className="muted">No fixtures</div>
-              ) : (
-                <div className="grid">
-                  {selectedMatches.map((item, index) => (
-                    <div
-                      key={item.id}
-                      style={{
-                        borderTop: index === 0 ? 'none' : '1px dashed var(--line-strong)',
-                        marginTop: index === 0 ? 0 : 8,
-                        paddingTop: index === 0 ? 0 : 8,
-                      }}
-                    >
-                      <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
-                      <div className="muted">홈 : {item.homeTeam}</div>
-                      <div className="muted">어웨이 : {item.awayTeam}</div>
-                      <div className="muted">{item.time} | {item.venue}</div>
-                    </div>
-                  ))}
+                  <strong style={{ minWidth: 90, textAlign: 'center' }}>{monthLabel}</strong>
+                  <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
+                    Next
+                  </button>
                 </div>
-              )}
-            </div>
+              </div>
+
+              <div className="calendar-grid">
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((weekday) => (
+                  <div key={weekday} className="muted" style={{ textAlign: 'center', fontWeight: 700 }}>{weekday}</div>
+                ))}
+
+                {dayCells.map((day, index) => {
+                  if (!day) return <div key={`empty-${index}`} />;
+
+                  const dateKey = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                  const count = countByDate[dateKey] || 0;
+                  const isSelected = selectedDate === dateKey;
+
+                  return (
+                    <button
+                      key={dateKey}
+                      className={`day-cell ${isSelected ? 'selected' : ''}`}
+                      onClick={() => setSelectedDate(dateKey)}
+                    >
+                      <div style={{ fontWeight: 700 }}>{day}</div>
+                      <div className="muted" style={{ color: count > 0 ? 'var(--accent)' : undefined }}>
+                        {count > 0 ? `${count} match${count > 1 ? 'es' : ''}` : '-'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>Fixtures on {selectedDate}</div>
+                {selectedMatches.length === 0 ? (
+                  <div className="muted">No fixtures</div>
+                ) : (
+                  <div className="grid">
+                    {selectedMatches.map((item, index) => (
+                      <div
+                        key={item.id}
+                        style={{
+                          borderTop: index === 0 ? 'none' : '1px dashed var(--line-strong)',
+                          marginTop: index === 0 ? 0 : 8,
+                          paddingTop: index === 0 ? 0 : 8,
+                        }}
+                      >
+                        <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
+                        <div className="muted">홈 : {item.homeTeam}</div>
+                        <div className="muted">어웨이 : {item.awayTeam}</div>
+                        <div className="muted">{item.time} | {item.venue}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
           </div>
         </section>
       </main>
       {isClassModalOpen ? (
-        <div className="fcm-modal-backdrop" role="dialog" aria-modal="true" aria-label="대회 생성">
+        <div className="fcm-modal-backdrop" role="dialog" aria-modal="true" aria-label="대회 관리">
           <div className="card card-panel fcm-modal competition-modal">
             <div className="section-heading">
               <div>
                 <div className="sidebar-eyebrow">Competition</div>
-                <h3>대회 생성</h3>
+                <h3>대회 관리</h3>
               </div>
               <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(false)}>닫기</button>
             </div>
 
+            <div className="sidebar-eyebrow">Create</div>
             <div className="competition-modal-grid">
               <div className="field-stack">
                 <div className="field-label">대회 코드</div>
@@ -801,10 +914,80 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
             <div className="row hero-actions-compact">
               <button className="btn-primary" onClick={createCompetitionClass}>Create Competition</button>
             </div>
+
+            <div className="sidebar-eyebrow" style={{ marginTop: 16 }}>Edit</div>
+            <div className="fcm-guide-table-wrap">
+              <table className="fcm-guide-table">
+                <thead>
+                  <tr>
+                    <th>코드</th>
+                    <th>표시 이름</th>
+                    <th>전반</th>
+                    <th>후반</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {competitionOptions.map((item) => (
+                    <tr key={item.code}>
+                      <td>{item.code}</td>
+                      <td>{item.name}</td>
+                      <td>{item.first_half_minutes}분</td>
+                      <td>{item.second_half_minutes}분</td>
+                      <td>
+                        <button className="button-compact btn-secondary" onClick={() => startEditCompetitionClass(item)}>
+                          수정
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {editingClassCode ? (
+              <div className="competition-modal-grid">
+                <div className="field-stack">
+                  <div className="field-label">수정 대상</div>
+                  <input value={editingClassCode} readOnly />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">표시 이름</div>
+                  <input value={editingClassName} onChange={(e) => setEditingClassName(e.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">전반 시간(분)</div>
+                  <input
+                    min={1}
+                    max={120}
+                    step={1}
+                    type="number"
+                    value={editingClassFirstHalf}
+                    onChange={(e) => setEditingClassFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                  />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">후반 시간(분)</div>
+                  <input
+                    min={1}
+                    max={120}
+                    step={1}
+                    type="number"
+                    value={editingClassSecondHalf}
+                    onChange={(e) => setEditingClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                  />
+                </div>
+                <div className="row hero-actions-compact">
+                  <button className="btn-primary" onClick={updateCompetitionClass}>Save Changes</button>
+                  <button className="btn-secondary" onClick={cancelEditCompetitionClass}>Cancel</button>
+                </div>
+              </div>
+            ) : null}
+
+            {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
           </div>
         </div>
       ) : null}

@@ -170,6 +170,77 @@ a:focus-visible {
   box-shadow: inset 0 0 0 1px rgba(255, 153, 47, 0.18);
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sport-context-badge {
+  background: rgba(255, 122, 0, 0.1);
+  color: var(--accent);
+}
+
+.sport-switcher,
+.sport-context-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sport-switcher-select {
+  width: 100%;
+  margin-top: 4px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.sport-switcher-select:focus,
+.sport-switcher-select:focus-visible {
+  outline: none;
+  border-color: var(--border-soft);
+  box-shadow: none;
+}
+
+.sport-switcher button,
+.sport-context-row button {
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-weight: 800;
+}
+
+.sport-switcher button {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  min-width: 0;
+}
+
+.sport-switcher button span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sport-switcher button.active,
+.sport-context-row button.active {
+  border-color: rgba(255, 152, 47, 0.5);
+  background: rgba(255, 122, 0, 0.12);
+  color: var(--accent);
+}
+
+.sport-context-row {
+  margin-top: 12px;
+}
+
 .btn-danger {
   background: linear-gradient(135deg, #432323, #5b2b2b);
   border-color: var(--border-danger);
@@ -601,12 +672,32 @@ a:focus-visible {
   width: 100%;
 }
 
+.hero-form-grid.compact.basketball-create-form {
+  grid-template-columns: 92px minmax(180px, 1fr) minmax(180px, 1fr) 92px 92px;
+  gap: 12px;
+  align-items: end;
+}
+
+.basketball-create-form .field-stack-wide {
+  min-width: 0;
+}
+
+.basketball-create-form .field-stack-operator {
+  grid-column: 1 / span 2;
+  width: 100%;
+}
+
+.basketball-create-form .field-stack-generated {
+  grid-column: 3 / -1;
+  width: 100%;
+}
+
 .hero-form-grid.compact .field-help {
   display: none;
 }
 
 .operator-toggle-inline {
-  justify-content: flex-start;
+  justify-content: space-between;
   gap: 10px;
   min-height: 42px;
   padding: 0 12px;
@@ -615,6 +706,11 @@ a:focus-visible {
   background: rgba(255, 255, 255, 0.03);
   white-space: nowrap;
   overflow: hidden;
+}
+
+.basketball-create-form .operator-toggle-inline {
+  justify-content: center;
+  min-height: 40px;
 }
 
 .operator-toggle-inline span {
@@ -640,6 +736,519 @@ a:focus-visible {
   min-width: 180px;
 }
 
+.basketball-page {
+  gap: 18px;
+}
+
+.basketball-scoreboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: stretch;
+  border: 1px solid var(--border-ghost);
+  background: var(--surface-card);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.basketball-score-team {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 20px;
+  background: linear-gradient(90deg, rgba(255, 122, 0, 0.18), rgba(255, 255, 255, 0.02));
+  border-right: 1px solid var(--border-ghost);
+}
+
+.basketball-score-team.away {
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.16), rgba(255, 255, 255, 0.02));
+}
+
+.basketball-score-team span {
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.basketball-score-team strong {
+  font-size: 42px;
+  line-height: 1;
+}
+
+.basketball-score-center {
+  min-width: 220px;
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.basketball-score-center span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.basketball-clock-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.basketball-clock-row input,
+.basketball-clock-row select {
+  min-height: 36px;
+  text-align: center;
+  font-weight: 900;
+}
+
+.basketball-clock-row button {
+  min-height: 36px;
+}
+
+.basketball-live-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, min(50vw, 760px)) minmax(420px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.basketball-court-card {
+  min-width: 0;
+}
+
+.basketball-main-stack {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.basketball-court {
+  width: 100%;
+  max-width: min(50vw, 720px);
+  max-height: 520px;
+  display: block;
+  margin: 0 auto;
+  border-radius: 8px;
+  background: #d9a755;
+}
+
+.court-bg {
+  fill: #d9a755;
+}
+
+.basketball-zone-map-base {
+  fill: #d9a755;
+}
+
+.basketball-zone-boundaries {
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+.shot-zone {
+  cursor: pointer;
+  stroke: transparent;
+  stroke-width: 2;
+  fill: rgba(255, 255, 255, 0.04);
+  fill-opacity: 1;
+  transition: filter 0.15s ease;
+}
+
+.shot-zone:hover,
+.selected-zone {
+  cursor: pointer;
+  stroke: rgba(255, 122, 0, 0.9);
+  stroke-width: 5;
+  fill: rgba(255, 122, 0, 0.18);
+  filter: brightness(1.08);
+}
+
+.court-line {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 0.18;
+  pointer-events: none;
+}
+
+.paint-line {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 0.22;
+  pointer-events: none;
+}
+
+.three-line,
+.half-line,
+.backboard-line {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.96);
+  stroke-width: 0.24;
+  pointer-events: none;
+}
+
+.backboard-line {
+  stroke-width: 0.34;
+}
+
+.rim-board {
+  fill: rgba(255, 255, 255, 0.95);
+  pointer-events: none;
+}
+
+.rim {
+  fill: none;
+  stroke: #f97316;
+  stroke-width: 0.25;
+  pointer-events: none;
+}
+
+.basketball-control-stack,
+.basketball-rebound-bars,
+.basketball-event-log {
+  display: grid;
+  gap: 12px;
+}
+
+.basketball-lineup-table-wrap {
+  max-height: 210px;
+  overflow: auto;
+  border: 1px solid var(--border-ghost);
+  border-radius: 8px;
+}
+
+.basketball-lineup-table-wrap.editor {
+  max-height: 420px;
+}
+
+.basketball-lineup-split-grid,
+.basketball-lineup-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.basketball-lineup-side,
+.basketball-lineup-editor-panel {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.basketball-lineup-side-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.basketball-lineup-side-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.basketball-lineup-side-title span {
+  color: var(--accent);
+  font-weight: 900;
+}
+
+.basketball-lineup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.basketball-lineup-table th,
+.basketball-lineup-table td {
+  padding: 9px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-ghost);
+  white-space: nowrap;
+}
+
+.basketball-lineup-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.basketball-lineup-table tbody tr {
+  cursor: pointer;
+}
+
+.basketball-lineup-table tbody tr:hover,
+.basketball-lineup-table tbody tr.active {
+  background: rgba(255, 122, 0, 0.12);
+}
+
+.basketball-lineup-table tbody tr.active td {
+  color: var(--accent);
+  font-weight: 900;
+}
+
+.basketball-lineup-table.editor th,
+.basketball-lineup-table.editor td {
+  padding: 7px;
+}
+
+.basketball-lineup-table.editor input,
+.basketball-lineup-table.editor select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.basketball-shot-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.basketball-shot-actions .muted {
+  grid-column: 1 / -1;
+}
+
+.basketball-shot-actions button.active {
+  box-shadow: 0 0 0 2px rgba(255, 152, 47, 0.2);
+}
+
+.basketball-log-entry-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px;
+  gap: 8px;
+}
+
+.basketball-log-entry-row input {
+  width: 100%;
+  min-width: 0;
+  font-weight: 900;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.basketball-rebound-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.basketball-rebound-picker button {
+  min-height: 40px;
+  font-weight: 900;
+}
+
+.basketball-rebound-picker button.active {
+  border-color: rgba(255, 152, 47, 0.5);
+  background: rgba(255, 122, 0, 0.12);
+  color: var(--accent);
+}
+
+.basketball-rebound-control-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.basketball-rebound-control-card {
+  min-height: 282px;
+}
+
+.basketball-rebound-control-card .basketball-rebound-control-grid {
+  margin-top: 12px;
+}
+
+.basketball-rebound-control-side {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-ghost);
+  border-radius: 8px;
+}
+
+.basketball-log-entry-row.rebound {
+  margin-top: 10px;
+}
+
+.basketball-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.basketball-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.basketball-bottom-grid {
+  display: block;
+  margin-top: 0;
+}
+
+.basketball-event-log {
+  height: 348px;
+  overflow: auto;
+}
+
+.basketball-event-card {
+  align-self: start;
+  width: 100%;
+  min-height: 440px;
+}
+
+.basketball-event-card .basketball-event-log {
+  min-height: 0;
+}
+
+.basketball-event-row {
+  display: grid;
+  grid-template-columns: 90px minmax(180px, 1fr) minmax(0, 140px) 80px;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-ghost);
+}
+
+.basketball-event-row:first-child {
+  border-top: 0;
+}
+
+.basketball-event-row span {
+  color: var(--muted);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.basketball-margin-chart {
+  width: 100%;
+  height: 290px;
+  display: block;
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+
+.margin-grid line {
+  stroke: rgba(255, 255, 255, 0.10);
+  stroke-width: 0.8;
+  stroke-dasharray: 3 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.margin-grid text {
+  fill: rgba(255, 255, 255, 0.35);
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.zero-line {
+  stroke: rgba(255, 255, 255, 0.88);
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.margin-fill-home {
+  fill: rgba(249, 115, 22, 0.22);
+  stroke: none;
+}
+
+.margin-fill-away {
+  fill: rgba(37, 99, 235, 0.22);
+  stroke: none;
+}
+
+.margin-line {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.76);
+  stroke-width: 1.4;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  vector-effect: non-scaling-stroke;
+}
+
+.quarter-marker line {
+  stroke: rgba(251, 191, 36, 0.88);
+  stroke-width: 1.1;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.quarter-marker text {
+  fill: #fbbf24;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.home-dot {
+  fill: var(--accent);
+  stroke: rgba(255, 255, 255, 0.82);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleX(0.56);
+}
+
+.away-dot {
+  fill: #3b82f6;
+  stroke: rgba(255, 255, 255, 0.82);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleX(0.56);
+}
+
+.margin-dot-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.margin-tooltip rect {
+  fill: rgba(22, 22, 24, 0.96);
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.margin-tooltip text {
+  fill: var(--text);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.margin-time-axis line {
+  stroke: rgba(255, 255, 255, 0.13);
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.margin-time-axis text {
+  fill: var(--muted);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
 .hero-actions-compact {
   justify-content: flex-end;
   align-items: center;
@@ -648,6 +1257,45 @@ a:focus-visible {
 
 .hero-actions-compact .field-help {
   margin: 0;
+}
+
+.match-hero-actions {
+  flex: 0 1 660px;
+  min-width: 0;
+  max-width: 660px;
+  display: grid;
+  gap: 18px;
+  justify-items: stretch;
+}
+
+.match-hero-actions > .row {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.match-lineup-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.match-lineup-action-row {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.match-lineup-action-row .muted {
+  white-space: nowrap;
+}
+
+.match-lineup-action-row select {
+  min-width: 92px;
 }
 
 .field-stack {
@@ -1306,6 +1954,21 @@ a:focus-visible {
   width: min(920px, 100%);
   max-height: min(82vh, 760px);
   overflow: auto;
+}
+
+.fcm-modal.basketball-lineup-modal {
+  width: min(1240px, calc(100vw - 40px));
+  max-height: min(86vh, 820px);
+  overflow: auto;
+}
+
+.basketball-lineup-modal .basketball-lineup-editor-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+.basketball-lineup-modal .basketball-lineup-table.editor {
+  min-width: 520px;
 }
 
 .fpa-match-modal {

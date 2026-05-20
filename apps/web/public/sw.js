@@ -1,13 +1,29 @@
-const CACHE_VERSION = 'live-admin-v1';
+const CACHE_VERSION = 'live-admin-v2';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const PAGE_CACHE = `${CACHE_VERSION}-pages`;
+const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
+const IS_DEV_HOST = DEV_HOSTS.has(self.location.hostname);
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
-  event.waitUntil(caches.open(STATIC_CACHE));
+  event.waitUntil(
+    IS_DEV_HOST
+      ? caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+      : caches.open(STATIC_CACHE)
+  );
 });
 
 self.addEventListener('activate', (event) => {
+  if (IS_DEV_HOST) {
+    event.waitUntil(
+      caches.keys()
+        .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+        .then(() => self.registration.unregister())
+        .then(() => self.clients.claim())
+    );
+    return;
+  }
+
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
@@ -29,6 +45,8 @@ function isStaticAsset(pathname) {
 }
 
 self.addEventListener('fetch', (event) => {
+  if (IS_DEV_HOST) return;
+
   const { request } = event;
   if (request.method !== 'GET') return;
 

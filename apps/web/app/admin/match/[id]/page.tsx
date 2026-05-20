@@ -1133,7 +1133,7 @@ export default function MatchPage() {
           </div>
           {copyMessage ? <div className="muted">{copyMessage}</div> : null}
         </div>
-        <div className="grid" style={{ gap: 118, minWidth: 'min(660px, 100%)', justifyItems: 'stretch' }}>
+        <div className="match-hero-actions">
           <div className="row" style={{ justifyContent: 'flex-end' }}>
             <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
               {isExportingMatchData ? 'Exporting...' : 'Export Match Data'}
@@ -1145,31 +1145,35 @@ export default function MatchPage() {
               operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
             </span>
           </div>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
-            <span className="muted">Lineup PDF first team</span>
-            <select value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team)} disabled={!canWrite || isUploadingLineup}>
-              <option value="HOME">HOME</option>
-              <option value="AWAY">AWAY</option>
-            </select>
-            <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
-              {isUploadingLineup ? 'Parsing...' : 'Upload Lineup PDF'}
-            </button>
-            <input
-              ref={lineupInputRef}
-              type="file"
-              accept="application/pdf,.pdf"
-              style={{ display: 'none' }}
-              onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
-            />
-            <span className="muted">
-              roster: H {(lineups.HOME || []).length} / A {(lineups.AWAY || []).length}
-            </span>
-            <button className="btn-secondary" onClick={swapLineupSides} disabled={!canWrite || isSwappingLineup || !hasLineupPlayers}>
-              {isSwappingLineup ? 'Swapping...' : 'Swap H/A'}
-            </button>
-            <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
-              Manual Lineup
-            </button>
+          <div className="match-lineup-actions">
+            <div className="match-lineup-action-row">
+              <span className="muted">Lineup PDF first team</span>
+              <select value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team)} disabled={!canWrite || isUploadingLineup}>
+                <option value="HOME">HOME</option>
+                <option value="AWAY">AWAY</option>
+              </select>
+              <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
+                {isUploadingLineup ? 'Parsing...' : 'Upload Lineup PDF'}
+              </button>
+              <input
+                ref={lineupInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                style={{ display: 'none' }}
+                onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
+              />
+            </div>
+            <div className="match-lineup-action-row">
+              <span className="muted">
+                roster: H {(lineups.HOME || []).length} / A {(lineups.AWAY || []).length}
+              </span>
+              <button className="btn-secondary" onClick={swapLineupSides} disabled={!canWrite || isSwappingLineup || !hasLineupPlayers}>
+                {isSwappingLineup ? 'Swapping...' : 'Swap H/A'}
+              </button>
+              <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
+                Manual Lineup
+              </button>
+            </div>
           </div>
         </div>
       </div>

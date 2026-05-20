@@ -3,12 +3,13 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 Team = Literal["HOME", "AWAY"]
+Sport = Literal["FOOTBALL", "BASKETBALL"]
 PossessionTeam = Literal["HOME", "AWAY", "NONE"]
 Lane = Literal["LEFT", "CENTER", "RIGHT"]
 AttackLR = Literal["L2R", "R2L"]
 IngestProtocol = Literal["SRT", "RTMP"]
 StreamMode = Literal["STREAM", "MANUAL"]
-WebhookEventKind = Literal["STATE", "EVENT"]
+WebhookEventKind = Literal["STATE", "EVENT", "BASKETBALL_STATE", "BASKETBALL_EVENT"]
 UserRole = Literal["OPERATOR", "SUPERADMIN"]
 MarkerType = Literal["HALFTIME_START"]
 TimelineItemKind = Literal["EVENT", "MARKER"]
@@ -17,6 +18,7 @@ EditableEventType = Literal["ATTACK_LANE", "XG", "HALFTIME_START"]
 
 class CreateMatchRequest(BaseModel):
     name: str
+    sport: Sport = "FOOTBALL"
     competition_class: str = Field(default="K3", min_length=1, max_length=20)
     round_number: int = Field(default=1, ge=1, le=99)
     stream_mode: StreamMode = "STREAM"
@@ -31,6 +33,7 @@ class CreateMatchRequest(BaseModel):
 class MatchResponse(BaseModel):
     id: UUID
     name: str
+    sport: Sport = "FOOTBALL"
     competition_class: str
     round_number: int
     first_half_minutes: int
@@ -48,6 +51,12 @@ class CompetitionClassCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     first_half_minutes: int = Field(default=45, ge=1, le=120)
     second_half_minutes: int = Field(default=45, ge=1, le=120)
+
+
+class CompetitionClassUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    first_half_minutes: int = Field(ge=1, le=120)
+    second_half_minutes: int = Field(ge=1, le=120)
 
 
 class CompetitionClassResponse(BaseModel):

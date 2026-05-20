@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { API_BASE, apiJson } from '../../../lib/api';
+import { useSportContext } from '../../../components/SportContext';
 
 type HubMatch = {
   id: string;
   name: string;
+  sport?: 'FOOTBALL' | 'BASKETBALL';
   competition_class: string;
   round_number: number;
   archived: boolean;
@@ -15,12 +17,13 @@ type HubMatch = {
 };
 
 export default function DataHubPage() {
+  const { sport } = useSportContext();
   const [matches, setMatches] = useState<HubMatch[]>([]);
   const [status, setStatus] = useState('Loading data hub');
 
   const load = async () => {
     try {
-      const data = await apiJson<HubMatch[]>('/data-hub/matches');
+      const data = await apiJson<HubMatch[]>(`/data-hub/matches?sport=${sport}`);
       setMatches(Array.isArray(data) ? data : []);
       setStatus('');
     } catch (error) {
@@ -30,7 +33,7 @@ export default function DataHubPage() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [sport]);
 
   return (
     <main className="page-stack">
@@ -38,7 +41,7 @@ export default function DataHubPage() {
         <div>
           <div className="sidebar-eyebrow">Shared Match Data</div>
           <h1>Data Hub</h1>
-          <p>FLA 경기 데이터와 저장된 FPA 분석 데이터를 같은 match 기준으로 내려받습니다.</p>
+          <p>{sport === 'BASKETBALL' ? '현재 Basketball 컨텍스트의 경기 데이터를 분리해서 봅니다.' : 'FLA 경기 데이터와 저장된 FPA 분석 데이터를 같은 match 기준으로 내려받습니다.'}</p>
         </div>
       </section>
 
@@ -46,7 +49,7 @@ export default function DataHubPage() {
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Downloads</div>
-            <h3>경기별 데이터</h3>
+            <h3>{sport === 'BASKETBALL' ? '농구 경기별 데이터' : '경기별 데이터'}</h3>
           </div>
           <button className="button-compact btn-secondary" onClick={load}>새로고침</button>
         </div>
@@ -69,9 +72,9 @@ export default function DataHubPage() {
                   <td>{match.name}</td>
                   <td>{match.archived ? 'Archived' : 'Active'}</td>
                   <td>
-                    <a className="button-link button-compact btn-success" href={`${API_BASE}/matches/${match.id}/export.csv`}>
+                    {sport === 'FOOTBALL' ? <a className="button-link button-compact btn-success" href={`${API_BASE}/matches/${match.id}/export.csv`}>
                       Download
-                    </a>
+                    </a> : <span className="muted">Local logger export</span>}
                   </td>
                   <td>
                     {match.has_fpa_logs ? (

@@ -26,7 +26,7 @@ const actionGroups = [
       ['rr', 'Dribble', '1개', '드리블'],
       ['gp', 'Gain', '1개', '볼 획득'],
       ['m', 'Miss', '1개', '컨트롤 미스'],
-      ['tr', 'Throw-in', '2개', '스로인'],
+      ['t / tt', 'Throw-in Fail / Success', '2개', '스로인 실패 / 성공'],
       ['st', 'Sprint', '2개', '스프린트'],
     ],
   },
@@ -43,7 +43,7 @@ const actionGroups = [
       ['bb / b', 'Duel', '1개', '경합 성공 / 실패'],
       ['f / ff', 'Foul', '1개', '파울 / 피파울'],
       ['o', 'Offside', '1개', '오프사이드'],
-      ['t', 'Touch', '1개', '위치 기록'],
+      ['선수번호만', 'Touch', '1개', '위치 기록'],
     ],
   },
 ] as const;
@@ -77,6 +77,8 @@ const examples = [
   ['11ddd.wf', '11번 선수가 어려운 자세에서 골', '좌표 1개, Success + Difficult'],
   ['9ddd.h', '9번 선수가 헤더 골', '좌표 1개, Success + Header'],
   ['3c', '3번 선수가 크로스를 시도했지만 실패', '좌표 2개, Fail'],
+  ['4tt7', '4번 선수가 7번 선수에게 스로인 성공', '좌표 2개, Success'],
+  ['4t7', '4번 선수가 7번 선수에게 스로인 실패', '좌표 2개, Fail'],
   ['10ddd.c.wf', '10번 선수가 역습 상황에서 어려운 자세로 골', 'Counter Attack + Difficult'],
 ] as const;
 

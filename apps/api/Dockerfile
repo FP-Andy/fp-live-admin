@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg && 
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-deps mplbasketball==1.0.1
 
 COPY app ./app
 

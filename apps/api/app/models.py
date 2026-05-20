@@ -19,6 +19,7 @@ class Match(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    sport: Mapped[str] = mapped_column(String, nullable=False, default="FOOTBALL", index=True)
     competition_class: Mapped[str] = mapped_column(String, nullable=False, default="K3")
     round_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     first_half_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=45)

@@ -52,7 +52,9 @@ ACTION_CODES = {
     "f": "Foul",
     "ff": "Be Fouled",
     "o": "Offside",
-    "t": "Touch",
+    "touch": "Touch",
+    "t": "Throw-in",
+    "tt": "Throw-in",
     "st": "Sprint",
     "tr": "Throw-in",
 }
@@ -71,6 +73,34 @@ TAG_CODES = {
     "ft": "First Time",
 }
 TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr"}
+
+
+def _dedupe_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df.columns.has_duplicates:
+        return df.loc[:, ~df.columns.duplicated()].copy()
+    return df
+
+
+def _scalar_value(value: Any) -> Any:
+    if isinstance(value, pd.Series):
+        non_null = value.dropna()
+        return non_null.iloc[0] if not non_null.empty else ""
+    if isinstance(value, np.ndarray):
+        flat = value.ravel()
+        return flat[0] if flat.size else ""
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else ""
+    return value
+
+
+def _clean_scalar_text(value: Any) -> str:
+    value = _scalar_value(value)
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text.endswith(".0") and text.replace(".", "", 1).isdigit():
+        return text[:-2]
+    return text
 
 
 def convert_time_to_seconds(df: pd.DataFrame) -> pd.DataFrame:
@@ -98,6 +128,10 @@ def is_in_final_third(x: Any) -> Any:
 
 def is_in_penalty_area(x: Any, y: Any) -> Any:
     return (x > 88.5) & (y > 13.84) & (y < 54.16)
+
+
+def is_in_either_penalty_area(x: Any, y: Any) -> Any:
+    return (((x >= 0) & (x < 16.5)) | ((x > 88.5) & (x <= FIELD_W))) & (y > 13.84) & (y < 54.16)
 
 
 def is_progressive_pass(start_x: Any, end_x: Any) -> Any:
@@ -210,12 +244,16 @@ def auto_tag_key_pass_and_assist(df: pd.DataFrame) -> pd.DataFrame:
     for i in range(1, len(df_sorted)):
         current_event = df_sorted.loc[i]
         prev_event = df_sorted.loc[i - 1]
+        current_team_id = _clean_scalar_text(current_event.get("TeamID", ""))
+        prev_team_id = _clean_scalar_text(prev_event.get("TeamID", ""))
+        current_player = _clean_scalar_text(current_event.get("Player", ""))
+        prev_player = _clean_scalar_text(prev_event.get("Player", ""))
         if (
             current_event["Action"] in ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
             and prev_event["Action"] in ["Pass", "Cross"]
             and "Success" in prev_event["Tags"]
-            and prev_event["TeamID"] == current_event["TeamID"]
-            and prev_event["Player"] != current_event["Player"]
+            and prev_team_id == current_team_id
+            and prev_player != current_player
         ):
             if current_event["Action"] == "Goal":
                 if "Assist" not in prev_event["Tags"]:
@@ -899,7 +937,7 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
 
     if base_action_part.isdigit():
         player_from = base_action_part
-        action_code_raw = "t"
+        action_code_raw = "touch"
         player_to = ""
     else:
         match = re.match(r"(\d+)([a-z]+)(\d*)", base_action_part)
@@ -913,15 +951,20 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
     if not action_name:
         raise ValueError("알 수 없는 액션 코드")
 
-    if (base_action_code in ["s", "c", "z"] or action_code_raw == "tr") and action_code_raw != "sv" and not player_to:
+    if (
+        base_action_code in ["s", "c", "z"]
+        or action_name == "Throw-in"
+    ) and action_code_raw != "sv" and not player_to:
         raise ValueError(f"'{action_name}' 액션은 받는 선수 번호가 필요합니다. (예: 10{action_code_raw}8)")
 
     tags_list = [TAG_CODES[tag_code] for tag_code in tag_codes if tag_code in TAG_CODES]
-    if action_code_raw in ["z", "gp", "w", "qw", "v", "vv", "sv", "dd", "ddd"]:
+    if action_name == "Throw-in":
+        tags_list.append("Success" if action_code_raw == "tt" else "Fail")
+    elif action_code_raw in ["z", "gp", "w", "qw", "v", "vv", "sv", "dd", "ddd"]:
         tags_list.append("Success")
     elif action_code_raw in ["d", "db"]:
         tags_list.append("Fail")
-    elif action_code_raw not in ["t", "m", "q", "p", "l", "qq", "bl", "o", "st"]:
+    elif action_code_raw not in ["touch", "t", "m", "q", "p", "l", "qq", "bl", "o", "st"]:
         if len(action_code_raw) > 1 and action_code_raw[0] == action_code_raw[1]:
             tags_list.append("Success")
         else:
@@ -967,7 +1010,8 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
         start_x_adj = FIELD_W - start_x if direction == "left" else start_x
         log_text = f"{half} | {team} | {direction} | {timeline} | Pos({start_x}, {start_y}) | {player_from} {action_name}"
 
-    if is_in_penalty_area(start_x_adj, start_y) and "In-box" not in tags_list:
+    in_penalty_box = is_in_penalty_area(start_x_adj, start_y) or is_in_either_penalty_area(start_x, start_y)
+    if in_penalty_box and "In-box" not in tags_list:
         tags_list.append("In-box")
     elif action_name in ["Goal", "Shot On Target", "Shot", "Blocked Shot"] and "Out-box" not in tags_list:
         tags_list.append("Out-box")
@@ -1018,7 +1062,7 @@ def build_final_stats(df_analyzed_with_xg: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_analysis_workbook(df_or_bytes: pd.DataFrame | bytes) -> bytes:
-    df = load_excel_dataframe(df_or_bytes, "Data") if isinstance(df_or_bytes, bytes) else df_or_bytes
+    df = load_excel_dataframe(df_or_bytes, "Data") if isinstance(df_or_bytes, bytes) else _dedupe_dataframe_columns(df_or_bytes.copy())
     analyzed = perform_full_analysis(df)
     pass_summary = create_player_summary(analyzed)
     shooter_summary = create_shooter_summary(analyzed)
@@ -1041,12 +1085,7 @@ def build_analysis_workbook(df_or_bytes: pd.DataFrame | bytes) -> bytes:
 
 
 def _clean_player_label(value: Any) -> str:
-    if pd.isna(value):
-        return ""
-    text = str(value).strip()
-    if text.endswith(".0") and text.replace(".", "", 1).isdigit():
-        return text[:-2]
-    return text
+    return _clean_scalar_text(value)
 
 
 def _format_count(value: Any) -> str:
@@ -1065,7 +1104,7 @@ def _format_decimal(value: Any) -> str:
 def _safe_series_value(series: pd.Series | None, key: str) -> float:
     if series is None or key not in series.index:
         return 0.0
-    value = series.get(key, 0)
+    value = _scalar_value(series.get(key, 0))
     if pd.isna(value):
         return 0.0
     return float(value)
@@ -1225,7 +1264,7 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
 
 
 def load_excel_dataframe(file_bytes: bytes, sheet_name: str | int = 0) -> pd.DataFrame:
-    return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name)
+    return _dedupe_dataframe_columns(pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name))
 
 
 def extract_players(file_bytes: bytes) -> list[str]:
@@ -1540,12 +1579,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
     rows: list[dict[str, str]] = []
 
     def clean_value(value: Any) -> str:
-        if pd.isna(value):
-            return ""
-        text = str(value).strip()
-        if text.endswith(".0") and text.replace(".", "", 1).isdigit():
-            return text[:-2]
-        return text
+        return _clean_scalar_text(value)
 
     home_team_id = ""
     away_team_id = ""
