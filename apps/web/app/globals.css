@@ -1299,7 +1299,47 @@ a:focus-visible {
 }
 
 .competition-modal {
-  width: min(560px, 100%);
+  width: min(620px, calc(100vw - 40px));
+  max-height: min(82vh, 720px);
+  overflow: hidden;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.competition-modal-tabs {
+  width: 100%;
+}
+
+.competition-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.competition-modal-section {
+  display: grid;
+  gap: 14px;
+}
+
+.competition-class-table-wrap {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border-ghost);
+  border-radius: var(--radius-control);
+}
+
+.competition-class-table th:last-child,
+.competition-class-table td:last-child {
+  width: 84px;
+  text-align: right;
+}
+
+.competition-edit-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-ghost);
+  border-radius: var(--radius-card);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .lineup-modal {
