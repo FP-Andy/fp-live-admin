@@ -70,32 +70,46 @@ const TEAM_OPTIONS_BY_CLASS: Record<string, string[]> = {
     '화천 KSPO 여자축구단',
   ],
   'SUFA-S': [
+    '고려대 FC DREAM',
     '서울시립대 아마축구부',
-    '연세대 WTF',
-    '한양대 라이언',
-    '중앙대 청우회',
-    '한체대 태풍',
     '숭실대 SSC',
     '연세대 FC연세',
+    '연세대 WTF',
+    '중앙대 청우회',
+    '한양대 라이언',
+    '한체대 태풍',
   ],
   'SUFA-A': [
     '고려대 아마추어축구부',
-    '서강대 서강축구반',
+    '광운대 KWPE',
     '동국대 FC TOTO',
     '서울시립대 AZURE',
+    '서강대 서강축구반',
+    '중앙대 FC BASTARD',
+    '한체대 FC LABAMBA',
     '한체대 FC 리히트',
   ],
   'SUFA-B': [
+    '건국대 N:TROPY',
+    '상명대 캐논',
+    '서강대 KLASSIKER',
+    '서울과기대 FC CTRL',
+    '서울과기대 FC GAIA',
+    '성균관대 성균축구단',
     '한국외대 야생마FC',
     '한양대 한백사',
-    '성균관대 성균축구단',
-    '상명대 캐논',
   ],
   'SUFA-L': [
-    '서울대 SNUWFC',
-    '이화여대 FC콕',
+    '고려대 FC ELISE',
+    '국민대 한마음 레이디스',
     '동국대 FC 엘레펜테',
+    '서울대 SNUWFC',
+    '서울시립대 WFC.BETA',
     '숙명여대 FC숙명',
+    '연세대 W-KICKS',
+    '이화여대 ESSA',
+    '이화여대 FC콕',
+    '한체대 FC천마',
   ],
 };
 
@@ -121,6 +135,10 @@ export default function Dashboard() {
   const [newClassName, setNewClassName] = useState('');
   const [newClassFirstHalf, setNewClassFirstHalf] = useState(45);
   const [newClassSecondHalf, setNewClassSecondHalf] = useState(45);
+  const [editingClassCode, setEditingClassCode] = useState('');
+  const [editingClassName, setEditingClassName] = useState('');
+  const [editingClassFirstHalf, setEditingClassFirstHalf] = useState(45);
+  const [editingClassSecondHalf, setEditingClassSecondHalf] = useState(45);
   const [classModalError, setClassModalError] = useState('');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -243,6 +261,45 @@ export default function Dashboard() {
     setNewClassFirstHalf(45);
     setNewClassSecondHalf(45);
     setIsClassModalOpen(false);
+    await load();
+  };
+
+  const startEditCompetitionClass = (item: CompetitionClass) => {
+    setClassModalError('');
+    setEditingClassCode(item.code);
+    setEditingClassName(item.name);
+    setEditingClassFirstHalf(item.first_half_minutes);
+    setEditingClassSecondHalf(item.second_half_minutes);
+  };
+
+  const cancelEditCompetitionClass = () => {
+    setEditingClassCode('');
+    setEditingClassName('');
+    setEditingClassFirstHalf(45);
+    setEditingClassSecondHalf(45);
+    setClassModalError('');
+  };
+
+  const updateCompetitionClass = async () => {
+    if (!editingClassCode) return;
+    const name = editingClassName.trim() || editingClassCode;
+    setClassModalError('');
+
+    const response = await apiFetch(`/competition-classes/${encodeURIComponent(editingClassCode)}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name,
+        first_half_minutes: editingClassFirstHalf,
+        second_half_minutes: editingClassSecondHalf,
+      }),
+    });
+
+    if (!response.ok) {
+      setClassModalError((await response.text()) || 'Failed to update competition class');
+      return;
+    }
+
+    cancelEditCompetitionClass();
     await load();
   };
 
@@ -453,7 +510,7 @@ export default function Dashboard() {
                   <h3>새 경기 등록</h3>
                 </div>
                 <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(true)}>
-                  대회 생성
+                  대회 관리
                 </button>
               </div>
               <div className="hero-form-grid compact">
@@ -750,16 +807,17 @@ export default function Dashboard() {
         </section>
       </main>
       {isClassModalOpen ? (
-        <div className="fcm-modal-backdrop" role="dialog" aria-modal="true" aria-label="대회 생성">
+        <div className="fcm-modal-backdrop" role="dialog" aria-modal="true" aria-label="대회 관리">
           <div className="card card-panel fcm-modal competition-modal">
             <div className="section-heading">
               <div>
                 <div className="sidebar-eyebrow">Competition</div>
-                <h3>대회 생성</h3>
+                <h3>대회 관리</h3>
               </div>
               <button className="button-compact btn-secondary" onClick={() => setIsClassModalOpen(false)}>닫기</button>
             </div>
 
+            <div className="sidebar-eyebrow">Create</div>
             <div className="competition-modal-grid">
               <div className="field-stack">
                 <div className="field-label">대회 코드</div>
@@ -805,6 +863,80 @@ export default function Dashboard() {
             <div className="row hero-actions-compact">
               <button className="btn-primary" onClick={createCompetitionClass}>Create Competition</button>
             </div>
+
+            <div className="sidebar-eyebrow" style={{ marginTop: 16 }}>Edit</div>
+            <div className="fcm-guide-table-wrap">
+              <table className="fcm-guide-table">
+                <thead>
+                  <tr>
+                    <th>코드</th>
+                    <th>이름</th>
+                    <th>시간</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {competitionOptions.map((item) => (
+                    <tr key={item.code}>
+                      <td>{item.code}</td>
+                      <td>{item.name}</td>
+                      <td>{item.first_half_minutes} / {item.second_half_minutes}분</td>
+                      <td>
+                        <button className="button-compact btn-secondary" onClick={() => startEditCompetitionClass(item)}>
+                          수정
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {editingClassCode ? (
+              <div className="card card-soft" style={{ marginTop: 12 }}>
+                <div className="section-heading">
+                  <div>
+                    <div className="sidebar-eyebrow">{editingClassCode}</div>
+                    <h3>대회 정보 수정</h3>
+                  </div>
+                  <button className="button-compact btn-secondary" onClick={cancelEditCompetitionClass}>취소</button>
+                </div>
+                <div className="competition-modal-grid">
+                  <div className="field-stack">
+                    <div className="field-label">표시 이름</div>
+                    <input
+                      value={editingClassName}
+                      onChange={(e) => setEditingClassName(e.target.value)}
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <div className="field-label">전반 시간(분)</div>
+                    <input
+                      min={1}
+                      max={120}
+                      step={1}
+                      type="number"
+                      value={editingClassFirstHalf}
+                      onChange={(e) => setEditingClassFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <div className="field-label">후반 시간(분)</div>
+                    <input
+                      min={1}
+                      max={120}
+                      step={1}
+                      type="number"
+                      value={editingClassSecondHalf}
+                      onChange={(e) => setEditingClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                    />
+                  </div>
+                  <div className="field-stack" style={{ justifyContent: 'end' }}>
+                    <button className="btn-primary" onClick={updateCompetitionClass}>Save Changes</button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

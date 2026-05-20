@@ -50,6 +50,12 @@ class CompetitionClassCreateRequest(BaseModel):
     second_half_minutes: int = Field(default=45, ge=1, le=120)
 
 
+class CompetitionClassUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    first_half_minutes: int = Field(ge=1, le=120)
+    second_half_minutes: int = Field(ge=1, le=120)
+
+
 class CompetitionClassResponse(BaseModel):
     code: str
     name: str

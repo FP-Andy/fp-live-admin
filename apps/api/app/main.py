@@ -46,6 +46,7 @@ from .schemas import (
     AttachSrtRequest,
     CompetitionClassCreateRequest,
     CompetitionClassResponse,
+    CompetitionClassUpdateRequest,
     CreateMatchRequest,
     IngestProtocol,
     LineupManualPlayerDeleteRequest,
@@ -2731,6 +2732,21 @@ def create_competition_class(body: CompetitionClassCreateRequest, db: Session = 
         second_half_minutes=body.second_half_minutes,
     )
     db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_competition_class(row)
+
+
+@app.put("/api/competition-classes/{code}", response_model=CompetitionClassResponse)
+def update_competition_class(code: str, body: CompetitionClassUpdateRequest, db: Session = Depends(get_db)):
+    normalized_code = _normalize_competition_class(code)
+    row = db.get(CompetitionClass, normalized_code)
+    if not row:
+        raise HTTPException(status_code=404, detail="Competition class not found")
+
+    row.name = body.name.strip()
+    row.first_half_minutes = body.first_half_minutes
+    row.second_half_minutes = body.second_half_minutes
     db.commit()
     db.refresh(row)
     return _serialize_competition_class(row)
