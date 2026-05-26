@@ -106,6 +106,8 @@ HIGHLIGHT_WORKER_INSTANCE_ID = os.getenv("HIGHLIGHT_WORKER_INSTANCE_ID", "").str
 HIGHLIGHT_WORKER_INSTANCE_NAME = os.getenv("HIGHLIGHT_WORKER_INSTANCE_NAME", "fhl-gpu-worker").strip() or "fhl-gpu-worker"
 FCM_RUNTIME_DIR = Path(os.getenv("FCM_RUNTIME_DIR", "/app/runtime/fcm")).resolve()
 FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
+BROADCAST_RUNTIME_DIR = Path(os.getenv("BROADCAST_RUNTIME_DIR", "/app/runtime/broadcast")).resolve()
+BROADCAST_LOGO_DIR = BROADCAST_RUNTIME_DIR / "logos"
 
 DOM_POSSESSION_WEIGHT = float(os.getenv("DOM_POSSESSION_WEIGHT", "0.35"))
 DOM_XG_WEIGHT = float(os.getenv("DOM_XG_WEIGHT", "0.65"))
@@ -114,6 +116,25 @@ DOM_XG_SCALE = float(os.getenv("DOM_XG_SCALE", "1.8"))
 DOM_GOAL_XG_MULTIPLIER = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
 DOMINANCE_CACHE_TTL_SECONDS = float(os.getenv("DOMINANCE_CACHE_TTL_SECONDS", "3.0"))
 _dominance_response_cache: dict[tuple[str, int, bool], tuple[float, dict]] = {}
+MATCH_RESPONSE_CACHE_TTL_SECONDS = float(os.getenv("MATCH_RESPONSE_CACHE_TTL_SECONDS", "3.0"))
+_match_response_cache: dict[str, tuple[float, object]] = {}
+BROADCAST_SNAPSHOT_CACHE_TTL_SECONDS = float(os.getenv("BROADCAST_SNAPSHOT_CACHE_TTL_SECONDS", "3.0"))
+_broadcast_snapshot_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _cache_get(cache: dict, key):
+    if MATCH_RESPONSE_CACHE_TTL_SECONDS <= 0:
+        return None
+    cached = cache.get(key)
+    if cached and time.monotonic() - cached[0] <= MATCH_RESPONSE_CACHE_TTL_SECONDS:
+        return cached[1]
+    return None
+
+
+def _cache_set(cache: dict, key, value):
+    if MATCH_RESPONSE_CACHE_TTL_SECONDS > 0:
+        cache[key] = (time.monotonic(), value)
+    return value
 
 
 def _normalize_hls_url(hls_url: str | None) -> str | None:
@@ -825,6 +846,168 @@ def _serialize_match(row: Match, include_sport: bool = True) -> dict:
     if include_sport:
         payload["sport"] = _normalize_sport(getattr(row, "sport", None))
     return payload
+
+
+def _default_broadcast_state(match_obj: Match) -> dict:
+    now = datetime.utcnow().isoformat()
+    return {
+        "match_id": str(match_obj.id),
+        "sport": _normalize_sport(getattr(match_obj, "sport", None)),
+        "scoreboard_visible": True,
+        "active_graphic": None,
+        "possession_visible": False,
+        "selected_xg_event_id": None,
+        "event_graphic": None,
+        "fullscreen_graphic": None,
+        "fullscreen_image_urls": {},
+        "theme_id": "fineplay_dark",
+        "home_label": "Home",
+        "away_label": "Away",
+        "home_color": "#ff7900",
+        "away_color": "#3d22f3",
+        "home_logo_url": "",
+        "away_logo_url": "",
+        "home_score": None,
+        "away_score": None,
+        "clock_ms": 0,
+        "clock_running": False,
+        "clock_started_at": None,
+        "sequence": 0,
+        "updated_at": now,
+    }
+
+
+def _broadcast_state(match_obj: Match) -> dict:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    state = metadata.get("broadcast") if isinstance(metadata.get("broadcast"), dict) else {}
+    base = _default_broadcast_state(match_obj)
+    base.update({k: v for k, v in state.items() if k in base or k in {"event_payload"}})
+    base["match_id"] = str(match_obj.id)
+    base["sport"] = _normalize_sport(getattr(match_obj, "sport", None))
+    base["scoreboard_visible"] = bool(base.get("scoreboard_visible"))
+    base["possession_visible"] = bool(base.get("possession_visible"))
+    if base.get("active_graphic") not in {None, "ATTACK_DIRECTION_HOME", "ATTACK_DIRECTION_AWAY", "XG"}:
+        base["active_graphic"] = None
+    if not isinstance(base.get("fullscreen_image_urls"), dict):
+        base["fullscreen_image_urls"] = {}
+    base["sequence"] = int(base.get("sequence") or 0)
+    base["clock_ms"] = max(0, int(base.get("clock_ms") or 0))
+    base["clock_running"] = bool(base.get("clock_running") or False)
+    for key, fallback in (("home_color", "#ff7900"), ("away_color", "#3d22f3")):
+        value = str(base.get(key) or fallback).strip()
+        base[key] = value if re.fullmatch(r"#[0-9A-Fa-f]{6}", value) else fallback
+    for key, fallback in (("home_label", "Home"), ("away_label", "Away")):
+        value = str(base.get(key) or fallback).strip()
+        base[key] = value[:20] if value else fallback
+    for key in ("home_logo_url", "away_logo_url"):
+        base[key] = str(base.get(key) or "").strip()[:500]
+    for key in ("home_score", "away_score"):
+        raw_score = base.get(key)
+        base[key] = None if raw_score is None else max(0, int(raw_score or 0))
+    return base
+
+
+def _broadcast_clock_ms(state: dict, now: datetime | None = None) -> int:
+    base_ms = max(0, int(state.get("clock_ms") or 0))
+    if not state.get("clock_running"):
+        return base_ms
+    raw_started_at = state.get("clock_started_at")
+    if not raw_started_at:
+        return base_ms
+    try:
+        started_at = datetime.fromisoformat(str(raw_started_at))
+    except ValueError:
+        return base_ms
+    current = now or datetime.utcnow()
+    return max(0, base_ms + int((current - started_at).total_seconds() * 1000))
+
+
+def _broadcast_logo_path(filename: str) -> Path:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", filename)
+    path = (BROADCAST_LOGO_DIR / safe_name).resolve()
+    if BROADCAST_LOGO_DIR.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid logo path")
+    return path
+
+
+def _team_names_from_match(match_obj: Match) -> dict:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    return {
+        "HOME": metadata.get("home_team") or "HOME",
+        "AWAY": metadata.get("away_team") or "AWAY",
+    }
+
+
+def _football_score_from_events(match_id: UUID, db: Session) -> dict:
+    rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG", Event.is_goal.is_(True))
+        .all()
+    )
+    return {
+        "HOME": sum(1 for row in rows if row.team == "HOME"),
+        "AWAY": sum(1 for row in rows if row.team == "AWAY"),
+    }
+
+
+def _build_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
+    state = _broadcast_state(match_obj)
+    teams = _team_names_from_match(match_obj)
+    latest_state = _latest_state(match_obj.id, db)
+    score = _football_score_from_events(match_obj.id, db)
+    home_score = score["HOME"] if state.get("home_score") is None else int(state.get("home_score") or 0)
+    away_score = score["AWAY"] if state.get("away_score") is None else int(state.get("away_score") or 0)
+    result = _build_partner_match_result(match_obj.id, db) if state["sport"] == "FOOTBALL" else {}
+    coder_clock_ms = _broadcast_clock_ms(state)
+    return {
+        "match": {
+            "id": str(match_obj.id),
+            "name": match_obj.name,
+            "sport": state["sport"],
+            "home": {"name": teams["HOME"], "score": home_score},
+            "away": {"name": teams["AWAY"], "score": away_score},
+            "clock": _fmt_clock_ms(coder_clock_ms),
+            "clock_ms": coder_clock_ms,
+            "running": bool(state.get("clock_running")),
+            "fla_clock": result.get("aggregate_clock") or (_fmt_clock_ms(latest_state.clock_ms) if latest_state else "00:00"),
+            "fla_clock_ms": result.get("aggregate_clock_ms") or (latest_state.clock_ms if latest_state else 0),
+        },
+        "broadcast_state": state,
+        "analysis": {
+            "possession": result.get("possession"),
+            "attack_direction": result.get("attack_direction") or [],
+            "xg": result.get("xg") or [],
+            "match_dominance": result.get("match_dominance"),
+        },
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _build_scoreboard_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
+    state = _broadcast_state(match_obj)
+    teams = _team_names_from_match(match_obj)
+    latest_state = _latest_state(match_obj.id, db)
+    score = _football_score_from_events(match_obj.id, db)
+    home_score = score["HOME"] if state.get("home_score") is None else int(state.get("home_score") or 0)
+    away_score = score["AWAY"] if state.get("away_score") is None else int(state.get("away_score") or 0)
+    coder_clock_ms = _broadcast_clock_ms(state)
+    return {
+        "match": {
+            "id": str(match_obj.id),
+            "name": match_obj.name,
+            "sport": state["sport"],
+            "home": {"name": teams["HOME"], "score": home_score},
+            "away": {"name": teams["AWAY"], "score": away_score},
+            "clock": _fmt_clock_ms(coder_clock_ms),
+            "clock_ms": coder_clock_ms,
+            "running": bool(state.get("clock_running")),
+            "fla_clock": _fmt_clock_ms(latest_state.clock_ms) if latest_state else "00:00",
+            "fla_clock_ms": latest_state.clock_ms if latest_state else 0,
+        },
+        "broadcast_state": state,
+        "analysis": {},
+        "updated_at": datetime.utcnow().isoformat(),
+    }
 
 
 def _require_football_match_for_partner(match_id: UUID, db: Session) -> Match:
@@ -3330,11 +3513,216 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 
 @app.get("/api/matches")
 def list_matches(sport: str | None = Query(default=None), db: Session = Depends(get_db)):
+    cache_key = ("list_matches", _normalize_sport(sport) if sport else "")
+    cached = _cache_get(_match_response_cache, cache_key)
+    if cached is not None:
+        return cached
     query = db.query(Match)
     if sport:
         query = query.filter(Match.sport == _normalize_sport(sport))
     rows = query.order_by(desc(Match.created_at)).all()
-    return [_serialize_match(r) for r in rows]
+    return _cache_set(_match_response_cache, cache_key, [_serialize_match(r) for r in rows])
+
+
+@app.get("/api/broadcast/matches/{match_id}/state")
+def get_broadcast_state(match_id: UUID, db: Session = Depends(get_db)):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    return _broadcast_state(match_obj)
+
+
+@app.post("/api/broadcast/matches/{match_id}/state")
+def put_broadcast_state(match_id: UUID, body: dict = Body(default_factory=dict), db: Session = Depends(get_db)):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    metadata = dict(match_obj.metadata_json or {})
+    previous = _broadcast_state(match_obj)
+    allowed_graphics = {None, "ATTACK_DIRECTION_HOME", "ATTACK_DIRECTION_AWAY", "XG"}
+    allowed_events = {None, "GOAL", "YELLOW_CARD", "RED_CARD", "SUBSTITUTION"}
+    allowed_fullscreen = {None, "LINEUP", "HALFTIME", "FULLTIME", "MATCH_DOMINANCE"}
+    next_state = {
+        **previous,
+        "scoreboard_visible": bool(body.get("scoreboard_visible", previous["scoreboard_visible"])),
+        "possession_visible": bool(body.get("possession_visible", previous.get("possession_visible"))),
+        "active_graphic": body.get("active_graphic", previous.get("active_graphic")),
+        "selected_xg_event_id": body.get("selected_xg_event_id", previous.get("selected_xg_event_id")),
+        "event_graphic": body.get("event_graphic", previous.get("event_graphic")),
+        "fullscreen_graphic": body.get("fullscreen_graphic", previous.get("fullscreen_graphic")),
+        "fullscreen_image_urls": previous.get("fullscreen_image_urls") if isinstance(previous.get("fullscreen_image_urls"), dict) else {},
+        "theme_id": str(body.get("theme_id", previous.get("theme_id") or "fineplay_dark")),
+        "home_label": str(body.get("home_label", previous.get("home_label") or "Home")).strip()[:20] or "Home",
+        "away_label": str(body.get("away_label", previous.get("away_label") or "Away")).strip()[:20] or "Away",
+        "home_color": str(body.get("home_color", previous.get("home_color") or "#ff7900")).strip(),
+        "away_color": str(body.get("away_color", previous.get("away_color") or "#3d22f3")).strip(),
+        "home_logo_url": str(body.get("home_logo_url", previous.get("home_logo_url") or "")).strip()[:500],
+        "away_logo_url": str(body.get("away_logo_url", previous.get("away_logo_url") or "")).strip()[:500],
+        "home_score": body.get("home_score", previous.get("home_score")),
+        "away_score": body.get("away_score", previous.get("away_score")),
+        "event_payload": body.get("event_payload", previous.get("event_payload")),
+        "sequence": int(previous.get("sequence") or 0) + 1,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    clock_action = body.get("clock_action")
+    if clock_action:
+        current_clock_ms = _broadcast_clock_ms(previous)
+        if clock_action == "start":
+            next_state["clock_ms"] = current_clock_ms
+            next_state["clock_running"] = True
+            next_state["clock_started_at"] = datetime.utcnow().isoformat()
+        elif clock_action == "pause":
+            next_state["clock_ms"] = current_clock_ms
+            next_state["clock_running"] = False
+            next_state["clock_started_at"] = None
+        elif clock_action == "reset":
+            next_state["clock_ms"] = 0
+            next_state["clock_running"] = False
+            next_state["clock_started_at"] = None
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported clock_action")
+    if "clock_ms" in body:
+        next_state["clock_ms"] = max(0, int(body.get("clock_ms") or 0))
+        next_state["clock_started_at"] = datetime.utcnow().isoformat() if next_state.get("clock_running") else None
+    if next_state["active_graphic"] not in allowed_graphics:
+        raise HTTPException(status_code=400, detail="Unsupported active_graphic")
+    if next_state["event_graphic"] not in allowed_events:
+        raise HTTPException(status_code=400, detail="Unsupported event_graphic")
+    if next_state["fullscreen_graphic"] not in allowed_fullscreen:
+        raise HTTPException(status_code=400, detail="Unsupported fullscreen_graphic")
+    for key in ("home_color", "away_color"):
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", str(next_state.get(key) or "")):
+            raise HTTPException(status_code=400, detail=f"Unsupported {key}")
+    for key in ("home_score", "away_score"):
+        if next_state.get(key) is not None:
+            next_state[key] = max(0, int(next_state.get(key) or 0))
+    metadata["broadcast"] = next_state
+    match_obj.metadata_json = metadata
+    db.commit()
+    _broadcast_snapshot_cache.pop(str(match_id), None)
+    return next_state
+
+
+@app.post("/api/broadcast/matches/{match_id}/logo")
+async def upload_broadcast_logo(
+    match_id: UUID,
+    team: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    team_key = team.upper()
+    if team_key not in {"HOME", "AWAY"}:
+        raise HTTPException(status_code=400, detail="Unsupported team")
+    original_suffix = Path(file.filename or "").suffix.lower()
+    suffix = original_suffix if original_suffix in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty logo file")
+    if len(payload) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Logo file is too large")
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            image.verify()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Unsupported logo image") from exc
+
+    BROADCAST_LOGO_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{match_id}_{team_key.lower()}_{uuid.uuid4().hex[:8]}{suffix}"
+    path = _broadcast_logo_path(filename)
+    path.write_bytes(payload)
+
+    metadata = dict(match_obj.metadata_json or {})
+    previous = _broadcast_state(match_obj)
+    next_state = {
+        **previous,
+        f"{team_key.lower()}_logo_url": f"/api/broadcast/assets/logos/{filename}",
+        "sequence": int(previous.get("sequence") or 0) + 1,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    metadata["broadcast"] = next_state
+    match_obj.metadata_json = metadata
+    db.commit()
+    _broadcast_snapshot_cache.pop(str(match_id), None)
+    return next_state
+
+
+@app.post("/api/broadcast/matches/{match_id}/fullscreen-image")
+async def upload_broadcast_fullscreen_image(
+    match_id: UUID,
+    scene: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    scene_key = scene.upper()
+    if scene_key not in {"LINEUP", "HALFTIME", "FULLTIME", "MATCH_DOMINANCE"}:
+        raise HTTPException(status_code=400, detail="Unsupported fullscreen scene")
+    original_suffix = Path(file.filename or "").suffix.lower()
+    suffix = original_suffix if original_suffix in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty fullscreen image")
+    if len(payload) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Fullscreen image is too large")
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            image.verify()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Unsupported fullscreen image") from exc
+
+    BROADCAST_LOGO_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{match_id}_fullscreen_{scene_key.lower()}_{uuid.uuid4().hex[:8]}{suffix}"
+    path = _broadcast_logo_path(filename)
+    path.write_bytes(payload)
+
+    metadata = dict(match_obj.metadata_json or {})
+    previous = _broadcast_state(match_obj)
+    fullscreen_image_urls = dict(previous.get("fullscreen_image_urls") or {})
+    fullscreen_image_urls[scene_key] = f"/api/broadcast/assets/logos/{filename}"
+    next_state = {
+        **previous,
+        "fullscreen_image_urls": fullscreen_image_urls,
+        "sequence": int(previous.get("sequence") or 0) + 1,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    metadata["broadcast"] = next_state
+    match_obj.metadata_json = metadata
+    db.commit()
+    _broadcast_snapshot_cache.pop(str(match_id), None)
+    return next_state
+
+
+@app.get("/api/broadcast/assets/logos/{filename}")
+def get_broadcast_logo(filename: str):
+    path = _broadcast_logo_path(filename)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Logo not found")
+    return FileResponse(str(path))
+
+
+@app.get("/api/broadcast/matches/{match_id}/snapshot")
+def get_broadcast_snapshot(match_id: UUID, view: str | None = Query(default=None), db: Session = Depends(get_db)):
+    if view == "scoreboard":
+        match_obj = db.get(Match, match_id)
+        if not match_obj:
+            raise HTTPException(status_code=404, detail="Match not found")
+        return _build_scoreboard_broadcast_snapshot(match_obj, db)
+    now = time.monotonic()
+    cache_key = str(match_id)
+    cached = _broadcast_snapshot_cache.get(cache_key)
+    if cached and now - cached[0] < BROADCAST_SNAPSHOT_CACHE_TTL_SECONDS:
+        return cached[1]
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    snapshot = _build_broadcast_snapshot(match_obj, db)
+    _broadcast_snapshot_cache[cache_key] = (now, snapshot)
+    return snapshot
 
 
 @app.post("/api/matches/{match_id}/archive")
@@ -3780,10 +4168,14 @@ def seed_demo_media_matches(db: Session = Depends(get_db), user: User = Depends(
 
 @app.get("/api/matches/{match_id}")
 def get_match(match_id: UUID, db: Session = Depends(get_db)):
+    cache_key = ("get_match", str(match_id))
+    cached = _cache_get(_match_response_cache, cache_key)
+    if cached is not None:
+        return cached
     row = db.get(Match, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
-    return _serialize_match(row)
+    return _cache_set(_match_response_cache, cache_key, _serialize_match(row))
 
 
 @app.post("/api/matches/{match_id}/lineup/pdf")
@@ -4578,7 +4970,11 @@ def delete_timeline_item(
 
 @app.get("/api/matches/{match_id}/summary")
 def summary(match_id: UUID, db: Session = Depends(get_db)):
-    return _build_match_summary(match_id, db)
+    cache_key = ("summary", str(match_id))
+    cached = _cache_get(_match_response_cache, cache_key)
+    if cached is not None:
+        return cached
+    return _cache_set(_match_response_cache, cache_key, _build_match_summary(match_id, db))
 
 
 @app.get("/api/matches/{match_id}/dominance")

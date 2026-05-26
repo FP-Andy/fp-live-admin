@@ -41,6 +41,12 @@ const FLA_ITEMS: NavItem[] = [
     match: (pathname) => pathname.startsWith('/admin/media'),
   },
   {
+    href: '/admin/live-coder',
+    label: 'Live Coder',
+    icon: '▥',
+    match: (pathname) => pathname.startsWith('/admin/live-coder'),
+  },
+  {
     href: '/admin/system',
     label: 'System',
     icon: '⚙',
@@ -137,6 +143,9 @@ function getPageMeta(pathname: string) {
   }
   if (pathname.startsWith('/admin/media')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Media' };
+  }
+  if (pathname.startsWith('/admin/live-coder')) {
+    return { product: 'FLA', eyebrow: 'FLA Broadcast Overlay', title: 'Live Coder' };
   }
   if (pathname.startsWith('/admin/highlight')) {
     return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Highlight' };

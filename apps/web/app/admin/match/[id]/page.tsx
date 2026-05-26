@@ -328,7 +328,7 @@ export default function MatchPage() {
 
   useEffect(() => {
     fetchAll();
-    const t = setInterval(fetchAll, 1000);
+    const t = setInterval(fetchAll, 3000);
     return () => clearInterval(t);
   }, [id]);
 
@@ -382,7 +382,7 @@ export default function MatchPage() {
       if (canWrite && runningRef.current) {
         saveState({ clockMs: clockRef.current }).catch(() => undefined);
       }
-    }, 1000);
+    }, 3000);
     return () => clearInterval(t);
   }, [running, possessionTeam, selectedTeam, attackLR, canWrite]);
 
