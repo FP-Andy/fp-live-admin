@@ -266,19 +266,120 @@ function TrimModal({
 }
 
 // ── Timeline Editor ───────────────────────────────────────────────────────────
-type TimelineItem = { type: 'clip' | 'image'; name: string; duration?: number };
+type TimelineItem = { type: 'clip' | 'image'; name: string; duration?: number; job_id?: string };
 
-function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[] }) {
+type OverlayDef = {
+  kind: 'scoreboard' | 'scorer';
+  enabled: boolean;
+  image_path?: string;
+  image_job_id?: string | null;
+  width_pct?: number;
+  height_pct?: number;
+  home?: string; home_score?: number; away?: string; away_score?: number;
+  number?: string; name?: string;
+  bg_color?: string;
+  x_pct: number; y_pct: number;
+  start_sec: number; duration_sec: number;
+};
+
+type BgmTrack = {
+  name: string; start_sec: number; duration_sec: number;
+  volume: number; fade_in_sec: number; fade_out_sec: number;
+};
+
+type EditorProjectInfo = { id: string; name: string; updated_at?: number; item_count?: number; overlay_count?: number };
+
+const numInput: React.CSSProperties = { width: 56, fontSize: 11, padding: '2px 4px' };
+const txtInput: React.CSSProperties = { width: 90, fontSize: 11, padding: '2px 6px' };
+const miniBtn: React.CSSProperties = { fontSize: 11, padding: '4px 10px', background: 'var(--button-dark)', border: '1px solid var(--border-ghost)', borderRadius: 6, cursor: 'pointer', color: 'var(--text)' };
+const fieldLabel: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' };
+
+function OverlayRow({ ov, onChange, onRemove }: {
+  ov: OverlayDef; onChange: (patch: Partial<OverlayDef>) => void; onRemove: () => void;
+}) {
+  const isImage = !!ov.image_path;
+  return (
+    <div style={{
+      display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', padding: '8px 10px',
+      background: ov.enabled ? 'rgba(255,116,0,0.06)' : 'rgba(255,255,255,0.03)',
+      border: '1px solid var(--border-ghost)', borderRadius: 8,
+    }}>
+      <input type="checkbox" checked={ov.enabled} onChange={(e) => onChange({ enabled: e.target.checked })}
+        title="활성화" style={{ accentColor: 'var(--accent)' }} />
+      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', minWidth: 52 }}>
+        {ov.kind === 'scoreboard' ? '점수판' : '득점자'}{isImage ? '🖼' : ''}
+      </span>
+
+      {!isImage && ov.kind === 'scoreboard' && (
+        <>
+          <label style={fieldLabel}>홈 <input value={ov.home ?? ''} onChange={(e) => onChange({ home: e.target.value })} style={txtInput} /></label>
+          <input type="number" value={ov.home_score ?? 0} min={0} onChange={(e) => onChange({ home_score: parseInt(e.target.value) || 0 })} style={numInput} />
+          <span style={{ color: 'var(--muted)' }}>-</span>
+          <input type="number" value={ov.away_score ?? 0} min={0} onChange={(e) => onChange({ away_score: parseInt(e.target.value) || 0 })} style={numInput} />
+          <label style={fieldLabel}>원정 <input value={ov.away ?? ''} onChange={(e) => onChange({ away: e.target.value })} style={txtInput} /></label>
+        </>
+      )}
+      {!isImage && ov.kind === 'scorer' && (
+        <>
+          <label style={fieldLabel}>번호 <input value={ov.number ?? ''} onChange={(e) => onChange({ number: e.target.value })} style={{ ...txtInput, width: 48 }} /></label>
+          <label style={fieldLabel}>선수 <input value={ov.name ?? ''} onChange={(e) => onChange({ name: e.target.value })} style={txtInput} /></label>
+        </>
+      )}
+      {!isImage && (
+        <label style={fieldLabel}>색 <input type="color" value={ov.bg_color || '#FF7400'} onChange={(e) => onChange({ bg_color: e.target.value })} style={{ width: 32, height: 24, padding: 0, cursor: 'pointer' }} /></label>
+      )}
+      {isImage && (
+        <label style={fieldLabel}>폭% <input type="number" value={ov.width_pct ?? 30} min={5} max={100} onChange={(e) => onChange({ width_pct: parseFloat(e.target.value) || 30 })} style={numInput} /></label>
+      )}
+
+      <label style={fieldLabel}>X% <input type="number" value={Math.round(ov.x_pct)} min={0} max={100} onChange={(e) => onChange({ x_pct: parseFloat(e.target.value) || 0 })} style={numInput} /></label>
+      <label style={fieldLabel}>Y% <input type="number" value={Math.round(ov.y_pct)} min={0} max={100} onChange={(e) => onChange({ y_pct: parseFloat(e.target.value) || 0 })} style={numInput} /></label>
+      <label style={fieldLabel}>시작 <input type="number" value={ov.start_sec} min={0} step={0.5} onChange={(e) => onChange({ start_sec: parseFloat(e.target.value) || 0 })} style={numInput} />s</label>
+      <label style={fieldLabel}>길이 <input type="number" value={ov.duration_sec} min={0.5} step={0.5} onChange={(e) => onChange({ duration_sec: parseFloat(e.target.value) || 1 })} style={numInput} />s</label>
+      <button onClick={onRemove} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 15 }}>✕</button>
+    </div>
+  );
+}
+
+function BgmTrackRow({ track, bgmList, onChange, onRemove }: {
+  track: BgmTrack; bgmList: string[]; onChange: (patch: Partial<BgmTrack>) => void; onRemove: () => void;
+}) {
+  return (
+    <div style={{
+      display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', padding: '8px 10px',
+      background: 'rgba(72,187,120,0.06)', border: '1px solid var(--border-ghost)', borderRadius: 8,
+    }}>
+      <select value={track.name} onChange={(e) => onChange({ name: e.target.value })}
+        style={{ background: 'var(--button-dark)', color: 'var(--text)', border: '1px solid var(--border-ghost)', borderRadius: 6, padding: '3px 6px', fontSize: 11, maxWidth: 140 }}>
+        {bgmList.map((t) => <option key={t} value={t}>{t.replace(/\.[^.]+$/, '')}</option>)}
+      </select>
+      <label style={fieldLabel}>시작 <input type="number" value={track.start_sec} min={0} step={0.5} onChange={(e) => onChange({ start_sec: parseFloat(e.target.value) || 0 })} style={numInput} />s</label>
+      <label style={fieldLabel}>길이 <input type="number" value={track.duration_sec} min={0.5} step={0.5} onChange={(e) => onChange({ duration_sec: parseFloat(e.target.value) || 1 })} style={numInput} />s</label>
+      <label style={fieldLabel}>볼륨 <input type="number" value={track.volume} min={0} max={2} step={0.05} onChange={(e) => onChange({ volume: parseFloat(e.target.value) || 0 })} style={numInput} /></label>
+      <label style={fieldLabel}>페이드 <input type="number" value={track.fade_in_sec} min={0} step={0.5} onChange={(e) => onChange({ fade_in_sec: parseFloat(e.target.value) || 0 })} style={{ ...numInput, width: 44 }} />/<input type="number" value={track.fade_out_sec} min={0} step={0.5} onChange={(e) => onChange({ fade_out_sec: parseFloat(e.target.value) || 0 })} style={{ ...numInput, width: 44 }} />s</label>
+      <button onClick={onRemove} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 15 }}>✕</button>
+    </div>
+  );
+}
+
+function TimelineEditor({ job, bgmList, onBgmUploaded }: { job: HighlightJob; bgmList: string[]; onBgmUploaded: () => void }) {
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [imageCards, setImageCards] = useState<string[]>([]);
   const [transitionSec, setTransitionSec] = useState(0.5);
   const [audioVolume, setAudioVolume] = useState(1.0);
   const [bgmName, setBgmName] = useState('');
   const [bgmVolume, setBgmVolume] = useState(0.3);
+  const [overlays, setOverlays] = useState<OverlayDef[]>([]);
+  const [bgmTracks, setBgmTracks] = useState<BgmTrack[]>([]);
+  const [projects, setProjects] = useState<EditorProjectInfo[]>([]);
+  const [projName, setProjName] = useState('');
+  const [selProjId, setSelProjId] = useState('');
   const [exporting, setExporting] = useState(false);
   const [exportReady, setExportReady] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
   const imgInputRef = useRef<HTMLInputElement>(null);
+  const extInputRef = useRef<HTMLInputElement>(null);
+  const ovImgInputRef = useRef<HTMLInputElement>(null);
   const dragIdx = useRef<number | null>(null);
   const dragOverIdx = useRef<number | null>(null);
 
@@ -291,7 +392,22 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
     } catch { /* ignore */ }
   }, [job.id]);
 
-  useEffect(() => { loadImageCards(); }, [loadImageCards]);
+  const loadProjects = useCallback(async () => {
+    try {
+      const d = await apiJson<{ projects: EditorProjectInfo[] }>(`/highlight/editor/projects`);
+      setProjects(d.projects || []);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    loadImageCards();
+    loadProjects();
+    // restore overlays / bgm tracks saved against this job
+    apiJson<{ overlays: OverlayDef[] }>(`/highlight/jobs/${job.id}/overlays`)
+      .then((d) => setOverlays(d.overlays || [])).catch(() => {});
+    apiJson<{ bgm_tracks: BgmTrack[] }>(`/highlight/jobs/${job.id}/bgm-tracks`)
+      .then((d) => setBgmTracks(d.bgm_tracks || [])).catch(() => {});
+  }, [job.id, loadImageCards, loadProjects]);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -299,10 +415,44 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
     const form = new FormData();
     form.append('file', file);
     try {
-      await fetch(`${API_BASE}/highlight/jobs/${job.id}/image-cards`, {
-        method: 'POST', credentials: 'include', body: form,
-      });
+      await fetch(`${API_BASE}/highlight/jobs/${job.id}/image-cards`, { method: 'POST', credentials: 'include', body: form });
       await loadImageCards();
+    } catch (err) { setStatusMsg(`업로드 실패: ${err}`); }
+    e.target.value = '';
+  };
+
+  const handleExternalClip = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setStatusMsg('외부 영상 업로드 중...');
+    try {
+      for (const file of files) {
+        const form = new FormData();
+        form.append('file', file);
+        const res = await fetch(`${API_BASE}/highlight/jobs/${job.id}/external-clips`, { method: 'POST', credentials: 'include', body: form });
+        if (!res.ok) throw new Error(await res.text());
+        const d = await res.json() as { name: string };
+        setItems((prev) => [...prev, { type: 'clip', name: d.name }]);
+      }
+      setStatusMsg('외부 영상 추가됨');
+    } catch (err) { setStatusMsg(`업로드 실패: ${err}`); }
+    e.target.value = '';
+  };
+
+  const handleOverlayImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const res = await fetch(`${API_BASE}/highlight/jobs/${job.id}/overlay-images`, { method: 'POST', credentials: 'include', body: form });
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json() as { name: string };
+      setOverlays((prev) => [...prev, {
+        kind: 'scoreboard', enabled: true, image_path: d.name, image_job_id: job.id,
+        width_pct: 35, height_pct: 0, x_pct: 5, y_pct: 5, start_sec: 0, duration_sec: 5,
+      }]);
+      setStatusMsg('이미지 오버레이 추가됨');
     } catch (err) { setStatusMsg(`업로드 실패: ${err}`); }
     e.target.value = '';
   };
@@ -312,6 +462,37 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
   const removeItem = (idx: number) => setItems((prev) => prev.filter((_, i) => i !== idx));
   const updateDuration = (idx: number, val: number) =>
     setItems((prev) => prev.map((it, i) => i === idx ? { ...it, duration: val } : it));
+
+  const addOverlay = (kind: 'scoreboard' | 'scorer') => {
+    const base = { enabled: true, bg_color: '#FF7400', start_sec: 0, duration_sec: 5 };
+    setOverlays((prev) => [...prev, kind === 'scoreboard'
+      ? { kind, ...base, home: '홈팀', home_score: 0, away: '원정', away_score: 0, x_pct: 35, y_pct: 5 }
+      : { kind, ...base, number: '10', name: '선수명', x_pct: 5, y_pct: 80 }]);
+  };
+  const patchOverlay = (idx: number, patch: Partial<OverlayDef>) =>
+    setOverlays((prev) => prev.map((o, i) => i === idx ? { ...o, ...patch } : o));
+  const removeOverlay = (idx: number) => setOverlays((prev) => prev.filter((_, i) => i !== idx));
+
+  const addBgmTrack = () => {
+    if (!bgmList.length) { setStatusMsg('BGM 파일이 없습니다. 먼저 업로드하세요.'); return; }
+    setBgmTracks((prev) => [...prev, { name: bgmList[0], start_sec: 0, duration_sec: 10, volume: 0.3, fade_in_sec: 1, fade_out_sec: 1 }]);
+  };
+  const patchBgmTrack = (idx: number, patch: Partial<BgmTrack>) =>
+    setBgmTracks((prev) => prev.map((t, i) => i === idx ? { ...t, ...patch } : t));
+  const removeBgmTrack = (idx: number) => setBgmTracks((prev) => prev.filter((_, i) => i !== idx));
+
+  const handleBgmUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      await fetch(`${API_BASE}/highlight/bgm/upload`, { method: 'POST', credentials: 'include', body: form });
+      onBgmUploaded();
+      setStatusMsg('BGM 업로드됨');
+    } catch (err) { setStatusMsg(`업로드 실패: ${err}`); }
+    e.target.value = '';
+  };
 
   const handleDragStart = (idx: number) => { dragIdx.current = idx; };
   const handleDragEnter = (idx: number) => { dragOverIdx.current = idx; };
@@ -325,20 +506,75 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
     dragOverIdx.current = null;
   };
 
+  const persistEditorState = useCallback(async () => {
+    // keep overlays / bgm tracks saved against the job (mirrors source autosave)
+    try {
+      await apiJson(`/highlight/jobs/${job.id}/overlays`, { method: 'POST', body: JSON.stringify({ overlays }) });
+      await apiJson(`/highlight/jobs/${job.id}/bgm-tracks`, { method: 'POST', body: JSON.stringify({ bgm_tracks: bgmTracks }) });
+    } catch { /* non-fatal */ }
+  }, [job.id, overlays, bgmTracks]);
+
+  const handleSaveProject = async () => {
+    const name = projName.trim();
+    if (!name) { setStatusMsg('프로젝트 이름을 입력하세요.'); return; }
+    try {
+      await apiJson(`/highlight/editor/projects`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name, job_id: job.id, timeline: items, overlays, bgm_tracks: bgmTracks,
+          transition_sec: transitionSec, audio_volume: audioVolume,
+        }),
+      });
+      setStatusMsg(`저장됨: ${name}`);
+      loadProjects();
+    } catch (err) { setStatusMsg(`저장 실패: ${err}`); }
+  };
+
+  const handleLoadProject = async () => {
+    if (!selProjId) return;
+    try {
+      const p = await apiJson<{
+        timeline?: TimelineItem[]; overlays?: OverlayDef[]; bgm_tracks?: BgmTrack[];
+        transition_sec?: number; audio_volume?: number; name?: string;
+      }>(`/highlight/editor/projects/${selProjId}`);
+      setItems(p.timeline || []);
+      setOverlays(p.overlays || []);
+      setBgmTracks(p.bgm_tracks || []);
+      setTransitionSec(p.transition_sec ?? 0.5);
+      setAudioVolume(p.audio_volume ?? 1.0);
+      setProjName(p.name || '');
+      setStatusMsg(`불러옴: ${p.name || ''}`);
+    } catch (err) { setStatusMsg(`불러오기 실패: ${err}`); }
+  };
+
+  const handleDeleteProject = async () => {
+    if (!selProjId) return;
+    if (!confirm('이 프로젝트를 삭제할까요?')) return;
+    try {
+      await apiJson(`/highlight/editor/projects/${selProjId}`, { method: 'DELETE' });
+      setSelProjId('');
+      loadProjects();
+      setStatusMsg('프로젝트 삭제됨');
+    } catch (err) { setStatusMsg(`삭제 실패: ${err}`); }
+  };
+
   const handleExport = async () => {
     if (!items.length) { setStatusMsg('타임라인이 비어 있습니다.'); return; }
     setExporting(true);
     setStatusMsg('합치는 중... 시간이 걸릴 수 있습니다.');
     setExportReady(false);
     try {
+      await persistEditorState();
       await apiJson(`/highlight/jobs/${job.id}/export/timeline`, {
         method: 'POST',
         body: JSON.stringify({
-          timeline: items.map((it) => ({ type: it.type, name: it.name, duration: it.duration ?? 3.0 })),
+          timeline: items.map((it) => ({ type: it.type, name: it.name, duration: it.duration ?? 3.0, job_id: it.job_id })),
           transition_sec: transitionSec,
           audio_volume: audioVolume,
           bgm_name: bgmName,
           bgm_volume: bgmVolume,
+          bgm_tracks: bgmTracks,
+          overlays,
         }),
       });
       setExportReady(true);
@@ -349,6 +585,8 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
 
   const sliderStyle = { width: 76, accentColor: 'var(--accent)' } as React.CSSProperties;
   const ctrlLabel = { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)' } as React.CSSProperties;
+  const sectionCard: React.CSSProperties = { background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 14, border: '1px solid var(--border-ghost)' };
+  const sectionTitle: React.CSSProperties = { fontSize: 10, color: 'var(--muted)', letterSpacing: 1, marginBottom: 10 };
   const itemCardStyle = (type: string) => ({
     display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
     background: type === 'clip' ? 'rgba(255,116,0,0.08)' : 'rgba(72,187,120,0.08)',
@@ -361,8 +599,8 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
 
       {/* Left: clip & image picker */}
       <div style={{ flex: '0 0 200px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 14, border: '1px solid var(--border-ghost)' }}>
-          <div style={{ fontSize: 10, color: 'var(--muted)', letterSpacing: 1, marginBottom: 10 }}>클립 목록</div>
+        <div style={sectionCard}>
+          <div style={sectionTitle}>클립 목록</div>
           {clips.length === 0 && <div style={{ fontSize: 12, color: 'var(--muted)' }}>클립 없음</div>}
           {clips.map((c) => (
             <div key={c} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -375,13 +613,15 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
               </button>
             </div>
           ))}
+          <input ref={extInputRef} type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm,.m4v" multiple style={{ display: 'none' }} onChange={handleExternalClip} />
+          <button onClick={() => extInputRef.current?.click()} title="외부 영상 파일을 타임라인에 추가"
+            style={{ ...miniBtn, width: '100%', marginTop: 8 }}>+ 외부 영상 추가</button>
         </div>
 
-        <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 14, border: '1px solid var(--border-ghost)' }}>
-          <div style={{ fontSize: 10, color: 'var(--muted)', letterSpacing: 1, marginBottom: 10 }}>이미지 카드</div>
+        <div style={sectionCard}>
+          <div style={sectionTitle}>이미지 카드</div>
           <input ref={imgInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleImageUpload} />
-          <button onClick={() => imgInputRef.current?.click()}
-            style={{ width: '100%', fontSize: 11, padding: '5px 0', background: 'var(--button-dark)', border: '1px solid var(--border-ghost)', borderRadius: 6, cursor: 'pointer', color: 'var(--text)', marginBottom: 8 }}>
+          <button onClick={() => imgInputRef.current?.click()} style={{ ...miniBtn, width: '100%', marginBottom: 8 }}>
             + 이미지 업로드
           </button>
           {imageCards.map((c) => (
@@ -400,7 +640,7 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
 
         {/* export controls */}
-        <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: '14px 20px', border: '1px solid var(--border-ghost)', display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
+        <div style={{ ...sectionCard, padding: '14px 20px', display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
           <label style={ctrlLabel}>
             전환
             <input type="range" min={0} max={1.5} step={0.1} value={transitionSec} onChange={(e) => setTransitionSec(parseFloat(e.target.value))} style={sliderStyle} />
@@ -441,9 +681,25 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
           </div>
         </div>
 
+        {/* project save / load */}
+        <div style={{ ...sectionCard, padding: '12px 20px', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <span style={{ ...sectionTitle, marginBottom: 0 }}>프로젝트</span>
+          <input value={projName} onChange={(e) => setProjName(e.target.value)} placeholder="프로젝트 이름"
+            style={{ fontSize: 12, padding: '4px 8px', width: 170 }} />
+          <button onClick={handleSaveProject} style={miniBtn} title="현재 타임라인·오버레이·BGM·설정 저장">💾 저장</button>
+          <select value={selProjId} onChange={(e) => setSelProjId(e.target.value)}
+            style={{ background: 'var(--button-dark)', color: 'var(--text)', border: '1px solid var(--border-ghost)', borderRadius: 6, padding: '4px 8px', fontSize: 12, minWidth: 200 }}>
+            <option value="">— 저장된 프로젝트 —</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.item_count ?? 0}컷)</option>)}
+          </select>
+          <button onClick={handleLoadProject} disabled={!selProjId} style={miniBtn}>📂 불러오기</button>
+          <button onClick={handleDeleteProject} disabled={!selProjId}
+            style={{ ...miniBtn, background: 'rgba(198,40,40,0.15)', borderColor: 'rgba(198,40,40,0.4)', color: '#ff6e6e' }}>삭제</button>
+        </div>
+
         {/* timeline items */}
-        <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 16, border: '1px solid var(--border-ghost)', minHeight: 120 }}>
-          <div style={{ fontSize: 10, color: 'var(--muted)', letterSpacing: 1, marginBottom: 12 }}>
+        <div style={{ ...sectionCard, padding: 16, minHeight: 120 }}>
+          <div style={{ ...sectionTitle, marginBottom: 12 }}>
             TIMELINE — {items.length}개 항목 · 드래그로 순서 변경
           </div>
           {!items.length && (
@@ -479,6 +735,43 @@ function TimelineEditor({ job, bgmList }: { job: HighlightJob; bgmList: string[]
             ))}
           </div>
         </div>
+
+        {/* overlays */}
+        <div style={{ ...sectionCard, padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+            <span style={{ ...sectionTitle, marginBottom: 0 }}>오버레이 ({overlays.length})</span>
+            <button onClick={() => addOverlay('scoreboard')} style={miniBtn}>+ 점수판</button>
+            <button onClick={() => addOverlay('scorer')} style={miniBtn}>+ 득점자</button>
+            <input ref={ovImgInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleOverlayImage} />
+            <button onClick={() => ovImgInputRef.current?.click()} style={miniBtn}>+ 이미지 오버레이</button>
+            <span style={{ fontSize: 10, color: 'var(--muted)' }}>start/길이는 합쳐진 영상 기준 초</span>
+          </div>
+          {!overlays.length && <div style={{ fontSize: 12, color: 'var(--muted)' }}>오버레이 없음</div>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {overlays.map((ov, idx) => (
+              <OverlayRow key={idx} ov={ov} onChange={(patch) => patchOverlay(idx, patch)} onRemove={() => removeOverlay(idx)} />
+            ))}
+          </div>
+        </div>
+
+        {/* bgm tracks */}
+        <div style={{ ...sectionCard, padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+            <span style={{ ...sectionTitle, marginBottom: 0 }}>BGM 트랙 ({bgmTracks.length})</span>
+            <button onClick={addBgmTrack} style={miniBtn}>+ 트랙 추가</button>
+            <label style={{ ...miniBtn, display: 'inline-flex', alignItems: 'center' }}>
+              ⤴ BGM 업로드
+              <input type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac" style={{ display: 'none' }} onChange={handleBgmUpload} />
+            </label>
+            <span style={{ fontSize: 10, color: 'var(--muted)' }}>트랙이 있으면 위의 단일 BGM 대신 트랙들이 사용됩니다</span>
+          </div>
+          {!bgmTracks.length && <div style={{ fontSize: 12, color: 'var(--muted)' }}>트랙 없음</div>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {bgmTracks.map((t, idx) => (
+              <BgmTrackRow key={idx} track={t} bgmList={bgmList} onChange={(patch) => patchBgmTrack(idx, patch)} onRemove={() => removeBgmTrack(idx)} />
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -490,6 +783,7 @@ export default function HighlightPage() {
   const [activeJob, setActiveJob] = useState<HighlightJob | null>(null);
   const [activeTab, setActiveTab] = useState<'clips' | 'timeline'>('clips');
   const [mode, setMode] = useState<'ai' | 'log_ai'>('ai');
+  const [uploadKind, setUploadKind] = useState<'single' | 'split'>('single');
   const [displayName, setDisplayName] = useState('');
   const [highlightCount, setHighlightCount] = useState(40);
   const [secondHalfMin, setSecondHalfMin] = useState('');
@@ -502,6 +796,8 @@ export default function HighlightPage() {
   const [exportReady, setExportReady] = useState(false);
   const [status, setStatus] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const firstHalfRef = useRef<HTMLInputElement>(null);
+  const secondHalfRef = useRef<HTMLInputElement>(null);
   const logFileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dragItem = useRef<number | null>(null);
@@ -527,12 +823,16 @@ export default function HighlightPage() {
     }
   }, []);
 
-  useEffect(() => {
-    loadJobs();
+  const loadBgm = useCallback(() => {
     apiJson<{ tracks: string[] }>('/highlight/bgm')
       .then((d) => setBgmList(d.tracks || []))
       .catch(() => {});
-  }, [loadJobs]);
+  }, []);
+
+  useEffect(() => {
+    loadJobs();
+    loadBgm();
+  }, [loadJobs, loadBgm]);
 
   const startPolling = useCallback((jobId: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -570,8 +870,15 @@ export default function HighlightPage() {
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    const file = fileInputRef.current?.files?.[0];
-    if (!file) {
+
+    const isSplit = uploadKind === 'split';
+    const single = fileInputRef.current?.files?.[0];
+    const first = firstHalfRef.current?.files?.[0];
+    const second = secondHalfRef.current?.files?.[0];
+
+    if (isSplit) {
+      if (!first || !second) { setStatus('전반/후반 영상을 모두 선택해주세요.'); return; }
+    } else if (!single) {
       setStatus('영상 파일을 선택해주세요.');
       return;
     }
@@ -584,15 +891,24 @@ export default function HighlightPage() {
     setExportReady(false);
 
     const form = new FormData();
-    form.append('video', file);
     form.append('mode', mode);
     form.append('highlight_count', String(highlightCount));
-    form.append('second_half_start_sec', String((parseInt(secondHalfMin) || 0) * 60 + (parseInt(secondHalfSecPart) || 0)));
     form.append('log_data_json', logDataJson || '[]');
     form.append('display_name', displayName.trim());
 
+    let endpoint = '/highlight/jobs';
+    if (isSplit) {
+      // second_half_start_sec is computed server-side from the first-half duration
+      form.append('first_half', first as File);
+      form.append('second_half', second as File);
+      endpoint = '/highlight/jobs/split';
+    } else {
+      form.append('video', single as File);
+      form.append('second_half_start_sec', String((parseInt(secondHalfMin) || 0) * 60 + (parseInt(secondHalfSecPart) || 0)));
+    }
+
     try {
-      const res = await fetch(`${API_BASE}/highlight/jobs`, {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         credentials: 'include',
         body: form,
@@ -698,10 +1014,46 @@ export default function HighlightPage() {
               />
             </div>
 
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>영상 파일</div>
-              <input ref={fileInputRef} type="file" accept="video/*" style={{ width: '100%', fontSize: 11 }} />
+            {/* single vs first/second-half split */}
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(['single', 'split'] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setUploadKind(k)}
+                  style={{
+                    flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 600,
+                    background: uploadKind === k ? 'var(--accent-soft)' : 'var(--button-dark)',
+                    color: uploadKind === k ? 'var(--accent)' : 'var(--muted)',
+                    border: `1px solid ${uploadKind === k ? 'var(--border-emphasis)' : 'transparent'}`,
+                    borderRadius: 'var(--radius-control)', cursor: 'pointer',
+                  }}
+                >
+                  {k === 'single' ? '전체 영상' : '전반 / 후반 분리'}
+                </button>
+              ))}
             </div>
+
+            {uploadKind === 'single' ? (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>영상 파일</div>
+                <input ref={fileInputRef} type="file" accept="video/*,.mts,.m2ts,.ts,.mov,.mkv,.avi,.m4v" style={{ width: '100%', fontSize: 11 }} />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>전반 영상</div>
+                  <input ref={firstHalfRef} type="file" accept="video/*,.mts,.m2ts,.ts,.mov,.mkv,.avi,.m4v" style={{ width: '100%', fontSize: 11 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>후반 영상</div>
+                  <input ref={secondHalfRef} type="file" accept="video/*,.mts,.m2ts,.ts,.mov,.mkv,.avi,.m4v" style={{ width: '100%', fontSize: 11 }} />
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.4 }}>
+                  후반 시작 시각은 전반 영상 길이로 자동 계산됩니다.
+                </div>
+              </>
+            )}
 
             <div>
               <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>클립 수</div>
@@ -713,6 +1065,7 @@ export default function HighlightPage() {
             </div>
 
             <div style={{ visibility: mode === 'log_ai' ? 'visible' : 'hidden', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {uploadKind === 'single' && (
                 <div>
                   <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>후반전 시작</div>
                   <div style={{ display: 'flex', gap: 3, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -732,6 +1085,7 @@ export default function HighlightPage() {
                     <span style={{ fontSize: 10, color: 'var(--muted)' }}>초</span>
                   </div>
                 </div>
+                )}
                 <div>
                   <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>로그 데이터</div>
                   <input
@@ -1059,7 +1413,7 @@ export default function HighlightPage() {
 
         {/* timeline editor tab */}
         {activeJob?.status === 'done' && activeTab === 'timeline' && (
-          <TimelineEditor job={activeJob} bgmList={bgmList} />
+          <TimelineEditor job={activeJob} bgmList={bgmList} onBgmUploaded={loadBgm} />
         )}
 
         {!activeJob && (

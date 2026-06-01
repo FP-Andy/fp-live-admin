@@ -3871,6 +3871,7 @@ def outbox_debug(db: Session = Depends(get_db)):
 import json as _json
 import shutil as _shutil
 import threading as _threading
+import time
 import numpy as _np
 
 
@@ -4015,7 +4016,6 @@ def _run_log_analysis(
             CLIP_DURATION_AFTER,
             LOG_CLIP_BEFORE,
             LOG_CLIP_AFTER,
-            LOG_CLIP_MINUTE_SPAN,
         )
 
         clips_dir = str(_hl_clips_dir(job_id))
@@ -4042,7 +4042,7 @@ def _run_log_analysis(
                 name = meta["clip"]
                 video_sec = float(meta.get("video_sec", 0))
                 clip_timestamps[name] = {
-                    "start": round(max(0.0, video_sec - LOG_CLIP_MINUTE_SPAN - LOG_CLIP_BEFORE), 1),
+                    "start": round(max(0.0, video_sec - LOG_CLIP_BEFORE), 1),
                     "end": round(video_sec + LOG_CLIP_AFTER, 1),
                 }
 
@@ -4202,7 +4202,7 @@ def _hl_mix_bgm(merged_clip, bgm_name: str, bgm_volume: float):
     bgm_path = HIGHLIGHT_BGM_DIR / bgm_name
     if not bgm_path.exists() or bgm_path.suffix.lower() not in _BGM_EXTENSIONS:
         return merged_clip
-    from moviepy import AudioFileClip, CompositeAudioClip, concatenate_audioclips, vfx
+    from moviepy import AudioFileClip, CompositeAudioClip, concatenate_audioclips, afx
     total_dur = merged_clip.duration
     bgm_raw = AudioFileClip(str(bgm_path))
     if bgm_raw.duration < total_dur:
@@ -4210,7 +4210,7 @@ def _hl_mix_bgm(merged_clip, bgm_name: str, bgm_volume: float):
         bgm_raw = concatenate_audioclips([bgm_raw] * loops)
     bgm_clip = bgm_raw.subclipped(0, total_dur)
     fade_dur = min(2.0, total_dur * 0.1)
-    bgm_clip = bgm_clip.with_effects([vfx.AudioFadeOut(fade_dur)])
+    bgm_clip = bgm_clip.with_effects([afx.AudioFadeOut(fade_dur)])
     bgm_clip = bgm_clip.with_volume_scaled(max(0.0, min(bgm_volume, 2.0)))
     if merged_clip.audio is not None:
         mixed = CompositeAudioClip([merged_clip.audio, bgm_clip])
@@ -4444,7 +4444,13 @@ def export_highlight_timeline(
     db: Session = Depends(get_db),
     _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
 ):
-    """타임라인 (영상 클립 + 이미지 카드 혼합) → 최종 영상 합치기."""
+    """타임라인 (영상 클립 + 이미지 카드 혼합 + 오버레이/BGM 트랙) → 최종 영상 합치기.
+
+    - 출력 해상도는 EXPORT_TARGET_SIZE 로 고정하고 클립은 종횡비 유지 레터박스(_hl_fit_clip).
+    - timeline 항목별 job_id 로 멀티 job/외부 클립 지원.
+    - overlays: 점수판/득점자/이미지 오버레이를 합성 영상 위에 burn-in.
+    - bgm_tracks: 편집기에서 배치한 다중 BGM 트랙. 없으면 legacy 단일 bgm_name 사용.
+    """
     if _user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
@@ -4459,23 +4465,27 @@ def export_highlight_timeline(
     audio_volume = max(0.0, min(float(body.get("audio_volume", 1.0)), 2.0))
     bgm_name: str = body.get("bgm_name", "")
     bgm_volume = max(0.0, min(float(body.get("bgm_volume", 0.3)), 2.0))
+    bgm_tracks: list[dict] = body.get("bgm_tracks", []) or []
+    overlays: list[dict] = body.get("overlays", []) or []
 
-    from moviepy import VideoFileClip, ImageClip, concatenate_videoclips
+    from moviepy import VideoFileClip, ImageClip, CompositeVideoClip, concatenate_videoclips
 
-    # 첫 번째 영상 클립에서 해상도·fps 결정
-    video_size = None
+    # 출력 해상도는 EXPORT_TARGET_SIZE 로 고정(해상도 혼합 시 축소-박힘 방지). fps만 첫 클립에서 결정.
+    video_size = EXPORT_TARGET_SIZE
     fps = 30.0
+    has_clip = False
     for item in timeline:
         if item.get("type") == "clip":
-            p = _hl_clips_dir(job_id) / item["name"]
+            item_job = item.get("job_id") or job_id
+            p = _hl_clips_dir(item_job) / item.get("name", "")
             if p.exists():
                 tmp = VideoFileClip(str(p))
-                video_size = tmp.size
                 fps = float(tmp.fps or 30.0)
                 tmp.close()
+                has_clip = True
                 break
 
-    if video_size is None:
+    if not has_clip:
         raise HTTPException(status_code=400, detail="영상 클립이 최소 1개 필요합니다.")
 
     final_clips: list = []
@@ -4483,17 +4493,18 @@ def export_highlight_timeline(
         for item in timeline:
             itype = item.get("type")
             name = item.get("name", "")
+            item_job = item.get("job_id") or job_id
             if "/" in name or "\\" in name:
                 raise HTTPException(status_code=400, detail=f"잘못된 파일명: {name}")
 
             if itype == "clip":
-                p = _hl_clips_dir(job_id) / name
+                p = _hl_clips_dir(item_job) / name
                 if not p.exists():
                     raise HTTPException(status_code=404, detail=f"클립 없음: {name}")
-                final_clips.append(VideoFileClip(str(p)))
+                final_clips.append(_hl_fit_clip(VideoFileClip(str(p)), video_size))
 
             elif itype == "image":
-                p = _hl_image_cards_dir(job_id) / name
+                p = _hl_image_cards_dir(item_job) / name
                 if not p.exists():
                     raise HTTPException(status_code=404, detail=f"이미지 없음: {name}")
                 duration = max(0.5, min(float(item.get("duration", 3.0)), 60.0))
@@ -4512,8 +4523,26 @@ def export_highlight_timeline(
 
         if audio_volume != 1.0 and merged.audio is not None:
             merged = merged.with_volume_scaled(audio_volume)
-        if bgm_name:
+        if bgm_tracks:
+            merged = _hl_mix_bgm_tracks(merged, bgm_tracks)
+        elif bgm_name:
             merged = _hl_mix_bgm(merged, bgm_name, bgm_volume)
+
+        # 합쳐진 영상 위에 오버레이 트랙 burn-in
+        if overlays:
+            ov_clips = []
+            for ov in overlays:
+                if not ov.get("enabled", True):
+                    continue
+                try:
+                    oc = _hl_make_overlay_clip(ov, merged.size, merged.duration, fallback_job_id=job_id, fps=fps)
+                    if oc is not None:
+                        ov_clips.append(oc)
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("overlay render failed: %s", exc)
+            if ov_clips:
+                merged = CompositeVideoClip([merged] + ov_clips)
 
         exports_dir = HIGHLIGHT_RUNTIME_DIR / "exports"
         exports_dir.mkdir(exist_ok=True)
@@ -4623,4 +4652,690 @@ def delete_highlight_export(
         except Exception:
             pass
         _hl_update_job(db, job_id, export_path=None)
+    return {"ok": True}
+
+
+# ── Highlight editor (overlays / BGM tracks / projects / split / external) ──
+
+EXPORT_TARGET_SIZE = (1920, 1080)
+
+# Camera transport-stream formats (AVCHD etc.) whose fps OpenCV/extract may misread.
+# These are often interlaced / variable-framerate, which skews clip timestamps.
+_HL_TRANSCODE_EXTS = {".mts", ".m2ts", ".m2t", ".ts", ".mod", ".tod"}
+_HL_EXTERNAL_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+
+_HL_ASSET_DIR = Path(__file__).resolve().parent / "assets"
+HIGHLIGHT_OVERLAY_LOGO = Path(os.getenv("HIGHLIGHT_OVERLAY_LOGO", str(_HL_ASSET_DIR / "overlay_logo.png")))
+_HL_OVERLAY_FONT_CANDIDATES = [
+    str(_HL_ASSET_DIR / "fonts" / "KFAGothicBold.otf"),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+]
+
+HIGHLIGHT_EDITOR_PROJECTS_PATH = HIGHLIGHT_RUNTIME_DIR / "editor_projects.json"
+
+
+def _hl_require_user(live_admin_session: str | None = Cookie(default=None)) -> str:
+    user = _verify_session_value(live_admin_session)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+def _hl_overlay_images_dir(job_id: str) -> Path:
+    d = _hl_job_dir(job_id) / "overlay_images"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# ── ffmpeg utils for split jobs ─────────────────────────────────────────────
+
+def _hl_probe_duration(path: Path) -> float:
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            check=True, capture_output=True,
+        )
+        return float(r.stdout.decode("utf-8", "ignore").strip())
+    except (subprocess.CalledProcessError, ValueError):
+        return 0.0
+
+
+def _hl_concat_videos(video_paths: list[Path], output_path: Path) -> None:
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        for p in video_paths:
+            f.write(f"file '{p}'\n")
+        list_file = f.name
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+         "-i", list_file, "-c", "copy", str(output_path)],
+        check=True, capture_output=True,
+    )
+    Path(list_file).unlink(missing_ok=True)
+
+
+def _hl_normalize_for_analysis(src: Path) -> Path:
+    """Transcode only fps/interlace-problematic inputs (MTS etc.) to a fixed-fps,
+    deinterlaced mp4. Standard formats (mp4/mov) are returned unchanged."""
+    import subprocess
+    if src.suffix.lower() not in _HL_TRANSCODE_EXTS:
+        return src
+    out = src.with_suffix(".mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src),
+             "-vf", "yadif=0", "-r", "30",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-c:a", "aac", "-movflags", "+faststart", str(out)],
+            check=True, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return src
+    src.unlink(missing_ok=True)
+    return out
+
+
+# ── video/audio compositing helpers ─────────────────────────────────────────
+
+def _hl_fit_clip(clip, target_size: tuple[int, int]):
+    """Scale clip to target_size keeping aspect ratio, letterboxing with black bars."""
+    tw, th = target_size
+    cw, ch = clip.size
+    if (cw, ch) == (tw, th):
+        return clip
+    scale = min(tw / cw, th / ch)
+    new_w = max(2, round(cw * scale / 2) * 2)  # even (libx264 requirement)
+    new_h = max(2, round(ch * scale / 2) * 2)
+    try:
+        scaled = clip.resized((new_w, new_h))
+    except AttributeError:
+        scaled = clip.resize((new_w, new_h))
+    if (new_w, new_h) == (tw, th):
+        return scaled
+    from moviepy import ColorClip, CompositeVideoClip
+    bg = ColorClip(size=(tw, th), color=(0, 0, 0), duration=clip.duration)
+    return CompositeVideoClip([bg, scaled.with_position("center")], size=(tw, th))
+
+
+def _hl_mix_bgm_tracks(merged_clip, tracks: list[dict]):
+    """Mix editor-placed BGM tracks with per-track fade in/out.
+
+    Each track dict: name, start_sec, duration_sec, volume, fade_in_sec, fade_out_sec.
+    BGM shorter than the segment is looped, longer is trimmed."""
+    from moviepy import AudioFileClip, CompositeAudioClip, concatenate_audioclips, afx
+
+    total_dur = float(merged_clip.duration or 0.0)
+    if total_dur <= 0:
+        return merged_clip
+
+    pieces: list = []
+    if merged_clip.audio is not None:
+        pieces.append(merged_clip.audio)
+
+    for t in tracks:
+        bgm_path = HIGHLIGHT_BGM_DIR / Path(str(t.get("name", ""))).name
+        if not bgm_path.exists() or bgm_path.suffix.lower() not in _BGM_EXTENSIONS:
+            continue
+        start_s = max(0.0, float(t.get("start_sec", 0.0)))
+        if start_s >= total_dur:
+            continue
+        seg_dur = max(0.5, min(float(t.get("duration_sec", 10.0)), total_dur - start_s))
+        if seg_dur <= 0:
+            continue
+
+        raw = AudioFileClip(str(bgm_path))
+        if raw.duration < seg_dur:
+            loops = int(seg_dur / raw.duration) + 1
+            raw = concatenate_audioclips([raw] * loops)
+        seg = raw.subclipped(0, seg_dur)
+
+        effects = []
+        fade_in = max(0.0, min(float(t.get("fade_in_sec", 1.0)), seg_dur / 2.0))
+        fade_out = max(0.0, min(float(t.get("fade_out_sec", 1.0)), seg_dur / 2.0))
+        if fade_in > 0:
+            effects.append(afx.AudioFadeIn(fade_in))
+        if fade_out > 0:
+            effects.append(afx.AudioFadeOut(fade_out))
+        if effects:
+            seg = seg.with_effects(effects)
+        seg = seg.with_volume_scaled(max(0.0, min(float(t.get("volume", 0.3)), 2.0)))
+        seg = seg.with_start(start_s)
+        pieces.append(seg)
+
+    if not pieces:
+        return merged_clip
+    return merged_clip.with_audio(CompositeAudioClip(pieces))
+
+
+def _hl_snap_overlay_timing(start_sec: float, duration_sec: float, clip_duration: float, fps: float) -> tuple[float, float]:
+    """Snap overlay start/duration to frame boundaries so appearance/disappearance
+    matches the edited time exactly (avoids ±1 frame jitter that looks like a delay)."""
+    fps = fps if fps and fps > 0 else 30.0
+    start_s = max(0.0, round(float(start_sec) * fps) / fps)
+    raw_dur = min(float(duration_sec), max(0.0, clip_duration - start_s))
+    dur_s = max(1.0 / fps, round(raw_dur * fps) / fps)
+    return start_s, dur_s
+
+
+def _hl_make_overlay_clip(
+    ov: dict,
+    video_size: tuple[int, int],
+    clip_duration: float,
+    fallback_job_id: str | None = None,
+    fps: float = 30.0,
+):
+    """Build an overlay clip (image-template mode or draw mode)."""
+    import numpy as _np2
+    from PIL import Image, ImageDraw, ImageFont
+    from moviepy import ImageClip
+
+    W, H = video_size
+
+    kind = str(ov.get("kind", ""))
+    start_sec = float(ov.get("start_sec", 0.0))
+    duration_sec = float(ov.get("duration_sec", 5.0))
+    x_pct = float(ov.get("x_pct", 25.0))
+    y_pct = float(ov.get("y_pct", 5.0))
+    image_path = str(ov.get("image_path", "") or "")
+
+    # ── image-template mode: composite an uploaded template image ──
+    if image_path:
+        img_job_id = ov.get("image_job_id") or fallback_job_id
+        if not img_job_id:
+            return None
+        img_path = _hl_overlay_images_dir(img_job_id) / Path(image_path).name
+        if not img_path.exists():
+            return None
+        try:
+            pil_img = Image.open(img_path).convert("RGBA")
+        except Exception:
+            return None
+
+        width_pct = float(ov.get("width_pct", 30.0))
+        height_pct = float(ov.get("height_pct", 0.0))
+        target_w = max(50, int(W * max(5.0, min(width_pct, 100.0)) / 100.0))
+        if height_pct > 0:
+            target_h = max(20, int(H * min(height_pct, 100.0) / 100.0))
+        else:
+            ratio = target_w / max(1, pil_img.width)
+            target_h = max(20, int(pil_img.height * ratio))
+        pil_img = pil_img.resize((target_w, target_h), Image.LANCZOS)
+
+        bx = max(0, min(int((x_pct / 100.0) * W), max(0, W - target_w)))
+        by = max(0, min(int((y_pct / 100.0) * H), max(0, H - target_h)))
+
+        arr = _np2.array(pil_img)
+        start_s, dur_s = _hl_snap_overlay_timing(start_sec, duration_sec, clip_duration, fps)
+        return (ImageClip(arr, duration=dur_s)
+                .with_start(start_s).with_fps(fps).with_position((bx, by)))
+
+    # ── draw mode: render box/text directly with Pillow ──
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    def _font(size: int):
+        for path in _HL_OVERLAY_FONT_CANDIDATES:
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+        return ImageFont.load_default()
+
+    def _hex_to_rgba(h: str, alpha: int = 127) -> tuple[int, int, int, int]:
+        s = (h or "").lstrip("#")
+        if len(s) == 6:
+            try:
+                return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), alpha)
+            except ValueError:
+                pass
+        return (255, 116, 0, alpha)
+
+    def _load_logo():
+        if HIGHLIGHT_OVERLAY_LOGO.exists():
+            try:
+                return Image.open(HIGHLIGHT_OVERLAY_LOGO).convert("RGBA")
+            except Exception:
+                pass
+        return None
+
+    ACCENT = _hex_to_rgba(str(ov.get("bg_color", "#FF7400")), alpha=127)
+    WHITE = (255, 255, 255, 255)
+    LIGHT_DIM = (255, 255, 255, 215)
+    logo_img = _load_logo()
+
+    def _center_y(box_top: int, box_h: int, bbox, glyph_h: int) -> int:
+        return box_top + (box_h - glyph_h) // 2 - bbox[1]
+
+    if kind == "scoreboard":
+        font_team = _font(max(20, int(H * 0.04)))
+        font_score = _font(max(26, int(H * 0.052)))
+
+        home_text = str(ov.get("home", "") or "HOME")
+        score_text = f"{int(ov.get('home_score', 0))} - {int(ov.get('away_score', 0))}"
+        away_text = str(ov.get("away", "") or "AWAY")
+
+        hb = draw.textbbox((0, 0), home_text, font=font_team)
+        sb = draw.textbbox((0, 0), score_text, font=font_score)
+        ab = draw.textbbox((0, 0), away_text, font=font_team)
+        hw, hh = hb[2] - hb[0], hb[3] - hb[1]
+        sw, sh = sb[2] - sb[0], sb[3] - sb[1]
+        aw_, ah = ab[2] - ab[0], ab[3] - ab[1]
+
+        pad_x = max(14, int(W * 0.013))
+        pad_y = max(8, int(H * 0.014))
+        sep = max(10, int(W * 0.01))
+        block_h = sh + pad_y * 2
+
+        logo_h = block_h
+        logo_w = 0
+        logo_resized = None
+        if logo_img is not None and logo_img.height > 0:
+            ratio = logo_img.width / logo_img.height
+            logo_w = int(logo_h * ratio)
+            logo_resized = logo_img.resize((logo_w, logo_h), Image.LANCZOS)
+
+        rect_w = pad_x + hw + sep + sw + sep + aw_ + pad_x
+        total_w = (logo_w + sep if logo_w else 0) + rect_w
+
+        bx = max(0, min(int((x_pct / 100.0) * W), W - total_w))
+        by = max(0, min(int((y_pct / 100.0) * H), H - block_h))
+
+        rect_x = bx
+        if logo_resized is not None:
+            img.paste(logo_resized, (bx, by + (block_h - logo_h) // 2), logo_resized)
+            rect_x = bx + logo_w + sep
+
+        draw.rectangle([rect_x, by, rect_x + rect_w, by + block_h], fill=ACCENT)
+
+        x = rect_x + pad_x
+        draw.text((x, _center_y(by, block_h, hb, hh)), home_text, font=font_team, fill=WHITE)
+        x += hw + sep
+        draw.text((x, _center_y(by, block_h, sb, sh)), score_text, font=font_score, fill=WHITE)
+        x += sw + sep
+        draw.text((x, _center_y(by, block_h, ab, ah)), away_text, font=font_team, fill=WHITE)
+
+    elif kind == "scorer":
+        font_num = _font(max(22, int(H * 0.045)))
+        font_label = _font(max(12, int(H * 0.022)))
+        font_name = _font(max(22, int(H * 0.042)))
+
+        number_text = str(ov.get("number", "") or "0")
+        label_text = "GOAL!"
+        name_text = str(ov.get("name", "") or "PLAYER")
+
+        nb = draw.textbbox((0, 0), number_text, font=font_num)
+        lb = draw.textbbox((0, 0), label_text, font=font_label)
+        nmb = draw.textbbox((0, 0), name_text, font=font_name)
+        nw_, nh_ = nb[2] - nb[0], nb[3] - nb[1]
+        lw_, lh_ = lb[2] - lb[0], lb[3] - lb[1]
+        nmw, nmh = nmb[2] - nmb[0], nmb[3] - nmb[1]
+
+        pad_x = max(12, int(W * 0.011))
+        pad_y = max(8, int(H * 0.012))
+        sep = max(10, int(W * 0.01))
+        text_inner_h = lh_ + 4 + nmh
+        block_h = text_inner_h + pad_y * 2
+
+        logo_h = block_h
+        logo_w = 0
+        logo_resized = None
+        if logo_img is not None and logo_img.height > 0:
+            ratio = logo_img.width / logo_img.height
+            logo_w = int(logo_h * ratio)
+            logo_resized = logo_img.resize((logo_w, logo_h), Image.LANCZOS)
+
+        rect_w = pad_x + nw_ + sep + max(lw_, nmw) + pad_x
+        total_w = (logo_w + sep if logo_w else 0) + rect_w
+
+        bx = max(0, min(int((x_pct / 100.0) * W), W - total_w))
+        by = max(0, min(int((y_pct / 100.0) * H), H - block_h))
+
+        rect_x = bx
+        if logo_resized is not None:
+            img.paste(logo_resized, (bx, by + (block_h - logo_h) // 2), logo_resized)
+            rect_x = bx + logo_w + sep
+
+        draw.rectangle([rect_x, by, rect_x + rect_w, by + block_h], fill=ACCENT)
+
+        x = rect_x + pad_x
+        draw.text((x, _center_y(by, block_h, nb, nh_)), number_text, font=font_num, fill=WHITE)
+        x += nw_ + sep
+
+        text_top = by + (block_h - text_inner_h) // 2
+        draw.text((x, text_top - lb[1]), label_text, font=font_label, fill=LIGHT_DIM)
+        draw.text((x, text_top + lh_ + 4 - nmb[1]), name_text, font=font_name, fill=WHITE)
+
+    else:
+        return None
+
+    bbox = img.getbbox()
+    if bbox:
+        pos = (bbox[0], bbox[1])
+        arr = _np2.array(img.crop(bbox))
+    else:
+        pos = (0, 0)
+        arr = _np2.array(img)
+    start_s, dur_s = _hl_snap_overlay_timing(start_sec, duration_sec, clip_duration, fps)
+    return (ImageClip(arr, duration=dur_s)
+            .with_start(start_s).with_fps(fps).with_position(pos))
+
+
+# ── editor project persistence (runtime JSON, not committed) ────────────────
+
+def _hl_load_editor_projects() -> dict:
+    if HIGHLIGHT_EDITOR_PROJECTS_PATH.exists():
+        try:
+            return _json.loads(HIGHLIGHT_EDITOR_PROJECTS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _hl_save_editor_projects(data: dict) -> None:
+    HIGHLIGHT_EDITOR_PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HIGHLIGHT_EDITOR_PROJECTS_PATH.write_text(
+        _json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ── split jobs (first-half + second-half uploads → concat → analyze) ────────
+
+@app.post("/api/highlight/jobs/split")
+async def create_highlight_split_job(
+    first_half: UploadFile = File(...),
+    second_half: UploadFile = File(...),
+    mode: str = Form("ai"),
+    highlight_count: int = Form(40),
+    log_data_json: str = Form("[]"),
+    display_name: str = Form(""),
+    db: Session = Depends(get_db),
+    _user: str = Depends(_hl_require_user),
+):
+    if mode not in ("ai", "log_ai"):
+        raise HTTPException(status_code=400, detail="mode must be 'ai' or 'log_ai'")
+    for f in (first_half, second_half):
+        if not f.filename:
+            raise HTTPException(status_code=400, detail="전반/후반 파일을 모두 선택하세요.")
+
+    job_id = str(uuid.uuid4())
+    upload_dir = HIGHLIGHT_RUNTIME_DIR / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    ext1 = Path(first_half.filename).suffix or ".mp4"
+    ext2 = Path(second_half.filename).suffix or ".mp4"
+    path1 = upload_dir / f"{job_id}_1{ext1}"
+    path2 = upload_dir / f"{job_id}_2{ext2}"
+    with path1.open("wb") as buf:
+        _shutil.copyfileobj(first_half.file, buf)
+    with path2.open("wb") as buf:
+        _shutil.copyfileobj(second_half.file, buf)
+    path1 = _hl_normalize_for_analysis(path1)
+    path2 = _hl_normalize_for_analysis(path2)
+
+    second_half_start_sec = _hl_probe_duration(path1)
+    combined = upload_dir / f"{job_id}_combined.mp4"
+    _hl_concat_videos([path1, path2], combined)
+
+    source_name = f"{Path(first_half.filename).stem} + {Path(second_half.filename).stem}"
+    job = HighlightJob(
+        id=job_id,
+        status="queued",
+        mode=mode,
+        original_filename=source_name,
+        display_name=display_name.strip() or None,
+        upload_path=str(combined),
+    )
+    db.add(job)
+    db.commit()
+
+    if mode == "ai":
+        _threading.Thread(
+            target=_run_ai_analysis,
+            args=(job_id, str(combined), highlight_count),
+            daemon=True,
+        ).start()
+    else:
+        try:
+            parsed = _json.loads(log_data_json)
+            log_data = parsed.get("data", []) if isinstance(parsed, dict) else parsed
+            if not isinstance(log_data, list):
+                log_data = []
+        except Exception:
+            log_data = []
+        _threading.Thread(
+            target=_run_log_analysis,
+            args=(job_id, str(combined), log_data, second_half_start_sec, highlight_count),
+            daemon=True,
+        ).start()
+
+    return {"job_id": job_id, "status": "queued", "second_half_start_sec": round(second_half_start_sec, 1)}
+
+
+# ── editor overlays / bgm tracks (stored in job_metadata) ───────────────────
+
+@app.get("/api/highlight/jobs/{job_id}/overlays")
+def get_highlight_overlays(
+    job_id: str, db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"overlays": (job.job_metadata or {}).get("editor_overlays", []) or []}
+
+
+@app.post("/api/highlight/jobs/{job_id}/overlays")
+def set_highlight_overlays(
+    job_id: str, body: dict = Body(...), db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    meta = dict(job.job_metadata or {})
+    meta["editor_overlays"] = body.get("overlays", []) or []
+    _hl_update_job(db, job_id, job_metadata=meta)
+    return {"ok": True}
+
+
+@app.get("/api/highlight/jobs/{job_id}/bgm-tracks")
+def get_highlight_bgm_tracks(
+    job_id: str, db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"bgm_tracks": (job.job_metadata or {}).get("editor_bgm_tracks", []) or []}
+
+
+@app.post("/api/highlight/jobs/{job_id}/bgm-tracks")
+def set_highlight_bgm_tracks(
+    job_id: str, body: dict = Body(...), db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    meta = dict(job.job_metadata or {})
+    meta["editor_bgm_tracks"] = body.get("bgm_tracks", []) or []
+    _hl_update_job(db, job_id, job_metadata=meta)
+    return {"ok": True}
+
+
+# ── BGM upload ──────────────────────────────────────────────────────────────
+
+@app.post("/api/highlight/bgm/upload")
+async def upload_highlight_bgm(
+    file: UploadFile = File(...), _user: str = Depends(_hl_require_user),
+):
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _BGM_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="지원하지 않는 파일 형식입니다.")
+    safe_name = Path(file.filename).name
+    dest = HIGHLIGHT_BGM_DIR / safe_name
+    with dest.open("wb") as f:
+        f.write(await file.read())
+    return {"name": safe_name}
+
+
+# ── overlay images (scoreboard / scorer templates) ──────────────────────────
+
+@app.post("/api/highlight/jobs/{job_id}/overlay-images")
+async def upload_highlight_overlay_image(
+    job_id: str, file: UploadFile = File(...), db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    if not db.get(HighlightJob, job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일이 없습니다.")
+    safe_name = Path(file.filename).name
+    if Path(safe_name).suffix.lower() not in _IMAGE_CARD_EXTS:
+        raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
+    saved = _hl_overlay_images_dir(job_id) / safe_name
+    with saved.open("wb") as f:
+        _shutil.copyfileobj(file.file, f)
+    return {"ok": True, "name": safe_name}
+
+
+@app.get("/api/highlight/jobs/{job_id}/overlay-images")
+def list_highlight_overlay_images(
+    job_id: str, db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    if not db.get(HighlightJob, job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    d = _hl_overlay_images_dir(job_id)
+    images = sorted(f.name for f in d.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_CARD_EXTS)
+    return {"images": images}
+
+
+@app.get("/api/highlight/jobs/{job_id}/overlay-images/{filename}")
+def serve_highlight_overlay_image(
+    job_id: str, filename: str, db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    p = _hl_overlay_images_dir(job_id) / filename
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Overlay image not found")
+    return FileResponse(str(p))
+
+
+@app.delete("/api/highlight/jobs/{job_id}/overlay-images/{filename}")
+def delete_highlight_overlay_image(
+    job_id: str, filename: str, db: Session = Depends(get_db), _user: str = Depends(_hl_require_user),
+):
+    if "/" in filename or "\\" in filename or filename.startswith(".."):
+        raise HTTPException(status_code=400, detail="잘못된 파일명")
+    p = _hl_overlay_images_dir(job_id) / filename
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="이미지 없음")
+    p.unlink()
+    return {"ok": True}
+
+
+# ── external clips (add external video into the timeline without analysis) ──
+
+@app.post("/api/highlight/jobs/{job_id}/external-clips")
+async def upload_highlight_external_clip(
+    job_id: str,
+    file: UploadFile = File(...),
+    register: bool = False,
+    db: Session = Depends(get_db),
+    _user: str = Depends(_hl_require_user),
+):
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일이 없습니다.")
+    ext = Path(file.filename).suffix.lower()
+    if ext not in _HL_EXTERNAL_VIDEO_EXTS:
+        raise HTTPException(status_code=400, detail="영상 파일만 업로드 가능합니다 (mp4/mov/avi/mkv/webm/m4v).")
+    clips_dir = _hl_clips_dir(job_id)
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = re.sub(r"[^\w가-힣.\-]", "_", Path(file.filename).stem).strip("_") or "external"
+    name = f"ext_{safe_stem}{ext}"
+    saved = clips_dir / name
+    i = 1
+    while saved.exists():
+        name = f"ext_{safe_stem}_{i}{ext}"
+        saved = clips_dir / name
+        i += 1
+    with saved.open("wb") as f:
+        _shutil.copyfileobj(file.file, f)
+
+    if register:
+        meta = dict(job.job_metadata or {})
+        clips = list(meta.get("clips") or [])
+        if name not in clips:
+            clips.append(name)
+        meta["clips"] = clips
+        selected = dict(meta.get("selected") or {})
+        selected[name] = True
+        meta["selected"] = selected
+        _hl_update_job(db, job_id, job_metadata=meta)
+
+    return {"ok": True, "name": name}
+
+
+# ── editor projects (timeline + overlays + bgm + settings) ──────────────────
+
+@app.get("/api/highlight/editor/projects")
+def list_highlight_editor_projects(_user: str = Depends(_hl_require_user)):
+    data = _hl_load_editor_projects()
+    out = [
+        {
+            "id": pid,
+            "name": p.get("name", "(이름없음)"),
+            "created_at": p.get("created_at"),
+            "updated_at": p.get("updated_at"),
+            "item_count": len(p.get("timeline", []) or []),
+            "overlay_count": len(p.get("overlays", []) or []),
+        }
+        for pid, p in data.items()
+    ]
+    out.sort(key=lambda x: x.get("updated_at") or 0, reverse=True)
+    return {"projects": out}
+
+
+@app.post("/api/highlight/editor/projects")
+def save_highlight_editor_project(body: dict = Body(...), _user: str = Depends(_hl_require_user)):
+    data = _hl_load_editor_projects()
+    name = (str(body.get("name", "")) or "").strip() or "무제 프로젝트"
+    pid = next((k for k, v in data.items() if v.get("name") == name), None)
+    now = time.time()
+    created = data[pid].get("created_at", now) if pid else now
+    if pid is None:
+        pid = uuid.uuid4().hex
+    data[pid] = {
+        "name": name,
+        "created_at": created,
+        "updated_at": now,
+        "job_id": body.get("job_id"),
+        "timeline": body.get("timeline", []) or [],
+        "overlays": body.get("overlays", []) or [],
+        "bgm_tracks": body.get("bgm_tracks", []) or [],
+        "transition_sec": float(body.get("transition_sec", 0.5)),
+        "audio_volume": float(body.get("audio_volume", 1.0)),
+    }
+    _hl_save_editor_projects(data)
+    return {"ok": True, "id": pid, "name": name}
+
+
+@app.get("/api/highlight/editor/projects/{project_id}")
+def get_highlight_editor_project(project_id: str, _user: str = Depends(_hl_require_user)):
+    data = _hl_load_editor_projects()
+    p = data.get(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    return {"id": project_id, **p}
+
+
+@app.delete("/api/highlight/editor/projects/{project_id}")
+def delete_highlight_editor_project(project_id: str, _user: str = Depends(_hl_require_user)):
+    data = _hl_load_editor_projects()
+    if project_id in data:
+        del data[project_id]
+        _hl_save_editor_projects(data)
     return {"ok": True}

@@ -28,13 +28,12 @@ MIN_SECONDS_BETWEEN_CLIPS = 15
 SCORE_THRESHOLD = 0.2
 
 # log-mode constants (kept identical to log_extract.py)
-LOG_CLIP_BEFORE = 10
-LOG_CLIP_AFTER = 5
-LOG_CLIP_MINUTE_SPAN = 60
-_LOG_MIN_GAP = LOG_CLIP_BEFORE + LOG_CLIP_MINUTE_SPAN + LOG_CLIP_AFTER
+LOG_CLIP_BEFORE = 45   # seconds before event
+LOG_CLIP_AFTER = 25    # seconds after event
+_LOG_MIN_GAP = 20  # event merge gap (s). events within 20s are merged (GOAL priority)
 
-_LOG_EVENT_SCORES = {"GOAL": 1.0, "VALID_SHOT": 0.8, "SHOT": 0.6}
-LOG_VALID_EVENTS = {"GOAL", "SHOT", "VALID_SHOT"}
+_LOG_EVENT_SCORES = {"GOAL": 1.0, "HIGHLIGHT": 0.9}
+LOG_VALID_EVENTS = {"GOAL", "HIGHLIGHT"}
 
 YOLO_CONF = 0.15
 YOLO_IMGSZ = 1280
@@ -120,14 +119,17 @@ def _parse_log(
         event_filter = LOG_VALID_EVENTS
     events: list[_LogEvent] = []
     for item in log_data:
-        event_type = str(item.get("eventLog", ""))
+        event_type = str(item.get("eventLog", "")).upper()
         if event_type not in event_filter:
             continue
-        elapsed_min = int(item.get("elapsedMinutes", 0))
-        half = str(item.get("halfType", "FIRST_HALF"))
-        elapsed_sec = elapsed_min * 60
+        # API field is elapsedSeconds (legacy elapsedTime fallback)
+        elapsed_sec = int(item.get("elapsedSeconds", item.get("elapsedTime", 0)))
+        half = str(item.get("halfType", "FIRST_HALF")).upper()
         video_sec = float(elapsed_sec) if half == "FIRST_HALF" else second_half_start_sec + elapsed_sec
         events.append(_LogEvent(video_sec=video_sec, event_type=event_type, half=half, elapsed_sec=elapsed_sec))
+    # FIRST_HALF time order → SECOND_HALF time order
+    half_order = {"FIRST_HALF": 0, "SECOND_HALF": 1}
+    events.sort(key=lambda e: (half_order.get(e.half, 2), e.elapsed_sec))
     return events
 
 
@@ -154,6 +156,29 @@ def _get_video_duration(video_path: str) -> float | None:
             capture_output=True, text=True, check=True,
         )
         return float(r.stdout.strip())
+    except Exception:
+        return None
+
+
+def _get_video_fps(video_path: str) -> float | None:
+    """Return r_frame_rate (e.g. '60000/1001') as a float fps, or None on failure.
+
+    Accurate fps is needed to compute AI clip anchor labels (frame/fps);
+    e.g. dividing a 59.94fps video by 30fps would double the label time.
+    """
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, check=True,
+        )
+        raw = r.stdout.strip()
+        if "/" in raw:
+            num, den = raw.split("/")
+            den_f = float(den)
+            return float(num) / den_f if den_f else None
+        return float(raw)
     except Exception:
         return None
 
@@ -721,8 +746,9 @@ def run_log_pipeline(
     clip_paths: list[str] = []
     events_meta: list[dict] = []
 
+    logger.info("Log mode: %d events → extracting clips", len(events))
     for i, ev in enumerate(events):
-        start = max(0.0, ev.video_sec - LOG_CLIP_MINUTE_SPAN - LOG_CLIP_BEFORE)
+        start = max(0.0, ev.video_sec - LOG_CLIP_BEFORE)
         end = ev.video_sec + LOG_CLIP_AFTER
         if video_duration:
             end = min(end, video_duration)
@@ -755,7 +781,7 @@ def run_log_pipeline(
     if remaining > 0 and yolo_model is not None:
         exclude_intervals = [
             (
-                max(0.0, ev.video_sec - LOG_CLIP_MINUTE_SPAN - LOG_CLIP_BEFORE - CLIP_DURATION_BEFORE),
+                max(0.0, ev.video_sec - LOG_CLIP_BEFORE - CLIP_DURATION_BEFORE),
                 ev.video_sec + LOG_CLIP_AFTER + CLIP_DURATION_AFTER,
             )
             for ev in events
@@ -806,11 +832,16 @@ def run_log_pipeline(
             if i < len(ai_feats):
                 clip_features_map[name] = ai_feats[i]
 
+    # Real fps: prefer AI result fps (read via cv2 during detection), else ffprobe.
+    # The server computes AI clip anchor labels as frame/fps, so fps must be accurate.
+    real_fps = (_ai_result.fps if _ai_result and _ai_result.fps else None) or _get_video_fps(video_path) or 30.0
+
     return LogExtractResult(
         success=True,
         message=f"로그 {log_count}개 + AI {ai_count}개 클립 추출 완료",
         clip_paths=clip_paths,
         events=events_meta,
+        fps=float(real_fps),
         clip_scores=clip_scores,
         clip_features=clip_features_map,
         clip_feature_stats=clip_feature_stats_map,
