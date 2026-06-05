@@ -10,8 +10,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from uuid import UUID
-from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
@@ -4276,26 +4276,70 @@ async def create_player_job(
     return {"job_id": job_id, "status": "queued"}
 
 
+def _serve_video_with_range(path: Path, request: Request, media_type: str):
+    """HTTP Range 지원 영상 서빙. <video> 의 시킹(드래그 이동)에 필수.
+    Range 없으면 200+Accept-Ranges, 있으면 206+해당 바이트 구간 스트리밍."""
+    file_size = path.stat().st_size
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if not range_header:
+        return FileResponse(str(path), media_type=media_type,
+                            headers={"Accept-Ranges": "bytes"})
+    try:
+        unit, _, rng = range_header.partition("=")
+        if unit.strip().lower() != "bytes":
+            raise ValueError
+        start_s, _, end_s = rng.partition("-")
+        start = int(start_s) if start_s.strip() else 0
+        end = int(end_s) if end_s.strip() else file_size - 1
+    except Exception:
+        return FileResponse(str(path), media_type=media_type,
+                            headers={"Accept-Ranges": "bytes"})
+    start = max(0, start)
+    end = min(end, file_size - 1)
+    if start > end:
+        start, end = 0, file_size - 1
+    length = end - start + 1
+
+    def _iter():
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers = {
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(length),
+    }
+    return StreamingResponse(_iter(), status_code=206, headers=headers, media_type=media_type)
+
+
 @app.get("/api/highlight/player-jobs/{job_id}/video")
 def serve_player_video(
     job_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
 ):
-    """리뷰 재생용 영상 서빙. 프록시(proxy.mp4)가 있으면 고배속용 저화질 프록시를 우선."""
+    """리뷰 재생용 영상 서빙(Range 지원). 프록시(proxy.mp4)가 있으면 저화질 프록시를 우선."""
     if _user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     job = _require_player_job(db, job_id)
     meta = job.job_metadata or {}
     proxy = _hl_job_dir(job_id) / "proxy.mp4"
     if meta.get("proxy_file") and proxy.exists():
-        return FileResponse(str(proxy), media_type="video/mp4", filename="proxy.mp4")
+        return _serve_video_with_range(proxy, request, "video/mp4")
     path = Path(job.upload_path) if job.upload_path else None
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="영상 파일을 찾을 수 없습니다.")
     suffix = path.suffix.lower()
     media = "video/mp4" if suffix in (".mp4", ".m4v", ".mov") else f"video/{suffix.lstrip('.')}"
-    return FileResponse(str(path), media_type=media, filename=path.name)
+    return _serve_video_with_range(path, request, media)
 
 
 @app.post("/api/highlight/player-jobs/{job_id}/proxy")
@@ -4501,14 +4545,16 @@ async def create_highlight_job(
 @app.get("/api/highlight/jobs")
 def list_highlight_jobs(
     limit: int = Query(20, ge=1, le=100),
+    mode: str | None = Query(None),
     db: Session = Depends(get_db),
     _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
 ):
     if _user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    rows = (db.query(HighlightJob)
-            .order_by(desc(HighlightJob.created_at))
-            .limit(limit).all())
+    q = db.query(HighlightJob)
+    if mode:
+        q = q.filter(HighlightJob.mode == mode)
+    rows = q.order_by(desc(HighlightJob.created_at)).limit(limit).all()
     return [_serialize_hl_job(r) for r in rows]
 
 
