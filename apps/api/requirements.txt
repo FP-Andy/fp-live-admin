@@ -17,6 +17,7 @@ scikit-learn==1.5.2
 torch==2.4.1
 torchvision==0.19.1
 ultralytics==8.3.161
+lap==0.5.13  # ByteTrack/BoT-SORT 선형할당 — 없으면 첫 track() 시 런타임 자동설치+재시작(진행중 job 죽음)
 xgboost==2.1.1
 moviepy==2.0.0
 opencv-python-headless==4.10.0.84
