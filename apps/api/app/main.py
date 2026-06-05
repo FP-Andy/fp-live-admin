@@ -3906,6 +3906,7 @@ def _hl_update_job(db: Session, job_id: str, **kwargs: object) -> HighlightJob |
 
 
 def _serialize_hl_job(job: HighlightJob) -> dict:
+    meta = job.job_metadata if isinstance(job.job_metadata, dict) else {}
     return {
         "id": job.id,
         "status": job.status,
@@ -3915,6 +3916,8 @@ def _serialize_hl_job(job: HighlightJob) -> dict:
         "export_path": job.export_path or None,
         "error_message": job.error_message,
         "job_metadata": job.job_metadata or {},
+        "progress": meta.get("progress"),
+        "stage": meta.get("stage"),
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
     }
@@ -3934,6 +3937,9 @@ def _run_ai_analysis(job_id: str, video_path: str, highlight_count: int) -> None
             CLIP_DURATION_AFTER,
         )
 
+        def _progress(pct: int, stage: str) -> None:
+            _hl_update_job(db, job_id, job_metadata={"progress": int(pct), "stage": stage})
+
         clips_dir = str(_hl_clips_dir(job_id))
         result = run_highlight_pipeline(
             video_path=video_path,
@@ -3941,6 +3947,7 @@ def _run_ai_analysis(job_id: str, video_path: str, highlight_count: int) -> None
             yolo_model=_yolo_model,
             xgb_model=_xgb_model,
             highlight_count=highlight_count,
+            progress_cb=_progress,
         )
 
         if not result.success:
@@ -4018,6 +4025,9 @@ def _run_log_analysis(
             LOG_CLIP_AFTER,
         )
 
+        def _progress(pct: int, stage: str) -> None:
+            _hl_update_job(db, job_id, job_metadata={"progress": int(pct), "stage": stage})
+
         clips_dir = str(_hl_clips_dir(job_id))
         result = run_log_pipeline(
             video_path=video_path,
@@ -4027,6 +4037,7 @@ def _run_log_analysis(
             target_count=highlight_count,
             yolo_model=_yolo_model,
             xgb_model=_xgb_model,
+            progress_cb=_progress,
         )
 
         if not result.success:
@@ -4079,6 +4090,355 @@ def _run_log_analysis(
         _hl_update_job(db, job_id, status="error", error_message=str(exc))
     finally:
         db.close()
+
+
+# ── 개인(선수) 클립 ──────────────────────────────────────────────────────────
+# 영상 업로드 → 선수·공 탐지·추적(track_id) → UI 에서 선수 지정 → 그 선수가 공에
+# 관여한 구간만 컷. AI/로그 잡과 달리 추출(extract)이 선수 지정 이후에 일어나므로
+# 원본 영상을 보존한다(upload_path 유지). mode="player" 로 HighlightJob 재사용.
+
+def _probe_dimensions(path: Path) -> tuple[int, int]:
+    """영상 (width, height) px. 실패 시 (0, 0)."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(path)],
+            check=True, capture_output=True, text=True,
+        )
+        w, h = r.stdout.strip().split("x")
+        return int(w), int(h)
+    except Exception:
+        return 0, 0
+
+
+def _make_playback_proxy(src: Path, out: Path, target_h: int = 720) -> bool:
+    """리뷰 재생 전용 저화질 프록시(720p·무음). 탐지·클립은 원본으로 — 프록시는 고배속
+    재생용 '보여주기'뿐. 박스 좌표는 원본 px 기준이라 프론트가 원본 W/H 로 스케일."""
+    import subprocess
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src), "-vf", f"scale=-2:{target_h}",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+             "-an", "-movflags", "+faststart", str(out)],
+            check=True, capture_output=True,
+        )
+        return out.exists()
+    except Exception:
+        return False
+
+
+def _run_player_proxy_job(job_id: str) -> None:
+    """기존 player job 원본으로 재생 프록시만 생성(재탐지 X). metadata 에 proxy_file 기록."""
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job or not job.upload_path:
+            return
+        src = Path(job.upload_path)
+        if not src.exists():
+            _hl_update_job(db, job_id, job_metadata={**(job.job_metadata or {}), "proxy_status": "error"})
+            return
+        vw, vh = _probe_dimensions(src)
+        ok = _make_playback_proxy(src, _hl_job_dir(job_id) / "proxy.mp4")
+        job = db.get(HighlightJob, job_id)  # 그새 바뀌었을 수 있어 재로드
+        meta = dict(job.job_metadata or {})
+        meta.update({
+            "video_w": vw or meta.get("video_w", 0),
+            "video_h": vh or meta.get("video_h", 0),
+            "proxy_file": "proxy.mp4" if ok else None,
+            "proxy_status": "done" if ok else "error",
+        })
+        _hl_update_job(db, job_id, job_metadata=meta)
+    finally:
+        db.close()
+
+
+def _run_player_detect_job(job_id: str, video_path: str) -> None:
+    """선수·공 탐지·추적 → detections CSV 저장 + 공 보유 이벤트 계산 (컷은 이후 extract)."""
+    db = SessionLocal()
+    try:
+        _hl_update_job(db, job_id, status="processing")
+        if _yolo_model is None:
+            _hl_update_job(db, job_id, status="error", error_message="YOLO 모델이 로드되지 않았습니다.")
+            return
+
+        import pandas as pd
+        from .player_clip_extract import run_player_detection, compute_possession_events
+
+        def _progress(pct: int, stage: str) -> None:
+            _hl_update_job(db, job_id, job_metadata={"progress": int(pct), "stage": stage})
+
+        job_dir = _hl_job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        result = run_player_detection(video_path, str(job_dir), _yolo_model, progress_cb=_progress)
+        if not result.success:
+            _hl_update_job(db, job_id, status="error", error_message=result.message)
+            return
+
+        det_df = pd.read_csv(job_dir / result.detection_file)
+        events = compute_possession_events(det_df, result.fps)
+
+        # canvas 박스 스케일용 원본 W/H + 고해상도면 고배속 재생용 프록시(720p) 생성
+        vw, vh = _probe_dimensions(Path(video_path))
+        proxy_file = None
+        if vh > 720:
+            _progress(98, "재생 프록시 생성")
+            if _make_playback_proxy(Path(video_path), job_dir / "proxy.mp4"):
+                proxy_file = "proxy.mp4"
+
+        metadata = {
+            "mode": "player",
+            "fps": result.fps,
+            "detection_file": result.detection_file,
+            "video_file": Path(video_path).name,
+            "n_frames": result.n_frames,
+            "n_player_tracks": result.n_player_tracks,
+            "video_w": vw,
+            "video_h": vh,
+            "proxy_file": proxy_file,
+            "events": events,
+            "clips": [],
+            "selected": {},
+            "message": result.message,
+        }
+        safe_meta = _json.loads(_json.dumps(metadata, cls=_NpEncoder))
+        _hl_update_job(db, job_id, status="done", clips_dir=str(_hl_clips_dir(job_id)),
+                       job_metadata=safe_meta)
+    except Exception as exc:
+        _hl_update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
+def _player_track_windows(body: dict, fps: float) -> list | None:
+    """body 의 [track_id, from_sec, to_sec] 목록 → (tid, from_frame, to_frame). 없으면 None."""
+    tw = body.get("track_windows") or []
+    return [(int(t), float(a) * fps, float(b) * fps) for t, a, b in tw] or None
+
+
+def _load_player_det(job: HighlightJob):
+    """개인클립 job 의 (detections df, fps) 로드. 탐지 전이면 400."""
+    import pandas as pd
+    meta = job.job_metadata or {}
+    det_path = _hl_job_dir(job.id) / meta.get("detection_file", "player_detections.csv")
+    if not det_path.exists():
+        raise HTTPException(status_code=400, detail="탐지 결과가 없습니다. 먼저 탐지를 완료하세요.")
+    return pd.read_csv(det_path), float(meta.get("fps") or 30.0)
+
+
+def _require_player_job(db: Session, job_id: str) -> HighlightJob:
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.mode != "player":
+        raise HTTPException(status_code=400, detail="개인 클립 잡이 아닙니다.")
+    return job
+
+
+@app.post("/api/highlight/player-jobs")
+async def create_player_job(
+    background_tasks: BackgroundTasks,
+    video: UploadFile = File(...),
+    display_name: str = Form(""),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """개인 클립: 영상 업로드 → 선수·공 탐지·추적(백그라운드). 이후 선수 지정 → /extract."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    job_id = str(uuid.uuid4())
+    upload_dir = HIGHLIGHT_RUNTIME_DIR / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
+    upload_path = upload_dir / f"{job_id}{suffix}"
+
+    content = await video.read()
+    upload_path.write_bytes(content)
+
+    job = HighlightJob(
+        id=job_id,
+        status="queued",
+        mode="player",
+        original_filename=video.filename or "video.mp4",
+        display_name=display_name.strip() or None,
+        upload_path=str(upload_path),
+    )
+    db.add(job)
+    db.commit()
+
+    _threading.Thread(
+        target=_run_player_detect_job,
+        args=(job_id, str(upload_path)),
+        daemon=True,
+    ).start()
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/highlight/player-jobs/{job_id}/video")
+def serve_player_video(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """리뷰 재생용 영상 서빙. 프록시(proxy.mp4)가 있으면 고배속용 저화질 프록시를 우선."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    meta = job.job_metadata or {}
+    proxy = _hl_job_dir(job_id) / "proxy.mp4"
+    if meta.get("proxy_file") and proxy.exists():
+        return FileResponse(str(proxy), media_type="video/mp4", filename="proxy.mp4")
+    path = Path(job.upload_path) if job.upload_path else None
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="영상 파일을 찾을 수 없습니다.")
+    suffix = path.suffix.lower()
+    media = "video/mp4" if suffix in (".mp4", ".m4v", ".mov") else f"video/{suffix.lstrip('.')}"
+    return FileResponse(str(path), media_type=media, filename=path.name)
+
+
+@app.post("/api/highlight/player-jobs/{job_id}/proxy")
+def make_player_proxy(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """기존 job 에 재생 프록시를 즉석 생성(재탐지 X, ffmpeg 만). 백그라운드 → 폴링."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    meta = job.job_metadata or {}
+    if meta.get("proxy_file"):
+        return {"status": "done", "proxy_file": meta["proxy_file"]}
+    if meta.get("proxy_status") == "running":
+        return {"status": "running"}
+    _hl_update_job(db, job_id, job_metadata={**meta, "proxy_status": "running"})
+    background_tasks.add_task(_run_player_proxy_job, job_id)
+    return {"status": "running"}
+
+
+@app.get("/api/highlight/player-jobs/{job_id}/detections")
+def serve_player_detections(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """프레임별 탐지 박스(player/ball) JSON. canvas 오버레이 렌더용.
+    반환: {fps, stride, video_w, video_h, frames: {frame: [{cls,tid,cx,cy,w,h}]}}."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    det_df, fps = _load_player_det(job)
+    meta = job.job_metadata or {}
+    frames: dict[int, list[dict]] = {}
+    for r in det_df.itertuples(index=False):
+        frames.setdefault(int(r.frame), []).append({
+            "cls": r.class_name, "tid": int(r.track_id),
+            "cx": float(r.cx), "cy": float(r.cy), "w": float(r.w), "h": float(r.h),
+        })
+    fs = sorted(frames.keys())
+    stride = (fs[1] - fs[0]) if len(fs) > 1 else 7
+    return {
+        "job_id": job_id, "fps": fps, "stride": int(stride),
+        "video_w": int(meta.get("video_w") or 0), "video_h": int(meta.get("video_h") or 0),
+        "frames": frames,
+    }
+
+
+@app.get("/api/highlight/player-jobs/{job_id}/events")
+def list_player_possession_events(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """영상 전체의 공 보유 이벤트(클립 후보) 열거 — 이벤트 리뷰용."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    meta = job.job_metadata or {}
+    events = meta.get("events") or []
+    return {"job_id": job_id, "fps": float(meta.get("fps") or 30.0),
+            "event_count": len(events), "events": events}
+
+
+@app.post("/api/highlight/player-jobs/{job_id}/preview")
+def preview_player_job_clips(
+    job_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """컷 없이 예상 클립 수·구간만 계산(미리보기). ffmpeg 미실행이라 빠름."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    from .player_clip_extract import compute_player_segments, CLIP_PAD_BEFORE, CLIP_PAD_AFTER
+
+    track_ids = [int(t) for t in (body.get("track_ids") or [])]
+    track_windows = body.get("track_windows") or []
+    direct_marks = [float(s) for s in (body.get("direct_marks") or [])]
+    if not track_ids and not track_windows and not direct_marks:
+        return {"job_id": job_id, "clip_count": 0, "segments": []}
+
+    det_df, fps = _load_player_det(job)
+    segments = compute_player_segments(
+        det_df, fps, track_ids,
+        pad_before=float(body.get("pad_before", CLIP_PAD_BEFORE)),
+        pad_after=float(body.get("pad_after", CLIP_PAD_AFTER)),
+        exclude_intervals=[tuple(iv) for iv in (body.get("exclude_intervals") or [])],
+        track_windows=_player_track_windows(body, fps),
+        extra_involve_secs=direct_marks,
+    )
+    total = round(sum(s["end"] - s["start"] for s in segments), 1)
+    return {"job_id": job_id, "clip_count": len(segments),
+            "total_seconds": total, "segments": segments}
+
+
+@app.post("/api/highlight/player-jobs/{job_id}/extract")
+def extract_player_job_clips(
+    job_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    _user: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    """지정한 선수 track_id 들이 공에 관여한 구간만 클립으로 추출."""
+    if _user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    from .player_clip_extract import extract_player_clips, CLIP_PAD_BEFORE, CLIP_PAD_AFTER
+
+    track_ids = [int(t) for t in (body.get("track_ids") or [])]
+    track_windows = body.get("track_windows") or []
+    direct_marks = [float(s) for s in (body.get("direct_marks") or [])]
+    if not track_ids and not track_windows and not direct_marks:
+        raise HTTPException(status_code=400, detail="선수를 한 명 이상 지정하세요.")
+    if not job.upload_path or not Path(job.upload_path).exists():
+        raise HTTPException(status_code=400, detail="원본 영상을 찾을 수 없습니다.")
+
+    det_df, fps = _load_player_det(job)
+    clip_paths, seg_meta = extract_player_clips(
+        job.upload_path, det_df, fps, track_ids, str(_hl_job_dir(job_id)),
+        pad_before=float(body.get("pad_before", CLIP_PAD_BEFORE)),
+        pad_after=float(body.get("pad_after", CLIP_PAD_AFTER)),
+        exclude_intervals=[tuple(iv) for iv in (body.get("exclude_intervals") or [])],
+        track_windows=_player_track_windows(body, fps),
+        extra_involve_secs=direct_marks,
+    )
+    clip_files = [Path(p).name for p in clip_paths]
+    meta = dict(job.job_metadata or {})
+    meta.update({
+        "clips": clip_files,
+        "selected": {n: False for n in clip_files},
+        "clip_timestamps": {m["clip"]: {"start": m["start"], "end": m["end"]} for m in seg_meta},
+        "player_segments": seg_meta,
+        "extracted_track_ids": track_ids or sorted({int(w[0]) for w in track_windows}),
+    })
+    safe_meta = _json.loads(_json.dumps(meta, cls=_NpEncoder))
+    _hl_update_job(db, job_id, clips_dir=str(_hl_clips_dir(job_id)), job_metadata=safe_meta)
+    return {"job_id": job_id, "clip_count": len(clip_files),
+            "clips": clip_files, "segments": seg_meta}
 
 
 @app.post("/api/highlight/jobs")

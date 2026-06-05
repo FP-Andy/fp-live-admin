@@ -45,13 +45,19 @@ const FHL_ITEMS: NavItem[] = [
     href: '/admin/highlight',
     label: 'Highlight',
     icon: '▶',
-    match: (pathname) => pathname === '/admin/highlight' || (pathname.startsWith('/admin/highlight') && !pathname.startsWith('/admin/highlight/editor')),
+    match: (pathname) => pathname === '/admin/highlight' || (pathname.startsWith('/admin/highlight') && !pathname.startsWith('/admin/highlight/editor') && !pathname.startsWith('/admin/highlight/player')),
   },
   {
     href: '/admin/highlight/editor',
     label: 'Editor',
     icon: '✂',
     match: (pathname) => pathname.startsWith('/admin/highlight/editor'),
+  },
+  {
+    href: '/admin/highlight/player',
+    label: 'Player',
+    icon: '♟',
+    match: (pathname) => pathname.startsWith('/admin/highlight/player'),
   },
   {
     href: '/admin/highlight/files',

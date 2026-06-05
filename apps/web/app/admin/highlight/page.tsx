@@ -136,6 +136,8 @@ type HighlightJob = {
   display_name?: string | null;
   error_message?: string;
   job_metadata: JobMetadata;
+  progress?: number | null;
+  stage?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -1182,20 +1184,36 @@ export default function HighlightPage() {
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
         {/* progress / status bar */}
-        {activeJob && (activeJob.status === 'queued' || activeJob.status === 'processing') && (
-          <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 24, border: '1px solid var(--border-ghost)' }}>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>PROCESSING</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{
-                width: 12, height: 12, borderRadius: '50%',
-                background: 'var(--accent)', animation: 'pulse 1.2s ease-in-out infinite',
-              }} />
-              <span style={{ fontSize: 13, color: 'var(--text)' }}>
-                {activeJob.status === 'queued' ? '분석 대기 중...' : 'YOLO 탐지 + 스코어 계산 중 (수분~수십분 소요)'}
-              </span>
+        {activeJob && (activeJob.status === 'queued' || activeJob.status === 'processing') && (() => {
+          const pct = typeof activeJob.progress === 'number' ? Math.max(0, Math.min(100, activeJob.progress)) : null;
+          const hasPct = activeJob.status === 'processing' && pct !== null;
+          return (
+            <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 24, border: '1px solid var(--border-ghost)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>PROCESSING</div>
+                {hasPct && <div style={{ fontSize: 12, color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>{pct}%</div>}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{
+                  width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
+                  background: 'var(--accent)', animation: 'pulse 1.2s ease-in-out infinite',
+                }} />
+                <span style={{ fontSize: 13, color: 'var(--text)' }}>
+                  {activeJob.status === 'queued'
+                    ? '분석 대기 중...'
+                    : (activeJob.stage
+                        ? `${activeJob.stage} 중...`
+                        : 'YOLO 탐지 + 스코어 계산 중 (수분~수십분 소요)')}
+                </span>
+              </div>
+              {hasPct && (
+                <div style={{ marginTop: 14, height: 6, borderRadius: 3, background: 'var(--border-ghost)', overflow: 'hidden' }}>
+                  <div style={{ width: `${pct}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.4s ease' }} />
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {activeJob?.status === 'error' && (
           <div style={{ background: 'var(--danger-soft)', borderRadius: 'var(--radius-card)', padding: 24, border: '1px solid var(--border-danger)' }}>

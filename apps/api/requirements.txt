@@ -12,6 +12,7 @@ openpyxl==3.1.5
 matplotlib==3.9.2
 mplsoccer==1.4.0
 scipy==1.14.1
+scikit-learn==1.5.2
 # highlight pipeline
 torch==2.4.1
 torchvision==0.19.1

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -38,6 +39,11 @@ LOG_VALID_EVENTS = {"GOAL", "HIGHLIGHT"}
 YOLO_CONF = 0.15
 YOLO_IMGSZ = 1280
 YOLO_STRIDE = 7
+# 공 전용 detect-only 패스 임계값 (ByteTrack이 stride=7에서 공 ~87% 누락 → 별도 추론으로 회복)
+BALL_DETECT_CONF = 0.10
+# 잔디(녹색) 마스크로 경기장 밖(관중·벤치) player/ref 오탐 제거. 끄려면 USE_GRASS_MASK=0.
+GRASS_MASK = os.environ.get("USE_GRASS_MASK", "1") == "1"
+GRASS_FILTER_CLASSES = ("player", "goalkeeper", "referee")  # 공/골대는 공중·라인 위라 미적용
 
 _ML_BASE_COLS = [
     "inv_dist_centroid_masked",
@@ -49,6 +55,8 @@ _ML_BASE_COLS = [
     "f_ball_to_goal_width_ratio",
     "f_goal_bbox_width_norm",
     "f_players_near_ball",
+    "f_ball_visible",
+    "f_ball_to_goal_approach",
 ]
 
 ML_FEATURES = [
@@ -65,6 +73,8 @@ ML_FEATURES = [
     "f_ball_to_goal_width_ratio_mean",
     "f_goal_bbox_width_norm_mean",
     "f_players_near_ball_max",
+    "f_ball_visible_mean",
+    "f_ball_to_goal_approach_max",
 ]
 
 AI_EVENT_WINDOW_ROWS = 25
@@ -223,7 +233,13 @@ class XHScoreCalculator:
         ball_stats = pd.DataFrame(index=all_frames)
         ball_stats[["cx", "cy"]] = ball_coords
 
-        ball_interp = ball_stats[["cx", "cy"]].interpolate(method="linear")
+        # 긴 공백을 가로지르는 보간은 가짜 등속(speed≈일정·accel≈0)을 만들어
+        # 격렬한 장면을 '조용함'으로 둔갑시킨다. ~1초 이내 공백만 보간하고
+        # 그 이상은 NaN으로 두어 speed/accel/dir_change가 0(무신호)으로 귀결되게 한다.
+        stride = (all_frames[1] - all_frames[0]) if len(all_frames) > 1 else 1
+        gap_limit = max(1, int(round(self.fps / max(stride, 1))))
+        ball_interp = ball_stats[["cx", "cy"]].interpolate(
+            method="linear", limit=gap_limit, limit_area="inside")
         ball_dx = ball_interp["cx"].diff()
         ball_dy = ball_interp["cy"].diff()
         ball_diff = (ball_dx.pow(2) + ball_dy.pow(2)).pow(0.5)
@@ -243,9 +259,33 @@ class XHScoreCalculator:
         ball_stats["dir_change"] = dir_change
         return ball_stats
 
-    def _compute_frame_features(self, df: pd.DataFrame, ball_stats: pd.DataFrame, all_frames: list) -> pd.DataFrame:
-        from moviepy import VideoFileClip  # lazy import
+    def _compute_goal_ref(self, df: pd.DataFrame, all_frames: list) -> pd.DataFrame:
+        """프레임별 골대 기준점(가장 넓은 bbox) + persistence.
 
+        골대는 정적인데 탐지율이 ~45%로 깜빡인다. 짧은 미탐지(~2초)는 마지막 탐지 위치를
+        유지(ffill/bfill)해 inv_dist_centroid·골대상대 피처의 유효 커버리지를 넓힌다.
+        """
+        cols = ["g_cx", "g_cy", "g_w", "g_h"]
+        goal_rows = []
+        for frame, fdf in df.groupby("frame"):
+            goals_f = fdf[fdf["class_name"] == "goal"]
+            if goals_f.empty:
+                continue
+            g = goals_f.loc[goals_f["w"].idxmax()]  # 가장 넓은=가장 가까운/주된 골대
+            goal_rows.append({"frame": frame, "g_cx": float(g["cx"]), "g_cy": float(g["cy"]),
+                              "g_w": float(g["w"]), "g_h": float(g["h"])})
+
+        goal_ref = (pd.DataFrame(goal_rows).set_index("frame")
+                    if goal_rows else pd.DataFrame(columns=cols))
+        goal_ref = goal_ref.reindex(all_frames)
+
+        stride = (all_frames[1] - all_frames[0]) if len(all_frames) > 1 else 1
+        fill_limit = max(1, int(round(self.fps * 2 / max(stride, 1))))  # ~2초
+        goal_ref[cols] = goal_ref[cols].ffill(limit=fill_limit).bfill(limit=fill_limit)
+        return goal_ref
+
+    def _compute_frame_features(self, df: pd.DataFrame, ball_stats: pd.DataFrame,
+                                all_frames: list, goal_ref: pd.DataFrame) -> pd.DataFrame:
         frame_features = []
         for frame, frame_df in df.groupby("frame"):
             players = frame_df[frame_df["class_name"] == "player"]
@@ -269,30 +309,32 @@ class XHScoreCalculator:
                 clustering_score = 1.0 / (avg_dist + 0.1)
 
             goals = frame_df[frame_df["class_name"] == "goal"]
-            f_goalpost_visible = int(len(goals) > 0)
-            f_dist_centroid_to_goal = np.nan
-            f_dist_ball_to_goal = np.nan
-            if not goals.empty:
-                goal_center = np.array([goals.iloc[0]["cx"], goals.iloc[0]["cy"]])
-                active = frame_df[frame_df["class_name"].isin(["player", "goalkeeper"])]
-                if not active.empty:
-                    centroid = np.array([active["cx"].mean(), active["cy"].mean()])
-                    f_dist_centroid_to_goal = float(np.linalg.norm(centroid - goal_center))
-                ball_row = frame_df[frame_df["class_name"] == "ball"]
-                if not ball_row.empty:
-                    ball_pos = np.array([ball_row.iloc[0]["cx"], ball_row.iloc[0]["cy"]])
-                    f_dist_ball_to_goal = float(np.linalg.norm(ball_pos - goal_center))
+            f_goalpost_visible = int(len(goals) > 0)  # raw 가시성 (persistence 아님)
+            active = frame_df[frame_df["class_name"].isin(["player", "goalkeeper"])]
+            centroid_cx = float(active["cx"].mean()) if not active.empty else np.nan
+            centroid_cy = float(active["cy"].mean()) if not active.empty else np.nan
 
             frame_features.append({
                 "frame": frame,
                 "clustering": clustering_score,
                 "audio": frame_df["f_audio"].max() if "f_audio" in df.columns else 0.0,
                 "f_goalpost_visible": f_goalpost_visible,
-                "f_dist_centroid_to_goal": f_dist_centroid_to_goal,
-                "f_dist_ball_to_goal": f_dist_ball_to_goal,
+                "centroid_cx": centroid_cx,
+                "centroid_cy": centroid_cy,
             })
 
-        feat_df = pd.DataFrame(frame_features).set_index("frame").reindex(all_frames).fillna(0)
+        feat_df = pd.DataFrame(frame_features).set_index("frame").reindex(all_frames)
+
+        # 골대 거리: persistence된 goal_ref 기준 (탐지율 ~45% 깜빡임 보완). fillna 전에 계산.
+        gr = goal_ref.reindex(feat_df.index)
+        feat_df["f_dist_centroid_to_goal"] = np.sqrt(
+            (feat_df["centroid_cx"] - gr["g_cx"]) ** 2 +
+            (feat_df["centroid_cy"] - gr["g_cy"]) ** 2)
+        ball_cx = ball_stats["cx"].reindex(feat_df.index)
+        ball_cy = ball_stats["cy"].reindex(feat_df.index)
+        feat_df["f_dist_ball_to_goal"] = np.sqrt(
+            (ball_cx - gr["g_cx"]) ** 2 + (ball_cy - gr["g_cy"]) ** 2)
+        feat_df = feat_df.drop(columns=["centroid_cx", "centroid_cy"]).fillna(0)
 
         feat_df["player_density"] = np.log1p(feat_df["clustering"])
         feat_df["player_density"] /= feat_df["player_density"].max() + 1e-5
@@ -314,6 +356,10 @@ class XHScoreCalculator:
             .interpolate(method="linear", limit=15, limit_direction="both")
             .fillna(0)
         )
+
+        # 공 실탐지 마스크 (보간/채움 전 원본). 윈도우 평균 = 그 구간 공 탐지율.
+        feat_df["f_ball_visible"] = (ball_stats["cx"].notna().astype(float)
+                                     .reindex(feat_df.index).fillna(0.0))
         return feat_df
 
     def _add_phase2_features(self, df: pd.DataFrame, feat_df: pd.DataFrame,
@@ -365,25 +411,12 @@ class XHScoreCalculator:
         return feat_df
 
     def _add_goal_relative_features(self, df: pd.DataFrame, feat_df: pd.DataFrame,
-                                     all_frames: list, ball_stats: pd.DataFrame) -> pd.DataFrame:
+                                     all_frames: list, ball_stats: pd.DataFrame,
+                                     goal_ref: pd.DataFrame) -> pd.DataFrame:
         player_types = ("player", "goalkeeper")
         df_by_frame = {f: g for f, g in df.groupby("frame")}
 
-        goal_rows = []
-        for frame in all_frames:
-            fdf = df_by_frame.get(frame)
-            if fdf is None:
-                continue
-            goals_f = fdf[fdf["class_name"] == "goal"]
-            if goals_f.empty:
-                continue
-            g = goals_f.loc[goals_f["w"].idxmax()]
-            goal_rows.append({"frame": frame, "g_cx": float(g["cx"]), "g_cy": float(g["cy"]),
-                               "g_w": float(g["w"]), "g_h": float(g["h"])})
-
-        goal_ref_df = (pd.DataFrame(goal_rows).set_index("frame")
-                       if goal_rows else pd.DataFrame(columns=["g_cx", "g_cy", "g_w", "g_h"]))
-        goal_ref_df = goal_ref_df.reindex(all_frames)
+        goal_ref_df = goal_ref.reindex(all_frames)  # persistence 적용된 통합 골대 기준
 
         ball_cx_i = ball_stats["cx"].reindex(all_frames)
         ball_cy_i = ball_stats["cy"].reindex(all_frames)
@@ -398,6 +431,20 @@ class XHScoreCalculator:
 
         gw = goal_ref_df["g_w"]
         feat_df["f_goal_bbox_width_norm"] = (gw / (gw.max() + 1e-5)).fillna(0.0)
+
+        # 골대 방향 추진력: 공 속도벡터의 골대방향 성분(골대폭 정규화=줌 불변). 슛/위협 신호.
+        to_gx = goal_ref_df["g_cx"] - ball_cx_i
+        to_gy = goal_ref_df["g_cy"] - ball_cy_i
+        norm = np.sqrt(to_gx.pow(2) + to_gy.pow(2))
+        ux, uy = to_gx / (norm + 1e-5), to_gy / (norm + 1e-5)
+        vx_i = ball_stats["vx"].reindex(all_frames)
+        vy_i = ball_stats["vy"].reindex(all_frames)
+        approach = ((vx_i * ux + vy_i * uy).clip(lower=0)) / (goal_ref_df["g_w"] + 1e-5)
+        # 공·골대 둘 다 있어야 유효 (보간 vx는 있어도 raw 공 위치 없으면 방향 신뢰불가)
+        approach = approach.where(ball_cx_i.notna() & goal_ref_df["g_cx"].notna())
+        feat_df["f_ball_to_goal_approach"] = (
+            approach / (approach.max() + 1e-5)
+        ).reindex(feat_df.index).fillna(0.0)
 
         frame_to_idx = {f: i for i, f in enumerate(all_frames)}
         near_counts = np.zeros(len(all_frames), dtype=float)
@@ -516,13 +563,16 @@ class XHScoreCalculator:
             df["track_id"] = -1
 
         ball_stats = self._compute_ball_physics(df, all_frames)
-        feat_df = self._compute_frame_features(df, ball_stats, all_frames)
+        goal_ref = self._compute_goal_ref(df, all_frames)
+        feat_df = self._compute_frame_features(df, ball_stats, all_frames, goal_ref)
         feat_df = self._add_phase2_features(df, feat_df, all_frames, ball_stats)
-        feat_df = self._add_goal_relative_features(df, feat_df, all_frames, ball_stats)
+        feat_df = self._add_goal_relative_features(df, feat_df, all_frames, ball_stats, goal_ref)
         feat_df = self._compute_rule_score(feat_df)
         feat_df = self._compute_ml_score(feat_df)
 
-        window_size = int(self.fps * 3)
+        # feat_df는 stride 간격 샘플당 1행 → 3초 = (fps*3/stride)행.
+        stride = (all_frames[1] - all_frames[0]) if len(all_frames) > 1 else 1
+        window_size = max(1, int(self.fps * 3 / max(stride, 1)))
         feat_df["smoothed_score"] = (
             feat_df["final_ensemble_score"]
             .rolling(window=window_size, center=True)
@@ -533,7 +583,69 @@ class XHScoreCalculator:
 
 # ── YOLO detection ────────────────────────────────────────────────────────
 
-def _detect_objects(video_path: str, yolo_model: Any) -> tuple[pd.DataFrame, float]:
+def _detect_ball_only(yolo_model: Any, video_path: str, device: str, stride: int,
+                      conf: float, total_frames: int,
+                      progress_cb: Callable[[int], None] | None = None) -> dict[int, dict]:
+    """공 전용 detect-only 패스.
+
+    ByteTrack은 stride=7에서 공 점프가 커 트랙을 못 만들고 공 탐지의 ~87%를 누락한다.
+    추적 없이 순수 탐지로 한 패스 더 돌려 공을 회복한다. 프레임별 conf 최고 공 1개만 채택.
+    """
+    ball_cls = next((k for k, v in yolo_model.names.items() if v == "ball"), None)
+    if ball_cls is None:
+        return {}
+    results = yolo_model.predict(
+        source=video_path, device=device, stream=True, half=True,
+        vid_stride=stride, conf=conf, imgsz=YOLO_IMGSZ, verbose=False, classes=[ball_cls],
+    )
+    ball_by_frame: dict[int, dict] = {}
+    frame_count = 0
+    logged_pct = -1
+    for result in results:
+        current_frame = int(getattr(result, "frame_idx", frame_count))
+        boxes = result.boxes
+        if boxes is not None and len(boxes) > 0:
+            confs = boxes.conf.cpu().numpy()
+            i = int(np.argmax(confs))
+            coords = boxes.xyxy[i].cpu().numpy()
+            ball_by_frame[current_frame] = {
+                "cx": float((coords[0] + coords[2]) / 2),
+                "cy": float((coords[1] + coords[3]) / 2),
+                "w": float(coords[2] - coords[0]),
+                "h": float(coords[3] - coords[1]),
+            }
+        frame_count += stride
+        if progress_cb:
+            pct = min(100, int(frame_count / max(total_frames, 1) * 100))
+            if pct // 10 > logged_pct // 10:
+                logged_pct = pct
+                progress_cb(pct)
+    return ball_by_frame
+
+
+def _green_mask(bgr: np.ndarray) -> np.ndarray:
+    """잔디(녹색) 이진 마스크. 자연/인조 잔디 포괄, 그림자 고려해 채도/명도 하한 낮춤."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    return cv2.inRange(hsv, np.array([30, 25, 25]), np.array([95, 255, 255]))
+
+
+def _feet_on_grass(mask: np.ndarray, cx: float, feet_y: float, h: float,
+                   min_green: float = 0.15) -> bool:
+    """발끝(bbox 하단 중앙) 주변 패치의 녹색 비율로 경기장 안 여부 판정. 경계 밖이면 보존(fail-open)."""
+    H, W = mask.shape
+    r = max(8, int(h * 0.15))
+    x0, x1 = max(0, int(cx) - r), min(W, int(cx) + r)
+    y0, y1 = max(0, int(feet_y) - r), min(H, int(feet_y) + r)
+    if x1 <= x0 or y1 <= y0:
+        return True
+    return (mask[y0:y1, x0:x1] > 0).mean() >= min_green
+
+
+def _detect_objects(video_path: str, yolo_model: Any, stride: int = YOLO_STRIDE,
+                    tracker: str = "bytetrack.yaml",
+                    progress_cb: Callable[[int, str], None] | None = None
+                    ) -> tuple[pd.DataFrame, float]:
+    """progress_cb(pct, stage): 추적 패스 0→45%, 공 탐지 패스 45→90% 로 보고."""
     import torch
 
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -545,10 +657,11 @@ def _detect_objects(video_path: str, yolo_model: Any) -> tuple[pd.DataFrame, flo
 
     tracker_ok = False
     try:
+        # half=True 는 CUDA(예: AWS T4)에서만 활성, MPS/CPU 에선 ultralytics 가 자동 무시.
         results = yolo_model.track(
-            source=video_path, device=device, stream=True,
-            vid_stride=YOLO_STRIDE, conf=YOLO_CONF, imgsz=YOLO_IMGSZ,
-            verbose=False, persist=True, tracker="bytetrack.yaml",
+            source=video_path, device=device, stream=True, half=True,
+            vid_stride=stride, conf=YOLO_CONF, imgsz=YOLO_IMGSZ,
+            verbose=False, persist=True, tracker=tracker,
         )
         tracker_ok = True
     except Exception as exc:
@@ -556,37 +669,89 @@ def _detect_objects(video_path: str, yolo_model: Any) -> tuple[pd.DataFrame, flo
 
     if not tracker_ok:
         results = yolo_model.predict(
-            source=video_path, device=device, stream=True,
-            vid_stride=YOLO_STRIDE, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, verbose=False,
+            source=video_path, device=device, stream=True, half=True,
+            vid_stride=stride, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, verbose=False,
         )
 
     frame_count = 0
-    total_expected = total_frames // YOLO_STRIDE
     logged_pct = -1
+    grass_removed = 0
     for result in results:
         current_frame = getattr(result, "frame_idx", frame_count)
         if result.boxes is not None:
             ids_tensor = getattr(result.boxes, "id", None)
             ids_list = (ids_tensor.cpu().numpy().astype(int).tolist()
                         if ids_tensor is not None else [-1] * len(result.boxes))
-            for box, tid in zip(result.boxes, ids_list):
+
+            # 잔디 마스크: 프레임이 경기장 위주(녹색 ≥12%)일 때만 활성 (클로즈업/관중샷은 fail-open)
+            gmask = None
+            if GRASS_MASK:
+                orig = getattr(result, "orig_img", None)
+                if orig is not None:
+                    gm = _green_mask(orig)
+                    if (gm > 0).mean() >= 0.12:
+                        gmask = gm
+
+            rows, off_pitch = [], []
+            for idx, (box, tid) in enumerate(zip(result.boxes, ids_list)):
                 coords = box.xyxy[0].cpu().numpy()
-                all_detections.append({
-                    "frame": int(current_frame),
-                    "class_name": yolo_model.names[int(box.cls[0])],
-                    "track_id": int(tid),
-                    "cx": float((coords[0] + coords[2]) / 2),
-                    "cy": float((coords[1] + coords[3]) / 2),
-                    "w": float(coords[2] - coords[0]),
-                    "h": float(coords[3] - coords[1]),
+                cls_name = yolo_model.names[int(box.cls[0])]
+                cx = float((coords[0] + coords[2]) / 2)
+                cy = float((coords[1] + coords[3]) / 2)
+                h = float(coords[3] - coords[1])
+                rows.append({
+                    "frame": int(current_frame), "class_name": cls_name, "track_id": int(tid),
+                    "cx": cx, "cy": cy, "w": float(coords[2] - coords[0]), "h": h,
                 })
-        frame_count += YOLO_STRIDE
-        pct = int(frame_count / max(total_frames, 1) * 100)
+                if gmask is not None and cls_name in GRASS_FILTER_CLASSES \
+                        and not _feet_on_grass(gmask, cx, cy + h / 2, h):
+                    off_pitch.append(idx)
+
+            # 안전장치: player 과반이 경기장 밖으로 판정되면 마스크 신뢰불가 → 필터 무시(fail-open)
+            n_players = sum(1 for r in rows if r["class_name"] == "player")
+            n_players_off = sum(1 for i in off_pitch if rows[i]["class_name"] == "player")
+            if n_players and n_players_off > 0.5 * n_players:
+                off_pitch = []
+
+            off_set = set(off_pitch)
+            for i, r in enumerate(rows):
+                if i in off_set:
+                    grass_removed += 1
+                    continue
+                all_detections.append(r)
+        frame_count += stride
+        pct = min(100, int(frame_count / max(total_frames, 1) * 100))
         if pct // 10 > logged_pct // 10:
             logged_pct = pct
             logger.info("Detection progress: %d%%", pct)
+            if progress_cb:
+                progress_cb(int(pct * 0.45), "선수·공 추적")
 
-    return pd.DataFrame(all_detections), float(fps)
+    if GRASS_MASK and grass_removed:
+        logger.info("Grass mask: removed %d off-pitch detections", grass_removed)
+
+    det_df = pd.DataFrame(all_detections)
+
+    # --- 공 전용 detect-only 패스로 공 행 교체 (추적 모드 공 누락 보완) ---
+    if tracker_ok:
+        n_ball_track = int((det_df["class_name"] == "ball").sum()) if not det_df.empty else 0
+        ball_cb = ((lambda p: progress_cb(45 + int(p * 0.45), "공 탐지"))
+                   if progress_cb else None)
+        ball_by_frame = _detect_ball_only(yolo_model, video_path, device, stride,
+                                          BALL_DETECT_CONF, total_frames, progress_cb=ball_cb)
+        if not det_df.empty:
+            det_df = det_df[det_df["class_name"] != "ball"]  # 추적 패스의 공 행 폐기
+        ball_rows = [
+            {"frame": f, "class_name": "ball", "track_id": -1,
+             "cx": b["cx"], "cy": b["cy"], "w": b["w"], "h": b["h"]}
+            for f, b in ball_by_frame.items()
+        ]
+        det_df = pd.concat([det_df, pd.DataFrame(ball_rows)], ignore_index=True)
+        det_df = det_df.sort_values("frame").reset_index(drop=True)
+        logger.info("Ball recovery: track-pass %d frames → detect-pass %d frames",
+                    n_ball_track, len(ball_rows))
+
+    return det_df, float(fps)
 
 
 def _get_audio_features(video_path: str, fps: float) -> pd.DataFrame | None:
@@ -652,12 +817,15 @@ def run_highlight_pipeline(
     xgb_model: Any = None,
     highlight_count: int = 40,
     exclude_intervals: list[tuple[float, float]] | None = None,
+    progress_cb: Callable[[int, str], None] | None = None,
 ) -> HighlightRunResult:
     logger.info("Starting AI highlight pipeline for %s", video_path)
 
-    detections_df, fps = _detect_objects(video_path, yolo_model)
+    detections_df, fps = _detect_objects(video_path, yolo_model, progress_cb=progress_cb)
     if detections_df.empty:
         return HighlightRunResult(False, "탐지된 객체가 없습니다.")
+    if progress_cb:
+        progress_cb(92, "스코어 계산")
 
     audio_df = _get_audio_features(video_path, fps)
     if audio_df is not None:
@@ -673,6 +841,8 @@ def run_highlight_pipeline(
     if not highlight_frames:
         return HighlightRunResult(False, "하이라이트 구간을 찾지 못했습니다.")
 
+    if progress_cb:
+        progress_cb(95, "클립 생성")
     clip_paths = _create_clips(video_path, highlight_frames, fps, output_dir)
 
     _RULE_CONTRIB = {
@@ -716,6 +886,8 @@ def run_highlight_pipeline(
         if not row.empty:
             clip_scores[frame] = float(row["smoothed_score"].iloc[0])
 
+    if progress_cb:
+        progress_cb(100, "완료")
     logger.info("Pipeline complete: %d clips extracted", len(highlight_frames))
     return HighlightRunResult(
         True,
@@ -733,6 +905,7 @@ def run_log_pipeline(
     target_count: int = 40,
     yolo_model: Any = None,
     xgb_model: Any = None,
+    progress_cb: Callable[[int, str], None] | None = None,
 ) -> LogExtractResult:
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -740,6 +913,8 @@ def run_log_pipeline(
     events = _dedup_events(_parse_log(log_data, second_half_start_sec))
     if not events:
         return LogExtractResult(success=False, message="로그에서 유효한 이벤트(GOAL/SHOT)를 찾지 못했습니다.")
+    if progress_cb:
+        progress_cb(3, "로그 이벤트 추출")
 
     video_duration = _get_video_duration(video_path)
     prefix = f"log_{time.strftime('%m%d_%H%M')}"
@@ -787,6 +962,9 @@ def run_log_pipeline(
             for ev in events
         ]
         try:
+            # AI 보충이 주 비용 → 내부 0~100% 를 전체 5~100% 로 매핑.
+            ai_cb = ((lambda p, s: progress_cb(5 + int(p * 0.95), s))
+                     if progress_cb else None)
             ai_result = run_highlight_pipeline(
                 video_path=video_path,
                 output_dir=output_dir,
@@ -794,6 +972,7 @@ def run_log_pipeline(
                 xgb_model=xgb_model,
                 highlight_count=remaining,
                 exclude_intervals=exclude_intervals,
+                progress_cb=ai_cb,
             )
             if ai_result.success and ai_result.clip_paths:
                 for p in ai_result.clip_paths:
@@ -836,6 +1015,8 @@ def run_log_pipeline(
     # The server computes AI clip anchor labels as frame/fps, so fps must be accurate.
     real_fps = (_ai_result.fps if _ai_result and _ai_result.fps else None) or _get_video_fps(video_path) or 30.0
 
+    if progress_cb:
+        progress_cb(100, "완료")
     return LogExtractResult(
         success=True,
         message=f"로그 {log_count}개 + AI {ai_count}개 클립 추출 완료",
