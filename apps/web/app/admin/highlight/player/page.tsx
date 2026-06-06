@@ -79,6 +79,7 @@ type ExtractResp = { job_id: string; clip_count: number; clips: string[]; segmen
 
 const PC_JUMP_K = 2.5; // 연속 샘플 위치변화 > 박스높이×K → '다른 선수로 바뀜' 의심
 const SPEEDS = [1, 1.5, 2, 3, 4];
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024 * 1024;
 
 const card: React.CSSProperties = {
   background: 'var(--card, #1b1b1f)',
@@ -217,6 +218,10 @@ export default function PlayerClipPage() {
 
   const handleUpload = async () => {
     if (!file) { setStatus('영상 파일을 선택하세요.'); return; }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setStatus('3GB 이하 영상만 업로드할 수 있습니다.');
+      return;
+    }
     setUploading(true);
     setStatus('업로드 중...');
     setJob(null); setLoaded(false); setPicks([]); setExcludes([]); setExPending(null);
@@ -226,11 +231,33 @@ export default function PlayerClipPage() {
     form.append('video', file);
     form.append('display_name', displayName);
     try {
-      const res = await fetch(`${API_BASE}/highlight/player-jobs`, {
-        method: 'POST', credentials: 'include', body: form,
+      const data = await new Promise<{ job_id: string }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_BASE}/highlight/player-jobs`);
+        xhr.withCredentials = true;
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) {
+            setStatus('업로드 중...');
+            return;
+          }
+          const pct = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+          setStatus(`업로드 중... ${pct}%`);
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText || '{}') as { job_id: string });
+            } catch {
+              reject(new Error('업로드 응답을 읽을 수 없습니다.'));
+            }
+            return;
+          }
+          reject(new Error(xhr.responseText || `업로드 실패 (${xhr.status})`));
+        };
+        xhr.onerror = () => reject(new Error('업로드 연결 오류'));
+        xhr.onabort = () => reject(new Error('업로드가 취소되었습니다.'));
+        xhr.send(form);
       });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { job_id: string };
       setStatus('탐지 시작됨 — 풀경기는 수 분 소요됩니다.');
       const j = await apiJson<PlayerJob>(`/highlight/jobs/${data.job_id}`);
       setJob(j);
