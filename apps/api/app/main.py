@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID
-from fastapi import Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
@@ -37,7 +37,18 @@ from .fpa import (
     parse_logs_to_dataframe,
 )
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
-from .highlight_jobs import delete_job_files, ensure_highlight_runtime_dirs, exports_dir, safe_clip_path, serialize_job, update_job, upload_dir
+from .highlight_jobs import (
+    clips_dir,
+    create_player_proxy_for_job,
+    delete_job_files,
+    ensure_highlight_runtime_dirs,
+    exports_dir,
+    job_dir,
+    safe_clip_path,
+    serialize_job,
+    update_job,
+    upload_dir,
+)
 from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
@@ -5438,15 +5449,318 @@ async def create_highlight_job(
     return {"job_id": job_id, "status": "queued"}
 
 
-@app.get("/api/highlight/jobs")
-def list_highlight_jobs(
-    limit: int = Query(20, ge=1, le=100),
+def _require_player_job(db: Session, job_id: str) -> HighlightJob:
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.mode != "player":
+        raise HTTPException(status_code=400, detail="개인 클립 작업이 아닙니다.")
+    return job
+
+
+def _load_player_detection(job: HighlightJob):
+    import pandas as pd
+
+    metadata = job.job_metadata or {}
+    detection_file = str(metadata.get("detection_file") or "player_detections.csv")
+    detection_path = job_dir(job.id) / detection_file
+    if not detection_path.exists():
+        raise HTTPException(status_code=400, detail="탐지 결과가 없습니다. 먼저 탐지를 완료하세요.")
+    return pd.read_csv(detection_path), float(metadata.get("fps") or 30.0)
+
+
+def _player_track_windows(body: dict, fps: float) -> list[tuple[int, float, float]] | None:
+    windows = body.get("track_windows") or []
+    parsed = [(int(track_id), float(start_sec) * fps, float(end_sec) * fps) for track_id, start_sec, end_sec in windows]
+    return parsed or None
+
+
+@app.post("/api/highlight/player-jobs")
+async def create_player_job(
+    video: UploadFile = File(...),
+    display_name: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    job_id = str(uuid.uuid4())
+    suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
+    upload_path = upload_dir() / f"{job_id}{suffix}"
+    try:
+        with upload_path.open("wb") as out_file:
+            shutil.copyfileobj(video.file, out_file)
+    finally:
+        await video.close()
+
+    metadata = {
+        "display_name": display_name.strip() or None,
+        "worker": {
+            "mode": "external",
+            "queued_at": datetime.utcnow().isoformat(),
+            "queued_by": user.name,
+        },
+        "progress": {
+            "phase": "queued",
+            "percent": 0,
+            "detail": "개인클립 탐지 대기 중",
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    }
+    job = HighlightJob(
+        id=job_id,
+        status="queued",
+        mode="player",
+        original_filename=video.filename or "video.mp4",
+        upload_path=str(upload_path),
+        job_metadata=metadata,
+    )
+    db.add(job)
+    db.commit()
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/highlight/player-jobs/{job_id}/video")
+def serve_player_video(
+    job_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    rows = db.query(HighlightJob).order_by(desc(HighlightJob.created_at)).limit(limit).all()
+    job = _require_player_job(db, job_id)
+    metadata = job.job_metadata or {}
+    proxy_path = job_dir(job_id) / "proxy.mp4"
+    if metadata.get("proxy_file") and proxy_path.exists():
+        return _serve_file_with_range(proxy_path, request, "video/mp4")
+    video_path = Path(job.upload_path) if job.upload_path else None
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="영상 파일을 찾을 수 없습니다.")
+    suffix = video_path.suffix.lower()
+    media_type = "video/mp4" if suffix in {".mp4", ".m4v", ".mov"} else f"video/{suffix.lstrip('.')}"
+    return _serve_file_with_range(video_path, request, media_type)
+
+
+@app.post("/api/highlight/player-jobs/{job_id}/proxy")
+def make_player_proxy(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    metadata = dict(job.job_metadata or {})
+    if metadata.get("proxy_file"):
+        return {"status": "done", "proxy_file": metadata["proxy_file"]}
+    if metadata.get("proxy_status") == "running":
+        return {"status": "running"}
+    metadata["proxy_status"] = "running"
+    update_job(db, job_id, job_metadata=metadata)
+    background_tasks.add_task(create_player_proxy_for_job, job_id)
+    return {"status": "running"}
+
+
+@app.get("/api/highlight/player-jobs/{job_id}/detections")
+def serve_player_detections(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    detections, fps = _load_player_detection(job)
+    metadata = job.job_metadata or {}
+    frames: dict[int, list[dict]] = {}
+    for row in detections.itertuples(index=False):
+        frames.setdefault(int(row.frame), []).append({
+            "cls": row.class_name,
+            "tid": int(row.track_id),
+            "cx": float(row.cx),
+            "cy": float(row.cy),
+            "w": float(row.w),
+            "h": float(row.h),
+        })
+    sorted_frames = sorted(frames.keys())
+    stride = sorted_frames[1] - sorted_frames[0] if len(sorted_frames) > 1 else 3
+    return {
+        "job_id": job_id,
+        "fps": fps,
+        "stride": int(stride),
+        "video_w": int(metadata.get("video_w") or 0),
+        "video_h": int(metadata.get("video_h") or 0),
+        "frames": frames,
+    }
+
+
+@app.get("/api/highlight/player-jobs/{job_id}/events")
+def list_player_possession_events(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    metadata = job.job_metadata or {}
+    return {
+        "job_id": job_id,
+        "fps": float(metadata.get("fps") or 30.0),
+        "event_count": len(metadata.get("events") or []),
+        "events": metadata.get("events") or [],
+    }
+
+
+@app.post("/api/highlight/player-jobs/{job_id}/preview")
+def preview_player_job_clips(
+    job_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    from .player_clip_extract import CLIP_PAD_AFTER, CLIP_PAD_BEFORE, compute_player_segments
+
+    track_ids = [int(track_id) for track_id in (body.get("track_ids") or [])]
+    track_windows = body.get("track_windows") or []
+    direct_marks = [float(sec) for sec in (body.get("direct_marks") or [])]
+    if not track_ids and not track_windows and not direct_marks:
+        return {"job_id": job_id, "clip_count": 0, "segments": []}
+
+    detections, fps = _load_player_detection(job)
+    segments = compute_player_segments(
+        detections,
+        fps,
+        track_ids,
+        pad_before=float(body.get("pad_before", CLIP_PAD_BEFORE)),
+        pad_after=float(body.get("pad_after", CLIP_PAD_AFTER)),
+        exclude_intervals=[tuple(interval) for interval in (body.get("exclude_intervals") or [])],
+        track_windows=_player_track_windows(body, fps),
+        extra_involve_secs=direct_marks,
+    )
+    total_seconds = round(sum(item["end"] - item["start"] for item in segments), 1)
+    return {
+        "job_id": job_id,
+        "clip_count": len(segments),
+        "total_seconds": total_seconds,
+        "segments": segments,
+    }
+
+
+@app.post("/api/highlight/player-jobs/{job_id}/extract")
+def extract_player_job_clips(
+    job_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = _require_player_job(db, job_id)
+    from .player_clip_extract import CLIP_PAD_AFTER, CLIP_PAD_BEFORE, extract_player_clips
+
+    track_ids = [int(track_id) for track_id in (body.get("track_ids") or [])]
+    track_windows = body.get("track_windows") or []
+    direct_marks = [float(sec) for sec in (body.get("direct_marks") or [])]
+    if not track_ids and not track_windows and not direct_marks:
+        raise HTTPException(status_code=400, detail="선수를 한 명 이상 지정하세요.")
+    if not job.upload_path or not Path(job.upload_path).exists():
+        raise HTTPException(status_code=400, detail="원본 영상을 찾을 수 없습니다.")
+
+    detections, fps = _load_player_detection(job)
+    clip_paths, segment_metadata = extract_player_clips(
+        job.upload_path,
+        detections,
+        fps,
+        track_ids,
+        str(job_dir(job_id)),
+        pad_before=float(body.get("pad_before", CLIP_PAD_BEFORE)),
+        pad_after=float(body.get("pad_after", CLIP_PAD_AFTER)),
+        exclude_intervals=[tuple(interval) for interval in (body.get("exclude_intervals") or [])],
+        track_windows=_player_track_windows(body, fps),
+        extra_involve_secs=direct_marks,
+    )
+    clip_files = [Path(path).name for path in clip_paths]
+    metadata = dict(job.job_metadata or {})
+    metadata.update({
+        "clips": clip_files,
+        "selected": {name: False for name in clip_files},
+        "clip_timestamps": {
+            item["clip"]: {"start": item["start"], "end": item["end"]}
+            for item in segment_metadata
+            if item.get("clip")
+        },
+        "player_segments": segment_metadata,
+        "extracted_track_ids": track_ids or sorted({int(window[0]) for window in track_windows}),
+    })
+    update_job(db, job_id, clips_dir=str(clips_dir(job_id)), job_metadata=metadata)
+    return {
+        "job_id": job_id,
+        "clip_count": len(clip_files),
+        "clips": clip_files,
+        "segments": segment_metadata,
+    }
+
+
+def _serve_file_with_range(path: Path, request: Request, media_type: str, headers: dict[str, str] | None = None):
+    file_size = path.stat().st_size
+    base_headers = {"Accept-Ranges": "bytes", **(headers or {})}
+    range_header = request.headers.get("range")
+    if not range_header:
+        return FileResponse(str(path), media_type=media_type, headers=base_headers)
+
+    try:
+        unit, _, byte_range = range_header.partition("=")
+        if unit.strip().lower() != "bytes":
+            raise ValueError("unsupported range unit")
+        start_raw, _, end_raw = byte_range.partition("-")
+        start = int(start_raw) if start_raw.strip() else 0
+        end = int(end_raw) if end_raw.strip() else file_size - 1
+    except Exception:
+        return FileResponse(str(path), media_type=media_type, headers=base_headers)
+
+    start = max(0, start)
+    end = min(end, file_size - 1)
+    if start > end:
+        start = 0
+        end = file_size - 1
+    length = end - start + 1
+
+    def iter_file():
+        with path.open("rb") as file_obj:
+            file_obj.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = file_obj.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    range_headers = {
+        **base_headers,
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(length),
+    }
+    return StreamingResponse(iter_file(), status_code=206, headers=range_headers, media_type=media_type)
+
+
+@app.get("/api/highlight/jobs")
+def list_highlight_jobs(
+    limit: int = Query(20, ge=1, le=100),
+    mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    query = db.query(HighlightJob)
+    if mode:
+        query = query.filter(HighlightJob.mode == mode)
+    rows = query.order_by(desc(HighlightJob.created_at)).limit(limit).all()
     return [serialize_job(row) for row in rows]
 
 
@@ -5468,6 +5782,7 @@ def get_highlight_job(
 def serve_highlight_clip(
     job_id: str,
     clip_name: str,
+    request: Request,
     db: Session = Depends(get_db),
     user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
 ):
@@ -5481,7 +5796,37 @@ def serve_highlight_clip(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not clip_path.exists():
         raise HTTPException(status_code=404, detail="Clip not found")
-    return FileResponse(str(clip_path), media_type="video/mp4")
+    return _serve_file_with_range(clip_path, request, "video/mp4")
+
+
+@app.delete("/api/highlight/jobs/{job_id}/clips/{clip_name}")
+def delete_highlight_clip(
+    job_id: str,
+    clip_name: str,
+    db: Session = Depends(get_db),
+    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        clip_path = safe_clip_path(job_id, clip_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    clip_path.unlink(missing_ok=True)
+    metadata = dict(job.job_metadata or {})
+    metadata["clips"] = [name for name in (metadata.get("clips") or []) if name != clip_name]
+    if isinstance(metadata.get("selected"), dict):
+        metadata["selected"] = {
+            name: value for name, value in metadata["selected"].items()
+            if name != clip_name
+        }
+    if isinstance(metadata.get("clip_timestamps"), dict):
+        metadata["clip_timestamps"].pop(clip_name, None)
+    update_job(db, job_id, job_metadata=metadata)
+    return {"ok": True}
 
 
 @app.post("/api/highlight/jobs/{job_id}/export")
@@ -5553,6 +5898,7 @@ def export_highlight_job(
 @app.get("/api/highlight/jobs/{job_id}/export/download")
 def download_highlight_export(
     job_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
 ):
@@ -5565,9 +5911,10 @@ def download_highlight_export(
     if not export_path.exists():
         raise HTTPException(status_code=404, detail="Export file missing")
     filename = f"highlight_{job_id[:8]}.mp4"
-    return FileResponse(
-        str(export_path),
-        media_type="video/mp4",
+    return _serve_file_with_range(
+        export_path,
+        request,
+        "video/mp4",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

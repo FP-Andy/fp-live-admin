@@ -69,7 +69,13 @@ const FHL_ITEMS: NavItem[] = [
     href: '/admin/highlight',
     label: 'Highlight',
     icon: '▶',
-    match: (pathname) => pathname.startsWith('/admin/highlight'),
+    match: (pathname) => pathname === '/admin/highlight',
+  },
+  {
+    href: '/admin/highlight/player',
+    label: 'Player Clips',
+    icon: '◍',
+    match: (pathname) => pathname.startsWith('/admin/highlight/player'),
   },
 ];
 
@@ -148,6 +154,9 @@ function getPageMeta(pathname: string) {
     return { product: 'FLA', eyebrow: 'FLA Broadcast Overlay', title: 'Live Coder' };
   }
   if (pathname.startsWith('/admin/highlight')) {
+    if (pathname.startsWith('/admin/highlight/player')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Player Clips' };
+    }
     return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Highlight' };
   }
   if (pathname.startsWith('/admin/system')) {

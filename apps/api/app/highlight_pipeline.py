@@ -511,9 +511,18 @@ class XHScoreCalculator:
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
-def _detect_objects(video_path: str, yolo_model: Any, progress_callback: ProgressCallback | None = None) -> tuple[pd.DataFrame, float]:
+def _detect_objects(
+    video_path: str,
+    yolo_model: Any,
+    progress_callback: ProgressCallback | None = None,
+    *,
+    stride: int | None = None,
+    tracker: str | None = None,
+) -> tuple[pd.DataFrame, float]:
     import torch
 
+    detect_stride = stride or YOLO_STRIDE
+    tracker_config = tracker or "bytetrack.yaml"
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -525,8 +534,8 @@ def _detect_objects(video_path: str, yolo_model: Any, progress_callback: Progres
     try:
         results = yolo_model.track(
             source=video_path, device=device, stream=True,
-            vid_stride=YOLO_STRIDE, conf=YOLO_CONF, imgsz=YOLO_IMGSZ,
-            verbose=False, persist=True, tracker="bytetrack.yaml",
+            vid_stride=detect_stride, conf=YOLO_CONF, imgsz=YOLO_IMGSZ,
+            verbose=False, persist=True, tracker=tracker_config,
         )
         tracker_ok = True
     except Exception as exc:
@@ -535,11 +544,10 @@ def _detect_objects(video_path: str, yolo_model: Any, progress_callback: Progres
     if not tracker_ok:
         results = yolo_model.predict(
             source=video_path, device=device, stream=True,
-            vid_stride=YOLO_STRIDE, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, verbose=False,
+            vid_stride=detect_stride, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, verbose=False,
         )
 
     frame_count = 0
-    total_expected = total_frames // YOLO_STRIDE
     logged_pct = -1
     for result in results:
         current_frame = getattr(result, "frame_idx", frame_count)
@@ -558,7 +566,7 @@ def _detect_objects(video_path: str, yolo_model: Any, progress_callback: Progres
                     "w": float(coords[2] - coords[0]),
                     "h": float(coords[3] - coords[1]),
                 })
-        frame_count += YOLO_STRIDE
+        frame_count += detect_stride
         pct = int(frame_count / max(total_frames, 1) * 100)
         if pct // 10 > logged_pct // 10:
             logged_pct = pct
