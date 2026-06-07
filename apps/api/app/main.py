@@ -44,6 +44,7 @@ from .highlight_jobs import (
     ensure_highlight_runtime_dirs,
     exports_dir,
     job_dir,
+    probe_video_dimensions,
     safe_clip_path,
     serialize_job,
     update_job,
@@ -5552,7 +5553,13 @@ def make_player_proxy(
     job = _require_player_job(db, job_id)
     metadata = dict(job.job_metadata or {})
     if metadata.get("proxy_file"):
-        return {"status": "done", "proxy_file": metadata["proxy_file"]}
+        proxy_path = job_dir(job_id) / str(metadata["proxy_file"])
+        proxy_w, proxy_h = probe_video_dimensions(proxy_path) if proxy_path.exists() else (0, 0)
+        if proxy_w > 0 and proxy_h > 0:
+            return {"status": "done", "proxy_file": metadata["proxy_file"]}
+        metadata["proxy_file"] = None
+        metadata["proxy_status"] = "error"
+        update_job(db, job_id, job_metadata=metadata)
     if metadata.get("proxy_status") == "running":
         return {"status": "running"}
     metadata["proxy_status"] = "running"

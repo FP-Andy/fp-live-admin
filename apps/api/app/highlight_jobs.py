@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from .models import HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
 DELETE_UPLOAD_AFTER_SUCCESS = os.getenv("HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS", "1") not in {"0", "false", "False"}
+logger = logging.getLogger(__name__)
 
 
 class NpEncoder(json.JSONEncoder):
@@ -155,8 +157,10 @@ def probe_video_dimensions(path: Path) -> tuple[int, int]:
 
 
 def make_playback_proxy(src: Path, out: Path, target_h: int = 720) -> bool:
+    tmp = out.with_name(f"{out.stem}.tmp{out.suffix}")
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
+        tmp.unlink(missing_ok=True)
         subprocess.run(
             [
                 "ffmpeg",
@@ -174,13 +178,26 @@ def make_playback_proxy(src: Path, out: Path, target_h: int = 720) -> bool:
                 "-an",
                 "-movflags",
                 "+faststart",
-                str(out),
+                str(tmp),
             ],
             check=True,
             capture_output=True,
+            text=True,
         )
-        return out.exists()
+        width, height = probe_video_dimensions(tmp)
+        if width <= 0 or height <= 0:
+            logger.warning("Playback proxy was created but failed validation: %s", tmp)
+            tmp.unlink(missing_ok=True)
+            return False
+        tmp.replace(out)
+        return True
+    except subprocess.CalledProcessError as ex:
+        logger.warning("Playback proxy ffmpeg failed: %s", (ex.stderr or ex.stdout or str(ex))[-2000:])
+        tmp.unlink(missing_ok=True)
+        return False
     except Exception:
+        logger.exception("Playback proxy generation failed")
+        tmp.unlink(missing_ok=True)
         return False
 
 
@@ -277,11 +294,6 @@ def _run_player_detection(db: Session, job: HighlightJob, yolo_model: object) ->
     det_df = pd.read_csv(out_dir / result.detection_file)
     events = compute_possession_events(det_df, result.fps)
     width, height = probe_video_dimensions(src)
-    proxy_file = None
-    if height > 720:
-        _update_progress(db, job, "creating_proxy", 98, "재생 프록시 생성 중")
-        if make_playback_proxy(src, out_dir / "proxy.mp4"):
-            proxy_file = "proxy.mp4"
 
     metadata = {
         **(job.job_metadata or {}),
@@ -293,8 +305,8 @@ def _run_player_detection(db: Session, job: HighlightJob, yolo_model: object) ->
         "n_player_tracks": result.n_player_tracks,
         "video_w": width,
         "video_h": height,
-        "proxy_file": proxy_file,
-        "proxy_status": "done" if proxy_file else None,
+        "proxy_file": None,
+        "proxy_status": None,
         "events": events,
         "clips": [],
         "selected": {},

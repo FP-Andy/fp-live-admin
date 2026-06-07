@@ -81,6 +81,21 @@ const PC_JUMP_K = 2.5; // 연속 샘플 위치변화 > 박스높이×K → '다�
 const SPEEDS = [1, 1.5, 2, 3, 4];
 const MAX_UPLOAD_BYTES = 3 * 1024 * 1024 * 1024;
 
+const fmtBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1024) return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+};
+
+const fmtDuration = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.max(0, Math.round(seconds - mins * 60));
+  if (mins <= 0) return `${secs}초`;
+  return `${mins}분 ${secs.toString().padStart(2, '0')}초`;
+};
+
 const card: React.CSSProperties = {
   background: 'var(--card, #1b1b1f)',
   border: '1px solid var(--border, #2c2c32)',
@@ -233,15 +248,19 @@ export default function PlayerClipPage() {
     try {
       const data = await new Promise<{ job_id: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        const uploadStartedAt = Date.now();
         xhr.open('POST', `${API_BASE}/highlight/player-jobs`);
         xhr.withCredentials = true;
         xhr.upload.onprogress = (event) => {
           if (!event.lengthComputable) {
-            setStatus('업로드 중...');
+            setStatus(`업로드 중... ${fmtBytes(event.loaded)}`);
             return;
           }
           const pct = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
-          setStatus(`업로드 중... ${pct}%`);
+          const elapsedSec = Math.max(0.1, (Date.now() - uploadStartedAt) / 1000);
+          const speed = event.loaded / elapsedSec;
+          const eta = speed > 0 ? fmtDuration((event.total - event.loaded) / speed) : '';
+          setStatus(`업로드 중... ${pct}% · ${fmtBytes(event.loaded)} / ${fmtBytes(event.total)} · ${fmtBytes(speed)}/s${eta ? ` · 남은 ${eta}` : ''}`);
         };
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
