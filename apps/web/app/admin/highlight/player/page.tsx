@@ -37,6 +37,7 @@ type PlayerJobMeta = {
   n_player_tracks?: number;
   events?: PossessionEvent[];
   clips?: string[];
+  player_segments?: Segment[];
   message?: string;
   video_w?: number;
   video_h?: number;
@@ -129,11 +130,15 @@ export default function PlayerClipPage() {
   const [hasProxy, setHasProxy] = useState(false);
   const [videoVer, setVideoVer] = useState(0);
   const [loaded, setLoaded] = useState(false);
+  const [jobList, setJobList] = useState<PlayerJob[]>([]); // 이전 player job 목록(불러오기용)
   const [, forceTick] = useState(0); // 박스 그리기 외 타임라인/시간 표시 갱신용
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const timelineRef = useRef<HTMLCanvasElement | null>(null);
+  const seekRef = useRef<HTMLInputElement | null>(null);      // 시크바(드래그 이동)
+  const timeLabelRef = useRef<HTMLSpanElement | null>(null);  // 현재시간/총시간 라벨
+  const draggingRef = useRef(false);                           // 시크바 드래그 중
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const proxyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -185,6 +190,11 @@ export default function PlayerClipPage() {
     setLoaded(true);
   }, []);
 
+  const loadJobList = useCallback(async () => {
+    try { setJobList(await apiJson<PlayerJob[]>(`/highlight/jobs?mode=player&limit=30`)); }
+    catch { /* noop */ }
+  }, []);
+
   const startPolling = useCallback((jobId: string) => {
     stopPolling();
     pollRef.current = setInterval(async () => {
@@ -198,6 +208,7 @@ export default function PlayerClipPage() {
             setStatus(j.job_metadata?.message || '탐지 완료 — 공 잡는 순간 선수를 클릭하세요.');
             try { await loadDetection(jobId); }
             catch (err) { setStatus(`탐지 데이터 로드 오류: ${err}`); }
+            loadJobList();
           } else {
             setStatus(`오류: ${j.error_message || '탐지 실패'}`);
           }
@@ -207,7 +218,33 @@ export default function PlayerClipPage() {
         setStatus(`폴링 오류: ${err}`);
       }
     }, 3000);
-  }, [stopPolling, loadDetection]);
+  }, [stopPolling, loadDetection, loadJobList]);
+
+  // 이전 player job 불러와 편집 이어가기 (다른 데 나갔다 와도 복구)
+  const openJob = useCallback(async (jobId: string) => {
+    if (!jobId) return;
+    stopPolling();
+    setPicks([]); setExcludes([]); setExPending(null); setPreview(null);
+    setClipSegs([]); setClipSel(new Set()); setLoaded(false); setHasProxy(false);
+    detRef.current = null; eventsRef.current = [];
+    try {
+      const j = await apiJson<PlayerJob>(`/highlight/jobs/${jobId}`);
+      setJob(j);
+      if (j.status === 'done') {
+        setHasProxy(!!j.job_metadata?.proxy_file);
+        setClipSegs((j.job_metadata?.player_segments || []).filter((s) => s.clip));
+        setStatus(j.job_metadata?.message || '불러옴 — 공 잡는 순간 선수를 클릭하세요.');
+        await loadDetection(jobId);
+      } else if (j.status === 'processing' || j.status === 'queued') {
+        setStatus('탐지 진행 중...');
+        startPolling(jobId);
+      } else {
+        setStatus(`상태: ${j.status}${j.error_message ? ' — ' + j.error_message : ''}`);
+      }
+    } catch (err) { setStatus(`불러오기 오류: ${err}`); }
+  }, [loadDetection, startPolling, stopPolling]);
+
+  useEffect(() => { loadJobList(); }, [loadJobList]);
 
   useEffect(() => () => {
     stopPolling();
@@ -235,6 +272,7 @@ export default function PlayerClipPage() {
       const j = await apiJson<PlayerJob>(`/highlight/jobs/${data.job_id}`);
       setJob(j);
       startPolling(data.job_id);
+      loadJobList();
     } catch (err) {
       setStatus(`오류: ${err}`);
     } finally {
@@ -360,6 +398,15 @@ export default function PlayerClipPage() {
           }
         }
       }
+      // 시크바 / 시간 라벨 (드래그 중이 아닐 때만 위치 동기화)
+      const v = videoRef.current;
+      if (v) {
+        if (seekRef.current && !draggingRef.current && v.duration > 0) {
+          seekRef.current.value = String(Math.round((v.currentTime / v.duration) * 1000));
+        }
+        if (timeLabelRef.current) timeLabelRef.current.textContent = `${fmt(v.currentTime || 0)} / ${fmt(v.duration || 0)}`;
+      }
+
       // 타임라인
       const tcv = timelineRef.current;
       if (tcv) {
@@ -426,10 +473,22 @@ export default function PlayerClipPage() {
       if (e.key === ' ') { togglePlay(); e.preventDefault(); }
       else if (e.key === 'ArrowRight') { vid.currentTime += e.shiftKey ? 0.1 : 1; e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { vid.currentTime -= e.shiftKey ? 0.1 : 1; e.preventDefault(); }
+      else if (e.key === 't' || e.key === 'T') {
+        // 현재 공 보유 선수의 터치를 선택(토글). 클릭과 동일하되 마우스 없이.
+        const F = currentFrame();
+        const ev = activeEvent(F, null);
+        if (ev) {
+          togglePick({ key: 'e' + ev.id, kind: 'event', evId: ev.id, track_id: ev.track_id, start: ev.start, end: ev.end, n_touch: ev.n_touch });
+        } else {
+          const t = +(vid.currentTime || 0).toFixed(1);
+          togglePick({ key: 'm' + t, kind: 'mark', t, start: t, end: t });
+        }
+        e.preventDefault();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [loaded]);
+  }, [loaded, currentFrame, activeEvent, togglePick]);
 
   // ── 페이로드 / 미리보기(디바운스) / 추출 ────────────────────
   const buildBody = useCallback(() => ({
@@ -466,6 +525,7 @@ export default function PlayerClipPage() {
       setClipSegs((resp.segments || []).filter((s) => s.clip));
       setClipSel(new Set());
       setStatus(`추출 완료 — ${resp.clip_count}개 클립`);
+      loadJobList();
     } catch (err) {
       setStatus(`추출 오류: ${err}`);
     } finally {
@@ -542,7 +602,7 @@ export default function PlayerClipPage() {
   const sortedPicks = useMemo(() => [...picks].sort((a, b) => a.start - b.start), [picks]);
 
   return (
-    <div style={{ maxWidth: 1180, margin: '0 auto', padding: 24, color: 'var(--text, #eee)' }}>
+    <div style={{ maxWidth: 1280, margin: '0 auto', padding: 24, color: 'var(--text, #eee)' }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>🎯 개인 클립 추출</h1>
       <p style={{ fontSize: 13, color: 'var(--muted, #999)', marginBottom: 20 }}>
         영상을 올리면 선수·공을 탐지합니다. 훑어보다가 <b>타깃 선수가 공을 잡는 순간 그 선수를 클릭</b>하세요.
@@ -563,6 +623,29 @@ export default function PlayerClipPage() {
             {uploading ? '업로드 중...' : detecting ? '탐지 중...' : '업로드 & 탐지'}
           </button>
         </div>
+        {jobList.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+            <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>이전 분석 불러와 편집</span>
+            <select
+              value={job?.id || ''}
+              onChange={(e) => openJob(e.target.value)}
+              disabled={uploading}
+              style={{ ...btn, cursor: 'pointer', minWidth: 300 }}
+            >
+              <option value="">— 선택 —</option>
+              {jobList.map((j) => {
+                const d = new Date(j.created_at);
+                const when = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                return (
+                  <option key={j.id} value={j.id}>
+                    {(j.display_name || j.original_filename)} · {j.status} · {when}
+                  </option>
+                );
+              })}
+            </select>
+            <button style={smallBtn} onClick={loadJobList} disabled={uploading} title="목록 새로고침">↻</button>
+          </div>
+        )}
         {status && <p style={{ fontSize: 13, marginTop: 12, color: 'var(--muted, #999)' }}>{status}</p>}
       </div>
 
@@ -587,8 +670,8 @@ export default function PlayerClipPage() {
       })()}
 
       {ready && loaded && job && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16 }}>
-          {/* 좌: 영상 + 캔버스 오버레이 */}
+        <>
+          {/* 영상 + 캔버스 오버레이 (크게, 전체 폭) */}
           <div style={card}>
             <h2 style={{ fontSize: 15, marginBottom: 10 }}>영상 리뷰 — 공 잡는 선수 클릭</h2>
             <div style={{ position: 'relative', width: '100%', aspectRatio: aspect, background: '#000', borderRadius: 8, overflow: 'hidden' }}>
@@ -613,6 +696,23 @@ export default function PlayerClipPage() {
               />
             </div>
 
+            {/* 시크바: 드래그해서 원하는 장면으로 이동 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+              <input
+                ref={seekRef}
+                type="range" min={0} max={1000} step={1} defaultValue={0}
+                onPointerDown={() => { draggingRef.current = true; }}
+                onPointerUp={() => { draggingRef.current = false; }}
+                onPointerCancel={() => { draggingRef.current = false; }}
+                onInput={(e) => {
+                  const vid = videoRef.current;
+                  if (vid && vid.duration > 0) vid.currentTime = (Number(e.currentTarget.value) / 1000) * vid.duration;
+                }}
+                style={{ flex: 1, cursor: 'pointer', accentColor: 'var(--accent, #3b82f6)' }}
+              />
+              <span ref={timeLabelRef} style={{ fontSize: 11, color: 'var(--muted, #999)', fontVariantNumeric: 'tabular-nums', minWidth: 88, textAlign: 'right' }}>0:00 / 0:00</span>
+            </div>
+
             {/* 컨트롤 */}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
               <button style={smallBtn} onClick={togglePlay}>⏯ 재생/정지</button>
@@ -622,7 +722,7 @@ export default function PlayerClipPage() {
                   {SPEEDS.map((s) => <option key={s} value={s}>{s}x</option>)}
                 </select>
               </label>
-              <span style={{ fontSize: 11, color: 'var(--muted, #999)' }}>Space 재생 · ←→ 1초(Shift 0.1초)</span>
+              <span style={{ fontSize: 11, color: 'var(--muted, #999)' }}>Space 재생 · ←→ 1초(Shift 0.1초) · T 현재 공보유 선수 선택</span>
               {showProxyBtn && (
                 <button style={smallBtn} onClick={requestProxy} disabled={proxyBusy}>⚡ 고배속 최적화</button>
               )}
@@ -661,7 +761,7 @@ export default function PlayerClipPage() {
             </div>
           </div>
 
-          {/* 우: 선택한 터치 + 패딩 + 추출 */}
+          {/* 선택한 터치 + 패딩 + 추출 (영상 아래) */}
           <div style={card}>
             <h2 style={{ fontSize: 15, marginBottom: 4 }}>
               선택한 터치 {picks.length}개 · {job.job_metadata?.n_player_tracks ?? 0}개 추적
@@ -713,7 +813,7 @@ export default function PlayerClipPage() {
               )}
             </div>
           </div>
-        </div>
+        </>
       )}
 
       {clipSegs.length > 0 && job && (
