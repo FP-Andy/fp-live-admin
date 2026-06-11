@@ -105,12 +105,21 @@ class FcmSubmissionResponse(BaseModel):
 class FcmTemplateResponse(BaseModel):
     id: UUID
     name: str
+    competition_class: str | None = None
     match_regex: str
     image_url: str
     priority: int
     active: bool
     created_at: str
     updated_at: str
+
+
+class FcmTemplateUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    competition_class: str = Field(min_length=1, max_length=20)
+    match_regex: str = Field(min_length=1, max_length=240)
+    priority: int = Field(default=100, ge=1, le=9999)
+    active: bool = True
 
 
 class ArchiveMatchRequest(BaseModel):

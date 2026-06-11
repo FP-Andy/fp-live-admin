@@ -70,6 +70,7 @@ from .schemas import (
     MatchMarkerRequest,
     EventsResetRequest,
     FcmTemplateResponse,
+    FcmTemplateUpdateRequest,
     FcmSubmissionResponse,
     FcmSubmissionUpsertRequest,
     PossessionResetRequest,
@@ -189,6 +190,7 @@ def _ensure_runtime_schema() -> None:
     event_columns = {column["name"] for column in inspector.get_columns("events")}
     dominance_columns = {column["name"] for column in inspector.get_columns("dominance_bins")}
     fcm_submission_columns = {column["name"] for column in inspector.get_columns("fcm_submissions")} if "fcm_submissions" in table_names else set()
+    fcm_template_columns = {column["name"] for column in inspector.get_columns("fcm_templates")} if "fcm_templates" in table_names else set()
     statements: list[str] = []
 
     if "role" not in user_columns:
@@ -211,6 +213,8 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN team_side VARCHAR NOT NULL DEFAULT 'HOME'")
     if "fcm_submissions" in table_names and "player_name" not in fcm_submission_columns:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN player_name VARCHAR NOT NULL DEFAULT ''")
+    if "fcm_templates" in table_names and "competition_class" not in fcm_template_columns:
+        statements.append("ALTER TABLE fcm_templates ADD COLUMN competition_class VARCHAR")
     if "is_goal" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
     if "shot_x" not in event_columns:
@@ -1085,6 +1089,7 @@ def _serialize_fcm_template(row: FcmTemplate) -> dict:
     return {
         "id": row.id,
         "name": row.name,
+        "competition_class": _normalize_competition_class(row.competition_class) if row.competition_class else None,
         "match_regex": row.match_regex,
         "image_url": f"/api/fcm/templates/{row.id}/image",
         "priority": int(row.priority or 100),
@@ -1094,13 +1099,28 @@ def _serialize_fcm_template(row: FcmTemplate) -> dict:
     }
 
 
-def _find_registered_template_path(db: Session, team_name: str) -> Path | None:
-    rows = (
-        db.query(FcmTemplate)
-        .filter(FcmTemplate.active == True)  # noqa: E712
-        .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
-        .all()
-    )
+def _validate_fcm_template_competition_class(db: Session, value: str | None) -> str:
+    raw_value = (value or "").strip()
+    if not raw_value:
+        raise HTTPException(status_code=400, detail="Competition class is required")
+    normalized = _normalize_competition_class(raw_value)
+    if not db.get(CompetitionClass, normalized):
+        raise HTTPException(status_code=400, detail="Competition class does not exist")
+    return normalized
+
+
+def _validate_fcm_template_regex(value: str | None) -> str:
+    clean_regex = (value or "").strip()
+    if not clean_regex:
+        raise HTTPException(status_code=400, detail="Template regex is required")
+    try:
+        re.compile(clean_regex)
+    except re.error as ex:
+        raise HTTPException(status_code=400, detail=f"Invalid regex: {ex}") from ex
+    return clean_regex
+
+
+def _find_matching_template_path(rows: list[FcmTemplate], team_name: str) -> Path | None:
     for row in rows:
         try:
             if re.search(row.match_regex, team_name or "", flags=re.IGNORECASE):
@@ -1112,8 +1132,31 @@ def _find_registered_template_path(db: Session, team_name: str) -> Path | None:
     return None
 
 
+def _find_registered_template_path(db: Session, competition_class: str | None, team_name: str) -> Path | None:
+    normalized_class = _normalize_competition_class(competition_class)
+    class_rows = (
+        db.query(FcmTemplate)
+        .filter(FcmTemplate.active == True)  # noqa: E712
+        .filter(FcmTemplate.competition_class == normalized_class)
+        .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
+        .all()
+    )
+    matched = _find_matching_template_path(class_rows, team_name)
+    if matched:
+        return matched
+
+    legacy_rows = (
+        db.query(FcmTemplate)
+        .filter(FcmTemplate.active == True)  # noqa: E712
+        .filter(FcmTemplate.competition_class.is_(None))
+        .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
+        .all()
+    )
+    return _find_matching_template_path(legacy_rows, team_name)
+
+
 def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_number: int) -> tuple[str, bytes]:
-    template_path = _find_registered_template_path(db, row.team_name or "") or find_template_path(row.team_name or "")
+    template_path = _find_registered_template_path(db, row.competition_class, row.team_name or "") or find_template_path(row.team_name or "")
     if not template_path:
         raise ValueError(f"{row.team_name}: 배경 템플릿 없음")
 
@@ -2843,6 +2886,7 @@ def list_fcm_templates(db: Session = Depends(get_db), _user: User = Depends(_req
 @app.post("/api/fcm/templates", response_model=FcmTemplateResponse)
 async def create_fcm_template(
     name: str = Form(...),
+    competition_class: str = Form(...),
     match_regex: str = Form(...),
     priority: int = Form(default=100),
     active: bool = Form(default=True),
@@ -2851,13 +2895,10 @@ async def create_fcm_template(
     _user: User = Depends(_require_session_user),
 ):
     clean_name = name.strip()
-    clean_regex = match_regex.strip()
     if not clean_name:
         raise HTTPException(status_code=400, detail="Template name is required")
-    try:
-        re.compile(clean_regex)
-    except re.error as ex:
-        raise HTTPException(status_code=400, detail=f"Invalid regex: {ex}") from ex
+    clean_class = _validate_fcm_template_competition_class(db, competition_class)
+    clean_regex = _validate_fcm_template_regex(match_regex)
 
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg"}:
@@ -2876,12 +2917,39 @@ async def create_fcm_template(
     row = FcmTemplate(
         id=template_id,
         name=clean_name,
+        competition_class=clean_class,
         match_regex=clean_regex,
         image_path=str(image_path),
         priority=max(1, priority),
         active=active,
     )
     db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_fcm_template(row)
+
+
+@app.put("/api/fcm/templates/{template_id}", response_model=FcmTemplateResponse)
+def update_fcm_template(
+    template_id: UUID,
+    body: FcmTemplateUpdateRequest,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    row = db.get(FcmTemplate, template_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    clean_name = body.name.strip()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Template name is required")
+
+    row.name = clean_name
+    row.competition_class = _validate_fcm_template_competition_class(db, body.competition_class)
+    row.match_regex = _validate_fcm_template_regex(body.match_regex)
+    row.priority = max(1, int(body.priority or 1))
+    row.active = bool(body.active)
+    row.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(row)
     return _serialize_fcm_template(row)

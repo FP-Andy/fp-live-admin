@@ -3220,6 +3220,35 @@ a:focus-visible {
   color: var(--text-primary);
 }
 
+.fcm-template-edit {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.fcm-template-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.fcm-template-edit-grid > * {
+  min-width: 0;
+}
+
+.fcm-template-edit-wide {
+  grid-column: 1 / -1;
+}
+
+.fcm-template-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
 .fcm-match-list .fcm-match-card {
   gap: 14px;
   padding: 18px 20px;
@@ -4058,6 +4087,12 @@ a:focus-visible {
   }
 
   .fcm-inline-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .fcm-template-grid,
+  .fcm-template-card,
+  .fcm-template-edit-grid {
     grid-template-columns: 1fr;
   }
 
