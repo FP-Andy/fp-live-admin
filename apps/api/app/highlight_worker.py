@@ -32,6 +32,9 @@ def _claim_next_job() -> str | None:
         job = (
             db.query(HighlightJob)
             .filter(HighlightJob.status == "queued")
+            # Operator jobs are handled inline by the API (link download +
+            # manual ffmpeg clip cutting), not the AI analysis worker.
+            .filter(HighlightJob.mode != "operator")
             .order_by(HighlightJob.created_at)
             .with_for_update(skip_locked=True)
             .first()

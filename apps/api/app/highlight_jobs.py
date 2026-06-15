@@ -418,6 +418,9 @@ def run_analysis_for_job(job_id: str, yolo_model: object, xgb_model: object | No
         job = db.get(HighlightJob, job_id)
         if not job:
             return
+        if job.mode == "operator":
+            # Operator jobs are processed inline by the API, not by AI analysis.
+            return
         update_job(
             db,
             job_id,
