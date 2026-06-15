@@ -12,6 +12,7 @@ type NavItem = {
   label: string;
   icon: string;
   match: (pathname: string) => boolean;
+  roles?: SessionUser['role'][];
 };
 
 type NavSection = {
@@ -66,10 +67,39 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
 
 const FHL_ITEMS: NavItem[] = [
   {
+    href: '/admin/highlight/upload',
+    label: 'Upload',
+    icon: '⬆',
+    match: (pathname) => pathname.startsWith('/admin/highlight/upload'),
+    roles: ['OPERATOR', 'SUPERADMIN'],
+  },
+  {
+    href: '/admin/highlight/my',
+    label: 'My Clips',
+    icon: '◍',
+    match: (pathname) => pathname.startsWith('/admin/highlight/my'),
+    roles: ['OPERATOR', 'SUPERADMIN'],
+  },
+  {
+    href: '/admin/highlight/process',
+    label: 'Process',
+    icon: '▤',
+    match: (pathname) => pathname.startsWith('/admin/highlight/process'),
+    roles: ['SUPERADMIN'],
+  },
+  {
+    href: '/admin/highlight/completed',
+    label: 'Completed',
+    icon: '✓',
+    match: (pathname) => pathname.startsWith('/admin/highlight/completed'),
+    roles: ['SUPERADMIN'],
+  },
+  {
     href: '/admin/highlight',
     label: 'AI+Log',
     icon: '▶',
-    match: (pathname) => pathname.startsWith('/admin/highlight'),
+    match: (pathname) => pathname === '/admin/highlight' || pathname.startsWith('/admin/highlight/player'),
+    roles: ['SUPERADMIN'],
   },
 ];
 
@@ -151,7 +181,19 @@ function getPageMeta(pathname: string) {
     if (pathname.startsWith('/admin/highlight/player')) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Player Clips' };
     }
-    return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Highlight' };
+    if (pathname.startsWith('/admin/highlight/upload')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Upload' };
+    }
+    if (pathname.startsWith('/admin/highlight/my')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'My Clips' };
+    }
+    if (pathname.startsWith('/admin/highlight/process')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Process' };
+    }
+    if (pathname.startsWith('/admin/highlight/completed')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Completed' };
+    }
+    return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'AI+Log' };
   }
   if (pathname.startsWith('/admin/system')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'System' };
@@ -204,8 +246,8 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
       items = section.id === 'FLA' ? BASKETBALL_FLA_ITEMS : [];
     } else if (section.id === 'FLA' && user?.role !== 'SUPERADMIN') {
       items = section.items.filter((item) => item.href === '/admin/dashboard');
-    } else if (section.id === 'FHL' && user?.role !== 'SUPERADMIN') {
-      items = [];
+    } else if (section.id === 'FHL') {
+      items = section.items.filter((item) => !item.roles || (user?.role && item.roles.includes(user.role)));
     }
     return { ...section, items };
   }).filter((section) => section.items.length > 0);
