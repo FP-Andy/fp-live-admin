@@ -20,6 +20,8 @@ const STATUS_LABEL: Record<string, string> = {
   downloading: '다운로드 중',
   ready: '처리 대기',
   processing: '처리 중',
+  clips_ready: '편집 중',
+  merging: '합치는 중',
   done: '추출 완료',
   error: '오류',
 };

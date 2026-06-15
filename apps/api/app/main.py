@@ -40,8 +40,10 @@ from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGe
 from .highlight_jobs import (
     clips_dir,
     create_player_proxy_for_job,
+    cut_clips_for_job,
     delete_job_files,
     download_link_for_job,
+    merge_clips_for_job,
     ensure_highlight_runtime_dirs,
     exports_dir,
     job_dir,
@@ -5721,6 +5723,123 @@ def fetch_operator_job_link(
         return {"status": "ready"}
     background_tasks.add_task(download_link_for_job, job_id)
     return {"status": "downloading"}
+
+
+@app.get("/api/highlight/operator-jobs/{job_id}/video")
+def serve_operator_video(
+    job_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    job = _require_operator_job(db, job_id, user)
+    video_path = Path(job.upload_path) if job.upload_path else None
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="영상 파일을 찾을 수 없습니다.")
+    suffix = video_path.suffix.lower()
+    media_type = "video/mp4" if suffix in {".mp4", ".m4v", ".mov"} else f"video/{suffix.lstrip('.')}"
+    return _serve_file_with_range(video_path, request, media_type)
+
+
+@app.post("/api/highlight/operator-jobs/{job_id}/clips")
+def cut_operator_clips(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    job = _require_operator_job(db, job_id, user)
+    if not job.upload_path or not Path(job.upload_path).exists():
+        raise HTTPException(status_code=409, detail="원본 영상이 아직 준비되지 않았습니다.")
+    labels = body.get("labels")
+    if not isinstance(labels, list) or not labels:
+        raise HTTPException(status_code=400, detail="라벨이 없습니다.")
+    try:
+        label_secs = [float(x) for x in labels]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="라벨 형식이 올바르지 않습니다.") from exc
+    before = float(body.get("before", 7.0))
+    after = float(body.get("after", 4.0))
+    background_tasks.add_task(cut_clips_for_job, job_id, label_secs, before, after)
+    return {"status": "processing", "count": len(label_secs)}
+
+
+@app.post("/api/highlight/operator-jobs/{job_id}/clips/{clip_name}/trim")
+def trim_operator_clip(
+    job_id: str,
+    clip_name: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    job = _require_operator_job(db, job_id, user)
+    if not job.upload_path or not Path(job.upload_path).exists():
+        raise HTTPException(status_code=409, detail="원본 영상을 찾을 수 없습니다.")
+    try:
+        start = float(body.get("start"))
+        end = float(body.get("end"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="start/end가 올바르지 않습니다.") from exc
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end는 start보다 커야 합니다.")
+    try:
+        clip_path = safe_clip_path(job_id, clip_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from .highlight_jobs import _ffmpeg_cut
+
+    if not _ffmpeg_cut(Path(job.upload_path), clip_path, start, end - start):
+        raise HTTPException(status_code=500, detail="클립 트림에 실패했습니다.")
+
+    metadata = dict(job.job_metadata or {})
+    clip_info = metadata.get("clip_info") or []
+    for clip in clip_info:
+        if clip.get("name") == clip_name:
+            clip["start"] = round(start, 2)
+            clip["end"] = round(end, 2)
+            break
+    metadata["clip_info"] = clip_info
+    update_job(db, job_id, job_metadata=metadata)
+    return {"ok": True}
+
+
+@app.post("/api/highlight/operator-jobs/{job_id}/merge")
+def merge_operator_clips(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    job = _require_operator_job(db, job_id, user)
+    clips = (job.job_metadata or {}).get("clips") or []
+    if not clips:
+        raise HTTPException(status_code=400, detail="합칠 클립이 없습니다.")
+    background_tasks.add_task(merge_clips_for_job, job_id)
+    return {"status": "merging"}
+
+
+@app.post("/api/highlight/operator-jobs/{job_id}/complete")
+def complete_operator_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    job = _require_operator_job(db, job_id, user)
+    if job.status != "done" or not job.export_path or not Path(job.export_path).exists():
+        raise HTTPException(status_code=409, detail="완성된 결과물이 아직 없습니다.")
+    metadata = dict(job.job_metadata or {})
+    # 원본은 완성되면 삭제하고 결과물(export)만 보존한다.
+    if job.upload_path:
+        try:
+            Path(job.upload_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    metadata["completed"] = True
+    metadata["completed_at"] = datetime.utcnow().isoformat()
+    update_job(db, job_id, upload_path=None, job_metadata=metadata)
+    return {"ok": True}
 
 
 @app.get("/api/highlight/player-jobs/{job_id}/video")

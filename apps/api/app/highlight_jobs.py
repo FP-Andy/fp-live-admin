@@ -301,6 +301,117 @@ def download_link_for_job(job_id: str) -> None:
         db.close()
 
 
+def _ffmpeg_cut(src: Path, out: Path, start: float, duration: float) -> bool:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", f"{max(0.0, start):.3f}",
+                "-i", str(src),
+                "-t", f"{max(0.1, duration):.3f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac",
+                "-movflags", "+faststart",
+                str(out),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        return out.exists()
+    except subprocess.CalledProcessError as ex:
+        logger.warning("ffmpeg cut failed: %s", (ex.stderr or ex.stdout or str(ex))[-1000:])
+        return False
+    except Exception:
+        logger.exception("ffmpeg cut crashed")
+        return False
+
+
+def cut_clips_for_job(job_id: str, labels: list[float], before: float, after: float) -> None:
+    """Cut one clip per label timestamp from the operator's source video."""
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job or not job.upload_path or not Path(job.upload_path).exists():
+            update_job(db, job_id, status="error", error_message="원본 영상을 찾을 수 없습니다.")
+            return
+        src = Path(job.upload_path)
+        out_dir = clips_dir(job_id)
+        if out_dir.exists():
+            shutil.rmtree(out_dir, ignore_errors=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        ordered = sorted(float(x) for x in labels)
+        total = len(ordered) or 1
+        clip_info: list[dict[str, Any]] = []
+        for i, label in enumerate(ordered):
+            start = max(0.0, label - float(before))
+            end = label + float(after)
+            name = f"clip_{i + 1:03d}.mp4"
+            metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+            metadata["progress"] = _progress_payload("cutting", int(i / total * 100), f"클립 {i + 1}/{len(ordered)} 생성 중")
+            update_job(db, job_id, status="processing", job_metadata=_json_safe(metadata))
+            if _ffmpeg_cut(src, out_dir / name, start, end - start):
+                clip_info.append({"name": name, "start": round(start, 2), "end": round(end, 2), "label": round(label, 2)})
+
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["clips"] = [c["name"] for c in clip_info]
+        metadata["clip_info"] = clip_info
+        metadata["progress"] = _progress_payload("clips_ready", 100, "클립 생성 완료")
+        update_job(db, job_id, status="clips_ready", clips_dir=str(out_dir), job_metadata=_json_safe(metadata))
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
+def merge_clips_for_job(job_id: str) -> None:
+    """Concatenate the job's current clips (in stored order) into a final export."""
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job:
+            return
+        metadata = dict(job.job_metadata or {})
+        clip_names = metadata.get("clips") or []
+        paths = [clips_dir(job_id) / str(n) for n in clip_names]
+        paths = [p for p in paths if p.exists()]
+        if not paths:
+            update_job(db, job_id, status="error", error_message="합칠 클립이 없습니다.")
+            return
+
+        metadata["progress"] = _progress_payload("merging", 50, "클립 합치는 중")
+        update_job(db, job_id, status="merging", job_metadata=_json_safe(metadata))
+
+        list_file = job_dir(job_id) / "concat.txt"
+        list_file.write_text("".join(f"file '{p.as_posix()}'\n" for p in paths))
+        export_path = exports_dir() / f"{job_id}_export.mp4"
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0",
+                    "-i", str(list_file),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                    "-c:a", "aac",
+                    "-movflags", "+faststart",
+                    str(export_path),
+                ],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as ex:
+            detail = (ex.stderr or ex.stdout or str(ex))[-300:]
+            update_job(db, job_id, status="error", error_message=f"합치기 실패: {detail}")
+            return
+
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
+        update_job(db, job_id, status="done", export_path=str(export_path), job_metadata=_json_safe(metadata))
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
 def run_analysis_for_job(job_id: str, yolo_model: object, xgb_model: object | None = None) -> None:
     db = SessionLocal()
     try:
