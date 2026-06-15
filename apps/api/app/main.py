@@ -41,6 +41,7 @@ from .highlight_jobs import (
     clips_dir,
     create_player_proxy_for_job,
     delete_job_files,
+    download_link_for_job,
     ensure_highlight_runtime_dirs,
     exports_dir,
     job_dir,
@@ -191,7 +192,12 @@ def _ensure_runtime_schema() -> None:
     dominance_columns = {column["name"] for column in inspector.get_columns("dominance_bins")}
     fcm_submission_columns = {column["name"] for column in inspector.get_columns("fcm_submissions")} if "fcm_submissions" in table_names else set()
     fcm_template_columns = {column["name"] for column in inspector.get_columns("fcm_templates")} if "fcm_templates" in table_names else set()
+    highlight_job_columns = {column["name"] for column in inspector.get_columns("highlight_jobs")} if "highlight_jobs" in table_names else set()
     statements: list[str] = []
+
+    if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
+        statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_highlight_jobs_owner_id ON highlight_jobs (owner_id)")
 
     if "role" not in user_columns:
         statements.append("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'OPERATOR'")
@@ -5585,6 +5591,136 @@ async def create_player_job(
     db.add(job)
     db.commit()
     return {"job_id": job_id, "status": "queued"}
+
+
+def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "operator":
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    if not _is_superuser(user) and job.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="본인 업로드만 접근할 수 있습니다.")
+    return job
+
+
+@app.post("/api/highlight/operator-jobs")
+async def create_operator_job(
+    video: UploadFile | None = File(default=None),
+    source_url: str = Form(""),
+    display_name: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    source_url = source_url.strip()
+    has_file = video is not None and bool(video.filename)
+    if not has_file and not source_url:
+        raise HTTPException(status_code=400, detail="영상 파일 또는 링크가 필요합니다.")
+    if has_file and source_url:
+        raise HTTPException(status_code=400, detail="파일과 링크 중 하나만 업로드하세요.")
+
+    job_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+
+    if has_file:
+        assert video is not None
+        suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
+        upload_path = upload_dir() / f"{job_id}{suffix}"
+        try:
+            with upload_path.open("wb") as out_file:
+                shutil.copyfileobj(video.file, out_file)
+        finally:
+            await video.close()
+        metadata = {
+            "source_type": "file",
+            "display_name": display_name.strip() or None,
+            "uploaded_by": user.name,
+            "progress": {"phase": "ready", "percent": 100, "detail": "업로드 완료", "updated_at": now},
+        }
+        job = HighlightJob(
+            id=job_id,
+            owner_id=user.id,
+            status="ready",
+            mode="operator",
+            original_filename=video.filename or "video.mp4",
+            upload_path=str(upload_path),
+            job_metadata=metadata,
+        )
+        db.add(job)
+        db.commit()
+        return {"job_id": job_id, "status": "ready"}
+
+    metadata = {
+        "source_type": "link",
+        "source_url": source_url,
+        "display_name": display_name.strip() or None,
+        "uploaded_by": user.name,
+        "progress": {"phase": "queued", "percent": 0, "detail": "링크 업로드됨", "updated_at": now},
+    }
+    job = HighlightJob(
+        id=job_id,
+        owner_id=user.id,
+        status="queued",
+        mode="operator",
+        original_filename=display_name.strip() or source_url,
+        job_metadata=metadata,
+    )
+    db.add(job)
+    db.commit()
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/highlight/operator-jobs")
+def list_operator_jobs(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    query = db.query(HighlightJob).filter(HighlightJob.mode == "operator")
+    if not _is_superuser(user):
+        query = query.filter(HighlightJob.owner_id == user.id)
+    rows = query.order_by(desc(HighlightJob.created_at)).all()
+
+    owner_ids = {row.owner_id for row in rows if row.owner_id}
+    name_map: dict[str, str] = {}
+    if owner_ids:
+        for owner in db.query(User).filter(User.id.in_(owner_ids)).all():
+            name_map[owner.id] = owner.name
+
+    result = []
+    for row in rows:
+        data = serialize_job(row)
+        data["owner_name"] = name_map.get(row.owner_id) if row.owner_id else None
+        result.append(data)
+    return result
+
+
+@app.get("/api/highlight/operator-jobs/{job_id}")
+def get_operator_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    job = _require_operator_job(db, job_id, user)
+    data = serialize_job(job)
+    if job.owner_id:
+        owner = db.get(User, job.owner_id)
+        data["owner_name"] = owner.name if owner else None
+    return data
+
+
+@app.post("/api/highlight/operator-jobs/{job_id}/fetch")
+def fetch_operator_job_link(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    job = _require_operator_job(db, job_id, user)
+    metadata = job.job_metadata or {}
+    if metadata.get("source_type") != "link":
+        raise HTTPException(status_code=400, detail="링크 업로드가 아닙니다.")
+    if job.upload_path and Path(job.upload_path).exists():
+        return {"status": "ready"}
+    background_tasks.add_task(download_link_for_job, job_id)
+    return {"status": "downloading"}
 
 
 @app.get("/api/highlight/player-jobs/{job_id}/video")

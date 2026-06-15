@@ -87,10 +87,13 @@ def serialize_job(job: HighlightJob) -> dict[str, Any]:
         progress_percent = progress
     return {
         "id": job.id,
+        "owner_id": job.owner_id,
         "status": job.status,
         "mode": job.mode,
         "original_filename": job.original_filename,
         "display_name": metadata.get("display_name"),
+        "source_type": metadata.get("source_type"),
+        "source_url": metadata.get("source_url"),
         "export_path": job.export_path,
         "error_message": job.error_message,
         "job_metadata": metadata,
@@ -226,6 +229,74 @@ def create_player_proxy_for_job(job_id: str) -> None:
             "proxy_status": "done" if ok else "error",
         })
         update_job(db, job_id, job_metadata=_json_safe(metadata))
+    finally:
+        db.close()
+
+
+def download_link_for_job(job_id: str) -> None:
+    """Download an operator-submitted link into the upload dir via yt-dlp + aria2c."""
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job:
+            return
+        metadata = dict(job.job_metadata or {})
+        url = metadata.get("source_url")
+        if not url:
+            update_job(db, job_id, status="error", error_message="다운로드할 링크가 없습니다.")
+            return
+        # Already downloaded.
+        if job.upload_path and Path(job.upload_path).exists():
+            return
+
+        out_template = str(upload_dir() / f"{job_id}.%(ext)s")
+        metadata["progress"] = _progress_payload("downloading", 5, "링크 다운로드 중")
+        update_job(db, job_id, status="downloading", job_metadata=_json_safe(metadata))
+
+        cmd = [
+            "yt-dlp",
+            "-f",
+            "bv[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]",
+            "--downloader",
+            "aria2c",
+            "--downloader-args",
+            "aria2c:-x 16 -s 16 -k 1M",
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            out_template,
+            url,
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as ex:
+            detail = (ex.stderr or ex.stdout or str(ex))[-2000:]
+            logger.warning("yt-dlp download failed for %s: %s", job_id, detail)
+            update_job(db, job_id, status="error", error_message=f"링크 다운로드 실패: {detail[-300:]}")
+            return
+        except FileNotFoundError:
+            update_job(db, job_id, status="error", error_message="yt-dlp 실행 파일을 찾을 수 없습니다.")
+            return
+
+        downloaded = sorted(upload_dir().glob(f"{job_id}.*"))
+        downloaded = [p for p in downloaded if not p.name.endswith(".part")]
+        if not downloaded:
+            update_job(db, job_id, status="error", error_message="다운로드된 파일을 찾을 수 없습니다.")
+            return
+
+        final_path = downloaded[0]
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["progress"] = _progress_payload("ready", 100, "다운로드 완료")
+        update_job(
+            db,
+            job_id,
+            status="ready",
+            upload_path=str(final_path),
+            original_filename=final_path.name,
+            job_metadata=_json_safe(metadata),
+        )
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=str(exc))
     finally:
         db.close()
 

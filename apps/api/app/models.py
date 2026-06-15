@@ -222,6 +222,7 @@ class HighlightJob(Base):
     __tablename__ = "highlight_jobs"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
     mode: Mapped[str] = mapped_column(String, nullable=False, default="ai")
     original_filename: Mapped[str] = mapped_column(String, nullable=False, default="")
