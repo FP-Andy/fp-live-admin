@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE, apiJson } from '../../../lib/api';
+import HighlightSubTabs from './HighlightSubTabs';
 
 type ClipTimestamp = { start: number; end: number };
 type JobProgress = {
@@ -352,6 +353,8 @@ export default function HighlightPage() {
   const selectedCount = Object.values(selectedClips).filter(Boolean).length;
 
   return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+    <HighlightSubTabs />
     <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', flexWrap: 'wrap' }}>
 
     {/* ── Left panel: upload form + job history ── */}
@@ -729,6 +732,7 @@ export default function HighlightPage() {
           50% { opacity: 0.3; }
         }
       `}</style>
+    </div>
     </div>
   );
 }

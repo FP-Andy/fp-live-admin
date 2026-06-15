@@ -67,15 +67,9 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
 const FHL_ITEMS: NavItem[] = [
   {
     href: '/admin/highlight',
-    label: 'Highlight',
+    label: 'AI+Log',
     icon: '▶',
-    match: (pathname) => pathname === '/admin/highlight',
-  },
-  {
-    href: '/admin/highlight/player',
-    label: 'Player Clips',
-    icon: '◍',
-    match: (pathname) => pathname.startsWith('/admin/highlight/player'),
+    match: (pathname) => pathname.startsWith('/admin/highlight'),
   },
 ];
 

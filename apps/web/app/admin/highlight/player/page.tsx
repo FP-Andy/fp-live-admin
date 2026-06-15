@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE, apiJson } from '../../../../lib/api';
+import HighlightSubTabs from '../HighlightSubTabs';
 
 type Box = { cls: string; tid: number; cx: number; cy: number; w: number; h: number };
 
@@ -589,6 +590,7 @@ export default function PlayerClipPage() {
 
   return (
     <div style={{ maxWidth: 1180, margin: '0 auto', padding: 24, color: 'var(--text, #eee)' }}>
+      <HighlightSubTabs />
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>🎯 개인 클립 추출</h1>
       <p style={{ fontSize: 13, color: 'var(--muted, #999)', marginBottom: 20 }}>
         영상을 올리면 선수·공을 탐지합니다. 훑어보다가 <b>타깃 선수가 공을 잡는 순간 그 선수를 클릭</b>하세요.
