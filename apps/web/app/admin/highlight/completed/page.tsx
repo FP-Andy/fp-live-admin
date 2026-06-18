@@ -62,8 +62,22 @@ export default function CompletedPage() {
     }
   };
 
+  const remove = async (id: string) => {
+    if (!confirm('이 하이라이트를 영구 삭제합니다. 영상·클립 파일도 서버에서 삭제되며 되돌릴 수 없습니다. 진행할까요?')) return;
+    setBusy(id);
+    try {
+      const res = await apiFetch(`/highlight/operator-jobs/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await res.text());
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '삭제 실패');
+    } finally {
+      setBusy('');
+    }
+  };
+
   return (
-    <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <h2 style={{ fontSize: 18, margin: 0 }}>완료 관리</h2>
 
       {error ? <p style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</p> : null}
@@ -72,6 +86,7 @@ export default function CompletedPage() {
         <div style={{ ...card, textAlign: 'center', color: 'var(--muted, #999)' }}>완성된 하이라이트가 없습니다.</div>
       ) : null}
 
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
       {jobs.map((job) => {
         const completed = !!job.job_metadata?.completed;
         return (
@@ -103,10 +118,18 @@ export default function CompletedPage() {
                   다운로드 ↓
                 </a>
               ) : null}
+              <button
+                onClick={() => remove(job.id)}
+                disabled={busy === job.id}
+                style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid var(--danger, #ef4444)', background: 'transparent', color: 'var(--danger, #ef4444)', fontSize: 13, fontWeight: 600, cursor: busy === job.id ? 'default' : 'pointer' }}
+              >
+                {busy === job.id ? '...' : '삭제'}
+              </button>
             </div>
           </div>
         );
       })}
+      </div>
     </div>
   );
 }

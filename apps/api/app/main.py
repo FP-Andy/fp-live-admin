@@ -5607,20 +5607,52 @@ def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
 @app.post("/api/highlight/operator-jobs")
 async def create_operator_job(
     video: UploadFile | None = File(default=None),
+    reference_image: UploadFile | None = File(default=None),
     source_url: str = Form(""),
-    display_name: str = Form(""),
+    jersey_number: str = Form(""),
+    player_name: str = Form(""),
+    uniform_color: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
     source_url = source_url.strip()
+    jersey_number = jersey_number.strip()
+    player_name = player_name.strip()
+    uniform_color = uniform_color.strip()
     has_file = video is not None and bool(video.filename)
+    has_reference = reference_image is not None and bool(reference_image.filename)
     if not has_file and not source_url:
         raise HTTPException(status_code=400, detail="영상 파일 또는 링크가 필요합니다.")
     if has_file and source_url:
         raise HTTPException(status_code=400, detail="파일과 링크 중 하나만 업로드하세요.")
+    if not jersey_number:
+        raise HTTPException(status_code=400, detail="선수 등번호를 입력하세요.")
+    if not player_name:
+        raise HTTPException(status_code=400, detail="선수 이름을 입력하세요.")
+    if not uniform_color:
+        raise HTTPException(status_code=400, detail="유니폼 색을 선택하세요.")
+    if not has_reference:
+        raise HTTPException(status_code=400, detail="분석할 선수 이미지를 등록하세요.")
+
+    display_name = f"{player_name} ({jersey_number})"
+    player_fields = {
+        "jersey_number": jersey_number,
+        "player_name": player_name,
+        "uniform_color": uniform_color,
+    }
 
     job_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
+
+    assert reference_image is not None
+    ref_suffix = Path(reference_image.filename or "ref.png").suffix or ".png"
+    reference_path = upload_dir() / f"{job_id}_ref{ref_suffix}"
+    try:
+        with reference_path.open("wb") as ref_file:
+            shutil.copyfileobj(reference_image.file, ref_file)
+    finally:
+        await reference_image.close()
+    player_fields["reference_image_path"] = str(reference_path)
 
     if has_file:
         assert video is not None
@@ -5633,7 +5665,8 @@ async def create_operator_job(
             await video.close()
         metadata = {
             "source_type": "file",
-            "display_name": display_name.strip() or None,
+            "display_name": display_name,
+            **player_fields,
             "uploaded_by": user.name,
             "progress": {"phase": "ready", "percent": 100, "detail": "업로드 완료", "updated_at": now},
         }
@@ -5653,7 +5686,8 @@ async def create_operator_job(
     metadata = {
         "source_type": "link",
         "source_url": source_url,
-        "display_name": display_name.strip() or None,
+        "display_name": display_name,
+        **player_fields,
         "uploaded_by": user.name,
         "progress": {"phase": "queued", "percent": 0, "detail": "링크 업로드됨", "updated_at": now},
     }
@@ -5662,7 +5696,7 @@ async def create_operator_job(
         owner_id=user.id,
         status="queued",
         mode="operator",
-        original_filename=display_name.strip() or source_url,
+        original_filename=display_name,
         job_metadata=metadata,
     )
     db.add(job)
@@ -5672,11 +5706,15 @@ async def create_operator_job(
 
 @app.get("/api/highlight/operator-jobs")
 def list_operator_jobs(
+    scope: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
     query = db.query(HighlightJob).filter(HighlightJob.mode == "operator")
-    if not _is_superuser(user):
+    # Non-superusers always see only their own jobs. Superusers see everything by
+    # default (the admin process list), but can request scope=mine to limit the
+    # result to the clips they uploaded themselves (the "my clips" view).
+    if not _is_superuser(user) or scope == "mine":
         query = query.filter(HighlightJob.owner_id == user.id)
     rows = query.order_by(desc(HighlightJob.created_at)).all()
 
@@ -5706,6 +5744,19 @@ def get_operator_job(
         owner = db.get(User, job.owner_id)
         data["owner_name"] = owner.name if owner else None
     return data
+
+
+@app.delete("/api/highlight/operator-jobs/{job_id}")
+def delete_operator_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    job = _require_operator_job(db, job_id, user)
+    delete_job_files(job)
+    db.delete(job)
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/highlight/operator-jobs/{job_id}/fetch")
@@ -5739,6 +5790,23 @@ def serve_operator_video(
     suffix = video_path.suffix.lower()
     media_type = "video/mp4" if suffix in {".mp4", ".m4v", ".mov"} else f"video/{suffix.lstrip('.')}"
     return _serve_file_with_range(video_path, request, media_type)
+
+
+@app.get("/api/highlight/operator-jobs/{job_id}/reference")
+def serve_operator_reference(
+    job_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    job = _require_operator_job(db, job_id, user)
+    ref = (job.job_metadata or {}).get("reference_image_path")
+    ref_path = Path(ref) if ref else None
+    if not ref_path or not ref_path.exists():
+        raise HTTPException(status_code=404, detail="선수 이미지를 찾을 수 없습니다.")
+    suffix = ref_path.suffix.lower().lstrip(".") or "png"
+    media_type = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
+    return _serve_file_with_range(ref_path, request, media_type)
 
 
 @app.post("/api/highlight/operator-jobs/{job_id}/clips")
@@ -5836,6 +5904,14 @@ def complete_operator_job(
             Path(job.upload_path).unlink(missing_ok=True)
         except Exception:
             pass
+    # 분석용 선수 기준 이미지도 함께 삭제한다.
+    ref = metadata.get("reference_image_path")
+    if ref:
+        try:
+            Path(ref).unlink(missing_ok=True)
+        except Exception:
+            pass
+        metadata.pop("reference_image_path", None)
     metadata["completed"] = True
     metadata["completed_at"] = datetime.utcnow().isoformat()
     update_job(db, job_id, upload_path=None, job_metadata=metadata)

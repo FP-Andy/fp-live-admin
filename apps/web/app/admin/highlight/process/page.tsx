@@ -75,7 +75,7 @@ export default function ProcessListPage() {
   }
 
   return (
-    <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 18 }}>
       <h2 style={{ fontSize: 18, margin: 0 }}>업로드 처리</h2>
 
       {error ? <p style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</p> : null}
@@ -87,6 +87,7 @@ export default function ProcessListPage() {
       {groups.map((group) => (
         <div key={group.date} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--muted, #999)' }}>{group.date}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 10 }}>
           {group.items.map((job) => (
             <button
               key={job.id}
@@ -116,6 +117,7 @@ export default function ProcessListPage() {
               </span>
             </button>
           ))}
+          </div>
         </div>
       ))}
     </div>

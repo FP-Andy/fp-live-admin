@@ -48,7 +48,7 @@ export default function MyClipsPage() {
 
   const load = async () => {
     try {
-      const data = await apiJson<OperatorJob[]>('/highlight/operator-jobs');
+      const data = await apiJson<OperatorJob[]>('/highlight/operator-jobs?scope=mine');
       setJobs(data);
       setError('');
     } catch (e) {
@@ -65,7 +65,7 @@ export default function MyClipsPage() {
   }, []);
 
   return (
-    <div style={{ maxWidth: 820, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: 18, margin: 0 }}>내 업로드</h2>
         <Link
@@ -84,6 +84,7 @@ export default function MyClipsPage() {
         </div>
       ) : null}
 
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
       {jobs.map((job) => {
         const done = job.status === 'done' && !!job.export_path;
         return (
@@ -121,6 +122,7 @@ export default function MyClipsPage() {
           </div>
         );
       })}
+      </div>
     </div>
   );
 }

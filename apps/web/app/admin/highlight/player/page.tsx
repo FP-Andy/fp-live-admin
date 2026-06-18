@@ -589,7 +589,7 @@ export default function PlayerClipPage() {
   const sortedPicks = useMemo(() => [...picks].sort((a, b) => a.start - b.start), [picks]);
 
   return (
-    <div style={{ maxWidth: 1180, margin: '0 auto', padding: 24, color: 'var(--text, #eee)' }}>
+    <div style={{ width: '100%', padding: 24, color: 'var(--text, #eee)' }}>
       <HighlightSubTabs />
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>🎯 개인 클립 추출</h1>
       <p style={{ fontSize: 13, color: 'var(--muted, #999)', marginBottom: 20 }}>

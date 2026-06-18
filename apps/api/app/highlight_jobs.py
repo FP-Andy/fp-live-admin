@@ -85,6 +85,8 @@ def serialize_job(job: HighlightJob) -> dict[str, Any]:
         stage = progress.get("detail") or progress.get("phase")
     elif isinstance(progress, (int, float)):
         progress_percent = progress
+    # 내부 파일시스템 경로는 응답에서 제외한다.
+    public_metadata = {k: v for k, v in metadata.items() if k != "reference_image_path"}
     return {
         "id": job.id,
         "owner_id": job.owner_id,
@@ -92,11 +94,15 @@ def serialize_job(job: HighlightJob) -> dict[str, Any]:
         "mode": job.mode,
         "original_filename": job.original_filename,
         "display_name": metadata.get("display_name"),
+        "jersey_number": metadata.get("jersey_number"),
+        "player_name": metadata.get("player_name"),
+        "uniform_color": metadata.get("uniform_color"),
+        "has_reference_image": bool(metadata.get("reference_image_path")),
         "source_type": metadata.get("source_type"),
         "source_url": metadata.get("source_url"),
         "export_path": job.export_path,
         "error_message": job.error_message,
-        "job_metadata": metadata,
+        "job_metadata": public_metadata,
         "progress": progress_percent,
         "stage": stage,
         "created_at": job.created_at.isoformat(),
