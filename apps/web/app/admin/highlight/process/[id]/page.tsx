@@ -18,7 +18,11 @@ type OperatorJob = {
   source_url: string | null;
   export_path: string | null;
   owner_name?: string | null;
-  job_metadata?: { clip_info?: ClipInfo[]; progress?: { detail?: string; percent?: number } };
+  job_metadata?: {
+    clip_info?: ClipInfo[];
+    operator_action?: { type?: string };
+    progress?: { detail?: string; percent?: number };
+  };
   stage?: string | null;
   progress?: number | null;
 };
@@ -260,7 +264,11 @@ export default function ProcessJobPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const videoReady = job && ['ready', 'processing', 'clips_ready', 'merging', 'done'].includes(job.status) && job.status !== 'queued';
+  const pendingAction = job?.job_metadata?.operator_action?.type;
+  const videoReady = job && (
+    ['ready', 'processing', 'clips_ready', 'merging', 'done'].includes(job.status) ||
+    (job.status === 'queued' && Boolean(pendingAction) && pendingAction !== 'download')
+  );
   const clips = job?.job_metadata?.clip_info || [];
 
   const generateClips = async () => {

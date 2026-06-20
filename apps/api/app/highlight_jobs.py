@@ -292,6 +292,7 @@ def download_link_for_job(job_id: str) -> None:
 
         final_path = downloaded[0]
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata.pop("operator_action", None)
         metadata["progress"] = _progress_payload("ready", 100, "다운로드 완료")
         update_job(
             db,
@@ -360,10 +361,51 @@ def cut_clips_for_job(job_id: str, labels: list[float], before: float, after: fl
                 clip_info.append({"name": name, "start": round(start, 2), "end": round(end, 2), "label": round(label, 2)})
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata.pop("operator_action", None)
         metadata["clips"] = [c["name"] for c in clip_info]
         metadata["clip_info"] = clip_info
         metadata["progress"] = _progress_payload("clips_ready", 100, "클립 생성 완료")
         update_job(db, job_id, status="clips_ready", clips_dir=str(out_dir), job_metadata=_json_safe(metadata))
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
+def trim_clip_for_job(job_id: str, clip_name: str, start: float, end: float) -> None:
+    """Re-cut one stored operator clip from the original source video."""
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job or not job.upload_path or not Path(job.upload_path).exists():
+            update_job(db, job_id, status="error", error_message="원본 영상을 찾을 수 없습니다.")
+            return
+        try:
+            clip_path = safe_clip_path(job_id, clip_name)
+        except ValueError as exc:
+            update_job(db, job_id, status="error", error_message=str(exc))
+            return
+
+        metadata = dict(job.job_metadata or {})
+        metadata["progress"] = _progress_payload("trimming", 30, "클립 트림 저장 중")
+        update_job(db, job_id, status="processing", job_metadata=_json_safe(metadata))
+
+        if not _ffmpeg_cut(Path(job.upload_path), clip_path, start, end - start):
+            update_job(db, job_id, status="error", error_message="클립 트림에 실패했습니다.")
+            return
+
+        job = db.get(HighlightJob, job_id)
+        metadata = dict(job.job_metadata or {}) if job else {}
+        clip_info = metadata.get("clip_info") or []
+        for clip in clip_info:
+            if clip.get("name") == clip_name:
+                clip["start"] = round(start, 2)
+                clip["end"] = round(end, 2)
+                break
+        metadata["clip_info"] = clip_info
+        metadata.pop("operator_action", None)
+        metadata["progress"] = _progress_payload("clips_ready", 100, "트림 저장 완료")
+        update_job(db, job_id, status="clips_ready", job_metadata=_json_safe(metadata))
     except Exception as exc:
         update_job(db, job_id, status="error", error_message=str(exc))
     finally:
@@ -410,6 +452,7 @@ def merge_clips_for_job(job_id: str) -> None:
             return
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata.pop("operator_action", None)
         metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
         update_job(db, job_id, status="done", export_path=str(export_path), job_metadata=_json_safe(metadata))
     except Exception as exc:
@@ -425,7 +468,37 @@ def run_analysis_for_job(job_id: str, yolo_model: object, xgb_model: object | No
         if not job:
             return
         if job.mode == "operator":
-            # Operator jobs are processed inline by the API, not by AI analysis.
+            metadata = dict(job.job_metadata or {})
+            action = metadata.get("operator_action") if isinstance(metadata.get("operator_action"), dict) else {}
+            action_type = action.get("type") if isinstance(action, dict) else None
+            if action_type == "download":
+                download_link_for_job(job_id)
+            elif action_type == "cut":
+                labels = action.get("labels", [])
+                if not isinstance(labels, list) or not labels:
+                    update_job(db, job_id, status="error", error_message="라벨이 없습니다.")
+                    return
+                cut_clips_for_job(
+                    job_id,
+                    [float(x) for x in labels],
+                    float(action.get("before", 7.0)),
+                    float(action.get("after", 4.0)),
+                )
+            elif action_type == "trim":
+                clip_name = str(action.get("clip_name") or "")
+                if not clip_name:
+                    update_job(db, job_id, status="error", error_message="트림할 클립이 없습니다.")
+                    return
+                trim_clip_for_job(
+                    job_id,
+                    clip_name,
+                    float(action.get("start")),
+                    float(action.get("end")),
+                )
+            elif action_type == "merge":
+                merge_clips_for_job(job_id)
+            else:
+                update_job(db, job_id, status="error", error_message="처리할 operator 작업이 없습니다.")
             return
         update_job(
             db,

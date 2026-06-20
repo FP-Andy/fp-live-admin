@@ -40,10 +40,7 @@ from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGe
 from .highlight_jobs import (
     clips_dir,
     create_player_proxy_for_job,
-    cut_clips_for_job,
     delete_job_files,
-    download_link_for_job,
-    merge_clips_for_job,
     ensure_highlight_runtime_dirs,
     exports_dir,
     job_dir,
@@ -5604,6 +5601,43 @@ def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
     return job
 
 
+def _require_operator_job_admin(db: Session, job_id: str, user: User) -> HighlightJob:
+    job = _require_operator_job(db, job_id, user)
+    if not _is_superuser(user):
+        raise HTTPException(status_code=403, detail="관리자만 처리할 수 있습니다.")
+    return job
+
+
+def _queue_operator_action(
+    db: Session,
+    job: HighlightJob,
+    action_type: str,
+    *,
+    detail: str,
+    **payload: object,
+) -> dict:
+    metadata = dict(job.job_metadata or {})
+    metadata["operator_action"] = {"type": action_type, **payload}
+    metadata["progress"] = {
+        "phase": "queued",
+        "percent": 0,
+        "detail": detail,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    update_job(db, job.id, status="queued", error_message=None, job_metadata=metadata)
+    return {"status": "queued", "action": action_type}
+
+
+def _require_highlight_job_access(job: HighlightJob, user: User) -> None:
+    if job.mode == "operator" and not (_is_superuser(user) or job.owner_id == user.id):
+        raise HTTPException(status_code=403, detail="본인 업로드만 접근할 수 있습니다.")
+
+
+def _require_highlight_job_admin(job: HighlightJob, user: User) -> None:
+    if job.mode == "operator" and not _is_superuser(user):
+        raise HTTPException(status_code=403, detail="관리자만 처리할 수 있습니다.")
+
+
 @app.post("/api/highlight/operator-jobs")
 async def create_operator_job(
     video: UploadFile | None = File(default=None),
@@ -5689,6 +5723,7 @@ async def create_operator_job(
         "display_name": display_name,
         **player_fields,
         "uploaded_by": user.name,
+        "operator_action": {"type": "download"},
         "progress": {"phase": "queued", "percent": 0, "detail": "링크 업로드됨", "updated_at": now},
     }
     job = HighlightJob(
@@ -5762,18 +5797,16 @@ def delete_operator_job(
 @app.post("/api/highlight/operator-jobs/{job_id}/fetch")
 def fetch_operator_job_link(
     job_id: str,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = _require_operator_job(db, job_id, user)
+    job = _require_operator_job_admin(db, job_id, user)
     metadata = job.job_metadata or {}
     if metadata.get("source_type") != "link":
         raise HTTPException(status_code=400, detail="링크 업로드가 아닙니다.")
     if job.upload_path and Path(job.upload_path).exists():
         return {"status": "ready"}
-    background_tasks.add_task(download_link_for_job, job_id)
-    return {"status": "downloading"}
+    return _queue_operator_action(db, job, "download", detail="링크 다운로드 대기 중")
 
 
 @app.get("/api/highlight/operator-jobs/{job_id}/video")
@@ -5812,12 +5845,11 @@ def serve_operator_reference(
 @app.post("/api/highlight/operator-jobs/{job_id}/clips")
 def cut_operator_clips(
     job_id: str,
-    background_tasks: BackgroundTasks,
     body: dict = Body(...),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = _require_operator_job(db, job_id, user)
+    job = _require_operator_job_admin(db, job_id, user)
     if not job.upload_path or not Path(job.upload_path).exists():
         raise HTTPException(status_code=409, detail="원본 영상이 아직 준비되지 않았습니다.")
     labels = body.get("labels")
@@ -5829,8 +5861,16 @@ def cut_operator_clips(
         raise HTTPException(status_code=400, detail="라벨 형식이 올바르지 않습니다.") from exc
     before = float(body.get("before", 7.0))
     after = float(body.get("after", 4.0))
-    background_tasks.add_task(cut_clips_for_job, job_id, label_secs, before, after)
-    return {"status": "processing", "count": len(label_secs)}
+    return _queue_operator_action(
+        db,
+        job,
+        "cut",
+        detail="클립 생성 대기 중",
+        labels=label_secs,
+        before=before,
+        after=after,
+        count=len(label_secs),
+    )
 
 
 @app.post("/api/highlight/operator-jobs/{job_id}/clips/{clip_name}/trim")
@@ -5841,7 +5881,7 @@ def trim_operator_clip(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = _require_operator_job(db, job_id, user)
+    job = _require_operator_job_admin(db, job_id, user)
     if not job.upload_path or not Path(job.upload_path).exists():
         raise HTTPException(status_code=409, detail="원본 영상을 찾을 수 없습니다.")
     try:
@@ -5856,36 +5896,30 @@ def trim_operator_clip(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    from .highlight_jobs import _ffmpeg_cut
-
-    if not _ffmpeg_cut(Path(job.upload_path), clip_path, start, end - start):
-        raise HTTPException(status_code=500, detail="클립 트림에 실패했습니다.")
-
-    metadata = dict(job.job_metadata or {})
-    clip_info = metadata.get("clip_info") or []
-    for clip in clip_info:
-        if clip.get("name") == clip_name:
-            clip["start"] = round(start, 2)
-            clip["end"] = round(end, 2)
-            break
-    metadata["clip_info"] = clip_info
-    update_job(db, job_id, job_metadata=metadata)
-    return {"ok": True}
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    return _queue_operator_action(
+        db,
+        job,
+        "trim",
+        detail="트림 저장 대기 중",
+        clip_name=clip_name,
+        start=start,
+        end=end,
+    )
 
 
 @app.post("/api/highlight/operator-jobs/{job_id}/merge")
 def merge_operator_clips(
     job_id: str,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = _require_operator_job(db, job_id, user)
+    job = _require_operator_job_admin(db, job_id, user)
     clips = (job.job_metadata or {}).get("clips") or []
     if not clips:
         raise HTTPException(status_code=400, detail="합칠 클립이 없습니다.")
-    background_tasks.add_task(merge_clips_for_job, job_id)
-    return {"status": "merging"}
+    return _queue_operator_action(db, job, "merge", detail="클립 합치기 대기 중")
 
 
 @app.post("/api/highlight/operator-jobs/{job_id}/complete")
@@ -6190,12 +6224,12 @@ def serve_highlight_clip(
     clip_name: str,
     request: Request,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_session_user),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    if not db.get(HighlightJob, job_id):
+    job = db.get(HighlightJob, job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _require_highlight_job_access(job, user)
     try:
         clip_path = safe_clip_path(job_id, clip_name)
     except ValueError as exc:
@@ -6210,13 +6244,12 @@ def delete_highlight_clip(
     job_id: str,
     clip_name: str,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_session_user),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _require_highlight_job_admin(job, user)
     try:
         clip_path = safe_clip_path(job_id, clip_name)
     except ValueError as exc:
@@ -6224,6 +6257,11 @@ def delete_highlight_clip(
     clip_path.unlink(missing_ok=True)
     metadata = dict(job.job_metadata or {})
     metadata["clips"] = [name for name in (metadata.get("clips") or []) if name != clip_name]
+    if isinstance(metadata.get("clip_info"), list):
+        metadata["clip_info"] = [
+            clip for clip in metadata["clip_info"]
+            if isinstance(clip, dict) and clip.get("name") != clip_name
+        ]
     if isinstance(metadata.get("selected"), dict):
         metadata["selected"] = {
             name: value for name, value in metadata["selected"].items()
@@ -6306,13 +6344,12 @@ def download_highlight_export(
     job_id: str,
     request: Request,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_session_user),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
     if not job or not job.export_path:
         raise HTTPException(status_code=404, detail="Export not found")
+    _require_highlight_job_access(job, user)
     export_path = Path(job.export_path)
     if not export_path.exists():
         raise HTTPException(status_code=404, detail="Export file missing")
@@ -6329,13 +6366,12 @@ def download_highlight_export(
 def delete_highlight_job(
     job_id: str,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_session_user),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _require_highlight_job_access(job, user)
     delete_job_files(job)
     db.delete(job)
     db.commit()
