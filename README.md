@@ -71,6 +71,7 @@ control endpoint 요청 형식:
   - `FPA`: Football performance analysis
   - `FCM`: FinePlay Card Marker
 - `README.md`: 실행/배포/환경변수/키바인딩/웹훅/확장 가이드
+- `docs/manual-production-deploy.md`: GitHub Actions 수동 운영 배포 절차
 - `docs/match-export-csv.md`: 매치 단일 CSV export 컬럼 정의서
 
 ---

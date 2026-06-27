@@ -5604,6 +5604,17 @@ def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
     return job
 
 
+def _require_highlight_job_export_access(db: Session, job_id: str, user: User) -> HighlightJob:
+    job = db.get(HighlightJob, job_id)
+    if not job or not job.export_path:
+        raise HTTPException(status_code=404, detail="Export not found")
+    if job.mode == "operator" and job.owner_id == user.id:
+        return job
+    if not _is_superuser(user):
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    return job
+
+
 @app.post("/api/highlight/operator-jobs")
 async def create_operator_job(
     video: UploadFile | None = File(default=None),
@@ -6159,10 +6170,8 @@ def list_highlight_jobs(
     limit: int = Query(20, ge=1, le=100),
     mode: str | None = Query(None),
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_superuser),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     query = db.query(HighlightJob)
     if mode:
         query = query.filter(HighlightJob.mode == mode)
@@ -6174,10 +6183,8 @@ def list_highlight_jobs(
 def get_highlight_job(
     job_id: str,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_superuser),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -6190,10 +6197,8 @@ def serve_highlight_clip(
     clip_name: str,
     request: Request,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_superuser),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     if not db.get(HighlightJob, job_id):
         raise HTTPException(status_code=404, detail="Job not found")
     try:
@@ -6210,10 +6215,8 @@ def delete_highlight_clip(
     job_id: str,
     clip_name: str,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_superuser),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -6240,10 +6243,8 @@ def export_highlight_job(
     job_id: str,
     body: dict = Body(...),
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_superuser),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -6306,13 +6307,9 @@ def download_highlight_export(
     job_id: str,
     request: Request,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_session_user),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    job = db.get(HighlightJob, job_id)
-    if not job or not job.export_path:
-        raise HTTPException(status_code=404, detail="Export not found")
+    job = _require_highlight_job_export_access(db, job_id, user)
     export_path = Path(job.export_path)
     if not export_path.exists():
         raise HTTPException(status_code=404, detail="Export file missing")
@@ -6329,10 +6326,8 @@ def download_highlight_export(
 def delete_highlight_job(
     job_id: str,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user: User = Depends(_require_superuser),
 ):
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
