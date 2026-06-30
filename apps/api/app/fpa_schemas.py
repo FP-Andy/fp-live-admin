@@ -6,11 +6,23 @@ from pydantic import BaseModel, Field
 class FpaDot(BaseModel):
     meter_x: float = Field(ge=0, le=105)
     meter_y: float = Field(ge=0, le=68)
+    team: Literal["ally", "opponent"] | None = None
+
+
+class FpaPitchState(BaseModel):
+    dots: list[FpaDot] = Field(default_factory=list)
+
+
+class FpaDualPitchPayload(BaseModel):
+    before: FpaPitchState = Field(default_factory=FpaPitchState)
+    after: FpaPitchState = Field(default_factory=FpaPitchState)
+    input_tier: Literal["minimal", "recommended", "rich", "full"] = "minimal"
 
 
 class FpaGenerateLogRequest(BaseModel):
     stat_input: str = Field(min_length=1, max_length=80)
     dots: list[FpaDot] = Field(default_factory=list)
+    dual_pitch: FpaDualPitchPayload | None = None
     half: str = Field(min_length=1, max_length=20)
     team: Literal["home", "away"]
     direction: Literal["left", "right"]
