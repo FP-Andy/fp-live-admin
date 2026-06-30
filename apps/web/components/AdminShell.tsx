@@ -112,7 +112,7 @@ const FPA_ITEMS: NavItem[] = [
   },
   {
     href: '/admin/fpa/reports',
-    label: 'Visual Reports',
+    label: 'Model Room',
     icon: '◌',
     match: (pathname) => pathname.startsWith('/admin/fpa/reports'),
   },
@@ -202,7 +202,7 @@ function getPageMeta(pathname: string) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Live Logger' };
   }
   if (pathname.startsWith('/admin/fpa/reports')) {
-    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Visual Reports' };
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Model Room' };
   }
   if (pathname.startsWith('/admin/fpa/settings')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Code Guide' };

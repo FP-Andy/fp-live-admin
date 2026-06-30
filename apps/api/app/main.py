@@ -21,6 +21,7 @@ from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session
 import os
 import httpx
+import pandas as pd
 from PIL import Image
 from pypdf import PdfReader
 
@@ -36,6 +37,7 @@ from .fpa import (
     import_logs_from_workbook,
     parse_logs_to_dataframe,
 )
+from .fpa_model_baselines import build_fpa_model_room_baseline_artifacts, canonicalize_xfp_weights_payload
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
 from .highlight_jobs import (
     clips_dir,
@@ -119,8 +121,59 @@ HIGHLIGHT_WORKER_INSTANCE_ID = os.getenv("HIGHLIGHT_WORKER_INSTANCE_ID", "").str
 HIGHLIGHT_WORKER_INSTANCE_NAME = os.getenv("HIGHLIGHT_WORKER_INSTANCE_NAME", "fhl-gpu-worker").strip() or "fhl-gpu-worker"
 FCM_RUNTIME_DIR = Path(os.getenv("FCM_RUNTIME_DIR", "/app/runtime/fcm")).resolve()
 FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
+FPA_MODEL_ROOM_DIR = Path(os.getenv("FPA_MODEL_ROOM_DIR", "/app/runtime/fpa_model_room")).resolve()
 BROADCAST_RUNTIME_DIR = Path(os.getenv("BROADCAST_RUNTIME_DIR", "/app/runtime/broadcast")).resolve()
 BROADCAST_LOGO_DIR = BROADCAST_RUNTIME_DIR / "logos"
+
+FPA_MODEL_ROOM_SLOTS: dict[str, dict[str, str]] = {
+    "xg": {
+        "label": "xG",
+        "description": "Shot location and context model for expected goals.",
+    },
+    "xgot": {
+        "label": "xGOT",
+        "description": "On-target shot quality model using goalmouth placement.",
+    },
+    "epv": {
+        "label": "EPV",
+        "description": "Possession value model for event and carry deltas.",
+    },
+    "pitch_control": {
+        "label": "Pitch Control",
+        "description": "Before/after control surface for dual pitch states.",
+    },
+    "xfp_weights": {
+        "label": "xFP Weights",
+        "description": "Action, pattern, and role weighting package.",
+    },
+}
+FPA_MODEL_ROOM_BASELINE_SEED_FILES: dict[str, tuple[str, str, str]] = {
+    "xg": (
+        "fineplay_xg_code_formula_v0_1.json",
+        "Current xG Formula Baseline",
+        "Generated from live admin xG code and xFP v0.2 teacher metrics.",
+    ),
+    "xgot": (
+        "fineplay_xgot_code_formula_v0_1.json",
+        "Current xGOT Formula Baseline",
+        "Generated from live admin xGOT placement formula.",
+    ),
+    "epv": (
+        "fineplay_epv_xfp_reference_v0_1.json",
+        "xFP EPV Reference Baseline",
+        "Generated from xFP EPV state-value design and v0.2 metrics.",
+    ),
+    "pitch_control": (
+        "fineplay_pitch_control_proxy_v0_1.json",
+        "Pitch Control Proxy Baseline",
+        "Generated from xFP freeze-frame pitch control interface.",
+    ),
+    "xfp_weights": (
+        "fineplay_xfp_weights_canonical_v0_2_config_pack.json",
+        "xFP Canonical Weight Config Pack",
+        "Generated from xFP v0.2 configs with shared A01-A24 canonical action ids and legacy alias mapping.",
+    ),
+}
 
 DOM_POSSESSION_WEIGHT = float(os.getenv("DOM_POSSESSION_WEIGHT", "0.35"))
 DOM_XG_WEIGHT = float(os.getenv("DOM_XG_WEIGHT", "0.65"))
@@ -2709,6 +2762,592 @@ def estimate_xgot(body: XGOTEstimateRequest):
     )
 
 
+def _normalize_fpa_model_room_slot(slot: str) -> str:
+    normalized = (slot or "").strip().lower().replace("-", "_")
+    if normalized == "pitchcontrol":
+        normalized = "pitch_control"
+    if normalized not in FPA_MODEL_ROOM_SLOTS:
+        raise HTTPException(status_code=404, detail="Unknown FPA model slot")
+    return normalized
+
+
+def _fpa_model_room_index_path(slot: str) -> Path:
+    return FPA_MODEL_ROOM_DIR / slot / "index.json"
+
+
+def _safe_fpa_model_filename(filename: str | None) -> str:
+    raw_name = Path(filename or "model.bin").name
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_name).strip("._")
+    return safe_name or "model.bin"
+
+
+def _read_fpa_model_room_slot(slot: str) -> dict[str, Any]:
+    slot = _normalize_fpa_model_room_slot(slot)
+    index_path = _fpa_model_room_index_path(slot)
+    slot_config = FPA_MODEL_ROOM_SLOTS[slot]
+    payload = {
+        "key": slot,
+        "label": slot_config["label"],
+        "description": slot_config["description"],
+        "active_model_id": None,
+        "models": [],
+    }
+    if not index_path.exists():
+        return payload
+    try:
+        stored = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return payload
+    models = stored.get("models") if isinstance(stored, dict) else []
+    payload["active_model_id"] = stored.get("active_model_id") if isinstance(stored, dict) else None
+    payload["models"] = models if isinstance(models, list) else []
+    return payload
+
+
+def _write_fpa_model_room_slot(slot: str, payload: dict[str, Any]) -> None:
+    slot = _normalize_fpa_model_room_slot(slot)
+    index_path = _fpa_model_room_index_path(slot)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _fpa_model_room_histogram(values: list[float], bin_count: int = 10) -> list[dict[str, float | int]]:
+    if not values:
+        return []
+    min_value = min(values)
+    max_value = max(values)
+    if min_value == max_value:
+        return [{"start": round(min_value, 4), "end": round(max_value, 4), "count": len(values)}]
+
+    width = (max_value - min_value) / bin_count
+    buckets = [0 for _ in range(bin_count)]
+    for value in values:
+        index = min(bin_count - 1, max(0, int((value - min_value) / width)))
+        buckets[index] += 1
+    return [
+        {
+            "start": round(min_value + width * index, 4),
+            "end": round(min_value + width * (index + 1), 4),
+            "count": count,
+        }
+        for index, count in enumerate(buckets)
+    ]
+
+
+def _fpa_model_room_quantile(sorted_values: list[float], q: float) -> float | None:
+    if not sorted_values:
+        return None
+    index = int(round((len(sorted_values) - 1) * q))
+    return round(sorted_values[index], 4)
+
+
+def _fpa_model_room_stats(values: list[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {"count": 0, "min": None, "max": None, "mean": None, "p10": None, "p50": None, "p90": None}
+    sorted_values = sorted(values)
+    return {
+        "count": len(values),
+        "min": round(sorted_values[0], 4),
+        "max": round(sorted_values[-1], 4),
+        "mean": round(sum(sorted_values) / len(sorted_values), 4),
+        "p10": _fpa_model_room_quantile(sorted_values, 0.1),
+        "p50": _fpa_model_room_quantile(sorted_values, 0.5),
+        "p90": _fpa_model_room_quantile(sorted_values, 0.9),
+    }
+
+
+def _fpa_model_room_dataframe(file_bytes: bytes, filename: str) -> pd.DataFrame | None:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(io.BytesIO(file_bytes))
+    if suffix in {".xlsx", ".xls"}:
+        return pd.read_excel(io.BytesIO(file_bytes))
+    if suffix == ".json":
+        data = json.loads(file_bytes.decode("utf-8"))
+        if isinstance(data, dict):
+            rows = data.get("points") or data.get("rows") or data.get("data") or data.get("values")
+            if rows is None:
+                rows = [data]
+        else:
+            rows = data
+        return pd.DataFrame(rows)
+    return None
+
+
+def _find_fpa_model_value_column(df: pd.DataFrame, slot: str, excluded_columns: set[Any]) -> Any | None:
+    lower_to_column = {str(column).strip().lower(): column for column in df.columns}
+    preferred_columns = {
+        "xg": ["xg", "xg_value", "expected_goals", "probability", "value", "score"],
+        "xgot": ["xgot", "xgot_value", "expected_goals_on_target", "probability", "value", "score"],
+        "epv": ["epv", "epv_delta", "epv_value", "value_delta", "value", "score"],
+        "pitch_control": ["pitch_control", "pitchcontrol", "pc", "pc_delta", "control", "value", "score"],
+        "xfp_weights": ["xfp_weight", "xfp_weights", "weight", "weights", "coefficient", "coef", "value", "score"],
+    }.get(slot, ["value", "score"])
+    for candidate in preferred_columns:
+        if candidate in lower_to_column and lower_to_column[candidate] not in excluded_columns:
+            return lower_to_column[candidate]
+
+    for column in df.columns:
+        if column in excluded_columns:
+            continue
+        numeric = pd.to_numeric(df[column], errors="coerce")
+        if int(numeric.notna().sum()) > 0:
+            return column
+    return None
+
+
+def _find_fpa_model_coord_columns(df: pd.DataFrame) -> tuple[Any | None, Any | None]:
+    lower_to_column = {str(column).strip().lower(): column for column in df.columns}
+    pairs = [
+        ("meter_x", "meter_y"),
+        ("start_x", "start_y"),
+        ("startx", "starty"),
+        ("x_start", "y_start"),
+        ("event_x", "event_y"),
+        ("shot_x", "shot_y"),
+        ("loc_x", "loc_y"),
+        ("x", "y"),
+    ]
+    for x_key, y_key in pairs:
+        if x_key in lower_to_column and y_key in lower_to_column:
+            return lower_to_column[x_key], lower_to_column[y_key]
+    return None, None
+
+
+def _find_fpa_model_goalmouth_columns(df: pd.DataFrame) -> tuple[Any | None, Any | None]:
+    lower_to_column = {str(column).strip().lower(): column for column in df.columns}
+    pairs = [
+        ("goalmouth_x", "goalmouth_y"),
+        ("goalmouth_x", "goalmouth_z"),
+        ("goal_x", "goal_y"),
+        ("goal_x", "goal_z"),
+        ("goal_width_x", "goal_height_z"),
+        ("ball_final_x", "ball_final_y"),
+        ("ball_final_x", "ball_final_z"),
+        ("final_x", "final_y"),
+        ("final_x", "final_z"),
+        ("x", "z"),
+    ]
+    for x_key, y_key in pairs:
+        if x_key in lower_to_column and y_key in lower_to_column:
+            return lower_to_column[x_key], lower_to_column[y_key]
+    return None, None
+
+
+def _normalize_fpa_model_point(x_value: float, y_value: float, max_x: float, max_y: float) -> tuple[float, float]:
+    x = x_value
+    y = y_value
+    if max_x <= 1.5 and max_y <= 1.5:
+        x *= 105
+        y *= 68
+    elif max_x <= 100.5 and max_y <= 100.5:
+        x = x / 100 * 105
+        y = y / 100 * 68
+    return max(0.0, min(105.0, x)), max(0.0, min(68.0, y))
+
+
+def _normalize_fpa_goalmouth_point(x_value: float, y_value: float) -> tuple[float, float]:
+    x = x_value
+    y = y_value
+    if 30.0 <= x <= 38.0:
+        x = (x - 30.34) / 7.32
+    elif x > 2.5:
+        x = x / 7.32 if x <= 7.5 else x / 100.0
+    if y > 2.5:
+        y = y / 100.0
+    elif y > 1.5:
+        y = y / 2.44
+    return max(0.0, min(1.0, x)), max(0.0, min(1.0, y))
+
+
+def _extract_fpa_goalmouth_points_from_df(
+    df: pd.DataFrame,
+    slot: str,
+    value_column: Any | None,
+) -> list[dict[str, float]]:
+    if slot != "xgot" or value_column is None:
+        return []
+    x_column, y_column = _find_fpa_model_goalmouth_columns(df)
+    if x_column is None or y_column is None:
+        return []
+    x_series = pd.to_numeric(df[x_column], errors="coerce")
+    y_series = pd.to_numeric(df[y_column], errors="coerce")
+    value_series = pd.to_numeric(df[value_column], errors="coerce")
+    points: list[dict[str, float]] = []
+    for x_value, y_value, model_value in zip(x_series.tolist(), y_series.tolist(), value_series.tolist()):
+        x_number = _finite_float(x_value)
+        y_number = _finite_float(y_value)
+        value_number = _finite_float(model_value)
+        if x_number is None or y_number is None or value_number is None:
+            continue
+        point_x, point_y = _normalize_fpa_goalmouth_point(x_number, y_number)
+        points.append({"x": round(point_x, 4), "y": round(point_y, 4), "value": round(value_number, 4)})
+        if len(points) >= 3000:
+            break
+    return points
+
+
+def _record_float(record: dict[str, Any], keys: list[str]) -> float | None:
+    lower_record = {str(key).strip().lower(): value for key, value in record.items()}
+    for key in keys:
+        value = lower_record.get(key)
+        number = _finite_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _record_text(record: dict[str, Any], keys: list[str]) -> str | None:
+    lower_record = {str(key).strip().lower(): value for key, value in record.items()}
+    for key in keys:
+        value = lower_record.get(key)
+        if value is None:
+            continue
+        text_value = str(value).strip()
+        if text_value and text_value.lower() != "nan":
+            return text_value
+    return None
+
+
+def _extract_fpa_matrix_cells_from_df(df: pd.DataFrame, slot: str, value_column: Any | None) -> list[dict[str, Any]]:
+    if slot != "xfp_weights" or value_column is None:
+        return []
+    cells: list[dict[str, Any]] = []
+    for record in df.to_dict(orient="records"):
+        row_label = _record_text(record, ["role_name", "role", "axis_name", "position_group"])
+        column_label = _record_text(record, ["action_id", "action_code", "action_key", "action", "metric"])
+        value_number = _record_float(record, [str(value_column), "value", "weight", "score", "coefficient", "coef"])
+        if row_label is None or column_label is None or value_number is None:
+            continue
+        cells.append(
+            {
+                "row": row_label,
+                "column": column_label,
+                "value": round(value_number, 4),
+                "row_group": _record_text(record, ["role_group", "position_group", "role_family"]) or "",
+                "detail": _record_text(record, ["action_key", "legacy_action_code", "action_code", "role_family"]) or "",
+            }
+        )
+        if len(cells) >= 1600:
+            break
+    return cells
+
+
+def _extract_fpa_goalmouth_points_from_json_payload(payload: Any, slot: str) -> list[dict[str, float]]:
+    if slot != "xgot" or not isinstance(payload, dict):
+        return []
+    rows = payload.get("goalmouth_points") or payload.get("goalmap_points") or payload.get("goal_mouth_points")
+    if not isinstance(rows, list):
+        return []
+    points: list[dict[str, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        x_number = _record_float(row, ["x", "goalmouth_x", "goal_x", "goal_width_x", "ball_final_x", "final_x"])
+        y_number = _record_float(row, ["y", "z", "goalmouth_y", "goalmouth_z", "goal_y", "goal_z", "goal_height_z", "ball_final_y", "ball_final_z", "final_y", "final_z"])
+        value_number = _record_float(row, ["value", "xgot", "xgot_value", "score"])
+        if x_number is None or y_number is None or value_number is None:
+            continue
+        point_x, point_y = _normalize_fpa_goalmouth_point(x_number, y_number)
+        points.append({"x": round(point_x, 4), "y": round(point_y, 4), "value": round(value_number, 4)})
+        if len(points) >= 3000:
+            break
+    return points
+
+
+def _extract_fpa_model_distribution(file_bytes: bytes, filename: str, slot: str) -> dict[str, Any]:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".csv", ".json", ".xlsx", ".xls"}:
+        return {
+            "parse_status": "unsupported_preview",
+            "message": "Preview supports CSV, JSON, and Excel tables. Binary model files are stored without distribution parsing.",
+            "stats": _fpa_model_room_stats([]),
+            "histogram": [],
+            "points": [],
+            "goalmouth_points": [],
+            "matrix_cells": [],
+        }
+
+    json_payload: Any = None
+    try:
+        if suffix == ".json":
+            json_payload = json.loads(file_bytes.decode("utf-8"))
+        df = _fpa_model_room_dataframe(file_bytes, filename)
+    except Exception as ex:
+        return {
+            "parse_status": "parse_failed",
+            "message": str(ex),
+            "stats": _fpa_model_room_stats([]),
+            "histogram": [],
+            "points": [],
+            "goalmouth_points": [],
+            "matrix_cells": [],
+        }
+    goalmouth_points = _extract_fpa_goalmouth_points_from_json_payload(json_payload, slot)
+    if df is None or df.empty:
+        goalmouth_values = [point["value"] for point in goalmouth_points]
+        return {
+            "parse_status": "ok" if goalmouth_points else "empty",
+            "message": "" if goalmouth_points else "No rows found in uploaded model table.",
+            "stats": _fpa_model_room_stats(goalmouth_values),
+            "histogram": _fpa_model_room_histogram(goalmouth_values),
+            "points": [],
+            "goalmouth_points": goalmouth_points,
+            "matrix_cells": [],
+        }
+
+    x_column, y_column = _find_fpa_model_coord_columns(df)
+    excluded = {column for column in [x_column, y_column] if column is not None}
+    value_column = _find_fpa_model_value_column(df, slot, excluded)
+    if value_column is None:
+        goalmouth_values = [point["value"] for point in goalmouth_points]
+        if goalmouth_points:
+            return {
+                "parse_status": "ok",
+                "value_column": "goalmouth_points.value",
+                "x_column": None,
+                "y_column": None,
+                "stats": _fpa_model_room_stats(goalmouth_values),
+                "histogram": _fpa_model_room_histogram(goalmouth_values),
+                "points": [],
+                "goalmouth_points": goalmouth_points,
+                "matrix_cells": [],
+            }
+        return {
+            "parse_status": "no_numeric_value",
+            "message": "No numeric value column was found for preview.",
+            "stats": _fpa_model_room_stats([]),
+            "histogram": [],
+            "points": [],
+            "goalmouth_points": [],
+            "matrix_cells": [],
+        }
+
+    value_series = pd.to_numeric(df[value_column], errors="coerce")
+    values = [_finite_float(value) for value in value_series.tolist()]
+    clean_values = [value for value in values if value is not None]
+    points: list[dict[str, float]] = []
+    matrix_cells = _extract_fpa_matrix_cells_from_df(df, slot, value_column)
+
+    if x_column is not None and y_column is not None:
+        x_series = pd.to_numeric(df[x_column], errors="coerce")
+        y_series = pd.to_numeric(df[y_column], errors="coerce")
+        clean_x = [value for value in (_finite_float(value) for value in x_series.tolist()) if value is not None]
+        clean_y = [value for value in (_finite_float(value) for value in y_series.tolist()) if value is not None]
+        max_x = max(clean_x) if clean_x else 105.0
+        max_y = max(clean_y) if clean_y else 68.0
+        for x_value, y_value, model_value in zip(x_series.tolist(), y_series.tolist(), values):
+            x_number = _finite_float(x_value)
+            y_number = _finite_float(y_value)
+            if x_number is None or y_number is None or model_value is None:
+                continue
+            point_x, point_y = _normalize_fpa_model_point(x_number, y_number, max_x, max_y)
+            points.append({"x": round(point_x, 3), "y": round(point_y, 3), "value": round(model_value, 4)})
+            if len(points) >= 3000:
+                break
+    if not goalmouth_points:
+        goalmouth_points = _extract_fpa_goalmouth_points_from_df(df, slot, value_column)
+
+    return {
+        "parse_status": "ok",
+        "value_column": str(value_column),
+        "x_column": str(x_column) if x_column is not None else None,
+        "y_column": str(y_column) if y_column is not None else None,
+        "stats": _fpa_model_room_stats(clean_values),
+        "histogram": _fpa_model_room_histogram(clean_values),
+        "points": points,
+        "goalmouth_points": goalmouth_points,
+        "matrix_cells": matrix_cells,
+    }
+
+
+def _store_fpa_model_room_model(
+    *,
+    slot: str,
+    file_bytes: bytes,
+    filename: str,
+    label: str,
+    notes: str = "",
+    activate: bool = True,
+    reuse_existing: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    slot = _normalize_fpa_model_room_slot(slot)
+    safe_filename = _safe_fpa_model_filename(filename)
+    file_sha256 = hashlib.sha256(file_bytes).hexdigest()
+    payload = _read_fpa_model_room_slot(slot)
+
+    if reuse_existing:
+        for existing_model in payload.get("models", []):
+            if existing_model.get("filename") != safe_filename:
+                continue
+            existing_hash = existing_model.get("file_sha256")
+            if not existing_hash:
+                existing_id = str(existing_model.get("id") or "")
+                existing_path = FPA_MODEL_ROOM_DIR / slot / existing_id / safe_filename
+                if existing_path.is_file():
+                    existing_hash = hashlib.sha256(existing_path.read_bytes()).hexdigest()
+                    existing_model["file_sha256"] = existing_hash
+            if existing_hash == file_sha256:
+                if activate:
+                    payload["active_model_id"] = existing_model.get("id")
+                _write_fpa_model_room_slot(slot, payload)
+                return payload, existing_model
+
+    model_id = uuid.uuid4().hex[:12]
+    model_dir = FPA_MODEL_ROOM_DIR / slot / model_id
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / safe_filename
+    model_path.write_bytes(file_bytes)
+
+    distribution = _extract_fpa_model_distribution(file_bytes, safe_filename, slot)
+    uploaded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    model = {
+        "id": model_id,
+        "slot": slot,
+        "label": label.strip() or Path(safe_filename).stem,
+        "filename": safe_filename,
+        "file_size": len(file_bytes),
+        "file_sha256": file_sha256,
+        "uploaded_at": uploaded_at,
+        "notes": notes.strip(),
+        "distribution": distribution,
+    }
+
+    payload["models"] = [model, *payload.get("models", [])]
+    if activate:
+        payload["active_model_id"] = model_id
+    _write_fpa_model_room_slot(slot, payload)
+    return payload, model
+
+
+def _list_fpa_model_room() -> dict[str, Any]:
+    return {"slots": [_read_fpa_model_room_slot(slot) for slot in FPA_MODEL_ROOM_SLOTS.keys()]}
+
+
+def _read_fpa_model_room_seed_artifacts() -> dict[str, dict[str, Any]]:
+    seed_dir = FPA_MODEL_ROOM_DIR / "_baseline_seed"
+    artifacts: dict[str, dict[str, Any]] = {}
+    for slot, (filename, label, notes) in FPA_MODEL_ROOM_BASELINE_SEED_FILES.items():
+        seed_path = seed_dir / filename
+        source_filename = filename
+        if slot == "xfp_weights" and not seed_path.is_file():
+            legacy_path = seed_dir / "fineplay_xfp_weights_v0_2_config_pack.json"
+            if legacy_path.is_file():
+                seed_path = legacy_path
+                source_filename = filename
+        if not seed_path.is_file():
+            return {}
+        file_bytes = seed_path.read_bytes()
+        if slot == "xfp_weights":
+            try:
+                seed_payload = json.loads(file_bytes.decode("utf-8"))
+                file_bytes = json.dumps(
+                    canonicalize_xfp_weights_payload(seed_payload),
+                    ensure_ascii=False,
+                    indent=2,
+                ).encode("utf-8")
+            except Exception:
+                pass
+        artifacts[slot] = {
+            "filename": source_filename,
+            "label": label,
+            "notes": notes,
+            "file_bytes": file_bytes,
+        }
+    return artifacts
+
+
+@app.get("/api/fpa/model-room")
+def get_fpa_model_room(_user: User = Depends(_require_session_user)):
+    return _list_fpa_model_room()
+
+
+@app.post("/api/fpa/model-room/bootstrap")
+def bootstrap_fpa_model_room(_user: User = Depends(_require_session_user)):
+    try:
+        artifacts = _read_fpa_model_room_seed_artifacts() or build_fpa_model_room_baseline_artifacts()
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Failed to build baseline models: {ex}") from ex
+
+    models: list[dict[str, Any]] = []
+    for slot, artifact in artifacts.items():
+        _payload, model = _store_fpa_model_room_model(
+            slot=slot,
+            file_bytes=artifact["file_bytes"],
+            filename=artifact["filename"],
+            label=artifact["label"],
+            notes=artifact.get("notes", ""),
+            activate=True,
+            reuse_existing=True,
+        )
+        models.append(model)
+    return {"models": models, **_list_fpa_model_room()}
+
+
+@app.get("/api/fpa/model-room/{slot}/download/{model_id}")
+def download_fpa_model_room_file(slot: str, model_id: str, _user: User = Depends(_require_session_user)):
+    slot = _normalize_fpa_model_room_slot(slot)
+    payload = _read_fpa_model_room_slot(slot)
+    model = next((item for item in payload.get("models", []) if item.get("id") == model_id), None)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model version not found")
+    filename = _safe_fpa_model_filename(model.get("filename"))
+    model_path = FPA_MODEL_ROOM_DIR / slot / model_id / filename
+    if not model_path.is_file():
+        raise HTTPException(status_code=404, detail="Model file not found")
+    return FileResponse(
+        str(model_path),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": _attachment_header(filename, "fpa_model.json")},
+    )
+
+
+@app.post("/api/fpa/model-room/{slot}/upload")
+async def upload_fpa_model_room_file(
+    slot: str,
+    file: UploadFile = File(...),
+    version_label: str = Form(default=""),
+    notes: str = Form(default=""),
+    _user: User = Depends(_require_session_user),
+):
+    slot = _normalize_fpa_model_room_slot(slot)
+    safe_filename = _safe_fpa_model_filename(file.filename)
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded model file is empty")
+
+    label = version_label.strip() or Path(safe_filename).stem
+    payload, model = _store_fpa_model_room_model(
+        slot=slot,
+        file_bytes=file_bytes,
+        filename=safe_filename,
+        label=label,
+        notes=notes,
+    )
+    return {"slot": payload, "model": model}
+
+
+@app.post("/api/fpa/model-room/{slot}/activate/{model_id}")
+def activate_fpa_model_room_file(slot: str, model_id: str, _user: User = Depends(_require_session_user)):
+    slot = _normalize_fpa_model_room_slot(slot)
+    payload = _read_fpa_model_room_slot(slot)
+    if not any(model.get("id") == model_id for model in payload.get("models", [])):
+        raise HTTPException(status_code=404, detail="Model version not found")
+    payload["active_model_id"] = model_id
+    _write_fpa_model_room_slot(slot, payload)
+    return {"slot": payload}
+
+
 @app.post("/api/fpa/logs/generate", response_model=FpaGenerateLogResponse)
 def generate_fpa_log(body: FpaGenerateLogRequest):
     try:
@@ -2719,6 +3358,7 @@ def generate_fpa_log(body: FpaGenerateLogRequest):
             team=body.team,
             direction=body.direction,
             timeline=body.timeline,
+            dual_pitch=body.dual_pitch.model_dump() if body.dual_pitch else None,
         )
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex

@@ -2,10 +2,10 @@ const actionGroups = [
   {
     title: '슈팅',
     rows: [
-      ['ddd', 'Goal', '1개', '골'],
-      ['dd', 'Shot On Target', '1개', '유효 슈팅'],
-      ['d', 'Shot', '1개', '빗나감 포함 슈팅'],
-      ['db', 'Blocked Shot', '1개', '블락된 슈팅'],
+      ['ddd', 'Shot + Goal', '1개', '골. 저장은 Shot event + Goal result tag'],
+      ['dd', 'Shot + On Target', '1개', '유효 슈팅. 저장은 Shot event + On Target tag'],
+      ['d', 'Shot + Off Target', '1개', '빗나간 슈팅'],
+      ['db', 'Shot + Blocked', '1개', '블락된 슈팅'],
     ],
   },
   {
@@ -13,8 +13,8 @@ const actionGroups = [
     rows: [
       ['ss', 'Pass (Success)', '2개', '패스 성공'],
       ['s', 'Pass (Fail)', '2개', '패스 실패'],
-      ['zz', 'Assist', '2개', '어시스트'],
-      ['z', 'Key Pass', '2개', '키 패스'],
+      ['zz', 'Pass + Assist', '2개', '어시스트는 독립 액션이 아니라 태그로 저장'],
+      ['z', 'Pass + Key Pass', '2개', '키패스는 독립 액션이 아니라 태그로 저장'],
       ['cc', 'Cross (Success)', '2개', '크로스 성공'],
       ['c', 'Cross (Fail)', '2개', '크로스 실패'],
     ],
@@ -23,10 +23,12 @@ const actionGroups = [
     title: '공격 플레이',
     rows: [
       ['ee', 'Breakthrough', '2개', '돌파'],
-      ['rr', 'Dribble', '1개', '드리블'],
+      ['e', 'Breakthrough (Fail)', '2개', '실패 돌파'],
+      ['rr', 'Dribble', '2개 이상', '드리블/운반 성공. 이동 경로 기록 가능'],
+      ['r', 'Dribble (Fail)', '2개 이상', '드리블/운반 실패'],
       ['gp', 'Gain', '1개', '볼 획득'],
       ['m', 'Miss', '1개', '컨트롤 미스'],
-      ['t / tt', 'Throw-in Fail / Success', '2개', '스로인 실패 / 성공'],
+      ['t / tt', 'Throw-in Lost / Retained', '2개', '스로인은 패스와 분리된 재개 이벤트'],
       ['st', 'Sprint', '2개', '스프린트'],
     ],
   },
@@ -53,19 +55,27 @@ const tagRows = [
   ['a', 'Assist', '어시스트'],
   ['h', 'Header', '헤더'],
   ['r', 'Aerial', '공중볼 경합'],
-  ['w', 'Suffered', '파울 당함'],
+  ['f', 'Foot', '발 사용'],
+  ['w / wf', 'Weak Foot', '약발'],
   ['n', 'In-box', '박스 안'],
   ['u', 'Out-box', '박스 밖'],
   ['p', 'Progressive', '진전 패스'],
   ['c', 'Counter Attack', '역습'],
   ['sw', 'Switch', '사이드 전환'],
-  ['wf', 'Difficult', '어려운 자세'],
   ['ft', 'First Time', '원터치'],
+  ['sf', 'Suffered', '파울 당함'],
+  ['up', 'Under Pressure', '압박 상황'],
+  ['lt', 'Long Throw', '롱 쓰로인'],
+  ['box', 'Box Entry', '박스 투입'],
+  ['ret / loss', 'Possession Outcome', '소유 유지 / 소유 상실'],
 ] as const;
 
 const autoTags = [
-  ['Success', '액션 코드가 2번 반복될 때', '예: ss, cc, dd, ddd'],
-  ['Fail', '액션 코드가 1번일 때', '예: s, c, d'],
+  ['Success', '액션 코드가 성공형일 때', '예: ss, cc, rr, dd, ddd'],
+  ['Fail', '액션 코드가 실패형일 때', '예: s, c, r, d, db'],
+  ['Goal / On Target / Off Target / Blocked', '슈팅 입력 코드 기준', 'd/dd/ddd/db는 모두 Shot event의 result tag'],
+  ['Retained / Lost', '쓰로인 입력 코드 기준', 'tt는 Retained, t는 Lost'],
+  ['Long Throw', '쓰로인 거리 20m 이상 또는 .lt 입력', '준 세트피스 이벤트로 분리'],
   ['Progressive', '패스가 전진 조건을 충족할 때', '진전 패스 자동 부여'],
   ['In-box', '이벤트가 박스 안에서 발생할 때', '슈팅/패스 위치 기준'],
   ['Out-box', '슈팅이 박스 밖에서 발생할 때', '중거리 시도 구분'],
@@ -73,13 +83,13 @@ const autoTags = [
 
 const examples = [
   ['10ss8', '10번 선수가 8번 선수에게 패스 성공', '좌표 2개, 자동 태그 Success'],
-  ['7ss9.k', '7번 선수가 9번 선수에게 키패스', '좌표 2개, Success + Key'],
-  ['11ddd.wf', '11번 선수가 어려운 자세에서 골', '좌표 1개, Success + Difficult'],
-  ['9ddd.h', '9번 선수가 헤더 골', '좌표 1개, Success + Header'],
+  ['7ss9.k.f.w', '7번 선수가 9번에게 약발 키패스 성공', '좌표 2개, Success + Key Pass + Foot + Weak Foot'],
+  ['11ddd.f.w', '11번 선수가 약발로 골', '좌표 1개, Shot + Goal + Foot + Weak Foot'],
+  ['9ddd.h', '9번 선수가 헤더 골', '좌표 1개, Shot + Goal + Header'],
   ['3c', '3번 선수가 크로스를 시도했지만 실패', '좌표 2개, Fail'],
-  ['4tt7', '4번 선수가 7번 선수에게 스로인 성공', '좌표 2개, Success'],
-  ['4t7', '4번 선수가 7번 선수에게 스로인 실패', '좌표 2개, Fail'],
-  ['10ddd.c.wf', '10번 선수가 역습 상황에서 어려운 자세로 골', 'Counter Attack + Difficult'],
+  ['4tt7.lt', '4번 선수가 7번에게 롱 쓰로인으로 소유 유지', '좌표 2개, Throw-in + Retained + Long Throw'],
+  ['4t7.lt.loss', '4번 롱 쓰로인이 상대 소유로 전환', '좌표 2개, Throw-in + Lost'],
+  ['10ddd.c.f.w', '10번 선수가 역습 상황에서 약발로 골', 'Counter Attack + Foot + Weak Foot'],
 ] as const;
 
 const scoringRows = [
@@ -205,9 +215,10 @@ export default function FpaSettingsPage() {
         </div>
         <GuideList
           items={[
-            '`10ss8.k` → 10번 선수가 8번 선수에게 패스 성공, Key 태그 추가',
-            '`9dd.wf` → 9번 선수가 어려운 자세에서 유효 슈팅',
-            '`7d` → 7번 선수가 슈팅',
+            '`10ss8.k.f.w` → 10번 선수가 8번에게 약발 키패스 성공',
+            '`9dd.f.w` → 9번 선수가 약발로 유효 슈팅',
+            '`7d` → 7번 선수가 빗나간 슈팅',
+            '`4tt7.lt` → 4번 선수가 7번에게 롱 쓰로인으로 소유 유지',
             '수신 선수가 없는 1점 액션은 선수번호와 액션코드만으로 입력 가능합니다.',
           ]}
         />

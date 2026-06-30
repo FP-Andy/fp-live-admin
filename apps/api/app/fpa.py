@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import re
 import zipfile
@@ -24,18 +25,20 @@ FIELD_H = 68
 DEFAULT_FPA_REPORT_TITLE = "FPA Visual Reports"
 
 ACTION_CODES = {
-    "ddd": "Goal",
-    "dd": "Shot On Target",
+    "ddd": "Shot",
+    "dd": "Shot",
     "d": "Shot",
-    "db": "Blocked Shot",
-    "zz": "Assist",
-    "z": "Key Pass",
+    "db": "Shot",
+    "zz": "Pass",
+    "z": "Pass",
     "cc": "Cross",
     "c": "Cross",
     "ss": "Pass",
     "s": "Pass",
     "ee": "Breakthrough",
+    "e": "Breakthrough",
     "rr": "Dribble",
+    "r": "Dribble",
     "gp": "Gain",
     "m": "Miss",
     "aa": "Tackle",
@@ -59,11 +62,12 @@ ACTION_CODES = {
     "tr": "Throw-in",
 }
 TAG_CODES = {
-    "k": "Key",
+    "k": "Key Pass",
     "a": "Assist",
     "h": "Header",
     "r": "Aerial",
-    "w": "Suffered",
+    "f": "Foot",
+    "w": "Weak Foot",
     "n": "In-box",
     "u": "Out-box",
     "p": "Progressive",
@@ -71,8 +75,93 @@ TAG_CODES = {
     "sw": "Switch",
     "wf": "Weak Foot",
     "ft": "First Time",
+    "sf": "Suffered",
+    "up": "Under Pressure",
+    "oo": "One-on-One",
+    "1v1": "One-on-One",
+    "lt": "Long Throw",
+    "box": "Box Entry",
+    "ret": "Possession Retained",
+    "loss": "Possession Lost",
+    "hc": "High Cross",
+    "lc": "Low Cross",
 }
 TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr"}
+SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
+SHOT_ACTIONS_LEGACY = ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
+
+
+def _tag_set(value: Any) -> set[str]:
+    return {part.strip() for part in str(value or "").split(",") if part.strip()}
+
+
+def _has_tag(value: Any, tag: str) -> bool:
+    return tag in _tag_set(value)
+
+
+def _is_shot_row(row: pd.Series) -> bool:
+    action = _clean_scalar_text(row.get("Action", ""))
+    tags = _tag_set(row.get("Tags", ""))
+    return action in SHOT_ACTIONS_LEGACY or (action == "Shot" and bool(tags & SHOT_RESULT_TAGS))
+
+
+def _is_goal_row(row: pd.Series) -> bool:
+    action = _clean_scalar_text(row.get("Action", ""))
+    return action == "Goal" or (action == "Shot" and _has_tag(row.get("Tags", ""), "Goal"))
+
+
+def _is_on_target_shot_row(row: pd.Series) -> bool:
+    action = _clean_scalar_text(row.get("Action", ""))
+    tags = _tag_set(row.get("Tags", ""))
+    return action in ["Goal", "Shot On Target"] or (action == "Shot" and bool(tags & {"Goal", "On Target"}))
+
+
+def _normalize_canonical_event(action: Any, tags: Any) -> tuple[str, str, str]:
+    action_text = _clean_scalar_text(action)
+    tag_values = _tag_set(tags)
+    if action_text == "Shot" or action_text in SHOT_ACTIONS_LEGACY:
+        if action_text == "Goal" or "Goal" in tag_values:
+            return "Shot", "Shot", "Goal"
+        if action_text == "Shot On Target" or "On Target" in tag_values:
+            return "Shot", "Shot", "On Target"
+        if action_text == "Blocked Shot" or "Blocked" in tag_values:
+            return "Shot", "Shot", "Blocked"
+        if "Off Target" in tag_values:
+            return "Shot", "Shot", "Off Target"
+        return "Shot", "Shot", "Attempt"
+    if action_text == "Throw-in":
+        if "Retained" in tag_values or "Possession Retained" in tag_values or "Success" in tag_values:
+            result = "Retained"
+        elif "Lost" in tag_values or "Possession Lost" in tag_values or "Fail" in tag_values:
+            result = "Lost"
+        else:
+            result = "Unknown"
+        subtype = "Long Throw" if "Long Throw" in tag_values else "Throw-in"
+        return "ThrowIn", subtype, result
+    if action_text == "Pass":
+        return "Pass", "Pass", "Success" if "Success" in tag_values else "Fail"
+    if action_text == "Cross":
+        subtype = "High Cross" if "High Cross" in tag_values else "Low Cross" if "Low Cross" in tag_values else "Cross"
+        return "Cross", subtype, "Success" if "Success" in tag_values else "Fail"
+    if action_text == "Dribble":
+        return "Dribble", "Carry" if "Carry" in tag_values else "Dribble", "Success" if "Success" in tag_values else "Fail"
+    if action_text in ["Tackle", "Intercept", "Acquisition", "Clear", "Cutout", "Block"]:
+        return "Defense", action_text, "Success" if "Success" in tag_values else "Fail"
+    return action_text or "Unknown", action_text or "Unknown", "Success" if "Success" in tag_values else "Fail" if "Fail" in tag_values else "Unknown"
+
+
+def add_canonical_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if "Tags" not in df.columns:
+        df["Tags"] = ""
+    canonical = df.apply(lambda row: _normalize_canonical_event(row.get("Action", ""), row.get("Tags", "")), axis=1)
+    df["EventType"] = [item[0] for item in canonical]
+    df["EventSubtype"] = [item[1] for item in canonical]
+    df["Result"] = [item[2] for item in canonical]
+    df["BodyPart"] = np.where(df["Tags"].astype(str).str.contains("Header", na=False), "Head", np.where(df["Tags"].astype(str).str.contains("Foot", na=False), "Foot", ""))
+    df["FootUsage"] = np.where(df["Tags"].astype(str).str.contains("Weak Foot", na=False), "Weak Foot", "")
+    df["Phase"] = np.where(df["EventType"].eq("ThrowIn"), "Restart / Quasi Set Piece", "")
+    return df
 
 
 def _dedupe_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -140,6 +229,120 @@ def is_progressive_pass(start_x: Any, end_x: Any) -> Any:
 
 def _format_path_points(points: list[tuple[float, float]]) -> str:
     return ";".join(f"{round(x, 2)},{round(y, 2)}" for x, y in points)
+
+
+def _format_dual_points(points: list[dict[str, Any]]) -> str:
+    formatted: list[str] = []
+    for point in points:
+        try:
+            point_team = str(point.get("team") or "ally")
+            formatted.append(f"{point_team}:{round(float(point['meter_x']), 2)},{round(float(point['meter_y']), 2)}")
+        except (KeyError, TypeError, ValueError):
+            continue
+    return ";".join(formatted)
+
+
+def _parse_dual_points(value: Any) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for x, y in _parse_path_points(value):
+        points.append({"meter_x": x, "meter_y": y, "team": "ally"})
+    return points
+
+
+def _dual_team_counts(points: list[dict[str, Any]]) -> tuple[int, int]:
+    ally_count = 0
+    opponent_count = 0
+    for point in points:
+        if str(point.get("team") or "ally") == "opponent":
+            opponent_count += 1
+        else:
+            ally_count += 1
+    return ally_count, opponent_count
+
+
+def _compact_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not dual_pitch:
+        return None
+
+    def points_for(key: str) -> list[dict[str, Any]]:
+        state = dual_pitch.get(key) or {}
+        raw_points = state.get("dots") or []
+        points: list[dict[str, Any]] = []
+        for point in raw_points:
+            try:
+                point_team = str(point.get("team") or "ally")
+                if point_team not in {"ally", "opponent"}:
+                    point_team = "ally"
+                points.append(
+                    {
+                        "meter_x": round(float(point["meter_x"]), 2),
+                        "meter_y": round(float(point["meter_y"]), 2),
+                        "team": point_team,
+                    }
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return points
+
+    before_points = points_for("before")
+    after_points = points_for("after")
+    if not before_points and not after_points:
+        return None
+    return {
+        "schema": "fpa_dual_pitch_state.v0.1",
+        "input_tier": str(dual_pitch.get("input_tier") or "minimal"),
+        "before": before_points,
+        "after": after_points,
+    }
+
+
+def _encode_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> str:
+    compact = _compact_dual_pitch_state(dual_pitch)
+    if not compact:
+        return ""
+    return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+
+
+def _decode_dual_pitch_state(value: Any) -> dict[str, Any] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _format_metrics(metrics: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ["xG", "xGOT", "EPV", "PC"]:
+        value = metrics.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            parts.append(f"{key}={float(value):.3f}")
+        except (TypeError, ValueError):
+            parts.append(f"{key}={value}")
+    return ", ".join(parts)
+
+
+def _parse_metrics(value: Any) -> dict[str, str]:
+    text = str(value or "").strip()
+    if text.startswith("Metrics: "):
+        text = text.replace("Metrics: ", "", 1)
+    metrics: dict[str, str] = {}
+    for raw_part in text.split(","):
+        if "=" not in raw_part:
+            continue
+        key, raw_value = raw_part.split("=", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if key in {"xG", "xGOT", "EPV", "PC"} and raw_value:
+            metrics[key] = raw_value
+    return metrics
 
 
 def _parse_path_points(value: Any) -> list[tuple[float, float]]:
@@ -213,8 +416,8 @@ def analyze_pass_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_xg_to_data(df: pd.DataFrame) -> pd.DataFrame:
-    shot_actions = ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
-    df_shots = df[df["Action"].isin(shot_actions)].copy()
+    shot_mask = df.apply(_is_shot_row, axis=1)
+    df_shots = df[shot_mask].copy()
     if df_shots.empty:
         df["xG"] = np.nan
         return df
@@ -249,13 +452,13 @@ def auto_tag_key_pass_and_assist(df: pd.DataFrame) -> pd.DataFrame:
         current_player = _clean_scalar_text(current_event.get("Player", ""))
         prev_player = _clean_scalar_text(prev_event.get("Player", ""))
         if (
-            current_event["Action"] in ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
+            _is_shot_row(current_event)
             and prev_event["Action"] in ["Pass", "Cross"]
             and "Success" in prev_event["Tags"]
             and prev_team_id == current_team_id
             and prev_player != current_player
         ):
-            if current_event["Action"] == "Goal":
+            if _is_goal_row(current_event):
                 if "Assist" not in prev_event["Tags"]:
                     df_sorted.loc[i - 1, "Tags"] = (prev_event["Tags"] + ", Assist").lstrip(", ")
             elif "Key Pass" not in prev_event["Tags"] and "Assist" not in prev_event["Tags"]:
@@ -386,20 +589,18 @@ def create_shooter_summary(df_with_xg: pd.DataFrame) -> pd.DataFrame:
     for col in required_cols:
         summary[col] = 0.0
 
-    df_shots = df_with_xg[df_with_xg["Action"].isin(["Goal", "Shot On Target", "Shot", "Blocked Shot"])].copy()
+    shot_mask = df_with_xg.apply(_is_shot_row, axis=1)
+    df_shots = df_with_xg[shot_mask].copy()
     if df_shots.empty:
         return summary
 
     df_shots["Tags"] = df_shots["Tags"].fillna("")
-    agg_summary = df_shots.groupby("Player").agg(
-        Total_Shots=("Action", "count"),
-        Shots_On_Target=("Action", lambda x: x.isin(["Shot On Target", "Goal"]).sum()),
-        Goals=("Action", lambda x: (x == "Goal").sum()),
-        Total_xG=("xG", "sum"),
-    )
+    df_shots["Is_SOT"] = df_shots.apply(_is_on_target_shot_row, axis=1)
+    df_shots["Is_Goal"] = df_shots.apply(_is_goal_row, axis=1)
+    agg_summary = df_shots.groupby("Player").agg(Total_Shots=("Action", "count"), Shots_On_Target=("Is_SOT", "sum"), Goals=("Is_Goal", "sum"), Total_xG=("xG", "sum"))
     summary.update(agg_summary)
 
-    df_goals = df_shots[df_shots["Action"] == "Goal"]
+    df_goals = df_shots[df_shots["Is_Goal"]]
     if not df_goals.empty:
         summary["Headed_Goals"] = df_goals[df_goals["Tags"].str.contains("Header")].groupby("Player")["Action"].count().reindex(all_players).fillna(0)
         summary["Outbox_Goals"] = df_goals[df_goals["Tags"].str.contains("Out-box")].groupby("Player")["Action"].count().reindex(all_players).fillna(0)
@@ -526,7 +727,7 @@ def create_advanced_summary(df_analyzed: pd.DataFrame) -> pd.DataFrame:
     df_pass_succ = df_analyzed[df_analyzed["Action"].isin(["Pass", "Cross"]) & df_analyzed["Tags"].str.contains("Success")]
     df_break_succ = df_analyzed[(df_analyzed["Action"] == "Breakthrough") & df_analyzed["Tags"].str.contains("Success")]
     df_pass_fail = df_analyzed[df_analyzed["Action"].isin(["Pass", "Cross"]) & ~df_analyzed["Tags"].str.contains("Success")]
-    df_miss = df_analyzed[df_analyzed["Action"] == "Miss"]
+    df_miss = df_analyzed[(df_analyzed["Action"] == "Miss") | ((df_analyzed["Action"] == "Shot") & df_analyzed["Tags"].str.contains("Off Target"))]
     safe_update(df_pass_succ.groupby("Player")["Action"].count(), "Pass_Success_Count")
     safe_update(df_break_succ.groupby("Player")["Action"].count(), "Breakthrough_Success")
     safe_update(df_pass_fail.groupby("Player")["Action"].count(), "Pass_Fail_Count")
@@ -600,11 +801,13 @@ def create_advanced_summary(df_analyzed: pd.DataFrame) -> pd.DataFrame:
         "Aerial_Duels_Lost",
     )
 
-    df_shots = df_analyzed[df_analyzed["Action"].isin(["Goal", "Shot On Target", "Shot", "Blocked Shot"])]
+    df_shots = df_analyzed[df_analyzed.apply(_is_shot_row, axis=1)].copy()
+    df_shots["Is_SOT"] = df_shots.apply(_is_on_target_shot_row, axis=1) if not df_shots.empty else pd.Series(dtype=bool)
+    df_shots["Is_Goal"] = df_shots.apply(_is_goal_row, axis=1) if not df_shots.empty else pd.Series(dtype=bool)
     safe_update(df_shots[df_shots["Tags"].str.contains("Assist")].groupby("Player")["Action"].count(), "Received_Assist")
     safe_update(df_shots[df_shots["Tags"].str.contains("Key Pass")].groupby("Player")["Action"].count(), "Received_Key_Pass")
-    safe_update(df_shots[df_shots["Action"].isin(["Goal", "Shot On Target"])].groupby("Player")["Action"].count(), "SOT_Count")
-    safe_update(df_shots[df_shots["Action"] == "Goal"].groupby("Player")["Action"].count(), "Goal_Count")
+    safe_update(df_shots[df_shots["Is_SOT"]].groupby("Player")["Action"].count(), "SOT_Count")
+    safe_update(df_shots[df_shots["Is_Goal"]].groupby("Player")["Action"].count(), "Goal_Count")
     safe_update(df_analyzed[df_analyzed["Action"] == "Offside"].groupby("Player")["Action"].count(), "Offside_Count")
 
     df_dribble = df_analyzed[df_analyzed["Action"] == "Dribble"]
@@ -623,9 +826,11 @@ def create_advanced_summary(df_analyzed: pd.DataFrame) -> pd.DataFrame:
     safe_update(df_sprint.groupby("Player")["Action"].count(), "Sprint_Count")
     safe_update(df_sprint.groupby("Player")["Distance"].sum(), "Total_Sprint_Distance")
 
-    df_header = df_analyzed[df_analyzed["Tags"].str.contains("Header")]
-    safe_update(df_header[df_header["Action"].isin(["Shot On Target", "Goal"])].groupby("Player")["Action"].count(), "Header_SOT")
-    safe_update(df_header[df_header["Action"] == "Clear"].groupby("Player")["Action"].count(), "Header_Clear")
+    df_header = df_analyzed[df_analyzed["Tags"].str.contains("Header")].copy()
+    if not df_header.empty:
+        header_sot_mask = df_header.apply(_is_on_target_shot_row, axis=1).astype(bool)
+        safe_update(df_header[header_sot_mask].groupby("Player")["Action"].count(), "Header_SOT")
+        safe_update(df_header[df_header["Action"] == "Clear"].groupby("Player")["Action"].count(), "Header_Clear")
     return summary.fillna(0).astype(int)
 
 
@@ -807,7 +1012,8 @@ def perform_full_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df = convert_time_to_seconds(df.copy())
     df = auto_tag_key_pass_and_assist(df)
     df = analyze_pass_data(df)
-    return add_xg_to_data(df)
+    df = add_xg_to_data(df)
+    return add_canonical_columns(df)
 
 
 def fig_to_base64(fig: Any) -> str:
@@ -886,6 +1092,11 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
             log_dict["Player"], log_dict["Action"], log_dict["Receiver"] = action_match.groups()
             log_dict["Receiver"] = log_dict["Receiver"] if log_dict["Receiver"] else ""
         log_dict["EndX"], log_dict["EndY"], log_dict["PathPoints"], log_dict["PathPointCount"], log_dict["PathDistance"], log_dict["Tags"] = "", "", "", "", "", ""
+        log_dict["DualState"], log_dict["DualInputTier"], log_dict["BeforeStatePoints"], log_dict["AfterStatePoints"] = "", "", "", ""
+        log_dict["BeforeStatePointCount"], log_dict["AfterStatePointCount"] = "", ""
+        log_dict["BeforeAllyPointCount"], log_dict["BeforeOpponentPointCount"] = "", ""
+        log_dict["AfterAllyPointCount"], log_dict["AfterOpponentPointCount"] = "", ""
+        log_dict["xGOT"], log_dict["EPV"], log_dict["PC"] = "", "", ""
         for part in parts[6:]:
             if part.startswith("Path("):
                 path_text = part.removeprefix("Path(").removesuffix(")")
@@ -893,12 +1104,35 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
                 log_dict["PathPoints"] = _format_path_points(path_points)
                 log_dict["PathPointCount"] = len(path_points) if path_points else ""
                 log_dict["PathDistance"] = round(_path_distance(path_points), 2) if path_points else ""
-            elif "Pos" in part:
+            elif part.startswith("Tags: "):
+                log_dict["Tags"] = part.replace("Tags: ", "")
+            elif part.startswith("DualState: "):
+                dual_state_text = part.replace("DualState: ", "", 1)
+                dual_state = _decode_dual_pitch_state(dual_state_text)
+                log_dict["DualState"] = dual_state_text
+                if dual_state:
+                    before_points = dual_state.get("before") if isinstance(dual_state.get("before"), list) else []
+                    after_points = dual_state.get("after") if isinstance(dual_state.get("after"), list) else []
+                    log_dict["DualInputTier"] = str(dual_state.get("input_tier") or "")
+                    log_dict["BeforeStatePoints"] = _format_dual_points(before_points)
+                    log_dict["AfterStatePoints"] = _format_dual_points(after_points)
+                    log_dict["BeforeStatePointCount"] = len(before_points)
+                    log_dict["AfterStatePointCount"] = len(after_points)
+                    before_ally_count, before_opponent_count = _dual_team_counts(before_points)
+                    after_ally_count, after_opponent_count = _dual_team_counts(after_points)
+                    log_dict["BeforeAllyPointCount"] = before_ally_count
+                    log_dict["BeforeOpponentPointCount"] = before_opponent_count
+                    log_dict["AfterAllyPointCount"] = after_ally_count
+                    log_dict["AfterOpponentPointCount"] = after_opponent_count
+            elif part.startswith("Metrics: "):
+                metrics = _parse_metrics(part)
+                log_dict["xGOT"] = metrics.get("xGOT", "")
+                log_dict["EPV"] = metrics.get("EPV", "")
+                log_dict["PC"] = metrics.get("PC", "")
+            elif part.startswith("Pos("):
                 end_pos_match = re.search(r"Pos\((.+?), (.+?)\)", part)
                 if end_pos_match:
                     log_dict["EndX"], log_dict["EndY"] = end_pos_match.groups()
-            elif "Tags" in part:
-                log_dict["Tags"] = part.replace("Tags: ", "")
         parsed_logs.append(log_dict)
 
     for idx, log in enumerate(parsed_logs, start=1):
@@ -926,11 +1160,32 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "PathPointCount",
         "PathDistance",
         "Tags",
+        "DualState",
+        "DualInputTier",
+        "BeforeStatePoints",
+        "AfterStatePoints",
+        "BeforeStatePointCount",
+        "AfterStatePointCount",
+        "BeforeAllyPointCount",
+        "BeforeOpponentPointCount",
+        "AfterAllyPointCount",
+        "AfterOpponentPointCount",
+        "xGOT",
+        "EPV",
+        "PC",
     ]
     return pd.DataFrame(parsed_logs).reindex(columns=columns)
 
 
-def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str, team: str, direction: str, timeline: str) -> dict[str, Any]:
+def generate_log_entry(
+    stat_input: str,
+    dots: list[dict[str, float]],
+    half: str,
+    team: str,
+    direction: str,
+    timeline: str,
+    dual_pitch: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     parts = stat_input.lower().split(".", 1)
     base_action_part = parts[0]
     tag_codes = parts[1].split(".") if len(parts) > 1 else []
@@ -958,12 +1213,25 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
         raise ValueError(f"'{action_name}' 액션은 받는 선수 번호가 필요합니다. (예: 10{action_code_raw}8)")
 
     tags_list = [TAG_CODES[tag_code] for tag_code in tag_codes if tag_code in TAG_CODES]
-    if action_name == "Throw-in":
-        tags_list.append("Success" if action_code_raw == "tt" else "Fail")
-    elif action_code_raw in ["z", "gp", "w", "qw", "v", "vv", "sv", "dd", "ddd"]:
+    if action_code_raw == "z":
+        tags_list.extend(["Key Pass", "Success"])
+    elif action_code_raw == "zz":
+        tags_list.extend(["Assist", "Success"])
+    elif action_name == "Throw-in":
+        if action_code_raw in ["tt", "tr"]:
+            tags_list.extend(["Retained", "Success", "Possession Retained"])
+        else:
+            tags_list.extend(["Lost", "Fail", "Possession Lost"])
+    elif action_code_raw == "ddd":
+        tags_list.extend(["Goal", "On Target", "Success"])
+    elif action_code_raw == "dd":
+        tags_list.extend(["On Target", "Success"])
+    elif action_code_raw == "db":
+        tags_list.extend(["Blocked", "Fail"])
+    elif action_code_raw == "d":
+        tags_list.extend(["Off Target", "Fail"])
+    elif action_code_raw in ["gp", "w", "qw", "v", "vv", "sv", "q", "qq"]:
         tags_list.append("Success")
-    elif action_code_raw in ["d", "db"]:
-        tags_list.append("Fail")
     elif action_code_raw not in ["touch", "t", "m", "q", "p", "l", "qq", "bl", "o", "st"]:
         if len(action_code_raw) > 1 and action_code_raw[0] == action_code_raw[1]:
             tags_list.append("Success")
@@ -996,8 +1264,14 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
         end_x, end_y = float(end_pos["meter_x"]), float(end_pos["meter_y"])
         start_x_adj = FIELD_W - start_x if direction == "left" else start_x
         end_x_adj = FIELD_W - end_x if direction == "left" else end_x
-        if is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
+        if action_name != "Throw-in" and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
+        if action_name == "Throw-in":
+            throw_distance = float(np.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2))
+            if throw_distance >= 20 and "Long Throw" not in tags_list:
+                tags_list.append("Long Throw")
+            if is_in_penalty_area(end_x_adj, end_y) and "Box Entry" not in tags_list:
+                tags_list.append("Box Entry")
         action_str = f"{player_from} {action_name}"
         if player_to:
             action_str += f" to {player_to}"
@@ -1016,9 +1290,32 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
     elif action_name in ["Goal", "Shot On Target", "Shot", "Blocked Shot"] and "Out-box" not in tags_list:
         tags_list.append("Out-box")
 
-    deduped_tags = sorted(list(set(tags_list)))
+    deduped_tags = list(dict.fromkeys(tags_list))
     if deduped_tags:
         log_text += f" | Tags: {', '.join(deduped_tags)}"
+
+    metrics: dict[str, Any] = {}
+    if action_name == "Shot":
+        try:
+            xg_meta = shared_estimate_xg(
+                "HOME",
+                "L2R",
+                float(start_x_adj),
+                float(start_y),
+                "Header" in deduped_tags,
+                "Weak Foot" in deduped_tags,
+            )
+            metrics["xG"] = float(xg_meta["xg"])
+        except (KeyError, TypeError, ValueError):
+            metrics["xG"] = ""
+
+    metrics_text = _format_metrics(metrics)
+    if metrics_text:
+        log_text += f" | Metrics: {metrics_text}"
+
+    dual_state_text = _encode_dual_pitch_state(dual_pitch)
+    if dual_state_text:
+        log_text += f" | DualState: {dual_state_text}"
 
     return {
         "log_text": log_text,
@@ -1033,6 +1330,11 @@ def generate_log_entry(stat_input: str, dots: list[dict[str, float]], half: str,
             "PathPoints": _format_path_points(path_points) if path_points else "",
             "PathPointCount": str(len(path_points)) if path_points else "",
             "PathDistance": str(round(path_distance, 2)) if path_points else "",
+            "DualState": dual_state_text,
+            "xG": _format_metrics({"xG": metrics.get("xG")}).replace("xG=", "") if metrics.get("xG") not in (None, "") else "",
+            "xGOT": "",
+            "EPV": "",
+            "PC": "",
         },
     }
 
@@ -1061,6 +1363,175 @@ def build_final_stats(df_analyzed_with_xg: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def build_canonical_events_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "No",
+        "MatchID",
+        "TeamID",
+        "Half",
+        "Team",
+        "Direction",
+        "Time",
+        "Player",
+        "Receiver",
+        "Action",
+        "EventType",
+        "EventSubtype",
+        "Result",
+        "Tags",
+        "BodyPart",
+        "FootUsage",
+        "Phase",
+        "DualInputTier",
+        "BeforeStatePoints",
+        "AfterStatePoints",
+        "BeforeStatePointCount",
+        "AfterStatePointCount",
+        "BeforeAllyPointCount",
+        "BeforeOpponentPointCount",
+        "AfterAllyPointCount",
+        "AfterOpponentPointCount",
+        "StartX_adj",
+        "StartY_adj",
+        "EndX_adj",
+        "EndY_adj",
+        "xG",
+        "xGOT",
+        "EPV",
+        "PC",
+    ]
+    return analyzed.reindex(columns=[col for col in columns if col in analyzed.columns])
+
+
+def build_dual_pitch_states_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "No",
+        "MatchID",
+        "TeamID",
+        "Half",
+        "Team",
+        "Direction",
+        "Time",
+        "Player",
+        "Receiver",
+        "EventType",
+        "EventSubtype",
+        "Result",
+        "DualInputTier",
+        "BeforeStatePointCount",
+        "BeforeAllyPointCount",
+        "BeforeOpponentPointCount",
+        "BeforeStatePoints",
+        "AfterStatePointCount",
+        "AfterAllyPointCount",
+        "AfterOpponentPointCount",
+        "AfterStatePoints",
+        "DualState",
+    ]
+    sheet = analyzed.reindex(columns=[col for col in columns if col in analyzed.columns]).copy()
+    if "DualState" in sheet.columns:
+        sheet = sheet[sheet["DualState"].fillna("").astype(str).str.len() > 0]
+    return sheet
+
+
+def build_action_definitions_sheet() -> pd.DataFrame:
+    rows = [
+        {"ActionKey": "Pass/*/Direct/Possession", "Event": "Pass", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Possession", "RequiredEvidence": "Success or retained possession"},
+        {"ActionKey": "Pass/*/Direct/Progression", "Event": "Pass", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Progression", "RequiredEvidence": "end_x - start_x >= 10m or EPV delta > 0"},
+        {"ActionKey": "Cross/OPP/Indirect/Goal", "Event": "Cross", "Condition": "OPP", "Level": "Indirect", "Outcome": "Goal", "RequiredEvidence": "linked shot/goal within sequence window"},
+        {"ActionKey": "Shot/OPP/Direct/Goal", "Event": "Shot", "Condition": "OPP", "Level": "Direct", "Outcome": "Goal", "RequiredEvidence": "shot location and xG"},
+        {"ActionKey": "Dribble/*/Direct/Possession", "Event": "Dribble/Carry", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Possession", "RequiredEvidence": "after possession retained"},
+        {"ActionKey": "Dribble/*/Direct/Progression", "Event": "Dribble/Carry", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Progression", "RequiredEvidence": "carry delta or EPV delta > 0"},
+        {"ActionKey": "ThrowIn/*/Direct/Possession", "Event": "ThrowIn", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Possession", "RequiredEvidence": "Retained / First Contact Won"},
+        {"ActionKey": "ThrowIn/*/Direct/TerritoryGain", "Event": "ThrowIn", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "TerritoryGain", "RequiredEvidence": "Long Throw + territory gain"},
+        {"ActionKey": "ThrowIn/OPP/Indirect/Goal", "Event": "ThrowIn", "Condition": "OPP", "Level": "Indirect", "Outcome": "Goal", "RequiredEvidence": "Box Entry or linked shot/second ball"},
+        {"ActionKey": "Defense/*/Direct/Possession", "Event": "Defense", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Possession", "RequiredEvidence": "recovery or possession gain"},
+    ]
+    return pd.DataFrame(rows)
+
+
+def build_model_config_sheet() -> pd.DataFrame:
+    rows = [
+        ("model_pack_id", "xfp_model_pack_v0.2-draft"),
+        ("source_schema_version", "fpa_canonical_event.v0.2-draft"),
+        ("action_definition_version", "fpa_xfp_action_rules_v0.2-draft"),
+        ("quick_dsl_version", "fpa_quick_dsl_v0.2-draft"),
+        ("xg_model_version", "fp_xg_shared_estimator"),
+        ("epv_model_version", "pending_fp_epv"),
+        ("pitch_control_model_version", "pending_pc_proxy"),
+        ("shot_formula", "1 / (1 + EXP(-(b0 + b1*distance + b2*angle + b3*header + b4*pressure)))"),
+        ("epv_formula", "EPV_Delta = After_EPV - Before_EPV"),
+        ("pitch_control_formula", "PitchControl_Delta = After_PC - Before_PC"),
+        ("action_score_formula", "BaseWeight * LevelMultiplier * OutcomeMultiplier * ReliabilityFactor"),
+    ]
+    return pd.DataFrame(rows, columns=["Field", "Value"])
+
+
+def build_xg_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
+    shot_rows = analyzed[analyzed.apply(_is_shot_row, axis=1)].copy()
+    if shot_rows.empty:
+        return pd.DataFrame(columns=["No", "Player", "Result", "StartX_adj", "StartY_adj", "BodyPart", "FootUsage", "xG", "xGOT", "Formula"])
+    shot_rows["Formula"] = "fp_xG(shared_estimate_xg): location + header + weak_foot"
+    return shot_rows.reindex(columns=["No", "Player", "Result", "StartX_adj", "StartY_adj", "BodyPart", "FootUsage", "xG", "xGOT", "Formula"])
+
+
+def build_epv_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
+    sheet = analyzed.reindex(
+        columns=[
+            "No",
+            "Player",
+            "EventType",
+            "Result",
+            "StartX_adj",
+            "StartY_adj",
+            "EndX_adj",
+            "EndY_adj",
+            "DualInputTier",
+            "BeforeStatePoints",
+            "AfterStatePoints",
+            "BeforeAllyPointCount",
+            "BeforeOpponentPointCount",
+            "AfterAllyPointCount",
+            "AfterOpponentPointCount",
+        ]
+    ).copy()
+    sheet["Before_EPV"] = ""
+    sheet["After_EPV"] = ""
+    sheet["EPV_Delta"] = ""
+    sheet["Formula"] = "EPV_Delta = After_EPV - Before_EPV"
+    return sheet
+
+
+def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
+    sheet = analyzed.reindex(
+        columns=[
+            "No",
+            "Player",
+            "EventType",
+            "Result",
+            "StartX_adj",
+            "StartY_adj",
+            "EndX_adj",
+            "EndY_adj",
+            "DualInputTier",
+            "BeforeStatePoints",
+            "AfterStatePoints",
+            "BeforeAllyPointCount",
+            "BeforeOpponentPointCount",
+            "AfterAllyPointCount",
+            "AfterOpponentPointCount",
+        ]
+    ).copy()
+    sheet["Before_PC"] = ""
+    sheet["After_PC"] = ""
+    sheet["PC_Delta"] = ""
+    has_dual_state = sheet.get("BeforeStatePoints", "").fillna("").astype(str).str.len() > 0
+    dual_tier = sheet.get("DualInputTier", "").fillna("").astype(str).replace("", "minimal")
+    sheet["InputTier"] = np.where(has_dual_state, "dual_pitch_" + dual_tier, "single_pitch")
+    sheet["Formula"] = "PC_Delta = After_PC - Before_PC; dual pitch player objects required for full model"
+    return sheet
+
+
 def build_analysis_workbook(df_or_bytes: pd.DataFrame | bytes) -> bytes:
     df = load_excel_dataframe(df_or_bytes, "Data") if isinstance(df_or_bytes, bytes) else _dedupe_dataframe_columns(df_or_bytes.copy())
     analyzed = perform_full_analysis(df)
@@ -1080,6 +1551,13 @@ def build_analysis_workbook(df_or_bytes: pd.DataFrame | bytes) -> bytes:
         advanced_summary.to_excel(writer, sheet_name="Advanced_Summary")
         if not final_stats_df.empty:
             final_stats_df.to_excel(writer, sheet_name="Final_Stats")
+        build_canonical_events_sheet(analyzed).to_excel(writer, sheet_name="Canonical_Events", index=False)
+        build_dual_pitch_states_sheet(analyzed).to_excel(writer, sheet_name="Dual_Pitch_States", index=False)
+        build_action_definitions_sheet().to_excel(writer, sheet_name="Action_Definitions", index=False)
+        build_model_config_sheet().to_excel(writer, sheet_name="Model_Config", index=False)
+        build_xg_calculation_sheet(analyzed).to_excel(writer, sheet_name="xG_Calculation", index=False)
+        build_epv_calculation_sheet(analyzed).to_excel(writer, sheet_name="EPV_Calculation", index=False)
+        build_pitch_control_calculation_sheet(analyzed).to_excel(writer, sheet_name="PitchControl_Calc", index=False)
     output.seek(0)
     return output.getvalue()
 
@@ -1599,7 +2077,12 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
         end_y = clean_value(row.get("EndY", ""))
         path_points = clean_value(row.get("PathPoints", ""))
         tags = clean_value(row.get("Tags", ""))
+        dual_state = clean_value(row.get("DualState", ""))
         team_id = clean_value(row.get("TeamID", ""))
+        xg = clean_value(row.get("xG", ""))
+        xgot = clean_value(row.get("xGOT", ""))
+        epv = clean_value(row.get("EPV", ""))
+        pc = clean_value(row.get("PC", ""))
 
         if team == "home" and team_id and not home_team_id:
             home_team_id = team_id
@@ -1624,6 +2107,11 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
             log_parts.append(f"Path({path_points})")
         if tags:
             log_parts.append(f"Tags: {tags}")
+        metrics = _format_metrics({"xG": xg, "xGOT": xgot, "EPV": epv, "PC": pc})
+        if metrics:
+            log_parts.append(f"Metrics: {metrics}")
+        if dual_state:
+            log_parts.append(f"DualState: {dual_state}")
         logs.append(" | ".join(log_parts))
         rows.append(
             {
@@ -1635,6 +2123,11 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "Coord": f"Pos({start_x}, {start_y})",
                 "Tags": tags,
                 "PathPoints": path_points,
+                "DualState": dual_state,
+                "xG": _parse_metrics(metrics).get("xG", "") if metrics else "",
+                "xGOT": _parse_metrics(metrics).get("xGOT", "") if metrics else "",
+                "EPV": _parse_metrics(metrics).get("EPV", "") if metrics else "",
+                "PC": _parse_metrics(metrics).get("PC", "") if metrics else "",
             }
         )
 
