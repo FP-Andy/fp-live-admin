@@ -4436,6 +4436,262 @@ a:focus-visible {
   align-content: start;
 }
 
+/* Input State 를 피치 위 가로 바로 — 한 줄 (clip UX 레이아웃 A) */
+.fpa-dual-input-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 14px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-soft);
+}
+.fpa-dual-input-bar > * {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* 바 안의 세그먼트 버튼(Point Type Q/W 등) 컴팩트하게 — 한 줄에 들어오도록 */
+.fpa-dual-input-bar .fpa-segmented button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+/* Point Type 그룹의 width:100%(세로 side-box용) 해제 → 가로 바에선 내용 크기 */
+.fpa-dual-input-bar .fpa-dual-point-type {
+  width: auto;
+}
+/* 팀 레이어 4종 — 한 줄 (xFP/fpa 색구분) */
+.fpa-dual-input-bar .fpa-dual-layers {
+  flex: 3 1 280px;
+}
+.fpa-dual-layers .fpa-segmented {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.fpa-dual-layers .fpa-segmented button {
+  min-height: 26px;
+  padding: 2px 4px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+/* 인라인 점 코드 입력 (xFP/fpa clip: 찍은 점에 번호/코드 부여) */
+.fpa-dual-input-bar .fpa-dual-code {
+  flex: 2 1 0;
+}
+.fpa-dual-code .fpa-stat-input-row {
+  display: flex;
+  gap: 6px;
+}
+.fpa-dual-code input {
+  min-height: 28px;
+  width: 100%;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.fpa-dual-code input:disabled {
+  opacity: 0.45;
+}
+.fpa-dual-code .submit {
+  flex: 0 0 auto;
+  min-width: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(22, 242, 154, 0.14);
+  color: var(--accent);
+  cursor: pointer;
+}
+.fpa-dual-code .submit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 피치 오른쪽 장면 요약 (액션별 xG/EPV/PC) */
+.fpa-scene-summary {
+  font-size: 12px;
+}
+.fpa-scene-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  opacity: 0.85;
+}
+.fpa-scene-actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+.fpa-scene-action-row {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.fpa-scene-action-row .metrics {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+.fpa-scene-actions .muted {
+  opacity: 0.5;
+}
+.fpa-scene-summary .fpa-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fpa-scene-new {
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.fpa-scene-new:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.fpa-scene-primary {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  margin-right: 4px;
+  color: rgba(255, 255, 255, 0.25);
+}
+.fpa-scene-primary.on {
+  color: var(--accent);
+}
+/* 장면요약 하단 우측 삭제 버튼 (액션 선택 후 삭제 — 오클릭 방지) */
+.fpa-scene-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.fpa-scene-del-btn {
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 91, 91, 0.5);
+  background: rgba(255, 91, 91, 0.12);
+  color: #ff8b8b;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.fpa-scene-del-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.fpa-scene-save {
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(22, 242, 154, 0.5);
+  background: rgba(22, 242, 154, 0.14);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.fpa-scene-save:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.fpa-scene-lock {
+  margin-top: 4px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(224, 82, 79, 0.15);
+  border: 1px solid rgba(224, 82, 79, 0.5);
+  color: #ff9b99;
+  font-size: 11px;
+}
+
+/* 패스/크로스 화살표 오버레이 (xFP/fpa 이식) */
+.fpa-scene-arrows {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* 액션 점(코드 라벨) — before 피치 오버레이 */
+.fpa-scene-action-point {
+  width: auto;
+  min-width: 26px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: rgba(22, 242, 154, 0.85);
+  color: #08110d;
+  font-size: 10px;
+  font-weight: 800;
+  border: 1px solid rgba(8, 17, 13, 0.4);
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  cursor: pointer;
+}
+.fpa-scene-action-point.primary {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+}
+
+/* 기록된 로그: 장면 단위 클릭 그룹 (나중에 클릭→불러오기/수정) */
+.fpa-log-scene {
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+.fpa-log-scene:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.fpa-log-scene.selected {
+  border-color: var(--accent);
+  background: rgba(22, 242, 154, 0.07);
+}
+.fpa-log-scene.editing {
+  border-color: rgba(255, 170, 51, 0.7);
+  background: rgba(255, 170, 51, 0.08);
+}
+
+/* 수정용 피치 — 기록된 로그 아래 장면 편집 패널. 라이브 캔버스와 분리 (편집 중 주황 톤) */
+.fpa-scene-editor {
+  border-color: rgba(255, 170, 51, 0.55);
+}
+.fpa-scene-editor .fpa-panel-title {
+  color: #ffaa33;
+}
+.fpa-scene-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.fpa-scene-editor .fpa-scene-actions {
+  font-size: 12px;
+}
+
+/* 시퀀스 로그 scene 구분선 */
+.fpa-log-scene-divider {
+  padding: 4px 10px;
+  margin: 2px 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(22, 242, 154, 0.08);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+}
+
 .fpa-dual-entry-bar {
   grid-template-columns: minmax(150px, 3fr) minmax(0, 7fr);
   align-items: end;
@@ -5159,7 +5415,8 @@ a:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .fpa-dual-pitch-grid {
+  .fpa-dual-pitch-grid,
+  .fpa-scene-editor-grid {
     grid-template-columns: 1fr;
   }
 

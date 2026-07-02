@@ -37,6 +37,7 @@ ACTION_CODES = {
     "s": "Pass",
     "ee": "Breakthrough",
     "e": "Breakthrough",
+    "pn": "Penetration",  # 오프더볼 침투 런(Off-ball Run) — xFP Event=Penetration (xFP/fpa 이식)
     "rr": "Dribble",
     "r": "Dribble",
     "gp": "Gain",
@@ -86,7 +87,7 @@ TAG_CODES = {
     "hc": "High Cross",
     "lc": "Low Cross",
 }
-TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr"}
+TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr", "pn"}
 SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
 SHOT_ACTIONS_LEGACY = ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
 
@@ -1232,7 +1233,7 @@ def generate_log_entry(
         tags_list.extend(["Off Target", "Fail"])
     elif action_code_raw in ["gp", "w", "qw", "v", "vv", "sv", "q", "qq"]:
         tags_list.append("Success")
-    elif action_code_raw not in ["touch", "t", "m", "q", "p", "l", "qq", "bl", "o", "st"]:
+    elif action_code_raw not in ["touch", "t", "m", "q", "p", "l", "qq", "bl", "o", "st", "pn"]:
         if len(action_code_raw) > 1 and action_code_raw[0] == action_code_raw[1]:
             tags_list.append("Success")
         else:
