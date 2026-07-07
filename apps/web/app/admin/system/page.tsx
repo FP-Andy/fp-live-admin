@@ -9,27 +9,18 @@ type SystemInfo = {
   streams_enabled: boolean;
   gateway_base: string | null;
   public_hls_base: string | null;
-  media_server: {
-    configured: boolean;
-    ok: boolean;
-    state: string;
-    detail?: string | null;
-    instance_id?: string | null;
-    instance_name?: string | null;
-    public_ip?: string | null;
-    private_ip?: string | null;
-    provider?: string | null;
+  system_monitor?: {
+    enabled: boolean;
+    slack_configured: boolean;
+    schedule_configured: boolean;
+    prematch_minutes: number;
+    postmatch_minutes: number;
+    active_check_seconds: number;
+    idle_check_seconds: number;
   };
-  highlight_worker: {
-    configured: boolean;
-    ok: boolean;
-    state: string;
-    detail?: string | null;
-    instance_id?: string | null;
-    instance_name?: string | null;
-    public_ip?: string | null;
-    private_ip?: string | null;
-    provider?: string | null;
+  app_server: ServerStatus;
+  media_server: ServerStatus;
+  highlight_worker: ServerStatus & {
     active_jobs?: number;
   };
   health: {
@@ -60,6 +51,118 @@ type SystemInfo = {
   }>;
 };
 
+type ServerMetrics = {
+  available?: boolean;
+  cpu_average_percent?: number | null;
+  cpu_max_percent?: number | null;
+  memory_percent?: number | null;
+  memory_used_gib?: number | null;
+  memory_total_gib?: number | null;
+  disk_percent?: number | null;
+  disk_used_gib?: number | null;
+  disk_total_gib?: number | null;
+  sample_time?: string | null;
+  detail?: string | null;
+};
+
+type ServerStatus = {
+  configured?: boolean;
+  ok: boolean;
+  state: string;
+  detail?: string | null;
+  instance_id?: string | null;
+  instance_name?: string | null;
+  instance_type?: string | null;
+  public_ip?: string | null;
+  private_ip?: string | null;
+  provider?: string | null;
+  metrics?: ServerMetrics;
+};
+
+type ResourceCardProps = {
+  title: string;
+  subtitle: string;
+  server?: ServerStatus | null;
+  showMemory?: boolean;
+  showDisk?: boolean;
+};
+
+function formatPercent(value?: number | null) {
+  return typeof value === 'number' ? `${value.toFixed(1)}%` : '-';
+}
+
+function formatGib(used?: number | null, total?: number | null) {
+  if (typeof used !== 'number' || typeof total !== 'number') return '-';
+  return `${used.toFixed(1)} / ${total.toFixed(1)} GiB`;
+}
+
+function metricLevel(value?: number | null) {
+  if (typeof value !== 'number') return 'muted';
+  if (value >= 85) return 'danger';
+  if (value >= 70) return 'warning';
+  return 'ok';
+}
+
+function ResourceBar({ label, value }: { label: string; value?: number | null }) {
+  const level = metricLevel(value);
+  const width = typeof value === 'number' ? Math.max(0, Math.min(100, value)) : 0;
+  return (
+    <div className="resource-bar-row">
+      <div className="resource-bar-label">
+        <span>{label}</span>
+        <strong>{formatPercent(value)}</strong>
+      </div>
+      <div className="resource-bar-track">
+        <div className={`resource-bar-fill ${level}`} style={{ width: `${width}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ResourceCard({ title, subtitle, server, showMemory = false, showDisk = false }: ResourceCardProps) {
+  const metrics = server?.metrics || {};
+  const isRunning = server?.state === 'running';
+  const statusClass = isRunning ? 'running' : server?.state === 'stopped' ? 'stopped' : 'warning';
+  return (
+    <div className="resource-card">
+      <div className="resource-card-head">
+        <div>
+          <div className="sidebar-eyebrow">{subtitle}</div>
+          <h4>{title}</h4>
+        </div>
+        <span className={`status-pill ${statusClass}`}>{server?.state || 'unknown'}</span>
+      </div>
+      <div className="resource-meta">
+        <span>{server?.instance_name || '-'}</span>
+        <span>{server?.instance_type || server?.provider || '-'}</span>
+        <span>{server?.private_ip || server?.public_ip || '-'}</span>
+      </div>
+      <ResourceBar label="CPU avg" value={metrics.cpu_average_percent} />
+      {typeof metrics.cpu_max_percent === 'number' ? <ResourceBar label="CPU peak" value={metrics.cpu_max_percent} /> : null}
+      {showMemory ? (
+        <>
+          <ResourceBar label="Memory" value={metrics.memory_percent} />
+          <div className="resource-small">{formatGib(metrics.memory_used_gib, metrics.memory_total_gib)}</div>
+        </>
+      ) : null}
+      {showDisk ? (
+        <>
+          <ResourceBar label="Disk" value={metrics.disk_percent} />
+          <div className="resource-small">{formatGib(metrics.disk_used_gib, metrics.disk_total_gib)}</div>
+        </>
+      ) : null}
+      {!metrics.available && server?.state === 'running' ? (
+        <div className="resource-small warning-text">{metrics.detail || 'No recent metric data'}</div>
+      ) : null}
+      {metrics.sample_time ? (
+        <div className="resource-small">
+          sample {new Date(metrics.sample_time).toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function SystemPage() {
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
@@ -80,7 +183,7 @@ export default function SystemPage() {
   useEffect(() => {
     let active = true;
 
-    load()
+    const loadIfActive = () => load()
       .then(() => {
         if (!active) return;
       })
@@ -89,8 +192,12 @@ export default function SystemPage() {
         setError(loadError instanceof Error ? loadError.message : 'System dashboard unavailable');
       });
 
+    loadIfActive();
+    const timer = window.setInterval(loadIfActive, 15000);
+
     return () => {
       active = false;
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -244,6 +351,35 @@ export default function SystemPage() {
             <span className="muted">FHL Jobs</span>
             <strong>{systemInfo?.health.active_highlight_jobs ?? 0}</strong>
           </div>
+        </div>
+      </section>
+
+      <section className="card card-panel grid">
+        <div className="section-heading">
+          <div>
+            <div className="sidebar-eyebrow">Live Resources</div>
+            <h3 style={{ margin: 0 }}>Server Load Dashboard</h3>
+          </div>
+          <span className="status-pill tech">15s refresh</span>
+        </div>
+        <div className="resource-grid">
+          <ResourceCard title="App / API / DB" subtitle="live-admin-app" server={systemInfo?.app_server} showMemory showDisk />
+          <ResourceCard title="Stream Gateway" subtitle="live-admin-media" server={systemInfo?.media_server} />
+          <ResourceCard title="FHL GPU Worker" subtitle="fhl-gpu-worker" server={systemInfo?.highlight_worker} />
+        </div>
+        <div className="muted">
+          Match Control의 3초 데이터 반영 주기는 유지합니다. 이 대시보드만 별도로 15초마다 서버 상태를 갱신합니다.
+        </div>
+        <div className="resource-meta">
+          <span className={`status-pill ${systemInfo?.system_monitor?.enabled ? 'running' : 'stopped'}`}>
+            monitor {systemInfo?.system_monitor?.enabled ? 'on' : 'off'}
+          </span>
+          <span className={`status-pill ${systemInfo?.system_monitor?.slack_configured ? 'running' : 'warning'}`}>
+            slack webhook {systemInfo?.system_monitor?.slack_configured ? 'ready' : 'not set'}
+          </span>
+          <span className="muted">
+            경기 시작 {systemInfo?.system_monitor?.prematch_minutes ?? 30}분 전부터 감시 · 경기 후 {systemInfo?.system_monitor?.postmatch_minutes ?? 180}분까지 유지
+          </span>
         </div>
       </section>
 

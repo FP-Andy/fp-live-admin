@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { scheduleItems } from './schedule-data';
-import { apiFetch, apiJson } from '../../../lib/api';
+import { API_BASE, apiFetch, apiJson } from '../../../lib/api';
 import { useSportContext, type Sport } from '../../../components/SportContext';
 
 type Match = {
@@ -41,8 +40,26 @@ type CompetitionClass = {
   name: string;
   first_half_minutes: number;
   second_half_minutes: number;
+  team_options?: string[];
   created_at: string;
 };
+
+type ScheduleEntry = {
+  id: string;
+  league: string;
+  round_label: string;
+  match_date: string;
+  kickoff_time: string;
+  home_team: string;
+  away_team: string;
+  fla_staff: string;
+  fpa_home_staff: string;
+  fpa_away_staff: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ScheduleForm = Omit<ScheduleEntry, 'id' | 'created_at' | 'updated_at'>;
 
 const TEAM_OPTIONS_BY_CLASS: Record<string, string[]> = {
   K3: [
@@ -146,6 +163,8 @@ export default function Dashboard() {
   const [editingClassFirstHalf, setEditingClassFirstHalf] = useState(45);
   const [editingClassSecondHalf, setEditingClassSecondHalf] = useState(45);
   const [classModalError, setClassModalError] = useState('');
+  const [classModalNotice, setClassModalNotice] = useState('');
+  const [importingClassTeams, setImportingClassTeams] = useState('');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -157,17 +176,38 @@ export default function Dashboard() {
     const d = String(now.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   });
+  const [scheduleEntries, setScheduleEntries] = useState<ScheduleEntry[]>([]);
+  const [scheduleError, setScheduleError] = useState('');
+  const [scheduleNotice, setScheduleNotice] = useState('');
+  const [scheduleFile, setScheduleFile] = useState<File | null>(null);
+  const [replaceSchedule, setReplaceSchedule] = useState(false);
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [isScheduleImportOpen, setIsScheduleImportOpen] = useState(false);
+  const [scheduleForm, setScheduleForm] = useState<ScheduleForm>({
+    league: 'K3',
+    round_label: '',
+    match_date: selectedDate,
+    kickoff_time: '19:00',
+    home_team: '',
+    away_team: '',
+    fla_staff: '',
+    fpa_home_staff: '',
+    fpa_away_staff: '',
+  });
 
   const load = async () => {
     try {
-      const [matchesData, classData, streamStatusData] = await Promise.all([
+      const [matchesData, classData, streamStatusData, scheduleData] = await Promise.all([
         apiJson<Match[]>(`/matches?sport=${sport}`),
         apiJson<CompetitionClass[]>('/competition-classes'),
         apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
+        apiJson<ScheduleEntry[]>('/schedule-entries').catch(() => []),
       ]);
       setMatches(Array.isArray(matchesData) ? matchesData : []);
       setCompetitionClasses(Array.isArray(classData) ? classData : []);
       setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
+      setScheduleEntries(Array.isArray(scheduleData) ? scheduleData : []);
       setError('');
     } catch (loadError) {
       setMatches([]);
@@ -181,6 +221,12 @@ export default function Dashboard() {
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
   }, [sport]);
+
+  useEffect(() => {
+    if (!editingScheduleId) {
+      setScheduleForm((current) => ({ ...current, match_date: selectedDate }));
+    }
+  }, [selectedDate, editingScheduleId]);
 
   const generatedMatchName = useMemo(() => {
     const home = homeTeam.trim();
@@ -247,6 +293,7 @@ export default function Dashboard() {
   const openCompetitionClassModal = () => {
     setClassModalMode('create');
     setClassModalError('');
+    setClassModalNotice('');
     setIsClassModalOpen(true);
   };
 
@@ -289,6 +336,7 @@ export default function Dashboard() {
 
   const startEditCompetitionClass = (item: CompetitionClass) => {
     setClassModalError('');
+    setClassModalNotice('');
     setClassModalMode('edit');
     setEditingClassCode(item.code);
     setEditingClassName(item.name);
@@ -302,11 +350,13 @@ export default function Dashboard() {
     setEditingClassFirstHalf(45);
     setEditingClassSecondHalf(45);
     setClassModalError('');
+    setClassModalNotice('');
   };
 
   const switchCompetitionClassMode = (mode: 'create' | 'edit') => {
     setClassModalMode(mode);
     setClassModalError('');
+    setClassModalNotice('');
     if (mode === 'create') cancelEditCompetitionClass();
   };
 
@@ -329,8 +379,200 @@ export default function Dashboard() {
       return;
     }
 
+    const updatedCode = editingClassCode;
     cancelEditCompetitionClass();
+    setClassModalNotice(`${updatedCode} 대회 정보를 수정했습니다.`);
     await load();
+  };
+
+  const downloadCompetitionTeams = async (item: CompetitionClass) => {
+    setClassModalError('');
+    setClassModalNotice('');
+    const response = await fetch(`${API_BASE}/competition-classes/${encodeURIComponent(item.code)}/teams.csv`, {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      setClassModalError((await response.text()) || '팀 목록을 다운로드하지 못했습니다.');
+      return;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${item.code}_teams.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setClassModalNotice(`${item.code} 팀 목록을 다운로드했습니다.`);
+  };
+
+  const importCompetitionTeams = async (item: CompetitionClass, file: File | null) => {
+    if (!file) return;
+    setClassModalError('');
+    setClassModalNotice('');
+    setImportingClassTeams(item.code);
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const response = await fetch(`${API_BASE}/competition-classes/${encodeURIComponent(item.code)}/teams/import-csv`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        setClassModalError(text || '팀 목록 업로드에 실패했습니다.');
+        return;
+      }
+      const result = text ? JSON.parse(text) : { team_count: 0 };
+      setClassModalNotice(`${item.code} 팀 목록 ${result.team_count || 0}개를 등록했습니다.`);
+      if (competitionClass === item.code) {
+        setHomeTeam('');
+        setAwayTeam('');
+      }
+      await load();
+    } catch (loadError) {
+      setClassModalError(loadError instanceof Error ? loadError.message : '팀 목록 업로드에 실패했습니다.');
+    } finally {
+      setImportingClassTeams('');
+    }
+  };
+
+  const resetScheduleForm = (date = selectedDate) => {
+    setEditingScheduleId(null);
+    setScheduleForm({
+      league: competitionClass || 'K3',
+      round_label: String(roundNumber || ''),
+      match_date: date,
+      kickoff_time: '19:00',
+      home_team: '',
+      away_team: '',
+      fla_staff: '',
+      fpa_home_staff: '',
+      fpa_away_staff: '',
+    });
+  };
+
+  const updateScheduleField = (key: keyof ScheduleForm, value: string) => {
+    setScheduleForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const openCreateSchedule = () => {
+    resetScheduleForm(selectedDate);
+    setScheduleError('');
+    setScheduleNotice('');
+    setIsScheduleModalOpen(true);
+  };
+
+  const closeScheduleModal = () => {
+    setIsScheduleModalOpen(false);
+    setScheduleError('');
+    resetScheduleForm();
+  };
+
+  const startEditSchedule = (entry: ScheduleEntry) => {
+    setEditingScheduleId(entry.id);
+    setScheduleError('');
+    setScheduleNotice('');
+    setScheduleForm({
+      league: entry.league,
+      round_label: entry.round_label,
+      match_date: entry.match_date,
+      kickoff_time: entry.kickoff_time,
+      home_team: entry.home_team,
+      away_team: entry.away_team,
+      fla_staff: entry.fla_staff,
+      fpa_home_staff: entry.fpa_home_staff,
+      fpa_away_staff: entry.fpa_away_staff,
+    });
+    setIsScheduleModalOpen(true);
+  };
+
+  const openScheduleImport = () => {
+    setScheduleError('');
+    setScheduleNotice('');
+    setIsScheduleImportOpen(true);
+  };
+
+  const closeScheduleImport = () => {
+    setIsScheduleImportOpen(false);
+    setScheduleFile(null);
+    setReplaceSchedule(false);
+    setScheduleError('');
+  };
+
+  const saveScheduleEntry = async () => {
+    if (!scheduleForm.match_date || !scheduleForm.kickoff_time || !scheduleForm.home_team.trim() || !scheduleForm.away_team.trim()) {
+      setScheduleError('날짜, 시간, 홈팀, 어웨이팀은 필수입니다.');
+      return;
+    }
+    setScheduleError('');
+    setScheduleNotice('');
+
+    const response = await apiFetch(editingScheduleId ? `/schedule-entries/${editingScheduleId}` : '/schedule-entries', {
+      method: editingScheduleId ? 'PUT' : 'POST',
+      body: JSON.stringify(scheduleForm),
+    });
+    if (!response.ok) {
+      setScheduleError((await response.text()) || '일정을 저장하지 못했습니다.');
+      return;
+    }
+    setScheduleNotice(editingScheduleId ? '일정을 수정했습니다.' : '일정을 추가했습니다.');
+    setSelectedDate(scheduleForm.match_date);
+    setCalendarMonth(new Date(`${scheduleForm.match_date}T00:00:00`));
+    setIsScheduleModalOpen(false);
+    resetScheduleForm(scheduleForm.match_date);
+    await load();
+  };
+
+  const deleteScheduleEntry = async (entry: ScheduleEntry) => {
+    const ok = window.confirm(`${entry.kickoff_time} ${entry.home_team} vs ${entry.away_team} 일정을 삭제할까요?`);
+    if (!ok) return;
+    setScheduleError('');
+    setScheduleNotice('');
+    const response = await apiFetch(`/schedule-entries/${entry.id}`, { method: 'DELETE' });
+    if (!response.ok) {
+      setScheduleError((await response.text()) || '일정을 삭제하지 못했습니다.');
+      return;
+    }
+    setScheduleNotice('일정을 삭제했습니다.');
+    if (editingScheduleId === entry.id) resetScheduleForm();
+    await load();
+  };
+
+  const importScheduleCsv = async () => {
+    if (!scheduleFile) {
+      setScheduleError('업로드할 CSV 파일을 선택하세요.');
+      return;
+    }
+    setScheduleError('');
+    setScheduleNotice('');
+    const formData = new FormData();
+    formData.append('file', scheduleFile);
+    const response = await fetch(`${API_BASE}/schedule-entries/import-csv?replace_existing=${replaceSchedule ? 'true' : 'false'}`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      setScheduleError(text || 'CSV 업로드에 실패했습니다.');
+      return;
+    }
+    const result = text ? JSON.parse(text) : { imported: 0, created: 0, updated: 0 };
+    setScheduleNotice(`CSV 반영 완료: ${result.imported}행 · 신규 ${result.created} · 수정 ${result.updated}`);
+    closeScheduleImport();
+    await load();
+  };
+
+  const downloadScheduleTemplate = () => {
+    const csv = `리그,라운드,날짜,시간,홈팀,어웨이팀,FLA담당자,FPA(홈),FPA(어웨이)\nK3,1,2026-07-04,19:00,홈팀명,어웨이팀명,FLA담당자,FPA홈담당자,FPA어웨이담당자\n`;
+    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'fpc_schedule_template.csv';
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const deleteMatch = async (matchId: string, matchName: string) => {
@@ -401,17 +643,17 @@ export default function Dashboard() {
   const startWeekday = firstDay.getDay();
   const dayCount = lastDay.getDate();
 
-  const visibleScheduleItems = sport === 'FOOTBALL' ? scheduleItems : [];
+  const visibleScheduleItems = sport === 'FOOTBALL' ? scheduleEntries : [];
 
   const countByDate = visibleScheduleItems.reduce<Record<string, number>>((acc, item) => {
-    if (!item.date) return acc;
-    acc[item.date] = (acc[item.date] || 0) + 1;
+    if (!item.match_date) return acc;
+    acc[item.match_date] = (acc[item.match_date] || 0) + 1;
     return acc;
   }, {});
 
   const selectedMatches = visibleScheduleItems
-    .filter((item) => item.date === selectedDate)
-    .sort((a, b) => a.time.localeCompare(b.time));
+    .filter((item) => item.match_date === selectedDate)
+    .sort((a, b) => a.kickoff_time.localeCompare(b.kickoff_time));
 
   const dayCells: Array<number | null> = [];
   for (let i = 0; i < startWeekday; i += 1) dayCells.push(null);
@@ -435,7 +677,9 @@ export default function Dashboard() {
       { code: 'SUFA-L', name: 'SUFA-L', first_half_minutes: 20, second_half_minutes: 20, created_at: '' },
     ];
   }, [competitionClasses]);
-  const selectedTeamOptions = TEAM_OPTIONS_BY_CLASS[competitionClass] || [];
+  const selectedTeamOptions = selectedCompetition?.team_options?.length
+    ? selectedCompetition.team_options
+    : TEAM_OPTIONS_BY_CLASS[competitionClass] || [];
   const usesTeamDropdown = selectedTeamOptions.length > 0;
   const assignedCount = useMemo(() => matches.filter((match) => !match.archived && match.operator_id).length, [matches]);
   const rtmpCount = useMemo(
@@ -806,7 +1050,10 @@ export default function Dashboard() {
 
           <div className="card card-utility">
               <div className="section-heading">
-                <h3>Match Calendar</h3>
+                <div>
+                  <div className="sidebar-eyebrow">Schedule</div>
+                  <h3>Match Calendar</h3>
+                </div>
                 <div className="row">
                   <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
                     Prev
@@ -846,11 +1093,25 @@ export default function Dashboard() {
               </div>
 
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>Fixtures on {selectedDate}</div>
+                <div className="section-heading">
+                  <div>
+                    <div style={{ fontWeight: 700 }}>Fixtures on {selectedDate}</div>
+                    <div className="muted">{selectedMatches.length} fixtures</div>
+                  </div>
+                  <div className="schedule-toolbar">
+                    <button className="button-compact btn-secondary" onClick={downloadScheduleTemplate}>CSV 템플릿</button>
+                    <button className="button-compact btn-secondary" onClick={openScheduleImport}>CSV 업로드</button>
+                    <button className="button-compact btn-primary" onClick={openCreateSchedule}>일정 추가</button>
+                  </div>
+                </div>
+
+                {scheduleError ? <p className="form-error">{scheduleError}</p> : null}
+                {scheduleNotice ? <p className="muted">{scheduleNotice}</p> : null}
+
                 {selectedMatches.length === 0 ? (
                   <div className="muted">No fixtures</div>
                 ) : (
-                  <div className="grid">
+                  <div className="schedule-list">
                     {selectedMatches.map((item, index) => (
                       <div
                         key={item.id}
@@ -860,10 +1121,21 @@ export default function Dashboard() {
                           paddingTop: index === 0 ? 0 : 8,
                         }}
                       >
-                        <div style={{ fontWeight: 700 }}>{item.homeTeam} vs {item.awayTeam}</div>
-                        <div className="muted">홈 : {item.homeTeam}</div>
-                        <div className="muted">어웨이 : {item.awayTeam}</div>
-                        <div className="muted">{item.time} | {item.venue}</div>
+                        <div className="section-heading schedule-item-heading">
+                          <div>
+                            <div style={{ fontWeight: 700 }}>{item.home_team} vs {item.away_team}</div>
+                            <div className="muted">
+                              {item.kickoff_time} | {item.league}{item.round_label ? ` ${item.round_label}R` : ''}
+                            </div>
+                          </div>
+                          <div className="row">
+                            <button className="button-compact btn-secondary" onClick={() => startEditSchedule(item)}>수정</button>
+                            <button className="button-compact btn-danger" onClick={() => deleteScheduleEntry(item)}>삭제</button>
+                          </div>
+                        </div>
+                        <div className="muted">FLA: {item.fla_staff || '-'}</div>
+                        <div className="muted">FPA 홈: {item.fpa_home_staff || '-'}</div>
+                        <div className="muted">FPA 어웨이: {item.fpa_away_staff || '-'}</div>
                       </div>
                     ))}
                   </div>
@@ -956,6 +1228,7 @@ export default function Dashboard() {
                           <th>코드</th>
                           <th>이름</th>
                           <th>시간</th>
+                          <th>팀</th>
                           <th>관리</th>
                         </tr>
                       </thead>
@@ -965,10 +1238,31 @@ export default function Dashboard() {
                             <td>{item.code}</td>
                             <td>{item.name}</td>
                             <td>{item.first_half_minutes} / {item.second_half_minutes}분</td>
+                            <td>{item.team_options?.length || 0}팀</td>
                             <td>
-                              <button className="button-compact btn-secondary" onClick={() => startEditCompetitionClass(item)}>
-                                수정
-                              </button>
+                              <div className="competition-actions">
+                                <button className="button-compact btn-secondary" onClick={() => startEditCompetitionClass(item)}>
+                                  수정
+                                </button>
+                                <button className="button-compact btn-secondary" onClick={() => void downloadCompetitionTeams(item)}>
+                                  다운로드
+                                </button>
+                                <label className={`button-compact btn-secondary competition-file-label ${importingClassTeams === item.code ? 'disabled' : ''}`}>
+                                  {importingClassTeams === item.code ? '업로드 중' : '업로드'}
+                                  <input
+                                    accept=".csv,text/csv"
+                                    disabled={Boolean(importingClassTeams)}
+                                    type="file"
+                                    onChange={(event) => {
+                                      const input = event.currentTarget;
+                                      const file = input.files?.[0] || null;
+                                      void importCompetitionTeams(item, file).finally(() => {
+                                        input.value = '';
+                                      });
+                                    }}
+                                  />
+                                </label>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -1023,8 +1317,108 @@ export default function Dashboard() {
                   ) : null}
 
                   {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
+                  {classModalNotice ? <p className="muted" style={{ margin: 0 }}>{classModalNotice}</p> : null}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isScheduleImportOpen ? (
+        <div className="fcm-modal-backdrop" role="dialog" aria-modal="true" aria-label="CSV 일정 업로드">
+          <div className="card card-panel fcm-modal schedule-modal schedule-import-modal">
+            <div className="section-heading">
+              <div>
+                <div className="sidebar-eyebrow">Schedule</div>
+                <h3>CSV 업로드</h3>
+              </div>
+              <button className="button-compact btn-secondary" onClick={closeScheduleImport}>닫기</button>
+            </div>
+
+            <div className="schedule-modal-body">
+              <div className="schedule-import-panel">
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => setScheduleFile(event.target.files?.[0] || null)}
+                />
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={replaceSchedule}
+                    onChange={(event) => setReplaceSchedule(event.target.checked)}
+                  />
+                  기존 일정 전체 교체
+                </label>
+              </div>
+
+              {scheduleError ? <p className="form-error" style={{ margin: 0 }}>{scheduleError}</p> : null}
+
+              <div className="row hero-actions-compact schedule-dialog-actions">
+                <button className="button-compact btn-secondary" onClick={downloadScheduleTemplate}>CSV 템플릿</button>
+                <button className="btn-primary" onClick={importScheduleCsv}>업로드</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isScheduleModalOpen ? (
+        <div className="fcm-modal-backdrop" role="dialog" aria-modal="true" aria-label={editingScheduleId ? '일정 수정' : '일정 추가'}>
+          <div className="card card-panel fcm-modal schedule-modal">
+            <div className="section-heading">
+              <div>
+                <div className="sidebar-eyebrow">Schedule</div>
+                <h3>{editingScheduleId ? '일정 수정' : '일정 추가'}</h3>
+              </div>
+              <button className="button-compact btn-secondary" onClick={closeScheduleModal}>닫기</button>
+            </div>
+
+            <div className="schedule-modal-body">
+              <div className="schedule-entry-form">
+                <div className="field-stack">
+                  <div className="field-label">리그</div>
+                  <input value={scheduleForm.league} onChange={(event) => updateScheduleField('league', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">라운드</div>
+                  <input value={scheduleForm.round_label} onChange={(event) => updateScheduleField('round_label', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">날짜</div>
+                  <input type="date" value={scheduleForm.match_date} onChange={(event) => updateScheduleField('match_date', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">시간</div>
+                  <input type="time" value={scheduleForm.kickoff_time} onChange={(event) => updateScheduleField('kickoff_time', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">홈팀</div>
+                  <input value={scheduleForm.home_team} onChange={(event) => updateScheduleField('home_team', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">어웨이팀</div>
+                  <input value={scheduleForm.away_team} onChange={(event) => updateScheduleField('away_team', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">FLA담당자</div>
+                  <input value={scheduleForm.fla_staff} onChange={(event) => updateScheduleField('fla_staff', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">FPA(홈)</div>
+                  <input value={scheduleForm.fpa_home_staff} onChange={(event) => updateScheduleField('fpa_home_staff', event.target.value)} />
+                </div>
+                <div className="field-stack">
+                  <div className="field-label">FPA(어웨이)</div>
+                  <input value={scheduleForm.fpa_away_staff} onChange={(event) => updateScheduleField('fpa_away_staff', event.target.value)} />
+                </div>
+              </div>
+
+              {scheduleError ? <p className="form-error" style={{ margin: 0 }}>{scheduleError}</p> : null}
+
+              <div className="row hero-actions-compact schedule-dialog-actions">
+                <button className="button-compact btn-secondary" onClick={closeScheduleModal}>취소</button>
+                <button className="btn-primary" onClick={saveScheduleEntry}>{editingScheduleId ? '수정 저장' : '일정 추가'}</button>
+              </div>
             </div>
           </div>
         </div>
