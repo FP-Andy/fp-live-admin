@@ -1142,6 +1142,7 @@ export default function MatchPage() {
 
   return (
     <main className="page-stack">
+      {running ? <div className="live-neon-overlay" aria-hidden /> : null}
       <div className="card card-hero row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div className="grid" style={{ gap: 6 }}>
           <h2 style={{ margin: 0 }}>
