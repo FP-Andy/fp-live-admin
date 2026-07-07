@@ -281,6 +281,7 @@ export default function MatchPage() {
   const userId = sessionUser?.id || '';
   const isArchived = Boolean(match?.archived);
   const isSuperuser = sessionUser?.role === 'SUPERADMIN';
+  const isManualMatch = match?.metadata?.stream_mode === 'MANUAL';
   const isOperator = useMemo(
     () => !isArchived && (isSuperuser || Boolean(match?.operator_id && match.operator_id === userId)),
     [isArchived, isSuperuser, match, userId]
@@ -301,7 +302,7 @@ export default function MatchPage() {
   // current clock as the new base, then let the new speed apply from now on.
   const changeClockSpeed = (nextSpeed: ClockSpeed) => {
     if (!canWrite || nextSpeed === clockSpeed) return;
-    if (nextSpeed === 2 && !isSuperuser) return;
+    if (nextSpeed === 2 && (!isSuperuser || !isManualMatch)) return;
     if (runningRef.current && perfRef.current != null) {
       const frozen = getCurrentClockMs();
       baseRef.current = frozen;
@@ -312,11 +313,16 @@ export default function MatchPage() {
     clockSpeedRef.current = nextSpeed;
   };
 
-  // X2 mode is superadmin-only: if a non-admin session lands on a match whose
-  // localStorage still says 2x (set earlier by an admin on this browser),
-  // freeze the clock at its current value and drop back to 1x.
+  // X2 mode is superadmin-only and manual-match-only: if a session lands on a
+  // match whose localStorage still says 2x (set earlier by an admin on this
+  // browser) but the session lacks the role or the match is stream-based,
+  // freeze the clock at its current value and drop back to 1x. Wait until the
+  // session/match has actually loaded before judging it ineligible.
   useEffect(() => {
-    if (!sessionUser || isSuperuser || clockSpeedRef.current !== 2) return;
+    if (clockSpeedRef.current !== 2) return;
+    const blockedByRole = Boolean(sessionUser) && !isSuperuser;
+    const blockedByMode = Boolean(match) && !isManualMatch;
+    if (!blockedByRole && !blockedByMode) return;
     if (runningRef.current && perfRef.current != null) {
       const frozen = getCurrentClockMs();
       baseRef.current = frozen;
@@ -325,7 +331,7 @@ export default function MatchPage() {
     }
     setClockSpeed(1);
     clockSpeedRef.current = 1;
-  }, [sessionUser, isSuperuser, clockSpeed]);
+  }, [sessionUser, isSuperuser, match, isManualMatch, clockSpeed]);
 
   const saveState = async (
     next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>
@@ -1330,7 +1336,7 @@ export default function MatchPage() {
       <div className="split">
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
           <div className="card card-panel" style={clockSpeed === 2 ? { outline: '2px solid #ff7900' } : undefined}>
-            {isSuperuser ? (
+            {isSuperuser && isManualMatch ? (
               <div className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
                 <button className={clockSpeed === 1 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(1)} disabled={!canWrite}>
                   LIVE 1×
