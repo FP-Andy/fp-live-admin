@@ -1947,7 +1947,8 @@ export default function FpaLivePage() {
       const isTextEntryTarget = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 
       if (inputMode === 'dual' && !isTextEntryTarget) {
-        const layer = DUAL_LAYERS.find((entry) => entry.hotkey === event.key.toLowerCase());
+        const eventHotkey = event.code.startsWith('Key') ? event.code.slice(3).toLowerCase() : event.key.toLowerCase();
+        const layer = DUAL_LAYERS.find((entry) => entry.hotkey === eventHotkey);
         if (layer) {
           event.preventDefault();
           setActiveLayer(layer.key);
