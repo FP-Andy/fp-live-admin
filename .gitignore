@@ -9,6 +9,7 @@ out/
 # Python
 .venv/
 venv/
+.mplconfig/
 __pycache__/
 *.pyc
 

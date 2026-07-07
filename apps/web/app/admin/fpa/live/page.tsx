@@ -5,15 +5,21 @@ import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
 import { FPA_DRAFT_EVENT, FPA_DRAFT_STORAGE_KEY } from '../../../../components/FpaDraftGuard';
 
 type DualDotTeam = 'ally' | 'opponent';
+type TeamSide = 'home' | 'away';
 
-// 팀 레이어 (옵시디언 설계: 색 구분, team+role). 단축키 q·w·e·r 순서
-type DualLayer = { key: string; label: string; hotkey: string; team: DualDotTeam; role: string; color: string };
+// 팀 레이어는 화면 표시용 home/away와 xFP scoring용 ally/opponent를 분리한다.
+// ally/opponent는 현재 Stat Input의 Team 값 기준으로 payload 생성 시 확정된다.
+type DualLayer = { key: string; label: string; hotkey: string; teamSide: TeamSide; role: 'field' | 'gk'; color: string };
 const DUAL_LAYERS: DualLayer[] = [
-  { key: 'atk', label: '홈', hotkey: 'q', team: 'ally', role: 'attacker', color: '#2f6df6' },
-  { key: 'def', label: '어웨이', hotkey: 'w', team: 'opponent', role: 'defender', color: '#e0524f' },
-  { key: 'atk_gk', label: '골키퍼(홈)', hotkey: 'e', team: 'ally', role: 'gk', color: '#16357a' },
-  { key: 'def_gk', label: '골키퍼(어웨이)', hotkey: 'r', team: 'opponent', role: 'gk', color: '#7a1f1d' },
+  { key: 'home_field', label: '홈', hotkey: 'q', teamSide: 'home', role: 'field', color: '#2f6df6' },
+  { key: 'away_field', label: '어웨이', hotkey: 'w', teamSide: 'away', role: 'field', color: '#e0524f' },
+  { key: 'home_gk', label: '홈 GK', hotkey: 'e', teamSide: 'home', role: 'gk', color: '#16357a' },
+  { key: 'away_gk', label: '어웨이 GK', hotkey: 'r', teamSide: 'away', role: 'gk', color: '#7a1f1d' },
 ];
+
+function relationForTeamSide(teamSide: TeamSide | undefined, actorTeam: TeamSide): DualDotTeam {
+  return teamSide === actorTeam ? 'ally' : 'opponent';
+}
 
 function newDotId() {
   return Math.random().toString(36).slice(2, 10);
@@ -26,7 +32,9 @@ type PitchDot = {
   screen_x: number;
   screen_y: number;
   team?: DualDotTeam;
-  role?: string;     // attacker | defender | gk (레이어)
+  teamSide?: TeamSide; // absolute home/away layer; team is actor-relative ally/opponent
+  layer?: string;
+  role?: string;     // field | gk (레이어)
   color?: string;    // 레이어 색
   number?: string;   // 등번호 — stat input 코드의 행위자 번호가 제출 시 그 점에 지정됨 (xFP/fpa)
 };
@@ -75,6 +83,12 @@ type LogPreview = {
   PC?: string;
 };
 
+type PersistedLogRow = LogPreview & {
+  SceneIndex?: string;
+  SceneActionIndex?: string;
+  SceneState?: string;
+};
+
 type MetricKey = 'xG' | 'xGOT' | 'EPV' | 'PC';
 
 type GoalmouthPoint = {
@@ -112,6 +126,24 @@ type Match = {
   } | null;
 };
 
+type DualStatePoint = {
+  meter_x?: number;
+  meter_y?: number;
+  team?: DualDotTeam;
+  team_side?: TeamSide;
+  role?: string;
+  layer?: string;
+  number?: string;
+  id?: string;
+};
+
+type ParsedDualState = {
+  actor_team?: TeamSide;
+  primary_row_index?: number | null;
+  before?: DualStatePoint[];
+  after?: DualStatePoint[];
+};
+
 function parseMatchTeams(match: Match) {
   const metadataHome = match.metadata?.home_team?.trim();
   const metadataAway = match.metadata?.away_team?.trim();
@@ -136,11 +168,20 @@ function extractDualStateSummary(logText?: string) {
   if (start < 0) return '';
   try {
     const parsed = JSON.parse(logText.slice(start + marker.length)) as {
-      before?: Array<{ team?: string }>;
-      after?: Array<{ team?: string }>;
+      actor_team?: string;
+      before?: Array<{ team?: string; team_side?: string }>;
+      after?: Array<{ team?: string; team_side?: string }>;
     };
     const before = parsed.before || [];
     const after = parsed.after || [];
+    const beforeHome = before.filter((point) => point.team_side === 'home').length;
+    const beforeAway = before.filter((point) => point.team_side === 'away').length;
+    const afterHome = after.filter((point) => point.team_side === 'home').length;
+    const afterAway = after.filter((point) => point.team_side === 'away').length;
+    const actorTeam = typeof parsed.actor_team === 'string' ? parsed.actor_team : '';
+    if (beforeHome + beforeAway + afterHome + afterAway > 0) {
+      return `${actorTeam ? `${actorTeam} · ` : ''}B H${beforeHome}/A${beforeAway} · A H${afterHome}/A${afterAway}`;
+    }
     const beforeOpponents = before.filter((point) => point.team === 'opponent').length;
     const afterOpponents = after.filter((point) => point.team === 'opponent').length;
     return `B${before.length}/${beforeOpponents}O A${after.length}/${afterOpponents}O`;
@@ -202,13 +243,180 @@ function shouldPromptXgot(statInput: string, row: LogPreview) {
   return row.Action === 'Shot' && /(^|, )On Target|(^|, )Goal/.test(row.Tags || '');
 }
 
-function toPayloadDot(dot: PitchDot) {
-  const payload: { meter_x: number; meter_y: number; team?: DualDotTeam } = {
+function screenFromMeter(meterX: number, meterY: number) {
+  return {
+    screen_x: Number(((meterX / 105) * 1050).toFixed(2)),
+    screen_y: Number((((68 - meterY) / 68) * 680).toFixed(2)),
+  };
+}
+
+function toPayloadDot(dot: PitchDot, actorTeam?: TeamSide) {
+  const payload: {
+    meter_x: number;
+    meter_y: number;
+    team?: DualDotTeam;
+    team_side?: TeamSide;
+    role?: string;
+    layer?: string;
+    number?: string;
+    id?: string;
+  } = {
     meter_x: dot.meter_x,
     meter_y: dot.meter_y,
   };
-  if (dot.team) payload.team = dot.team;
+  const actorRelativeTeam = dot.teamSide && actorTeam ? relationForTeamSide(dot.teamSide, actorTeam) : dot.team;
+  if (actorRelativeTeam) payload.team = actorRelativeTeam;
+  if (dot.teamSide) payload.team_side = dot.teamSide;
+  if (dot.role) payload.role = dot.role;
+  if (dot.layer) payload.layer = dot.layer;
+  if (dot.number) payload.number = dot.number;
+  if (dot.id) payload.id = dot.id;
   return payload;
+}
+
+function colorForDualDot(teamSide?: TeamSide, role?: string, team?: DualDotTeam) {
+  const layer = DUAL_LAYERS.find((candidate) => candidate.teamSide === teamSide && candidate.role === role);
+  if (layer) return layer.color;
+  if (teamSide === 'home') return role === 'gk' ? '#16357a' : '#2f6df6';
+  if (teamSide === 'away') return role === 'gk' ? '#7a1f1d' : '#e0524f';
+  return team === 'opponent' ? '#e0524f' : '#2f6df6';
+}
+
+function normalizePitchDot(raw: Partial<PitchDot> & { team_side?: TeamSide }, actorTeam?: TeamSide): PitchDot | null {
+  const meterX = Number(raw.meter_x);
+  const meterY = Number(raw.meter_y);
+  if (!Number.isFinite(meterX) || !Number.isFinite(meterY)) return null;
+  const screen = Number.isFinite(Number(raw.screen_x)) && Number.isFinite(Number(raw.screen_y))
+    ? { screen_x: Number(raw.screen_x), screen_y: Number(raw.screen_y) }
+    : screenFromMeter(meterX, meterY);
+  const legacyLayerSide: TeamSide | undefined =
+    raw.layer === 'atk' || raw.layer === 'atk_gk' ? 'home'
+      : raw.layer === 'def' || raw.layer === 'def_gk' ? 'away'
+        : undefined;
+  const teamSide = raw.teamSide || raw.team_side || legacyLayerSide;
+  const team = teamSide && actorTeam ? relationForTeamSide(teamSide, actorTeam) : raw.team;
+  const rawRole = raw.role || (raw.layer?.includes('gk') ? 'gk' : undefined);
+  const role = rawRole === 'attacker' || rawRole === 'defender' ? 'field' : rawRole;
+  const layer = raw.layer || (teamSide ? `${teamSide}_${role === 'gk' ? 'gk' : 'field'}` : undefined);
+  return {
+    ...raw,
+    id: raw.id || newDotId(),
+    meter_x: Number(meterX.toFixed(2)),
+    meter_y: Number(meterY.toFixed(2)),
+    ...screen,
+    team: team || 'ally',
+    teamSide,
+    layer,
+    role,
+    color: raw.color || colorForDualDot(teamSide, role, team),
+  };
+}
+
+function parseDualStateFromLog(logText?: string): ParsedDualState | null {
+  if (!logText) return null;
+  const marker = 'DualState: ';
+  const start = logText.indexOf(marker);
+  if (start < 0) return null;
+  try {
+    const parsed = JSON.parse(logText.slice(start + marker.length)) as ParsedDualState;
+    if (!Array.isArray(parsed.before) && !Array.isArray(parsed.after)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function latestDualStateFromLogs(logsToScan: string[]): ParsedDualState | null {
+  for (let index = logsToScan.length - 1; index >= 0; index -= 1) {
+    const parsed = parseDualStateFromLog(logsToScan[index]);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function dotsFromDualState(logsToScan: string[], side: PitchSide, fallbackActorTeam?: TeamSide) {
+  const state = latestDualStateFromLogs(logsToScan);
+  const actorTeam = state?.actor_team || fallbackActorTeam;
+  const points = side === 'before' ? state?.before : state?.after;
+  if (!Array.isArray(points)) return [];
+  return points
+    .map((point) => normalizePitchDot(point, actorTeam))
+    .filter((dot): dot is PitchDot => Boolean(dot));
+}
+
+function hydrateSceneDots(dots: PitchDot[], logsToScan: string[], side: PitchSide, fallbackActorTeam?: TeamSide) {
+  const normalized = dots
+    .map((dot) => normalizePitchDot(dot, fallbackActorTeam))
+    .filter((dot): dot is PitchDot => Boolean(dot));
+  return normalized.length ? normalized : dotsFromDualState(logsToScan, side, fallbackActorTeam);
+}
+
+function sceneFromDualLogs(rows: LogPreview[], logsToScan: string[], fallbackActorTeam?: TeamSide): SavedScene | null {
+  const state = latestDualStateFromLogs(logsToScan);
+  if (!state) return null;
+  const header = logsToScan[0]?.split(' | ') || [];
+  const headerTeam = header[1] === 'home' || header[1] === 'away' ? header[1] : undefined;
+  const actorTeam = state.actor_team || headerTeam || fallbackActorTeam;
+  const beforeDotsFromState = dotsFromDualState(logsToScan, 'before', actorTeam);
+  const afterDotsFromState = dotsFromDualState(logsToScan, 'after', actorTeam);
+  if (!beforeDotsFromState.length && !afterDotsFromState.length) return null;
+  return {
+    rows,
+    logs: logsToScan,
+    beforeDots: beforeDotsFromState,
+    afterDots: afterDotsFromState,
+    passArrows: [],
+    primary: typeof state.primary_row_index === 'number' ? state.primary_row_index : null,
+  };
+}
+
+function sceneStateFromRow(row: LogPreview) {
+  const raw = (row as PersistedLogRow).SceneState;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as {
+      beforeDots?: PitchDot[];
+      afterDots?: PitchDot[];
+      before?: PitchDot[];
+      after?: PitchDot[];
+      passArrows?: PassArrow[];
+      primary?: number | null;
+    };
+  } catch {
+    return null;
+  }
+}
+
+function scenesFromPersistedRows(rows: LogPreview[], logsToScan: string[], fallbackActorTeam?: TeamSide) {
+  const groups = new Map<string, { rows: LogPreview[]; logs: string[]; state: ReturnType<typeof sceneStateFromRow> }>();
+  rows.forEach((row, index) => {
+    const sceneIndex = (row as PersistedLogRow).SceneIndex;
+    if (!sceneIndex) return;
+    const existing = groups.get(sceneIndex) || { rows: [], logs: [], state: null };
+    existing.rows.push(row);
+    existing.logs.push(logsToScan[index] || '');
+    existing.state = existing.state || sceneStateFromRow(row);
+    groups.set(sceneIndex, existing);
+  });
+
+  return Array.from(groups.entries())
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([, group]) => {
+      const state = group.state;
+      if (!state) return null;
+      const beforeSource = state.beforeDots || state.before || [];
+      const afterSource = state.afterDots || state.after || [];
+      const scene: SavedScene = {
+        rows: group.rows,
+        logs: group.logs,
+        beforeDots: hydrateSceneDots(beforeSource, group.logs, 'before', fallbackActorTeam),
+        afterDots: hydrateSceneDots(afterSource, group.logs, 'after', fallbackActorTeam),
+        passArrows: Array.isArray(state.passArrows) ? state.passArrows.map((arrow) => ({ ...arrow })) : [],
+        primary: typeof state.primary === 'number' ? state.primary : null,
+      };
+      return scene;
+    })
+    .filter((scene): scene is SavedScene => Boolean(scene));
 }
 
 function dotFromClientPoint(clientX: number, clientY: number, rect: DOMRect): PitchDot {
@@ -226,15 +434,78 @@ function isAllyDot(dot: PitchDot) {
   return (dot.team || 'ally') === 'ally';
 }
 
+function clonePitchDotsForNextScene(dotsToClone: PitchDot[]) {
+  return dotsToClone.map((dot) => ({ ...dot, id: newDotId() }));
+}
+
+function clonePitchDotsWithIdMap(dotsToClone: PitchDot[]) {
+  const idMap = new Map<string, string>();
+  const dots = dotsToClone.map((dot) => {
+    const nextId = newDotId();
+    if (dot.id) idMap.set(dot.id, nextId);
+    return { ...dot, id: nextId };
+  });
+  return { dots, idMap };
+}
+
 function statInputHasReceiver(statInput: string) {
   const baseAction = statInput.trim().split('.', 1)[0] || '';
   return /^\d+[a-z]+\d+$/i.test(baseAction);
 }
 
+function statInputIsNumberOnly(statInput: string) {
+  return /^\d+$/.test(statInput.trim());
+}
+
+function arrowBelongsToRemovedDot(arrow: PassArrow, side: PitchSide, removedId: string) {
+  if (arrow.startId !== removedId) return false;
+  return arrow.side === side || side === 'before';
+}
+
+function mirroredBeforeArrowsForAfter(arrows: PassArrow[], idMap: Map<string, string>) {
+  return arrows
+    .filter((arrow) => arrow.side === 'before')
+    .map((arrow) => ({
+      ...arrow,
+      side: 'after' as PitchSide,
+      startId: arrow.startId ? idMap.get(arrow.startId) || arrow.startId : undefined,
+    }));
+}
+
+function sceneStateForPersistence(scene: SavedScene, sceneIndex: number) {
+  return JSON.stringify({
+    schema: 'fineplay.fpa.scene_state.v0.1',
+    scene_index: sceneIndex,
+    beforeDots: scene.beforeDots,
+    afterDots: scene.afterDots,
+    passArrows: scene.passArrows,
+    primary: scene.primary,
+  });
+}
+
+function validateMatchIdForSave(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === 'ID') return '';
+  if (/\s/.test(trimmed)) return 'Match ID에는 띄어쓰기를 사용할 수 없습니다';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
+    return 'Match ID는 UUID 형식이어야 합니다. 비워두면 자동 생성됩니다';
+  }
+  return '';
+}
+
+function generateMatchId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (char) =>
+    (Number(char) ^ (Math.random() * 16) >> (Number(char) / 4)).toString(16));
+}
+
 function buildRenderPitchDots(sourceDots: PitchDot[]): RenderPitchDot[] {
   let allyCount = 0;
   let opponentCount = 0;
-  return sourceDots.map((dot) => {
+  return sourceDots.map((sourceDot) => {
+    const dot = normalizePitchDot(sourceDot) || sourceDot;
     const dotTeam = dot.team || 'ally';
     const teamIndex = dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
     return {
@@ -266,7 +537,7 @@ export default function FpaLivePage() {
   const [timeline, setTimeline] = useState('00:00');
   const [statInput, setStatInput] = useState('');
   const [inputMode, setInputMode] = useState<InputMode>('single');
-  const [activeLayer, setActiveLayer] = useState<string>('atk');
+  const [activeLayer, setActiveLayer] = useState<string>('home_field');
   const currentLayer = DUAL_LAYERS.find((layer) => layer.key === activeLayer) ?? DUAL_LAYERS[0];
   const [dots, setDots] = useState<PitchDot[]>([]);
   const [beforeDots, setBeforeDots] = useState<PitchDot[]>([]);
@@ -309,6 +580,7 @@ export default function FpaLivePage() {
   const [matchId, setMatchId] = useState('ID');
   const [teamIdH, setTeamIdH] = useState('Home');
   const [teamIdA, setTeamIdA] = useState('Away');
+  const [matchIdError, setMatchIdError] = useState('');
   const [status, setStatus] = useState('실시간 입력 준비됨');
   const [busy, setBusy] = useState(false);
   const [availableMatches, setAvailableMatches] = useState<Match[]>([]);
@@ -317,6 +589,32 @@ export default function FpaLivePage() {
   // 전체 로그 = 저장된 장면들(flatten) + 현재 버퍼 (single 은 savedScenes 비어 있어 = 현재 버퍼). 저장/내보내기용.
   const allLogs = [...savedScenes.flatMap((scene) => scene.logs), ...logs];
   const allRows = [...savedScenes.flatMap((scene) => scene.rows), ...rows];
+
+  const buildRowsForPersistence = () => {
+    if (inputMode !== 'dual') return allRows;
+    const scenesToPersist: SavedScene[] = [
+      ...savedScenes,
+      ...(rows.length
+        ? [{
+          rows,
+          logs,
+          beforeDots,
+          afterDots,
+          passArrows,
+          primary: primaryRowIndex,
+        }]
+        : []),
+    ];
+    return scenesToPersist.flatMap((scene, sceneIndex) => {
+      const sceneState = sceneStateForPersistence(scene, sceneIndex + 1);
+      return scene.rows.map((row, actionIndex) => ({
+        ...row,
+        SceneIndex: String(sceneIndex + 1),
+        SceneActionIndex: String(actionIndex + 1),
+        SceneState: sceneState,
+      }));
+    });
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined' || didHydrateRef.current) return;
@@ -366,7 +664,16 @@ export default function FpaLivePage() {
       if (draft.timeline) setTimeline(draft.timeline);
       if (typeof draft.statInput === 'string') setStatInput(draft.statInput);
       if (draft.inputMode) setInputMode(draft.inputMode);
-      if (draft.activeLayer) setActiveLayer(draft.activeLayer);
+      if (draft.activeLayer) {
+        const legacyLayerMap: Record<string, string> = {
+          atk: 'home_field',
+          def: 'away_field',
+          atk_gk: 'home_gk',
+          def_gk: 'away_gk',
+        };
+        const layerKey = legacyLayerMap[draft.activeLayer] || draft.activeLayer;
+        setActiveLayer(DUAL_LAYERS.some((layer) => layer.key === layerKey) ? layerKey : 'home_field');
+      }
       if (Array.isArray(draft.dots)) setDots(draft.dots);
       if (Array.isArray(draft.beforeDots)) setBeforeDots(draft.beforeDots);
       if (Array.isArray(draft.afterDots)) setAfterDots(draft.afterDots);
@@ -411,7 +718,7 @@ export default function FpaLivePage() {
       beforeDots.length > 0 ||
       afterDots.length > 0 ||
       inputMode !== 'single' ||
-      activeLayer !== 'atk' ||
+      activeLayer !== 'home_field' ||
       statInput.trim().length > 0 ||
       matchId !== 'ID' ||
       teamIdH !== 'Home' ||
@@ -538,6 +845,48 @@ export default function FpaLivePage() {
     setSelectedDualDot(null);
   };
 
+  const assignNumberToLiveSelectedDot = (number: string) => {
+    const sel = selectedDualDot;
+    if (!sel) {
+      setStatus('번호를 붙일 좌표를 먼저 선택하세요');
+      return false;
+    }
+    const dotsArr = sel.side === 'before' ? beforeDots : afterDots;
+    if (!dotsArr[sel.index]) {
+      setStatus('선택된 좌표를 찾을 수 없습니다');
+      return false;
+    }
+    const assign = (prev: PitchDot[]) =>
+      prev.map((dot, index) => (index === sel.index ? { ...dot, number } : dot));
+    if (sel.side === 'before') setBeforeDots(assign);
+    else setAfterDots(assign);
+    setStatInput('');
+    setStatus(`${number}번을 ${sel.side === 'before' ? 'Before' : 'After'} 좌표에 할당했습니다`);
+    requestAnimationFrame(() => statInputRef.current?.focus());
+    return true;
+  };
+
+  const assignNumberToEditSelectedDot = (number: string) => {
+    const sel = editSelectedDot;
+    if (!sel) {
+      setStatus('수정용 피치에서 번호를 붙일 좌표를 먼저 선택하세요');
+      return false;
+    }
+    const dotsArr = sel.side === 'before' ? editBeforeDots : editAfterDots;
+    if (!dotsArr[sel.index]) {
+      setStatus('수정용 피치의 선택된 좌표를 찾을 수 없습니다');
+      return false;
+    }
+    const assign = (prev: PitchDot[]) =>
+      prev.map((dot, index) => (index === sel.index ? { ...dot, number } : dot));
+    if (sel.side === 'before') setEditBeforeDots(assign);
+    else setEditAfterDots(assign);
+    setEditStatInput('');
+    setStatus(`${number}번을 수정용 ${sel.side === 'before' ? 'Before' : 'After'} 좌표에 할당했습니다`);
+    requestAnimationFrame(() => editStatInputRef.current?.focus());
+    return true;
+  };
+
   const handlePitchClick = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = pitchRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -552,7 +901,8 @@ export default function FpaLivePage() {
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점
     if (pendingPass && pendingPass.side === side) {
       const c = dotFromClientPoint(event.clientX, event.clientY, rect);
-      setPassArrows((prev) => [...prev, { side, startId: pendingPass.startId, x1: pendingPass.sx, y1: pendingPass.sy, x2: c.screen_x, y2: c.screen_y }]);
+      const arrow = { side, startId: pendingPass.startId, x1: pendingPass.sx, y1: pendingPass.sy, x2: c.screen_x, y2: c.screen_y };
+      setPassArrows((prev) => [...prev, arrow]);
       const start: PitchDot = { meter_x: pendingPass.mx, meter_y: pendingPass.my, screen_x: pendingPass.sx, screen_y: pendingPass.sy };
       const end: PitchDot = { meter_x: c.meter_x, meter_y: c.meter_y, screen_x: c.screen_x, screen_y: c.screen_y };
       const code = pendingPass.code;
@@ -563,7 +913,11 @@ export default function FpaLivePage() {
     const nextDot: PitchDot = {
       id: newDotId(),
       ...dotFromClientPoint(event.clientX, event.clientY, rect),
-      team: currentLayer.team, role: currentLayer.role, color: currentLayer.color,
+      team: relationForTeamSide(currentLayer.teamSide, team),
+      teamSide: currentLayer.teamSide,
+      layer: currentLayer.key,
+      role: currentLayer.role,
+      color: currentLayer.color,
     };
     const place = (prev: PitchDot[]) => {
       const index = prev.length;
@@ -591,7 +945,7 @@ export default function FpaLivePage() {
     } else {
       setAfterDots(removeAt);
     }
-    if (removedId) setPassArrows((prev) => prev.filter((arrow) => !(arrow.side === sel.side && arrow.startId === removedId)));
+    if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, sel.side, removedId)));
     setSelectedDualDot(null);
     setStatus('선택한 dual pitch 좌표 삭제');
   };
@@ -602,7 +956,7 @@ export default function FpaLivePage() {
     if (side === 'before') setBeforeDots((prev) => prev.filter((_, i) => i !== index));
     else setAfterDots((prev) => prev.filter((_, i) => i !== index));
     // 그 점에 딸린 패스 화살표도 함께 삭제
-    if (removedId) setPassArrows((prev) => prev.filter((arrow) => !(arrow.side === side && arrow.startId === removedId)));
+    if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
     setSelectedDualDot(null);
     setStatus('점 삭제');
   };
@@ -615,12 +969,17 @@ export default function FpaLivePage() {
     } else {
       setAfterDots((prev) => prev.slice(0, -1));
     }
-    if (removedId) setPassArrows((prev) => prev.filter((arrow) => !(arrow.side === side && arrow.startId === removedId)));
+    if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
     setSelectedDualDot(null);
   };
 
   const clearDualDots = (side: PitchSide) => {
-    setPassArrows((prev) => prev.filter((arrow) => arrow.side !== side));
+    const clearedIds = new Set((side === 'before' ? beforeDots : afterDots).map((dot) => dot.id).filter(Boolean));
+    setPassArrows((prev) => prev.filter((arrow) => {
+      if (arrow.side === side) return false;
+      if (side === 'before' && arrow.startId && clearedIds.has(arrow.startId)) return false;
+      return true;
+    }));
     if (side === 'before') {
       setBeforeDots([]);
     } else {
@@ -630,9 +989,12 @@ export default function FpaLivePage() {
   };
 
   const copyBeforeToAfter = () => {
-    setAfterDots(beforeDots.map((dot) => ({ ...dot })));
+    const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeDots);
+    const nextAfterArrows = mirroredBeforeArrowsForAfter(passArrows, idMap);
+    setAfterDots(nextAfterDots);
+    setPassArrows((prev) => [...prev.filter((arrow) => arrow.side !== 'after'), ...nextAfterArrows]);
     setSelectedDualDot(null);
-    setStatus('Before 좌표를 After로 복사했습니다');
+    setStatus('Before 좌표와 패스 화살표를 After로 복사했습니다');
   };
 
   // 현재 작업 캔버스+버퍼 비우기 (저장/새장면/불러오기 공용)
@@ -655,9 +1017,18 @@ export default function FpaLivePage() {
       return;
     }
     const snapshot: SavedScene = { rows, logs, beforeDots, afterDots, passArrows, primary: primaryRowIndex };
+    const nextBeforeDots = clonePitchDotsForNextScene(afterDots);
     setSavedScenes((prev) => [...prev, snapshot]);
-    setStatus('장면 저장됨 — 기록된 로그에 추가');
-    clearCurrentScene();
+    setRows([]);
+    setLogs([]);
+    setPrimaryRowIndex(null);
+    setSelectedRowIndex(null);
+    setBeforeDots(nextBeforeDots);
+    setAfterDots([]);
+    setSelectedDualDot(null);
+    setPendingPass(null);
+    setPassArrows([]);
+    setStatus('장면 저장됨 — After 좌표를 다음 Before로 복사했습니다');
   };
 
   // 새 장면: 저장 안 한 현재 장면을 버리고 새로 시작
@@ -671,21 +1042,25 @@ export default function FpaLivePage() {
     if (selectedSceneIndex == null) return;
     const scene = savedScenes[selectedSceneIndex];
     if (!scene) return;
+    const header = scene.logs[0]?.split(' | ') || [];
+    const nextEditHalf = header[0] === '1H' || header[0] === '2H' ? header[0] : half;
+    const nextEditTeam = header[1] === 'home' || header[1] === 'away' ? header[1] : team;
+    const nextEditDirection = header[2] === 'left' || header[2] === 'right' ? header[2] : direction;
+    const nextEditTimeline = /^\d{1,3}:\d{2}$/.test(header[3] || '') ? header[3] : timeline;
     setEditRows(scene.rows);
     setEditLogs(scene.logs);
-    setEditBeforeDots(scene.beforeDots.map((dot) => ({ ...dot })));
-    setEditAfterDots(scene.afterDots.map((dot) => ({ ...dot })));
+    setEditBeforeDots(hydrateSceneDots(scene.beforeDots, scene.logs, 'before', nextEditTeam).map((dot) => ({ ...dot })));
+    setEditAfterDots(hydrateSceneDots(scene.afterDots, scene.logs, 'after', nextEditTeam).map((dot) => ({ ...dot })));
     setEditPassArrows(scene.passArrows.map((arrow) => ({ ...arrow })));
     setEditPrimary(scene.primary);
     setEditingSceneIndex(selectedSceneIndex);
     setEditSelectedDot(null);
     setEditSelectedRowIndex(null);
     // 수정용 입력값 시드: 로그 헤더(half | team | direction | timeline)에서 복원, 없으면 라이브 현재값
-    const header = scene.logs[0]?.split(' | ') || [];
-    setEditHalf(header[0] === '1H' || header[0] === '2H' ? header[0] : half);
-    setEditTeam(header[1] === 'home' || header[1] === 'away' ? header[1] : team);
-    setEditDirection(header[2] === 'left' || header[2] === 'right' ? header[2] : direction);
-    setEditTimeline(/^\d{1,3}:\d{2}$/.test(header[3] || '') ? header[3] : timeline);
+    setEditHalf(nextEditHalf);
+    setEditTeam(nextEditTeam);
+    setEditDirection(nextEditDirection);
+    setEditTimeline(nextEditTimeline);
     setEditStatInput('');
     setEditPendingPass(null);
     setStatus(`장면 ${selectedSceneIndex + 1} 수정용 피치로 불러옴 — 아래에서 수정 후 "수정 저장"`);
@@ -705,6 +1080,19 @@ export default function FpaLivePage() {
     setEditStatInput('');
     setEditPendingPass(null);
     if (pendingXgot?.canvas === 'edit') resetXgotState();
+  };
+
+  const deleteSelectedScene = () => {
+    if (selectedSceneIndex == null) return;
+    const removedIndex = selectedSceneIndex;
+    setSavedScenes((prev) => prev.filter((_, index) => index !== removedIndex));
+    setSelectedSceneIndex(null);
+    if (editingSceneIndex === removedIndex) {
+      closeSceneEditor();
+    } else if (editingSceneIndex != null && editingSceneIndex > removedIndex) {
+      setEditingSceneIndex(editingSceneIndex - 1);
+    }
+    setStatus(`장면 ${removedIndex + 1} 삭제됨`);
   };
 
   // 수정 저장: 편집 중 장면을 제자리 덮어쓰기 (순서 유지)
@@ -734,7 +1122,8 @@ export default function FpaLivePage() {
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점 (라이브와 동일)
     if (editPendingPass && editPendingPass.side === side) {
       const c = dotFromClientPoint(event.clientX, event.clientY, rect);
-      setEditPassArrows((prev) => [...prev, { side, startId: editPendingPass.startId, x1: editPendingPass.sx, y1: editPendingPass.sy, x2: c.screen_x, y2: c.screen_y }]);
+      const arrow = { side, startId: editPendingPass.startId, x1: editPendingPass.sx, y1: editPendingPass.sy, x2: c.screen_x, y2: c.screen_y };
+      setEditPassArrows((prev) => [...prev, arrow]);
       const start: PitchDot = { meter_x: editPendingPass.mx, meter_y: editPendingPass.my, screen_x: editPendingPass.sx, screen_y: editPendingPass.sy };
       const end: PitchDot = { meter_x: c.meter_x, meter_y: c.meter_y, screen_x: c.screen_x, screen_y: c.screen_y };
       const code = editPendingPass.code;
@@ -745,7 +1134,11 @@ export default function FpaLivePage() {
     const nextDot: PitchDot = {
       id: newDotId(),
       ...dotFromClientPoint(event.clientX, event.clientY, rect),
-      team: currentLayer.team, role: currentLayer.role, color: currentLayer.color,
+      team: relationForTeamSide(currentLayer.teamSide, editTeam),
+      teamSide: currentLayer.teamSide,
+      layer: currentLayer.key,
+      role: currentLayer.role,
+      color: currentLayer.color,
     };
     const place = (prev: PitchDot[]) => {
       selectEditDot({ side, index: prev.length });
@@ -762,7 +1155,7 @@ export default function FpaLivePage() {
     const removedId = dotsArr[index]?.id;
     if (side === 'before') setEditBeforeDots((prev) => prev.filter((_, i) => i !== index));
     else setEditAfterDots((prev) => prev.filter((_, i) => i !== index));
-    if (removedId) setEditPassArrows((prev) => prev.filter((arrow) => !(arrow.side === side && arrow.startId === removedId)));
+    if (removedId) setEditPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
     setEditSelectedDot(null);
     setStatus('수정용 피치 점 삭제');
   };
@@ -773,7 +1166,12 @@ export default function FpaLivePage() {
   };
 
   const clearEditDots = (side: PitchSide) => {
-    setEditPassArrows((prev) => prev.filter((arrow) => arrow.side !== side));
+    const clearedIds = new Set((side === 'before' ? editBeforeDots : editAfterDots).map((dot) => dot.id).filter(Boolean));
+    setEditPassArrows((prev) => prev.filter((arrow) => {
+      if (arrow.side === side) return false;
+      if (side === 'before' && arrow.startId && clearedIds.has(arrow.startId)) return false;
+      return true;
+    }));
     if (side === 'before') setEditBeforeDots([]);
     else setEditAfterDots([]);
     setEditSelectedDot(null);
@@ -797,8 +1195,6 @@ export default function FpaLivePage() {
   const finishXgotFlow = (message: string, canvas: 'live' | 'edit' = 'live') => {
     resetXgotState();
     if (canvas === 'live') {
-      setBeforeDots([]);
-      setAfterDots([]);
       setSelectedDualDot(null);
     }
     setStatus(message);
@@ -909,7 +1305,7 @@ export default function FpaLivePage() {
         method: 'POST',
         body: JSON.stringify({
           stat_input: code,
-          dots: [toPayloadDot(start), toPayloadDot(end)],
+          dots: [toPayloadDot(start, team), toPayloadDot(end, team)],
           dual_pitch: buildDualPitchPayload(),
           half,
           team,
@@ -940,12 +1336,14 @@ export default function FpaLivePage() {
   const buildDualPitchPayload = () => {
     if (inputMode !== 'dual') return undefined;
     return {
+      actor_team: team,
+      primary_row_index: primaryRowIndex,
       input_tier: beforeDots.length + afterDots.length >= 6 ? 'recommended' : 'minimal',
       before: {
-        dots: beforeDots.map(toPayloadDot),
+        dots: beforeDots.map((dot) => toPayloadDot(dot, team)),
       },
       after: {
-        dots: afterDots.map(toPayloadDot),
+        dots: afterDots.map((dot) => toPayloadDot(dot, team)),
       },
     };
   };
@@ -963,12 +1361,14 @@ export default function FpaLivePage() {
   };
 
   const buildEditDualPitchPayload = () => ({
+    actor_team: editTeam,
+    primary_row_index: editPrimary,
     input_tier: editBeforeDots.length + editAfterDots.length >= 6 ? 'recommended' : 'minimal',
     before: {
-      dots: editBeforeDots.map(toPayloadDot),
+      dots: editBeforeDots.map((dot) => toPayloadDot(dot, editTeam)),
     },
     after: {
-      dots: editAfterDots.map(toPayloadDot),
+      dots: editAfterDots.map((dot) => toPayloadDot(dot, editTeam)),
     },
   });
 
@@ -991,7 +1391,7 @@ export default function FpaLivePage() {
         method: 'POST',
         body: JSON.stringify({
           stat_input: code,
-          dots: [toPayloadDot(start), toPayloadDot(end)],
+          dots: [toPayloadDot(start, editTeam), toPayloadDot(end, editTeam)],
           dual_pitch: buildEditDualPitchPayload(),
           half: editHalf,
           team: editTeam,
@@ -1025,6 +1425,10 @@ export default function FpaLivePage() {
       setStatus('진행 중인 xGOT 입력을 먼저 완료하세요');
       return;
     }
+    if (statInputIsNumberOnly(editStatInput)) {
+      assignNumberToEditSelectedDot(editStatInput.trim());
+      return;
+    }
     // 패스/크로스(받는번호 O) = 시작 점 선택 후 도착점 클릭까지 채점 지연 (라이브와 동일)
     if (statInputHasReceiver(editStatInput)) {
       const sel = editSelectedDot;
@@ -1055,7 +1459,7 @@ export default function FpaLivePage() {
         method: 'POST',
         body: JSON.stringify({
           stat_input: editStatInput,
-          dots: buildEditSubmitDots().map(toPayloadDot),
+          dots: buildEditSubmitDots().map((dot) => toPayloadDot(dot, editTeam)),
           dual_pitch: buildEditDualPitchPayload(),
           half: editHalf,
           team: editTeam,
@@ -1135,7 +1539,7 @@ export default function FpaLivePage() {
       // 그 점에서 출발하는 패스 화살표 시작점도 따라 이동
       if (existing.id) {
         (isEdit ? setEditPassArrows : setPassArrows)((prev) => prev.map((arrow) =>
-          arrow.side === dragging.side && arrow.startId === existing.id
+          arrow.startId === existing.id && (arrow.side === dragging.side || dragging.side === 'before')
             ? { ...arrow, x1: coords.screen_x, y1: coords.screen_y }
             : arrow));
       }
@@ -1163,6 +1567,10 @@ export default function FpaLivePage() {
     if (!statInput.trim()) return;
     if (pendingXgot) {
       setStatus('진행 중인 xGOT 입력을 먼저 완료하세요');
+      return;
+    }
+    if (inputMode === 'dual' && statInputIsNumberOnly(statInput)) {
+      assignNumberToLiveSelectedDot(statInput.trim());
       return;
     }
     // 패스/크로스(받는번호 O) = 2점(시작·도착). 점 1개만 찍고 코드 입력 → 채점은 도착점 클릭 시 (xFP/fpa)
@@ -1196,7 +1604,7 @@ export default function FpaLivePage() {
         method: 'POST',
         body: JSON.stringify({
           stat_input: statInput,
-          dots: submitDots.map(toPayloadDot),
+          dots: submitDots.map((dot) => toPayloadDot(dot, team)),
           dual_pitch: buildDualPitchPayload(),
           half,
           team,
@@ -1327,9 +1735,39 @@ export default function FpaLivePage() {
         teamid_h: string;
         teamid_a: string;
       };
-      setLogs(data.logs || []);
-      setRows(data.rows || []);
-      setSelectedRowIndex((data.rows || []).length ? 0 : null);
+      const importedLogs = data.logs || [];
+      const importedRows = data.rows || [];
+      const persistedScenes = scenesFromPersistedRows(importedRows, importedLogs, team);
+      const dualScene = sceneFromDualLogs(importedRows, importedLogs, team);
+      if (persistedScenes.length) {
+        setInputMode('dual');
+        setSavedScenes(persistedScenes);
+        setSelectedSceneIndex(0);
+        setLogs([]);
+        setRows([]);
+        setBeforeDots([]);
+        setAfterDots([]);
+        setPassArrows([]);
+        setPrimaryRowIndex(null);
+        closeSceneEditor();
+      } else if (dualScene) {
+        setInputMode('dual');
+        setSavedScenes([dualScene]);
+        setSelectedSceneIndex(0);
+        setLogs([]);
+        setRows([]);
+        setBeforeDots([]);
+        setAfterDots([]);
+        setPassArrows([]);
+        setPrimaryRowIndex(null);
+        closeSceneEditor();
+      } else {
+        setLogs(importedLogs);
+        setRows(importedRows);
+        setSelectedRowIndex(importedRows.length ? 0 : null);
+        setSavedScenes([]);
+        closeSceneEditor();
+      }
       if (data.match_id) setMatchId(data.match_id);
       if (data.teamid_h) setTeamIdH(data.teamid_h);
       if (data.teamid_a) setTeamIdA(data.teamid_a);
@@ -1371,13 +1809,33 @@ export default function FpaLivePage() {
         teamid_h: string;
         teamid_a: string;
       }>(`/fpa/matches/${match.id}/logs`);
-      setLogs(saved.logs || []);
-      setRows(saved.rows || []);
-      setSelectedRowIndex((saved.rows || []).length ? 0 : null);
-      // 불러온 경기 로그는 현재 버퍼로 (장면 구조 없음). scene/수정용 피치 상태 초기화.
-      setSavedScenes([]);
+      const savedLogs = saved.logs || [];
+      const savedRows = saved.rows || [];
+      const persistedScenes = scenesFromPersistedRows(savedRows, savedLogs, team);
+      const dualScene = sceneFromDualLogs(savedRows, savedLogs, team);
+      if (persistedScenes.length) {
+        setInputMode('dual');
+        setSavedScenes(persistedScenes);
+        setSelectedSceneIndex(0);
+        setLogs([]);
+        setRows([]);
+        setSelectedRowIndex(null);
+      } else if (dualScene) {
+        setInputMode('dual');
+        setSavedScenes([dualScene]);
+        setSelectedSceneIndex(0);
+        setLogs([]);
+        setRows([]);
+        setSelectedRowIndex(null);
+      } else {
+        setLogs(savedLogs);
+        setRows(savedRows);
+        setSelectedRowIndex(savedRows.length ? 0 : null);
+        // 불러온 경기 로그는 현재 버퍼로 (장면 구조 없음). scene/수정용 피치 상태 초기화.
+        setSavedScenes([]);
+        setSelectedSceneIndex(null);
+      }
       closeSceneEditor();
-      setSelectedSceneIndex(null);
       setPrimaryRowIndex(null);
       setPendingPass(null);
       setPassArrows([]);
@@ -1397,27 +1855,37 @@ export default function FpaLivePage() {
       setStatus('저장할 로그가 없습니다');
       return;
     }
-    if (!matchId || matchId === 'ID') {
-      setStatus('FLA 경기 불러오기 후 저장할 수 있습니다');
+    const rawMatchId = matchId.trim();
+    const matchIdForSave = rawMatchId && rawMatchId !== 'ID' ? rawMatchId : generateMatchId();
+    const generatedMatchId = matchIdForSave !== rawMatchId;
+    const nextMatchIdError = validateMatchIdForSave(matchIdForSave);
+    setMatchIdError(nextMatchIdError);
+    if (nextMatchIdError) {
+      setStatus(nextMatchIdError);
       return;
     }
+    const homeTeamForSave = teamIdH.trim() || 'Home';
+    const awayTeamForSave = teamIdA.trim() || 'Away';
     setBusy(true);
-    setStatus('FPA 로그 DB 저장 중');
+    setStatus(generatedMatchId ? '랜덤 Match ID 생성 후 FPA 로그 DB 저장 중' : 'FPA 로그 DB 저장 중');
     try {
-      const response = await apiFetch(`/fpa/matches/${matchId}/logs`, {
+      const response = await apiFetch(`/fpa/matches/${encodeURIComponent(matchIdForSave)}/logs`, {
         method: 'PUT',
         body: JSON.stringify({
           logs: allLogs,
-          rows: allRows,
-          teamid_h: teamIdH,
-          teamid_a: teamIdA,
+          rows: buildRowsForPersistence(),
+          teamid_h: homeTeamForSave,
+          teamid_a: awayTeamForSave,
         }),
       });
       if (!response.ok) {
         setStatus((await response.text()) || 'FPA 로그 저장 실패');
         return;
       }
-      setStatus(`FPA 로그 ${allLogs.length}건 저장 완료`);
+      setMatchId(matchIdForSave);
+      setTeamIdH(homeTeamForSave);
+      setTeamIdA(awayTeamForSave);
+      setStatus(generatedMatchId ? `FPA 로그 ${allLogs.length}건 저장 완료 · Match ID 자동 생성됨` : `FPA 로그 ${allLogs.length}건 저장 완료`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'FPA 로그 저장 실패');
     } finally {
@@ -1778,20 +2246,65 @@ export default function FpaLivePage() {
           </div>
         </div>
         <div className="fpa-scene-editor-grid">
-          {renderEditPitch('before')}
-          {pendingXgot && pendingXgot.canvas === 'edit' ? (
-            <div className="fpa-dual-pitch-card fpa-dual-xgot-card">
-              <div className="fpa-dual-pitch-head">
-                <span>xGOT Input</span>
-                <div>
-                  <span className="fpa-dual-pitch-count">Shot {pendingXgot.isGoal ? 'Goal' : 'On Target'}</span>
+          <div className="fpa-scene-editor-pitches">
+            {renderEditPitch('before')}
+            {pendingXgot && pendingXgot.canvas === 'edit' ? (
+              <div className="fpa-dual-pitch-card fpa-dual-xgot-card">
+                <div className="fpa-dual-pitch-head">
+                  <span>xGOT Input</span>
+                  <div>
+                    <span className="fpa-dual-pitch-count">Shot {pendingXgot.isGoal ? 'Goal' : 'On Target'}</span>
+                  </div>
                 </div>
+                {renderXgotPanel()}
               </div>
-              {renderXgotPanel()}
+            ) : (
+              renderEditPitch('after')
+            )}
+          </div>
+          <aside className="fpa-scene-editor-actions">
+            <div className="fpa-scene-actions">
+              {editRows.length === 0 ? (
+                <span className="muted">이 장면에 남은 액션이 없습니다</span>
+              ) : (
+                editRows.map((row, index) => {
+                  const isPrimary = editPrimary === index;
+                  return (
+                    <div
+                      className="fpa-scene-action-row"
+                      key={`edit-${index}-${row.Player}-${row.Action}`}
+                      onClick={() => setEditSelectedRowIndex(index)}
+                      role="button"
+                      tabIndex={0}
+                      style={{ outline: editSelectedRowIndex === index ? '1px solid var(--accent)' : 'none' }}
+                    >
+                      <span>
+                        <button
+                          className={`fpa-scene-primary ${isPrimary ? 'on' : ''}`}
+                          onClick={(event) => { event.stopPropagation(); setEditPrimary(index); }}
+                          title="primary 액션으로 지정"
+                          type="button"
+                        >★</button>
+                        {row.Team} {row.Player} · {row.Action}{row.Receiver ? ` → ${row.Receiver}` : ''}
+                      </span>
+                      <span className="metrics">
+                        xG {row.xG ?? '-'} · EPV {row.EPV ?? '-'} · PC {row.PC ?? '-'}
+                        {row.xGOT ? ` · xGOT ${row.xGOT}` : ''}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
             </div>
-          ) : (
-            renderEditPitch('after')
-          )}
+            <div className="fpa-scene-footer">
+              <button
+                className="fpa-scene-del-btn"
+                disabled={editSelectedRowIndex == null}
+                onClick={() => { if (editSelectedRowIndex != null) removeEditLogAt(editSelectedRowIndex); }}
+                type="button"
+              >선택 액션 삭제</button>
+            </div>
+          </aside>
         </div>
         <div className="fpa-dual-entry-bar">
           <div className="fpa-live-control-group">
@@ -1832,47 +2345,6 @@ export default function FpaLivePage() {
             </div>
           </div>
         </div>
-        <div className="fpa-scene-actions">
-          {editRows.length === 0 ? (
-            <span className="muted">이 장면에 남은 액션이 없습니다</span>
-          ) : (
-            editRows.map((row, index) => {
-              const isPrimary = editPrimary === index;
-              return (
-                <div
-                  className="fpa-scene-action-row"
-                  key={`edit-${index}-${row.Player}-${row.Action}`}
-                  onClick={() => setEditSelectedRowIndex(index)}
-                  role="button"
-                  tabIndex={0}
-                  style={{ outline: editSelectedRowIndex === index ? '1px solid var(--accent)' : 'none' }}
-                >
-                  <span>
-                    <button
-                      className={`fpa-scene-primary ${isPrimary ? 'on' : ''}`}
-                      onClick={(event) => { event.stopPropagation(); setEditPrimary(index); }}
-                      title="primary 액션으로 지정"
-                      type="button"
-                    >★</button>
-                    {row.Team} {row.Player} · {row.Action}{row.Receiver ? ` → ${row.Receiver}` : ''}
-                  </span>
-                  <span className="metrics">
-                    xG {row.xG ?? '-'} · EPV {row.EPV ?? '-'} · PC {row.PC ?? '-'}
-                    {row.xGOT ? ` · xGOT ${row.xGOT}` : ''}
-                  </span>
-                </div>
-              );
-            })
-          )}
-        </div>
-        <div className="fpa-scene-footer">
-          <button
-            className="fpa-scene-del-btn"
-            disabled={editSelectedRowIndex == null}
-            onClick={() => { if (editSelectedRowIndex != null) removeEditLogAt(editSelectedRowIndex); }}
-            type="button"
-          >선택 액션 삭제</button>
-        </div>
       </section>
     );
   };
@@ -1897,12 +2369,12 @@ export default function FpaLivePage() {
         <span>{row.Receiver || '-'}</span>
         <span>{row.Coord}</span>
         <span>{extractReceiveCoord(logStr) || '-'}</span>
-        <span>{row.Tags || '-'}</span>
+        <span title={row.Tags || '-'}>{row.Tags || '-'}</span>
         <span>{displayMetric(row, logStr, 'xG')}</span>
         <span>{displayMetric(row, logStr, 'xGOT')}</span>
         <span>{displayMetric(row, logStr, 'EPV')}</span>
         <span>{displayMetric(row, logStr, 'PC')}</span>
-        <span>{extractDualStateSummary(logStr) || '-'}</span>
+        <span title={extractDualStateSummary(logStr) || '-'}>{extractDualStateSummary(logStr) || '-'}</span>
       </div>
     );
   };
@@ -1928,7 +2400,7 @@ export default function FpaLivePage() {
           <button className="primary" disabled={!allLogs.length || busy} onClick={exportWorkbook} type="button">
             분석 및 내보내기
           </button>
-          <button className="primary" disabled={!allLogs.length || busy || !matchId || matchId === 'ID'} onClick={saveLogsToMatch} type="button">
+          <button className="primary" disabled={!allLogs.length || busy} onClick={saveLogsToMatch} type="button">
             저장
           </button>
         </div>
@@ -1953,8 +2425,10 @@ export default function FpaLivePage() {
         </div>
         <div className="fpa-log-body" ref={logBodyRef}>
           {inputMode === 'dual'
-            // dual: 저장된 장면을 "장면 단위" 그룹으로 — 클릭 선택 후 "불러오기"로 수정
-            ? savedScenes.map((scene, sceneIdx) => (
+            // dual: 저장된 장면 + 현재 작업 중 장면을 함께 표시한다.
+            ? (
+              <>
+                {savedScenes.map((scene, sceneIdx) => (
                 <div
                   className={`fpa-log-scene ${selectedSceneIndex === sceneIdx ? 'selected' : ''} ${editingSceneIndex === sceneIdx ? 'editing' : ''}`}
                   key={`scene-${sceneIdx}`}
@@ -1965,16 +2439,34 @@ export default function FpaLivePage() {
                   <div className="fpa-log-scene-divider">장면 {sceneIdx + 1}{editingSceneIndex === sceneIdx ? ' (편집 중)' : ''}</div>
                   {scene.rows.map((row, j) => renderLogRow(row, scene.logs[j], `s${sceneIdx}-${j}`, false, -1))}
                 </div>
-              ))
+                ))}
+                {rows.length ? (
+                  <div className="fpa-log-scene current" key="current-scene">
+                    <div className="fpa-log-scene-divider">현재 장면 (미저장)</div>
+                    {rows.map((row, index) => renderLogRow(row, logs[index], `current-${index}`, false, -1))}
+                  </div>
+                ) : null}
+              </>
+            )
             // single: 원본대로 액션 단위 로그
             : rows.map((row, index) => renderLogRow(row, logs[index], `r-${index}`, true, index))}
         </div>
       </div>
-      <div className="fpa-log-actions">
+      <div className={`fpa-log-actions ${inputMode === 'dual' ? 'fpa-log-actions-dual' : ''}`}>
         {inputMode === 'dual' ? (
-          <button disabled={selectedSceneIndex == null} onClick={loadSelectedScene} type="button">
-            선택 장면 수정 (아래 수정용 피치)
-          </button>
+          <>
+            <button disabled={selectedSceneIndex == null} onClick={loadSelectedScene} type="button">
+              선택 장면 수정 (아래 수정용 피치)
+            </button>
+            <button
+              className="fpa-scene-del-btn"
+              disabled={selectedSceneIndex == null}
+              onClick={deleteSelectedScene}
+              type="button"
+            >
+              선택 장면 삭제
+            </button>
+          </>
         ) : (
           <>
             <button disabled={selectedRowIndex == null} onClick={() => moveSelectedLog(-1)} type="button">
@@ -2289,7 +2781,30 @@ export default function FpaLivePage() {
           </label>
           <label className="fpa-live-meta-field">
             <span>Match ID</span>
-            <input value={matchId} onChange={(event) => setMatchId(event.target.value)} placeholder="ID" />
+            <div className="fpa-match-id-row">
+              <input
+                className={matchIdError ? 'invalid' : ''}
+                value={matchId}
+                onBlur={() => {
+                  if (matchIdError) setMatchIdError(validateMatchIdForSave(matchId));
+                }}
+                onChange={(event) => {
+                  setMatchId(event.target.value);
+                  setMatchIdError('');
+                }}
+                placeholder="비워두면 자동 생성"
+              />
+              <button
+                onClick={() => {
+                  setMatchId(generateMatchId());
+                  setMatchIdError('');
+                }}
+                type="button"
+              >
+                랜덤
+              </button>
+            </div>
+            {matchIdError ? <small className="fpa-field-error">{matchIdError}</small> : null}
           </label>
           {inputMode === 'single' ? renderHalfControl() : null}
           <div className="fpa-live-meta-field">

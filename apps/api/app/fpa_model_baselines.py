@@ -415,10 +415,12 @@ def _team_control_at(x: float, y: float, allies: list[tuple[float, float]], oppo
             total += math.exp(-intercept_time / tau)
         return total
 
-    ally_control = control(allies)
-    opponent_control = control(opponents)
-    denominator = ally_control + opponent_control
-    return round(ally_control / denominator if denominator else 0.5, 4)
+    home_control = control(allies)
+    away_control = control(opponents)
+    denominator = home_control + away_control
+    home_probability = home_control / denominator if denominator else 0.5
+    # Scale to [-1, 1]: 1 = home team 100%, -1 = away team 100%, 0 = balanced.
+    return round((home_probability * 2) - 1, 4)
 
 
 def _build_pitch_control_baseline() -> dict[str, Any]:
@@ -429,18 +431,20 @@ def _build_pitch_control_baseline() -> dict[str, Any]:
         pc = _team_control_at(x, y, allies, opponents)
         points.append({"x": x, "y": y, "value": pc, "pitch_control": pc})
     return {
-        "schema": "fineplay.model_room.baseline.v0.1",
+        "schema": "fineplay.model_room.baseline.v0.2",
         "slot": "pitch_control",
         "model_kind": "code_formula_proxy",
-        "model_name": "FinePlay freeze-frame pitch control proxy",
+        "model_name": "FinePlay equal-speed pitch control dominance proxy",
         "formula": {
-            "time_to_intercept": "T_i(z) = reaction_time + distance(player_i, z) / max_speed + orientation_penalty",
+            "time_to_intercept": "T_i(z) = reaction_time + distance(player_i, z) / shared_player_speed",
             "player_control": "control_i(z) = exp(-T_i(z) / tau)",
-            "team_control": "sum(control_i for team) / sum(control_j for all players)",
+            "home_probability": "P_home(z) = sum(home control_i) / sum(all control_i)",
+            "pitch_control": "PC(z) = 2 * P_home(z) - 1",
+            "scale": "1 = home team 100%, 0 = balanced, -1 = away team 100%",
             "delta": "PC_after(target_zone_or_ball_zone) - PC_before(source_zone_or_ball_zone)",
         },
-        "parameters": {"reaction_time": 0.7, "max_speed": 5.5, "tau": 1.15, "orientation_penalty": 0.0},
-        "sample_state": {"allies": allies, "opponents": opponents},
+        "parameters": {"reaction_time": 0.7, "shared_player_speed_mps": 5.5, "tau": 1.15},
+        "sample_state": {"home": allies, "away": opponents},
         "source_references": ["/Users/andy/Project/xFP/reference/fp_xg_epv_pitch_control_v01.md"],
         "points": points,
     }

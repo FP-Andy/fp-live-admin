@@ -146,6 +146,8 @@ def _normalize_canonical_event(action: Any, tags: Any) -> tuple[str, str, str]:
         return "Cross", subtype, "Success" if "Success" in tag_values else "Fail"
     if action_text == "Dribble":
         return "Dribble", "Carry" if "Carry" in tag_values else "Dribble", "Success" if "Success" in tag_values else "Fail"
+    if action_text == "Penetration":
+        return "Penetration", "Off-ball Run", "Success" if "Success" in tag_values else "Unknown"
     if action_text in ["Tackle", "Intercept", "Acquisition", "Clear", "Cutout", "Block"]:
         return "Defense", action_text, "Success" if "Success" in tag_values else "Fail"
     return action_text or "Unknown", action_text or "Unknown", "Success" if "Success" in tag_values else "Fail" if "Fail" in tag_values else "Unknown"
@@ -237,7 +239,12 @@ def _format_dual_points(points: list[dict[str, Any]]) -> str:
     for point in points:
         try:
             point_team = str(point.get("team") or "ally")
-            formatted.append(f"{point_team}:{round(float(point['meter_x']), 2)},{round(float(point['meter_y']), 2)}")
+            team_side = str(point.get("team_side") or "").strip()
+            role = str(point.get("role") or "").strip()
+            number = str(point.get("number") or "").strip()
+            label_parts = [part for part in [team_side or point_team, number, role] if part]
+            label = "/".join(label_parts)
+            formatted.append(f"{label}:{round(float(point['meter_x']), 2)},{round(float(point['meter_y']), 2)}")
         except (KeyError, TypeError, ValueError):
             continue
     return ";".join(formatted)
@@ -261,26 +268,59 @@ def _dual_team_counts(points: list[dict[str, Any]]) -> tuple[int, int]:
     return ally_count, opponent_count
 
 
+def _dual_side_counts(points: list[dict[str, Any]]) -> tuple[int, int]:
+    home_count = 0
+    away_count = 0
+    for point in points:
+        team_side = str(point.get("team_side") or "")
+        if team_side == "home":
+            home_count += 1
+        elif team_side == "away":
+            away_count += 1
+    return home_count, away_count
+
+
+def _dual_role_counts(points: list[dict[str, Any]]) -> tuple[int, int]:
+    gk_count = 0
+    numbered_count = 0
+    for point in points:
+        if str(point.get("role") or "") == "gk":
+            gk_count += 1
+        if str(point.get("number") or "").strip():
+            numbered_count += 1
+    return gk_count, numbered_count
+
+
 def _compact_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> dict[str, Any] | None:
     if not dual_pitch:
         return None
 
     def points_for(key: str) -> list[dict[str, Any]]:
         state = dual_pitch.get(key) or {}
-        raw_points = state.get("dots") or []
+        raw_points = state if isinstance(state, list) else state.get("dots") or []
         points: list[dict[str, Any]] = []
         for point in raw_points:
             try:
                 point_team = str(point.get("team") or "ally")
                 if point_team not in {"ally", "opponent"}:
                     point_team = "ally"
-                points.append(
-                    {
-                        "meter_x": round(float(point["meter_x"]), 2),
-                        "meter_y": round(float(point["meter_y"]), 2),
-                        "team": point_team,
-                    }
-                )
+                compact_point: dict[str, Any] = {
+                    "meter_x": round(float(point["meter_x"]), 2),
+                    "meter_y": round(float(point["meter_y"]), 2),
+                    "team": point_team,
+                }
+                for source_key, target_key in [
+                    ("team_side", "team_side"),
+                    ("teamSide", "team_side"),
+                    ("role", "role"),
+                    ("layer", "layer"),
+                    ("number", "number"),
+                    ("id", "id"),
+                ]:
+                    value = str(point.get(source_key) or "").strip()
+                    if value:
+                        compact_point[target_key] = value
+                points.append(compact_point)
             except (KeyError, TypeError, ValueError):
                 continue
         return points
@@ -290,8 +330,10 @@ def _compact_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> dict[str, An
     if not before_points and not after_points:
         return None
     return {
-        "schema": "fpa_dual_pitch_state.v0.1",
+        "schema": "fpa_dual_pitch_state.v0.2",
         "input_tier": str(dual_pitch.get("input_tier") or "minimal"),
+        "actor_team": str(dual_pitch.get("actor_team") or ""),
+        "primary_row_index": dual_pitch.get("primary_row_index"),
         "before": before_points,
         "after": after_points,
     }
@@ -362,6 +404,126 @@ def _parse_path_points(value: Any) -> list[tuple[float, float]]:
     return points
 
 
+def _metric_text_value(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def _epv_state_value(x: Any, y: Any) -> float | None:
+    x_value = _finite_float(x)
+    y_value = _finite_float(y)
+    if x_value is None or y_value is None:
+        return None
+    progress = max(0.0, min(1.0, x_value / FIELD_W))
+    centrality = max(0.0, 1.0 - abs(y_value - FIELD_H / 2) / (FIELD_H / 2))
+    box_boost = 0.012 if x_value >= 88.5 and 13.84 < y_value < 54.16 else 0.0
+    value = 0.006 + 0.011 * progress + 0.038 * (progress**2.35) * (0.45 + 0.55 * centrality) + box_boost
+    return round(min(0.085, value), 4)
+
+
+def _epv_delta(start_x: Any, start_y: Any, end_x: Any, end_y: Any) -> float | None:
+    before = _epv_state_value(start_x, start_y)
+    after = _epv_state_value(end_x, end_y)
+    if before is None or after is None:
+        return None
+    return round(after - before, 4)
+
+
+def _point_team_side(point: dict[str, Any], actor_team: str | None = None) -> str:
+    side = str(point.get("team_side") or point.get("teamSide") or "").lower()
+    if side in {"home", "away"}:
+        return side
+    relation = str(point.get("team") or "").lower()
+    actor = str(actor_team or "").lower()
+    if actor in {"home", "away"} and relation == "ally":
+        return actor
+    if actor == "home" and relation == "opponent":
+        return "away"
+    if actor == "away" and relation == "opponent":
+        return "home"
+    return ""
+
+
+def _dual_points_by_side(points: Any, actor_team: str | None = None) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    home: list[tuple[float, float]] = []
+    away: list[tuple[float, float]] = []
+    if not isinstance(points, list):
+        return home, away
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        x_value = _finite_float(point.get("meter_x", point.get("x")))
+        y_value = _finite_float(point.get("meter_y", point.get("y")))
+        if x_value is None or y_value is None:
+            continue
+        side = _point_team_side(point, actor_team)
+        if side == "home":
+            home.append((x_value, y_value))
+        elif side == "away":
+            away.append((x_value, y_value))
+    return home, away
+
+
+def _pitch_control_at(x: Any, y: Any, home_points: list[tuple[float, float]], away_points: list[tuple[float, float]]) -> float | None:
+    x_value = _finite_float(x)
+    y_value = _finite_float(y)
+    if x_value is None or y_value is None or not home_points or not away_points:
+        return None
+
+    reaction_time = 0.7
+    shared_player_speed = 5.5
+    tau = 1.15
+
+    def team_control(points: list[tuple[float, float]]) -> float:
+        total = 0.0
+        for point_x, point_y in points:
+            distance = float(np.sqrt((x_value - point_x) ** 2 + (y_value - point_y) ** 2))
+            arrival_time = reaction_time + distance / shared_player_speed
+            total += float(np.exp(-arrival_time / tau))
+        return total
+
+    home_control = team_control(home_points)
+    away_control = team_control(away_points)
+    denominator = home_control + away_control
+    if denominator <= 0:
+        return None
+    home_probability = home_control / denominator
+    return round((home_probability * 2) - 1, 4)
+
+
+def _pitch_control_delta(
+    dual_state: dict[str, Any] | None,
+    start_point: tuple[float, float],
+    end_point: tuple[float, float],
+) -> float | None:
+    if not dual_state:
+        return None
+    actor_team = str(dual_state.get("actor_team") or "").lower()
+    before_home, before_away = _dual_points_by_side(dual_state.get("before"), actor_team)
+    after_home, after_away = _dual_points_by_side(dual_state.get("after"), actor_team)
+    if not after_home and not after_away:
+        after_home, after_away = before_home, before_away
+    before_pc = _pitch_control_at(start_point[0], start_point[1], before_home, before_away)
+    after_pc = _pitch_control_at(end_point[0], end_point[1], after_home, after_away)
+    if before_pc is None or after_pc is None:
+        return None
+    return round(after_pc - before_pc, 4)
+
+
 def _path_distance(points: list[tuple[float, float]]) -> float:
     if len(points) < 2:
         return 0.0
@@ -417,10 +579,13 @@ def analyze_pass_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_xg_to_data(df: pd.DataFrame) -> pd.DataFrame:
+    if "xG" not in df.columns:
+        df["xG"] = np.nan
+    else:
+        df["xG"] = pd.to_numeric(df["xG"], errors="coerce")
     shot_mask = df.apply(_is_shot_row, axis=1)
     df_shots = df[shot_mask].copy()
     if df_shots.empty:
-        df["xG"] = np.nan
         return df
 
     df_shots["Tags"] = df_shots["Tags"].astype(str).fillna("")
@@ -438,7 +603,10 @@ def add_xg_to_data(df: pd.DataFrame) -> pd.DataFrame:
         return float(meta["xg"])
 
     df_shots["xG"] = df_shots.apply(estimate_row_xg, axis=1)
-    return pd.merge(df, df_shots[["No", "xG"]], on="No", how="left")
+    computed_xg = df_shots.set_index("No")["xG"]
+    missing_xg = df["xG"].isna()
+    df.loc[missing_xg, "xG"] = df.loc[missing_xg, "No"].map(computed_xg)
+    return df
 
 
 def auto_tag_key_pass_and_assist(df: pd.DataFrame) -> pd.DataFrame:
@@ -1093,11 +1261,16 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
             log_dict["Player"], log_dict["Action"], log_dict["Receiver"] = action_match.groups()
             log_dict["Receiver"] = log_dict["Receiver"] if log_dict["Receiver"] else ""
         log_dict["EndX"], log_dict["EndY"], log_dict["PathPoints"], log_dict["PathPointCount"], log_dict["PathDistance"], log_dict["Tags"] = "", "", "", "", "", ""
-        log_dict["DualState"], log_dict["DualInputTier"], log_dict["BeforeStatePoints"], log_dict["AfterStatePoints"] = "", "", "", ""
+        log_dict["DualState"], log_dict["DualInputTier"], log_dict["DualActorTeam"], log_dict["DualPrimaryRowIndex"] = "", "", "", ""
+        log_dict["BeforeStatePoints"], log_dict["AfterStatePoints"] = "", ""
         log_dict["BeforeStatePointCount"], log_dict["AfterStatePointCount"] = "", ""
         log_dict["BeforeAllyPointCount"], log_dict["BeforeOpponentPointCount"] = "", ""
         log_dict["AfterAllyPointCount"], log_dict["AfterOpponentPointCount"] = "", ""
-        log_dict["xGOT"], log_dict["EPV"], log_dict["PC"] = "", "", ""
+        log_dict["BeforeHomePointCount"], log_dict["BeforeAwayPointCount"] = "", ""
+        log_dict["AfterHomePointCount"], log_dict["AfterAwayPointCount"] = "", ""
+        log_dict["BeforeGkPointCount"], log_dict["AfterGkPointCount"] = "", ""
+        log_dict["BeforeNumberedPointCount"], log_dict["AfterNumberedPointCount"] = "", ""
+        log_dict["xG"], log_dict["xGOT"], log_dict["EPV"], log_dict["PC"] = "", "", "", ""
         for part in parts[6:]:
             if part.startswith("Path("):
                 path_text = part.removeprefix("Path(").removesuffix(")")
@@ -1115,18 +1288,33 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
                     before_points = dual_state.get("before") if isinstance(dual_state.get("before"), list) else []
                     after_points = dual_state.get("after") if isinstance(dual_state.get("after"), list) else []
                     log_dict["DualInputTier"] = str(dual_state.get("input_tier") or "")
+                    log_dict["DualActorTeam"] = str(dual_state.get("actor_team") or "")
+                    log_dict["DualPrimaryRowIndex"] = dual_state.get("primary_row_index") if dual_state.get("primary_row_index") is not None else ""
                     log_dict["BeforeStatePoints"] = _format_dual_points(before_points)
                     log_dict["AfterStatePoints"] = _format_dual_points(after_points)
                     log_dict["BeforeStatePointCount"] = len(before_points)
                     log_dict["AfterStatePointCount"] = len(after_points)
                     before_ally_count, before_opponent_count = _dual_team_counts(before_points)
                     after_ally_count, after_opponent_count = _dual_team_counts(after_points)
+                    before_home_count, before_away_count = _dual_side_counts(before_points)
+                    after_home_count, after_away_count = _dual_side_counts(after_points)
+                    before_gk_count, before_numbered_count = _dual_role_counts(before_points)
+                    after_gk_count, after_numbered_count = _dual_role_counts(after_points)
                     log_dict["BeforeAllyPointCount"] = before_ally_count
                     log_dict["BeforeOpponentPointCount"] = before_opponent_count
                     log_dict["AfterAllyPointCount"] = after_ally_count
                     log_dict["AfterOpponentPointCount"] = after_opponent_count
+                    log_dict["BeforeHomePointCount"] = before_home_count
+                    log_dict["BeforeAwayPointCount"] = before_away_count
+                    log_dict["AfterHomePointCount"] = after_home_count
+                    log_dict["AfterAwayPointCount"] = after_away_count
+                    log_dict["BeforeGkPointCount"] = before_gk_count
+                    log_dict["AfterGkPointCount"] = after_gk_count
+                    log_dict["BeforeNumberedPointCount"] = before_numbered_count
+                    log_dict["AfterNumberedPointCount"] = after_numbered_count
             elif part.startswith("Metrics: "):
                 metrics = _parse_metrics(part)
+                log_dict["xG"] = metrics.get("xG", "")
                 log_dict["xGOT"] = metrics.get("xGOT", "")
                 log_dict["EPV"] = metrics.get("EPV", "")
                 log_dict["PC"] = metrics.get("PC", "")
@@ -1163,6 +1351,8 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "Tags",
         "DualState",
         "DualInputTier",
+        "DualActorTeam",
+        "DualPrimaryRowIndex",
         "BeforeStatePoints",
         "AfterStatePoints",
         "BeforeStatePointCount",
@@ -1171,6 +1361,15 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "BeforeOpponentPointCount",
         "AfterAllyPointCount",
         "AfterOpponentPointCount",
+        "BeforeHomePointCount",
+        "BeforeAwayPointCount",
+        "AfterHomePointCount",
+        "AfterAwayPointCount",
+        "BeforeGkPointCount",
+        "AfterGkPointCount",
+        "BeforeNumberedPointCount",
+        "AfterNumberedPointCount",
+        "xG",
         "xGOT",
         "EPV",
         "PC",
@@ -1180,7 +1379,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
 
 def generate_log_entry(
     stat_input: str,
-    dots: list[dict[str, float]],
+    dots: list[dict[str, Any]],
     half: str,
     team: str,
     direction: str,
@@ -1233,6 +1432,8 @@ def generate_log_entry(
         tags_list.extend(["Off Target", "Fail"])
     elif action_code_raw in ["gp", "w", "qw", "v", "vv", "sv", "q", "qq"]:
         tags_list.append("Success")
+    elif action_code_raw == "pn":
+        tags_list.extend(["Off-ball Run", "Success"])
     elif action_code_raw not in ["touch", "t", "m", "q", "p", "l", "qq", "bl", "o", "st", "pn"]:
         if len(action_code_raw) > 1 and action_code_raw[0] == action_code_raw[1]:
             tags_list.append("Success")
@@ -1242,6 +1443,9 @@ def generate_log_entry(
     is_dribble = action_name == "Dribble"
     path_points: list[tuple[float, float]] = []
     path_distance = 0.0
+    end_x: float | None = None
+    end_y: float | None = None
+    end_x_adj: float | None = None
     if is_dribble:
         if len(dots) < 2:
             raise ValueError("드리블은 좌표 2개 이상이 필요합니다.")
@@ -1249,6 +1453,7 @@ def generate_log_entry(
         start_x, start_y = path_points[0]
         end_x, end_y = path_points[-1]
         start_x_adj = FIELD_W - start_x if direction == "left" else start_x
+        end_x_adj = FIELD_W - end_x if direction == "left" else end_x
         path_distance = _path_distance(path_points)
         action_str = f"{player_from} {action_name}"
         log_text = (
@@ -1310,11 +1515,28 @@ def generate_log_entry(
         except (KeyError, TypeError, ValueError):
             metrics["xG"] = ""
 
+    compact_dual_state = _compact_dual_pitch_state(dual_pitch)
+    metric_end_x = end_x if end_x is not None else start_x
+    metric_end_y = end_y if end_y is not None else start_y
+    metric_end_x_adj = end_x_adj if end_x_adj is not None else start_x_adj
+    epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
+    if epv_value is not None:
+        metrics["EPV"] = epv_value
+    pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
+    if pc_value is not None:
+        metrics["PC"] = pc_value
+
     metrics_text = _format_metrics(metrics)
     if metrics_text:
-        log_text += f" | Metrics: {metrics_text}"
+        parts = log_text.split(" | ")
+        metric_index = next((index for index, part in enumerate(parts) if part.startswith("Metrics: ")), -1)
+        if metric_index >= 0:
+            parts[metric_index] = f"Metrics: {metrics_text}"
+            log_text = " | ".join(parts)
+        else:
+            log_text += f" | Metrics: {metrics_text}"
 
-    dual_state_text = _encode_dual_pitch_state(dual_pitch)
+    dual_state_text = json.dumps(compact_dual_state, ensure_ascii=False, separators=(",", ":")) if compact_dual_state else ""
     if dual_state_text:
         log_text += f" | DualState: {dual_state_text}"
 
@@ -1332,10 +1554,10 @@ def generate_log_entry(
             "PathPointCount": str(len(path_points)) if path_points else "",
             "PathDistance": str(round(path_distance, 2)) if path_points else "",
             "DualState": dual_state_text,
-            "xG": _format_metrics({"xG": metrics.get("xG")}).replace("xG=", "") if metrics.get("xG") not in (None, "") else "",
+            "xG": _metric_text_value(metrics.get("xG")),
             "xGOT": "",
-            "EPV": "",
-            "PC": "",
+            "EPV": _metric_text_value(metrics.get("EPV")),
+            "PC": _metric_text_value(metrics.get("PC")),
         },
     }
 
@@ -1384,6 +1606,8 @@ def build_canonical_events_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
         "FootUsage",
         "Phase",
         "DualInputTier",
+        "DualActorTeam",
+        "DualPrimaryRowIndex",
         "BeforeStatePoints",
         "AfterStatePoints",
         "BeforeStatePointCount",
@@ -1392,6 +1616,14 @@ def build_canonical_events_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
         "BeforeOpponentPointCount",
         "AfterAllyPointCount",
         "AfterOpponentPointCount",
+        "BeforeHomePointCount",
+        "BeforeAwayPointCount",
+        "AfterHomePointCount",
+        "AfterAwayPointCount",
+        "BeforeGkPointCount",
+        "AfterGkPointCount",
+        "BeforeNumberedPointCount",
+        "AfterNumberedPointCount",
         "StartX_adj",
         "StartY_adj",
         "EndX_adj",
@@ -1419,13 +1651,23 @@ def build_dual_pitch_states_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
         "EventSubtype",
         "Result",
         "DualInputTier",
+        "DualActorTeam",
+        "DualPrimaryRowIndex",
         "BeforeStatePointCount",
         "BeforeAllyPointCount",
         "BeforeOpponentPointCount",
+        "BeforeHomePointCount",
+        "BeforeAwayPointCount",
+        "BeforeGkPointCount",
+        "BeforeNumberedPointCount",
         "BeforeStatePoints",
         "AfterStatePointCount",
         "AfterAllyPointCount",
         "AfterOpponentPointCount",
+        "AfterHomePointCount",
+        "AfterAwayPointCount",
+        "AfterGkPointCount",
+        "AfterNumberedPointCount",
         "AfterStatePoints",
         "DualState",
     ]
@@ -1443,6 +1685,8 @@ def build_action_definitions_sheet() -> pd.DataFrame:
         {"ActionKey": "Shot/OPP/Direct/Goal", "Event": "Shot", "Condition": "OPP", "Level": "Direct", "Outcome": "Goal", "RequiredEvidence": "shot location and xG"},
         {"ActionKey": "Dribble/*/Direct/Possession", "Event": "Dribble/Carry", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Possession", "RequiredEvidence": "after possession retained"},
         {"ActionKey": "Dribble/*/Direct/Progression", "Event": "Dribble/Carry", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Progression", "RequiredEvidence": "carry delta or EPV delta > 0"},
+        {"ActionKey": "Penetration/OPP/Direct/Progression", "Event": "Penetration", "Condition": "OPP", "Level": "Direct", "Outcome": "Progression", "RequiredEvidence": "off-ball run/reception point increases EPV or creates box/line-breaking receive state"},
+        {"ActionKey": "Penetration/OPP/Indirect/Progression", "Event": "Penetration", "Condition": "OPP", "Level": "Indirect", "Outcome": "Progression", "RequiredEvidence": "run/space occupation linked to teammate progression within the sequence window"},
         {"ActionKey": "ThrowIn/*/Direct/Possession", "Event": "ThrowIn", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "Possession", "RequiredEvidence": "Retained / First Contact Won"},
         {"ActionKey": "ThrowIn/*/Direct/TerritoryGain", "Event": "ThrowIn", "Condition": "OWN/OPP", "Level": "Direct", "Outcome": "TerritoryGain", "RequiredEvidence": "Long Throw + territory gain"},
         {"ActionKey": "ThrowIn/OPP/Indirect/Goal", "Event": "ThrowIn", "Condition": "OPP", "Level": "Indirect", "Outcome": "Goal", "RequiredEvidence": "Box Entry or linked shot/second ball"},
@@ -1458,11 +1702,13 @@ def build_model_config_sheet() -> pd.DataFrame:
         ("action_definition_version", "fpa_xfp_action_rules_v0.2-draft"),
         ("quick_dsl_version", "fpa_quick_dsl_v0.2-draft"),
         ("xg_model_version", "fp_xg_shared_estimator"),
-        ("epv_model_version", "pending_fp_epv"),
-        ("pitch_control_model_version", "pending_pc_proxy"),
+        ("epv_model_version", "fp_epv_state_value_proxy_v0.2"),
+        ("pitch_control_model_version", "equal_speed_freeze_frame_pc_v0.2"),
         ("shot_formula", "1 / (1 + EXP(-(b0 + b1*distance + b2*angle + b3*header + b4*pressure)))"),
         ("epv_formula", "EPV_Delta = After_EPV - Before_EPV"),
-        ("pitch_control_formula", "PitchControl_Delta = After_PC - Before_PC"),
+        ("pitch_control_formula", "PC(z)=2*P_home(z)-1; P_home=sum(exp(-T_home/tau))/sum(exp(-T_all/tau)); T=reaction_time+distance/shared_player_speed"),
+        ("pitch_control_scale", "1=home 100%, 0=balanced, -1=away 100%"),
+        ("pitch_control_default_parameters", "reaction_time=0.7s, shared_player_speed=5.5m/s, tau=1.15"),
         ("action_score_formula", "BaseWeight * LevelMultiplier * OutcomeMultiplier * ReliabilityFactor"),
     ]
     return pd.DataFrame(rows, columns=["Field", "Value"])
@@ -1483,10 +1729,15 @@ def build_epv_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
             "Player",
             "EventType",
             "Result",
+            "StartX",
+            "StartY",
+            "EndX",
+            "EndY",
             "StartX_adj",
             "StartY_adj",
             "EndX_adj",
             "EndY_adj",
+            "EPV",
             "DualInputTier",
             "BeforeStatePoints",
             "AfterStatePoints",
@@ -1496,9 +1747,27 @@ def build_epv_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
             "AfterOpponentPointCount",
         ]
     ).copy()
-    sheet["Before_EPV"] = ""
-    sheet["After_EPV"] = ""
-    sheet["EPV_Delta"] = ""
+    before_values: list[str] = []
+    after_values: list[str] = []
+    delta_values: list[str] = []
+    for _, row in sheet.iterrows():
+        start_x = _finite_float(row.get("StartX_adj"))
+        start_y = _finite_float(row.get("StartY_adj"))
+        end_x = _finite_float(row.get("EndX_adj"))
+        end_y = _finite_float(row.get("EndY_adj"))
+        if end_x is None:
+            end_x = start_x
+        if end_y is None:
+            end_y = start_y
+        before_epv = _epv_state_value(start_x, start_y)
+        after_epv = _epv_state_value(end_x, end_y)
+        delta_epv = round(after_epv - before_epv, 4) if before_epv is not None and after_epv is not None else None
+        before_values.append(_metric_text_value(before_epv))
+        after_values.append(_metric_text_value(after_epv))
+        delta_values.append(_metric_text_value(delta_epv))
+    sheet["Before_EPV"] = before_values
+    sheet["After_EPV"] = after_values
+    sheet["EPV_Delta"] = delta_values
     sheet["Formula"] = "EPV_Delta = After_EPV - Before_EPV"
     return sheet
 
@@ -1510,11 +1779,17 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
             "Player",
             "EventType",
             "Result",
+            "StartX",
+            "StartY",
+            "EndX",
+            "EndY",
             "StartX_adj",
             "StartY_adj",
             "EndX_adj",
             "EndY_adj",
+            "PC",
             "DualInputTier",
+            "DualState",
             "BeforeStatePoints",
             "AfterStatePoints",
             "BeforeAllyPointCount",
@@ -1523,13 +1798,42 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
             "AfterOpponentPointCount",
         ]
     ).copy()
-    sheet["Before_PC"] = ""
-    sheet["After_PC"] = ""
-    sheet["PC_Delta"] = ""
+    before_values: list[str] = []
+    after_values: list[str] = []
+    delta_values: list[str] = []
+    for _, row in sheet.iterrows():
+        state = _decode_dual_pitch_state(row.get("DualState"))
+        start_x = _finite_float(row.get("StartX"))
+        start_y = _finite_float(row.get("StartY"))
+        end_x = _finite_float(row.get("EndX"))
+        end_y = _finite_float(row.get("EndY"))
+        if start_x is None or start_y is None:
+            before_values.append("")
+            after_values.append("")
+            delta_values.append("")
+            continue
+        if end_x is None:
+            end_x = start_x
+        if end_y is None:
+            end_y = start_y
+        actor_team = str(state.get("actor_team") or "").lower() if state else ""
+        before_home, before_away = _dual_points_by_side(state.get("before") if state else None, actor_team)
+        after_home, after_away = _dual_points_by_side(state.get("after") if state else None, actor_team)
+        if not after_home and not after_away:
+            after_home, after_away = before_home, before_away
+        before_pc = _pitch_control_at(start_x, start_y, before_home, before_away)
+        after_pc = _pitch_control_at(end_x, end_y, after_home, after_away)
+        delta_pc = round(after_pc - before_pc, 4) if before_pc is not None and after_pc is not None else None
+        before_values.append(_metric_text_value(before_pc))
+        after_values.append(_metric_text_value(after_pc))
+        delta_values.append(_metric_text_value(delta_pc))
+    sheet["Before_PC"] = before_values
+    sheet["After_PC"] = after_values
+    sheet["PC_Delta"] = delta_values
     has_dual_state = sheet.get("BeforeStatePoints", "").fillna("").astype(str).str.len() > 0
     dual_tier = sheet.get("DualInputTier", "").fillna("").astype(str).replace("", "minimal")
     sheet["InputTier"] = np.where(has_dual_state, "dual_pitch_" + dual_tier, "single_pitch")
-    sheet["Formula"] = "PC_Delta = After_PC - Before_PC; dual pitch player objects required for full model"
+    sheet["Formula"] = "PC(z)=2*P_home(z)-1 from equal-speed home/away player coordinates; PC_Delta = After_PC - Before_PC"
     return sheet
 
 

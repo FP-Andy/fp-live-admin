@@ -4366,6 +4366,36 @@ a:focus-visible {
   text-align: center;
 }
 
+.fpa-match-id-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.fpa-match-id-row button {
+  min-height: 42px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 0 10px;
+  box-shadow: none;
+}
+
+.fpa-live-meta-field input.invalid {
+  border-color: rgba(255, 91, 91, 0.86);
+  box-shadow: 0 0 0 3px rgba(255, 91, 91, 0.14);
+}
+
+.fpa-field-error {
+  color: #ff8b8b;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: center;
+}
+
 .fpa-segmented {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4440,7 +4470,7 @@ a:focus-visible {
 .fpa-dual-input-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: end;
+  align-items: flex-end;
   gap: 14px;
   padding: 10px 12px;
   border-radius: 14px;
@@ -4661,6 +4691,10 @@ a:focus-visible {
   border-color: rgba(255, 170, 51, 0.7);
   background: rgba(255, 170, 51, 0.08);
 }
+.fpa-log-scene.current {
+  border-color: rgba(22, 242, 154, 0.35);
+  background: rgba(22, 242, 154, 0.045);
+}
 
 /* 수정용 피치 — 기록된 로그 아래 장면 편집 패널. 라이브 캔버스와 분리 (편집 중 주황 톤) */
 .fpa-scene-editor {
@@ -4671,12 +4705,38 @@ a:focus-visible {
 }
 .fpa-scene-editor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 8fr) minmax(220px, 2fr);
+  gap: 10px;
+  align-items: stretch;
+}
+.fpa-scene-editor-pitches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   align-items: start;
 }
+.fpa-scene-editor-actions {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  min-height: 0;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.025);
+}
 .fpa-scene-editor .fpa-scene-actions {
   font-size: 12px;
+  margin-top: 0;
+}
+.fpa-scene-editor-actions .fpa-scene-actions {
+  overflow: auto;
+  max-height: min(52vh, 460px);
+  padding-right: 2px;
+}
+.fpa-scene-editor-actions .fpa-scene-footer {
+  margin-top: auto;
+  padding-top: 8px;
 }
 
 /* 시퀀스 로그 scene 구분선 */
@@ -4781,13 +4841,13 @@ a:focus-visible {
 .fpa-log-header,
 .fpa-log-entry {
   display: grid;
-  grid-template-columns: 46px 56px 56px 54px 58px 86px 72px 96px 108px minmax(180px, 1fr) 52px 58px 52px 52px 96px;
-  gap: 8px;
+  grid-template-columns: 42px 52px 48px 44px 54px 76px 64px 86px 92px minmax(96px, 0.8fr) 44px 50px 44px 44px minmax(118px, 1fr);
+  gap: 5px;
   align-items: center;
   padding: 6px 8px;
   font-size: 11px;
   width: 100%;
-  min-width: 1320px;
+  min-width: 1120px;
 }
 
 .fpa-log-header {
@@ -4805,7 +4865,17 @@ a:focus-visible {
 
 .fpa-log-header span,
 .fpa-log-entry span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.fpa-log-header span:nth-child(10),
+.fpa-log-entry span:nth-child(10),
+.fpa-log-header span:nth-child(15),
+.fpa-log-entry span:nth-child(15) {
+  max-width: 100%;
 }
 
 .fpa-log-entry {
@@ -4830,6 +4900,10 @@ a:focus-visible {
   gap: 8px;
 }
 
+.fpa-log-actions-dual {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .fpa-log-actions button {
   min-height: 32px;
   border-radius: 8px;
@@ -4847,6 +4921,12 @@ a:focus-visible {
   background: linear-gradient(135deg, rgba(255, 122, 0, 0.74), rgba(234, 107, 0, 0.72));
   border-color: rgba(255, 152, 47, 0.56);
   color: #fff4ea;
+}
+
+.fpa-log-actions .fpa-scene-del-btn {
+  border-color: rgba(255, 91, 91, 0.5);
+  background: rgba(255, 91, 91, 0.12);
+  color: #ff8b8b;
 }
 
 .fpa-pitch-cream {
@@ -5302,6 +5382,349 @@ a:focus-visible {
   font-size: 12px;
 }
 
+.fpa-replay-page {
+  display: grid;
+  gap: 16px;
+}
+
+.fpa-replay-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.fpa-replay-hero h2,
+.fpa-replay-stage-head h3 {
+  margin: 4px 0;
+}
+
+.fpa-replay-hero p,
+.fpa-replay-stage-head p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.fpa-replay-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.fpa-replay-sidebar,
+.fpa-replay-stage-card {
+  display: grid;
+  gap: 12px;
+}
+
+.fpa-replay-match-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(68vh, 720px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.fpa-replay-match-list button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+}
+
+.fpa-replay-match-list button.active {
+  border-color: rgba(255, 152, 47, 0.58);
+  background: rgba(255, 122, 0, 0.13);
+}
+
+.fpa-replay-match-list span,
+.fpa-replay-match-list small {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fpa-replay-empty-list {
+  padding: 14px 12px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.fpa-replay-stage-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.fpa-replay-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.fpa-replay-controls button,
+.fpa-replay-scene-tabs button {
+  min-height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
+.fpa-replay-scene-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.fpa-replay-scene-tabs button {
+  width: 34px;
+  padding: 0;
+}
+
+.fpa-replay-scene-tabs button.active {
+  border-color: rgba(22, 242, 154, 0.48);
+  color: var(--accent);
+  background: rgba(22, 242, 154, 0.1);
+}
+
+.fpa-replay-motion-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+  gap: 16px;
+  align-items: start;
+  justify-content: stretch;
+  width: 100%;
+}
+
+.fpa-replay-pitch {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  aspect-ratio: 1050 / 680;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(10, 14, 12, 0.72);
+}
+
+.fpa-replay-pitch img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0.9;
+  user-select: none;
+  pointer-events: none;
+}
+
+.fpa-replay-arrows {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.fpa-replay-arrows line {
+  stroke: #16c2c2;
+  stroke-width: 4;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.42));
+}
+
+.fpa-replay-dot {
+  position: absolute;
+  left: var(--from-left);
+  top: var(--from-top);
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(255, 122, 0, 0.96), rgba(255, 170, 51, 0.96));
+  color: #1c1c1c;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(255, 122, 0, 0.35);
+  animation: fpa-replay-move 3s cubic-bezier(0.22, 0.84, 0.28, 1) var(--delay, 0s) both;
+}
+
+.fpa-replay-dot.away,
+.fpa-replay-dot.opponent {
+  background: linear-gradient(135deg, rgba(47, 109, 246, 0.96), rgba(78, 135, 255, 0.96));
+  color: #f7fbff;
+  box-shadow: 0 6px 18px rgba(47, 109, 246, 0.34);
+}
+
+.fpa-replay-dot.gk {
+  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.26), 0 8px 18px rgba(0, 0, 0, 0.34);
+}
+
+.fpa-replay-ball {
+  position: absolute;
+  left: var(--from-left);
+  top: var(--from-top);
+  z-index: 4;
+  transform: translate(-50%, -50%);
+  font-size: 21px;
+  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.48));
+  animation: fpa-replay-move 3s cubic-bezier(0.18, 0.8, 0.24, 1) both;
+}
+
+@keyframes fpa-replay-move {
+  from {
+    left: var(--from-left);
+    top: var(--from-top);
+  }
+  to {
+    left: var(--to-left);
+    top: var(--to-top);
+  }
+}
+
+.fpa-replay-summary {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  align-self: start;
+  min-width: 0;
+  height: var(--fpa-replay-pitch-height, auto);
+  max-height: var(--fpa-replay-pitch-height, clamp(420px, calc(100vh - 230px), 720px));
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.fpa-replay-summary-card,
+.fpa-replay-metric,
+.fpa-replay-action-item {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-soft);
+}
+
+.fpa-replay-summary-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+}
+
+.fpa-replay-summary-card span,
+.fpa-replay-metric span,
+.fpa-replay-action-item span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.fpa-replay-summary-card strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.fpa-replay-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fpa-replay-metric {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+}
+
+.fpa-replay-metric strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.fpa-replay-metric.positive strong,
+.fpa-replay-action-item span.positive {
+  color: #40e49a;
+}
+
+.fpa-replay-metric.negative strong,
+.fpa-replay-action-item span.negative {
+  color: #ff8e6f;
+}
+
+.fpa-replay-action-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 0;
+  height: 100%;
+  max-height: max(160px, calc(var(--fpa-replay-pitch-height, 650px) - 214px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
+.fpa-replay-action-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px 11px;
+}
+
+.fpa-replay-action-item strong {
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fpa-replay-action-item div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.fpa-replay-action-item span {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  white-space: nowrap;
+}
+
+.fpa-replay-empty {
+  min-height: 320px;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-soft);
+  border-radius: 8px;
+}
+
 @media (max-width: 1100px) {
   .app-shell,
   .dashboard-grid,
@@ -5402,7 +5825,20 @@ a:focus-visible {
   }
 
   .fpa-model-preview-layout,
-  .fpa-model-preview-grid {
+  .fpa-model-preview-grid,
+  .fpa-replay-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .fpa-replay-match-list {
+    max-height: 280px;
+  }
+
+  .fpa-replay-motion-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .fpa-replay-summary {
     grid-template-columns: 1fr;
   }
 
@@ -5418,6 +5854,14 @@ a:focus-visible {
   .fpa-dual-pitch-grid,
   .fpa-scene-editor-grid {
     grid-template-columns: 1fr;
+  }
+
+  .fpa-scene-editor-pitches {
+    grid-template-columns: 1fr;
+  }
+
+  .fpa-scene-editor-actions .fpa-scene-actions {
+    max-height: none;
   }
 
   .fpa-xgot-body {
@@ -5447,6 +5891,11 @@ a:focus-visible {
   }
 
   .fpa-live-status {
+    flex-direction: column;
+  }
+
+  .fpa-replay-hero,
+  .fpa-replay-stage-head {
     flex-direction: column;
   }
 }
@@ -5486,6 +5935,10 @@ a:focus-visible {
   }
 
   .fcm-selection-grid-wide {
+    grid-template-columns: 1fr;
+  }
+
+  .fpa-replay-summary {
     grid-template-columns: 1fr;
   }
 

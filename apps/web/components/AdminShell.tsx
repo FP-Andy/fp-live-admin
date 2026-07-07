@@ -117,6 +117,12 @@ const FPA_ITEMS: NavItem[] = [
     match: (pathname) => pathname.startsWith('/admin/fpa/reports'),
   },
   {
+    href: '/admin/fpa/replay',
+    label: 'Scene Motion',
+    icon: '◒',
+    match: (pathname) => pathname.startsWith('/admin/fpa/replay'),
+  },
+  {
     href: '/admin/fpa/settings',
     label: 'Code Guide',
     icon: '⋯',
@@ -203,6 +209,9 @@ function getPageMeta(pathname: string) {
   }
   if (pathname.startsWith('/admin/fpa/reports')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Model Room' };
+  }
+  if (pathname.startsWith('/admin/fpa/replay')) {
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Scene Motion' };
   }
   if (pathname.startsWith('/admin/fpa/settings')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Code Guide' };

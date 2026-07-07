@@ -7,6 +7,11 @@ class FpaDot(BaseModel):
     meter_x: float = Field(ge=0, le=105)
     meter_y: float = Field(ge=0, le=68)
     team: Literal["ally", "opponent"] | None = None
+    team_side: Literal["home", "away"] | None = None
+    role: str | None = Field(default=None, max_length=40)
+    layer: str | None = Field(default=None, max_length=40)
+    number: str | None = Field(default=None, max_length=20)
+    id: str | None = Field(default=None, max_length=64)
 
 
 class FpaPitchState(BaseModel):
@@ -17,6 +22,8 @@ class FpaDualPitchPayload(BaseModel):
     before: FpaPitchState = Field(default_factory=FpaPitchState)
     after: FpaPitchState = Field(default_factory=FpaPitchState)
     input_tier: Literal["minimal", "recommended", "rich", "full"] = "minimal"
+    actor_team: Literal["home", "away"] | None = None
+    primary_row_index: int | None = None
 
 
 class FpaGenerateLogRequest(BaseModel):

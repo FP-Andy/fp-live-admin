@@ -1902,6 +1902,38 @@ def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
     return build_analysis_workbook(df)
 
 
+def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSavedLogsRequest, user: User | None) -> Match:
+    match_obj = db.get(Match, match_id)
+    home_team = (body.teamid_h or "").strip() or "Home"
+    away_team = (body.teamid_a or "").strip() or "Away"
+    if match_obj:
+        return match_obj
+    metadata = {
+        "sport": "FOOTBALL",
+        "home_team": home_team,
+        "away_team": away_team,
+        "first_half_minutes": 45,
+        "second_half_minutes": 45,
+        "fpa_manual_match": True,
+        "source": "fpa_live_logger",
+    }
+    match_obj = Match(
+        id=match_id,
+        name=f"[FPA | 1R] {home_team} vs {away_team}",
+        sport="FOOTBALL",
+        competition_class="FPA",
+        round_number=1,
+        first_half_minutes=45,
+        second_half_minutes=45,
+        metadata_json=metadata,
+        operator_id=user.id if user else None,
+    )
+    db.add(match_obj)
+    db.flush()
+    _match_response_cache.clear()
+    return match_obj
+
+
 def _serialize_fcm_template(row: FcmTemplate) -> dict:
     return {
         "id": row.id,
@@ -4189,8 +4221,7 @@ def save_fpa_logs(
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    if not db.get(Match, match_id):
-        raise HTTPException(status_code=404, detail="Match not found")
+    _ensure_fpa_match_for_saved_logs(db, match_id, body, user)
     row = db.get(FpaSavedLog, match_id)
     if not row:
         row = FpaSavedLog(match_id=match_id)
