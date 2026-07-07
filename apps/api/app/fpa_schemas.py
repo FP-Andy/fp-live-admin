@@ -43,6 +43,7 @@ class FpaGenerateLogResponse(BaseModel):
 
 class FpaExportLogsRequest(BaseModel):
     logs: list[str] = Field(default_factory=list)
+    rows: list[dict[str, str]] = Field(default_factory=list)
     match_id: str = ""
     teamid_h: str = ""
     teamid_a: str = ""

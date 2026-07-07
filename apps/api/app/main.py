@@ -1899,7 +1899,7 @@ def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
     if not logs:
         raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
     df = parse_logs_to_dataframe(logs, str(row.match_id), row.teamid_h or "", row.teamid_a or "")
-    return build_analysis_workbook(df)
+    return build_analysis_workbook(df, scene_rows=list(row.rows or []))
 
 
 def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSavedLogsRequest, user: User | None) -> Match:
@@ -4161,7 +4161,7 @@ def export_fpa_logs(body: FpaExportLogsRequest):
         raise HTTPException(status_code=400, detail="No logs to process")
     try:
         df = parse_logs_to_dataframe(body.logs, body.match_id, body.teamid_h, body.teamid_a)
-        workbook = build_analysis_workbook(df)
+        workbook = build_analysis_workbook(df, scene_rows=body.rows)
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 

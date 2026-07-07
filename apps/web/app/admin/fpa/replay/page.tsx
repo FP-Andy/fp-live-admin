@@ -168,7 +168,7 @@ function parseDots(raw: unknown) {
 
 function passArrowToSegment(arrow: PassArrow, index: number): PassSegment {
   return {
-    key: `arrow-${index}-${arrow.x1}-${arrow.y1}`,
+    key: `arrow-${arrow.side || 'scene'}-${index}-${arrow.x1}-${arrow.y1}`,
     x1: arrow.x1,
     y1: arrow.y1,
     x2: arrow.x2,
@@ -260,7 +260,6 @@ function sceneFromState(
   const rawArrows = Array.isArray(state.passArrows) ? state.passArrows : [];
   const arrowSegments = rawArrows
     .filter((arrow): arrow is PassArrow => Boolean(arrow) && typeof arrow === 'object' && Number.isFinite(Number((arrow as PassArrow).x1)))
-    .filter((arrow) => !arrow.side || arrow.side === 'before')
     .map(passArrowToSegment);
   const pathSegments = rows
     .map((row, rowIndex) => pathToSegment(row, logs[rowIndex], rowIndex))

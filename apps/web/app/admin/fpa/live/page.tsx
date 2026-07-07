@@ -1679,6 +1679,7 @@ export default function FpaLivePage() {
         method: 'POST',
         body: JSON.stringify({
           logs: allLogs,
+          rows: buildRowsForPersistence(),
           match_id: matchId,
           teamid_h: teamIdH,
           teamid_a: teamIdA,

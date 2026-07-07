@@ -1837,8 +1837,173 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
     return sheet
 
 
-def build_analysis_workbook(df_or_bytes: pd.DataFrame | bytes) -> bytes:
+def _scene_cell_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def _parse_scene_state(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _scene_points(state: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    candidates = state.get(key)
+    if key == "beforeDots" and not isinstance(candidates, list):
+        candidates = state.get("before")
+    if key == "afterDots" and not isinstance(candidates, list):
+        candidates = state.get("after")
+    return [item for item in candidates if isinstance(item, dict)] if isinstance(candidates, list) else []
+
+
+def _scene_pass_arrows(state: dict[str, Any]) -> list[dict[str, Any]]:
+    arrows = state.get("passArrows")
+    return [item for item in arrows if isinstance(item, dict)] if isinstance(arrows, list) else []
+
+
+def _merge_scene_columns(df: pd.DataFrame, scene_rows: list[dict[str, Any]] | None) -> pd.DataFrame:
+    if not scene_rows:
+        return df
+    merged = df.copy()
+    row_count = len(merged.index)
+    for column in ["SceneIndex", "SceneActionIndex", "SceneState"]:
+        values = [""] * row_count
+        for index, row in enumerate(scene_rows[:row_count]):
+            if isinstance(row, dict):
+                values[index] = _scene_cell_value(row.get(column, ""))
+        if any(values):
+            merged[column] = values
+    return merged
+
+
+def build_scene_actions_sheet(scene_rows: list[dict[str, Any]] | None) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(scene_rows or [], start=1):
+        if not isinstance(row, dict):
+            continue
+        state = _parse_scene_state(row.get("SceneState"))
+        before_dots = _scene_points(state, "beforeDots") if state else []
+        after_dots = _scene_points(state, "afterDots") if state else []
+        pass_arrows = _scene_pass_arrows(state) if state else []
+        rows.append(
+            {
+                "RowNo": index,
+                "SceneIndex": _scene_cell_value(row.get("SceneIndex")),
+                "SceneActionIndex": _scene_cell_value(row.get("SceneActionIndex")),
+                "Time": _scene_cell_value(row.get("Time")),
+                "Team": _scene_cell_value(row.get("Team")),
+                "Player": _scene_cell_value(row.get("Player")),
+                "Action": _scene_cell_value(row.get("Action")),
+                "Receiver": _scene_cell_value(row.get("Receiver")),
+                "Tags": _scene_cell_value(row.get("Tags")),
+                "BeforeDotCount": len(before_dots),
+                "AfterDotCount": len(after_dots),
+                "PassArrowCount": len(pass_arrows),
+                "PrimaryActionIndex": _scene_cell_value(state.get("primary") if state else ""),
+                "SceneState": _scene_cell_value(row.get("SceneState")),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "RowNo",
+            "SceneIndex",
+            "SceneActionIndex",
+            "Time",
+            "Team",
+            "Player",
+            "Action",
+            "Receiver",
+            "Tags",
+            "BeforeDotCount",
+            "AfterDotCount",
+            "PassArrowCount",
+            "PrimaryActionIndex",
+            "SceneState",
+        ],
+    )
+
+
+def _unique_scene_states(scene_rows: list[dict[str, Any]] | None) -> list[tuple[str, dict[str, Any]]]:
+    scenes: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for index, row in enumerate(scene_rows or [], start=1):
+        if not isinstance(row, dict):
+            continue
+        state = _parse_scene_state(row.get("SceneState"))
+        if not state:
+            continue
+        scene_index = _scene_cell_value(row.get("SceneIndex")) or str(index)
+        if scene_index in seen:
+            continue
+        seen.add(scene_index)
+        scenes.append((scene_index, state))
+    return scenes
+
+
+def build_scene_dots_sheet(scene_rows: list[dict[str, Any]] | None) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for scene_index, state in _unique_scene_states(scene_rows):
+        for side, dots in [("before", _scene_points(state, "beforeDots")), ("after", _scene_points(state, "afterDots"))]:
+            for dot_index, dot in enumerate(dots, start=1):
+                rows.append(
+                    {
+                        "SceneIndex": scene_index,
+                        "Side": side,
+                        "DotIndex": dot_index,
+                        "DotId": _scene_cell_value(dot.get("id")),
+                        "Team": _scene_cell_value(dot.get("team")),
+                        "TeamSide": _scene_cell_value(dot.get("teamSide") or dot.get("team_side")),
+                        "Role": _scene_cell_value(dot.get("role")),
+                        "Number": _scene_cell_value(dot.get("number")),
+                        "Layer": _scene_cell_value(dot.get("layer")),
+                        "MeterX": dot.get("meter_x", dot.get("x", "")),
+                        "MeterY": dot.get("meter_y", dot.get("y", "")),
+                        "ScreenX": dot.get("screen_x", ""),
+                        "ScreenY": dot.get("screen_y", ""),
+                        "Color": _scene_cell_value(dot.get("color")),
+                    }
+                )
+    return pd.DataFrame(
+        rows,
+        columns=["SceneIndex", "Side", "DotIndex", "DotId", "Team", "TeamSide", "Role", "Number", "Layer", "MeterX", "MeterY", "ScreenX", "ScreenY", "Color"],
+    )
+
+
+def build_scene_passes_sheet(scene_rows: list[dict[str, Any]] | None) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for scene_index, state in _unique_scene_states(scene_rows):
+        for arrow_index, arrow in enumerate(_scene_pass_arrows(state), start=1):
+            rows.append(
+                {
+                    "SceneIndex": scene_index,
+                    "ArrowIndex": arrow_index,
+                    "Side": _scene_cell_value(arrow.get("side")),
+                    "StartId": _scene_cell_value(arrow.get("startId") or arrow.get("start_id")),
+                    "X1": arrow.get("x1", ""),
+                    "Y1": arrow.get("y1", ""),
+                    "X2": arrow.get("x2", ""),
+                    "Y2": arrow.get("y2", ""),
+                }
+            )
+    return pd.DataFrame(rows, columns=["SceneIndex", "ArrowIndex", "Side", "StartId", "X1", "Y1", "X2", "Y2"])
+
+
+def build_analysis_workbook(df_or_bytes: pd.DataFrame | bytes, scene_rows: list[dict[str, Any]] | None = None) -> bytes:
     df = load_excel_dataframe(df_or_bytes, "Data") if isinstance(df_or_bytes, bytes) else _dedupe_dataframe_columns(df_or_bytes.copy())
+    df = _merge_scene_columns(df, scene_rows)
     analyzed = perform_full_analysis(df)
     pass_summary = create_player_summary(analyzed)
     shooter_summary = create_shooter_summary(analyzed)
@@ -1863,6 +2028,10 @@ def build_analysis_workbook(df_or_bytes: pd.DataFrame | bytes) -> bytes:
         build_xg_calculation_sheet(analyzed).to_excel(writer, sheet_name="xG_Calculation", index=False)
         build_epv_calculation_sheet(analyzed).to_excel(writer, sheet_name="EPV_Calculation", index=False)
         build_pitch_control_calculation_sheet(analyzed).to_excel(writer, sheet_name="PitchControl_Calc", index=False)
+        if scene_rows:
+            build_scene_actions_sheet(scene_rows).to_excel(writer, sheet_name="Scene_Actions", index=False)
+            build_scene_dots_sheet(scene_rows).to_excel(writer, sheet_name="Scene_Dots", index=False)
+            build_scene_passes_sheet(scene_rows).to_excel(writer, sheet_name="Scene_Passes", index=False)
     output.seek(0)
     return output.getvalue()
 
