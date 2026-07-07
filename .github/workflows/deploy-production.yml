@@ -1,10 +1,12 @@
 name: Deploy Production
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type deploy-production to run production deployment.
+        required: true
+        type: string
 
 concurrency:
   group: production-deploy
@@ -16,70 +18,41 @@ permissions:
 jobs:
   deploy:
     name: Deploy app server
-    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'deploy-production'
+    runs-on: [self-hosted, live-admin-app, production]
+    timeout-minutes: 40
     environment: production
     steps:
-      - name: Check deployment secrets
-        id: deploy_secrets
-        env:
-          LIVE_ADMIN_APP_HOST: ${{ secrets.LIVE_ADMIN_APP_HOST }}
-          LIVE_ADMIN_APP_USER: ${{ secrets.LIVE_ADMIN_APP_USER }}
-          LIVE_ADMIN_APP_SSH_KEY: ${{ secrets.LIVE_ADMIN_APP_SSH_KEY }}
-          LIVE_ADMIN_APP_SSH_PORT: ${{ secrets.LIVE_ADMIN_APP_SSH_PORT }}
+      - name: Deploy locally on app server
         run: |
-          missing=""
-          [ -n "$LIVE_ADMIN_APP_HOST" ] || missing="$missing LIVE_ADMIN_APP_HOST"
-          [ -n "$LIVE_ADMIN_APP_USER" ] || missing="$missing LIVE_ADMIN_APP_USER"
-          [ -n "$LIVE_ADMIN_APP_SSH_KEY" ] || missing="$missing LIVE_ADMIN_APP_SSH_KEY"
+          set -Eeuo pipefail
 
-          if [ -n "$missing" ]; then
-            echo "::warning::Skipping deployment. Missing GitHub secrets:$missing"
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          APP_DIR="/home/ubuntu/fp-live-admin"
+          COMPOSE_FILE="infra/app/docker-compose.yml"
+          BACKUP_ROOT="/home/ubuntu/deploy-backups"
+          DEPLOY_ID="gha-${{ github.sha }}-$(date -u +%Y%m%d_%H%M%S)"
+
+          cd "$APP_DIR"
+          mkdir -p "$BACKUP_ROOT"
+
+          if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
+            BACKUP_DIR="$BACKUP_ROOT/$DEPLOY_ID"
+            mkdir -p "$BACKUP_DIR"
+            git status --porcelain=v1 --untracked-files=all > "$BACKUP_DIR/status.txt"
+            git diff > "$BACKUP_DIR/worktree.patch" || true
+            git diff --cached > "$BACKUP_DIR/index.patch" || true
+            git ls-files --others --exclude-standard > "$BACKUP_DIR/untracked.txt"
+            echo "Saved pre-deploy working tree snapshot to $BACKUP_DIR"
           fi
 
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-          echo "port=${LIVE_ADMIN_APP_SSH_PORT:-22}" >> "$GITHUB_OUTPUT"
+          git fetch origin main
+          git reset --hard origin/main
+          git clean -fd
+          git checkout -B main origin/main
 
-      - name: Deploy over SSH
-        if: steps.deploy_secrets.outputs.ready == 'true'
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.LIVE_ADMIN_APP_HOST }}
-          username: ${{ secrets.LIVE_ADMIN_APP_USER }}
-          key: ${{ secrets.LIVE_ADMIN_APP_SSH_KEY }}
-          port: ${{ steps.deploy_secrets.outputs.port }}
-          command_timeout: 30m
-          script_stop: true
-          script: |
-            set -Eeuo pipefail
+          docker compose -f "$COMPOSE_FILE" build api web
+          docker compose -f "$COMPOSE_FILE" up -d api web
+          docker compose -f "$COMPOSE_FILE" ps api web
 
-            APP_DIR="/home/ubuntu/fp-live-admin"
-            COMPOSE_FILE="infra/app/docker-compose.yml"
-            BACKUP_ROOT="/home/ubuntu/deploy-backups"
-            DEPLOY_ID="gha-${{ github.sha }}-$(date -u +%Y%m%d_%H%M%S)"
-
-            cd "$APP_DIR"
-            mkdir -p "$BACKUP_ROOT"
-
-            if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
-              BACKUP_DIR="$BACKUP_ROOT/$DEPLOY_ID"
-              mkdir -p "$BACKUP_DIR"
-              git status --porcelain=v1 --untracked-files=all > "$BACKUP_DIR/status.txt"
-              git diff > "$BACKUP_DIR/worktree.patch" || true
-              git diff --cached > "$BACKUP_DIR/index.patch" || true
-              git ls-files --others --exclude-standard > "$BACKUP_DIR/untracked.txt"
-              echo "Saved pre-deploy working tree snapshot to $BACKUP_DIR"
-            fi
-
-            git fetch origin main
-            git reset --hard origin/main
-            git clean -fd
-            git checkout -B main origin/main
-
-            docker compose -f "$COMPOSE_FILE" build api web
-            docker compose -f "$COMPOSE_FILE" up -d api web
-            docker compose -f "$COMPOSE_FILE" ps api web
-
-            docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
-            curl -fsS https://console.fineludens.kr/health
+          docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
+          curl -fsS https://console.fineludens.kr/health
