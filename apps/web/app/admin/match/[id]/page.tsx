@@ -24,6 +24,7 @@ function regulationHalfMinutes(competitionClass?: string | null, firstHalfMinute
 
 type Team = 'HOME' | 'AWAY';
 type PossessionTeam = Team | 'NONE';
+type ClockSpeed = 1 | 2;
 type Lane = 'LEFT' | 'CENTER' | 'RIGHT';
 type AttackLR = 'L2R' | 'R2L';
 type ShotPaceBand = 'LOW' | 'MID' | 'HIGH';
@@ -114,10 +115,12 @@ export default function MatchPage() {
   const [isResettingEvents, setIsResettingEvents] = useState(false);
   const [isExportingMatchData, setIsExportingMatchData] = useState(false);
   const [secondHalfStartAbsMs, setSecondHalfStartAbsMs] = useState<number | null>(null);
+  const [clockSpeed, setClockSpeed] = useState<ClockSpeed>(1);
 
   const perfRef = useRef<number | null>(null);
   const baseRef = useRef<number>(0);
   const clockRef = useRef<number>(0);
+  const clockSpeedRef = useRef<ClockSpeed>(1);
   const runningRef = useRef<boolean>(false);
   const initializedRef = useRef<boolean>(false);
   const lastPossessionLogSecondRef = useRef<number>(-1);
@@ -207,6 +210,24 @@ export default function MatchPage() {
   }, [running]);
 
   useEffect(() => {
+    clockSpeedRef.current = clockSpeed;
+  }, [clockSpeed]);
+
+  useEffect(() => {
+    if (!id) return;
+    const raw = window.localStorage.getItem(`clockSpeed:${id}`);
+    if (raw === '2') {
+      setClockSpeed(2);
+      clockSpeedRef.current = 2;
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    window.localStorage.setItem(`clockSpeed:${id}`, String(clockSpeed));
+  }, [id, clockSpeed]);
+
+  useEffect(() => {
     if (!id) return;
     const raw = window.localStorage.getItem(`secondHalfStartAbsMs:${id}`);
     if (!raw) return;
@@ -273,8 +294,38 @@ export default function MatchPage() {
     if (!runningRef.current || perfRef.current == null) {
       return clockRef.current;
     }
-    return Math.floor(baseRef.current + (performance.now() - perfRef.current));
+    return Math.floor(baseRef.current + (performance.now() - perfRef.current) * clockSpeedRef.current);
   };
+
+  // Switching speed mid-run must not rescale already-elapsed time: freeze the
+  // current clock as the new base, then let the new speed apply from now on.
+  const changeClockSpeed = (nextSpeed: ClockSpeed) => {
+    if (!canWrite || nextSpeed === clockSpeed) return;
+    if (nextSpeed === 2 && !isSuperuser) return;
+    if (runningRef.current && perfRef.current != null) {
+      const frozen = getCurrentClockMs();
+      baseRef.current = frozen;
+      perfRef.current = performance.now();
+      setClockMs(frozen);
+    }
+    setClockSpeed(nextSpeed);
+    clockSpeedRef.current = nextSpeed;
+  };
+
+  // X2 mode is superadmin-only: if a non-admin session lands on a match whose
+  // localStorage still says 2x (set earlier by an admin on this browser),
+  // freeze the clock at its current value and drop back to 1x.
+  useEffect(() => {
+    if (!sessionUser || isSuperuser || clockSpeedRef.current !== 2) return;
+    if (runningRef.current && perfRef.current != null) {
+      const frozen = getCurrentClockMs();
+      baseRef.current = frozen;
+      perfRef.current = performance.now();
+      setClockMs(frozen);
+    }
+    setClockSpeed(1);
+    clockSpeedRef.current = 1;
+  }, [sessionUser, isSuperuser, clockSpeed]);
 
   const saveState = async (
     next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>
@@ -368,7 +419,7 @@ export default function MatchPage() {
     let raf = 0;
     const loop = () => {
       if (perfRef.current != null) {
-        const delta = performance.now() - perfRef.current;
+        const delta = (performance.now() - perfRef.current) * clockSpeedRef.current;
         setClockMs(Math.floor(baseRef.current + delta));
       }
       raf = requestAnimationFrame(loop);
@@ -389,7 +440,7 @@ export default function MatchPage() {
   const toggleRun = async () => {
     if (!canWrite) return;
     if (running) {
-      const finalClock = perfRef.current == null ? clockMs : Math.floor(baseRef.current + (performance.now() - perfRef.current));
+      const finalClock = perfRef.current == null ? clockMs : Math.floor(baseRef.current + (performance.now() - perfRef.current) * clockSpeedRef.current);
       setClockMs(finalClock);
       baseRef.current = finalClock;
       perfRef.current = null;
@@ -984,17 +1035,17 @@ export default function MatchPage() {
       if (e.code === 'Space') {
         e.preventDefault();
         toggleRun();
-      } else if (e.key === 'q' || e.key === 'Q') {
+      } else if (e.code === 'KeyQ') {
         changePossession('HOME');
-      } else if (e.key === 'w' || e.key === 'W') {
+      } else if (e.code === 'KeyW') {
         changePossession('AWAY');
-      } else if (e.key === 'e' || e.key === 'E') {
+      } else if (e.code === 'KeyE') {
         changePossession('NONE');
-      } else if (e.key === 'a' || e.key === 'A') {
+      } else if (e.code === 'KeyA') {
         setPendingLane('LEFT');
-      } else if (e.key === 's' || e.key === 'S') {
+      } else if (e.code === 'KeyS') {
         setPendingLane('CENTER');
-      } else if (e.key === 'd' || e.key === 'D') {
+      } else if (e.code === 'KeyD') {
         setPendingLane('RIGHT');
       } else if (e.key === 'Enter') {
         sendLane(pendingLane);
@@ -1277,10 +1328,28 @@ export default function MatchPage() {
 
       <div className="split">
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
-          <div className="card card-panel">
+          <div className="card card-panel" style={clockSpeed === 2 ? { outline: '2px solid #ff7900' } : undefined}>
+            {isSuperuser ? (
+              <div className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
+                <button className={clockSpeed === 1 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(1)} disabled={!canWrite}>
+                  LIVE 1×
+                </button>
+                <button className={clockSpeed === 2 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(2)} disabled={!canWrite}>
+                  X2 MODE (녹화 2배속)
+                </button>
+                {clockSpeed === 2 ? (
+                  <span className="muted" style={{ color: '#ff7900' }}>
+                    타이머가 실시간의 2배로 흐릅니다 — 영상도 2배속인지 확인하세요
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
               <strong>Timer</strong>
-              <strong style={{ fontSize: 24 }}>{displayClockLabel(clockMs)}</strong>
+              <strong style={{ fontSize: 24, color: clockSpeed === 2 ? '#ff7900' : undefined }}>
+                {displayClockLabel(clockMs)}
+                {clockSpeed === 2 ? <span style={{ fontSize: 14, marginLeft: 6 }}>×2</span> : null}
+              </strong>
               <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
               <button className="btn-secondary" onClick={resetClock} disabled={!canWrite}>Reset</button>
               <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>

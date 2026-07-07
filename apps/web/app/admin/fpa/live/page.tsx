@@ -896,13 +896,13 @@ export default function FpaLivePage() {
       const isTextEntryTarget = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 
       if (inputMode === 'dual' && !isTextEntryTarget) {
-        if (event.key.toLowerCase() === 'q') {
+        if (event.code === 'KeyQ') {
           event.preventDefault();
           setDualDotTeam('ally');
           setStatus('Point Type: Ally');
           return;
         }
-        if (event.key.toLowerCase() === 'w') {
+        if (event.code === 'KeyW') {
           event.preventDefault();
           setDualDotTeam('opponent');
           setStatus('Point Type: Opponent');
