@@ -1,14 +1,18 @@
-# Fine Play Console (SRT/RTMP->HLS Gateway + Multi-Product Ops Console)
+# Fine Play Console (FLA/FPA/FCM Ops Console + SRT/RTMP HLS Gateway)
 
-로컬에서 `docker compose`로 즉시 실행 가능하며, VPS 배포(nginx/https 옵션)까지 고려한 구조입니다.
+Fine Play 운영 콘솔입니다. `FLA` 실시간 경기 운영, `FPA` 퍼포먼스 분석, `FCM` 카드 제작, 미디어 gateway 제어를 한 저장소에서 관리합니다.
+
+현재 운영 배포는 GitHub `main` 브랜치를 기준으로 하며, GitHub Actions의 수동 workflow가 운영 앱 서버의 self-hosted runner에서 Docker build/restart를 수행합니다.
 
 ## Collaboration Baseline
 
 - 기준 브랜치: `main`
 - 현재 제품 범위: `FLA`, `FPA`, `FCM`
-- 작업 브랜치는 `main`에서 새로 만들고, 기능 단위 PR 또는 명시적 merge로 합치는 것을 권장합니다.
+- 운영 배포 브랜치: `main`
+- 작업 브랜치는 `main`에서 새로 만들고, 기능 단위 PR 또는 명시적 merge로 합칩니다.
+- 운영 배포는 GitHub Actions `Deploy Production` workflow를 사용합니다.
 - 로컬 업로드 파일, 카드 생성 결과, HTML export, 백업 patch는 Git에 올리지 않습니다.
-- 운영 서버 작업트리는 과거 수동 배포 이력이 있어 dirty 상태일 수 있으므로, 운영 반영 전에는 서버에서 `git status --short`와 백업을 먼저 확인합니다.
+- 운영 서버 배포 workflow는 서버 작업트리 변경분이 있으면 `/home/ubuntu/deploy-backups`에 patch/status를 남긴 뒤 `origin/main`으로 강제 동기화합니다.
 
 ## Production Access
 
@@ -17,6 +21,30 @@
 - 운영 미디어 서버 고정 IP: `3.227.35.90`
 - HLS 직접 분리 목표 도메인: `https://stream.fineludens.kr` (DNS/HTTPS 준비 후 `PUBLIC_HLS_BASE`, `GATEWAY_PUBLIC_HLS_BASE`로 전환)
 - 운영 북마크/로그인 안내는 `live.fineludens.kr` 대신 `console.fineludens.kr` 기준으로 통일
+- 운영 runner: `live-admin-app` (`self-hosted`, `production`)
+
+## Production Deploy
+
+배포 권한이 있는 GitHub 사용자는 SSH 접속 없이 운영 배포를 실행할 수 있습니다.
+
+1. GitHub 저장소 `FP-Andy/fp-live-admin` 접속
+2. `Actions` -> `Deploy Production`
+3. `Run workflow`
+4. Branch: `main`
+5. `confirm`: `deploy-production`
+6. 실행 후 workflow log에서 Docker build, container restart, `/health` 확인
+
+workflow 파일: `.github/workflows/deploy-production.yml`
+
+workflow 동작:
+
+- 운영 앱 서버 `/home/ubuntu/fp-live-admin`에서 실행
+- `git fetch origin main`
+- `git reset --hard origin/main`
+- `git clean -fd`
+- `docker compose -f infra/app/docker-compose.yml build api web`
+- `docker compose -f infra/app/docker-compose.yml up -d api web`
+- 내부 API health와 외부 `https://console.fineludens.kr/health` 확인
 
 ## Media Server Remote Control
 
@@ -68,8 +96,9 @@ control endpoint 요청 형식:
 - `apps/api/`: FastAPI + SQLAlchemy + Postgres
 - `apps/web/`: Next.js 기반 `Fine Play Console`
   - `FLA`: Live match operations
-  - `FPA`: Football performance analysis
+  - `FPA`: Live logger, dual pitch scene capture, replay, model room, workbook analysis
   - `FCM`: FinePlay Card Marker
+- `.github/workflows/deploy-production.yml`: `main` 기준 수동 운영 배포 workflow
 - `README.md`: 실행/배포/환경변수/키바인딩/웹훅/확장 가이드
 - `docs/manual-production-deploy.md`: GitHub Actions 수동 운영 배포 절차
 - `docs/match-export-csv.md`: 매치 단일 CSV export 컬럼 정의서
@@ -87,7 +116,9 @@ control endpoint 요청 형식:
     - `Event Editor`
   - `FPA`
     - `Live Logger`
-    - `Visual Reports`
+    - `Replay`
+    - `Reports / Model Room`
+    - `Analyzer`
     - `Code Guide`
   - `FCM`
     - `Workspace`
@@ -110,7 +141,7 @@ control endpoint 요청 형식:
   4. 상태/이벤트 저장 직후 outbox에 webhook enqueue
   5. 백그라운드 워커가 webhook 전송 재시도(지수 백오프)
   6. Match 페이지의 `Export Match Data` 버튼으로 단일 CSV 다운로드 가능
-  7. `/admin/fpa/*`에서 FPA 전용 입력/분석/시각화 수행 가능
+  7. `/admin/fpa/*`에서 FPA 전용 입력/dual pitch 장면 저장/replay/분석 workbook/model room 관리 가능
   8. `/admin/fcm/*`에서 archived match 기반 선수 카드 생성 가능
 
 ---
@@ -176,7 +207,8 @@ docker compose up -d --build
 - 권장 로그인 URL: `https://127.0.0.1/login`
 - FLA dashboard: `https://127.0.0.1/admin/dashboard`
 - FPA live logger: `https://127.0.0.1/admin/fpa/live`
-- FPA visual reports: `https://127.0.0.1/admin/fpa/reports`
+- FPA replay: `https://127.0.0.1/admin/fpa/replay`
+- FPA reports/model room: `https://127.0.0.1/admin/fpa/reports`
 - FCM workspace: `https://127.0.0.1/admin/fcm/workspace`
 - FCM match status: `https://127.0.0.1/admin/fcm/match-status`
 - FCM templates: `https://127.0.0.1/admin/fcm/templates`
@@ -199,14 +231,24 @@ docker compose up -d --build
 ### FPA 운영 흐름
 
 1. `Live Logger`
-   - 필드 이미지 위에서 좌표를 직접 클릭
+   - `Single` 또는 `Dual` 입력 모드 선택
+   - `Single`: 필드 이미지 위에서 좌표를 직접 클릭
+   - `Dual`: Before/After 피치에 home/away 필드 플레이어/GK를 배치하고 장면 단위로 저장
    - 필드 좌표는 `105 x 68` 기준
    - 원점은 원본 FPA와 동일하게 좌하단 `(0,0)`
    - `Home/Away` 전환 시 `Direction` 자동 반전
    - `-1/+1` 버튼과 방향키는 `1분` 단위 시간 조절
    - `Enter`로 제출, 우클릭으로 마지막 좌표 제거
+   - 유효 슈팅 입력 후 goalmouth 위치를 클릭하면 `xGOT`을 계산해 row/log에 병합
+   - 경기 선택 없이 저장하면 랜덤 UUID Match ID를 생성해 `[FPA | 1R] Home vs Away` 형태로 저장
+   - 저장된 dual scene은 `SceneIndex`, `SceneActionIndex`, `SceneState`로 DB에 보존
+   - workbook export는 기존 분석 시트와 함께 `Scene_Actions`, `Scene_Dots`, `Scene_Passes`를 포함
 2. `Visual Reports`
    - 별도 화면에서 파일 기반 패스맵/히트맵 생성 가능
+   - Model Room에서 `xG`, `xGOT`, `EPV`, `Pitch Control`, `xFP Weights` 모델 업로드/활성화/preview 가능
+   - `Generate Baseline Models`로 baseline 모델을 등록할 수 있음
+3. `Replay`
+   - 저장된 `SceneState` 또는 legacy `DualState` 기반으로 장면 움직임과 패스 화살표를 재생
 
 ### FCM 운영 흐름
 
@@ -237,6 +279,12 @@ docker compose up -d --build
   - `Enter`: stat input 제출
   - `ArrowUp`, `ArrowRight`: `+1분`
   - `ArrowDown`, `ArrowLeft`: `-1분`
+  - Dual mode layer:
+    - `Q`: home field
+    - `W`: away field
+    - `E`: home GK
+    - `R`: away GK
+  - Dual mode dot 선택 중 `Backspace`/`Delete`: 선택 좌표 삭제
 
 주의:
 
@@ -295,19 +343,34 @@ docker compose up -d --build
 - `POST /api/fpa/analyze/upload`
 - `POST /api/fpa/players/extract`
 - `POST /api/fpa/analyze/visualize`
+- `GET /api/fpa/matches/{match_id}/logs`
+- `PUT /api/fpa/matches/{match_id}/logs`
+- `GET /api/fpa/matches/{match_id}/logs/export.xlsx`
+- `GET /api/fpa/model-room`
+- `POST /api/fpa/model-room/bootstrap`
+- `POST /api/fpa/model-room/{slot}/upload`
+- `POST /api/fpa/model-room/{slot}/activate/{model_id}`
+- `GET /api/fpa/model-room/{slot}/download/{model_id}`
 
 FPA endpoint 메모:
 
 - `logs/generate`
   - live logger 입력을 원본 FPA 형식의 로그 문자열과 row preview로 변환
 - `analyze/export`
-  - live logger 누적 로그를 분석 workbook으로 생성
+  - live logger 누적 로그와 row/scene metadata를 분석 workbook으로 생성
+  - dual scene rows가 있으면 `Scene_Actions`, `Scene_Dots`, `Scene_Passes` 시트를 추가
 - `analyze/upload`
   - 업로드 파일의 `Data` 시트를 다시 분석 workbook으로 생성
 - `players/extract`
   - 업로드 파일에서 선수 목록 추출
 - `analyze/visualize`
   - 업로드 파일과 `player_id` 기준으로 pass map / heatmap 생성
+- `matches/{match_id}/logs`
+  - FPA live logger 저장/불러오기
+  - 저장 대상 match가 없으면 FPA manual match를 자동 생성
+- `model-room`
+  - FPA 모델 슬롯별 버전 관리
+  - 지원 슬롯: `xg`, `xgot`, `epv`, `pitch_control`, `xfp_weights`
 
 `/api/matches/{match_id}/export.csv`:
 

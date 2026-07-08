@@ -4,67 +4,67 @@ This project uses a manually triggered GitHub Actions workflow for production de
 
 Workflow:
 
-- `.github/workflows/manual-production-deploy.yml`
-- Trigger: GitHub Actions > Manual Production Deploy > Run workflow
-- Protection: GitHub `production` Environment reviewers
+- `.github/workflows/deploy-production.yml`
+- Trigger: GitHub Actions > Deploy Production > Run workflow
+- Deploy branch: `main`
+- Required input: `confirm=deploy-production`
+- Runner: self-hosted `live-admin-app` with `production` label
 
 ## Required GitHub Setup
 
-Create a GitHub Environment named `production`.
+The app server already runs a repository self-hosted runner as a systemd service.
+
+Current runner:
+
+- Service: `actions.runner.FP-Andy-fp-live-admin.live-admin-app.service`
+- Labels: `self-hosted`, `Linux`, `X64`, `live-admin-app`, `production`
+
+Create or keep a GitHub Environment named `production` if reviewer approval is desired.
 
 Recommended protection:
 
 - Required reviewer: Andy
-- Deployment branches: `main` and approved release branches only
+- Deployment branches: `main` only
 
-Add these Environment secrets:
-
-| Secret | Description |
-| --- | --- |
-| `PROD_DEPLOY_KEY` | Private SSH key for the deploy user |
-| `PROD_APP_HOST` | Public hostname or IP for the app server |
-| `PROD_APP_USER` | SSH user on the app server |
-| `PROD_APP_PATH` | Absolute repository path on the app server |
-| `PROD_HIGHLIGHT_WORKER_HOST` | Hostname or private IP for the highlight worker server |
-| `PROD_HIGHLIGHT_WORKER_USER` | SSH user on the highlight worker server |
-| `PROD_HIGHLIGHT_WORKER_PATH` | Absolute repository path on the highlight worker server |
-
-The highlight worker secrets are only required when `deploy_highlight_worker` is selected.
+No SSH deploy key secrets are required for the current app deploy workflow because the job runs directly on the production app server.
 
 ## Server Requirements
 
-The deploy SSH user needs permission to run:
+The runner service user needs permission to run:
 
 ```bash
-git fetch origin --prune
-git checkout <deploy-ref>
-git pull --ff-only origin <deploy-ref>
-docker compose -f infra/app/docker-compose.yml up -d --build api web nginx
-docker compose -f infra/highlight-worker/docker-compose.yml up -d --build
+cd /home/ubuntu/fp-live-admin
+git fetch origin main
+git reset --hard origin/main
+git clean -fd
+git checkout -B main origin/main
+docker compose -f infra/app/docker-compose.yml build api web
+docker compose -f infra/app/docker-compose.yml up -d api web
 ```
-
-If the worker server is reachable only through the app server, the workflow uses the app server as a `ProxyJump`.
 
 ## Usage
 
-1. Merge or push the commit to deploy.
+1. Merge or push the commit to `main`.
 2. Open GitHub Actions.
-3. Select `Manual Production Deploy`.
+3. Select `Deploy Production`.
 4. Click `Run workflow`.
-5. Set `branch` to the branch or tag to deploy.
-6. Keep `deploy_app` enabled.
-7. Enable `deploy_highlight_worker` only when worker code or worker dependencies changed.
-8. Wait for the `production` Environment approval.
-9. Confirm the health check and compose status in the workflow logs.
+5. Select branch `main`.
+6. Type `deploy-production` in the `confirm` field.
+7. Run the workflow.
+8. Confirm Docker build, container restart, and health check in the workflow logs.
 
 ## Safety Behavior
 
-The workflow stops if the production server worktree has uncommitted changes.
+If the production server worktree has uncommitted changes, the workflow saves a snapshot before syncing:
 
-Resolve that state manually before rerunning:
+- `/home/ubuntu/deploy-backups/<deploy-id>/status.txt`
+- `/home/ubuntu/deploy-backups/<deploy-id>/worktree.patch`
+- `/home/ubuntu/deploy-backups/<deploy-id>/index.patch`
+- `/home/ubuntu/deploy-backups/<deploy-id>/untracked.txt`
 
-```bash
-git status --short
-```
+Then it force-syncs the app server repo to `origin/main`.
 
-The workflow does not force-reset production code.
+Health checks:
+
+- Internal API: `http://127.0.0.1:8000/health`
+- External app: `https://console.fineludens.kr/health`
