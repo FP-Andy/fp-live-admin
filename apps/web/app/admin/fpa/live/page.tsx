@@ -56,7 +56,8 @@ type RenderPitchDot = PitchDot & {
   isPrimaryAlly: boolean;
 };
 
-type PassArrow = { side: PitchSide; startId?: string; x1: number; y1: number; x2: number; y2: number };
+// code/rowIndex: 끝점 드래그로 도착점을 옮겼을 때 그 로그 행을 재채점하기 위한 연결 (신규 생성 화살표에만 채워짐)
+type PassArrow = { side: PitchSide; startId?: string; x1: number; y1: number; x2: number; y2: number; code?: string; rowIndex?: number };
 
 // 저장된 장면 — 로그행 + 캔버스 스냅샷(점·화살표). 불러오기 시 그대로 복원, 저장 시 제자리 덮어쓰기.
 type SavedScene = {
@@ -81,6 +82,7 @@ type LogPreview = {
   xGOT?: string;
   EPV?: string;
   PC?: string;
+  StatInput?: string; // 원본 스탯 코드 — 장면 저장 시 최종 좌표로 재채점하기 위해 각 행에 보존
 };
 
 type PersistedLogRow = LogPreview & {
@@ -457,6 +459,16 @@ function statInputIsNumberOnly(statInput: string) {
   return /^\d+$/.test(statInput.trim());
 }
 
+// 수비 화살표 액션 — before 프레임에 상대 볼/슛 경로를 화살표(start→end)로 그림 (2클릭). 리시버 번호 없음.
+// aa/q/ww = 패스/볼 경로 → EPV-prevented (백엔드), qw = 슛 경로 → xG-prevented (백엔드). 그리기 동작은 동일.
+// 제외: Duel(b/bb)·Clear(w)=포인트 액션.
+const DEFENSE_ARROW_CODES = new Set(['aa', 'q', 'ww', 'qw']);
+function statInputIsDefenseArrow(statInput?: string | null) {
+  const base = (statInput ?? '').trim().split('.', 1)[0] || '';
+  const match = base.match(/^\d+([a-z]+)$/i);
+  return !!match && DEFENSE_ARROW_CODES.has(match[1].toLowerCase());
+}
+
 function arrowBelongsToRemovedDot(arrow: PassArrow, side: PitchSide, removedId: string) {
   if (arrow.startId !== removedId) return false;
   return arrow.side === side || side === 'before';
@@ -527,6 +539,8 @@ export default function FpaLivePage() {
   const editBeforePitchRef = useRef<HTMLDivElement | null>(null);
   const editAfterPitchRef = useRef<HTMLDivElement | null>(null);
   const draggingDualDotRef = useRef<(SelectedDualDot & { canvas: 'live' | 'edit' }) | null>(null);
+  // 패스 화살표 끝점 드래그 상태 — index=passArrows 배열 실제 인덱스, end='end'(도착점) 이동, moved=실제 이동 여부(클릭과 구분)
+  const draggingArrowRef = useRef<{ index: number; end: 'start' | 'end'; side: PitchSide; canvas: 'live' | 'edit'; moved: boolean } | null>(null);
   const logBodyRef = useRef<HTMLDivElement | null>(null);
   const statInputRef = useRef<HTMLInputElement | null>(null);
   const editStatInputRef = useRef<HTMLInputElement | null>(null);
@@ -568,6 +582,11 @@ export default function FpaLivePage() {
   const [editAfterDots, setEditAfterDots] = useState<PitchDot[]>([]);
   const [editPassArrows, setEditPassArrows] = useState<PassArrow[]>([]);
   const [editPrimary, setEditPrimary] = useState<number | null>(null);
+  // 드래그 종료(pointerup) 시점에 최신 화살표 좌표를 읽기 위한 미러 (render마다 동기 갱신)
+  const passArrowsRef = useRef<PassArrow[]>(passArrows);
+  passArrowsRef.current = passArrows;
+  const editPassArrowsRef = useRef<PassArrow[]>(editPassArrows);
+  editPassArrowsRef.current = editPassArrows;
   const [editSelectedDot, setEditSelectedDot] = useState<SelectedDualDot | null>(null);
   const [editSelectedRowIndex, setEditSelectedRowIndex] = useState<number | null>(null);
   // 수정용 입력 상태 — 라이브 입력값과 분리 (과거 장면은 half/시간/공격방향이 지금 라이브와 다름). 레이어만 공유(activeLayer).
@@ -577,6 +596,9 @@ export default function FpaLivePage() {
   const [editTimeline, setEditTimeline] = useState('00:00');
   const [editStatInput, setEditStatInput] = useState('');
   const [editPendingPass, setEditPendingPass] = useState<{ code: string; side: PitchSide; startId?: string; sx: number; sy: number; mx: number; my: number } | null>(null);
+  // 수비 화살표 1차 클릭 대기 — 상대 볼 출발점을 찍으면 pendingPass 로 승격되어 2차 클릭에서 화살표 완성
+  const [pendingDefStart, setPendingDefStart] = useState<{ code: string; side: PitchSide } | null>(null);
+  const [editPendingDefStart, setEditPendingDefStart] = useState<{ code: string; side: PitchSide } | null>(null);
   const [matchId, setMatchId] = useState('ID');
   const [teamIdH, setTeamIdH] = useState('Home');
   const [teamIdA, setTeamIdA] = useState('Away');
@@ -856,6 +878,11 @@ export default function FpaLivePage() {
       setStatus('선택된 좌표를 찾을 수 없습니다');
       return false;
     }
+    // 행위자 번호는 아군(우리 팀) 점에만 — 상대(away) 점엔 절대 안 붙게
+    if (!isAllyDot(dotsArr[sel.index])) {
+      setStatus('행위자 번호는 아군 점에만 붙일 수 있습니다 (상대 점 선택됨)');
+      return false;
+    }
     const assign = (prev: PitchDot[]) =>
       prev.map((dot, index) => (index === sel.index ? { ...dot, number } : dot));
     if (sel.side === 'before') setBeforeDots(assign);
@@ -875,6 +902,10 @@ export default function FpaLivePage() {
     const dotsArr = sel.side === 'before' ? editBeforeDots : editAfterDots;
     if (!dotsArr[sel.index]) {
       setStatus('수정용 피치의 선택된 좌표를 찾을 수 없습니다');
+      return false;
+    }
+    if (!isAllyDot(dotsArr[sel.index])) {
+      setStatus('행위자 번호는 아군 점에만 붙일 수 있습니다 (상대 점 선택됨)');
       return false;
     }
     const assign = (prev: PitchDot[]) =>
@@ -901,13 +932,21 @@ export default function FpaLivePage() {
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점
     if (pendingPass && pendingPass.side === side) {
       const c = dotFromClientPoint(event.clientX, event.clientY, rect);
-      const arrow = { side, startId: pendingPass.startId, x1: pendingPass.sx, y1: pendingPass.sy, x2: c.screen_x, y2: c.screen_y };
+      const arrow = { side, startId: pendingPass.startId, x1: pendingPass.sx, y1: pendingPass.sy, x2: c.screen_x, y2: c.screen_y, code: pendingPass.code, rowIndex: rows.length };
       setPassArrows((prev) => [...prev, arrow]);
       const start: PitchDot = { meter_x: pendingPass.mx, meter_y: pendingPass.my, screen_x: pendingPass.sx, screen_y: pendingPass.sy };
       const end: PitchDot = { meter_x: c.meter_x, meter_y: c.meter_y, screen_x: c.screen_x, screen_y: c.screen_y };
       const code = pendingPass.code;
       setPendingPass(null);
       void scorePass(code, start, end);
+      return;
+    }
+    // 수비 화살표 1차 클릭 = 상대 볼 출발점 → pendingPass 로 승격(2차 클릭에서 화살표 완성)
+    if (pendingDefStart && pendingDefStart.side === side) {
+      const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+      setPendingPass({ code: pendingDefStart.code, side, sx: c.screen_x, sy: c.screen_y, mx: c.meter_x, my: c.meter_y });
+      setPendingDefStart(null);
+      setStatus('수비: 끊은/막은 지점을 클릭하세요 (화살표 끝)');
       return;
     }
     const nextDot: PitchDot = {
@@ -990,7 +1029,8 @@ export default function FpaLivePage() {
 
   const copyBeforeToAfter = () => {
     const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeDots);
-    const nextAfterArrows = mirroredBeforeArrowsForAfter(passArrows, idMap);
+    // 수비 화살표(상대 공 경로)는 끊은 뒤 사라지므로 after 로 복사하지 않음
+    const nextAfterArrows = mirroredBeforeArrowsForAfter(passArrows.filter((arrow) => !statInputIsDefenseArrow(arrow.code)), idMap);
     setAfterDots(nextAfterDots);
     setPassArrows((prev) => [...prev.filter((arrow) => arrow.side !== 'after'), ...nextAfterArrows]);
     setSelectedDualDot(null);
@@ -1007,16 +1047,30 @@ export default function FpaLivePage() {
     setAfterDots([]);
     setSelectedDualDot(null);
     setPendingPass(null);
+    setPendingDefStart(null);
     setPassArrows([]);
   };
 
-  // 장면 저장: 현재 라이브 장면 스냅샷을 savedScenes 에 append. (저장된 장면 수정은 아래 수정용 피치에서)
-  const saveScene = () => {
+  // 장면 저장: 저장 시점의 최종 before/after(+화살표)로 이 장면의 모든 액션을 재채점한 뒤 스냅샷을 savedScenes 에 append.
+  //  → 코드 입력 순서와 무관하게 이동 액션(드리블/침투) 경로·획득 t/f 가 최종 좌표 기준으로 확정됨.
+  const saveScene = async () => {
     if (!rows.length) {
       setStatus('저장할 액션이 없습니다');
       return;
     }
-    const snapshot: SavedScene = { rows, logs, beforeDots, afterDots, passArrows, primary: primaryRowIndex };
+    setBusy(true);
+    setStatus('장면 저장 · 최종 좌표로 재채점 중…');
+    const { rows: scoredRows, logs: scoredLogs } = await rescoreSceneRows(rows, logs, {
+      before: beforeDots,
+      after: afterDots,
+      arrows: passArrows,
+      actorTeam: team,
+      half,
+      direction,
+      timeline,
+      primary: primaryRowIndex,
+    });
+    const snapshot: SavedScene = { rows: scoredRows, logs: scoredLogs, beforeDots, afterDots, passArrows, primary: primaryRowIndex };
     const nextBeforeDots = clonePitchDotsForNextScene(afterDots);
     setSavedScenes((prev) => [...prev, snapshot]);
     setRows([]);
@@ -1027,8 +1081,10 @@ export default function FpaLivePage() {
     setAfterDots([]);
     setSelectedDualDot(null);
     setPendingPass(null);
+    setPendingDefStart(null);
     setPassArrows([]);
-    setStatus('장면 저장됨 — After 좌표를 다음 Before로 복사했습니다');
+    setBusy(false);
+    setStatus('장면 저장됨 · 최종 좌표로 재채점 완료 — After 좌표를 다음 Before로 복사했습니다');
   };
 
   // 새 장면: 저장 안 한 현재 장면을 버리고 새로 시작
@@ -1063,6 +1119,7 @@ export default function FpaLivePage() {
     setEditTimeline(nextEditTimeline);
     setEditStatInput('');
     setEditPendingPass(null);
+    setEditPendingDefStart(null);
     setStatus(`장면 ${selectedSceneIndex + 1} 수정용 피치로 불러옴 — 아래에서 수정 후 "수정 저장"`);
   };
 
@@ -1079,6 +1136,7 @@ export default function FpaLivePage() {
     setEditSelectedRowIndex(null);
     setEditStatInput('');
     setEditPendingPass(null);
+    setEditPendingDefStart(null);
     if (pendingXgot?.canvas === 'edit') resetXgotState();
   };
 
@@ -1095,24 +1153,37 @@ export default function FpaLivePage() {
     setStatus(`장면 ${removedIndex + 1} 삭제됨`);
   };
 
-  // 수정 저장: 편집 중 장면을 제자리 덮어쓰기 (순서 유지)
-  const saveEditedScene = () => {
+  // 수정 저장: 편집 중 장면을 최종 좌표로 재채점 후 제자리 덮어쓰기 (순서 유지)
+  const saveEditedScene = async () => {
     if (editingSceneIndex == null) return;
     if (!editRows.length) {
       setStatus('장면에 액션이 없습니다 — 빈 장면은 저장할 수 없습니다');
       return;
     }
     const savedIndex = editingSceneIndex;
+    setBusy(true);
+    setStatus('수정 저장 · 최종 좌표로 재채점 중…');
+    const { rows: scoredRows, logs: scoredLogs } = await rescoreSceneRows(editRows, editLogs, {
+      before: editBeforeDots,
+      after: editAfterDots,
+      arrows: editPassArrows,
+      actorTeam: editTeam,
+      half: editHalf,
+      direction: editDirection,
+      timeline: editTimeline,
+      primary: editPrimary,
+    });
     const snapshot: SavedScene = {
-      rows: editRows,
-      logs: editLogs,
+      rows: scoredRows,
+      logs: scoredLogs,
       beforeDots: editBeforeDots,
       afterDots: editAfterDots,
       passArrows: editPassArrows,
       primary: editPrimary,
     };
     setSavedScenes((prev) => prev.map((scene, index) => (index === savedIndex ? snapshot : scene)));
-    setStatus(`장면 ${savedIndex + 1} 수정 저장됨`);
+    setBusy(false);
+    setStatus(`장면 ${savedIndex + 1} 수정 저장됨 · 최종 좌표로 재채점 완료`);
     closeSceneEditor();
   };
 
@@ -1122,13 +1193,21 @@ export default function FpaLivePage() {
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점 (라이브와 동일)
     if (editPendingPass && editPendingPass.side === side) {
       const c = dotFromClientPoint(event.clientX, event.clientY, rect);
-      const arrow = { side, startId: editPendingPass.startId, x1: editPendingPass.sx, y1: editPendingPass.sy, x2: c.screen_x, y2: c.screen_y };
+      const arrow = { side, startId: editPendingPass.startId, x1: editPendingPass.sx, y1: editPendingPass.sy, x2: c.screen_x, y2: c.screen_y, code: editPendingPass.code, rowIndex: editRows.length };
       setEditPassArrows((prev) => [...prev, arrow]);
       const start: PitchDot = { meter_x: editPendingPass.mx, meter_y: editPendingPass.my, screen_x: editPendingPass.sx, screen_y: editPendingPass.sy };
       const end: PitchDot = { meter_x: c.meter_x, meter_y: c.meter_y, screen_x: c.screen_x, screen_y: c.screen_y };
       const code = editPendingPass.code;
       setEditPendingPass(null);
       void scoreEditPass(code, start, end);
+      return;
+    }
+    // 수비 화살표 1차 클릭 = 상대 볼 출발점 → editPendingPass 로 승격 (라이브와 동일)
+    if (editPendingDefStart && editPendingDefStart.side === side) {
+      const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+      setEditPendingPass({ code: editPendingDefStart.code, side, sx: c.screen_x, sy: c.screen_y, mx: c.meter_x, my: c.meter_y });
+      setEditPendingDefStart(null);
+      setStatus('수비: 끊은/막은 지점을 클릭하세요 (수정용)');
       return;
     }
     const nextDot: PitchDot = {
@@ -1284,15 +1363,23 @@ export default function FpaLivePage() {
     }
   };
 
-  const buildDualSubmitDots = () => {
-    if (inputMode !== 'dual') return dots;
-    const beforeAllies = beforeDots.filter(isAllyDot);
-    const afterAllies = afterDots.filter(isAllyDot);
-    if (statInputHasReceiver(statInput) && beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
-    if (beforeAllies.length && afterAllies.length) return [beforeAllies[0], afterAllies[0]];
+  // 특정 코드에 대해 before/after에서 제출용 좌표를 뽑는 공용 로직 (라이브 제출 + 저장 시 재채점 공용)
+  const submitDotsForCode = (code: string, before: PitchDot[], after: PitchDot[]): PitchDot[] => {
+    const beforeAllies = before.filter(isAllyDot);
+    const afterAllies = after.filter(isAllyDot);
+    // pn/dribble 등 이동 액션: 첫 ally([0])가 아니라 코드 앞번호(행위자)와 일치하는 점을 before·after에서 골라 변위 계산
+    const actorNum = code.trim().match(/^(\d+)/)?.[1];
+    const pickActor = (arr: PitchDot[]) => (actorNum && arr.find((dot) => dot.number === actorNum)) || arr[0];
+    if (statInputHasReceiver(code) && beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
+    if (beforeAllies.length && afterAllies.length) return [pickActor(beforeAllies), pickActor(afterAllies)];
     if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
     if (afterAllies.length >= 2) return afterAllies.slice(0, 2);
     return [...beforeAllies, ...afterAllies];
+  };
+
+  const buildDualSubmitDots = () => {
+    if (inputMode !== 'dual') return dots;
+    return submitDotsForCode(statInput, beforeDots, afterDots);
   };
 
   // 패스/크로스 채점: 시작 점 + 도착점(클릭) 2점 → codex /fpa/logs/generate
@@ -1318,6 +1405,7 @@ export default function FpaLivePage() {
         return;
       }
       const data = await response.json() as { log_text: string; log_data: LogPreview };
+      data.log_data.StatInput = code;
       setLogs((prev) => [...prev, data.log_text]);
       setRows((prev) => {
         const next = [...prev, data.log_data];
@@ -1331,6 +1419,115 @@ export default function FpaLivePage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // 화살표 screen 좌표(0~1050 / 0~680) → meter dot 역변환 (dotFromClientPoint 의 역)
+  const screenToMeterDot = (sx: number, sy: number): PitchDot => ({
+    meter_x: Number(((sx / 1050) * 105).toFixed(2)),
+    meter_y: Number((((680 - sy) / 680) * 68).toFixed(2)),
+    screen_x: sx,
+    screen_y: sy,
+  });
+
+  // 패스 화살표 도착점을 드래그로 옮긴 뒤 놓을 때 → 해당 로그 행을 새 [시작,도착]으로 재채점(제자리 교체)
+  const rescorePassArrow = async (canvas: 'live' | 'edit', arrow: PassArrow) => {
+    if (arrow.code == null || arrow.rowIndex == null) return;
+    const isEdit = canvas === 'edit';
+    const actorTeam = isEdit ? editTeam : team;
+    const start = screenToMeterDot(arrow.x1, arrow.y1);
+    const end = screenToMeterDot(arrow.x2, arrow.y2);
+    setBusy(true);
+    setStatus('패스 도착점 이동 → 재채점 중');
+    try {
+      const response = await apiFetch('/fpa/logs/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          stat_input: arrow.code,
+          dots: [toPayloadDot(start, actorTeam), toPayloadDot(end, actorTeam)],
+          dual_pitch: isEdit ? buildEditDualPitchPayload() : buildDualPitchPayload(),
+          half: isEdit ? editHalf : half,
+          team: actorTeam,
+          direction: isEdit ? editDirection : direction,
+          timeline: isEdit ? editTimeline : timeline,
+        }),
+      });
+      if (!response.ok) {
+        setStatus((await response.text()) || '재채점 실패');
+        return;
+      }
+      const data = await response.json() as { log_text: string; log_data: LogPreview };
+      data.log_data.StatInput = arrow.code;
+      const ri = arrow.rowIndex;
+      (isEdit ? setEditLogs : setLogs)((prev) => prev.map((entry, idx) => (idx === ri ? data.log_text : entry)));
+      (isEdit ? setEditRows : setRows)((prev) => prev.map((row, idx) => (idx === ri ? data.log_data : row)));
+      setStatus('패스 도착점 이동 · 재채점 완료');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '재채점 실패');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 장면 저장 시 호출 — 그 장면의 모든 행을 현재(최종) before/after(+패스 화살표) 기준으로 재채점해 교체본을 반환.
+  //  · 패스/크로스: 연결된 화살표(rowIndex)의 시작·도착 좌표 사용
+  //  · 그 외(이동/점 액션): submitDotsForCode 로 before/after에서 코드 기반 좌표 재선택
+  //  · StatInput 없는 행(옛 데이터/xGOT 등)은 임시값 그대로 유지
+  const rescoreSceneRows = async (
+    sceneRows: LogPreview[],
+    sceneLogs: string[],
+    ctx: {
+      before: PitchDot[];
+      after: PitchDot[];
+      arrows: PassArrow[];
+      actorTeam: 'home' | 'away';
+      half: string;
+      direction: 'left' | 'right';
+      timeline: string;
+      primary: number | null;
+    },
+  ): Promise<{ rows: LogPreview[]; logs: string[] }> => {
+    const dualPayload = {
+      actor_team: ctx.actorTeam,
+      primary_row_index: ctx.primary,
+      input_tier: ctx.before.length + ctx.after.length >= 6 ? 'recommended' : 'minimal',
+      before: { dots: ctx.before.map((dot) => toPayloadDot(dot, ctx.actorTeam)) },
+      after: { dots: ctx.after.map((dot) => toPayloadDot(dot, ctx.actorTeam)) },
+    };
+    const nextRows = [...sceneRows];
+    const nextLogs = [...sceneLogs];
+    for (let i = 0; i < sceneRows.length; i += 1) {
+      const code = sceneRows[i].StatInput;
+      if (!code) continue;
+      const arrow = ctx.arrows.find((item) => item.rowIndex === i);
+      const dotsForRow = arrow
+        ? [screenToMeterDot(arrow.x1, arrow.y1), screenToMeterDot(arrow.x2, arrow.y2)]
+        : submitDotsForCode(code, ctx.before, ctx.after);
+      if (!dotsForRow.length) continue;
+      try {
+        const response = await apiFetch('/fpa/logs/generate', {
+          method: 'POST',
+          body: JSON.stringify({
+            stat_input: code,
+            dots: dotsForRow.map((dot) => toPayloadDot(dot, ctx.actorTeam)),
+            dual_pitch: dualPayload,
+            half: ctx.half,
+            team: ctx.actorTeam,
+            direction: ctx.direction,
+            timeline: ctx.timeline,
+          }),
+        });
+        if (!response.ok) continue;
+        const data = await response.json() as { log_text: string; log_data: LogPreview };
+        data.log_data.StatInput = code;
+        // xGOT는 백엔드 채점이 만들지 않음(골문클릭 플로우에서 나중에 채워짐) → 재채점이 덮어쓰지 않게 기존값 보존
+        if (sceneRows[i].xGOT) data.log_data.xGOT = sceneRows[i].xGOT;
+        nextRows[i] = data.log_data;
+        nextLogs[i] = data.log_text;
+      } catch {
+        // 개별 행 재채점 실패는 임시값 유지 (전체 저장은 계속)
+      }
+    }
+    return { rows: nextRows, logs: nextLogs };
   };
 
   const buildDualPitchPayload = () => {
@@ -1353,8 +1550,10 @@ export default function FpaLivePage() {
   const buildEditSubmitDots = () => {
     const beforeAllies = editBeforeDots.filter(isAllyDot);
     const afterAllies = editAfterDots.filter(isAllyDot);
+    const actorNum = editStatInput.trim().match(/^(\d+)/)?.[1];
+    const pickActor = (arr: PitchDot[]) => (actorNum && arr.find((dot) => dot.number === actorNum)) || arr[0];
     if (statInputHasReceiver(editStatInput) && beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
-    if (beforeAllies.length && afterAllies.length) return [beforeAllies[0], afterAllies[0]];
+    if (beforeAllies.length && afterAllies.length) return [pickActor(beforeAllies), pickActor(afterAllies)];
     if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
     if (afterAllies.length >= 2) return afterAllies.slice(0, 2);
     return [...beforeAllies, ...afterAllies];
@@ -1404,6 +1603,7 @@ export default function FpaLivePage() {
         return;
       }
       const data = await response.json() as { log_text: string; log_data: LogPreview };
+      data.log_data.StatInput = code;
       setEditLogs((prev) => [...prev, data.log_text]);
       setEditRows((prev) => {
         const next = [...prev, data.log_data];
@@ -1429,6 +1629,13 @@ export default function FpaLivePage() {
       assignNumberToEditSelectedDot(editStatInput.trim());
       return;
     }
+    // 수비(태클/인터셉트/차단/블록) = 상대 공 경로를 Before 에 화살표로 (라이브와 동일)
+    if (statInputIsDefenseArrow(editStatInput)) {
+      setEditPendingDefStart({ code: editStatInput.trim(), side: 'before' });
+      setEditStatInput('');
+      setStatus('수비: 상대 볼 출발점을 Before 에 클릭하세요 (수정용)');
+      return;
+    }
     // 패스/크로스(받는번호 O) = 시작 점 선택 후 도착점 클릭까지 채점 지연 (라이브와 동일)
     if (statInputHasReceiver(editStatInput)) {
       const sel = editSelectedDot;
@@ -1436,6 +1643,10 @@ export default function FpaLivePage() {
       const startDot = sel ? dotsArr[sel.index] : undefined;
       if (!sel || !startDot) {
         setStatus('수정용 피치에서 패스 시작 점을 먼저 찍으세요');
+        return;
+      }
+      if (!isAllyDot(startDot)) {
+        setStatus('패스 시작 점은 아군 점이어야 합니다 (상대 점 선택됨)');
         return;
       }
       const actorNum = editStatInput.trim().match(/^(\d+)/)?.[1];
@@ -1474,6 +1685,7 @@ export default function FpaLivePage() {
       }
 
       const data = await response.json() as { log_text: string; log_data: LogPreview };
+      data.log_data.StatInput = requestedStatInput;
       setEditLogs((prev) => [...prev, data.log_text]);
       setEditRows((prev) => {
         const nextRows = [...prev, data.log_data];
@@ -1504,13 +1716,17 @@ export default function FpaLivePage() {
       // 비패스 액션: 선택된 점에 행위자 번호 지정 (패스는 도착점 클릭으로 별도 처리)
       const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
       const actorSel = editSelectedDot;
-      if (actorSel && actorNum) {
+      const actorTarget = actorSel ? (actorSel.side === 'before' ? editBeforeDots : editAfterDots)[actorSel.index] : undefined;
+      const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
+      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
         const assign = (prev: PitchDot[]) =>
           prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
         if (actorSel.side === 'before') setEditBeforeDots(assign);
         else setEditAfterDots(assign);
       }
-      setStatus('수정용 장면에 액션 추가 완료');
+      setStatus(actorOnOpponent
+        ? '액션 추가됨 · 행위자 번호는 상대 점에 안 붙었습니다 — 아군 점 선택 후 재지정하세요'
+        : '수정용 장면에 액션 추가 완료');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '로그 생성 실패');
     } finally {
@@ -1520,6 +1736,25 @@ export default function FpaLivePage() {
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
+      // 패스 화살표 끝점 드래그 — 점과 분리, 화살표만 이동
+      const arrowDrag = draggingArrowRef.current;
+      if (arrowDrag) {
+        const isEditArrow = arrowDrag.canvas === 'edit';
+        const arrowRef = arrowDrag.side === 'before'
+          ? (isEditArrow ? editBeforePitchRef.current : beforePitchRef.current)
+          : (isEditArrow ? editAfterPitchRef.current : afterPitchRef.current);
+        const arrowRect = arrowRef?.getBoundingClientRect();
+        if (!arrowRect) return;
+        arrowDrag.moved = true;
+        const coords = dotFromClientPoint(event.clientX, event.clientY, arrowRect);
+        (isEditArrow ? setEditPassArrows : setPassArrows)((prev) => prev.map((arrow, idx) => {
+          if (idx !== arrowDrag.index) return arrow;
+          return arrowDrag.end === 'end'
+            ? { ...arrow, x2: coords.screen_x, y2: coords.screen_y }
+            : { ...arrow, x1: coords.screen_x, y1: coords.screen_y };
+        }));
+        return;
+      }
       const dragging = draggingDualDotRef.current;
       if (!dragging) return;
       const isEdit = dragging.canvas === 'edit';
@@ -1547,6 +1782,7 @@ export default function FpaLivePage() {
 
     const handlePointerUp = () => {
       draggingDualDotRef.current = null;
+      draggingArrowRef.current = null;
     };
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -1573,22 +1809,52 @@ export default function FpaLivePage() {
       assignNumberToLiveSelectedDot(statInput.trim());
       return;
     }
+    // 수비(태클/인터셉트/차단/블록) = 상대 공 경로를 Before 에 화살표로. 코드 입력 후 2번 클릭(출발점→끊은지점)
+    if (inputMode === 'dual' && statInputIsDefenseArrow(statInput)) {
+      setPendingDefStart({ code: statInput.trim(), side: 'before' });
+      setStatInput('');
+      setStatus('수비: 상대 볼 출발점을 Before 에 클릭하세요 (화살표 시작)');
+      return;
+    }
     // 패스/크로스(받는번호 O) = 2점(시작·도착). 점 1개만 찍고 코드 입력 → 채점은 도착점 클릭 시 (xFP/fpa)
     if (inputMode === 'dual' && statInputHasReceiver(statInput)) {
-      const sel = selectedDualDot;
-      const dotsArr = sel?.side === 'before' ? beforeDots : afterDots;
-      const startDot = sel ? dotsArr[sel.index] : undefined;
-      if (!sel || !startDot) {
-        setStatus('패스 시작 점을 먼저 찍으세요');
+      const actorNum = statInput.trim().match(/^(\d+)/)?.[1];
+      let side: PitchSide | undefined = selectedDualDot?.side;
+      let startIndex: number | undefined = selectedDualDot?.index;
+      let startDot =
+        side != null && startIndex != null ? (side === 'before' ? beforeDots : afterDots)[startIndex] : undefined;
+      // 선택이 없으면(예: 장면 저장 후 after→before 복사 직후) 코드의 행위자 번호로 시작 점 탐색 → 그 점에서 화살표 시작
+      if (!startDot && actorNum) {
+        const bIdx = beforeDots.findIndex((dot) => isAllyDot(dot) && dot.number === actorNum);
+        if (bIdx >= 0) {
+          side = 'before';
+          startIndex = bIdx;
+          startDot = beforeDots[bIdx];
+        } else {
+          const aIdx = afterDots.findIndex((dot) => isAllyDot(dot) && dot.number === actorNum);
+          if (aIdx >= 0) {
+            side = 'after';
+            startIndex = aIdx;
+            startDot = afterDots[aIdx];
+          }
+        }
+      }
+      if (!startDot || side == null || startIndex == null) {
+        setStatus('패스 시작 점을 먼저 찍으세요 (또는 시작 선수 번호가 찍혀 있어야 합니다)');
         return;
       }
-      const actorNum = statInput.trim().match(/^(\d+)/)?.[1];
+      if (!isAllyDot(startDot)) {
+        setStatus('패스 시작 점은 아군 점이어야 합니다 (상대 점 선택됨)');
+        return;
+      }
       if (actorNum) {
-        const assign = (prev: PitchDot[]) => prev.map((dot, index) => (index === sel.index ? { ...dot, number: actorNum } : dot));
-        if (sel.side === 'before') setBeforeDots(assign);
+        const idx = startIndex;
+        const targetSide = side;
+        const assign = (prev: PitchDot[]) => prev.map((dot, index) => (index === idx ? { ...dot, number: actorNum } : dot));
+        if (targetSide === 'before') setBeforeDots(assign);
         else setAfterDots(assign);
       }
-      setPendingPass({ code: statInput, side: sel.side, startId: startDot.id, sx: startDot.screen_x, sy: startDot.screen_y, mx: startDot.meter_x, my: startDot.meter_y });
+      setPendingPass({ code: statInput, side, startId: startDot.id, sx: startDot.screen_x, sy: startDot.screen_y, mx: startDot.meter_x, my: startDot.meter_y });
       setStatInput('');
       setStatus('패스 도착점을 클릭하세요 (화살표)');
       return;
@@ -1619,6 +1885,7 @@ export default function FpaLivePage() {
       }
 
       const data = await response.json() as { log_text: string; log_data: LogPreview };
+      data.log_data.StatInput = requestedStatInput;
       setLogs((prev) => [...prev, data.log_text]);
       setRows((prev) => {
         const nextRows = [...prev, data.log_data];
@@ -1651,13 +1918,18 @@ export default function FpaLivePage() {
         // 비패스 액션: 방금 찍은(선택된) 점에 행위자 번호 지정 (패스는 위에서 도착점 클릭으로 별도 처리)
         const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
         const actorSel = selectedDualDot;
-        if (actorSel && actorNum) {
+        const actorTarget = actorSel ? (actorSel.side === 'before' ? beforeDots : afterDots)[actorSel.index] : undefined;
+        // 행위자 번호는 아군 점에만 — 상대(away) 점 선택 시 지정 스킵(오염 방지)
+        const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
+        if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
           const assign = (prev: PitchDot[]) =>
             prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
           if (actorSel.side === 'before') setBeforeDots(assign);
           else setAfterDots(assign);
         }
-        setStatus('로그 추가 완료');
+        setStatus(actorOnOpponent
+          ? '로그 추가됨 · 단 행위자 번호는 상대 점에 안 붙었습니다 — 아군 점 선택 후 재지정하세요'
+          : '로그 추가 완료');
       } else {
         setDots([]);
         setStatus('로그 추가 완료');
@@ -1839,6 +2111,7 @@ export default function FpaLivePage() {
       closeSceneEditor();
       setPrimaryRowIndex(null);
       setPendingPass(null);
+      setPendingDefStart(null);
       setPassArrows([]);
       if (saved.teamid_h) setTeamIdH(saved.teamid_h);
       if (saved.teamid_a) setTeamIdA(saved.teamid_a);
@@ -2120,10 +2393,25 @@ export default function FpaLivePage() {
                   <path d="M0,0 L6,3 L0,6 Z" fill="#16c2c2" />
                 </marker>
               </defs>
-              {passArrows.filter((arrow) => arrow.side === side).map((arrow, i) => (
-                <line key={`arrow-${side}-${i}`} markerEnd="url(#fpa-pass-arrowhead)"
-                  stroke="#16c2c2" strokeWidth={4} x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
-              ))}
+              {passArrows.map((arrow, i) => (arrow.side === side ? (
+                <g key={`arrow-${side}-${i}`}>
+                  <line markerEnd="url(#fpa-pass-arrowhead)"
+                    stroke="#16c2c2" strokeWidth={4} x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
+                  <circle className="fpa-arrow-handle" cx={arrow.x2} cy={arrow.y2} r={13}
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      draggingArrowRef.current = { index: i, end: 'end', side, canvas: 'live', moved: false };
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onPointerUp={() => {
+                      const info = draggingArrowRef.current;
+                      if (info && info.canvas === 'live' && info.index === i && info.moved) {
+                        void rescorePassArrow('live', passArrowsRef.current[i] ?? arrow);
+                      }
+                    }}
+                    onClick={(event) => event.stopPropagation()} />
+                </g>
+              ) : null))}
             </svg>
           ) : null}
         </div>
@@ -2200,10 +2488,25 @@ export default function FpaLivePage() {
                   <path d="M0,0 L6,3 L0,6 Z" fill="#16c2c2" />
                 </marker>
               </defs>
-              {editPassArrows.filter((arrow) => arrow.side === side).map((arrow, i) => (
-                <line key={`edit-arrow-${side}-${i}`} markerEnd={`url(#fpa-pass-arrowhead-edit-${side})`}
-                  stroke="#16c2c2" strokeWidth={4} x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
-              ))}
+              {editPassArrows.map((arrow, i) => (arrow.side === side ? (
+                <g key={`edit-arrow-${side}-${i}`}>
+                  <line markerEnd={`url(#fpa-pass-arrowhead-edit-${side})`}
+                    stroke="#16c2c2" strokeWidth={4} x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
+                  <circle className="fpa-arrow-handle" cx={arrow.x2} cy={arrow.y2} r={13}
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      draggingArrowRef.current = { index: i, end: 'end', side, canvas: 'edit', moved: false };
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onPointerUp={() => {
+                      const info = draggingArrowRef.current;
+                      if (info && info.canvas === 'edit' && info.index === i && info.moved) {
+                        void rescorePassArrow('edit', editPassArrowsRef.current[i] ?? arrow);
+                      }
+                    }}
+                    onClick={(event) => event.stopPropagation()} />
+                </g>
+              ) : null))}
             </svg>
           ) : null}
         </div>
