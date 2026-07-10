@@ -460,13 +460,43 @@ function statInputIsNumberOnly(statInput: string) {
 }
 
 // 수비 화살표 액션 — before 프레임에 상대 볼/슛 경로를 화살표(start→end)로 그림 (2클릭). 리시버 번호 없음.
-// aa/q/ww = 패스/볼 경로 → EPV-prevented (백엔드), qw = 슛 경로 → xG-prevented (백엔드). 그리기 동작은 동일.
+// aa/q/ww = 패스/볼 경로 → EPV(end)−EPV(start) 로 채점하므로 양 끝이 모두 점수에 들어간다.
+// qw = 슛 블락 → xG(슈터 위치)만으로 채점. end(블록 지점)는 기록용이고 점수에 안 쓰인다.
+//   상대팀은 좌표만 찍으므로 슛 위치 마커가 필요해 화살표를 유지한다 (2026-07-10 결정).
 // 제외: Duel(b/bb)·Clear(w)=포인트 액션.
 const DEFENSE_ARROW_CODES = new Set(['aa', 'q', 'ww', 'qw']);
-function statInputIsDefenseArrow(statInput?: string | null) {
+const SHOT_BLOCK_CODES = new Set(['qw']);
+function statInputActionCode(statInput?: string | null) {
   const base = (statInput ?? '').trim().split('.', 1)[0] || '';
-  const match = base.match(/^\d+([a-z]+)$/i);
-  return !!match && DEFENSE_ARROW_CODES.has(match[1].toLowerCase());
+  return base.match(/^\d+([a-z]+)$/i)?.[1].toLowerCase() ?? '';
+}
+function statInputIsDefenseArrow(statInput?: string | null) {
+  return DEFENSE_ARROW_CODES.has(statInputActionCode(statInput));
+}
+function statInputIsShotBlock(statInput?: string | null) {
+  return SHOT_BLOCK_CODES.has(statInputActionCode(statInput));
+}
+
+// 화살표 그리기 대기 상태 서술자 — 피치 위 배지/커서/미리보기 렌더에 사용
+type ArrowArm = { side: PitchSide; code: string; stage: 'start' | 'end'; sx: number; sy: number };
+
+// 패스(아군 볼) vs 수비(상대 볼 차단)를 한눈에 구분 — 색·선종류·끝점 마커가 모두 다름.
+// aa/q/ww/qw 세부 구분은 화살표에 붙는 코드 칩이 담당한다.
+const ARROW_COLORS = { pass: '#16c2c2', defense: '#e0524f' } as const;
+type ArrowKind = keyof typeof ARROW_COLORS;
+function arrowKind(code?: string): ArrowKind {
+  return statInputIsDefenseArrow(code) ? 'defense' : 'pass';
+}
+
+// 각 클릭이 무엇을 뜻하는지 — 피치 배지와 하단 상태바가 같은 문구를 쓴다
+function arrowArmHint(code: string, stage: 'start' | 'end') {
+  if (statInputIsShotBlock(code)) {
+    return stage === 'start' ? '슛 위치(슈터) 클릭 · xG 채점 기준' : '블록 지점 클릭 · 기록용';
+  }
+  if (statInputIsDefenseArrow(code)) {
+    return stage === 'start' ? '상대 볼 출발점 클릭' : '끊은 지점 클릭';
+  }
+  return '패스 도착점 클릭';
 }
 
 function arrowBelongsToRemovedDot(arrow: PassArrow, side: PitchSide, removedId: string) {
@@ -599,6 +629,136 @@ export default function FpaLivePage() {
   // 수비 화살표 1차 클릭 대기 — 상대 볼 출발점을 찍으면 pendingPass 로 승격되어 2차 클릭에서 화살표 완성
   const [pendingDefStart, setPendingDefStart] = useState<{ code: string; side: PitchSide } | null>(null);
   const [editPendingDefStart, setEditPendingDefStart] = useState<{ code: string; side: PitchSide } | null>(null);
+  // 화살표 그리는 중 커서 위치(viewBox 좌표) — 시작점→커서 고무줄 미리보기용
+  const [arrowPreview, setArrowPreview] = useState<{ canvas: 'live' | 'edit'; side: PitchSide; x: number; y: number } | null>(null);
+
+  // pendingDefStart(출발점 대기) / pendingPass(도착점 대기)를 피치 렌더가 쓰기 좋은 형태로 통합
+  const liveArrowArm: ArrowArm | null = pendingPass
+    ? { side: pendingPass.side, code: pendingPass.code, stage: 'end', sx: pendingPass.sx, sy: pendingPass.sy }
+    : pendingDefStart
+      ? { side: pendingDefStart.side, code: pendingDefStart.code, stage: 'start', sx: 0, sy: 0 }
+      : null;
+  const editArrowArm: ArrowArm | null = editPendingPass
+    ? { side: editPendingPass.side, code: editPendingPass.code, stage: 'end', sx: editPendingPass.sx, sy: editPendingPass.sy }
+    : editPendingDefStart
+      ? { side: editPendingDefStart.side, code: editPendingDefStart.code, stage: 'start', sx: 0, sy: 0 }
+      : null;
+
+  const cancelArrowDraw = () => {
+    if (!pendingPass && !pendingDefStart && !editPendingPass && !editPendingDefStart) return;
+    setPendingPass(null);
+    setPendingDefStart(null);
+    setEditPendingPass(null);
+    setEditPendingDefStart(null);
+    setArrowPreview(null);
+    setStatus('화살표 그리기 취소');
+  };
+
+  // 화살표 대기 중인 피치 위에서만 커서를 추적 (미리보기 선). 그 외에는 리렌더 없음
+  const trackArrowPreview = (
+    canvas: 'live' | 'edit',
+    side: PitchSide,
+    arm: ArrowArm | null,
+    event: React.PointerEvent<HTMLDivElement>,
+    rect: DOMRect | undefined,
+  ) => {
+    if (!arm || arm.side !== side || !rect) return;
+    const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+    setArrowPreview({ canvas, side, x: c.screen_x, y: c.screen_y });
+  };
+
+  const armedLive = !!liveArrowArm;
+  const armedEdit = !!editArrowArm;
+  useEffect(() => {
+    if (!armedLive && !armedEdit) setArrowPreview(null);
+  }, [armedLive, armedEdit]);
+
+  // 라이브·수정용 피치가 공유하는 화살표 오버레이 (기존 화살표 + 그리는 중 미리보기)
+  const renderArrowOverlay = (canvas: 'live' | 'edit', side: PitchSide, arrows: PassArrow[], arm: ArrowArm | null) => {
+    const armedHere = arm?.side === side;
+    const previewHere = arrowPreview?.canvas === canvas && arrowPreview.side === side ? arrowPreview : null;
+    if (!arrows.some((arrow) => arrow.side === side) && !armedHere) return null;
+    const liveArrows = canvas === 'edit' ? editPassArrowsRef : passArrowsRef;
+    const markerId = (kind: ArrowKind) => `fpa-arrowhead-${kind}-${canvas}-${side}`;
+    const armColor = ARROW_COLORS[arm ? arrowKind(arm.code) : 'pass'];
+
+    // 드래그 핸들 — 시작점/도착점 양끝. 점이 아니라 화살표 좌표만 움직이고, 놓으면 재채점
+    const handle = (index: number, end: 'start' | 'end', cx: number, cy: number, color: string, fallback: PassArrow) => (
+      <circle className="fpa-arrow-handle" cx={cx} cy={cy} fill={color} r={13} stroke={color}
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          draggingArrowRef.current = { index, end, side, canvas, moved: false };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerUp={() => {
+          const info = draggingArrowRef.current;
+          if (info && info.canvas === canvas && info.index === index && info.moved) {
+            void rescorePassArrow(canvas, liveArrows.current[index] ?? fallback);
+          }
+        }} />
+    );
+
+    return (
+      <svg className="fpa-scene-arrows" preserveAspectRatio="none" viewBox="0 0 1050 680">
+        <defs>
+          {(Object.keys(ARROW_COLORS) as ArrowKind[]).map((kind) => (
+            <marker id={markerId(kind)} key={kind} markerHeight="6" markerWidth="6" orient="auto" refX="4.5" refY="3">
+              <path d="M0,0 L6,3 L0,6 Z" fill={ARROW_COLORS[kind]} />
+            </marker>
+          ))}
+        </defs>
+        {armedHere && arm?.stage === 'end' ? (
+          <g className="fpa-arrow-preview">
+            <circle className="fpa-arrow-start-marker" cx={arm.sx} cy={arm.sy} r={11} stroke={armColor} />
+            {previewHere ? (
+              <line markerEnd={`url(#${markerId(arrowKind(arm.code))})`} stroke={armColor} strokeDasharray="12 8"
+                x1={arm.sx} y1={arm.sy} x2={previewHere.x} y2={previewHere.y} />
+            ) : null}
+          </g>
+        ) : null}
+        {arrows.map((arrow, index) => {
+          if (arrow.side !== side) return null;
+          const kind = arrowKind(arrow.code);
+          const color = ARROW_COLORS[kind];
+          const defense = kind === 'defense';
+          return (
+            <g key={`${canvas}-arrow-${side}-${index}`}>
+              <line
+                markerEnd={defense ? undefined : `url(#${markerId(kind)})`}
+                stroke={color} strokeDasharray={defense ? '14 7' : undefined} strokeWidth={4}
+                x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
+              {defense ? (
+                // 상대 볼이 어디서 출발해(○) 어디서 끊겼는지(✕). 방향이 드러나므로 화살촉은 생략
+                <g className="fpa-arrow-defense-caps" stroke={color}>
+                  <circle cx={arrow.x1} cy={arrow.y1} fill={color} r={6} />
+                  <line x1={arrow.x2 - 10} y1={arrow.y2 - 10} x2={arrow.x2 + 10} y2={arrow.y2 + 10} />
+                  <line x1={arrow.x2 - 10} y1={arrow.y2 + 10} x2={arrow.x2 + 10} y2={arrow.y2 - 10} />
+                </g>
+              ) : null}
+              {handle(index, 'start', arrow.x1, arrow.y1, color, arrow)}
+              {handle(index, 'end', arrow.x2, arrow.y2, color, arrow)}
+            </g>
+          );
+        })}
+      </svg>
+    );
+  };
+
+  // 화살표 중점의 코드 칩 — SVG는 preserveAspectRatio="none" 이라 글자가 늘어나므로 HTML 오버레이로 그린다
+  const renderArrowChips = (side: PitchSide, arrows: PassArrow[]) =>
+    arrows.map((arrow, index) => (arrow.side === side && arrow.code ? (
+      <div
+        className={`fpa-arrow-chip ${arrowKind(arrow.code)}`}
+        key={`chip-${side}-${index}`}
+        style={{
+          left: `${((arrow.x1 + arrow.x2) / 2 / 1050) * 100}%`,
+          top: `${((arrow.y1 + arrow.y2) / 2 / 680) * 100}%`,
+        }}
+      >
+        {arrow.code}
+      </div>
+    ) : null));
   const [matchId, setMatchId] = useState('ID');
   const [teamIdH, setTeamIdH] = useState('Home');
   const [teamIdA, setTeamIdA] = useState('Away');
@@ -946,7 +1106,7 @@ export default function FpaLivePage() {
       const c = dotFromClientPoint(event.clientX, event.clientY, rect);
       setPendingPass({ code: pendingDefStart.code, side, sx: c.screen_x, sy: c.screen_y, mx: c.meter_x, my: c.meter_y });
       setPendingDefStart(null);
-      setStatus('수비: 끊은/막은 지점을 클릭하세요 (화살표 끝)');
+      setStatus(`${arrowArmHint(pendingDefStart.code, 'end')} · Esc 취소`);
       return;
     }
     const nextDot: PitchDot = {
@@ -1207,7 +1367,7 @@ export default function FpaLivePage() {
       const c = dotFromClientPoint(event.clientX, event.clientY, rect);
       setEditPendingPass({ code: editPendingDefStart.code, side, sx: c.screen_x, sy: c.screen_y, mx: c.meter_x, my: c.meter_y });
       setEditPendingDefStart(null);
-      setStatus('수비: 끊은/막은 지점을 클릭하세요 (수정용)');
+      setStatus(`수정용: ${arrowArmHint(editPendingDefStart.code, 'end')} · Esc 취소`);
       return;
     }
     const nextDot: PitchDot = {
@@ -1437,7 +1597,7 @@ export default function FpaLivePage() {
     const start = screenToMeterDot(arrow.x1, arrow.y1);
     const end = screenToMeterDot(arrow.x2, arrow.y2);
     setBusy(true);
-    setStatus('패스 도착점 이동 → 재채점 중');
+    setStatus('화살표 이동 → 재채점 중');
     try {
       const response = await apiFetch('/fpa/logs/generate', {
         method: 'POST',
@@ -1460,7 +1620,7 @@ export default function FpaLivePage() {
       const ri = arrow.rowIndex;
       (isEdit ? setEditLogs : setLogs)((prev) => prev.map((entry, idx) => (idx === ri ? data.log_text : entry)));
       (isEdit ? setEditRows : setRows)((prev) => prev.map((row, idx) => (idx === ri ? data.log_data : row)));
-      setStatus('패스 도착점 이동 · 재채점 완료');
+      setStatus('화살표 이동 · 재채점 완료');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '재채점 실패');
     } finally {
@@ -1633,7 +1793,7 @@ export default function FpaLivePage() {
     if (statInputIsDefenseArrow(editStatInput)) {
       setEditPendingDefStart({ code: editStatInput.trim(), side: 'before' });
       setEditStatInput('');
-      setStatus('수비: 상대 볼 출발점을 Before 에 클릭하세요 (수정용)');
+      setStatus(`수정용 Before: ${arrowArmHint(editStatInput.trim(), 'start')} · Esc 취소`);
       return;
     }
     // 패스/크로스(받는번호 O) = 시작 점 선택 후 도착점 클릭까지 채점 지연 (라이브와 동일)
@@ -1657,7 +1817,7 @@ export default function FpaLivePage() {
       }
       setEditPendingPass({ code: editStatInput, side: sel.side, startId: startDot.id, sx: startDot.screen_x, sy: startDot.screen_y, mx: startDot.meter_x, my: startDot.meter_y });
       setEditStatInput('');
-      setStatus('수정용 피치에서 패스 도착점을 클릭하세요 (화살표)');
+      setStatus('수정용 피치에서 패스 도착점을 클릭하세요 (화살표 · Esc 취소)');
       return;
     }
     setBusy(true);
@@ -1813,7 +1973,7 @@ export default function FpaLivePage() {
     if (inputMode === 'dual' && statInputIsDefenseArrow(statInput)) {
       setPendingDefStart({ code: statInput.trim(), side: 'before' });
       setStatInput('');
-      setStatus('수비: 상대 볼 출발점을 Before 에 클릭하세요 (화살표 시작)');
+      setStatus(`Before: ${arrowArmHint(statInput.trim(), 'start')} · Esc 취소`);
       return;
     }
     // 패스/크로스(받는번호 O) = 2점(시작·도착). 점 1개만 찍고 코드 입력 → 채점은 도착점 클릭 시 (xFP/fpa)
@@ -1856,7 +2016,7 @@ export default function FpaLivePage() {
       }
       setPendingPass({ code: statInput, side, startId: startDot.id, sx: startDot.screen_x, sy: startDot.screen_y, mx: startDot.meter_x, my: startDot.meter_y });
       setStatInput('');
-      setStatus('패스 도착점을 클릭하세요 (화살표)');
+      setStatus('패스 도착점을 클릭하세요 (화살표 · Esc 취소)');
       return;
     }
     setBusy(true);
@@ -2215,6 +2375,12 @@ export default function FpaLivePage() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
+      // Esc 취소는 어느 입력칸에 포커스가 있든 동작해야 함 (코드 입력 직후가 대부분)
+      if (event.key === 'Escape' && (pendingPass || pendingDefStart || editPendingPass || editPendingDefStart)) {
+        event.preventDefault();
+        cancelArrowDraw();
+        return;
+      }
       if (target instanceof HTMLElement && target.tagName === 'INPUT' && target.id !== 'fpa-live-timeline' && target.id !== 'fpa-live-stat-input') {
         return;
       }
@@ -2273,7 +2439,7 @@ export default function FpaLivePage() {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [afterDots, beforeDots, busy, direction, dots, activeLayer, editAfterDots, editBeforeDots, editSelectedDot, half, inputMode, pendingXgot, rows.length, selectedDualDot, statInput, team, timeline]);
+  }, [afterDots, beforeDots, busy, direction, dots, activeLayer, editAfterDots, editBeforeDots, editPendingDefStart, editPendingPass, editSelectedDot, half, inputMode, pendingDefStart, pendingPass, pendingXgot, rows.length, selectedDualDot, statInput, team, timeline]);
 
   const renderXgotPanel = () => {
     if (!pendingXgot) return null;
@@ -2331,6 +2497,7 @@ export default function FpaLivePage() {
     const title = side === 'before' ? 'Before' : 'After';
     const allyCount = renderDots.filter((dot) => dot.team === 'ally').length;
     const opponentCount = renderDots.length - allyCount;
+    const armedHere = liveArrowArm?.side === side;
     return (
       <div className="fpa-dual-pitch-card">
         <div className="fpa-dual-pitch-head">
@@ -2342,17 +2509,37 @@ export default function FpaLivePage() {
           </div>
         </div>
         <div
-          className="fpa-pitch fpa-pitch-cream"
+          className={`fpa-pitch fpa-pitch-cream ${armedHere ? 'fpa-pitch-armed' : ''}`}
           onClick={(event) => handleDualPitchClick(side, event)}
           onContextMenu={(event) => {
             event.preventDefault();
             removeLastDualDot(side);
           }}
+          onPointerLeave={() => {
+            if (arrowPreview?.canvas === 'live' && arrowPreview.side === side) setArrowPreview(null);
+          }}
+          onPointerMove={(event) => trackArrowPreview('live', side, liveArrowArm, event, panelRef.current?.getBoundingClientRect())}
           ref={panelRef}
           role="button"
           tabIndex={0}
         >
           <img alt={`${title} football field`} className="fpa-pitch-image" draggable={false} src="/fpa-field.png" />
+          {armedHere && liveArrowArm ? (
+            <div className="fpa-arrow-arm-badge" onClick={(event) => event.stopPropagation()}>
+              <b>{liveArrowArm.code}</b>
+              <span>{arrowArmHint(liveArrowArm.code, liveArrowArm.stage)}</span>
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  cancelArrowDraw();
+                }}
+                title="화살표 그리기 취소 (Esc)"
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
           {renderDots.map((dot, index) => {
             const selected = selectedDualDot?.side === side && selectedDualDot.index === index;
             return (
@@ -2360,6 +2547,8 @@ export default function FpaLivePage() {
                 className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''}`}
                 key={`${side}-${index}-${dot.left}-${dot.top}`}
                 onClick={(event) => {
+                  // 화살표 그리는 중엔 점을 선택하지 않고 피치로 흘려보냄 (끊은 지점이 수비수 점 위인 경우가 흔함)
+                  if (armedHere) return;
                   event.stopPropagation();
                   selectLiveDualDot({ side, index });
                 }}
@@ -2369,6 +2558,7 @@ export default function FpaLivePage() {
                   removeDualDotAt(side, index);
                 }}
                 onPointerDown={(event) => {
+                  if (armedHere) return;
                   event.stopPropagation();
                   draggingDualDotRef.current = { side, index, canvas: 'live' };
                   selectLiveDualDot({ side, index });
@@ -2386,34 +2576,8 @@ export default function FpaLivePage() {
               </div>
             );
           })}
-          {passArrows.some((arrow) => arrow.side === side) ? (
-            <svg className="fpa-scene-arrows" preserveAspectRatio="none" viewBox="0 0 1050 680">
-              <defs>
-                <marker id="fpa-pass-arrowhead" markerHeight="6" markerWidth="6" orient="auto" refX="4.5" refY="3">
-                  <path d="M0,0 L6,3 L0,6 Z" fill="#16c2c2" />
-                </marker>
-              </defs>
-              {passArrows.map((arrow, i) => (arrow.side === side ? (
-                <g key={`arrow-${side}-${i}`}>
-                  <line markerEnd="url(#fpa-pass-arrowhead)"
-                    stroke="#16c2c2" strokeWidth={4} x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
-                  <circle className="fpa-arrow-handle" cx={arrow.x2} cy={arrow.y2} r={13}
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                      draggingArrowRef.current = { index: i, end: 'end', side, canvas: 'live', moved: false };
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                    }}
-                    onPointerUp={() => {
-                      const info = draggingArrowRef.current;
-                      if (info && info.canvas === 'live' && info.index === i && info.moved) {
-                        void rescorePassArrow('live', passArrowsRef.current[i] ?? arrow);
-                      }
-                    }}
-                    onClick={(event) => event.stopPropagation()} />
-                </g>
-              ) : null))}
-            </svg>
-          ) : null}
+          {renderArrowOverlay('live', side, passArrows, liveArrowArm)}
+          {renderArrowChips(side, passArrows)}
         </div>
       </div>
     );
@@ -2426,6 +2590,7 @@ export default function FpaLivePage() {
     const title = side === 'before' ? 'Before' : 'After';
     const allyCount = renderDots.filter((dot) => dot.team === 'ally').length;
     const opponentCount = renderDots.length - allyCount;
+    const armedHere = editArrowArm?.side === side;
     return (
       <div className="fpa-dual-pitch-card">
         <div className="fpa-dual-pitch-head">
@@ -2437,17 +2602,37 @@ export default function FpaLivePage() {
           </div>
         </div>
         <div
-          className="fpa-pitch fpa-pitch-cream"
+          className={`fpa-pitch fpa-pitch-cream ${armedHere ? 'fpa-pitch-armed' : ''}`}
           onClick={(event) => handleEditPitchClick(side, event)}
           onContextMenu={(event) => {
             event.preventDefault();
             removeLastEditDot(side);
           }}
+          onPointerLeave={() => {
+            if (arrowPreview?.canvas === 'edit' && arrowPreview.side === side) setArrowPreview(null);
+          }}
+          onPointerMove={(event) => trackArrowPreview('edit', side, editArrowArm, event, panelRef.current?.getBoundingClientRect())}
           ref={panelRef}
           role="button"
           tabIndex={0}
         >
           <img alt={`${title} football field (수정용)`} className="fpa-pitch-image" draggable={false} src="/fpa-field.png" />
+          {armedHere && editArrowArm ? (
+            <div className="fpa-arrow-arm-badge" onClick={(event) => event.stopPropagation()}>
+              <b>{editArrowArm.code}</b>
+              <span>{arrowArmHint(editArrowArm.code, editArrowArm.stage)}</span>
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  cancelArrowDraw();
+                }}
+                title="화살표 그리기 취소 (Esc)"
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
           {renderDots.map((dot, index) => {
             const selected = editSelectedDot?.side === side && editSelectedDot.index === index;
             return (
@@ -2455,6 +2640,7 @@ export default function FpaLivePage() {
                 className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''}`}
                 key={`edit-${side}-${index}-${dot.left}-${dot.top}`}
                 onClick={(event) => {
+                  if (armedHere) return;
                   event.stopPropagation();
                   selectEditDot({ side, index });
                 }}
@@ -2464,6 +2650,7 @@ export default function FpaLivePage() {
                   removeEditDotAt(side, index);
                 }}
                 onPointerDown={(event) => {
+                  if (armedHere) return;
                   event.stopPropagation();
                   draggingDualDotRef.current = { side, index, canvas: 'edit' };
                   selectEditDot({ side, index });
@@ -2481,34 +2668,8 @@ export default function FpaLivePage() {
               </div>
             );
           })}
-          {editPassArrows.some((arrow) => arrow.side === side) ? (
-            <svg className="fpa-scene-arrows" preserveAspectRatio="none" viewBox="0 0 1050 680">
-              <defs>
-                <marker id={`fpa-pass-arrowhead-edit-${side}`} markerHeight="6" markerWidth="6" orient="auto" refX="4.5" refY="3">
-                  <path d="M0,0 L6,3 L0,6 Z" fill="#16c2c2" />
-                </marker>
-              </defs>
-              {editPassArrows.map((arrow, i) => (arrow.side === side ? (
-                <g key={`edit-arrow-${side}-${i}`}>
-                  <line markerEnd={`url(#fpa-pass-arrowhead-edit-${side})`}
-                    stroke="#16c2c2" strokeWidth={4} x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
-                  <circle className="fpa-arrow-handle" cx={arrow.x2} cy={arrow.y2} r={13}
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                      draggingArrowRef.current = { index: i, end: 'end', side, canvas: 'edit', moved: false };
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                    }}
-                    onPointerUp={() => {
-                      const info = draggingArrowRef.current;
-                      if (info && info.canvas === 'edit' && info.index === i && info.moved) {
-                        void rescorePassArrow('edit', editPassArrowsRef.current[i] ?? arrow);
-                      }
-                    }}
-                    onClick={(event) => event.stopPropagation()} />
-                </g>
-              ) : null))}
-            </svg>
-          ) : null}
+          {renderArrowOverlay('edit', side, editPassArrows, editArrowArm)}
+          {renderArrowChips(side, editPassArrows)}
         </div>
       </div>
     );
