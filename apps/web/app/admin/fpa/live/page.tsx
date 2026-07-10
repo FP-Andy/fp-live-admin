@@ -455,6 +455,14 @@ function statInputHasReceiver(statInput: string) {
   return /^\d+[a-z]+\d+$/i.test(baseAction);
 }
 
+// 드리블/돌파/침투: 도착점은 행위자가 after 프레임에서 서 있는 위치다. 리시버가 붙으면 패스 계열.
+const MOVE_ACTION_CODES = ['r', 'rr', 'e', 'ee', 'pn'];
+
+function statInputIsMoveAction(statInput: string) {
+  if (statInputHasReceiver(statInput)) return false;
+  return MOVE_ACTION_CODES.includes(extractActionCode(statInput));
+}
+
 function statInputIsNumberOnly(statInput: string) {
   return /^\d+$/.test(statInput.trim());
 }
@@ -1531,6 +1539,14 @@ export default function FpaLivePage() {
     const actorNum = code.trim().match(/^(\d+)/)?.[1];
     const pickActor = (arr: PitchDot[]) => (actorNum && arr.find((dot) => dot.number === actorNum)) || arr[0];
     if (statInputHasReceiver(code) && beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
+    // 이동 액션은 시작=before 행위자, 도착=after 행위자. 입력 시점엔 after 가 아직 없으므로
+    // [시작, 시작] 으로 임시 채점하고, 장면 저장 시 rescoreSceneRows 가 프레임으로 확정한다.
+    if (statInputIsMoveAction(code)) {
+      const start = beforeAllies.length ? pickActor(beforeAllies) : pickActor(afterAllies);
+      if (!start) return [];
+      const end = beforeAllies.length && afterAllies.length ? pickActor(afterAllies) : start;
+      return [start, end];
+    }
     if (beforeAllies.length && afterAllies.length) return [pickActor(beforeAllies), pickActor(afterAllies)];
     if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
     if (afterAllies.length >= 2) return afterAllies.slice(0, 2);
