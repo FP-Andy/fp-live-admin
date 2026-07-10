@@ -2613,6 +2613,10 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
         xgot = clean_value(row.get("xGOT", ""))
         epv = clean_value(row.get("EPV", ""))
         pc = clean_value(row.get("PC", ""))
+        # 장면 경계는 이 세 컬럼에만 있다. 떨어뜨리면 불러오기 후 전 로그가 한 장면으로 합쳐진다.
+        scene_index = clean_value(row.get("SceneIndex", ""))
+        scene_action_index = clean_value(row.get("SceneActionIndex", ""))
+        scene_state = clean_value(row.get("SceneState", ""))
 
         if team == "home" and team_id and not home_team_id:
             home_team_id = team_id
@@ -2658,6 +2662,9 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "xGOT": _parse_metrics(metrics).get("xGOT", "") if metrics else "",
                 "EPV": _parse_metrics(metrics).get("EPV", "") if metrics else "",
                 "PC": _parse_metrics(metrics).get("PC", "") if metrics else "",
+                "SceneIndex": scene_index,
+                "SceneActionIndex": scene_action_index,
+                "SceneState": scene_state,
             }
         )
 
