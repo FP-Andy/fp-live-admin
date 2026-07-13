@@ -31,11 +31,11 @@ type ShotPaceBand = 'LOW' | 'MID' | 'HIGH';
 type LineupPlayer = { number: string; position?: string; name: string; label?: string };
 
 function fmt(ms: number) {
-  const s = Math.floor(ms / 1000);
-  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
-  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  // Match clock: minutes accumulate past 60 (e.g. 90:00, 120:00) instead of rolling into hours.
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, '0');
   const ss = String(s % 60).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
+  return `${mm}:${ss}`;
 }
 
 function formatCreatedAtKst(createdAt: string) {
@@ -102,6 +102,7 @@ export default function MatchPage() {
   const [isHeaderShot, setIsHeaderShot] = useState(false);
   const [isWeakFootShot, setIsWeakFootShot] = useState(false);
   const [isGoalShot, setIsGoalShot] = useState(false);
+  const [isOwnGoal, setIsOwnGoal] = useState(false);
   const [isUnderPressureShot, setIsUnderPressureShot] = useState(false);
   const [isOneOnOneShot, setIsOneOnOneShot] = useState(false);
   const [shotPaceBand, setShotPaceBand] = useState<ShotPaceBand>('MID');
@@ -115,6 +116,8 @@ export default function MatchPage() {
   const [isResettingEvents, setIsResettingEvents] = useState(false);
   const [isExportingMatchData, setIsExportingMatchData] = useState(false);
   const [secondHalfStartAbsMs, setSecondHalfStartAbsMs] = useState<number | null>(null);
+  const [thirdHalfStartAbsMs, setThirdHalfStartAbsMs] = useState<number | null>(null);
+  const [fourthHalfStartAbsMs, setFourthHalfStartAbsMs] = useState<number | null>(null);
   const [clockSpeed, setClockSpeed] = useState<ClockSpeed>(1);
 
   const perfRef = useRef<number | null>(null);
@@ -136,17 +139,29 @@ export default function MatchPage() {
 
   const displayClockLabel = (ms: number) => {
     const totalSec = Math.floor(ms / 1000);
-    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
-    const baseHalfSec = baseHalfMinutes * 60;
+    const firstHalfMin = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
+    const secondHalfMin = Number(match?.second_half_minutes) > 0 ? Number(match?.second_half_minutes) : firstHalfMin;
+    const extraFirstHalfMin = Number(match?.extra_first_half_minutes) > 0 ? Number(match?.extra_first_half_minutes) : 15;
+    const base2Sec = firstHalfMin * 60; // 2H display base (e.g. 45:00)
+    const base3Sec = (firstHalfMin + secondHalfMin) * 60; // 3H display base (e.g. 90:00)
+    const base4Sec = (firstHalfMin + secondHalfMin + extraFirstHalfMin) * 60; // 4H display base (e.g. 105:00)
+    if (fourthHalfStartAbsMs != null && ms >= fourthHalfStartAbsMs) {
+      const sec = Math.max(0, Math.floor((ms - fourthHalfStartAbsMs) / 1000));
+      return fmt((base4Sec + sec) * 1000);
+    }
+    if (thirdHalfStartAbsMs != null && ms >= thirdHalfStartAbsMs) {
+      const sec = Math.max(0, Math.floor((ms - thirdHalfStartAbsMs) / 1000));
+      return fmt((base3Sec + sec) * 1000);
+    }
     if (secondHalfStartAbsMs != null && ms >= secondHalfStartAbsMs) {
       const sec2h = Math.max(0, Math.floor((ms - secondHalfStartAbsMs) / 1000));
-      return fmt((baseHalfSec + sec2h) * 1000);
+      return fmt((base2Sec + sec2h) * 1000);
     }
-    if (totalSec > baseHalfSec) {
-      const etSec = totalSec - baseHalfSec;
+    if (totalSec > base2Sec) {
+      const etSec = totalSec - base2Sec;
       const etMin = Math.floor(etSec / 60);
       const etRem = String(etSec % 60).padStart(2, '0');
-      return `1H ${baseHalfMinutes}+${etMin}:${etRem}`;
+      return `1H ${firstHalfMin}+${etMin}:${etRem}`;
     }
     return fmt(ms);
   };
@@ -167,28 +182,50 @@ export default function MatchPage() {
     };
   };
 
+  const dominanceHalfNominalMinutes = (): Record<number, number> => {
+    const firstHalfMin = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
+    const secondHalfMin = Number(match?.second_half_minutes) > 0 ? Number(match?.second_half_minutes) : firstHalfMin;
+    const extraFirstHalfMin = Number(match?.extra_first_half_minutes) > 0 ? Number(match?.extra_first_half_minutes) : 15;
+    const extraSecondHalfMin = Number(match?.extra_second_half_minutes) > 0 ? Number(match?.extra_second_half_minutes) : 15;
+    return { 1: firstHalfMin, 2: secondHalfMin, 3: extraFirstHalfMin, 4: extraSecondHalfMin };
+  };
+
+  // Lay each period end-to-end on the chart axis (with a gap between periods),
+  // so ticks/labels work for 1H/2H and, when marked, 3H/4H.
+  const buildDominancePeriodLayout = () => {
+    if (!dominanceMeta?.split_halves) return null;
+    const halves = (dominanceMeta.halves || []) as Array<{ period: number; duration_ms: number }>;
+    const gap = Number(dominanceMeta.half_gap_ms || 0);
+    const nominal = dominanceHalfNominalMinutes();
+    let cursor = 0;
+    const layout: Array<{ period: number; chartStartMs: number; durationMs: number; nominalMin: number }> = [];
+    halves.forEach((half, index) => {
+      const durationMs = Number(half.duration_ms || 0);
+      layout.push({ period: half.period, chartStartMs: cursor, durationMs, nominalMin: nominal[half.period] || 0 });
+      cursor += durationMs;
+      if (index < halves.length - 1) cursor += gap;
+    });
+    return layout;
+  };
+
   const formatDominanceTick = (minuteVal: number) => {
     const ms = Math.round(Number(minuteVal) * 60000);
-    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
-    const baseHalfMs = baseHalfMinutes * 60000;
-    if (dominanceMeta?.split_halves) {
-      const halfGapMs = Number(dominanceMeta.half_gap_ms || 0);
-      const firstHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 1)?.duration_ms || 0);
-      const secondHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 2)?.duration_ms || 0);
-      if (firstHalfDurationMs > 0 && ms === firstHalfDurationMs) {
-        const extraMinutes = Math.round((firstHalfDurationMs - baseHalfMs) / 60000);
-        return extraMinutes > 0 ? `${baseHalfMinutes}+${extraMinutes}` : String(baseHalfMinutes);
-      }
-      if (ms >= firstHalfDurationMs + halfGapMs) {
-        const secondHalfMs = ms - firstHalfDurationMs - halfGapMs;
-        if (secondHalfDurationMs > 0 && secondHalfMs === secondHalfDurationMs) {
-          const extraMinutes = Math.round((secondHalfDurationMs - baseHalfMs) / 60000);
-          return extraMinutes > 0 ? `${baseHalfMinutes}+${extraMinutes}` : String(baseHalfMinutes);
+    const layout = buildDominancePeriodLayout();
+    if (layout) {
+      for (const seg of layout) {
+        if (ms >= seg.chartStartMs && ms <= seg.chartStartMs + seg.durationMs) {
+          const rel = ms - seg.chartStartMs;
+          if (seg.durationMs > 0 && rel === seg.durationMs) {
+            const extraMinutes = Math.round((seg.durationMs - seg.nominalMin * 60000) / 60000);
+            return extraMinutes > 0 ? `${seg.nominalMin}+${extraMinutes}` : String(seg.nominalMin);
+          }
+          return String(Math.floor(rel / 60000));
         }
-        return String(Math.floor(secondHalfMs / 60000));
       }
       return String(Math.floor(ms / 60000));
     }
+    const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
+    const baseHalfMs = baseHalfMinutes * 60000;
     if (dominanceSecondHalfStartMs != null && ms >= dominanceSecondHalfStartMs) {
       const sec2h = Math.max(0, Math.floor((ms - dominanceSecondHalfStartMs) / 1000));
       return String(Math.floor(sec2h / 60));
@@ -248,6 +285,40 @@ export default function MatchPage() {
   }, [id, secondHalfStartAbsMs]);
 
   useEffect(() => {
+    if (!id) return;
+    const raw3 = window.localStorage.getItem(`thirdHalfStartAbsMs:${id}`);
+    if (raw3) {
+      const n = Number(raw3);
+      if (Number.isFinite(n) && n >= 0) setThirdHalfStartAbsMs(n);
+    }
+    const raw4 = window.localStorage.getItem(`fourthHalfStartAbsMs:${id}`);
+    if (raw4) {
+      const n = Number(raw4);
+      if (Number.isFinite(n) && n >= 0) setFourthHalfStartAbsMs(n);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    const key = `thirdHalfStartAbsMs:${id}`;
+    if (thirdHalfStartAbsMs == null) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, String(thirdHalfStartAbsMs));
+  }, [id, thirdHalfStartAbsMs]);
+
+  useEffect(() => {
+    if (!id) return;
+    const key = `fourthHalfStartAbsMs:${id}`;
+    if (fourthHalfStartAbsMs == null) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, String(fourthHalfStartAbsMs));
+  }, [id, fourthHalfStartAbsMs]);
+
+  useEffect(() => {
     if (possessionTeam === 'HOME' || possessionTeam === 'AWAY') {
       setSelectedTeam(possessionTeam);
       setXgTeam(possessionTeam);
@@ -263,6 +334,19 @@ export default function MatchPage() {
       setIsOnTargetShot(true);
     }
   }, [isGoalShot, isOnTargetShot]);
+
+  // Own goal is not a shot by the crediting team: clear shot-specific toggles
+  // so only the pitch location and the scoring team matter.
+  useEffect(() => {
+    if (isOwnGoal) {
+      setIsGoalShot(false);
+      setIsOnTargetShot(false);
+      setIsHeaderShot(false);
+      setIsWeakFootShot(false);
+      setIsUnderPressureShot(false);
+      setIsOneOnOneShot(false);
+    }
+  }, [isOwnGoal]);
 
   useEffect(() => {
     if (!isOnTargetShot) {
@@ -551,6 +635,8 @@ export default function MatchPage() {
     perfRef.current = null;
     setRunning(false);
     setSecondHalfStartAbsMs(null);
+    setThirdHalfStartAbsMs(null);
+    setFourthHalfStartAbsMs(null);
     await saveState({ clockMs: 0, running: false, allowClockRewind: true, possessionTeam: 'NONE' });
   };
 
@@ -562,6 +648,8 @@ export default function MatchPage() {
     perfRef.current = null;
     setRunning(false);
     setSecondHalfStartAbsMs(null);
+    setThirdHalfStartAbsMs(null);
+    setFourthHalfStartAbsMs(null);
     setPossessionTeam('NONE');
     await saveState({
       clockMs: 0,
@@ -583,6 +671,46 @@ export default function MatchPage() {
     await apiFetch(`/matches/${id}/markers`, {
       method: 'POST',
       body: JSON.stringify({ marker_type: 'HALFTIME_START', clock_ms: now }),
+    });
+    await saveState({ running: false, possessionTeam: 'NONE' });
+    await fetchAll();
+  };
+
+  const extraHalfBaseMinutes = (period: 3 | 4) => {
+    const firstHalfMin = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
+    const secondHalfMin = Number(match?.second_half_minutes) > 0 ? Number(match?.second_half_minutes) : firstHalfMin;
+    const extraFirstHalfMin = Number(match?.extra_first_half_minutes) > 0 ? Number(match?.extra_first_half_minutes) : 15;
+    return period === 3 ? firstHalfMin + secondHalfMin : firstHalfMin + secondHalfMin + extraFirstHalfMin;
+  };
+
+  const markThirdHalfStart = async () => {
+    if (!canWrite) return;
+    const baseMin = extraHalfBaseMinutes(3);
+    if (!window.confirm(`지금 시점을 연장 전반(3H) 시작(표시 ${baseMin}:00)으로 설정할까요?`)) return;
+    const now = clockRef.current;
+    setThirdHalfStartAbsMs(now);
+    setFourthHalfStartAbsMs(null);
+    setRunning(false);
+    perfRef.current = null;
+    await apiFetch(`/matches/${id}/markers`, {
+      method: 'POST',
+      body: JSON.stringify({ marker_type: 'EXTRA_TIME_1_START', clock_ms: now }),
+    });
+    await saveState({ running: false, possessionTeam: 'NONE' });
+    await fetchAll();
+  };
+
+  const markFourthHalfStart = async () => {
+    if (!canWrite) return;
+    const baseMin = extraHalfBaseMinutes(4);
+    if (!window.confirm(`지금 시점을 연장 후반(4H) 시작(표시 ${baseMin}:00)으로 설정할까요?`)) return;
+    const now = clockRef.current;
+    setFourthHalfStartAbsMs(now);
+    setRunning(false);
+    perfRef.current = null;
+    await apiFetch(`/matches/${id}/markers`, {
+      method: 'POST',
+      body: JSON.stringify({ marker_type: 'EXTRA_TIME_2_START', clock_ms: now }),
     });
     await saveState({ running: false, possessionTeam: 'NONE' });
     await fetchAll();
@@ -804,9 +932,49 @@ export default function MatchPage() {
 
   const submitXg = async () => {
     if (!canWrite) return;
+    const shotCoordinates = getShotCoordinates();
+
+    // Own goal: counts as a goal for the selected (crediting) team, but carries
+    // no xG/xGOT and no shot attributes. Team follows the same convention as a
+    // normal goal — whichever side's score should go up.
+    if (isOwnGoal) {
+      if (!shotCoordinates) {
+        setXgEstimateMeta('Click the pitch to set the own-goal location');
+        return;
+      }
+      await apiFetch(`/matches/${id}/events/xg`, {
+        method: 'POST',
+        body: JSON.stringify({
+          event_id: makeId(),
+          team: xgTeam,
+          xg: 0,
+          player_name: null,
+          player_number: null,
+          is_goal: true,
+          is_own_goal: true,
+          is_on_target: false,
+          clock_ms: clockMs,
+          shot_x: shotCoordinates.shot_x,
+          shot_y: shotCoordinates.shot_y,
+          goalmouth_x: null,
+          goalmouth_y: null,
+          is_header: false,
+          is_weak_foot: false,
+          under_pressure: false,
+          one_on_one: false,
+          shot_pace_band: shotPaceBand,
+        }),
+      });
+      setShotPoint(null);
+      setIsOwnGoal(false);
+      setXgEstimateMeta(`Own goal recorded → ${xgTeam}`);
+      setXgotEstimateMeta('');
+      await fetchAll();
+      return;
+    }
+
     const xg = Number(xgValue);
     if (!Number.isFinite(xg) || xg < 0) return;
-    const shotCoordinates = getShotCoordinates();
     const goalmouthCoordinates = getGoalmouthCoordinates();
     if (isOnTargetShot && !goalmouthCoordinates) {
       setXgotEstimateMeta('Click the goalmouth map for an on-target shot');
@@ -844,6 +1012,7 @@ export default function MatchPage() {
     setIsHeaderShot(false);
     setIsWeakFootShot(false);
     setIsGoalShot(false);
+    setIsOwnGoal(false);
     setIsUnderPressureShot(false);
     setIsOneOnOneShot(false);
     setShotPaceBand('MID');
@@ -1080,13 +1249,10 @@ export default function MatchPage() {
     () => {
       const ticks = dominanceBaseData.map((d) => d.minuteVal);
       if (!dominanceMeta?.split_halves) return ticks;
-      const halfGapMs = Number(dominanceMeta.half_gap_ms || 0);
-      const firstHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 1)?.duration_ms || 0);
-      const secondHalfDurationMs = Number((dominanceMeta.halves || []).find((half: any) => half.period === 2)?.duration_ms || 0);
-      if (firstHalfDurationMs > 0) ticks.push(firstHalfDurationMs / 60000);
-      if (secondHalfDurationMs > 0) {
-        ticks.push((firstHalfDurationMs + halfGapMs + secondHalfDurationMs) / 60000);
-      }
+      const layout = buildDominancePeriodLayout();
+      (layout || []).forEach((seg) => {
+        if (seg.durationMs > 0) ticks.push((seg.chartStartMs + seg.durationMs) / 60000);
+      });
       return Array.from(new Set(ticks)).sort((a, b) => a - b);
     },
     [dominanceBaseData, dominanceMeta]
@@ -1355,7 +1521,13 @@ export default function MatchPage() {
               <button className="btn-secondary" onClick={resetClock} disabled={!canWrite}>Reset</button>
               <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>
               <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>
-                Mark 2H {regulationHalfMinutes(match?.competition_class, match?.first_half_minutes)}:00
+                2H {regulationHalfMinutes(match?.competition_class, match?.first_half_minutes)}:00
+              </button>
+              <button className="btn-secondary" onClick={markThirdHalfStart} disabled={!canWrite}>
+                3H {extraHalfBaseMinutes(3)}:00
+              </button>
+              <button className="btn-secondary" onClick={markFourthHalfStart} disabled={!canWrite}>
+                4H {extraHalfBaseMinutes(4)}:00
               </button>
             </div>
           </div>
@@ -1398,11 +1570,13 @@ export default function MatchPage() {
               {(summary?.events || []).slice(0, 40).map((e: any) => (
                 <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
                   <span>
-                    {e.type} {e.team} @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''}{' '}
-                    {typeof e.xg === 'number' ? `xg=${e.xg}` : ''}{' '}
-                    {typeof e.xgot === 'number' ? `xgot=${e.xgot}` : ''}{' '}
+                    {e.type} {e.team}{' '}
+                    {e.is_own_goal ? <strong style={{ color: '#f97316' }}>OG⚽</strong> : e.is_goal ? <strong style={{ color: '#22c55e' }}>GOAL⚽</strong> : ''}{' '}
+                    @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''}{' '}
+                    {e.is_own_goal ? '' : typeof e.xg === 'number' ? `xg=${e.xg}` : ''}{' '}
+                    {e.is_own_goal ? '' : typeof e.xgot === 'number' ? `xgot=${e.xgot}` : ''}{' '}
                     {e.player_name ? `No.${e.player_number || '-'} ${e.player_name}` : ''}{' '}
-                    {e.is_on_target ? 'on-target' : ''}
+                    {e.is_own_goal ? '' : e.is_on_target ? 'on-target' : ''}
                   </span>
                   <span className="muted">{formatCreatedAtKst(e.created_at)}</span>
                 </div>
@@ -1461,7 +1635,7 @@ export default function MatchPage() {
                     </option>
                   ))}
                 </select>
-                <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>Record xG</button>
+                <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>{isOwnGoal ? 'Record OG' : 'Record xG'}</button>
               </div>
             </div>
             <div className="grid" style={{ gap: 10 }}>
@@ -1727,7 +1901,21 @@ export default function MatchPage() {
               <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>Goal</button>
               <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>Header</button>
               <button className={isWeakFootShot ? 'btn-active' : ''} onClick={() => setIsWeakFootShot((prev) => !prev)} disabled={!canWrite}>Difficult</button>
-              <span className="muted">{shotPoint ? `shot=(${shotPoint.x}, ${shotPoint.y})` : 'Click pitch to set shot location'}</span>
+              <button
+                className={isOwnGoal ? 'btn-active' : ''}
+                onClick={() => setIsOwnGoal((prev) => !prev)}
+                disabled={!canWrite}
+                title="Own goal — counts on the scoreboard for the selected team"
+              >
+                OG
+              </button>
+              <span className="muted">
+                {isOwnGoal
+                  ? `Own goal → ${xgTeam} scores. Click pitch, then Record OG.`
+                  : shotPoint
+                  ? `shot=(${shotPoint.x}, ${shotPoint.y})`
+                  : 'Click pitch to set shot location'}
+              </span>
             </div>
             <div className="muted">Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.</div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
@@ -1843,14 +2031,23 @@ export default function MatchPage() {
               />
               <YAxis domain={[-1.2, 1.2]} ticks={[-1, -0.5, 0, 0.5, 1]} />
               <Tooltip />
-              {dominanceMeta?.split_halves && dominanceMeta?.ht_chart_ms != null ? (
-                <ReferenceLine
-                  x={Number(dominanceMeta.ht_chart_ms) / 60000}
-                  stroke="#fbbf24"
-                  strokeDasharray="6 4"
-                  label={{ value: 'HT', position: 'top', fill: '#fbbf24', fontSize: 12 }}
-                />
-              ) : null}
+              {dominanceMeta?.split_halves
+                ? (
+                    (dominanceMeta.breaks && dominanceMeta.breaks.length
+                      ? dominanceMeta.breaks
+                      : dominanceMeta.ht_chart_ms != null
+                      ? [{ chart_ms: dominanceMeta.ht_chart_ms, label: 'HT' }]
+                      : []) as Array<{ chart_ms: number; label: string }>
+                  ).map((brk, brkIndex) => (
+                    <ReferenceLine
+                      key={`dominance-break-${brkIndex}-${brk.chart_ms}`}
+                      x={Number(brk.chart_ms) / 60000}
+                      stroke="#fbbf24"
+                      strokeDasharray="6 4"
+                      label={{ value: brk.label || 'HT', position: 'top', fill: '#fbbf24', fontSize: 12 }}
+                    />
+                  ))
+                : null}
               {dominanceChartData.map((bin) => {
                 const goalSummary = bin.annotations?.goal_summary;
                 const hasHt = !dominanceMeta?.split_halves && Boolean(bin.annotations?.markers?.includes('HT'));

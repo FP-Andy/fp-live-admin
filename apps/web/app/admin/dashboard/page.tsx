@@ -40,6 +40,8 @@ type CompetitionClass = {
   name: string;
   first_half_minutes: number;
   second_half_minutes: number;
+  extra_first_half_minutes?: number;
+  extra_second_half_minutes?: number;
   team_options?: string[];
   created_at: string;
 };
@@ -158,10 +160,14 @@ export default function Dashboard() {
   const [newClassName, setNewClassName] = useState('');
   const [newClassFirstHalf, setNewClassFirstHalf] = useState(45);
   const [newClassSecondHalf, setNewClassSecondHalf] = useState(45);
+  const [newClassExtraFirstHalf, setNewClassExtraFirstHalf] = useState(15);
+  const [newClassExtraSecondHalf, setNewClassExtraSecondHalf] = useState(15);
   const [editingClassCode, setEditingClassCode] = useState('');
   const [editingClassName, setEditingClassName] = useState('');
   const [editingClassFirstHalf, setEditingClassFirstHalf] = useState(45);
   const [editingClassSecondHalf, setEditingClassSecondHalf] = useState(45);
+  const [editingClassExtraFirstHalf, setEditingClassExtraFirstHalf] = useState(15);
+  const [editingClassExtraSecondHalf, setEditingClassExtraSecondHalf] = useState(15);
   const [classModalError, setClassModalError] = useState('');
   const [classModalNotice, setClassModalNotice] = useState('');
   const [importingClassTeams, setImportingClassTeams] = useState('');
@@ -317,6 +323,8 @@ export default function Dashboard() {
         name,
         first_half_minutes: newClassFirstHalf,
         second_half_minutes: newClassSecondHalf,
+        extra_first_half_minutes: newClassExtraFirstHalf,
+        extra_second_half_minutes: newClassExtraSecondHalf,
       }),
     });
 
@@ -330,6 +338,8 @@ export default function Dashboard() {
     setNewClassName('');
     setNewClassFirstHalf(45);
     setNewClassSecondHalf(45);
+    setNewClassExtraFirstHalf(15);
+    setNewClassExtraSecondHalf(15);
     setIsClassModalOpen(false);
     await load();
   };
@@ -342,6 +352,8 @@ export default function Dashboard() {
     setEditingClassName(item.name);
     setEditingClassFirstHalf(item.first_half_minutes);
     setEditingClassSecondHalf(item.second_half_minutes);
+    setEditingClassExtraFirstHalf(item.extra_first_half_minutes ?? 15);
+    setEditingClassExtraSecondHalf(item.extra_second_half_minutes ?? 15);
   };
 
   const cancelEditCompetitionClass = () => {
@@ -349,6 +361,8 @@ export default function Dashboard() {
     setEditingClassName('');
     setEditingClassFirstHalf(45);
     setEditingClassSecondHalf(45);
+    setEditingClassExtraFirstHalf(15);
+    setEditingClassExtraSecondHalf(15);
     setClassModalError('');
     setClassModalNotice('');
   };
@@ -371,6 +385,8 @@ export default function Dashboard() {
         name,
         first_half_minutes: editingClassFirstHalf,
         second_half_minutes: editingClassSecondHalf,
+        extra_first_half_minutes: editingClassExtraFirstHalf,
+        extra_second_half_minutes: editingClassExtraSecondHalf,
       }),
     });
 
@@ -1212,6 +1228,28 @@ export default function Dashboard() {
                         onChange={(e) => setNewClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
                       />
                     </div>
+                    <div className="field-stack">
+                      <div className="field-label">연장 전반(분)</div>
+                      <input
+                        min={1}
+                        max={120}
+                        step={1}
+                        type="number"
+                        value={newClassExtraFirstHalf}
+                        onChange={(e) => setNewClassExtraFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                      />
+                    </div>
+                    <div className="field-stack">
+                      <div className="field-label">연장 후반(분)</div>
+                      <input
+                        min={1}
+                        max={120}
+                        step={1}
+                        type="number"
+                        value={newClassExtraSecondHalf}
+                        onChange={(e) => setNewClassExtraSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                      />
+                    </div>
                   </div>
 
                   {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
@@ -1307,6 +1345,28 @@ export default function Dashboard() {
                             type="number"
                             value={editingClassSecondHalf}
                             onChange={(e) => setEditingClassSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                          />
+                        </div>
+                        <div className="field-stack">
+                          <div className="field-label">연장 전반(분)</div>
+                          <input
+                            min={1}
+                            max={120}
+                            step={1}
+                            type="number"
+                            value={editingClassExtraFirstHalf}
+                            onChange={(e) => setEditingClassExtraFirstHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
+                          />
+                        </div>
+                        <div className="field-stack">
+                          <div className="field-label">연장 후반(분)</div>
+                          <input
+                            min={1}
+                            max={120}
+                            step={1}
+                            type="number"
+                            value={editingClassExtraSecondHalf}
+                            onChange={(e) => setEditingClassExtraSecondHalf(Math.max(1, Math.min(120, Number(e.target.value) || 1)))}
                           />
                         </div>
                         <div className="field-stack" style={{ justifyContent: 'end' }}>

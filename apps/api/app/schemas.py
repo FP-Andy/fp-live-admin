@@ -11,9 +11,9 @@ IngestProtocol = Literal["SRT", "RTMP"]
 StreamMode = Literal["STREAM", "MANUAL"]
 WebhookEventKind = Literal["STATE", "EVENT", "BASKETBALL_STATE", "BASKETBALL_EVENT"]
 UserRole = Literal["OPERATOR", "SUPERADMIN"]
-MarkerType = Literal["HALFTIME_START"]
+MarkerType = Literal["HALFTIME_START", "EXTRA_TIME_1_START", "EXTRA_TIME_2_START"]
 TimelineItemKind = Literal["EVENT", "MARKER"]
-EditableEventType = Literal["ATTACK_LANE", "XG", "HALFTIME_START"]
+EditableEventType = Literal["ATTACK_LANE", "XG", "HALFTIME_START", "EXTRA_TIME_1_START", "EXTRA_TIME_2_START"]
 
 
 class CreateMatchRequest(BaseModel):
@@ -38,6 +38,8 @@ class MatchResponse(BaseModel):
     round_number: int
     first_half_minutes: int
     second_half_minutes: int
+    extra_first_half_minutes: int = 15
+    extra_second_half_minutes: int = 15
     archived: bool
     archived_at: str | None = None
     created_at: str
@@ -51,6 +53,8 @@ class CompetitionClassCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     first_half_minutes: int = Field(default=45, ge=1, le=120)
     second_half_minutes: int = Field(default=45, ge=1, le=120)
+    extra_first_half_minutes: int = Field(default=15, ge=1, le=120)
+    extra_second_half_minutes: int = Field(default=15, ge=1, le=120)
     team_options: list[str] = Field(default_factory=list)
 
 
@@ -58,6 +62,8 @@ class CompetitionClassUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     first_half_minutes: int = Field(ge=1, le=120)
     second_half_minutes: int = Field(ge=1, le=120)
+    extra_first_half_minutes: int = Field(default=15, ge=1, le=120)
+    extra_second_half_minutes: int = Field(default=15, ge=1, le=120)
 
 
 class CompetitionClassResponse(BaseModel):
@@ -65,6 +71,8 @@ class CompetitionClassResponse(BaseModel):
     name: str
     first_half_minutes: int
     second_half_minutes: int
+    extra_first_half_minutes: int = 15
+    extra_second_half_minutes: int = 15
     team_options: list[str] = Field(default_factory=list)
     created_at: str
 
@@ -197,6 +205,7 @@ class XGEventRequest(BaseModel):
     player_name: str | None = Field(default=None, max_length=80)
     player_number: str | None = Field(default=None, max_length=20)
     is_goal: bool = False
+    is_own_goal: bool = False
     is_on_target: bool = False
     shot_x: float | None = Field(default=None, ge=0, le=105)
     shot_y: float | None = Field(default=None, ge=0, le=68)

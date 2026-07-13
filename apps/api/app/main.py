@@ -292,12 +292,20 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE matches ADD COLUMN first_half_minutes INTEGER NOT NULL DEFAULT 45")
     if "second_half_minutes" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN second_half_minutes INTEGER NOT NULL DEFAULT 45")
+    if "extra_first_half_minutes" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN extra_first_half_minutes INTEGER NOT NULL DEFAULT 15")
+    if "extra_second_half_minutes" not in match_columns:
+        statements.append("ALTER TABLE matches ADD COLUMN extra_second_half_minutes INTEGER NOT NULL DEFAULT 15")
     if "archived" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE")
     if "archived_at" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN archived_at TIMESTAMP NULL")
     if "competition_classes" in table_names and "team_options" not in competition_class_columns:
         statements.append("ALTER TABLE competition_classes ADD COLUMN team_options JSONB NOT NULL DEFAULT '[]'::jsonb")
+    if "competition_classes" in table_names and "extra_first_half_minutes" not in competition_class_columns:
+        statements.append("ALTER TABLE competition_classes ADD COLUMN extra_first_half_minutes INTEGER NOT NULL DEFAULT 15")
+    if "competition_classes" in table_names and "extra_second_half_minutes" not in competition_class_columns:
+        statements.append("ALTER TABLE competition_classes ADD COLUMN extra_second_half_minutes INTEGER NOT NULL DEFAULT 15")
     if "fcm_submissions" in table_names and "team_side" not in fcm_submission_columns:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN team_side VARCHAR NOT NULL DEFAULT 'HOME'")
     if "fcm_submissions" in table_names and "player_name" not in fcm_submission_columns:
@@ -306,6 +314,8 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE fcm_templates ADD COLUMN competition_class VARCHAR")
     if "is_goal" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
+    if "is_own_goal" not in event_columns:
+        statements.append("ALTER TABLE events ADD COLUMN is_own_goal BOOLEAN NOT NULL DEFAULT FALSE")
     if "shot_x" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN shot_x DOUBLE PRECISION")
     if "shot_y" not in event_columns:
@@ -516,6 +526,8 @@ def _serialize_competition_class(row: CompetitionClass) -> dict:
         "name": row.name,
         "first_half_minutes": int(row.first_half_minutes or 45),
         "second_half_minutes": int(row.second_half_minutes or row.first_half_minutes or 45),
+        "extra_first_half_minutes": int(getattr(row, "extra_first_half_minutes", None) or 15),
+        "extra_second_half_minutes": int(getattr(row, "extra_second_half_minutes", None) or 15),
         "team_options": _normalize_team_options(row.team_options),
         "created_at": row.created_at.isoformat(),
     }
@@ -1669,6 +1681,8 @@ def _serialize_match(row: Match, include_sport: bool = True) -> dict:
         "round_number": int(row.round_number or 1),
         "first_half_minutes": int(row.first_half_minutes or default_first_half),
         "second_half_minutes": int(row.second_half_minutes or default_second_half),
+        "extra_first_half_minutes": int(getattr(row, "extra_first_half_minutes", None) or 15),
+        "extra_second_half_minutes": int(getattr(row, "extra_second_half_minutes", None) or 15),
         "archived": bool(row.archived),
         "archived_at": row.archived_at.isoformat() if row.archived_at else None,
         "created_at": row.created_at.isoformat(),
@@ -2425,11 +2439,17 @@ def _build_dominance_annotations(
             entry["goal_summary"]["away"] += 1
         entry["goal_summary"]["total"] += 1
 
+    marker_labels = {
+        "HALFTIME_START": "HT",
+        "EXTRA_TIME_1_START": "ET",
+        "EXTRA_TIME_2_START": "ET HT",
+    }
     for marker in marker_rows:
         k = marker.clock_ms // bin_size_ms
         entry = annotations_by_k.setdefault(k, {"goal_summary": {"home": 0, "away": 0, "total": 0}, "markers": []})
-        if marker.marker_type == "HALFTIME_START" and "HT" not in entry["markers"]:
-            entry["markers"].append("HT")
+        label = marker_labels.get(marker.marker_type)
+        if label and label not in entry["markers"]:
+            entry["markers"].append(label)
 
     cleaned: dict[int, dict] = {}
     valid_keys = {row.k for row in rows}
@@ -2542,6 +2562,7 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
                 "xgot": e.xgot,
                 **_event_player_payload(e),
                 "is_goal": e.is_goal,
+                "is_own_goal": e.is_own_goal,
                 "is_on_target": e.is_on_target,
                 "shot_x": e.shot_x,
                 "shot_y": e.shot_y,
@@ -2638,19 +2659,41 @@ def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session)
         default=0,
     )
 
-    halftime_marker = next((marker for marker in marker_rows if marker.marker_type == "HALFTIME_START"), None)
-    halftime_start_ms = halftime_marker.clock_ms if halftime_marker else None
+    # Period start boundaries from markers, in chronological order:
+    # 1H (0) → 2H (HALFTIME_START) → 3H (EXTRA_TIME_1_START) → 4H (EXTRA_TIME_2_START).
+    def _marker_ms(marker_type: str) -> int | None:
+        m = next((marker for marker in marker_rows if marker.marker_type == marker_type), None)
+        return m.clock_ms if m else None
+
+    period_boundaries = [
+        (1, 0, None),
+        (2, _marker_ms("HALFTIME_START"), "HT"),
+        (3, _marker_ms("EXTRA_TIME_1_START"), "ET"),
+        (4, _marker_ms("EXTRA_TIME_2_START"), "ET HT"),
+    ]
+    # Keep the first half plus any later period whose start marker exists and has activity.
+    starts: list[tuple[int, int, str | None]] = [(1, 0, None)]
+    for period_no, start_ms, label in period_boundaries[1:]:
+        if start_ms is None:
+            continue
+        if start_ms < starts[-1][1]:
+            continue
+        if max_clock_ms <= start_ms:
+            continue
+        starts.append((period_no, int(start_ms), label))
 
     periods: list[dict] = []
-    first_half_end_ms = halftime_start_ms if halftime_start_ms is not None else max_clock_ms
-    periods.append({"period": 1, "start_ms": 0, "end_ms": max(0, first_half_end_ms)})
-    if halftime_start_ms is not None and max_clock_ms > halftime_start_ms:
-        periods.append({"period": 2, "start_ms": halftime_start_ms, "end_ms": max_clock_ms})
+    for idx, (period_no, start_ms, break_label) in enumerate(starts):
+        end_ms = starts[idx + 1][1] if idx + 1 < len(starts) else max_clock_ms
+        periods.append(
+            {"period": period_no, "start_ms": start_ms, "end_ms": max(start_ms, end_ms), "break_label": break_label}
+        )
 
     bins: list[dict] = []
     half_gap_ms = bin_size_ms
     chart_cursor_ms = 0
     ht_chart_ms: int | None = None
+    breaks: list[dict] = []
     half_payloads: list[dict] = []
 
     for index, period in enumerate(periods):
@@ -2659,8 +2702,12 @@ def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session)
         period_duration_ms = max(0, period_end_ms - period_start_ms)
         half_payloads.append({"period": period["period"], "duration_ms": period_duration_ms})
         if period_duration_ms <= 0:
-            if index == 0 and len(periods) > 1:
-                ht_chart_ms = chart_cursor_ms + half_gap_ms // 2
+            if index + 1 < len(periods):
+                break_chart_ms = chart_cursor_ms + half_gap_ms // 2
+                break_label = periods[index + 1].get("break_label") or "HT"
+                breaks.append({"chart_ms": break_chart_ms, "label": break_label})
+                if ht_chart_ms is None:
+                    ht_chart_ms = break_chart_ms
                 chart_cursor_ms += half_gap_ms
             continue
 
@@ -2717,10 +2764,15 @@ def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session)
                     "total": home_goals + away_goals,
                 }
 
+            marker_labels = {
+                "HALFTIME_START": "HT",
+                "EXTRA_TIME_1_START": "ET",
+                "EXTRA_TIME_2_START": "ET HT",
+            }
             markers: list[str] = []
             for marker in marker_rows:
-                if abs_start_ms <= marker.clock_ms < abs_end_ms and marker.marker_type == "HALFTIME_START":
-                    markers.append("HT")
+                if abs_start_ms <= marker.clock_ms < abs_end_ms and marker.marker_type in marker_labels:
+                    markers.append(marker_labels[marker.marker_type])
             if markers:
                 annotations["markers"] = markers
 
@@ -2757,8 +2809,12 @@ def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session)
             rel_start_ms = rel_end_ms
 
         chart_cursor_ms += period_duration_ms
-        if index == 0 and len(periods) > 1:
-            ht_chart_ms = chart_cursor_ms + half_gap_ms // 2
+        if index + 1 < len(periods):
+            break_chart_ms = chart_cursor_ms + half_gap_ms // 2
+            break_label = periods[index + 1].get("break_label") or "HT"
+            breaks.append({"chart_ms": break_chart_ms, "label": break_label})
+            if ht_chart_ms is None:
+                ht_chart_ms = break_chart_ms
             chart_cursor_ms += half_gap_ms
 
     result = {
@@ -2766,6 +2822,7 @@ def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session)
         "split_halves": True,
         "half_gap_ms": half_gap_ms if len(periods) > 1 else 0,
         "halves": half_payloads,
+        "breaks": breaks,
         "bins": bins,
     }
     if ht_chart_ms is not None:
@@ -2961,6 +3018,7 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
                 "xgot": r.xgot,
                 **_event_player_payload(r),
                 "is_goal": r.is_goal,
+                "is_own_goal": r.is_own_goal,
                 "is_on_target": r.is_on_target,
                 "shot_x": r.shot_x,
                 "shot_y": r.shot_y,
@@ -3025,20 +3083,30 @@ def _fmt_clock_ms(ms: int) -> str:
     return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
+def _period_start_marker_ms(match_id: UUID, db: Session, marker_type: str) -> int | None:
+    marker = (
+        db.query(MatchMarker)
+        .filter(MatchMarker.match_id == match_id, MatchMarker.marker_type == marker_type)
+        .order_by(MatchMarker.clock_ms.asc(), MatchMarker.created_at.asc(), MatchMarker.id.asc())
+        .first()
+    )
+    return marker.clock_ms if marker else None
+
+
 def _clock_normalization_context(match_id: UUID, db: Session) -> dict:
     match_obj = db.get(Match, match_id)
     base_first_half = int(match_obj.first_half_minutes if match_obj else 45) * 60_000
     base_second_half = int(match_obj.second_half_minutes if match_obj else 45) * 60_000
-    marker = (
-        db.query(MatchMarker)
-        .filter(MatchMarker.match_id == match_id, MatchMarker.marker_type == "HALFTIME_START")
-        .order_by(MatchMarker.clock_ms.asc(), MatchMarker.created_at.asc(), MatchMarker.id.asc())
-        .first()
-    )
+    extra_first_half = int(getattr(match_obj, "extra_first_half_minutes", None) or 15) * 60_000
+    extra_second_half = int(getattr(match_obj, "extra_second_half_minutes", None) or 15) * 60_000
     return {
         "first_half_ms": base_first_half,
         "second_half_ms": base_second_half,
-        "halftime_start_ms": marker.clock_ms if marker else None,
+        "extra_first_half_ms": extra_first_half,
+        "extra_second_half_ms": extra_second_half,
+        "halftime_start_ms": _period_start_marker_ms(match_id, db, "HALFTIME_START"),
+        "extra_time_1_start_ms": _period_start_marker_ms(match_id, db, "EXTRA_TIME_1_START"),
+        "extra_time_2_start_ms": _period_start_marker_ms(match_id, db, "EXTRA_TIME_2_START"),
     }
 
 
@@ -3046,12 +3114,31 @@ def _normalize_match_clock_ms(clock_ms: int, context: dict) -> int:
     raw_ms = max(0, int(clock_ms or 0))
     first_half_ms = int(context.get("first_half_ms") or 45 * 60_000)
     second_half_ms = int(context.get("second_half_ms") or 45 * 60_000)
+    extra_first_half_ms = int(context.get("extra_first_half_ms") or 15 * 60_000)
+    extra_second_half_ms = int(context.get("extra_second_half_ms") or 15 * 60_000)
     halftime_start_ms = context.get("halftime_start_ms")
-    if halftime_start_ms is not None and raw_ms >= int(halftime_start_ms):
-        normalized = first_half_ms + max(0, raw_ms - int(halftime_start_ms))
+    et1_start_ms = context.get("extra_time_1_start_ms")
+    et2_start_ms = context.get("extra_time_2_start_ms")
+
+    # Display base (match-clock offset) at the kickoff of each period.
+    base_p2 = first_half_ms
+    base_p3 = first_half_ms + second_half_ms
+    base_p4 = first_half_ms + second_half_ms + extra_first_half_ms
+
+    if et2_start_ms is not None and raw_ms >= int(et2_start_ms):
+        normalized = base_p4 + max(0, raw_ms - int(et2_start_ms))
+    elif et1_start_ms is not None and raw_ms >= int(et1_start_ms):
+        normalized = base_p3 + max(0, raw_ms - int(et1_start_ms))
+    elif halftime_start_ms is not None and raw_ms >= int(halftime_start_ms):
+        normalized = base_p2 + max(0, raw_ms - int(halftime_start_ms))
     else:
         normalized = raw_ms
-    return min(normalized, first_half_ms + second_half_ms)
+
+    has_extra_time = et1_start_ms is not None or et2_start_ms is not None
+    ceiling = first_half_ms + second_half_ms
+    if has_extra_time:
+        ceiling += extra_first_half_ms + extra_second_half_ms
+    return min(normalized, ceiling)
 
 
 def _event_player_payload(event: Event) -> dict:
@@ -4895,6 +4982,8 @@ def create_competition_class(body: CompetitionClassCreateRequest, db: Session = 
         name=name,
         first_half_minutes=body.first_half_minutes,
         second_half_minutes=body.second_half_minutes,
+        extra_first_half_minutes=body.extra_first_half_minutes,
+        extra_second_half_minutes=body.extra_second_half_minutes,
         team_options=_normalize_team_options(body.team_options),
     )
     db.add(row)
@@ -4913,6 +5002,8 @@ def update_competition_class(code: str, body: CompetitionClassUpdateRequest, db:
     row.name = body.name.strip()
     row.first_half_minutes = body.first_half_minutes
     row.second_half_minutes = body.second_half_minutes
+    row.extra_first_half_minutes = body.extra_first_half_minutes
+    row.extra_second_half_minutes = body.extra_second_half_minutes
     db.commit()
     db.refresh(row)
     return _serialize_competition_class(row)
@@ -4945,6 +5036,8 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
 
     first_half_minutes = competition.first_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
     second_half_minutes = competition.second_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
+    extra_first_half_minutes = int(getattr(competition, "extra_first_half_minutes", None) or 15) if competition else 15
+    extra_second_half_minutes = int(getattr(competition, "extra_second_half_minutes", None) or 15) if competition else 15
     metadata = dict(body.metadata or {})
     metadata["sport"] = sport
     metadata["stream_mode"] = body.stream_mode
@@ -4952,6 +5045,8 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     metadata["away_team"] = away_team
     metadata["first_half_minutes"] = first_half_minutes
     metadata["second_half_minutes"] = second_half_minutes
+    metadata["extra_first_half_minutes"] = extra_first_half_minutes
+    metadata["extra_second_half_minutes"] = extra_second_half_minutes
     row = Match(
         id=uuid.uuid4(),
         name=body.name,
@@ -4960,6 +5055,8 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
         round_number=body.round_number,
         first_half_minutes=first_half_minutes,
         second_half_minutes=second_half_minutes,
+        extra_first_half_minutes=extra_first_half_minutes,
+        extra_second_half_minutes=extra_second_half_minutes,
         hls_url=body.hls_url,
         metadata_json=metadata,
         operator_id=user.id if user and body.assign_operator else None,
@@ -6461,6 +6558,7 @@ def post_xg(
         player_name=(body.player_name or "").strip() or None,
         player_number=(body.player_number or "").strip() or None,
         is_goal=body.is_goal,
+        is_own_goal=body.is_own_goal,
         is_on_target=body.is_on_target,
         shot_x=body.shot_x,
         shot_y=body.shot_y,
@@ -6474,7 +6572,12 @@ def post_xg(
     )
     db.add(event)
     goal_boost = float(os.getenv("DOM_GOAL_XG_MULTIPLIER", "2.5"))
-    dominance_xg = body.xg * goal_boost if body.is_goal else body.xg
+    # An own goal counts on the scoreboard for body.team but is not that team's
+    # shot, so it must not contribute xG/dominance to them.
+    if body.is_own_goal:
+        dominance_xg = 0.0
+    else:
+        dominance_xg = body.xg * goal_boost if body.is_goal else body.xg
     apply_xg_event(db, match_id, body.team, clock_ms, dominance_xg)
     clock_context = _clock_normalization_context(match_id, db)
     match_clock_ms = _normalize_match_clock_ms(clock_ms, clock_context)
@@ -6496,6 +6599,7 @@ def post_xg(
         "player_name": (body.player_name or "").strip() or None,
         "player_number": (body.player_number or "").strip() or None,
         "is_goal": body.is_goal,
+        "is_own_goal": body.is_own_goal,
         "is_on_target": body.is_on_target,
         "shot_x": body.shot_x,
         "shot_y": body.shot_y,
