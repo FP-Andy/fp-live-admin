@@ -54,5 +54,34 @@ jobs:
           docker compose -f "$COMPOSE_FILE" up -d api web
           docker compose -f "$COMPOSE_FILE" ps api web
 
+          # `up -d` returns once the container process starts, but uvicorn only
+          # binds :8000 after startup (schema migration + seeding + workers).
+          # Poll the in-container health endpoint until it is ready instead of
+          # hitting it once and racing the boot.
+          echo "Waiting for api to become healthy..."
+          api_healthy=false
+          for i in $(seq 1 30); do
+            if docker compose -f "$COMPOSE_FILE" exec -T api \
+                 python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" >/dev/null 2>&1; then
+              echo "api healthy after ${i} attempt(s)"
+              api_healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$api_healthy" != "true" ]; then
+            echo "api did not become healthy within ~60s"
+            docker compose -f "$COMPOSE_FILE" logs --tail=80 api
+            exit 1
+          fi
           docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
-          curl -fsS https://console.fineludens.kr/health
+
+          # External check through nginx, with a short retry for edge readiness.
+          for i in $(seq 1 10); do
+            if curl -fsS https://console.fineludens.kr/health; then
+              echo; echo "external health ok after ${i} attempt(s)"
+              break
+            fi
+            if [ "$i" -eq 10 ]; then echo "external health check failed"; exit 1; fi
+            sleep 2
+          done
