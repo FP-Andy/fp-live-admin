@@ -4653,6 +4653,110 @@ a:focus-visible {
   z-index: 2;
 }
 
+/* 화살표 양끝 드래그 핸들 — SVG는 pointer-events:none 이므로 핸들만 auto 로 잡히게.
+   fill/stroke 는 액션 종류별 색을 인라인 속성으로 받으므로 여기서 지정하지 않는다 */
+.fpa-arrow-handle {
+  pointer-events: auto;
+  cursor: grab;
+  fill-opacity: 0.35;
+  stroke-width: 1.5;
+  touch-action: none;
+}
+.fpa-arrow-handle:hover {
+  fill-opacity: 0.65;
+}
+.fpa-arrow-handle:active {
+  cursor: grabbing;
+}
+
+/* 화살표 그리기 대기(무장) 상태 — 어느 피치에 무엇을 찍어야 하는지 피치 자체로 알림 */
+.fpa-pitch-armed {
+  cursor: crosshair;
+  box-shadow: 0 0 0 2px #16c2c2, 0 0 18px rgba(22, 194, 194, 0.55);
+}
+.fpa-pitch-armed .fpa-pitch-dot {
+  cursor: crosshair;
+}
+
+.fpa-arrow-arm-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  background: rgba(6, 40, 40, 0.92);
+  border: 1px solid #16c2c2;
+  color: #d7fbfb;
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: auto;
+}
+.fpa-arrow-arm-badge b {
+  color: #16c2c2;
+  font-weight: 700;
+}
+.fpa-arrow-arm-badge button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(22, 194, 194, 0.2);
+  color: #d7fbfb;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+.fpa-arrow-arm-badge button:hover {
+  background: rgba(22, 194, 194, 0.45);
+}
+
+/* 시작점 → 커서 고무줄 미리보기 (stroke 색은 액션 종류에 따라 인라인 지정) */
+.fpa-arrow-preview line {
+  stroke-width: 3;
+  stroke-opacity: 0.75;
+}
+.fpa-arrow-start-marker {
+  fill: none;
+  stroke-width: 3;
+  stroke-dasharray: 5 4;
+}
+
+/* 수비 화살표 끝의 차단 표시(✕)와 상대 볼 출발점(○) */
+.fpa-arrow-defense-caps line {
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+/* 화살표 중점의 액션 코드 칩 */
+.fpa-arrow-chip {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, -50%);
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.fpa-arrow-chip.pass {
+  background: rgba(6, 40, 40, 0.9);
+  border: 1px solid #16c2c2;
+  color: #7ff0f0;
+}
+.fpa-arrow-chip.defense {
+  background: rgba(48, 12, 12, 0.9);
+  border: 1px solid #e0524f;
+  color: #ff9b99;
+}
+
 /* 액션 점(코드 라벨) — before 피치 오버레이 */
 .fpa-scene-action-point {
   width: auto;

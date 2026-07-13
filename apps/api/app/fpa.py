@@ -38,13 +38,15 @@ ACTION_CODES = {
     "ee": "Breakthrough",
     "e": "Breakthrough",
     "pn": "Penetration",  # 오프더볼 침투 런(Off-ball Run) — xFP Event=Penetration (xFP/fpa 이식)
+    "pr": "Press",  # 압박 — 팀 단위 행위라 선수 번호 없이 'pr'만 입력. 압박자=프레임에 찍힌 아군, closing 기준=상대 위치 (점수 공식은 추후)
     "rr": "Dribble",
     "r": "Dribble",
     "gp": "Gain",
     "m": "Miss",
     "aa": "Tackle",
     "q": "Intercept",
-    "qq": "Acquisition",
+    # "qq": "Acquisition" 제거 (2026-07-08) — 수비는 before/after 위치변화로 EPV·PC 채점. 획득(possession-win) 개념 폐기.
+    # 옛 데이터의 Action="Acquisition" 행은 정규화/집계에서 계속 인식(하위호환)하되 신규 입력은 불가.
     "w": "Clear",
     "ww": "Cutout",
     "qw": "Block",
@@ -88,6 +90,15 @@ TAG_CODES = {
     "lc": "Low Cross",
 }
 TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr", "pn"}
+# 수비 액션(태클/인터셉트/차단) — 상대 '패스 공' 경로를 before 프레임에 화살표로 그림 (2026-07-09 확정).
+# 화살표 start=상대 볼 출발점, end=끊은 지점. 점수 = 상대가 만든 전진위협을 막은 값 =
+# '상대 공격방향' 기준 EPV(end)−EPV(start) (prevented threat). 좌표 2개(화살표)로 채점, EPV-방어만 사용.
+# 제외: Duel(b/bb)=경합 포인트, Clear(w)=단독 지점.
+DEFENSE_ARROW_CODES = {"aa", "q", "ww"}
+# Block(qw)=슛블락 — 상대 '슛' 궤적을 before 프레임에 화살표로(start=슈터, end=블록 지점).
+# 점수 = 막은 슛의 xG를 블로커에게 승계(상대 공격방향으로 슈터 위치 뒤집어 estimate_xg) × BLOCK_CREDIT. xG 컬럼 사용.
+SHOT_BLOCK_CODES = {"qw"}
+BLOCK_CREDIT = 1.0
 SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
 SHOT_ACTIONS_LEGACY = ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
 
@@ -337,6 +348,23 @@ def _compact_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> dict[str, An
         "before": before_points,
         "after": after_points,
     }
+
+
+def _actor_present_in_after(dual_pitch: dict[str, Any] | None, player_number: str) -> bool:
+    """dual after 프레임에 행위자(같은 번호·아군) 점이 있으면 True. 소유 획득(possession-win) 판정용."""
+    if not dual_pitch or not player_number:
+        return False
+    after = dual_pitch.get("after") or {}
+    raw_points = after if isinstance(after, list) else after.get("dots") or []
+    for point in raw_points:
+        try:
+            number = str(point.get("number") or "").strip()
+            point_team = str(point.get("team") or "ally")
+        except AttributeError:
+            continue
+        if number == str(player_number) and point_team in {"ally", ""}:
+            return True
+    return False
 
 
 def _encode_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> str:
@@ -1394,6 +1422,11 @@ def generate_log_entry(
         player_from = base_action_part
         action_code_raw = "touch"
         player_to = ""
+    elif base_action_part.isalpha() and base_action_part in ACTION_CODES:
+        # 번호 없는 액션 (예: pr=압박). 팀 단위라 행위자 번호가 없음.
+        player_from = ""
+        action_code_raw = base_action_part
+        player_to = ""
     else:
         match = re.match(r"(\d+)([a-z]+)(\d*)", base_action_part)
         if not match:
@@ -1430,11 +1463,11 @@ def generate_log_entry(
         tags_list.extend(["Blocked", "Fail"])
     elif action_code_raw == "d":
         tags_list.extend(["Off Target", "Fail"])
-    elif action_code_raw in ["gp", "w", "qw", "v", "vv", "sv", "q", "qq"]:
+    elif action_code_raw in ["gp", "w", "qw", "v", "vv", "sv", "q", "pr"]:
         tags_list.append("Success")
     elif action_code_raw == "pn":
         tags_list.extend(["Off-ball Run", "Success"])
-    elif action_code_raw not in ["touch", "t", "m", "q", "p", "l", "qq", "bl", "o", "st", "pn"]:
+    elif action_code_raw not in ["touch", "t", "m", "q", "p", "l", "bl", "o", "st", "pn"]:
         if len(action_code_raw) > 1 and action_code_raw[0] == action_code_raw[1]:
             tags_list.append("Success")
         else:
@@ -1462,6 +1495,9 @@ def generate_log_entry(
         )
     else:
         requires_two_dots = (base_action_code in TWO_DOT_ACTION_CODES or action_code_raw in TWO_DOT_ACTION_CODES or player_to) and action_code_raw != "sv"
+        # 수비 액션: 상대 볼/슛 경로 화살표(start,end) 2점이 오면 two-dot로 처리 (EPV-prevented 또는 xG-prevented).
+        if not requires_two_dots and action_code_raw in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES) and len(dots) >= 2:
+            requires_two_dots = True
     if not is_dribble and requires_two_dots:
         if len(dots) < 2:
             raise ValueError("좌표 2개가 필요합니다.")
@@ -1470,7 +1506,8 @@ def generate_log_entry(
         end_x, end_y = float(end_pos["meter_x"]), float(end_pos["meter_y"])
         start_x_adj = FIELD_W - start_x if direction == "left" else start_x
         end_x_adj = FIELD_W - end_x if direction == "left" else end_x
-        if action_name != "Throw-in" and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
+        # Progressive는 전진 '전달' 액션(패스/크로스/드리블 등)에만 — 수비(상대 공/슛 경로)엔 부적절하므로 제외
+        if action_name != "Throw-in" and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
         if action_name == "Throw-in":
             throw_distance = float(np.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2))
@@ -1496,6 +1533,8 @@ def generate_log_entry(
     elif action_name in ["Goal", "Shot On Target", "Shot", "Blocked Shot"] and "Out-box" not in tags_list:
         tags_list.append("Out-box")
 
+    # 획득(possession-win) t/f 폐기 (2026-07-08) — 수비는 before(행위 전)→after(행위 시점) 위치변화의
+    # EPV·PC delta로 채점한다. after 프레임 유무로 소유권을 판정하던 옛 로직 제거.
     deduped_tags = list(dict.fromkeys(tags_list))
     if deduped_tags:
         log_text += f" | Tags: {', '.join(deduped_tags)}"
@@ -1519,12 +1558,29 @@ def generate_log_entry(
     metric_end_x = end_x if end_x is not None else start_x
     metric_end_y = end_y if end_y is not None else start_y
     metric_end_x_adj = end_x_adj if end_x_adj is not None else start_x_adj
-    epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
-    if epv_value is not None:
-        metrics["EPV"] = epv_value
-    pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
-    if pc_value is not None:
-        metrics["PC"] = pc_value
+    if action_code_raw in SHOT_BLOCK_CODES:
+        # 슛블락: 막은 슛의 xG를 블로커에게 승계. 화살표 start=슈터(상대) 위치를 상대 공격방향으로 뒤집어
+        # estimate_xg 계산. EPV/PC는 슛블락에 무의미하므로 생략, xG 컬럼만 채움.
+        try:
+            block_xg = shared_estimate_xg(
+                "HOME", "L2R", float(FIELD_W - start_x_adj), float(start_y),
+                "Header" in deduped_tags, "Weak Foot" in deduped_tags,
+            )
+            metrics["xG"] = round(float(block_xg["xg"]) * BLOCK_CREDIT, 4)
+        except (KeyError, TypeError, ValueError):
+            pass
+    else:
+        if action_code_raw in DEFENSE_ARROW_CODES:
+            # 수비: 화살표(start=상대 볼 출발, end=끊은 지점)는 '상대 공' 경로. 상대 공격방향(좌표 뒤집기)으로
+            # EPV를 재서, 상대가 만들려던 전진위협 EPV(end)−EPV(start)를 그대로 승계(=prevented threat). EPV-방어만.
+            epv_value = _epv_delta(FIELD_W - start_x_adj, start_y, FIELD_W - metric_end_x_adj, metric_end_y)
+        else:
+            epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
+        if epv_value is not None:
+            metrics["EPV"] = epv_value
+        pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
+        if pc_value is not None:
+            metrics["PC"] = pc_value
 
     metrics_text = _format_metrics(metrics)
     if metrics_text:
@@ -2557,6 +2613,10 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
         xgot = clean_value(row.get("xGOT", ""))
         epv = clean_value(row.get("EPV", ""))
         pc = clean_value(row.get("PC", ""))
+        # 장면 경계는 이 세 컬럼에만 있다. 떨어뜨리면 불러오기 후 전 로그가 한 장면으로 합쳐진다.
+        scene_index = clean_value(row.get("SceneIndex", ""))
+        scene_action_index = clean_value(row.get("SceneActionIndex", ""))
+        scene_state = clean_value(row.get("SceneState", ""))
 
         if team == "home" and team_id and not home_team_id:
             home_team_id = team_id
@@ -2602,6 +2662,9 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "xGOT": _parse_metrics(metrics).get("xGOT", "") if metrics else "",
                 "EPV": _parse_metrics(metrics).get("EPV", "") if metrics else "",
                 "PC": _parse_metrics(metrics).get("PC", "") if metrics else "",
+                "SceneIndex": scene_index,
+                "SceneActionIndex": scene_action_index,
+                "SceneState": scene_state,
             }
         )
 
