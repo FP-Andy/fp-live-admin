@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Float, BigInteger, Text
+from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Float, BigInteger, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
@@ -32,6 +32,36 @@ class Match(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ScheduleEntry(Base):
+    __tablename__ = "schedule_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    league: Mapped[str] = mapped_column(String, nullable=False, default="", index=True)
+    round_label: Mapped[str] = mapped_column(String, nullable=False, default="")
+    match_date: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kickoff_time: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    home_team: Mapped[str] = mapped_column(String, nullable=False, default="")
+    away_team: Mapped[str] = mapped_column(String, nullable=False, default="")
+    fla_staff: Mapped[str] = mapped_column(String, nullable=False, default="")
+    fpa_home_staff: Mapped[str] = mapped_column(String, nullable=False, default="")
+    fpa_away_staff: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+
+
+class ScheduleNotificationLog(Base):
+    __tablename__ = "schedule_notification_logs"
+    __table_args__ = (UniqueConstraint("dedupe_key", name="uq_schedule_notification_logs_dedupe_key"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    dedupe_key: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    schedule_entry_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    target_date: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    message_preview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class CompetitionClass(Base):
     __tablename__ = "competition_classes"
 
@@ -39,6 +69,7 @@ class CompetitionClass(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     first_half_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
     second_half_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
+    team_options: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

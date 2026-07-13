@@ -1694,6 +1694,98 @@ a:focus-visible {
   background: var(--success-soft);
 }
 
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.resource-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.035);
+  min-width: 0;
+}
+
+.resource-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.resource-card h4 {
+  margin: 4px 0 0;
+  font-size: 16px;
+}
+
+.resource-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.resource-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.resource-bar-row {
+  display: grid;
+  gap: 6px;
+}
+
+.resource-bar-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.resource-bar-label strong {
+  color: var(--text-primary);
+}
+
+.resource-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.resource-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--text-secondary);
+}
+
+.resource-bar-fill.ok {
+  background: #3ddc97;
+}
+
+.resource-bar-fill.warning {
+  background: #ffb14a;
+}
+
+.resource-bar-fill.danger {
+  background: #ff6b6b;
+}
+
+.resource-small {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.warning-text {
+  color: #ffe0b3;
+}
+
 .form-stack {
   display: grid;
   gap: 14px;
@@ -3046,8 +3138,29 @@ a:focus-visible {
 
 .competition-class-table th:last-child,
 .competition-class-table td:last-child {
-  width: 84px;
+  width: 220px;
   text-align: right;
+}
+
+.competition-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.competition-file-label {
+  cursor: pointer;
+  min-height: 0;
+}
+
+.competition-file-label input {
+  display: none;
+}
+
+.competition-file-label.disabled {
+  opacity: 0.62;
+  pointer-events: none;
 }
 
 .competition-edit-panel {
@@ -3057,6 +3170,82 @@ a:focus-visible {
   border: 1px solid var(--border-ghost);
   border-radius: var(--radius-card);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.schedule-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.schedule-modal {
+  width: min(760px, calc(100vw - 40px));
+  max-height: min(86vh, 760px);
+  overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.schedule-import-modal {
+  width: min(520px, calc(100vw - 40px));
+}
+
+.schedule-modal-body {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.schedule-import-panel {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.schedule-entry-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.schedule-entry-form .field-stack:nth-child(5),
+.schedule-entry-form .field-stack:nth-child(6) {
+  grid-column: span 1;
+}
+
+.schedule-entry-form .field-stack:nth-child(5),
+.schedule-entry-form .field-stack:nth-child(6),
+.schedule-entry-form .field-stack:nth-child(7),
+.schedule-entry-form .field-stack:nth-child(8),
+.schedule-entry-form .field-stack:nth-child(9) {
+  min-width: 0;
+}
+
+.schedule-dialog-actions {
+  justify-content: flex-end;
+}
+
+.schedule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.schedule-item-heading {
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 6px;
 }
 
 .lineup-modal {
@@ -4879,6 +5068,20 @@ a:focus-visible {
 
   .metric-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .resource-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-import-panel,
+  .schedule-entry-form {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-entry-form .field-stack:nth-child(5),
+  .schedule-entry-form .field-stack:nth-child(6) {
+    grid-column: auto;
   }
 
   .fvc-workspace {

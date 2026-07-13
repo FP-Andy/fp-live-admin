@@ -1,6 +1,6 @@
 import asyncio
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import io
@@ -18,6 +18,7 @@ from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form,
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 import os
 import httpx
@@ -52,7 +53,7 @@ from .highlight_jobs import (
     update_job,
     upload_dir,
 )
-from .models import Match, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightJob
+from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -77,6 +78,9 @@ from .schemas import (
     FcmSubmissionUpsertRequest,
     PossessionResetRequest,
     ReleaseLockRequest,
+    ScheduleEntryRequest,
+    ScheduleEntryResponse,
+    ScheduleImportResponse,
     SessionUserResponse,
     StateRequest,
     TimelineEditorListItem,
@@ -105,6 +109,8 @@ app.add_middleware(
 
 worker_stop_event = asyncio.Event()
 worker_task: asyncio.Task | None = None
+system_monitor_task: asyncio.Task | None = None
+schedule_slack_task: asyncio.Task | None = None
 SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
@@ -119,6 +125,25 @@ HIGHLIGHT_WORKER_CONTROL_URL = os.getenv("HIGHLIGHT_WORKER_CONTROL_URL", "").str
 HIGHLIGHT_WORKER_CONTROL_TOKEN = os.getenv("HIGHLIGHT_WORKER_CONTROL_TOKEN", "").strip()
 HIGHLIGHT_WORKER_INSTANCE_ID = os.getenv("HIGHLIGHT_WORKER_INSTANCE_ID", "").strip()
 HIGHLIGHT_WORKER_INSTANCE_NAME = os.getenv("HIGHLIGHT_WORKER_INSTANCE_NAME", "fhl-gpu-worker").strip() or "fhl-gpu-worker"
+SYSTEM_MONITOR_ENABLED = os.getenv("SYSTEM_MONITOR_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SYSTEM_MONITOR_SLACK_WEBHOOK_URL = os.getenv("SYSTEM_MONITOR_SLACK_WEBHOOK_URL", "").strip()
+SYSTEM_MONITOR_SCHEDULE_CSV_URL = os.getenv(
+    "SYSTEM_MONITOR_SCHEDULE_CSV_URL",
+    "https://docs.google.com/spreadsheets/d/10Ha_KDtbYIJr83PAxsoirTrVvqLnGKMKbXVdIEy5ibE/export?format=csv&gid=317978883",
+).strip()
+SYSTEM_MONITOR_PREMATCH_MINUTES = int(os.getenv("SYSTEM_MONITOR_PREMATCH_MINUTES", "30"))
+SYSTEM_MONITOR_POSTMATCH_MINUTES = int(os.getenv("SYSTEM_MONITOR_POSTMATCH_MINUTES", "180"))
+SYSTEM_MONITOR_ACTIVE_CHECK_SECONDS = int(os.getenv("SYSTEM_MONITOR_ACTIVE_CHECK_SECONDS", "60"))
+SYSTEM_MONITOR_IDLE_CHECK_SECONDS = int(os.getenv("SYSTEM_MONITOR_IDLE_CHECK_SECONDS", "300"))
+SCHEDULE_SLACK_ENABLED = os.getenv("SCHEDULE_SLACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SCHEDULE_SLACK_WEBHOOK_URL = os.getenv("SCHEDULE_SLACK_WEBHOOK_URL", "").strip()
+SCHEDULE_SLACK_DAILY_HOUR = int(os.getenv("SCHEDULE_SLACK_DAILY_HOUR", "9"))
+SCHEDULE_SLACK_DAILY_MINUTE = int(os.getenv("SCHEDULE_SLACK_DAILY_MINUTE", "0"))
+SCHEDULE_SLACK_REMINDER_MINUTES = int(os.getenv("SCHEDULE_SLACK_REMINDER_MINUTES", "60"))
+SCHEDULE_SLACK_CHECK_SECONDS = int(os.getenv("SCHEDULE_SLACK_CHECK_SECONDS", "1800"))
+SCHEDULE_SLACK_POST_EMPTY_DAILY = os.getenv("SCHEDULE_SLACK_POST_EMPTY_DAILY", "0").strip().lower() in {"1", "true", "yes", "on"}
+SCHEDULE_SLACK_MENTION_MAP_JSON = os.getenv("SCHEDULE_SLACK_MENTION_MAP_JSON", "").strip()
+KST = timezone(timedelta(hours=9))
 FCM_RUNTIME_DIR = Path(os.getenv("FCM_RUNTIME_DIR", "/app/runtime/fcm")).resolve()
 FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
 FPA_MODEL_ROOM_DIR = Path(os.getenv("FPA_MODEL_ROOM_DIR", "/app/runtime/fpa_model_room")).resolve()
@@ -242,6 +267,7 @@ def _ensure_runtime_schema() -> None:
     match_columns = {column["name"] for column in inspector.get_columns("matches")}
     event_columns = {column["name"] for column in inspector.get_columns("events")}
     dominance_columns = {column["name"] for column in inspector.get_columns("dominance_bins")}
+    competition_class_columns = {column["name"] for column in inspector.get_columns("competition_classes")} if "competition_classes" in table_names else set()
     fcm_submission_columns = {column["name"] for column in inspector.get_columns("fcm_submissions")} if "fcm_submissions" in table_names else set()
     fcm_template_columns = {column["name"] for column in inspector.get_columns("fcm_templates")} if "fcm_templates" in table_names else set()
     highlight_job_columns = {column["name"] for column in inspector.get_columns("highlight_jobs")} if "highlight_jobs" in table_names else set()
@@ -267,6 +293,8 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE matches ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE")
     if "archived_at" not in match_columns:
         statements.append("ALTER TABLE matches ADD COLUMN archived_at TIMESTAMP NULL")
+    if "competition_classes" in table_names and "team_options" not in competition_class_columns:
+        statements.append("ALTER TABLE competition_classes ADD COLUMN team_options JSONB NOT NULL DEFAULT '[]'::jsonb")
     if "fcm_submissions" in table_names and "team_side" not in fcm_submission_columns:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN team_side VARCHAR NOT NULL DEFAULT 'HOME'")
     if "fcm_submissions" in table_names and "player_name" not in fcm_submission_columns:
@@ -337,6 +365,93 @@ def _default_half_minutes_for_class(code: str | None) -> tuple[int, int]:
     return 45, 45
 
 
+DEFAULT_COMPETITION_TEAM_OPTIONS: dict[str, list[str]] = {
+    "K3": [
+        "FC강릉",
+        "FC목포",
+        "경주한수원FC",
+        "당진시민축구단",
+        "대전코레일FC",
+        "부산교통공사축구단",
+        "시흥시민축구단",
+        "양평FC",
+        "여주FC",
+        "울산시민축구단",
+        "전북현대모터스",
+        "창원FC",
+        "춘천시민축구단",
+        "포천시민축구단",
+    ],
+    "WK": [
+        "강진SWANSWFC",
+        "경주한수원WFC",
+        "상무여자축구단",
+        "서울시청",
+        "세종스포츠토토여자축구단",
+        "수원FC위민",
+        "인천현대제철",
+        "화천 KSPO 여자축구단",
+    ],
+    "SUFA-S": [
+        "고려대 FC DREAM",
+        "서울시립대 아마축구부",
+        "숭실대 SSC",
+        "연세대 FC연세",
+        "연세대 WTF",
+        "중앙대 청우회",
+        "한양대 라이언",
+        "한체대 태풍",
+    ],
+    "SUFA-A": [
+        "고려대 아마추어축구부",
+        "광운대 KWPE",
+        "동국대 FC TOTO",
+        "서울시립대 AZURE",
+        "서강대 서강축구반",
+        "중앙대 FC BASTARD",
+        "한체대 FC LABAMBA",
+        "한체대 FC 리히트",
+    ],
+    "SUFA-B": [
+        "건국대 N:TROPY",
+        "상명대 캐논",
+        "서강대 KLASSIKER",
+        "서울과기대 FC CTRL",
+        "서울과기대 FC GAIA",
+        "성균관대 성균축구단",
+        "한국외대 야생마FC",
+        "한양대 한백사",
+    ],
+    "SUFA-L": [
+        "고려대 FC ELISE",
+        "국민대 한마음 레이디스",
+        "동국대 FC 엘레펜테",
+        "서울대 SNUWFC",
+        "서울시립대 WFC.BETA",
+        "숙명여대 FC숙명",
+        "연세대 W-KICKS",
+        "이화여대 ESSA",
+        "이화여대 FC콕",
+        "한체대 FC천마",
+    ],
+}
+
+
+def _normalize_team_options(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = str(value or "").strip()
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(name)
+    return normalized
+
+
 def _seed_competition_classes(db: Session) -> None:
     defaults = [
         ("K3", "K3", 45, 45),
@@ -347,9 +462,13 @@ def _seed_competition_classes(db: Session) -> None:
         ("SUFA-B", "SUFA-B", 20, 20),
         ("SUFA-L", "SUFA-L", 20, 20),
     ]
-    existing = {row.code for row in db.query(CompetitionClass).all()}
+    existing = {row.code: row for row in db.query(CompetitionClass).all()}
     for code, name, first_half_minutes, second_half_minutes in defaults:
-        if code in existing:
+        team_options = DEFAULT_COMPETITION_TEAM_OPTIONS.get(code, [])
+        existing_row = existing.get(code)
+        if existing_row:
+            if team_options and not _normalize_team_options(existing_row.team_options):
+                existing_row.team_options = team_options
             continue
         db.add(
             CompetitionClass(
@@ -357,6 +476,7 @@ def _seed_competition_classes(db: Session) -> None:
                 name=name,
                 first_half_minutes=first_half_minutes,
                 second_half_minutes=second_half_minutes,
+                team_options=team_options,
             )
         )
     db.commit()
@@ -393,8 +513,383 @@ def _serialize_competition_class(row: CompetitionClass) -> dict:
         "name": row.name,
         "first_half_minutes": int(row.first_half_minutes or 45),
         "second_half_minutes": int(row.second_half_minutes or row.first_half_minutes or 45),
+        "team_options": _normalize_team_options(row.team_options),
         "created_at": row.created_at.isoformat(),
     }
+
+
+COMPETITION_TEAM_CSV_NAME_COLUMNS = ("팀명", "팀", "team", "Team", "Team Name", "team_name")
+COMPETITION_TEAM_CSV_PAIR_COLUMNS = ("홈팀", "어웨이팀", "home_team", "away_team", "Home", "Away")
+
+
+def _parse_competition_team_csv(raw_bytes: bytes) -> list[str]:
+    text_value = raw_bytes.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text_value))
+    fieldnames = [field.strip() for field in (reader.fieldnames or [])]
+    if not fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 헤더가 필요합니다.")
+
+    name_columns = [column for column in COMPETITION_TEAM_CSV_NAME_COLUMNS if column in fieldnames]
+    pair_columns = [column for column in COMPETITION_TEAM_CSV_PAIR_COLUMNS if column in fieldnames]
+    source_columns = name_columns or pair_columns or fieldnames[:1]
+    team_names: list[str] = []
+    seen: set[str] = set()
+
+    for row in reader:
+        if not any((value or "").strip() for value in row.values()):
+            continue
+        for column in source_columns:
+            name = (row.get(column) or "").strip()
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            team_names.append(name)
+
+    return team_names
+
+
+def _competition_team_csv(row: CompetitionClass) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["대회코드", "대회명", "팀명"])
+    teams = _normalize_team_options(row.team_options)
+    if teams:
+        for team in teams:
+            writer.writerow([row.code, row.name, team])
+    else:
+        writer.writerow([row.code, row.name, ""])
+    return output.getvalue()
+
+
+SCHEDULE_CSV_COLUMNS = ["리그", "라운드", "날짜", "시간", "홈팀", "어웨이팀", "FLA담당자", "FPA(홈)", "FPA(어웨이)"]
+
+
+def _validate_schedule_date(value: str) -> str:
+    raw = (value or "").strip()
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail="날짜는 YYYY-MM-DD 형식이어야 합니다.") from ex
+
+
+def _validate_schedule_time(value: str) -> str:
+    raw = (value or "").strip()
+    try:
+        return datetime.strptime(raw, "%H:%M").strftime("%H:%M")
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail="시간은 HH:MM 형식이어야 합니다.") from ex
+
+
+def _normalize_schedule_entry(body: ScheduleEntryRequest) -> dict:
+    home_team = body.home_team.strip()
+    away_team = body.away_team.strip()
+    if not home_team or not away_team:
+        raise HTTPException(status_code=400, detail="홈팀과 어웨이팀은 필수입니다.")
+    return {
+        "league": body.league.strip(),
+        "round_label": body.round_label.strip(),
+        "match_date": _validate_schedule_date(body.match_date),
+        "kickoff_time": _validate_schedule_time(body.kickoff_time),
+        "home_team": home_team,
+        "away_team": away_team,
+        "fla_staff": body.fla_staff.strip(),
+        "fpa_home_staff": body.fpa_home_staff.strip(),
+        "fpa_away_staff": body.fpa_away_staff.strip(),
+    }
+
+
+def _serialize_schedule_entry(row: ScheduleEntry) -> dict:
+    return {
+        "id": row.id,
+        "league": row.league or "",
+        "round_label": row.round_label or "",
+        "match_date": row.match_date,
+        "kickoff_time": row.kickoff_time,
+        "home_team": row.home_team,
+        "away_team": row.away_team,
+        "fla_staff": row.fla_staff or "",
+        "fpa_home_staff": row.fpa_home_staff or "",
+        "fpa_away_staff": row.fpa_away_staff or "",
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _schedule_key(payload: dict) -> tuple[str, str, str, str]:
+    return (
+        payload["match_date"],
+        payload["kickoff_time"],
+        payload["home_team"],
+        payload["away_team"],
+    )
+
+
+def _parse_schedule_csv(raw_bytes: bytes) -> tuple[list[dict], list[str]]:
+    text_value = raw_bytes.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text_value))
+    fieldnames = [field.strip() for field in (reader.fieldnames or [])]
+    missing = [column for column in SCHEDULE_CSV_COLUMNS if column not in fieldnames]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"CSV 컬럼이 누락되었습니다: {', '.join(missing)}")
+
+    rows: list[dict] = []
+    errors: list[str] = []
+    for index, row in enumerate(reader, start=2):
+        if not any((value or "").strip() for value in row.values()):
+            continue
+        try:
+            payload = {
+                "league": (row.get("리그") or "").strip(),
+                "round_label": (row.get("라운드") or "").strip(),
+                "match_date": _validate_schedule_date(row.get("날짜") or ""),
+                "kickoff_time": _validate_schedule_time(row.get("시간") or ""),
+                "home_team": (row.get("홈팀") or "").strip(),
+                "away_team": (row.get("어웨이팀") or "").strip(),
+                "fla_staff": (row.get("FLA담당자") or "").strip(),
+                "fpa_home_staff": (row.get("FPA(홈)") or "").strip(),
+                "fpa_away_staff": (row.get("FPA(어웨이)") or "").strip(),
+            }
+            if not payload["home_team"] or not payload["away_team"]:
+                raise ValueError("홈팀/어웨이팀 누락")
+            rows.append(payload)
+        except HTTPException as ex:
+            errors.append(f"{index}행: {ex.detail}")
+        except Exception as ex:
+            errors.append(f"{index}행: {ex}")
+    return rows, errors
+
+
+def _schedule_slack_mention_map() -> dict[str, str]:
+    if not SCHEDULE_SLACK_MENTION_MAP_JSON:
+        return {}
+    try:
+        parsed = json.loads(SCHEDULE_SLACK_MENTION_MAP_JSON)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(name).strip(): str(value).strip() for name, value in parsed.items() if str(name).strip() and str(value).strip()}
+
+
+def _schedule_slack_mention(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    if raw.startswith("<@") or raw.startswith("<!"):
+        return raw
+    if re.match(r"^[UW][A-Z0-9]+$", raw):
+        return f"<@{raw}>"
+    return raw
+
+
+def _schedule_entry_mentions(row: ScheduleEntry) -> list[str]:
+    mention_map = _schedule_slack_mention_map()
+    if not mention_map:
+        return []
+    combined = " ".join([row.fla_staff or "", row.fpa_home_staff or "", row.fpa_away_staff or ""])
+    mentions: list[str] = []
+    for name, target in mention_map.items():
+        if name in combined:
+            mention = _schedule_slack_mention(target)
+            if mention and mention not in mentions:
+                mentions.append(mention)
+    return mentions
+
+
+def _schedule_entry_kickoff_kst(row: ScheduleEntry) -> datetime | None:
+    try:
+        return datetime.strptime(f"{row.match_date} {row.kickoff_time}", "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+    except ValueError:
+        return None
+
+
+def _schedule_entry_competition(row: ScheduleEntry) -> str:
+    return " ".join(part for part in [row.league or "", row.round_label or ""] if part).strip() or "-"
+
+
+def _schedule_entry_staff_text(row: ScheduleEntry) -> str:
+    parts = []
+    if row.fla_staff:
+        parts.append(f"FLA {row.fla_staff}")
+    if row.fpa_home_staff:
+        parts.append(f"FPA홈 {row.fpa_home_staff}")
+    if row.fpa_away_staff:
+        parts.append(f"FPA어웨이 {row.fpa_away_staff}")
+    return " / ".join(parts)
+
+
+def _format_schedule_entry_line(row: ScheduleEntry) -> str:
+    staff = _schedule_entry_staff_text(row)
+    mentions = " ".join(_schedule_entry_mentions(row))
+    suffix = ""
+    if staff:
+        suffix = f" / {staff}"
+    if mentions:
+        suffix = f"{suffix} / {mentions}" if suffix else f" / {mentions}"
+    return f"- {row.kickoff_time} | {_schedule_entry_competition(row)} | {row.home_team} vs {row.away_team}{suffix}"
+
+
+def _build_schedule_daily_message(target_date: str, rows: list[ScheduleEntry], now_kst: datetime) -> str:
+    if not rows:
+        return (
+            f"경기 일정 알림 | {target_date} KST\n"
+            "오늘 등록된 경기는 없습니다."
+        )
+    lines = [_format_schedule_entry_line(row) for row in rows]
+    return "\n".join(
+        [
+            f"경기 일정 알림 | {target_date} KST",
+            f"오늘 등록된 경기는 총 {len(rows)}경기입니다.",
+            *lines,
+            f"확인 시각: {now_kst:%Y-%m-%d %H:%M} KST",
+        ]
+    )
+
+
+def _build_schedule_reminder_message(row: ScheduleEntry, kickoff: datetime, now_kst: datetime) -> str:
+    staff = _schedule_entry_staff_text(row) or "-"
+    mentions = " ".join(_schedule_entry_mentions(row))
+    mention_line = f"\n담당자 멘션: {mentions}" if mentions else ""
+    return (
+        f"경기 시작 {SCHEDULE_SLACK_REMINDER_MINUTES}분 전 알림 | {kickoff:%Y-%m-%d %H:%M} KST\n"
+        f"- 대회: {_schedule_entry_competition(row)}\n"
+        f"- 경기: {row.home_team} vs {row.away_team}\n"
+        f"- 담당: {staff}"
+        f"{mention_line}\n"
+        f"확인 시각: {now_kst:%Y-%m-%d %H:%M} KST"
+    )
+
+
+async def _send_schedule_slack(message: str) -> bool:
+    if not SCHEDULE_SLACK_WEBHOOK_URL:
+        return False
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.post(SCHEDULE_SLACK_WEBHOOK_URL, json={"text": message})
+        response.raise_for_status()
+    return True
+
+
+def _schedule_notification_sent(db: Session, dedupe_key: str) -> bool:
+    return db.query(ScheduleNotificationLog.id).filter(ScheduleNotificationLog.dedupe_key == dedupe_key).first() is not None
+
+
+def _record_schedule_notification(
+    db: Session,
+    *,
+    kind: str,
+    dedupe_key: str,
+    target_date: str | None,
+    schedule_entry_id: str | None,
+    message: str,
+) -> None:
+    db.add(
+        ScheduleNotificationLog(
+            kind=kind,
+            dedupe_key=dedupe_key,
+            target_date=target_date,
+            schedule_entry_id=schedule_entry_id,
+            message_preview=message[:500],
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+
+def _schedule_entries_for_date(db: Session, target_date: str) -> list[ScheduleEntry]:
+    return (
+        db.query(ScheduleEntry)
+        .filter(ScheduleEntry.match_date == target_date)
+        .order_by(ScheduleEntry.kickoff_time.asc(), ScheduleEntry.home_team.asc())
+        .all()
+    )
+
+
+async def _send_schedule_daily_if_due(db: Session, now_kst: datetime, *, force: bool = False) -> bool:
+    target_date = now_kst.strftime("%Y-%m-%d")
+    due_at = now_kst.replace(hour=SCHEDULE_SLACK_DAILY_HOUR, minute=SCHEDULE_SLACK_DAILY_MINUTE, second=0, microsecond=0)
+    if not force and now_kst < due_at:
+        return False
+    dedupe_key = f"schedule-daily:{target_date}"
+    if not force and _schedule_notification_sent(db, dedupe_key):
+        return False
+
+    rows = _schedule_entries_for_date(db, target_date)
+    if not rows and not SCHEDULE_SLACK_POST_EMPTY_DAILY and not force:
+        return False
+    message = _build_schedule_daily_message(target_date, rows, now_kst)
+    sent = await _send_schedule_slack(message)
+    if sent:
+        _record_schedule_notification(
+            db,
+            kind="DAILY",
+            dedupe_key=dedupe_key,
+            target_date=target_date,
+            schedule_entry_id=None,
+            message=message,
+        )
+    return sent
+
+
+async def _send_schedule_reminders_if_due(db: Session, now_kst: datetime) -> int:
+    reminder_delta = timedelta(minutes=SCHEDULE_SLACK_REMINDER_MINUTES)
+    target_dates = {
+        now_kst.strftime("%Y-%m-%d"),
+        (now_kst + timedelta(days=1)).strftime("%Y-%m-%d"),
+    }
+    rows = (
+        db.query(ScheduleEntry)
+        .filter(ScheduleEntry.match_date.in_(target_dates))
+        .order_by(ScheduleEntry.match_date.asc(), ScheduleEntry.kickoff_time.asc(), ScheduleEntry.home_team.asc())
+        .all()
+    )
+    sent_count = 0
+    for row in rows:
+        kickoff = _schedule_entry_kickoff_kst(row)
+        if not kickoff:
+            continue
+        reminder_at = kickoff - reminder_delta
+        if now_kst < reminder_at or now_kst >= kickoff:
+            continue
+        dedupe_key = f"schedule-reminder:{row.id}:{row.match_date}:{row.kickoff_time}:{SCHEDULE_SLACK_REMINDER_MINUTES}"
+        if _schedule_notification_sent(db, dedupe_key):
+            continue
+        message = _build_schedule_reminder_message(row, kickoff, now_kst)
+        sent = await _send_schedule_slack(message)
+        if sent:
+            _record_schedule_notification(
+                db,
+                kind="REMINDER",
+                dedupe_key=dedupe_key,
+                target_date=row.match_date,
+                schedule_entry_id=str(row.id),
+                message=message,
+            )
+            sent_count += 1
+    return sent_count
+
+
+async def schedule_slack_worker(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        sleep_seconds = max(60, SCHEDULE_SLACK_CHECK_SECONDS)
+        try:
+            if SCHEDULE_SLACK_ENABLED and SCHEDULE_SLACK_WEBHOOK_URL:
+                db = SessionLocal()
+                try:
+                    now_kst = datetime.now(KST)
+                    await _send_schedule_daily_if_due(db, now_kst)
+                    await _send_schedule_reminders_if_due(db, now_kst)
+                finally:
+                    db.close()
+        except Exception as ex:
+            print(f"schedule slack worker failed: {ex}")
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=sleep_seconds)
+        except asyncio.TimeoutError:
+            pass
 
 
 def _gateway_start_stream(
@@ -565,9 +1060,11 @@ def _media_control_status() -> dict:
         "detail": data.get("detail"),
         "instance_id": data.get("instance_id") or MEDIA_INSTANCE_ID or None,
         "instance_name": data.get("instance_name") or MEDIA_INSTANCE_NAME,
+        "instance_type": data.get("instance_type"),
         "public_ip": data.get("public_ip"),
         "private_ip": data.get("private_ip"),
         "provider": data.get("provider") or "aws",
+        "metrics": data.get("metrics") if isinstance(data.get("metrics"), dict) else {"available": False},
     }
 
 
@@ -619,10 +1116,263 @@ def _highlight_worker_control_status() -> dict:
         "detail": data.get("detail"),
         "instance_id": data.get("instance_id") or HIGHLIGHT_WORKER_INSTANCE_ID or None,
         "instance_name": data.get("instance_name") or HIGHLIGHT_WORKER_INSTANCE_NAME,
+        "instance_type": data.get("instance_type"),
         "public_ip": data.get("public_ip"),
         "private_ip": data.get("private_ip"),
         "provider": data.get("provider") or "aws",
+        "metrics": data.get("metrics") if isinstance(data.get("metrics"), dict) else {"available": False},
     }
+
+
+def _read_cpu_times() -> tuple[int, int] | None:
+    try:
+        first_line = Path("/proc/stat").read_text().splitlines()[0]
+        values = [int(value) for value in first_line.split()[1:]]
+    except Exception:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return idle, sum(values)
+
+
+def _local_cpu_percent() -> float | None:
+    first = _read_cpu_times()
+    if not first:
+        return None
+    time.sleep(0.05)
+    second = _read_cpu_times()
+    if not second:
+        return None
+    idle_delta = second[0] - first[0]
+    total_delta = second[1] - first[1]
+    if total_delta <= 0:
+        return None
+    return round(max(0.0, min(100.0, (1 - idle_delta / total_delta) * 100)), 2)
+
+
+def _meminfo_kib() -> dict[str, int]:
+    result: dict[str, int] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, raw_value = line.split(":", 1)
+            result[key] = int(raw_value.strip().split()[0])
+    except Exception:
+        return {}
+    return result
+
+
+def _local_resource_status() -> dict:
+    meminfo = _meminfo_kib()
+    total_kib = meminfo.get("MemTotal", 0)
+    available_kib = meminfo.get("MemAvailable", 0)
+    used_kib = max(0, total_kib - available_kib) if total_kib else 0
+    disk = shutil.disk_usage("/")
+    return {
+        "ok": True,
+        "provider": "local",
+        "instance_name": "live-admin-app",
+        "state": "running",
+        "metrics": {
+            "available": True,
+            "cpu_average_percent": _local_cpu_percent(),
+            "memory_percent": round((used_kib / total_kib) * 100, 2) if total_kib else None,
+            "memory_used_gib": round(used_kib / 1024 / 1024, 2) if total_kib else None,
+            "memory_total_gib": round(total_kib / 1024 / 1024, 2) if total_kib else None,
+            "disk_percent": round((disk.used / disk.total) * 100, 2) if disk.total else None,
+            "disk_used_gib": round(disk.used / 1024 / 1024 / 1024, 2),
+            "disk_total_gib": round(disk.total / 1024 / 1024 / 1024, 2),
+            "sample_time": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+def _system_metric_level(value: Any) -> int:
+    if not isinstance(value, (int, float)):
+        return 0
+    if value >= 90:
+        return 90
+    if value >= 80:
+        return 80
+    if value >= 70:
+        return 70
+    return 0
+
+
+def _format_system_metric(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "지표 없음"
+    return f"{value:.1f}%"
+
+
+def _server_metric_points(label: str, server: dict, *, include_memory_disk: bool = False) -> list[dict]:
+    metrics = server.get("metrics") if isinstance(server.get("metrics"), dict) else {}
+    points = [
+        {
+            "key": f"{label}:cpu",
+            "server": label,
+            "metric": "CPU",
+            "value": metrics.get("cpu_max_percent", metrics.get("cpu_average_percent")),
+            "average": metrics.get("cpu_average_percent"),
+            "state": server.get("state") or "unknown",
+            "instance_type": server.get("instance_type"),
+        }
+    ]
+    if include_memory_disk:
+        points.extend(
+            [
+                {
+                    "key": f"{label}:memory",
+                    "server": label,
+                    "metric": "Memory",
+                    "value": metrics.get("memory_percent"),
+                    "average": metrics.get("memory_percent"),
+                    "state": server.get("state") or "unknown",
+                    "instance_type": server.get("instance_type"),
+                },
+                {
+                    "key": f"{label}:disk",
+                    "server": label,
+                    "metric": "Disk",
+                    "value": metrics.get("disk_percent"),
+                    "average": metrics.get("disk_percent"),
+                    "state": server.get("state") or "unknown",
+                    "instance_type": server.get("instance_type"),
+                },
+            ]
+        )
+    return points
+
+
+def _parse_schedule_rows(csv_text: str) -> list[dict]:
+    matches: list[dict] = []
+    reader = csv.DictReader(io.StringIO(csv_text))
+    for row in reader:
+        date_raw = (row.get("날짜") or row.get("date") or "").strip()
+        time_raw = (row.get("시간") or row.get("time") or "").strip()
+        if not date_raw or not time_raw:
+            continue
+        try:
+            kickoff = datetime.strptime(f"{date_raw} {time_raw}", "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+        except ValueError:
+            continue
+        matches.append(
+            {
+                "league": (row.get("리그") or "").strip(),
+                "round": (row.get("라운드") or "").strip(),
+                "kickoff": kickoff,
+                "home": (row.get("홈팀") or "").strip(),
+                "away": (row.get("어웨이팀") or "").strip(),
+            }
+        )
+    return matches
+
+
+def _fetch_system_monitor_schedule() -> list[dict]:
+    if not SYSTEM_MONITOR_SCHEDULE_CSV_URL:
+        return []
+    with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+        response = client.get(SYSTEM_MONITOR_SCHEDULE_CSV_URL)
+        response.raise_for_status()
+        return _parse_schedule_rows(response.text)
+
+
+def _schedule_window_status(matches: list[dict], now_kst: datetime) -> dict:
+    monitor_start_delta = timedelta(minutes=SYSTEM_MONITOR_PREMATCH_MINUTES)
+    monitor_end_delta = timedelta(minutes=SYSTEM_MONITOR_POSTMATCH_MINUTES)
+    today = now_kst.date()
+    today_matches = [match for match in matches if match["kickoff"].date() == today]
+    monitored = [
+        match
+        for match in today_matches
+        if match["kickoff"] - monitor_start_delta <= now_kst <= match["kickoff"] + monitor_end_delta
+    ]
+    live = [
+        match
+        for match in today_matches
+        if match["kickoff"] <= now_kst <= match["kickoff"] + monitor_end_delta
+    ]
+    next_match = min((match for match in matches if match["kickoff"] >= now_kst), key=lambda item: item["kickoff"], default=None)
+    return {
+        "active": bool(monitored),
+        "today_match_count": len(today_matches),
+        "monitored_match_count": len(monitored),
+        "live_estimate_match_count": len(live),
+        "next_kickoff": next_match["kickoff"].isoformat() if next_match else None,
+    }
+
+
+async def _send_system_monitor_slack(message: str) -> None:
+    if not SYSTEM_MONITOR_SLACK_WEBHOOK_URL:
+        return
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.post(SYSTEM_MONITOR_SLACK_WEBHOOK_URL, json={"text": message})
+        response.raise_for_status()
+
+
+def _collect_system_monitor_resources() -> dict:
+    return {
+        "App/API": _local_resource_status(),
+        "Media Gateway": _media_control_status(),
+        "FHL GPU Worker": _highlight_worker_control_status(),
+    }
+
+
+def _build_system_monitor_message(point: dict, level: int, window: dict, now_kst: datetime) -> str:
+    value = _format_system_metric(point.get("value"))
+    average = _format_system_metric(point.get("average"))
+    state = point.get("state") or "unknown"
+    instance_type = point.get("instance_type") or "-"
+    return (
+        f"FPC 서버 부하 경고 (KST {now_kst:%Y-%m-%d %H:%M})\n"
+        f"판단: {level}% 이상\n"
+        f"- 대상: {point['server']} / {point['metric']}\n"
+        f"- 현재: peak {value}, avg {average} / {state} / {instance_type}\n"
+        f"- 경기 윈도우: 감시 {window['monitored_match_count']}경기, 진행 추정 {window['live_estimate_match_count']}경기"
+    )
+
+
+async def system_monitor_worker(stop_event: asyncio.Event) -> None:
+    levels: dict[str, int] = {}
+    last_schedule_fetch = 0.0
+    schedule: list[dict] = []
+    while not stop_event.is_set():
+        sleep_seconds = max(30, SYSTEM_MONITOR_IDLE_CHECK_SECONDS)
+        try:
+            if not SYSTEM_MONITOR_ENABLED:
+                await asyncio.wait_for(stop_event.wait(), timeout=sleep_seconds)
+                continue
+
+            now_monotonic = time.monotonic()
+            if not schedule or now_monotonic - last_schedule_fetch >= 900:
+                schedule = await asyncio.to_thread(_fetch_system_monitor_schedule)
+                last_schedule_fetch = now_monotonic
+
+            now_kst = datetime.now(KST)
+            window = _schedule_window_status(schedule, now_kst)
+            if window["active"]:
+                sleep_seconds = max(30, SYSTEM_MONITOR_ACTIVE_CHECK_SECONDS)
+                resources = await asyncio.to_thread(_collect_system_monitor_resources)
+                points: list[dict] = []
+                points.extend(_server_metric_points("App/API", resources["App/API"], include_memory_disk=True))
+                points.extend(_server_metric_points("Media Gateway", resources["Media Gateway"]))
+                points.extend(_server_metric_points("FHL GPU Worker", resources["FHL GPU Worker"]))
+
+                for point in points:
+                    level = _system_metric_level(point.get("value"))
+                    previous_level = levels.get(point["key"], 0)
+                    if level and level > previous_level:
+                        await _send_system_monitor_slack(_build_system_monitor_message(point, level, window, now_kst))
+                    levels[point["key"]] = level
+            else:
+                levels.clear()
+        except asyncio.TimeoutError:
+            pass
+        except Exception as ex:
+            print(f"system monitor failed: {ex}")
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=sleep_seconds)
+        except asyncio.TimeoutError:
+            pass
 
 
 def _probe_hls_url(hls_url: str | None) -> dict:
@@ -656,7 +1406,7 @@ def _probe_hls_url(hls_url: str | None) -> dict:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global worker_task
+    global worker_task, system_monitor_task, schedule_slack_task
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
     ensure_highlight_runtime_dirs()
@@ -667,6 +1417,8 @@ async def startup() -> None:
     finally:
         db.close()
     worker_task = asyncio.create_task(outbox_worker(worker_stop_event))
+    system_monitor_task = asyncio.create_task(system_monitor_worker(worker_stop_event))
+    schedule_slack_task = asyncio.create_task(schedule_slack_worker(worker_stop_event))
 
 
 @app.on_event("shutdown")
@@ -674,6 +1426,10 @@ async def shutdown() -> None:
     worker_stop_event.set()
     if worker_task:
         await worker_task
+    if system_monitor_task:
+        await system_monitor_task
+    if schedule_slack_task:
+        await schedule_slack_task
 
 
 def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
@@ -3827,6 +4583,158 @@ def list_competition_classes(db: Session = Depends(get_db)):
     return [_serialize_competition_class(row) for row in rows]
 
 
+@app.get("/api/competition-classes/{code}/teams.csv")
+def download_competition_class_teams(code: str, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    normalized_code = _normalize_competition_class(code)
+    row = db.get(CompetitionClass, normalized_code)
+    if not row:
+        raise HTTPException(status_code=404, detail="Competition class not found")
+
+    filename = f"{normalized_code}_teams.csv"
+    return Response(
+        content=f"\ufeff{_competition_team_csv(row)}",
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@app.post("/api/competition-classes/{code}/teams/import-csv")
+async def import_competition_class_teams(
+    code: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    normalized_code = _normalize_competition_class(code)
+    row = db.get(CompetitionClass, normalized_code)
+    if not row:
+        raise HTTPException(status_code=404, detail="Competition class not found")
+
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="CSV 파일이 비어 있습니다.")
+
+    teams = _parse_competition_team_csv(raw_bytes)
+    if not teams:
+        raise HTTPException(status_code=400, detail="등록할 팀명이 없습니다. '팀명' 또는 '홈팀/어웨이팀' 컬럼을 확인하세요.")
+
+    row.team_options = teams
+    db.commit()
+    db.refresh(row)
+    return {"ok": True, "code": row.code, "team_count": len(teams), "teams": teams}
+
+
+@app.get("/api/schedule-entries", response_model=list[ScheduleEntryResponse])
+def list_schedule_entries(
+    date: str | None = Query(default=None),
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    query = db.query(ScheduleEntry)
+    if date:
+        query = query.filter(ScheduleEntry.match_date == _validate_schedule_date(date))
+    if start_date:
+        query = query.filter(ScheduleEntry.match_date >= _validate_schedule_date(start_date))
+    if end_date:
+        query = query.filter(ScheduleEntry.match_date <= _validate_schedule_date(end_date))
+    rows = query.order_by(ScheduleEntry.match_date.asc(), ScheduleEntry.kickoff_time.asc(), ScheduleEntry.home_team.asc()).all()
+    return [_serialize_schedule_entry(row) for row in rows]
+
+
+@app.post("/api/schedule-entries", response_model=ScheduleEntryResponse)
+def create_schedule_entry(body: ScheduleEntryRequest, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    payload = _normalize_schedule_entry(body)
+    row = ScheduleEntry(**payload)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_schedule_entry(row)
+
+
+@app.put("/api/schedule-entries/{entry_id}", response_model=ScheduleEntryResponse)
+def update_schedule_entry(entry_id: UUID, body: ScheduleEntryRequest, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    row = db.get(ScheduleEntry, entry_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Schedule entry not found")
+    payload = _normalize_schedule_entry(body)
+    for key, value in payload.items():
+        setattr(row, key, value)
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    return _serialize_schedule_entry(row)
+
+
+@app.delete("/api/schedule-entries/{entry_id}")
+def delete_schedule_entry(entry_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    row = db.get(ScheduleEntry, entry_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Schedule entry not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/schedule-entries/import-csv", response_model=ScheduleImportResponse)
+async def import_schedule_entries_csv(
+    file: UploadFile = File(...),
+    replace_existing: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="CSV 파일이 비어 있습니다.")
+
+    rows, errors = _parse_schedule_csv(raw_bytes)
+    if not rows:
+        raise HTTPException(status_code=400, detail="저장할 일정 행이 없습니다.")
+
+    if replace_existing:
+        db.query(ScheduleEntry).delete()
+        existing_by_key: dict[tuple[str, str, str, str], ScheduleEntry] = {}
+    else:
+        existing_by_key = {
+            _schedule_key(
+                {
+                    "match_date": item.match_date,
+                    "kickoff_time": item.kickoff_time,
+                    "home_team": item.home_team,
+                    "away_team": item.away_team,
+                }
+            ): item
+            for item in db.query(ScheduleEntry).all()
+        }
+
+    created = 0
+    updated = 0
+    for payload in rows:
+        key = _schedule_key(payload)
+        existing = existing_by_key.get(key)
+        if existing:
+            for field, value in payload.items():
+                setattr(existing, field, value)
+            existing.updated_at = datetime.utcnow()
+            updated += 1
+            continue
+        row = ScheduleEntry(**payload)
+        db.add(row)
+        existing_by_key[key] = row
+        created += 1
+
+    db.commit()
+    return {
+        "ok": True,
+        "imported": len(rows),
+        "created": created,
+        "updated": updated,
+        "replaced": replace_existing,
+        "errors": errors[:20],
+    }
+
+
 @app.get("/api/basketball/court.svg")
 def basketball_court_svg(
     court_type: str = Query(default="nba", pattern="^(nba|wnba|ncaa|fiba)$"),
@@ -3953,6 +4861,7 @@ def create_competition_class(body: CompetitionClassCreateRequest, db: Session = 
         name=name,
         first_half_minutes=body.first_half_minutes,
         second_half_minutes=body.second_half_minutes,
+        team_options=_normalize_team_options(body.team_options),
     )
     db.add(row)
     db.commit()
@@ -4494,12 +5403,79 @@ def get_admin_stream_status():
     return _gateway_status()
 
 
+@app.get("/api/admin/schedule-slack/status")
+def get_schedule_slack_status(db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    today_count = db.query(ScheduleEntry).filter(ScheduleEntry.match_date == today).count()
+    recent_logs = (
+        db.query(ScheduleNotificationLog)
+        .order_by(ScheduleNotificationLog.sent_at.desc())
+        .limit(10)
+        .all()
+    )
+    return {
+        "enabled": SCHEDULE_SLACK_ENABLED,
+        "webhook_configured": bool(SCHEDULE_SLACK_WEBHOOK_URL),
+        "daily_time_kst": f"{SCHEDULE_SLACK_DAILY_HOUR:02d}:{SCHEDULE_SLACK_DAILY_MINUTE:02d}",
+        "reminder_minutes": SCHEDULE_SLACK_REMINDER_MINUTES,
+        "check_seconds": SCHEDULE_SLACK_CHECK_SECONDS,
+        "post_empty_daily": SCHEDULE_SLACK_POST_EMPTY_DAILY,
+        "mention_map_configured": bool(_schedule_slack_mention_map()),
+        "today": today,
+        "today_match_count": today_count,
+        "recent_notifications": [
+            {
+                "kind": row.kind,
+                "target_date": row.target_date,
+                "schedule_entry_id": row.schedule_entry_id,
+                "sent_at": row.sent_at.isoformat(),
+                "message_preview": row.message_preview,
+            }
+            for row in recent_logs
+        ],
+    }
+
+
+@app.post("/api/admin/schedule-slack/send-daily")
+async def send_schedule_slack_daily_now(
+    target_date: str | None = Query(default=None),
+    force: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    if not SCHEDULE_SLACK_WEBHOOK_URL:
+        raise HTTPException(status_code=400, detail="SCHEDULE_SLACK_WEBHOOK_URL is not configured")
+    date_key = _validate_schedule_date(target_date or datetime.now(KST).strftime("%Y-%m-%d"))
+    rows = _schedule_entries_for_date(db, date_key)
+    if not rows and not SCHEDULE_SLACK_POST_EMPTY_DAILY and not force:
+        return {"ok": True, "sent": False, "reason": "no matches", "target_date": date_key, "match_count": 0}
+
+    now_kst = datetime.now(KST)
+    message = _build_schedule_daily_message(date_key, rows, now_kst)
+    dedupe_key = f"schedule-daily-manual:{date_key}:{uuid.uuid4()}" if force else f"schedule-daily:{date_key}"
+    if not force and _schedule_notification_sent(db, dedupe_key):
+        return {"ok": True, "sent": False, "reason": "already sent", "target_date": date_key, "match_count": len(rows)}
+
+    sent = await _send_schedule_slack(message)
+    if sent:
+        _record_schedule_notification(
+            db,
+            kind="DAILY_MANUAL" if force else "DAILY",
+            dedupe_key=dedupe_key,
+            target_date=date_key,
+            schedule_entry_id=None,
+            message=message,
+        )
+    return {"ok": True, "sent": sent, "target_date": date_key, "match_count": len(rows)}
+
+
 @app.get("/api/admin/system")
 def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
     try:
         gateway_status = _gateway_status()
     except HTTPException:
         gateway_status = {"ok": False, "lines": [], "running_match_ids": []}
+    app_server = _local_resource_status()
     media_server = _media_control_status()
     highlight_worker = _highlight_worker_control_status()
     active_highlight_jobs = (
@@ -4521,6 +5497,12 @@ def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_requi
         alerts.append({"severity": "MEDIUM", "title": "Orphan stream risk", "message": "실행 중 스트림은 있는데 활성 STREAM 매치 목록이 비어 있습니다."})
     if manual_matches and not streaming_matches:
         alerts.append({"severity": "INFO", "title": "Manual-only day candidate", "message": "현재 MANUAL 매치만 남아 있으면 media 서버 종료 검토가 가능합니다."})
+    media_cpu = (media_server.get("metrics") or {}).get("cpu_average_percent")
+    app_cpu = (app_server.get("metrics") or {}).get("cpu_average_percent")
+    if isinstance(media_cpu, (int, float)) and media_cpu >= 80:
+        alerts.append({"severity": "HIGH", "title": "Media CPU high", "message": f"Media 서버 CPU가 {media_cpu:.1f}%입니다. 10경기 운영 중이면 stream 수와 ffmpeg 상태를 확인하세요."})
+    if isinstance(app_cpu, (int, float)) and app_cpu >= 80:
+        alerts.append({"severity": "HIGH", "title": "App CPU high", "message": f"App 서버 CPU가 {app_cpu:.1f}%입니다. API 응답과 DB 상태를 확인하세요."})
 
     recent_audits = (
         db.query(AuditLog)
@@ -4535,6 +5517,24 @@ def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_requi
         "streams_enabled": bool(os.getenv("GATEWAY_API_BASE", "").strip()),
         "gateway_base": os.getenv("GATEWAY_API_BASE", "").strip() or None,
         "public_hls_base": PUBLIC_HLS_BASE,
+        "system_monitor": {
+            "enabled": SYSTEM_MONITOR_ENABLED,
+            "slack_configured": bool(SYSTEM_MONITOR_SLACK_WEBHOOK_URL),
+            "schedule_configured": bool(SYSTEM_MONITOR_SCHEDULE_CSV_URL),
+            "prematch_minutes": SYSTEM_MONITOR_PREMATCH_MINUTES,
+            "postmatch_minutes": SYSTEM_MONITOR_POSTMATCH_MINUTES,
+            "active_check_seconds": SYSTEM_MONITOR_ACTIVE_CHECK_SECONDS,
+            "idle_check_seconds": SYSTEM_MONITOR_IDLE_CHECK_SECONDS,
+        },
+        "schedule_slack": {
+            "enabled": SCHEDULE_SLACK_ENABLED,
+            "webhook_configured": bool(SCHEDULE_SLACK_WEBHOOK_URL),
+            "daily_time_kst": f"{SCHEDULE_SLACK_DAILY_HOUR:02d}:{SCHEDULE_SLACK_DAILY_MINUTE:02d}",
+            "reminder_minutes": SCHEDULE_SLACK_REMINDER_MINUTES,
+            "check_seconds": SCHEDULE_SLACK_CHECK_SECONDS,
+            "mention_map_configured": bool(_schedule_slack_mention_map()),
+        },
+        "app_server": app_server,
         "media_server": media_server,
         "highlight_worker": {
             **highlight_worker,

@@ -19,6 +19,7 @@ OUT_DIR="/srv/hls/${MATCH_ID}"
 PID_FILE="${PID_DIR}/${MATCH_ID}.pid"
 LOG_FILE="${OUT_DIR}/ffmpeg.log"
 FFMPEG_VIDEO_MODE="${FFMPEG_VIDEO_MODE:-copy}"
+FFMPEG_AUDIO_MODE="${FFMPEG_AUDIO_MODE:-copy}"
 HLS_TIME="${HLS_TIME:-2}"
 HLS_LIST_SIZE="${HLS_LIST_SIZE:-8}"
 HLS_DELETE_THRESHOLD="${HLS_DELETE_THRESHOLD:-1}"
@@ -59,13 +60,24 @@ if [[ "$FFMPEG_VIDEO_MODE" != "copy" ]]; then
   VIDEO_ARGS=(-c:v libx264 -preset veryfast -tune zerolatency -g 50 -keyint_min 50 -sc_threshold 0)
 fi
 
+AUDIO_ARGS=(-c:a copy)
+if [[ "$FFMPEG_AUDIO_MODE" == "aac" ]]; then
+  AUDIO_ARGS=(-c:a aac -ar 48000 -b:a 128k)
+elif [[ "$FFMPEG_AUDIO_MODE" == "none" ]]; then
+  AUDIO_ARGS=(-an)
+elif [[ "$FFMPEG_AUDIO_MODE" != "copy" ]]; then
+  echo "invalid FFMPEG_AUDIO_MODE=${FFMPEG_AUDIO_MODE}; expected copy, aac, or none"
+  exit 1
+fi
+
 nohup ffmpeg -hide_banner -loglevel warning -nostdin \
   -fflags +genpts \
   -thread_queue_size 2048 \
   -analyzeduration 32M -probesize 32M \
   -i "$INPUT_URL" \
+  -map 0:v:0 -map 0:a? \
   "${VIDEO_ARGS[@]}" \
-  -c:a aac -ar 48000 -b:a 128k \
+  "${AUDIO_ARGS[@]}" \
   -f hls \
   -hls_time "$HLS_TIME" \
   -hls_list_size "$HLS_LIST_SIZE" \

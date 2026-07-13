@@ -51,6 +51,7 @@ class CompetitionClassCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     first_half_minutes: int = Field(default=45, ge=1, le=120)
     second_half_minutes: int = Field(default=45, ge=1, le=120)
+    team_options: list[str] = Field(default_factory=list)
 
 
 class CompetitionClassUpdateRequest(BaseModel):
@@ -64,7 +65,35 @@ class CompetitionClassResponse(BaseModel):
     name: str
     first_half_minutes: int
     second_half_minutes: int
+    team_options: list[str] = Field(default_factory=list)
     created_at: str
+
+
+class ScheduleEntryRequest(BaseModel):
+    league: str = Field(default="", max_length=40)
+    round_label: str = Field(default="", max_length=40)
+    match_date: str = Field(min_length=10, max_length=10)
+    kickoff_time: str = Field(min_length=4, max_length=5)
+    home_team: str = Field(min_length=1, max_length=120)
+    away_team: str = Field(min_length=1, max_length=120)
+    fla_staff: str = Field(default="", max_length=80)
+    fpa_home_staff: str = Field(default="", max_length=80)
+    fpa_away_staff: str = Field(default="", max_length=80)
+
+
+class ScheduleEntryResponse(ScheduleEntryRequest):
+    id: UUID
+    created_at: str
+    updated_at: str
+
+
+class ScheduleImportResponse(BaseModel):
+    ok: bool
+    imported: int
+    created: int
+    updated: int
+    replaced: bool
+    errors: list[str] = []
 
 
 class LineupManualPlayerRequest(BaseModel):

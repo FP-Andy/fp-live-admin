@@ -1,10 +1,12 @@
 import json
 import os
+from datetime import datetime, timedelta, timezone
 
 import boto3
 
 
 ec2 = boto3.client("ec2")
+cloudwatch = boto3.client("cloudwatch")
 
 INSTANCE_ID = os.getenv("MEDIA_INSTANCE_ID", "").strip()
 INSTANCE_NAME = os.getenv("MEDIA_INSTANCE_NAME", "live-admin-media").strip() or "live-admin-media"
@@ -47,14 +49,49 @@ def _describe(instance_id: str) -> dict:
     if not reservations or not reservations[0].get("Instances"):
         raise RuntimeError("Instance not found")
     instance = reservations[0]["Instances"][0]
+    instance_type = instance.get("InstanceType")
+    state = instance.get("State", {}).get("Name", "unknown")
+    metrics = _cloudwatch_metrics(instance_id) if state == "running" else {"available": False}
     return {
         "ok": True,
         "provider": "aws",
         "instance_id": instance["InstanceId"],
         "instance_name": next((tag["Value"] for tag in instance.get("Tags", []) if tag["Key"] == "Name"), INSTANCE_NAME),
-        "state": instance.get("State", {}).get("Name", "unknown"),
+        "instance_type": instance_type,
+        "state": state,
         "public_ip": instance.get("PublicIpAddress"),
         "private_ip": instance.get("PrivateIpAddress"),
+        "metrics": metrics,
+    }
+
+
+def _cloudwatch_metrics(instance_id: str) -> dict:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(minutes=15)
+    try:
+        response = cloudwatch.get_metric_statistics(
+            Namespace="AWS/EC2",
+            MetricName="CPUUtilization",
+            Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+            StartTime=start,
+            EndTime=end,
+            Period=300,
+            Statistics=["Average", "Maximum"],
+            Unit="Percent",
+        )
+    except Exception as ex:
+        return {"available": False, "detail": str(ex)}
+
+    datapoints = sorted(response.get("Datapoints", []), key=lambda row: row.get("Timestamp", datetime.min.replace(tzinfo=timezone.utc)))
+    if not datapoints:
+        return {"available": False, "detail": "No recent CloudWatch datapoints"}
+    latest = datapoints[-1]
+    return {
+        "available": True,
+        "window_minutes": 15,
+        "cpu_average_percent": round(float(latest.get("Average", 0.0)), 2),
+        "cpu_max_percent": round(float(latest.get("Maximum", 0.0)), 2),
+        "sample_time": latest.get("Timestamp").isoformat() if latest.get("Timestamp") else None,
     }
 
 

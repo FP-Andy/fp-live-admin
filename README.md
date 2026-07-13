@@ -553,6 +553,9 @@ server {
 - 현재 목표(동시 5경기 + 분석관 10명)에서 앱 폴링 1초는 충분
 - write 권한은 operator lock으로 단일화
 - 영상 트래픽은 gateway로만 처리하여 app 서버 부하 분리
+- 코리아컵/WK 코리아컵처럼 특정일에만 동시 경기 수가 치솟는 경우에는 평시 평균이 아니라 match-day peak window 기준으로 sizing한다.
+- 10경기 STREAM 운영일에는 `live-admin-media`를 `c7i.4xlarge`로 올리고, 운영 종료 후 scale-down 또는 stop한다. 세부 절차는 `docs/10-match-capacity-plan.md`를 따른다.
+- gateway ffmpeg는 기본적으로 video/audio copy를 우선한다. 오디오 호환 문제가 있으면 `FFMPEG_AUDIO_MODE=aac`로 되돌린다.
 - 향후 확장:
   - API 수평 확장 + 외부 Redis 락
   - Outbox 전용 worker 분리
