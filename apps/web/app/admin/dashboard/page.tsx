@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { API_BASE, apiFetch, apiJson } from '../../../lib/api';
+import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../lib/api';
 import { useSportContext, type Sport } from '../../../components/SportContext';
 
 type Match = {
@@ -134,6 +134,99 @@ const TEAM_OPTIONS_BY_CLASS: Record<string, string[]> = {
   ],
 };
 
+function TeamCombobox({
+  value,
+  onSelect,
+  options,
+  disabledOption,
+  placeholder,
+}: {
+  value: string;
+  onSelect: (team: string) => void;
+  options: string[];
+  disabledOption?: string;
+  placeholder: string;
+}) {
+  // query === null means "not searching": the input shows the selected value.
+  const [query, setQuery] = useState<string | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+
+  const filtered = useMemo(() => {
+    const q = (query ?? '').trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((team) => team.toLowerCase().includes(q));
+  }, [options, query]);
+
+  const close = () => {
+    setIsOpen(false);
+    setQuery(null);
+    setHighlight(0);
+  };
+
+  const commit = (team: string) => {
+    if (team === disabledOption) return;
+    onSelect(team);
+    close();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setIsOpen(true);
+      setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+    } else if (e.key === 'Enter') {
+      if (!isOpen) return;
+      e.preventDefault();
+      const team = filtered[highlight];
+      if (team) commit(team);
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  };
+
+  return (
+    <div className="team-combobox">
+      <input
+        value={query ?? value}
+        placeholder={placeholder}
+        onFocus={() => setIsOpen(true)}
+        onBlur={close}
+        onKeyDown={handleKeyDown}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setIsOpen(true);
+          setHighlight(0);
+        }}
+      />
+      {isOpen ? (
+        <div className="team-combobox-list" onMouseDown={(e) => e.preventDefault()}>
+          {filtered.length ? (
+            filtered.map((team, index) => (
+              <button
+                key={team}
+                type="button"
+                disabled={team === disabledOption}
+                className={`team-combobox-option${index === highlight ? ' highlighted' : ''}${team === value ? ' selected' : ''}`}
+                onMouseEnter={() => setHighlight(index)}
+                onClick={() => commit(team)}
+              >
+                {team}
+              </button>
+            ))
+          ) : (
+            <div className="team-combobox-empty">검색 결과 없음</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const PAGE_SIZE = 7;
   const { sport } = useSportContext();
@@ -171,6 +264,7 @@ export default function Dashboard() {
   const [classModalError, setClassModalError] = useState('');
   const [classModalNotice, setClassModalNotice] = useState('');
   const [importingClassTeams, setImportingClassTeams] = useState('');
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -227,6 +321,14 @@ export default function Dashboard() {
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
   }, [sport]);
+
+  useEffect(() => {
+    apiJson<SessionUser>('/session/me')
+      .then(setSessionUser)
+      .catch(() => setSessionUser(null));
+  }, []);
+
+  const isSuperuser = sessionUser?.role === 'SUPERADMIN';
 
   useEffect(() => {
     if (!editingScheduleId) {
@@ -398,6 +500,30 @@ export default function Dashboard() {
     const updatedCode = editingClassCode;
     cancelEditCompetitionClass();
     setClassModalNotice(`${updatedCode} 대회 정보를 수정했습니다.`);
+    await load();
+  };
+
+  const deleteCompetitionClass = async (item: CompetitionClass) => {
+    if (!window.confirm(`${item.code} 대회를 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    setClassModalError('');
+    setClassModalNotice('');
+
+    const response = await apiFetch(`/competition-classes/${encodeURIComponent(item.code)}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      if (response.status === 409) {
+        window.alert(`${item.code} 대회로 만든 경기가 있어 삭제할 수 없습니다.\n해당 대회의 경기가 하나도 없어야 삭제할 수 있습니다.`);
+        return;
+      }
+      setClassModalError((await response.text()) || '대회를 삭제하지 못했습니다.');
+      return;
+    }
+
+    if (editingClassCode === item.code) cancelEditCompetitionClass();
+    if (competitionClass === item.code) handleCompetitionClassChange('K3');
+    setClassModalNotice(`${item.code} 대회를 삭제했습니다.`);
     await load();
   };
 
@@ -693,9 +819,15 @@ export default function Dashboard() {
       { code: 'SUFA-L', name: 'SUFA-L', first_half_minutes: 20, second_half_minutes: 20, created_at: '' },
     ];
   }, [competitionClasses]);
-  const selectedTeamOptions = selectedCompetition?.team_options?.length
-    ? selectedCompetition.team_options
-    : TEAM_OPTIONS_BY_CLASS[competitionClass] || [];
+  // Sorted copy so the dropdown stays alphabetized no matter what order the
+  // imported CSV/Excel sheet listed the teams in; re-sorts whenever the
+  // competition's team list reloads after an upload.
+  const selectedTeamOptions = useMemo(() => {
+    const teams = selectedCompetition?.team_options?.length
+      ? selectedCompetition.team_options
+      : TEAM_OPTIONS_BY_CLASS[competitionClass] || [];
+    return [...teams].sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [selectedCompetition, competitionClass]);
   const usesTeamDropdown = selectedTeamOptions.length > 0;
   const assignedCount = useMemo(() => matches.filter((match) => !match.archived && match.operator_id).length, [matches]);
   const rtmpCount = useMemo(
@@ -831,14 +963,13 @@ export default function Dashboard() {
                 <div className="field-stack field-stack-wide">
                   <div className="field-label">홈</div>
                   {sport === 'FOOTBALL' && usesTeamDropdown ? (
-                    <select value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)}>
-                      <option value="">홈팀 선택</option>
-                      {selectedTeamOptions.map((team) => (
-                        <option key={team} value={team} disabled={team === awayTeam}>
-                          {team}
-                        </option>
-                      ))}
-                    </select>
+                    <TeamCombobox
+                      value={homeTeam}
+                      onSelect={setHomeTeam}
+                      options={selectedTeamOptions}
+                      disabledOption={awayTeam || undefined}
+                      placeholder="홈팀 선택 · 검색"
+                    />
                   ) : (
                     <input value={homeTeam} onChange={(e) => setHomeTeam(e.target.value)} placeholder={sport === 'BASKETBALL' ? '예: Home Hoops' : '예: 당진'} />
                   )}
@@ -847,14 +978,13 @@ export default function Dashboard() {
                 <div className="field-stack field-stack-wide">
                   <div className="field-label">어웨이</div>
                   {sport === 'FOOTBALL' && usesTeamDropdown ? (
-                    <select value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)}>
-                      <option value="">어웨이팀 선택</option>
-                      {selectedTeamOptions.map((team) => (
-                        <option key={team} value={team} disabled={team === homeTeam}>
-                          {team}
-                        </option>
-                      ))}
-                    </select>
+                    <TeamCombobox
+                      value={awayTeam}
+                      onSelect={setAwayTeam}
+                      options={selectedTeamOptions}
+                      disabledOption={homeTeam || undefined}
+                      placeholder="어웨이팀 선택 · 검색"
+                    />
                   ) : (
                     <input value={awayTeam} onChange={(e) => setAwayTeam(e.target.value)} placeholder={sport === 'BASKETBALL' ? '예: Away Five' : '예: 경주'} />
                   )}
@@ -1300,6 +1430,11 @@ export default function Dashboard() {
                                     }}
                                   />
                                 </label>
+                                {isSuperuser ? (
+                                  <button className="button-compact btn-danger" onClick={() => void deleteCompetitionClass(item)}>
+                                    삭제
+                                  </button>
+                                ) : null}
                               </div>
                             </td>
                           </tr>

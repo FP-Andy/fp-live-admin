@@ -6119,3 +6119,59 @@ a:focus-visible {
     opacity: 0.7;
   }
 }
+
+.team-combobox {
+  position: relative;
+}
+
+.team-combobox input {
+  width: 100%;
+}
+
+.team-combobox-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface-floating);
+  border: 1px solid var(--border-emphasis);
+  border-radius: var(--radius-control);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.team-combobox-option {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: 10px 13px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.team-combobox-option:hover,
+.team-combobox-option.highlighted {
+  transform: none;
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.team-combobox-option.selected {
+  color: var(--accent);
+}
+
+.team-combobox-option:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  background: transparent;
+}
+
+.team-combobox-empty {
+  padding: 10px 13px;
+  color: var(--muted);
+  font-size: 13px;
+}
