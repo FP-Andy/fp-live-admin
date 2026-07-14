@@ -76,6 +76,10 @@ jobs:
           fi
           docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
 
+          # api/web are recreated above, so reload nginx to resolve their new
+          # Docker network addresses before checking the public endpoint.
+          docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload
+
           # External check through nginx, with a short retry for edge readiness.
           for i in $(seq 1 10); do
             if curl -fsS https://console.fineludens.kr/health; then
@@ -85,3 +89,10 @@ jobs:
             if [ "$i" -eq 10 ]; then echo "external health check failed"; exit 1; fi
             sleep 2
           done
+
+          git fetch origin main
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "production checkout no longer matches origin/main; rerun the deployment"
+            exit 1
+          fi
+          echo "production revision verified: $(git rev-parse HEAD)"
