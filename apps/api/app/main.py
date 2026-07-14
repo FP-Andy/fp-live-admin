@@ -5277,14 +5277,20 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.get("/api/matches")
-def list_matches(sport: str | None = Query(default=None), db: Session = Depends(get_db)):
-    cache_key = ("list_matches", _normalize_sport(sport) if sport else "")
+def list_matches(
+    sport: str | None = Query(default=None),
+    include_fpa_manual: bool = Query(default=True),
+    db: Session = Depends(get_db),
+):
+    cache_key = ("list_matches", _normalize_sport(sport) if sport else "", include_fpa_manual)
     cached = _cache_get(_match_response_cache, cache_key)
     if cached is not None:
         return cached
     query = db.query(Match)
     if sport:
         query = query.filter(Match.sport == _normalize_sport(sport))
+    if not include_fpa_manual:
+        query = query.filter(Match.competition_class != "FPA")
     rows = query.order_by(desc(Match.created_at)).all()
     return _cache_set(_match_response_cache, cache_key, [_serialize_match(r) for r in rows])
 

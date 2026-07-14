@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { API_BASE, apiJson } from '../../../lib/api';
 import { useSportContext } from '../../../components/SportContext';
 
@@ -19,6 +19,7 @@ type HubMatch = {
 export default function DataHubPage() {
   const { sport } = useSportContext();
   const [matches, setMatches] = useState<HubMatch[]>([]);
+  const [competitionFilter, setCompetitionFilter] = useState('ALL');
   const [status, setStatus] = useState('Loading data hub');
 
   const load = async () => {
@@ -32,8 +33,17 @@ export default function DataHubPage() {
   };
 
   useEffect(() => {
+    setCompetitionFilter('ALL');
     load();
   }, [sport]);
+
+  const competitionOptions = useMemo(() => [
+    'ALL',
+    ...Array.from(new Set(matches.map((match) => match.competition_class).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ko-KR')),
+  ], [matches]);
+  const visibleMatches = competitionFilter === 'ALL'
+    ? matches
+    : matches.filter((match) => match.competition_class === competitionFilter);
 
   return (
     <main className="page-stack">
@@ -51,7 +61,19 @@ export default function DataHubPage() {
             <div className="sidebar-eyebrow">Downloads</div>
             <h3>{sport === 'BASKETBALL' ? '농구 경기별 데이터' : '경기별 데이터'}</h3>
           </div>
-          <button className="button-compact btn-secondary" onClick={load}>새로고침</button>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <label className="field-stack dashboard-filter-select">
+              <span className="field-label">대회 필터</span>
+              <select value={competitionFilter} onChange={(event) => setCompetitionFilter(event.target.value)}>
+                {competitionOptions.map((competitionClass) => (
+                  <option key={competitionClass} value={competitionClass}>
+                    {competitionClass === 'ALL' ? '전체' : competitionClass}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="button-compact btn-secondary" onClick={load}>새로고침</button>
+          </div>
         </div>
         {status ? <div className="panel-note">{status}</div> : null}
         <div className="fcm-guide-table-wrap">
@@ -66,7 +88,7 @@ export default function DataHubPage() {
               </tr>
             </thead>
             <tbody>
-              {matches.map((match) => (
+              {visibleMatches.map((match) => (
                 <tr key={match.id}>
                   <td>{match.competition_class}</td>
                   <td>{match.name}</td>
@@ -87,7 +109,7 @@ export default function DataHubPage() {
                   </td>
                 </tr>
               ))}
-              {!matches.length && !status ? (
+              {!visibleMatches.length && !status ? (
                 <tr>
                   <td colSpan={5} className="muted">No matches</td>
                 </tr>

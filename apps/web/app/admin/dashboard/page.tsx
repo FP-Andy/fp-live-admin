@@ -205,7 +205,7 @@ export default function Dashboard() {
   const load = async () => {
     try {
       const [matchesData, classData, streamStatusData, scheduleData] = await Promise.all([
-        apiJson<Match[]>(`/matches?sport=${sport}`),
+        apiJson<Match[]>(`/matches?sport=${sport}&include_fpa_manual=false`),
         apiJson<CompetitionClass[]>('/competition-classes'),
         apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
         apiJson<ScheduleEntry[]>('/schedule-entries').catch(() => []),
