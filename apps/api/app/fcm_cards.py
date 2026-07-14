@@ -52,7 +52,7 @@ DEFAULT_HEATMAP_COLORS = (
 )
 
 DEFAULT_PASS_STYLES = {
-    "assist": {"color": "#FF5A67", "alpha": 1.00, "lw": 8.0, "zorder": 4},
+    "assist": {"color": "#FF8A3D", "alpha": 1.00, "lw": 8.0, "zorder": 4},
     "key": {"color": "#FF8A3D", "alpha": 1.00, "lw": 7.4, "zorder": 4},
     "fail": {"color": "#F15B6C", "alpha": 0.98, "lw": 6.8, "zorder": 3},
     "success": {"color": "#8ADC5E", "alpha": 0.96, "lw": 6.8, "zorder": 3},
