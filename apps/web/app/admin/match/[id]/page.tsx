@@ -365,6 +365,8 @@ export default function MatchPage() {
   const userId = sessionUser?.id || '';
   const isArchived = Boolean(match?.archived);
   const isSuperuser = sessionUser?.role === 'SUPERADMIN';
+  const isManualMatch = match?.metadata?.stream_mode === 'MANUAL';
+  const canUseX2 = isSuperuser && isManualMatch;
   const isOperator = useMemo(
     () => !isArchived && (isSuperuser || Boolean(match?.operator_id && match.operator_id === userId)),
     [isArchived, isSuperuser, match, userId]
@@ -385,7 +387,7 @@ export default function MatchPage() {
   // current clock as the new base, then let the new speed apply from now on.
   const changeClockSpeed = (nextSpeed: ClockSpeed) => {
     if (!canWrite || nextSpeed === clockSpeed) return;
-    if (nextSpeed === 2 && !isSuperuser) return;
+    if (nextSpeed === 2 && !canUseX2) return;
     if (runningRef.current && perfRef.current != null) {
       const frozen = getCurrentClockMs();
       baseRef.current = frozen;
@@ -396,11 +398,13 @@ export default function MatchPage() {
     clockSpeedRef.current = nextSpeed;
   };
 
-  // X2 mode is superadmin-only: if a non-admin session lands on a match whose
-  // localStorage still says 2x (set earlier by an admin on this browser),
-  // freeze the clock at its current value and drop back to 1x.
+  // X2 mode is superadmin-only and manual-match-only: if a session lands on a
+  // match it can't use 2x on but localStorage still says 2x (set earlier by an
+  // admin on a manual match on this browser), freeze the clock at its current
+  // value and drop back to 1x. Wait until both session and match are loaded so
+  // an eligible match isn't reset before metadata arrives.
   useEffect(() => {
-    if (!sessionUser || isSuperuser || clockSpeedRef.current !== 2) return;
+    if (!sessionUser || !match || canUseX2 || clockSpeedRef.current !== 2) return;
     if (runningRef.current && perfRef.current != null) {
       const frozen = getCurrentClockMs();
       baseRef.current = frozen;
@@ -409,7 +413,7 @@ export default function MatchPage() {
     }
     setClockSpeed(1);
     clockSpeedRef.current = 1;
-  }, [sessionUser, isSuperuser, clockSpeed]);
+  }, [sessionUser, match, canUseX2, clockSpeed]);
 
   const saveState = async (
     next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>
@@ -1496,7 +1500,7 @@ export default function MatchPage() {
       <div className="split">
         <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
           <div className="card card-panel" style={clockSpeed === 2 ? { outline: '2px solid #ff7900' } : undefined}>
-            {isSuperuser ? (
+            {canUseX2 ? (
               <div className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
                 <button className={clockSpeed === 1 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(1)} disabled={!canWrite}>
                   LIVE 1×
