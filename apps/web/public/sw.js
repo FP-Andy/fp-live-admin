@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'live-admin-v2';
+const CACHE_VERSION = 'live-admin-v3';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const PAGE_CACHE = `${CACHE_VERSION}-pages`;
 const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
@@ -75,17 +75,23 @@ self.addEventListener('fetch', (event) => {
 
   if (!isStaticAsset(url.pathname)) return;
 
+  // /_next/static/ 파일명에는 콘텐츠 해시가 붙어 불변이지만, public 자산은
+  // 같은 경로로 내용이 바뀌므로 네트워크 우선이어야 교체가 반영된다.
+  const isImmutable = url.pathname.startsWith('/_next/static/');
+
   event.respondWith(
     caches.match(request).then((cached) => {
-      if (cached) return cached;
+      if (cached && isImmutable) return cached;
 
-      return fetch(request).then((response) => {
+      const network = fetch(request).then((response) => {
         if (response.ok) {
           const copy = response.clone();
           caches.open(STATIC_CACHE).then((cache) => cache.put(request, copy));
         }
         return response;
       });
+
+      return cached ? network.catch(() => cached) : network;
     })
   );
 });
