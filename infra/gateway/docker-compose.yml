@@ -32,6 +32,7 @@ services:
       context: ./runner
     container_name: gateway-ffmpeg
     restart: unless-stopped
+    init: true
     ports:
       - "8090:8090"
     environment:
@@ -39,6 +40,7 @@ services:
       GATEWAY_PUBLIC_RTMP_SERVER: ${GATEWAY_PUBLIC_RTMP_SERVER:-rtmp://localhost:1935/live}
       GATEWAY_RTMP_PULL_BASE: ${GATEWAY_RTMP_PULL_BASE:-rtmp://gateway-rtmp/live}
       FFMPEG_VIDEO_MODE: ${FFMPEG_VIDEO_MODE:-copy}
+      FFMPEG_AUDIO_MODE: ${FFMPEG_AUDIO_MODE:-copy}
       HLS_TIME: ${HLS_TIME:-2}
       HLS_LIST_SIZE: ${HLS_LIST_SIZE:-8}
       HLS_DELETE_THRESHOLD: ${HLS_DELETE_THRESHOLD:-1}

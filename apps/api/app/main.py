@@ -1016,9 +1016,9 @@ def _gateway_status() -> dict:
     for line in lines:
         if not isinstance(line, str):
             continue
-        match = line.split(" ", 1)[0].strip()
-        if match and match != "no":
-            running_match_ids.append(match)
+        parts = line.split(maxsplit=2)
+        if len(parts) >= 2 and parts[1] == "RUNNING":
+            running_match_ids.append(parts[0])
 
     return {
         "ok": True,
