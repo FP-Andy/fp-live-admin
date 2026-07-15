@@ -1939,6 +1939,8 @@ def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSaved
         round_number=1,
         first_half_minutes=45,
         second_half_minutes=45,
+        archived=True,
+        archived_at=datetime.utcnow(),
         metadata_json=metadata,
         operator_id=user.id if user else None,
     )
