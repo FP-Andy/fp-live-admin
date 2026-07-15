@@ -5011,6 +5011,24 @@ def update_competition_class(code: str, body: CompetitionClassUpdateRequest, db:
     return _serialize_competition_class(row)
 
 
+@app.delete("/api/competition-classes/{code}")
+def delete_competition_class(code: str, db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    normalized_code = _normalize_competition_class(code)
+    row = db.get(CompetitionClass, normalized_code)
+    if not row:
+        raise HTTPException(status_code=404, detail="Competition class not found")
+
+    # Matches only keep the class code as a string, so deleting an in-use class
+    # would leave them pointing at nothing — refuse instead.
+    match_count = db.query(Match).filter(Match.competition_class == normalized_code).count()
+    if match_count:
+        raise HTTPException(status_code=409, detail=f"Competition class is used by {match_count} match(es)")
+
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "code": normalized_code}
+
+
 @app.post("/api/matches", response_model=MatchResponse)
 def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: User | None = Depends(_get_session_user)):
     sport = _normalize_sport(body.sport)

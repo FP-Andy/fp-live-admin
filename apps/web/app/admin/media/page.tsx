@@ -78,6 +78,21 @@ export default function MediaPage() {
     [data]
   );
 
+  const [allKeysCopied, setAllKeysCopied] = useState(false);
+
+  const copyAllKeys = async () => {
+    const text = streamMatches
+      .map((match) => `${match.name}\n\nkey: ${match.metadata?.rtmp?.stream_key || match.id}`)
+      .join('\n\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setAllKeysCopied(true);
+      setTimeout(() => setAllKeysCopied(false), 2000);
+    } catch {
+      window.alert('클립보드 복사에 실패했습니다. HTTPS(또는 localhost)에서만 동작합니다.');
+    }
+  };
+
   const runAction = async (key: string, action: () => Promise<Response>) => {
     setBusyKey(key);
     setError('');
@@ -200,6 +215,13 @@ export default function MediaPage() {
             <div className="sidebar-eyebrow">Streaming Matches</div>
             <h3 style={{ margin: 0 }}>Per-Match Control</h3>
           </div>
+          <button
+            className="button-compact btn-secondary"
+            onClick={copyAllKeys}
+            disabled={streamMatches.length === 0}
+          >
+            {allKeysCopied ? '복사됨 ✓' : 'All Copy Key'}
+          </button>
         </div>
 
         {streamMatches.length === 0 ? (

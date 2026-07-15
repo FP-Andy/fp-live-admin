@@ -38,19 +38,18 @@ def estimate_xg(
     angle = abs(angle_left - angle_right)
     is_head = 1 if is_header else 0
     is_weak = 1 if is_weak_foot else 0
-    dist_log = math.log1p(distance)
     angle_log = math.log1p(angle)
-    header_dist_penalty = dist_log * is_head
     goal_line_dist = goal_x - shot_x_adj
     endline_penalty = 1.5 if goal_line_dist < 1.0 else 0.0
 
+    # 2026-07 재보정: 실측 기반 모델(StatsBomb류) 스케일에 맞춤 —
+    # 탭인 0.90, 6야드 정면 0.47, PK 지점 0.18, 박스 정면 0.08, 20m 0.05, 35m 0.01
     exponent = (
-        1.00 * dist_log
-        - 2.00 * angle_log
-        + 0.70 * is_head
+        0.081 * distance
+        - 3.384 * angle_log
+        + 0.77 * is_head
         + 0.40 * is_weak
-        + 0.30 * header_dist_penalty
-        - 1.10
+        + 2.291
         + endline_penalty
     )
     xg = 1.0 / (1.0 + math.exp(exponent))

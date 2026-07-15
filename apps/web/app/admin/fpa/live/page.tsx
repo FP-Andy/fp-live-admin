@@ -775,6 +775,20 @@ export default function FpaLivePage() {
   const [busy, setBusy] = useState(false);
   const [availableMatches, setAvailableMatches] = useState<Match[]>([]);
   const [matchPickerOpen, setMatchPickerOpen] = useState(false);
+  const [matchFilterClass, setMatchFilterClass] = useState('ALL');
+  const [matchFilterRound, setMatchFilterRound] = useState('ALL');
+
+  const matchClassOptions = Array.from(new Set(availableMatches.map((m) => m.competition_class)))
+    .sort((a, b) => a.localeCompare(b, 'ko'));
+  const matchRoundOptions = Array.from(new Set(
+    availableMatches
+      .filter((m) => matchFilterClass === 'ALL' || m.competition_class === matchFilterClass)
+      .map((m) => m.round_number)
+  )).sort((a, b) => a - b);
+  const filteredAvailableMatches = availableMatches.filter((m) =>
+    (matchFilterClass === 'ALL' || m.competition_class === matchFilterClass) &&
+    (matchFilterRound === 'ALL' || String(m.round_number) === matchFilterRound)
+  );
 
   // 전체 로그 = 저장된 장면들(flatten) + 현재 버퍼 (single 은 savedScenes 비어 있어 = 현재 버퍼). 저장/내보내기용.
   const allLogs = [...savedScenes.flatMap((scene) => scene.logs), ...logs];
@@ -2233,6 +2247,8 @@ export default function FpaLivePage() {
 
   const openMatchPicker = async () => {
     setMatchPickerOpen(true);
+    setMatchFilterClass('ALL');
+    setMatchFilterRound('ALL');
     setStatus('경기 목록 불러오는 중');
     try {
       const data = await apiJson<Match[]>('/matches');
@@ -3216,6 +3232,32 @@ export default function FpaLivePage() {
               </div>
               <button className="button-compact btn-secondary" onClick={() => setMatchPickerOpen(false)}>닫기</button>
             </div>
+            <div className="row" style={{ gap: 8, marginBottom: 10, justifyContent: 'flex-start' }}>
+              <label className="field-stack" style={{ minWidth: 140 }}>
+                <span className="field-label">대회</span>
+                <select
+                  value={matchFilterClass}
+                  onChange={(e) => {
+                    setMatchFilterClass(e.target.value);
+                    setMatchFilterRound('ALL');
+                  }}
+                >
+                  <option value="ALL">전체</option>
+                  {matchClassOptions.map((code) => (
+                    <option key={code} value={code}>{code}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-stack" style={{ minWidth: 110 }}>
+                <span className="field-label">라운드</span>
+                <select value={matchFilterRound} onChange={(e) => setMatchFilterRound(e.target.value)}>
+                  <option value="ALL">전체</option>
+                  {matchRoundOptions.map((round) => (
+                    <option key={round} value={String(round)}>{round}R</option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <div className="fcm-guide-table-wrap fpa-match-table-wrap">
               <table className="fcm-guide-table">
                 <thead>
@@ -3227,7 +3269,7 @@ export default function FpaLivePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {availableMatches.map((match) => (
+                  {filteredAvailableMatches.map((match) => (
                     <tr key={match.id}>
                       <td>{match.competition_class}</td>
                       <td>{match.name}</td>
@@ -3239,6 +3281,11 @@ export default function FpaLivePage() {
                       </td>
                     </tr>
                   ))}
+                  {!filteredAvailableMatches.length ? (
+                    <tr>
+                      <td colSpan={4} className="muted">해당 조건의 경기가 없습니다</td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
