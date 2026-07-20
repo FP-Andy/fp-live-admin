@@ -3,11 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "copy:ffmpeg": "mkdir -p public/ffmpeg && cp node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm public/ffmpeg/",
+    "predev": "npm run copy:ffmpeg",
     "dev": "NEXT_DIST_DIR=.next-dev next dev",
+    "prebuild": "npm run copy:ffmpeg",
     "build": "next build",
     "start": "next start"
   },
   "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "hls.js": "^1.5.15",
     "next": "14.2.15",
     "react": "18.3.1",

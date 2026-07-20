@@ -40,3 +40,6 @@ filed.png
 
 # Claude Code worktrees (로컬 에이전트 작업 사본)
 .claude/worktrees/
+
+# ffmpeg.wasm core는 node_modules에서 빌드 시 복사한다 (31MB 바이너리라 커밋하지 않음)
+apps/web/public/ffmpeg/

@@ -1,0 +1,13 @@
+# 호스트의 node_modules 가 컨테이너로 복사되면 deps 단계에서 리눅스용으로 설치한 것을
+# macOS 바이너리(@next/swc-darwin-arm64 등)로 덮어써 빌드가 깨진다.
+node_modules
+
+# 빌드 산출물은 컨테이너에서 새로 만든다.
+.next
+.next-dev
+
+# ffmpeg 코어는 prebuild 스크립트가 node_modules 에서 다시 복사한다 (31MB).
+public/ffmpeg
+
+.DS_Store
+*.log

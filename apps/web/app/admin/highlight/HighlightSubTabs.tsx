@@ -6,6 +6,8 @@ import { usePathname } from 'next/navigation';
 const SUB_TABS = [
   { href: '/admin/highlight', label: 'AI Highlight' },
   { href: '/admin/highlight/player', label: 'Player Clips' },
+  { href: '/admin/highlight/manual', label: '수동 태깅' },
+  { href: '/admin/highlight/results', label: '수동 결과물' },
 ];
 
 export default function HighlightSubTabs() {

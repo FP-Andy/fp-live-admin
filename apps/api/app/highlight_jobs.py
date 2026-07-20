@@ -418,6 +418,105 @@ def merge_clips_for_job(job_id: str) -> None:
         db.close()
 
 
+def _probe_start_time(path: Path) -> float:
+    """클립이 원본 타임라인의 어디에서 시작하는지 읽는다.
+
+    브라우저가 `-c copy -copyts` 로 자르기 때문에 클립은 원본 좌표를 그대로 갖고 있고,
+    그 값이 곧 ffmpeg 이 실제로 붙잡은 키프레임 위치다.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=start_time",
+                "-of", "default=nw=1:nk=1",
+                str(path),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        return float((result.stdout or "0").strip())
+    except (subprocess.CalledProcessError, ValueError):
+        # 시작점을 못 읽으면 0으로 두어 클립을 통째로 쓴다. 잘못 잘라내는 것보다 낫다.
+        return 0.0
+
+
+def merge_manual_clips_for_job(job_id: str) -> None:
+    """수동 태깅 클립들을 정확한 지점으로 다듬어 하나로 합친다.
+
+    브라우저는 키프레임 경계까지만 자를 수 있어 클립 앞쪽에 최대 한 GOP 만큼 여유가 붙는다.
+    각 클립의 start_time 과 요청 구간의 차이가 그 여유분이므로, 입력마다 -ss/-t 를 걸고
+    concat 필터로 묶어 재인코딩 한 번에 다듬기와 합치기를 동시에 처리한다.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job:
+            return
+        metadata = dict(job.job_metadata or {})
+        clip_info = metadata.get("clip_info") or []
+        if not clip_info:
+            update_job(db, job_id, status="error", error_message="합칠 클립이 없습니다.")
+            return
+
+        metadata["progress"] = _progress_payload("merging", 30, "클립 다듬고 합치는 중")
+        update_job(db, job_id, status="merging", job_metadata=_json_safe(metadata))
+
+        args: list[str] = ["ffmpeg", "-y"]
+        used = 0
+        for info in clip_info:
+            path = clips_dir(job_id) / str(info.get("name", ""))
+            if not path.exists():
+                continue
+            try:
+                req_start = float(info["requested_start"])
+                req_end = float(info["requested_end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            duration = req_end - req_start
+            if duration <= 0:
+                continue
+            offset = max(0.0, req_start - _probe_start_time(path))
+            args += ["-ss", f"{offset:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
+            used += 1
+
+        if used == 0:
+            update_job(db, job_id, status="error", error_message="유효한 클립이 없습니다.")
+            return
+
+        # concat 필터는 모든 입력이 같은 스트림 구성을 가져야 한다. 원본이 하나이므로
+        # 클립들의 코덱·해상도는 항상 동일하다.
+        streams = "".join(f"[{i}:v][{i}:a]" for i in range(used))
+        export_path = exports_dir() / f"{job_id}_export.mp4"
+        args += [
+            "-filter_complex", f"{streams}concat=n={used}:v=1:a=1[v][a]",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            str(export_path),
+        ]
+
+        try:
+            subprocess.run(args, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as ex:
+            detail = (ex.stderr or ex.stdout or str(ex))[-300:]
+            update_job(db, job_id, status="error", error_message=f"합치기 실패: {detail}")
+            return
+
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
+        update_job(
+            db, job_id,
+            status="done",
+            export_path=str(export_path),
+            job_metadata=_json_safe(metadata),
+        )
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
 def run_analysis_for_job(job_id: str, yolo_model: object, xgb_model: object | None = None) -> None:
     db = SessionLocal()
     try:

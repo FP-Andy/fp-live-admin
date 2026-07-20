@@ -47,6 +47,7 @@ from .highlight_jobs import (
     delete_job_files,
     download_link_for_job,
     merge_clips_for_job,
+    merge_manual_clips_for_job,
     ensure_highlight_runtime_dirs,
     exports_dir,
     job_dir,
@@ -7394,6 +7395,104 @@ async def create_player_job(
     db.add(job)
     db.commit()
     return {"job_id": job_id, "status": "queued"}
+
+
+def _require_manual_job(db: Session, job_id: str, user: User) -> HighlightJob:
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "manual":
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    if not _is_superuser(user) and job.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="본인 작업만 접근할 수 있습니다.")
+    return job
+
+
+@app.post("/api/highlight/manual-jobs")
+def create_manual_job(
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """수동 태깅 작업을 연다. 원본은 올라오지 않고 잘린 클립만 뒤이어 올라온다."""
+    job_id = str(uuid.uuid4())
+    source_filename = str(body.get("source_filename") or "").strip()
+    display_name = str(body.get("display_name") or "").strip()
+
+    clips_dir(job_id).mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "display_name": display_name or None,
+        "clips": [],
+        "clip_info": [],
+        "progress": {
+            "phase": "collecting",
+            "percent": 0,
+            "detail": "클립 수신 대기 중",
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    }
+    job = HighlightJob(
+        id=job_id,
+        owner_id=user.id,
+        status="collecting",
+        mode="manual",
+        original_filename=source_filename or "manual.mp4",
+        clips_dir=str(clips_dir(job_id)),
+        job_metadata=metadata,
+    )
+    db.add(job)
+    db.commit()
+    return {"job_id": job_id, "status": "collecting"}
+
+
+@app.post("/api/highlight/manual-jobs/{job_id}/clips")
+async def upload_manual_clip(
+    job_id: str,
+    clip: UploadFile = File(...),
+    requested_start: float = Form(...),
+    requested_end: float = Form(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """브라우저가 잘라 보낸 클립 하나를 받는다. 순서는 요청 시작 시각으로 정렬한다."""
+    job = _require_manual_job(db, job_id, user)
+    if requested_end <= requested_start:
+        raise HTTPException(status_code=400, detail="클립 구간이 올바르지 않습니다.")
+
+    metadata = dict(job.job_metadata or {})
+    clip_info = list(metadata.get("clip_info") or [])
+
+    name = f"clip_{len(clip_info) + 1:03d}.mp4"
+    target = clips_dir(job_id) / name
+    try:
+        with target.open("wb") as out_file:
+            shutil.copyfileobj(clip.file, out_file)
+    finally:
+        await clip.close()
+
+    clip_info.append({
+        "name": name,
+        "requested_start": round(float(requested_start), 3),
+        "requested_end": round(float(requested_end), 3),
+    })
+    clip_info.sort(key=lambda c: c["requested_start"])
+    metadata["clip_info"] = clip_info
+    metadata["clips"] = [c["name"] for c in clip_info]
+    update_job(db, job_id, job_metadata=metadata)
+    return {"name": name, "count": len(clip_info)}
+
+
+@app.post("/api/highlight/manual-jobs/{job_id}/merge")
+def merge_manual_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    job = _require_manual_job(db, job_id, user)
+    metadata = dict(job.job_metadata or {})
+    if not (metadata.get("clip_info") or []):
+        raise HTTPException(status_code=409, detail="합칠 클립이 없습니다.")
+    background_tasks.add_task(merge_manual_clips_for_job, job_id)
+    return {"status": "merging"}
 
 
 def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
