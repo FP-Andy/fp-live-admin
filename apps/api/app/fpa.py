@@ -88,6 +88,10 @@ TAG_CODES = {
     "loss": "Possession Lost",
     "hc": "High Cross",
     "lc": "Low Cross",
+    # 세트피스 마커 (2026-07-20): 채점 로직은 당분간 인플레이와 동일, 태그로만 남겨 나중에 소급 분리/재채점.
+    "sp": "Set Piece",
+    # 페널티킥 — 유일하게 즉시 채점이 달라짐: xG를 좌표 무시하고 PENALTY_XG 고정.
+    "pk": "Penalty",
 }
 TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr", "pn"}
 # 수비 액션(태클/인터셉트/차단) — 상대 '패스 공' 경로를 before 프레임에 화살표로 그림 (2026-07-09 확정).
@@ -99,6 +103,8 @@ DEFENSE_ARROW_CODES = {"aa", "q", "ww"}
 # 점수 = 막은 슛의 xG를 블로커에게 승계(상대 공격방향으로 슈터 위치 뒤집어 estimate_xg) × BLOCK_CREDIT. xG 컬럼 사용.
 SHOT_BLOCK_CODES = {"qw"}
 BLOCK_CREDIT = 1.0
+# 페널티킥 고정 xG — 좌표 기반 공식은 인플레이 전용이라 PK엔 적용하지 않음
+PENALTY_XG = 0.75
 SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
 SHOT_ACTIONS_LEGACY = ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
 
@@ -1446,6 +1452,9 @@ def generate_log_entry(
         raise ValueError(f"'{action_name}' 액션은 받는 선수 번호가 필요합니다. (예: 10{action_code_raw}8)")
 
     tags_list = [TAG_CODES[tag_code] for tag_code in tag_codes if tag_code in TAG_CODES]
+    # PK는 세트피스의 부분집합 — 소급 분리 필터가 "Set Piece" 하나로 전부 걸리도록 함께 태깅
+    if "Penalty" in tags_list and "Set Piece" not in tags_list:
+        tags_list.append("Set Piece")
     if action_code_raw == "z":
         tags_list.extend(["Key Pass", "Success"])
     elif action_code_raw == "zz":
@@ -1541,18 +1550,21 @@ def generate_log_entry(
 
     metrics: dict[str, Any] = {}
     if action_name == "Shot":
-        try:
-            xg_meta = shared_estimate_xg(
-                "HOME",
-                "L2R",
-                float(start_x_adj),
-                float(start_y),
-                "Header" in deduped_tags,
-                "Weak Foot" in deduped_tags,
-            )
-            metrics["xG"] = float(xg_meta["xg"])
-        except (KeyError, TypeError, ValueError):
-            metrics["xG"] = ""
+        if "Penalty" in deduped_tags:
+            metrics["xG"] = PENALTY_XG
+        else:
+            try:
+                xg_meta = shared_estimate_xg(
+                    "HOME",
+                    "L2R",
+                    float(start_x_adj),
+                    float(start_y),
+                    "Header" in deduped_tags,
+                    "Weak Foot" in deduped_tags,
+                )
+                metrics["xG"] = float(xg_meta["xg"])
+            except (KeyError, TypeError, ValueError):
+                metrics["xG"] = ""
 
     compact_dual_state = _compact_dual_pitch_state(dual_pitch)
     metric_end_x = end_x if end_x is not None else start_x
