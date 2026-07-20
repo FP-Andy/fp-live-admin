@@ -1285,6 +1285,8 @@ export default function FpaLivePage() {
   // 현재 작업 캔버스+버퍼 비우기 (저장/새장면/불러오기 공용)
   const clearCurrentScene = () => {
     resetDualUndo();
+    // 미완료 xGOT 대기가 남으면 다음 장면의 모든 입력이 가드에 막힌다 — 장면 경계에서 자동 해제(=skip)
+    if (pendingXgot?.canvas === 'live') resetXgotState();
     setRows([]);
     setLogs([]);
     setPrimaryRowIndex(null);
@@ -1318,6 +1320,9 @@ export default function FpaLivePage() {
     });
     const snapshot: SavedScene = { rows: scoredRows, logs: scoredLogs, beforeDots, afterDots, passArrows, primary: primaryRowIndex };
     const nextBeforeDots = clonePitchDotsForNextScene(afterDots);
+    // 저장으로 행이 확정되면 남은 xGOT 대기는 갱신할 행이 없다 — 해제 안 하면 다음 장면 입력이 잠김
+    if (pendingXgot?.canvas === 'live') resetXgotState();
+    resetDualUndo();
     setSavedScenes((prev) => [...prev, snapshot]);
     setRows([]);
     setLogs([]);
@@ -1331,12 +1336,15 @@ export default function FpaLivePage() {
     setPassArrows([]);
     setBusy(false);
     setStatus('장면 저장됨 · 최종 좌표로 재채점 완료 — After 좌표를 다음 Before로 복사했습니다');
+    // 저장 버튼 클릭으로 포커스가 버튼에 남는다 — 바로 다음 코드 타이핑이 되도록 입력창으로 복귀
+    requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
   // 새 장면: 저장 안 한 현재 장면을 버리고 새로 시작
   const startNewScene = () => {
     clearCurrentScene();
     setStatus('현재 장면 비움 (미저장)');
+    requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
   // 불러오기: 선택한 저장 장면을 기록된 로그 아래 "수정용 피치"로 복원 — 라이브 캔버스(찍는 데이터)는 안 건드림
