@@ -88,6 +88,10 @@ TAG_CODES = {
     "loss": "Possession Lost",
     "hc": "High Cross",
     "lc": "Low Cross",
+    # 세트피스 마커 (2026-07-20): 채점 로직은 당분간 인플레이와 동일, 태그로만 남겨 나중에 소급 분리/재채점.
+    "sp": "Set Piece",
+    # 페널티킥 — 유일하게 즉시 채점이 달라짐: xG를 좌표 무시하고 PENALTY_XG 고정.
+    "pk": "Penalty",
 }
 TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr", "pn"}
 # 수비 액션(태클/인터셉트/차단) — 상대 '패스 공' 경로를 before 프레임에 화살표로 그림 (2026-07-09 확정).
@@ -99,6 +103,8 @@ DEFENSE_ARROW_CODES = {"aa", "q", "ww"}
 # 점수 = 막은 슛의 xG를 블로커에게 승계(상대 공격방향으로 슈터 위치 뒤집어 estimate_xg) × BLOCK_CREDIT. xG 컬럼 사용.
 SHOT_BLOCK_CODES = {"qw"}
 BLOCK_CREDIT = 1.0
+# 페널티킥 고정 xG — 좌표 기반 공식은 인플레이 전용이라 PK엔 적용하지 않음
+PENALTY_XG = 0.75
 SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
 SHOT_ACTIONS_LEGACY = ["Goal", "Shot On Target", "Shot", "Blocked Shot"]
 
@@ -1435,17 +1441,21 @@ def generate_log_entry(
 
     player_to = player_to if player_to else ""
     base_action_code = action_code_raw[0]
-    action_name = ACTION_CODES.get(action_code_raw) or ACTION_CODES.get(base_action_code)
+    # 정확 매칭만 인정. 미인식 2글자+ 코드를 첫 글자 액션으로 조용히 대체하던 폴백 제거.
+    # (예: 폐기된 'qq'(획득)나 'qw' 오타가 'q'=Intercept 로 둔갑하던 버그 — 2026-07-21)
+    action_name = ACTION_CODES.get(action_code_raw)
     if not action_name:
-        raise ValueError("알 수 없는 액션 코드")
+        raise ValueError(f"알 수 없는 액션 코드: '{action_code_raw}'")
 
-    if (
-        base_action_code in ["s", "c", "z"]
-        or action_name == "Throw-in"
-    ) and action_code_raw != "sv" and not player_to:
+    # 받는 선수 번호 필수 = 패스/크로스/스로인만. 첫 글자('s') 기준으로 판정하면
+    # Save(sv)·Sprint(st) 같은 무관 액션까지 걸리므로 액션 이름으로 판정 (2026-07-21)
+    if action_name in ("Pass", "Cross", "Throw-in") and not player_to:
         raise ValueError(f"'{action_name}' 액션은 받는 선수 번호가 필요합니다. (예: 10{action_code_raw}8)")
 
     tags_list = [TAG_CODES[tag_code] for tag_code in tag_codes if tag_code in TAG_CODES]
+    # PK는 세트피스의 부분집합 — 소급 분리 필터가 "Set Piece" 하나로 전부 걸리도록 함께 태깅
+    if "Penalty" in tags_list and "Set Piece" not in tags_list:
+        tags_list.append("Set Piece")
     if action_code_raw == "z":
         tags_list.extend(["Key Pass", "Success"])
     elif action_code_raw == "zz":
@@ -1494,7 +1504,8 @@ def generate_log_entry(
             f"Pos({end_x}, {end_y}) | Path({_format_path_points(path_points)})"
         )
     else:
-        requires_two_dots = (base_action_code in TWO_DOT_ACTION_CODES or action_code_raw in TWO_DOT_ACTION_CODES or player_to) and action_code_raw != "sv"
+        # 첫 글자 's' 로 two-dot 판정 시 Save(sv)·Sprint(st)가 Pass(s)에 걸려 좌표 2개를 잘못 요구 → 제외 (2026-07-21)
+        requires_two_dots = (base_action_code in TWO_DOT_ACTION_CODES or action_code_raw in TWO_DOT_ACTION_CODES or player_to) and action_code_raw not in ("sv", "st")
         # 수비 액션: 상대 볼/슛 경로 화살표(start,end) 2점이 오면 two-dot로 처리 (EPV-prevented 또는 xG-prevented).
         if not requires_two_dots and action_code_raw in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES) and len(dots) >= 2:
             requires_two_dots = True
@@ -1541,18 +1552,21 @@ def generate_log_entry(
 
     metrics: dict[str, Any] = {}
     if action_name == "Shot":
-        try:
-            xg_meta = shared_estimate_xg(
-                "HOME",
-                "L2R",
-                float(start_x_adj),
-                float(start_y),
-                "Header" in deduped_tags,
-                "Weak Foot" in deduped_tags,
-            )
-            metrics["xG"] = float(xg_meta["xg"])
-        except (KeyError, TypeError, ValueError):
-            metrics["xG"] = ""
+        if "Penalty" in deduped_tags:
+            metrics["xG"] = PENALTY_XG
+        else:
+            try:
+                xg_meta = shared_estimate_xg(
+                    "HOME",
+                    "L2R",
+                    float(start_x_adj),
+                    float(start_y),
+                    "Header" in deduped_tags,
+                    "Weak Foot" in deduped_tags,
+                )
+                metrics["xG"] = float(xg_meta["xg"])
+            except (KeyError, TypeError, ValueError):
+                metrics["xG"] = ""
 
     compact_dual_state = _compact_dual_pitch_state(dual_pitch)
     metric_end_x = end_x if end_x is not None else start_x
@@ -2153,6 +2167,7 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         "인터셉트",
         "태클",
         "클리어",
+        "블락",
         "차단",
         "경합 성공률(%)",
         "볼 터치",
@@ -2183,6 +2198,7 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         tackle = _safe_series_value(advanced_row, "Successful_Tackles")
         clear = _safe_series_value(advanced_row, "Clear_Count")
         block = _safe_series_value(advanced_row, "Block_Count")
+        cutout = _safe_series_value(advanced_row, "Cutout_Count")
         touches = float(touch_counts.get(raw_player, 0))
         duel_win = _safe_series_value(advanced_row, "Duel_Win_Count")
         duel_lose = _safe_series_value(advanced_row, "Duel_Lose_Count")
@@ -2191,8 +2207,9 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         headed_goals = _safe_series_value(shooter_row, "Headed_Goals")
         header_sot = _safe_series_value(advanced_row, "Header_SOT")
         header_clear = _safe_series_value(advanced_row, "Header_Clear")
-        duel_total = duel_win + duel_lose + aerial_win + aerial_lose
-        duel_success_pct = ((duel_win + aerial_win) / duel_total * 100) if duel_total > 0 else 0.0
+        # Duel_Win/Lose_Count 는 공중볼(Aerial) 경합까지 이미 포함 → aerial_* 재합산은 중복 (2026-07-21)
+        duel_total = duel_win + duel_lose
+        duel_success_pct = (duel_win / duel_total * 100) if duel_total > 0 else 0.0
         header_count = headed_goals + header_sot + header_clear
 
         candidate_map = {
@@ -2210,8 +2227,9 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
             "인터셉트": f"인터셉트 : {_format_count(intercept)}",
             "태클": f"태클 : {_format_count(tackle)}",
             "클리어": f"클리어 : {_format_count(clear)}",
-            "차단": f"차단 : {_format_count(block)}",
-            "경합 성공률(%)": f"경합 성공률(%) : {_format_percent(duel_success_pct)}",
+            "블락": f"블락 : {_format_count(block)}",
+            "차단": f"차단 : {_format_count(cutout)}",
+            "경합 성공률(%)": f"경합 성공률(%) : {_format_percent(duel_success_pct)} ({int(duel_win)}회)",
             "볼 터치": f"볼 터치 : {_format_count(touches)}",
         }
 
@@ -2230,7 +2248,8 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
             "인터셉트": intercept * 9,
             "태클": tackle * 10,
             "클리어": clear * 7,
-            "차단": block * 8,
+            "블락": block * 8,
+            "차단": cutout * 8,
             "경합 성공률(%)": duel_success_pct + duel_total,
             "볼 터치": touches * 0.5,
         }
