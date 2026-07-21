@@ -1,0 +1,79 @@
+name: Sync Server Env
+
+# GitHub Secrets 에 넣어둔 FinePlay 연동 값(S3 키, API 토큰)을 앱 서버의
+# infra/app/.env 에 반영하고 api 컨테이너를 재생성한다. SSH 없이 서버 env 를
+# 관리하기 위한 워크플로 — 시크릿을 추가/변경하면 이걸 다시 실행하면 된다.
+#
+# 필요한 Secrets (Settings → Secrets and variables → Actions):
+#   FINEPLAY_S3_ACCESS_KEY_ID      pc-pipeline IAM 액세스키
+#   FINEPLAY_S3_SECRET_ACCESS_KEY  pc-pipeline IAM 시크릿
+#   FINEPLAY_API_TOKEN             (선택) FinePlay 서비스 토큰 — 오면 추가
+# 비어 있는 시크릿은 건드리지 않으므로, 토큰이 아직 없어도 실행할 수 있다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type sync-env to update server .env from GitHub secrets.
+        required: true
+        type: string
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync env on app server
+    if: github.event.inputs.confirm == 'sync-env'
+    runs-on: [self-hosted, live-admin-app, production]
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Update .env and recreate api
+        env:
+          S3_KEY_ID: ${{ secrets.FINEPLAY_S3_ACCESS_KEY_ID }}
+          S3_SECRET: ${{ secrets.FINEPLAY_S3_SECRET_ACCESS_KEY }}
+          FP_TOKEN: ${{ secrets.FINEPLAY_API_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          ENV_FILE="/home/ubuntu/fp-live-admin/infra/app/.env"
+          touch "$ENV_FILE"
+
+          # 같은 키가 있으면 교체, 없으면 추가. sed 이스케이프 문제를 피하려고
+          # (시크릿에 +, /, & 가 섞일 수 있다) 삭제 후 append 방식을 쓴다.
+          upsert() {
+            key="$1"; val="$2"
+            [ -z "$val" ] && { echo "skip ${key} (secret empty)"; return 0; }
+            grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" || true
+            mv "${ENV_FILE}.tmp" "$ENV_FILE"
+            printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
+            echo "set ${key}"
+          }
+
+          upsert HIGHLIGHT_S3_BUCKET "fineplay-files"
+          upsert HIGHLIGHT_S3_REGION "ap-northeast-2"
+          upsert AWS_ACCESS_KEY_ID "$S3_KEY_ID"
+          upsert AWS_SECRET_ACCESS_KEY "$S3_SECRET"
+          upsert FINEPLAY_API_TOKEN "$FP_TOKEN"
+
+          echo "--- .env keys now present (값은 출력하지 않음) ---"
+          grep -oE '^[A-Za-z_]+' "$ENV_FILE" | sort
+
+          # env 변경은 재시작이 아니라 컨테이너 재생성이어야 반영된다.
+          cd /home/ubuntu/fp-live-admin/infra/app
+          docker compose up -d api
+          docker compose ps api
+
+          # api 가 새 env 로 부팅했는지 확인
+          for i in $(seq 1 30); do
+            if docker compose exec -T api \
+                 python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" >/dev/null 2>&1; then
+              echo "api healthy after ${i} attempt(s)"; exit 0
+            fi
+            sleep 2
+          done
+          echo "api did not become healthy"; docker compose logs --tail=50 api; exit 1
