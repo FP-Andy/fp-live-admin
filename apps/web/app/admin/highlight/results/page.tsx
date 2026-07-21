@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
 import HighlightSubTabs from '../HighlightSubTabs';
+import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 
 // 수동 태깅으로 만든 하이라이트 목록. 전원 SUPERADMIN 이라 누가 만들었든 모두 조회·다운로드한다.
 
@@ -18,7 +19,10 @@ type ManualJob = {
   error_message?: string | null;
   stage?: string | null;
   created_at: string;
-  job_metadata?: { clip_info?: ClipInfo[] } | null;
+  job_metadata?: {
+    clip_info?: ClipInfo[];
+    progress?: { percent?: number; detail?: string; phase?: string } | null;
+  } | null;
 };
 
 const card: React.CSSProperties = {
@@ -175,6 +179,23 @@ export default function ManualResultsPage() {
                 ) : null}
                 <button style={btn} onClick={() => void remove(job)}>삭제</button>
               </div>
+
+              {job.status === 'merging' || job.status === 'collecting' ? (
+                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>
+                      {job.status === 'merging' ? '다듬고 합치는 중' : '클립 수신 중'}
+                    </span>
+                    <LeaveBadge canLeave />
+                    {job.job_metadata?.progress?.detail ? (
+                      <span style={{ fontSize: 12, color: 'var(--muted, #999)', marginLeft: 'auto' }}>
+                        {job.job_metadata.progress.detail}
+                      </span>
+                    ) : null}
+                  </div>
+                  <ProgressBar indeterminate color="#22c55e" />
+                </div>
+              ) : null}
 
               {open ? (
                 <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>

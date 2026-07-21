@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import { API_BASE, apiJson } from '../../../../lib/api';
 import type { CutClip, CutProgress } from '../../../../lib/localCut';
+import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 
 type JobStatus = {
   id: string;
@@ -50,6 +51,19 @@ const numInput: React.CSSProperties = {
   color: 'var(--text, #eee)',
   fontSize: 13,
 };
+const stageBox: React.CSSProperties = {
+  marginTop: 12,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  padding: 12,
+  borderRadius: 8,
+  background: 'var(--surface-input, #16161a)',
+  border: '1px solid var(--border-ghost, #2c2c32)',
+};
+const stageHead: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' };
+const stageCount: React.CSSProperties = { fontSize: 12, color: 'var(--muted, #999)', marginLeft: 'auto' };
+const stageNote: React.CSSProperties = { fontSize: 12, color: 'var(--muted, #999)', margin: 0 };
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00';
@@ -84,6 +98,9 @@ export default function ManualHighlightPage() {
   const [publishMsg, setPublishMsg] = useState('');
   const [publishError, setPublishError] = useState('');
   const [doneJobId, setDoneJobId] = useState('');
+  // 업로드는 브라우저(탭 유지 필요), 합치기는 서버(탭 닫아도 됨) — 단계를 나눠 바/배지에 쓴다.
+  const [publishPhase, setPublishPhase] = useState<'idle' | 'uploading' | 'merging' | 'done'>('idle');
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
   const [introFile, setIntroFile] = useState<File | null>(null);
   const [introUrl, setIntroUrl] = useState('');
   const [introDuration, setIntroDuration] = useState(1.8);
@@ -274,6 +291,8 @@ export default function ManualHighlightPage() {
     setPublishing(true);
     setPublishError('');
     setDoneJobId('');
+    setPublishPhase('uploading');
+    setUploadProgress({ done: 0, total: clips.length });
     try {
       const { job_id: jobId } = await apiJson<{ job_id: string }>('/highlight/manual-jobs', {
         method: 'POST',
@@ -293,6 +312,7 @@ export default function ManualHighlightPage() {
           body: form,
         });
         if (!res.ok) throw new Error(await res.text() || `클립 ${i + 1} 업로드 실패`);
+        setUploadProgress({ done: i + 1, total: clips.length });
       }
 
       // 인트로 사진이 있으면 클립을 다 올린 뒤, 합치기 직전에 보낸다.
@@ -309,6 +329,8 @@ export default function ManualHighlightPage() {
         if (!introRes.ok) throw new Error(await introRes.text() || '인트로 사진 업로드 실패');
       }
 
+      // 여기서부터는 서버 몫 — 탭을 닫아도 합치기는 끝나고 "수동 결과물"에 뜬다.
+      setPublishPhase('merging');
       setPublishMsg('서버에서 다듬고 합치는 중...');
       await apiJson(`/highlight/manual-jobs/${jobId}/merge`, { method: 'POST' });
 
@@ -318,6 +340,7 @@ export default function ManualHighlightPage() {
         const job = await apiJson<JobStatus>(`/highlight/jobs/${jobId}`);
         if (job.status === 'done') {
           setDoneJobId(jobId);
+          setPublishPhase('done');
           setPublishMsg('완료되었습니다.');
           break;
         }
@@ -327,6 +350,7 @@ export default function ManualHighlightPage() {
     } catch (err) {
       setPublishError(err instanceof Error ? err.message : String(err));
       setPublishMsg('');
+      setPublishPhase('idle');
     } finally {
       setPublishing(false);
     }
@@ -573,19 +597,30 @@ export default function ManualHighlightPage() {
                 <button style={primaryBtn} onClick={runCut} disabled={cutting}>
                   {cutting ? '추출 중...' : `✂ 클립 ${tags.length}개 추출`}
                 </button>
-                {cutting && cutProgress ? (
-                  <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
-                    {cutProgress.phase === 'loading'
-                      ? 'ffmpeg 준비 중 (최초 1회 31MB 내려받음)'
-                      : `${cutProgress.done} / ${cutProgress.total}`}
-                  </span>
-                ) : null}
-                {clips.length ? (
+                {!cutting && clips.length ? (
                   <span style={{ fontSize: 13, color: '#22c55e' }}>
                     클립 {clips.length}개 · 총 {fmtBytes(clipsTotalBytes)} — 업로드 준비 완료
                   </span>
                 ) : null}
               </div>
+
+              {cutting && cutProgress ? (
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>1. 클립 추출 (브라우저)</span>
+                    <LeaveBadge canLeave={false} />
+                    <span style={{ fontSize: 12, color: 'var(--muted, #999)', marginLeft: 'auto' }}>
+                      {cutProgress.phase === 'loading'
+                        ? 'ffmpeg 준비 중 (최초 1회 31MB)'
+                        : `${cutProgress.done} / ${cutProgress.total}`}
+                    </span>
+                  </div>
+                  <ProgressBar
+                    percent={cutProgress.total ? (cutProgress.done / cutProgress.total) * 100 : 0}
+                    indeterminate={cutProgress.phase === 'loading'}
+                  />
+                </div>
+              ) : null}
 
               {cutError ? (
                 <div
@@ -674,10 +709,41 @@ export default function ManualHighlightPage() {
                     <button style={primaryBtn} onClick={publish} disabled={publishing}>
                       {publishing ? '처리 중...' : `⬆ 업로드하고 하나로 합치기 (${fmtBytes(clipsTotalBytes)})`}
                     </button>
-                    {publishMsg ? (
-                      <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>{publishMsg}</span>
+                    {publishPhase === 'done' && publishMsg ? (
+                      <span style={{ fontSize: 13, color: '#22c55e' }}>{publishMsg}</span>
                     ) : null}
                   </div>
+
+                  {publishPhase === 'uploading' ? (
+                    <div style={stageBox}>
+                      <div style={stageHead}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>2. 클립 업로드 (브라우저)</span>
+                        <LeaveBadge canLeave={false} />
+                        <span style={stageCount}>{uploadProgress.done} / {uploadProgress.total}</span>
+                      </div>
+                      <ProgressBar
+                        percent={uploadProgress.total ? (uploadProgress.done / uploadProgress.total) * 100 : 0}
+                      />
+                      <p style={stageNote}>
+                        업로드가 끝날 때까지 <strong>이 탭을 닫지 마세요.</strong> 다음 영상은 새 탭에서 준비하세요.
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {publishPhase === 'merging' ? (
+                    <div style={stageBox}>
+                      <div style={stageHead}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>3. 서버에서 다듬고 합치는 중</span>
+                        <LeaveBadge canLeave />
+                        <span style={stageCount}>{publishMsg}</span>
+                      </div>
+                      <ProgressBar indeterminate color="#22c55e" />
+                      <p style={stageNote}>
+                        여기부턴 서버가 처리해요. <strong>탭을 닫아도 되고</strong>, 완료되면{' '}
+                        <strong>수동 결과물</strong> 탭에 자동으로 나타납니다.
+                      </p>
+                    </div>
+                  ) : null}
 
                   <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>
                     원본은 올라가지 않습니다. 잘린 클립만 보내고, 서버가 요청 구간에 맞춰
