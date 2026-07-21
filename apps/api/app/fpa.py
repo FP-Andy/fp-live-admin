@@ -41,12 +41,14 @@ ACTION_CODES = {
     "pr": "Press",  # 압박 — 팀 단위 행위라 선수 번호 없이 'pr'만 입력. 압박자=프레임에 찍힌 아군, closing 기준=상대 위치 (점수 공식은 추후)
     "rr": "Dribble",
     "r": "Dribble",
-    "gp": "Gain",
+    # "gp": "Gain" 삭제 (2026-07-21) — 볼 획득은 qq(Acquisition, single 전용)로 일원화. 옛 Gain 행은 하위호환으로 Acquisition 취급.
     "m": "Miss",
     "aa": "Tackle",
     "q": "Intercept",
-    # "qq": "Acquisition" 제거 (2026-07-08) — 수비는 before/after 위치변화로 EPV·PC 채점. 획득(possession-win) 개념 폐기.
-    # 옛 데이터의 Action="Acquisition" 행은 정규화/집계에서 계속 인식(하위호환)하되 신규 입력은 불가.
+    # 획득(Acquisition)은 single 모드 전용 (2026-07-21 복원). dual 은 before/after 위치변화로
+    # EPV·PC 를 채점하므로 불필요하지만, 프레임이 없는 single 은 소유권을 따냈다는 사실 자체를
+    # 기록할 코드가 필요하다. dual 에서 입력하면 파싱 단계에서 거부한다.
+    "qq": "Acquisition",
     "w": "Clear",
     "ww": "Cutout",
     "qw": "Block",
@@ -159,7 +161,10 @@ def _normalize_canonical_event(action: Any, tags: Any) -> tuple[str, str, str]:
         return "Dribble", "Carry" if "Carry" in tag_values else "Dribble", "Success" if "Success" in tag_values else "Fail"
     if action_text == "Penetration":
         return "Penetration", "Off-ball Run", "Success" if "Success" in tag_values else "Unknown"
-    if action_text in ["Tackle", "Intercept", "Acquisition", "Clear", "Cutout", "Block"]:
+    if action_text in ("Acquisition", "Gain"):  # Gain = 삭제된 gp 코드의 옛 데이터 (하위호환)
+        # 획득은 소유권을 따낸 사건 그 자체라 성공/실패 태그 없이 항상 Success 다 (single 전용 코드).
+        return "Defense", "Acquisition", "Success"
+    if action_text in ["Tackle", "Intercept", "Clear", "Cutout", "Block"]:
         return "Defense", action_text, "Success" if "Success" in tag_values else "Fail"
     return action_text or "Unknown", action_text or "Unknown", "Success" if "Success" in tag_values else "Fail" if "Fail" in tag_values else "Unknown"
 
@@ -970,7 +975,7 @@ def create_advanced_summary(df_analyzed: pd.DataFrame) -> pd.DataFrame:
         "Duel_Win_Count",
     )
     safe_update(df_analyzed[df_analyzed["Action"] == "Intercept"].groupby("Player")["Action"].count(), "Intercept_Count")
-    safe_update(df_analyzed[df_analyzed["Action"] == "Acquisition"].groupby("Player")["Action"].count(), "Acquisition_Count")
+    safe_update(df_analyzed[df_analyzed["Action"].isin(["Acquisition", "Gain"])].groupby("Player")["Action"].count(), "Acquisition_Count")
     safe_update(df_analyzed[df_analyzed["Action"] == "Foul"].groupby("Player")["Action"].count(), "Foul_Count")
     safe_update(
         df_analyzed[(df_analyzed["Action"] == "Duel") & ~df_analyzed["Tags"].str.contains("Success")]
@@ -1439,6 +1444,10 @@ def generate_log_entry(
     if not action_name:
         raise ValueError("알 수 없는 액션 코드")
 
+    # 획득(qq)은 single 전용 — dual 은 before/after 위치변화로 채점하므로 개념이 겹친다.
+    if action_name == "Acquisition" and dual_pitch:
+        raise ValueError("획득(qq)은 single 모드 전용입니다. dual에서는 before/after 위치변화로 채점됩니다.")
+
     if (
         base_action_code in ["s", "c", "z"]
         or action_name == "Throw-in"
@@ -1463,7 +1472,7 @@ def generate_log_entry(
         tags_list.extend(["Blocked", "Fail"])
     elif action_code_raw == "d":
         tags_list.extend(["Off Target", "Fail"])
-    elif action_code_raw in ["gp", "w", "qw", "v", "vv", "sv", "q", "pr"]:
+    elif action_code_raw in ["qq", "w", "qw", "v", "vv", "sv", "q", "pr"]:
         tags_list.append("Success")
     elif action_code_raw == "pn":
         tags_list.extend(["Off-ball Run", "Success"])
