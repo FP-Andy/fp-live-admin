@@ -15,3 +15,4 @@ scipy==1.14.1
 moviepy==2.0.0
 pypdf==5.1.0
 yt-dlp==2024.12.13
+boto3>=1.34

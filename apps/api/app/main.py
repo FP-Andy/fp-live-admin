@@ -48,6 +48,9 @@ from .highlight_jobs import (
     download_link_for_job,
     merge_clips_for_job,
     merge_manual_clips_for_job,
+    run_produce_job,
+    run_fineplay_produce,
+    FINEPLAY_PIPELINE_VERSION,
     ensure_highlight_runtime_dirs,
     exports_dir,
     job_dir,
@@ -57,6 +60,9 @@ from .highlight_jobs import (
     update_job,
     upload_dir,
 )
+from .fineplay_client import default_client as fineplay_default_client
+from .fineplay_models import parse_manifest as fineplay_parse_manifest
+from .highlight_storage import default_storage as highlight_default_storage
 from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
@@ -7525,6 +7531,277 @@ def merge_manual_job(
         raise HTTPException(status_code=409, detail="합칠 클립이 없습니다.")
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
     return {"status": "merging"}
+
+
+@app.post("/api/highlight/produce-jobs")
+def create_produce_job(
+    background_tasks: BackgroundTasks,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """서버사이드 S3 생성 잡(Phase 0): 원본은 S3에 이미 있고, 구간만 받아 서버가 만든다.
+
+    body: {source_key, segments:[{start,end}], intro_key?, intro_duration?, output_key?, display_name?}
+    브라우저 컷/클립 업로드 없이 타임코드만 받는 경로.
+    """
+    source_key = str(body.get("source_key") or "").strip()
+    if not source_key:
+        raise HTTPException(status_code=400, detail="source_key 가 필요합니다.")
+
+    raw_segments = body.get("segments") or []
+    segments: list[dict] = []
+    for seg in raw_segments:
+        try:
+            start = float(seg["start"])
+            end = float(seg["end"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="segments 형식이 올바르지 않습니다.")
+        if end > start:
+            segments.append({"start": round(start, 3), "end": round(end, 3)})
+    if not segments:
+        raise HTTPException(status_code=400, detail="유효한 구간(end > start)이 없습니다.")
+
+    job_id = str(uuid.uuid4())
+    metadata = {
+        "display_name": str(body.get("display_name") or "").strip() or None,
+        "source_key": source_key,
+        "segments": segments,
+        "intro_key": str(body.get("intro_key") or "").strip() or None,
+        "intro_duration": body.get("intro_duration"),
+        "output_key": str(body.get("output_key") or "").strip() or None,
+        "progress": {
+            "phase": "queued",
+            "percent": 0,
+            "detail": "생성 대기 중",
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    }
+    job = HighlightJob(
+        id=job_id,
+        owner_id=user.id,
+        status="queued",
+        mode="produce_s3",
+        original_filename=source_key.rsplit("/", 1)[-1] or "highlight.mp4",
+        job_metadata=metadata,
+    )
+    db.add(job)
+    db.commit()
+
+    background_tasks.add_task(run_produce_job, job_id)
+    return {"job_id": job_id, "status": "queued", "segments": len(segments)}
+
+
+# ---------------------------------------------------------------------------
+# FinePlay 연동 (영상 왕복): poll+claim → S3 영상 태깅 → 클립 렌더+업로드+콜백
+# ---------------------------------------------------------------------------
+
+@app.post("/api/highlight/fineplay-jobs/poll")
+def poll_fineplay_jobs(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """FinePlay 대기열을 폴링해 새 작업을 claim 하고 로컬 잡(mode=fineplay)으로 저장한다.
+
+    잡 id 를 `fp-{analysisRequestId}` 로 고정해 재폴링해도 중복 생성되지 않는다.
+    """
+    client = fineplay_default_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+
+    try:
+        data = client.poll_jobs()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FinePlay 작업 조회 실패: {exc}")
+
+    claimed: list[str] = []
+    skipped = 0
+    for m in data.get("jobs") or []:
+        rid = m.get("analysisRequestId")
+        if rid is None:
+            continue
+        job_id = f"fp-{rid}"
+        if db.get(HighlightJob, job_id):
+            skipped += 1
+            continue
+        try:
+            cr = client.claim(rid, pipeline_version=FINEPLAY_PIPELINE_VERSION)
+        except Exception:
+            continue
+        if not cr.granted:
+            skipped += 1
+            continue
+        manifest = cr.manifest or m
+        team = manifest.get("team") or {}
+        videos = manifest.get("videos") or []
+        first = videos[0] if videos else {}
+        job = HighlightJob(
+            id=job_id,
+            owner_id=user.id,
+            status="tagging",
+            mode="fineplay",
+            original_filename=str(first.get("s3Key") or "").rsplit("/", 1)[-1] or "fineplay.mp4",
+            job_metadata={
+                "display_name": team.get("teamName"),
+                "analysis_request_id": rid,
+                "manifest": manifest,
+                "clips": [],
+                "progress": {
+                    "phase": "tagging",
+                    "percent": 0,
+                    "detail": "태깅 대기 중",
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            },
+        )
+        db.add(job)
+        claimed.append(job_id)
+    db.commit()
+    return {"claimed": claimed, "skipped": skipped}
+
+
+@app.get("/api/highlight/fineplay-jobs/{job_id}/source-url")
+def fineplay_source_url(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """태깅 화면에서 재생할 원본 영상의 presigned URL 을 준다 (6시간 유효)."""
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    manifest = fineplay_parse_manifest((job.job_metadata or {}).get("manifest") or {})
+    video = manifest.primary_video
+    if not video:
+        raise HTTPException(status_code=409, detail="매니페스트에 영상이 없습니다.")
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+    return {
+        "url": storage.presigned_get(video.s3_key, expires=21600),
+        "videoId": video.video_id,
+        "durationSeconds": video.duration_seconds,
+        "resolution": video.resolution,
+    }
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/resend-callback")
+def resend_fineplay_callback(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """기록해 둔 결과 payload 를 FinePlay 에 다시 보낸다(멱등이라 안전).
+
+    엔드포인트 오픈 전 만든 결과나 콜백 실패 건을 나중에 밀어 넣는 용도.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = dict(job.job_metadata or {})
+    payload = metadata.get("result_payload")
+    if not payload:
+        raise HTTPException(status_code=409, detail="보낼 결과가 없습니다. 먼저 클립을 생성하세요.")
+    client = fineplay_default_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+    try:
+        client.post_results(payload)
+        metadata["callback_status"] = "sent"
+    except Exception as exc:
+        metadata["callback_status"] = f"failed: {exc}"
+        update_job(db, job_id, job_metadata=metadata)
+        raise HTTPException(status_code=502, detail=f"콜백 전송 실패: {exc}")
+    update_job(db, job_id, job_metadata=metadata)
+    return {"callback_status": "sent"}
+
+
+@app.get("/api/highlight/fineplay-jobs/{job_id}/outputs")
+def fineplay_outputs(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """편집 룸 검수용: 만들어 올린 결과 클립들의 presigned URL 목록.
+
+    highlights/* 에 읽기 권한이 있다는 전제(FinePlay 에 GetObject 추가 요청됨).
+    권한이 없으면 URL 은 발급되지만 재생 시 403 이 난다.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = job.job_metadata or {}
+    payload = metadata.get("result_payload") or {}
+    clips = payload.get("clips") or []
+    if not clips:
+        return {"clips": [], "callbackStatus": metadata.get("callback_status")}
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+
+    out = []
+    for c in clips:
+        hv = c.get("highlightVideo") or {}
+        item: dict = {
+            "clipId": c.get("fpcClipId"),
+            "start": c.get("startTime"),
+            "end": c.get("endTime"),
+            "mainAction": c.get("mainAction"),
+            "durationSeconds": hv.get("durationSeconds"),
+        }
+        for field, key in (
+            ("url", "horizontalS3Key"),
+            ("verticalUrl", "verticalS3Key"),
+            ("thumbnailUrl", "thumbnailS3Key"),
+        ):
+            s3key = hv.get(key)
+            if s3key:
+                item[field] = storage.presigned_get(s3key, expires=3600)
+        out.append(item)
+    return {"clips": out, "callbackStatus": metadata.get("callback_status")}
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/produce")
+def produce_fineplay_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """태깅된 구간으로 클립 렌더+S3 업로드+결과 콜백을 시작한다.
+
+    body: {clips: [{start, end, mainAction?, makeVertical?}]}
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+
+    clips: list[dict] = []
+    for c in body.get("clips") or []:
+        try:
+            start = float(c["start"])
+            end = float(c["end"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="clips 형식이 올바르지 않습니다.")
+        if end > start:
+            clips.append({
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "mainAction": c.get("mainAction"),
+                "makeVertical": bool(c.get("makeVertical")),
+                # 편집룸 재편집 시 기존 clipId 를 유지하면 같은 키로 덮어써(멱등) 중복이 없다.
+                "clipId": (str(c.get("clipId")).strip() or None) if c.get("clipId") else None,
+            })
+    if not clips:
+        raise HTTPException(status_code=400, detail="유효한 구간(end > start)이 없습니다.")
+
+    metadata = dict(job.job_metadata or {})
+    metadata["clips"] = clips
+    update_job(db, job_id, status="queued", job_metadata=metadata)
+
+    background_tasks.add_task(run_fineplay_produce, job_id)
+    return {"job_id": job_id, "status": "queued", "clips": len(clips)}
 
 
 def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:

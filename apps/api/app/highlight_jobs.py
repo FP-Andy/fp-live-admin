@@ -13,6 +13,12 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
+from .fineplay_client import default_client
+from .fineplay_models import ClipSpec, parse_manifest
+from .fineplay_worker import process_job
+from .highlight_produce import Segment
+from .highlight_produce_job import ProduceSpec, run_produce
+from .highlight_storage import default_storage
 from .models import HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
@@ -605,6 +611,148 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             export_path=str(export_path),
             job_metadata=_json_safe(metadata),
         )
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
+def run_produce_job(job_id: str) -> None:
+    """서버사이드 S3 생성 잡(Phase 0): 원본 key + 구간으로 하이라이트를 만들어 S3에 올린다.
+
+    브라우저 컷/클립 업로드가 없는 경로. job_metadata 에서 source_key·segments 를 읽어
+    highlight_produce_job.run_produce 로 위임하고, 결과 output_key 를 잡에 기록한다.
+    지금은 API BackgroundTask 로 호출하지만, SQS 워커가 그대로 호출하게 옮길 수 있다.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job:
+            return
+        metadata = dict(job.job_metadata or {})
+
+        source_key = str(metadata.get("source_key") or "").strip()
+        raw_segments = metadata.get("segments") or []
+        if not source_key or not raw_segments:
+            update_job(db, job_id, status="error", error_message="source_key 또는 segments 가 없습니다.")
+            return
+
+        try:
+            segments = [Segment(float(s["start"]), float(s["end"])) for s in raw_segments]
+        except (KeyError, TypeError, ValueError):
+            update_job(db, job_id, status="error", error_message="segments 형식이 올바르지 않습니다.")
+            return
+
+        metadata["progress"] = _progress_payload("merging", 30, "원본 받아 다듬고 합치는 중")
+        update_job(db, job_id, status="merging", job_metadata=_json_safe(metadata))
+
+        spec = ProduceSpec(
+            source_key=source_key,
+            segments=segments,
+            output_key=(metadata.get("output_key") or None),
+            intro_key=(metadata.get("intro_key") or None),
+            intro_duration=float(metadata.get("intro_duration") or INTRO_SEC),
+        )
+
+        try:
+            result = run_produce(spec, default_storage())
+        except Exception as exc:
+            update_job(db, job_id, status="error", error_message=f"생성 실패: {exc}")
+            return
+
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["output_key"] = result.output_key
+        metadata["output_bytes"] = result.output_bytes
+        metadata["output_duration"] = result.duration_sec
+        if result.warnings:
+            metadata["warnings"] = result.warnings
+        metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
+        update_job(
+            db, job_id,
+            status="done",
+            export_path=result.output_key,
+            job_metadata=_json_safe(metadata),
+        )
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=str(exc))
+    finally:
+        db.close()
+
+
+FINEPLAY_PIPELINE_VERSION = os.getenv("FINEPLAY_PIPELINE_VERSION", "fpc-transport-v0.1")
+
+
+def run_fineplay_produce(job_id: str) -> None:
+    """FinePlay 작업(mode=fineplay) 렌더: 태깅된 구간으로 클립별 영상+썸네일을 만들어
+    S3(highlights/)에 올리고, 토큰이 설정돼 있으면 결과 콜백까지 보낸다.
+
+    콜백 실패는 잡을 죽이지 않는다 — 영상은 이미 S3에 있고 콜백은 멱등이라
+    나중에 재전송하면 되므로, 상태와 사유만 기록한다.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job:
+            return
+        metadata = dict(job.job_metadata or {})
+        manifest_raw = metadata.get("manifest") or {}
+        clips_raw = metadata.get("clips") or []
+        if not manifest_raw or not clips_raw:
+            update_job(db, job_id, status="error", error_message="manifest 또는 clips 가 없습니다.")
+            return
+
+        manifest = parse_manifest(manifest_raw)
+        rid = manifest.analysis_request_id
+        default_video = manifest.primary_video.video_id if manifest.primary_video else ""
+
+        specs: list[ClipSpec] = []
+        for i, c in enumerate(clips_raw):
+            try:
+                start = float(c["start"])
+                end = float(c["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if end <= start:
+                continue
+            specs.append(ClipSpec(
+                source_video_id=str(c.get("sourceVideoId") or default_video),
+                start=start,
+                end=end,
+                clip_id=str(c.get("clipId") or f"fpc-{rid}-{i + 1:03d}"),
+                main_action=c.get("mainAction"),
+                make_vertical=bool(c.get("makeVertical")),
+            ))
+        if not specs:
+            update_job(db, job_id, status="error", error_message="유효한 클립 구간이 없습니다.")
+            return
+
+        metadata["progress"] = _progress_payload("merging", 30, "원본 받아 클립 만드는 중")
+        update_job(db, job_id, status="merging", job_metadata=_json_safe(metadata))
+
+        try:
+            payload = process_job(
+                manifest, specs, default_storage(),
+                pipeline_version=FINEPLAY_PIPELINE_VERSION,
+            )
+        except Exception as exc:
+            update_job(db, job_id, status="error", error_message=f"렌더/업로드 실패: {exc}")
+            return
+
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["result_payload"] = payload
+
+        client = default_client()
+        if client.configured:
+            try:
+                client.post_results(payload)
+                metadata["callback_status"] = "sent"
+            except Exception as exc:
+                metadata["callback_status"] = f"failed: {exc}"
+        else:
+            metadata["callback_status"] = "skipped (FINEPLAY_API_TOKEN 미설정)"
+
+        metadata["progress"] = _progress_payload("done", 100, "클립 제작 완료")
+        update_job(db, job_id, status="done", job_metadata=_json_safe(metadata))
     except Exception as exc:
         update_job(db, job_id, status="error", error_message=str(exc))
     finally:
