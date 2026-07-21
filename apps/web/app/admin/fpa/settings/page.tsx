@@ -27,7 +27,6 @@ const actionGroups = [
       ['pn', 'Penetration', '1개', '오프더볼 침투 런. 좌표 1개(침투 시작점) 찍고, 도착 위치 변화는 장면 before/after로 반영'],
       ['rr', 'Dribble', '2개 이상', '드리블/운반 성공. 이동 경로 기록 가능'],
       ['r', 'Dribble (Fail)', '2개 이상', '드리블/운반 실패'],
-      ['gp', 'Gain', '1개', '볼 획득'],
       ['m', 'Miss', '1개', '컨트롤 미스'],
       ['t / tt', 'Throw-in Lost / Retained', '2개', '스로인은 패스와 분리된 재개 이벤트'],
       ['st', 'Sprint', '1개', '스프린트'],
@@ -38,6 +37,7 @@ const actionGroups = [
     rows: [
       ['aa', 'Tackle', '화살표(Before)', '태클 — 코드 입력 후 Before에 상대 볼 경로를 화살표로(볼 출발점→끊은 지점). 막아낸 상대 전진위협(EPV)을 승계'],
       ['q', 'Intercept', '화살표(Before)', '인터셉트 — Before에 상대 패스 경로 화살표(패서→가로챈 지점). 막은 전진위협(EPV)으로 채점'],
+      ['qq', 'Acquisition', '1개', '획득 — 소유권을 따낸 지점 1개. single 모드 전용 (dual은 before/after 위치변화로 채점되어 입력 시 거부)'],
       ['ww', 'Cutout', '화살표(Before)', '차단 — Before에 상대 패스/크로스 경로 화살표(출발→차단 지점). 막은 위협(EPV)으로 채점'],
       ['qw', 'Block', '화살표(Before)', '블락 — 슛블락. Before에 슛 궤적 화살표(슈터→블록 지점). 막은 슛의 xG를 블로커에게 승계'],
       ['w', 'Clear', '1개', '클리어 — 단독 지점만 입력'],
