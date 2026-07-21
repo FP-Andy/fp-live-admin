@@ -17,11 +17,13 @@ from .models import HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
 DELETE_UPLOAD_AFTER_SUCCESS = os.getenv("HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS", "1") not in {"0", "false", "False"}
-# 수동 태깅 클립을 합칠 때 각 클립 끝에 적용하는 페이드아웃 길이(초).
-FADE_OUT_SEC = float(os.getenv("HIGHLIGHT_CLIP_FADE_OUT_SEC", "0.1"))
 # 인트로 사진을 앞에 보여주는 기본 길이(초)와 인트로 앞뒤 페이드 길이(초).
 INTRO_SEC = float(os.getenv("HIGHLIGHT_INTRO_SEC", "1.8"))
 INTRO_FADE_SEC = float(os.getenv("HIGHLIGHT_INTRO_FADE_SEC", "0.3"))
+# 합치기 재인코딩 x264 프리셋. 앱 서버(t3.medium, 2vCPU 버스터블)가 약해서
+# ultrafast 로 CPU 부담을 줄여 크레딧 소진 전에 끝낸다. 화질은 crf 로 고정되고
+# 파일만 조금 커진다. veryfast 로 되돌리려면 env 로 바꾼다.
+MERGE_PRESET = os.getenv("HIGHLIGHT_MERGE_PRESET", "ultrafast")
 logger = logging.getLogger(__name__)
 
 
@@ -543,47 +545,46 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         for path, offset, duration in clips_to_use:
             args += ["-ss", f"{offset:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
 
-        # 클립마다 끝에서 짧게 페이드아웃한다. concat 앞에 입력별 fade 를 걸어
-        # 재인코딩 한 번에 다듬기·페이드·합치기를 모두 처리한다. 영상만 검게 하면
-        # 소리가 갑자기 끊겨 어색하므로 오디오도 함께 페이드한다.
-        # concat 필터는 모든 입력이 같은 스트림 구성을 가져야 한다. 원본이 하나이므로
-        # 클립들의 코덱·해상도는 항상 동일하고, 인트로만 그 규격에 맞춰준다.
-        fade = FADE_OUT_SEC
+        # 클립 사이는 하드컷이다(페이드 없음). concat 필터는 모든 입력이 같은 스트림
+        # 구성을 가져야 하는데 원본이 하나라 클립들의 코덱·해상도는 항상 동일하다.
+        # 인트로가 붙을 때만 이미지를 그 규격에 맞추고 앞뒤로 부드럽게 페이드한다.
         chains: list[str] = []
         segments: list[tuple[str, str]] = []
 
         if has_intro:
             ifade = INTRO_FADE_SEC
-            i_out = max(0.0, intro_dur - ifade)
-            # 이미지를 클립 해상도·fps·SAR·픽셀포맷에 맞추고, 앞뒤로 부드럽게 페이드한다.
+            # 이미지를 클립 해상도·fps·SAR·픽셀포맷에 맞추고, 처음에 검정에서 페이드인만 한다.
+            # 끝에는 페이드아웃하지 않아 인트로가 밝게 유지되다 첫 클립으로 바로 하드컷된다
+            # (인트로→클립 사이 검정 구간 없음). 인트로 오디오는 무음이라 그대로 통과시킨다.
             chains.append(
                 f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
                 f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
-                f"fade=t=in:st=0:d={ifade:.3f},fade=t=out:st={i_out:.3f}:d={ifade:.3f}[vintro]"
+                f"fade=t=in:st=0:d={ifade:.3f}[vintro]"
             )
-            chains.append(f"[1:a]afade=t=out:st={i_out:.3f}:d={ifade:.3f}[aintro]")
-            segments.append(("[vintro]", "[aintro]"))
+            segments.append(("[vintro]", "[1:a]"))
 
-        # 인트로가 붙으면 클립도 같은 SAR·픽셀포맷으로 맞춰 concat 규격 불일치를 막는다.
-        v_extra = ",setsar=1,format=yuv420p" if has_intro else ""
         for k in range(used):
             idx = clip_base + k
-            d = clips_to_use[k][2]
-            st = max(0.0, d - fade)
-            chains.append(f"[{idx}:v]fade=t=out:st={st:.3f}:d={fade:.3f}{v_extra}[v{idx}]")
-            chains.append(f"[{idx}:a]afade=t=out:st={st:.3f}:d={fade:.3f}[a{idx}]")
-            segments.append((f"[v{idx}]", f"[a{idx}]"))
+            if has_intro:
+                # 인트로와 규격을 맞추려 SAR·픽셀포맷만 통일한다(페이드는 걸지 않는다).
+                chains.append(f"[{idx}:v]setsar=1,format=yuv420p[v{idx}]")
+                segments.append((f"[v{idx}]", f"[{idx}:a]"))
+            else:
+                # 필터 없이 원본 스트림을 그대로 concat 한다.
+                segments.append((f"[{idx}:v]", f"[{idx}:a]"))
 
         n_seg = len(segments)
         concat_inputs = "".join(v + a for v, a in segments)
-        filter_complex = ";".join(chains) + (
-            f";{concat_inputs}concat=n={n_seg}:v=1:a=1[v][a]"
+        # 인트로가 없으면 전처리 체인이 비어 있다. 그때 앞에 세미콜론이 붙지 않게 한다.
+        prefix = ";".join(chains)
+        filter_complex = (f"{prefix};" if prefix else "") + (
+            f"{concat_inputs}concat=n={n_seg}:v=1:a=1[v][a]"
         )
         export_path = exports_dir() / f"{job_id}_export.mp4"
         args += [
             "-filter_complex", filter_complex,
             "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:v", "libx264", "-preset", MERGE_PRESET, "-crf", "23",
             "-c:a", "aac",
             "-movflags", "+faststart",
             str(export_path),
