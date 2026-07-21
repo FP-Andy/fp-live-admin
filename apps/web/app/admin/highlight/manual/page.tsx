@@ -84,6 +84,9 @@ export default function ManualHighlightPage() {
   const [publishMsg, setPublishMsg] = useState('');
   const [publishError, setPublishError] = useState('');
   const [doneJobId, setDoneJobId] = useState('');
+  const [introFile, setIntroFile] = useState<File | null>(null);
+  const [introUrl, setIntroUrl] = useState('');
+  const [introDuration, setIntroDuration] = useState(1.8);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const urlRef = useRef<string>('');
@@ -123,6 +126,27 @@ export default function ManualHighlightPage() {
     urlRef.current = url;
     setVideoUrl(url);
   };
+
+  // 인트로 사진 미리보기용 objectURL 을 갈아끼울 때마다 이전 것을 해제한다.
+  const introUrlRef = useRef<string>('');
+  const pickIntro = useCallback((f: File | null) => {
+    if (introUrlRef.current) {
+      URL.revokeObjectURL(introUrlRef.current);
+      introUrlRef.current = '';
+    }
+    setIntroFile(f);
+    if (!f) {
+      setIntroUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(f);
+    introUrlRef.current = url;
+    setIntroUrl(url);
+  }, []);
+
+  useEffect(() => () => {
+    if (introUrlRef.current) URL.revokeObjectURL(introUrlRef.current);
+  }, []);
 
   // 이전에 태깅하던 파일이면 저장해둔 작업을 되살린다.
   // 패딩도 함께 복원해야 한다. 태그만 돌아오고 패딩이 기본값으로 리셋되면
@@ -269,6 +293,20 @@ export default function ManualHighlightPage() {
           body: form,
         });
         if (!res.ok) throw new Error(await res.text() || `클립 ${i + 1} 업로드 실패`);
+      }
+
+      // 인트로 사진이 있으면 클립을 다 올린 뒤, 합치기 직전에 보낸다.
+      if (introFile) {
+        setPublishMsg('인트로 사진 업로드 중...');
+        const introForm = new FormData();
+        introForm.append('image', introFile, introFile.name);
+        introForm.append('duration', String(introDuration));
+        const introRes = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/intro`, {
+          method: 'POST',
+          credentials: 'include',
+          body: introForm,
+        });
+        if (!introRes.ok) throw new Error(await introRes.text() || '인트로 사진 업로드 실패');
       }
 
       setPublishMsg('서버에서 다듬고 합치는 중...');
@@ -589,6 +627,49 @@ export default function ManualHighlightPage() {
 
               {clips.length ? (
                 <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-ghost, #2c2c32)' }}>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+                    {introUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={introUrl}
+                        alt="인트로 미리보기"
+                        style={{ width: 96, height: 54, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border-ghost, #3a3a42)' }}
+                      />
+                    ) : null}
+                    <label style={{ ...smallBtn, display: 'inline-flex', alignItems: 'center' }}>
+                      {introFile ? '인트로 사진 변경' : '＋ 인트로 사진 (선택)'}
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        style={{ display: 'none' }}
+                        onChange={(e) => pickIntro(e.target.files?.[0] ?? null)}
+                        disabled={publishing}
+                      />
+                    </label>
+                    {introFile ? (
+                      <>
+                        <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          표시 시간
+                          <input
+                            type="number"
+                            step={0.1}
+                            min={0.5}
+                            max={5}
+                            value={introDuration}
+                            onChange={(e) => setIntroDuration(Math.max(0.5, Math.min(5, Number(e.target.value) || 1.8)))}
+                            style={numInput}
+                            disabled={publishing}
+                          />
+                          초
+                        </label>
+                        <button style={smallBtn} onClick={() => pickIntro(null)} disabled={publishing}>제거</button>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                        하이라이트 맨 앞에 사진을 잠깐 보여줍니다.
+                      </span>
+                    )}
+                  </div>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button style={primaryBtn} onClick={publish} disabled={publishing}>
                       {publishing ? '처리 중...' : `⬆ 업로드하고 하나로 합치기 (${fmtBytes(clipsTotalBytes)})`}
