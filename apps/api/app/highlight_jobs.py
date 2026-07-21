@@ -17,6 +17,11 @@ from .models import HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
 DELETE_UPLOAD_AFTER_SUCCESS = os.getenv("HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS", "1") not in {"0", "false", "False"}
+# 수동 태깅 클립을 합칠 때 각 클립 끝에 적용하는 페이드아웃 길이(초).
+FADE_OUT_SEC = float(os.getenv("HIGHLIGHT_CLIP_FADE_OUT_SEC", "0.1"))
+# 인트로 사진을 앞에 보여주는 기본 길이(초)와 인트로 앞뒤 페이드 길이(초).
+INTRO_SEC = float(os.getenv("HIGHLIGHT_INTRO_SEC", "1.8"))
+INTRO_FADE_SEC = float(os.getenv("HIGHLIGHT_INTRO_FADE_SEC", "0.3"))
 logger = logging.getLogger(__name__)
 
 
@@ -440,6 +445,34 @@ def _probe_start_time(path: Path) -> float:
         return 0.0
 
 
+def _probe_video_dims(path: Path) -> tuple[int, int, str]:
+    """클립의 가로·세로·프레임레이트를 읽는다. 인트로 이미지를 이 규격에 맞춘다.
+
+    r_frame_rate 는 "30000/1001" 같은 분수 문자열이며 fps 필터가 그대로 받는다.
+    읽지 못하면 720p/30fps 로 둔다 — 최악의 경우에도 인트로만 조금 어긋날 뿐이다.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate",
+                "-of", "default=nw=1:nk=1",
+                str(path),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        lines = [ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()]
+        width = int(lines[0])
+        height = int(lines[1])
+        fps = lines[2] if len(lines) > 2 else ""
+        if not fps or fps in {"0/0", "0"}:
+            fps = "30"
+        return width, height, fps
+    except (subprocess.CalledProcessError, ValueError, IndexError):
+        return 1280, 720, "30"
+
+
 def merge_manual_clips_for_job(job_id: str) -> None:
     """수동 태깅 클립들을 정확한 지점으로 다듬어 하나로 합친다.
 
@@ -461,8 +494,9 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         metadata["progress"] = _progress_payload("merging", 30, "클립 다듬고 합치는 중")
         update_job(db, job_id, status="merging", job_metadata=_json_safe(metadata))
 
-        args: list[str] = ["ffmpeg", "-y"]
-        used = 0
+        # 먼저 쓸 수 있는 클립만 (경로·오프셋·길이) 로 모은다. 인트로 이미지를
+        # 클립 해상도에 맞추려면 클립 하나의 규격을 먼저 알아야 하기 때문이다.
+        clips_to_use: list[tuple[Path, float, float]] = []
         for info in clip_info:
             path = clips_dir(job_id) / str(info.get("name", ""))
             if not path.exists():
@@ -476,19 +510,78 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             if duration <= 0:
                 continue
             offset = max(0.0, req_start - _probe_start_time(path))
-            args += ["-ss", f"{offset:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
-            used += 1
+            clips_to_use.append((path, offset, duration))
 
+        used = len(clips_to_use)
         if used == 0:
             update_job(db, job_id, status="error", error_message="유효한 클립이 없습니다.")
             return
 
+        # 인트로 이미지가 있으면 클립 앞에 정지영상(무음) 세그먼트로 붙인다.
+        intro_name = str(metadata.get("intro_image") or "").strip()
+        intro_path = clips_dir(job_id) / intro_name if intro_name else None
+        try:
+            intro_dur = float(metadata.get("intro_duration") or INTRO_SEC)
+        except (TypeError, ValueError):
+            intro_dur = INTRO_SEC
+        has_intro = bool(intro_path) and intro_path.exists() and intro_dur > 0
+        if has_intro:
+            iw, ih, ifps = _probe_video_dims(clips_to_use[0][0])
+
+        args: list[str] = ["ffmpeg", "-y"]
+        # 인트로 입력은 맨 앞에 둬 클립 입력 인덱스가 그 뒤로 밀리게 한다.
+        if has_intro:
+            args += ["-loop", "1", "-t", f"{intro_dur:.3f}", "-i", str(intro_path)]
+            args += [
+                "-f", "lavfi", "-t", f"{intro_dur:.3f}",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ]
+            clip_base = 2
+        else:
+            clip_base = 0
+
+        for path, offset, duration in clips_to_use:
+            args += ["-ss", f"{offset:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
+
+        # 클립마다 끝에서 짧게 페이드아웃한다. concat 앞에 입력별 fade 를 걸어
+        # 재인코딩 한 번에 다듬기·페이드·합치기를 모두 처리한다. 영상만 검게 하면
+        # 소리가 갑자기 끊겨 어색하므로 오디오도 함께 페이드한다.
         # concat 필터는 모든 입력이 같은 스트림 구성을 가져야 한다. 원본이 하나이므로
-        # 클립들의 코덱·해상도는 항상 동일하다.
-        streams = "".join(f"[{i}:v][{i}:a]" for i in range(used))
+        # 클립들의 코덱·해상도는 항상 동일하고, 인트로만 그 규격에 맞춰준다.
+        fade = FADE_OUT_SEC
+        chains: list[str] = []
+        segments: list[tuple[str, str]] = []
+
+        if has_intro:
+            ifade = INTRO_FADE_SEC
+            i_out = max(0.0, intro_dur - ifade)
+            # 이미지를 클립 해상도·fps·SAR·픽셀포맷에 맞추고, 앞뒤로 부드럽게 페이드한다.
+            chains.append(
+                f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
+                f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
+                f"fade=t=in:st=0:d={ifade:.3f},fade=t=out:st={i_out:.3f}:d={ifade:.3f}[vintro]"
+            )
+            chains.append(f"[1:a]afade=t=out:st={i_out:.3f}:d={ifade:.3f}[aintro]")
+            segments.append(("[vintro]", "[aintro]"))
+
+        # 인트로가 붙으면 클립도 같은 SAR·픽셀포맷으로 맞춰 concat 규격 불일치를 막는다.
+        v_extra = ",setsar=1,format=yuv420p" if has_intro else ""
+        for k in range(used):
+            idx = clip_base + k
+            d = clips_to_use[k][2]
+            st = max(0.0, d - fade)
+            chains.append(f"[{idx}:v]fade=t=out:st={st:.3f}:d={fade:.3f}{v_extra}[v{idx}]")
+            chains.append(f"[{idx}:a]afade=t=out:st={st:.3f}:d={fade:.3f}[a{idx}]")
+            segments.append((f"[v{idx}]", f"[a{idx}]"))
+
+        n_seg = len(segments)
+        concat_inputs = "".join(v + a for v, a in segments)
+        filter_complex = ";".join(chains) + (
+            f";{concat_inputs}concat=n={n_seg}:v=1:a=1[v][a]"
+        )
         export_path = exports_dir() / f"{job_id}_export.mp4"
         args += [
-            "-filter_complex", f"{streams}concat=n={used}:v=1:a=1[v][a]",
+            "-filter_complex", filter_complex,
             "-map", "[v]", "-map", "[a]",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-c:a", "aac",

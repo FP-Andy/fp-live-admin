@@ -7480,6 +7480,38 @@ async def upload_manual_clip(
     return {"name": name, "count": len(clip_info)}
 
 
+@app.post("/api/highlight/manual-jobs/{job_id}/intro")
+async def upload_manual_intro(
+    job_id: str,
+    image: UploadFile = File(...),
+    duration: float = Form(1.8),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """하이라이트 맨 앞에 잠깐 보여줄 인트로 사진을 받는다. 합칠 때 정지영상으로 붙는다."""
+    job = _require_manual_job(db, job_id, user)
+
+    ext = Path(image.filename or "").suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise HTTPException(status_code=400, detail="jpg/png/webp 이미지만 넣을 수 있습니다.")
+
+    # 너무 짧거나 길면 리듬이 깨지므로 0.5~5초로 제한한다.
+    dur = max(0.5, min(5.0, float(duration)))
+    name = f"intro{ext}"
+    target = clips_dir(job_id) / name
+    try:
+        with target.open("wb") as out_file:
+            shutil.copyfileobj(image.file, out_file)
+    finally:
+        await image.close()
+
+    metadata = dict(job.job_metadata or {})
+    metadata["intro_image"] = name
+    metadata["intro_duration"] = round(dur, 3)
+    update_job(db, job_id, job_metadata=metadata)
+    return {"intro_image": name, "duration": round(dur, 3)}
+
+
 @app.post("/api/highlight/manual-jobs/{job_id}/merge")
 def merge_manual_job(
     job_id: str,
