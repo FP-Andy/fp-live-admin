@@ -66,39 +66,48 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
 ];
 
 const FHL_ITEMS: NavItem[] = [
-  {
-    href: '/admin/highlight/upload',
-    label: 'Upload',
-    icon: '⬆',
-    match: (pathname) => pathname.startsWith('/admin/highlight/upload'),
-    roles: ['OPERATOR', 'SUPERADMIN'],
-  },
-  {
-    href: '/admin/highlight/my',
-    label: 'My Clips',
-    icon: '◍',
-    match: (pathname) => pathname.startsWith('/admin/highlight/my'),
-    roles: ['OPERATOR', 'SUPERADMIN'],
-  },
-  {
-    href: '/admin/highlight/process',
-    label: 'Process',
-    icon: '▤',
-    match: (pathname) => pathname.startsWith('/admin/highlight/process'),
-    roles: ['SUPERADMIN'],
-  },
-  {
-    href: '/admin/highlight/completed',
-    label: 'Completed',
-    icon: '✓',
-    match: (pathname) => pathname.startsWith('/admin/highlight/completed'),
-    roles: ['SUPERADMIN'],
-  },
+  // FinePlay 연동 프로세스에서 쓰지 않는 기존 업로드→완료 흐름은 메뉴에서 숨긴다 (페이지는 살아있음).
+  // {
+  //   href: '/admin/highlight/upload',
+  //   label: 'Upload',
+  //   icon: '⬆',
+  //   match: (pathname) => pathname.startsWith('/admin/highlight/upload'),
+  //   roles: ['OPERATOR', 'SUPERADMIN'],
+  // },
+  // {
+  //   href: '/admin/highlight/my',
+  //   label: 'My Clips',
+  //   icon: '◍',
+  //   match: (pathname) => pathname.startsWith('/admin/highlight/my'),
+  //   roles: ['OPERATOR', 'SUPERADMIN'],
+  // },
+  // {
+  //   href: '/admin/highlight/process',
+  //   label: 'Process',
+  //   icon: '▤',
+  //   match: (pathname) => pathname.startsWith('/admin/highlight/process'),
+  //   roles: ['SUPERADMIN'],
+  // },
+  // {
+  //   href: '/admin/highlight/completed',
+  //   label: 'Completed',
+  //   icon: '✓',
+  //   match: (pathname) => pathname.startsWith('/admin/highlight/completed'),
+  //   roles: ['SUPERADMIN'],
+  // },
   {
     href: '/admin/highlight',
     label: 'AI+Log',
     icon: '▶',
     match: (pathname) => pathname === '/admin/highlight' || pathname.startsWith('/admin/highlight/player'),
+    roles: ['SUPERADMIN'],
+  },
+  {
+    href: '/admin/highlight/fineplay',
+    label: 'FinePlay',
+    icon: '◇',
+    match: (pathname) =>
+      pathname.startsWith('/admin/highlight/fineplay') || pathname.startsWith('/admin/highlight/editroom'),
     roles: ['SUPERADMIN'],
   },
 ];
