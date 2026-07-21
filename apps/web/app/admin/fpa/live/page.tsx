@@ -569,6 +569,17 @@ function buildRenderPitchDots(sourceDots: PitchDot[]): RenderPitchDot[] {
   });
 }
 
+// 라이브 dual 캔버스 undo 단위 — 조작 직전의 캔버스+로그 스냅샷 (Undo 는 마지막 조작 자체를 되돌림)
+type DualUndoSnapshot = {
+  beforeDots: PitchDot[];
+  afterDots: PitchDot[];
+  passArrows: PassArrow[];
+  rows: LogPreview[];
+  logs: string[];
+  primaryRowIndex: number | null;
+  selectedRowIndex: number | null;
+};
+
 export default function FpaLivePage() {
   const didHydrateRef = useRef(false);
   const pitchRef = useRef<HTMLDivElement | null>(null);
@@ -576,7 +587,7 @@ export default function FpaLivePage() {
   const afterPitchRef = useRef<HTMLDivElement | null>(null);
   const editBeforePitchRef = useRef<HTMLDivElement | null>(null);
   const editAfterPitchRef = useRef<HTMLDivElement | null>(null);
-  const draggingDualDotRef = useRef<(SelectedDualDot & { canvas: 'live' | 'edit' }) | null>(null);
+  const draggingDualDotRef = useRef<(SelectedDualDot & { canvas: 'live' | 'edit'; historyPushed?: boolean }) | null>(null);
   // 패스 화살표 끝점 드래그 상태 — index=passArrows 배열 실제 인덱스, end='end'(도착점) 이동, moved=실제 이동 여부(클릭과 구분)
   const draggingArrowRef = useRef<{ index: number; end: 'start' | 'end'; side: PitchSide; canvas: 'live' | 'edit'; moved: boolean } | null>(null);
   const logBodyRef = useRef<HTMLDivElement | null>(null);
@@ -625,6 +636,10 @@ export default function FpaLivePage() {
   passArrowsRef.current = passArrows;
   const editPassArrowsRef = useRef<PassArrow[]>(editPassArrows);
   editPassArrowsRef.current = editPassArrows;
+  // undo 스냅샷용 최신 상태 미러 (이벤트 리스너의 stale closure 회피 — render마다 동기 갱신)
+  const dualUndoStateRef = useRef<DualUndoSnapshot>({ beforeDots, afterDots, passArrows, rows, logs, primaryRowIndex, selectedRowIndex });
+  dualUndoStateRef.current = { beforeDots, afterDots, passArrows, rows, logs, primaryRowIndex, selectedRowIndex };
+  const dualUndoHistoryRef = useRef<DualUndoSnapshot[]>([]);
   const [editSelectedDot, setEditSelectedDot] = useState<SelectedDualDot | null>(null);
   const [editSelectedRowIndex, setEditSelectedRowIndex] = useState<number | null>(null);
   // 수정용 입력 상태 — 라이브 입력값과 분리 (과거 장면은 half/시간/공격방향이 지금 라이브와 다름). 레이어만 공유(activeLayer).
@@ -1065,6 +1080,7 @@ export default function FpaLivePage() {
       setStatus('행위자 번호는 아군 점에만 붙일 수 있습니다 (상대 점 선택됨)');
       return false;
     }
+    pushDualUndo();
     const assign = (prev: PitchDot[]) =>
       prev.map((dot, index) => (index === sel.index ? { ...dot, number } : dot));
     if (sel.side === 'before') setBeforeDots(assign);
@@ -1114,6 +1130,7 @@ export default function FpaLivePage() {
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점
     if (pendingPass && pendingPass.side === side) {
       const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+      pushDualUndo();
       const arrow = { side, startId: pendingPass.startId, x1: pendingPass.sx, y1: pendingPass.sy, x2: c.screen_x, y2: c.screen_y, code: pendingPass.code, rowIndex: rows.length };
       setPassArrows((prev) => [...prev, arrow]);
       const start: PitchDot = { meter_x: pendingPass.mx, meter_y: pendingPass.my, screen_x: pendingPass.sx, screen_y: pendingPass.sy };
@@ -1140,6 +1157,7 @@ export default function FpaLivePage() {
       role: currentLayer.role,
       color: currentLayer.color,
     };
+    pushDualUndo();
     const place = (prev: PitchDot[]) => {
       const index = prev.length;
       selectLiveDualDot({ side, index });
@@ -1155,10 +1173,47 @@ export default function FpaLivePage() {
     setDots((prev) => prev.slice(0, -1));
   };
 
+  // 라이브 dual 캔버스를 바꾸는 모든 조작 직전에 호출 — 현재 상태를 undo 스택에 push (최대 50단계)
+  const pushDualUndo = () => {
+    dualUndoHistoryRef.current = [...dualUndoHistoryRef.current.slice(-49), { ...dualUndoStateRef.current }];
+  };
+
+  // 장면 저장/새 장면/불러오기 등 장면 경계에서 undo 스택 비움 (장면을 넘나드는 undo 방지)
+  const resetDualUndo = () => {
+    dualUndoHistoryRef.current = [];
+  };
+
+  const undoDual = () => {
+    if (busy) {
+      setStatus('채점 중에는 되돌릴 수 없습니다');
+      return;
+    }
+    const stack = dualUndoHistoryRef.current;
+    const snap = stack[stack.length - 1];
+    if (!snap) {
+      setStatus('되돌릴 조작이 없습니다');
+      return;
+    }
+    dualUndoHistoryRef.current = stack.slice(0, -1);
+    setBeforeDots(snap.beforeDots);
+    setAfterDots(snap.afterDots);
+    setPassArrows(snap.passArrows);
+    setRows(snap.rows);
+    setLogs(snap.logs);
+    setPrimaryRowIndex(snap.primaryRowIndex);
+    setSelectedRowIndex(snap.selectedRowIndex);
+    setSelectedDualDot(null);
+    setPendingPass(null);
+    setPendingDefStart(null);
+    setStatus('마지막 조작을 되돌렸습니다');
+  };
+
   const removeSelectedDualDot = () => {
     if (!selectedDualDot) return;
     const sel = selectedDualDot;
     const dotsArr = sel.side === 'before' ? beforeDots : afterDots;
+    if (!dotsArr[sel.index]) return;
+    pushDualUndo();
     const removedId = dotsArr[sel.index]?.id;
     const removeAt = (prev: PitchDot[]) => prev.filter((_, index) => index !== sel.index);
     if (sel.side === 'before') {
@@ -1173,6 +1228,8 @@ export default function FpaLivePage() {
 
   const removeDualDotAt = (side: PitchSide, index: number) => {
     const dotsArr = side === 'before' ? beforeDots : afterDots;
+    if (!dotsArr[index]) return;
+    pushDualUndo();
     const removedId = dotsArr[index]?.id;
     if (side === 'before') setBeforeDots((prev) => prev.filter((_, i) => i !== index));
     else setAfterDots((prev) => prev.filter((_, i) => i !== index));
@@ -1184,6 +1241,8 @@ export default function FpaLivePage() {
 
   const removeLastDualDot = (side: PitchSide) => {
     const dotsArr = side === 'before' ? beforeDots : afterDots;
+    if (!dotsArr.length) return;
+    pushDualUndo();
     const removedId = dotsArr[dotsArr.length - 1]?.id;
     if (side === 'before') {
       setBeforeDots((prev) => prev.slice(0, -1));
@@ -1195,7 +1254,10 @@ export default function FpaLivePage() {
   };
 
   const clearDualDots = (side: PitchSide) => {
-    const clearedIds = new Set((side === 'before' ? beforeDots : afterDots).map((dot) => dot.id).filter(Boolean));
+    const sideDots = side === 'before' ? beforeDots : afterDots;
+    if (!sideDots.length && !passArrows.some((arrow) => arrow.side === side)) return;
+    pushDualUndo();
+    const clearedIds = new Set(sideDots.map((dot) => dot.id).filter(Boolean));
     setPassArrows((prev) => prev.filter((arrow) => {
       if (arrow.side === side) return false;
       if (side === 'before' && arrow.startId && clearedIds.has(arrow.startId)) return false;
@@ -1210,9 +1272,10 @@ export default function FpaLivePage() {
   };
 
   const copyBeforeToAfter = () => {
+    pushDualUndo();
     const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeDots);
-    // 수비 화살표(상대 공 경로)는 끊은 뒤 사라지므로 after 로 복사하지 않음
-    const nextAfterArrows = mirroredBeforeArrowsForAfter(passArrows.filter((arrow) => !statInputIsDefenseArrow(arrow.code)), idMap);
+    // 패스·수비(상대 공 경로) 화살표 모두 after 에 동일하게 복사 (2026-07-20: 수비 제외하던 규칙 폐기)
+    const nextAfterArrows = mirroredBeforeArrowsForAfter(passArrows, idMap);
     setAfterDots(nextAfterDots);
     setPassArrows((prev) => [...prev.filter((arrow) => arrow.side !== 'after'), ...nextAfterArrows]);
     setSelectedDualDot(null);
@@ -1221,6 +1284,9 @@ export default function FpaLivePage() {
 
   // 현재 작업 캔버스+버퍼 비우기 (저장/새장면/불러오기 공용)
   const clearCurrentScene = () => {
+    resetDualUndo();
+    // 미완료 xGOT 대기가 남으면 다음 장면의 모든 입력이 가드에 막힌다 — 장면 경계에서 자동 해제(=skip)
+    if (pendingXgot?.canvas === 'live') resetXgotState();
     setRows([]);
     setLogs([]);
     setPrimaryRowIndex(null);
@@ -1254,6 +1320,9 @@ export default function FpaLivePage() {
     });
     const snapshot: SavedScene = { rows: scoredRows, logs: scoredLogs, beforeDots, afterDots, passArrows, primary: primaryRowIndex };
     const nextBeforeDots = clonePitchDotsForNextScene(afterDots);
+    // 저장으로 행이 확정되면 남은 xGOT 대기는 갱신할 행이 없다 — 해제 안 하면 다음 장면 입력이 잠김
+    if (pendingXgot?.canvas === 'live') resetXgotState();
+    resetDualUndo();
     setSavedScenes((prev) => [...prev, snapshot]);
     setRows([]);
     setLogs([]);
@@ -1267,12 +1336,15 @@ export default function FpaLivePage() {
     setPassArrows([]);
     setBusy(false);
     setStatus('장면 저장됨 · 최종 좌표로 재채점 완료 — After 좌표를 다음 Before로 복사했습니다');
+    // 저장 버튼 클릭으로 포커스가 버튼에 남는다 — 바로 다음 코드 타이핑이 되도록 입력창으로 복귀
+    requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
   // 새 장면: 저장 안 한 현재 장면을 버리고 새로 시작
   const startNewScene = () => {
     clearCurrentScene();
     setStatus('현재 장면 비움 (미저장)');
+    requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
   // 불러오기: 선택한 저장 장면을 기록된 로그 아래 "수정용 피치"로 복원 — 라이브 캔버스(찍는 데이터)는 안 건드림
@@ -1333,6 +1405,21 @@ export default function FpaLivePage() {
       setEditingSceneIndex(editingSceneIndex - 1);
     }
     setStatus(`장면 ${removedIndex + 1} 삭제됨`);
+  };
+
+  // 기록된 로그 전체 삭제 — 저장된 장면 + 현재 작업 장면(캔버스 포함) 모두 비움. 서버에 저장된 데이터는 안 건드림.
+  const clearAllRecordedLogs = () => {
+    if (!allLogs.length && !savedScenes.length) return;
+    const detail = inputMode === 'dual'
+      ? `장면 ${savedScenes.length}개 · 액션 ${allLogs.length}건`
+      : `액션 ${allLogs.length}건`;
+    if (!window.confirm(`기록된 로그를 전체 삭제할까요? (${detail})\n삭제하면 되돌릴 수 없습니다.`)) return;
+    setSavedScenes([]);
+    setSelectedSceneIndex(null);
+    closeSceneEditor();
+    clearCurrentScene();
+    setDots([]);
+    setStatus('기록된 로그 전체 삭제됨');
   };
 
   // 수정 저장: 편집 중 장면을 최종 좌표로 재채점 후 제자리 덮어쓰기 (순서 유지)
@@ -1821,9 +1908,20 @@ export default function FpaLivePage() {
     }
     // 수비(태클/인터셉트/차단/블록) = 상대 공 경로를 Before 에 화살표로 (라이브와 동일)
     if (statInputIsDefenseArrow(editStatInput)) {
-      setEditPendingDefStart({ code: editStatInput.trim(), side: 'before' });
+      const code = editStatInput.trim();
+      // 수비 행위자 번호를 선택된 아군 점에 반영 (라이브와 동일)
+      const actorNum = code.match(/^(\d+)/)?.[1];
+      const actorSel = editSelectedDot;
+      const actorTarget = actorSel ? (actorSel.side === 'before' ? editBeforeDots : editAfterDots)[actorSel.index] : undefined;
+      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+        const assign = (prev: PitchDot[]) =>
+          prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
+        if (actorSel.side === 'before') setEditBeforeDots(assign);
+        else setEditAfterDots(assign);
+      }
+      setEditPendingDefStart({ code, side: 'before' });
       setEditStatInput('');
-      setStatus(`수정용 Before: ${arrowArmHint(editStatInput.trim(), 'start')} · Esc 취소`);
+      setStatus(`수정용 Before: ${arrowArmHint(code, 'start')} · Esc 취소`);
       return;
     }
     // 패스/크로스(받는번호 O) = 시작 점 선택 후 도착점 클릭까지 채점 지연 (라이브와 동일)
@@ -1935,6 +2033,8 @@ export default function FpaLivePage() {
           : (isEditArrow ? editAfterPitchRef.current : afterPitchRef.current);
         const arrowRect = arrowRef?.getBoundingClientRect();
         if (!arrowRect) return;
+        // 실제로 움직이기 시작한 첫 순간에만 undo 스냅샷 (클릭만으로는 안 쌓음)
+        if (!arrowDrag.moved && !isEditArrow) pushDualUndo();
         arrowDrag.moved = true;
         const coords = dotFromClientPoint(event.clientX, event.clientY, arrowRect);
         (isEditArrow ? setEditPassArrows : setPassArrows)((prev) => prev.map((arrow, idx) => {
@@ -1958,6 +2058,10 @@ export default function FpaLivePage() {
         : (isEdit ? editAfterDots : afterDots);
       const existing = currentDots[dragging.index];
       if (!existing) return;
+      if (!dragging.historyPushed) {
+        if (!isEdit) pushDualUndo();
+        dragging.historyPushed = true;
+      }
       const coords = dotFromClientPoint(event.clientX, event.clientY, rect);
       // 위치만 갱신 — team/role/color/number/id 보존 (안 하면 레이어 색 사라져 홈/어웨이 뒤바뀐 듯 보임)
       (isEdit ? updateEditDot : updateDualDot)(dragging.side, dragging.index, { ...existing, ...coords });
@@ -2001,9 +2105,20 @@ export default function FpaLivePage() {
     }
     // 수비(태클/인터셉트/차단/블록) = 상대 공 경로를 Before 에 화살표로. 코드 입력 후 2번 클릭(출발점→끊은지점)
     if (inputMode === 'dual' && statInputIsDefenseArrow(statInput)) {
-      setPendingDefStart({ code: statInput.trim(), side: 'before' });
+      const code = statInput.trim();
+      // 수비 행위자 번호(예: 4q의 4)는 방금 찍은(선택된) 아군 점에 반영 — 화살표는 상대 공 경로라 점과 별개
+      const actorNum = code.match(/^(\d+)/)?.[1];
+      const actorSel = selectedDualDot;
+      const actorTarget = actorSel ? (actorSel.side === 'before' ? beforeDots : afterDots)[actorSel.index] : undefined;
+      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+        const assign = (prev: PitchDot[]) =>
+          prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
+        if (actorSel.side === 'before') setBeforeDots(assign);
+        else setAfterDots(assign);
+      }
+      setPendingDefStart({ code, side: 'before' });
       setStatInput('');
-      setStatus(`Before: ${arrowArmHint(statInput.trim(), 'start')} · Esc 취소`);
+      setStatus(`Before: ${arrowArmHint(code, 'start')} · Esc 취소`);
       return;
     }
     // 패스/크로스(받는번호 O) = 2점(시작·도착). 점 1개만 찍고 코드 입력 → 채점은 도착점 클릭 시 (xFP/fpa)
@@ -2076,6 +2191,7 @@ export default function FpaLivePage() {
 
       const data = await response.json() as { log_text: string; log_data: LogPreview };
       data.log_data.StatInput = requestedStatInput;
+      if (inputMode === 'dual') pushDualUndo();
       setLogs((prev) => [...prev, data.log_text]);
       setRows((prev) => {
         const nextRows = [...prev, data.log_data];
@@ -2231,6 +2347,7 @@ export default function FpaLivePage() {
         setSavedScenes([]);
         closeSceneEditor();
       }
+      resetDualUndo();
       if (data.match_id) setMatchId(data.match_id);
       if (data.teamid_h) setTeamIdH(data.teamid_h);
       if (data.teamid_a) setTeamIdA(data.teamid_a);
@@ -2301,6 +2418,7 @@ export default function FpaLivePage() {
         setSelectedSceneIndex(null);
       }
       closeSceneEditor();
+      resetDualUndo();
       setPrimaryRowIndex(null);
       setPendingPass(null);
       setPendingDefStart(null);
@@ -2361,6 +2479,7 @@ export default function FpaLivePage() {
 
   // 현재 버퍼(현재 장면/single 로그)에서 특정 인덱스 액션 삭제 + primary/선택 동기화
   const removeLogAt = (removedIdx: number) => {
+    if (inputMode === 'dual') pushDualUndo();
     setLogs((prev) => prev.filter((_, index) => index !== removedIdx));
     setRows((prev) => prev.filter((_, index) => index !== removedIdx));
     setSelectedRowIndex((sel) => (sel == null ? null : sel === removedIdx ? null : sel > removedIdx ? sel - 1 : sel));
@@ -2385,6 +2504,7 @@ export default function FpaLivePage() {
       return nextItems;
     };
 
+    if (inputMode === 'dual') pushDualUndo();
     setLogs((prev) => reorder(prev));
     setRows((prev) => reorder(prev));
     setSelectedRowIndex(nextIndex);
@@ -2411,6 +2531,13 @@ export default function FpaLivePage() {
       if (event.key === 'Escape' && (pendingPass || pendingDefStart || editPendingPass || editPendingDefStart)) {
         event.preventDefault();
         cancelArrowDraw();
+        return;
+      }
+      // ⌘Z/Ctrl+Z = 라이브 dual 캔버스 undo. 입력칸에 지울 텍스트가 있으면 브라우저 기본 undo 우선
+      if (inputMode === 'dual' && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z') {
+        if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value) return;
+        event.preventDefault();
+        undoDual();
         return;
       }
       if (target instanceof HTMLElement && target.tagName === 'INPUT' && target.id !== 'fpa-live-timeline' && target.id !== 'fpa-live-stat-input') {
@@ -2536,7 +2663,7 @@ export default function FpaLivePage() {
           <span>{title}</span>
           <div>
             <span className="fpa-dual-pitch-count">A{allyCount} O{opponentCount}</span>
-            <button onClick={() => removeLastDualDot(side)} type="button">Undo</button>
+            <button onClick={undoDual} title="마지막 조작 되돌리기 (⌘Z)" type="button">Undo</button>
             <button onClick={() => clearDualDots(side)} type="button">Clear</button>
           </div>
         </div>
@@ -2900,6 +3027,9 @@ export default function FpaLivePage() {
           </button>
           <button className="primary" disabled={!allLogs.length || busy} onClick={saveLogsToMatch} type="button">
             저장
+          </button>
+          <button className="fpa-scene-del-btn" disabled={!allLogs.length || busy} onClick={clearAllRecordedLogs} type="button">
+            전체 삭제
           </button>
         </div>
       </div>
