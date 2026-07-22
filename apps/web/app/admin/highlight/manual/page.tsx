@@ -17,7 +17,8 @@ type JobStatus = {
 // 로컬 우선 태깅: 원본을 서버에 올리지 않고 브라우저에서 바로 재생하며 하이라이트 지점을 찍는다.
 // 태그는 타임코드(초)일 뿐이라 용량이 없다시피 하고, 클립 추출은 이후 단계에서 붙는다.
 
-type Tag = { id: string; t: number };
+// before/after 는 이 태그만의 개별 앞/뒤 초. 없으면(undefined) 전역 padBefore/padAfter 를 따른다.
+type Tag = { id: string; t: number; before?: number; after?: number };
 type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number };
 
 const SPEEDS = [1, 1.5, 2, 3, 4];
@@ -208,6 +209,13 @@ export default function ManualHighlightPage() {
     v.currentTime = Math.max(0, Math.min(v.duration || 0, t));
   }, []);
 
+  // 태그 클릭용 — 영상 시간을 옮기면서, 목록을 보다 아래로 스크롤한 상태여도
+  // 플레이어가 보이도록 화면을 위로 데려온다. (키보드 화살표 seek 에는 붙이지 않는다.)
+  const seekAndReveal = useCallback((t: number) => {
+    seekTo(t);
+    videoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [seekTo]);
+
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -229,6 +237,17 @@ export default function ManualHighlightPage() {
   }, []);
 
   const removeTag = (id: string) => setTags((prev) => prev.filter((p) => p.id !== id));
+
+  // 태그의 개별 앞/뒤 초를 바꾼다. undefined 로 넘기면 오버라이드를 지우고 전역 기본값으로 되돌린다.
+  const updateTagPad = (id: string, key: 'before' | 'after', value: number | undefined) => {
+    setTags((prev) =>
+      prev.map((tag) => (tag.id === id ? { ...tag, [key]: value } : tag)),
+    );
+  };
+
+  // 이 태그에 실제로 적용되는 앞/뒤 초 (개별값 있으면 그것, 없으면 전역 기본값).
+  const effBefore = (tag: Tag) => tag.before ?? padBefore;
+  const effAfter = (tag: Tag) => tag.after ?? padAfter;
 
   // 단축키. 입력창에 포커스가 있을 때는 동작하지 않아야 한다.
   useEffect(() => {
@@ -257,7 +276,7 @@ export default function ManualHighlightPage() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [cutting, publishing]);
 
-  const totalClipSeconds = tags.length * (padBefore + padAfter);
+  const totalClipSeconds = tags.reduce((sum, tag) => sum + effBefore(tag) + effAfter(tag), 0);
 
   // 태그가 바뀌면 이미 뽑아둔 클립은 더 이상 맞지 않는다.
   useEffect(() => { setClips([]); setCutError(''); }, [tags, padBefore, padAfter]);
@@ -270,10 +289,14 @@ export default function ManualHighlightPage() {
     try {
       // ffmpeg 코어는 처음 쓸 때만 받는다(31MB). 초기 번들에는 넣지 않는다.
       const { cutClipsLocally } = await import('../../../../lib/localCut');
-      const requests = tags.map((tag) => ({
-        start: Math.max(0, tag.t - padBefore),
-        end: Math.min(duration || tag.t + padAfter, tag.t + padAfter),
-      }));
+      const requests = tags.map((tag) => {
+        const before = effBefore(tag);
+        const after = effAfter(tag);
+        return {
+          start: Math.max(0, tag.t - before),
+          end: Math.min(duration || tag.t + after, tag.t + after),
+        };
+      });
       const made = await cutClipsLocally(file, requests, setCutProgress);
       setClips(made);
     } catch (err) {
@@ -299,21 +322,42 @@ export default function ManualHighlightPage() {
         body: JSON.stringify({ source_filename: file.name }),
       });
 
-      for (let i = 0; i < clips.length; i += 1) {
-        const clip = clips[i];
-        setPublishMsg(`클립 업로드 ${i + 1} / ${clips.length}`);
+      // 병렬 업로드 — 클립을 하나씩 줄세우지 않고 여러 개를 동시에 올려 네트워크 왕복
+      // 지연이 겹치게 한다(특히 서버가 멀 때 큼). 다만 서버(t3.medium)를 독점하지 않도록
+      // 동시 4개로 제한한다. 파일명은 clip.index 로 고정돼 서버에서 이름이 겹치지 않는다.
+      setPublishMsg(`클립 업로드 0 / ${clips.length}`);
+      const UPLOAD_CONCURRENCY = 4;
+      let uploaded = 0;
+      let cursor = 0;
+      const uploadOne = async (clip: CutClip) => {
         const form = new FormData();
         form.append('clip', clip.blob, `clip_${String(clip.index).padStart(3, '0')}.mp4`);
         form.append('requested_start', String(clip.requestedStart));
         form.append('requested_end', String(clip.requestedEnd));
+        form.append('index', String(clip.index));
         const res = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/clips`, {
           method: 'POST',
           credentials: 'include',
           body: form,
         });
-        if (!res.ok) throw new Error(await res.text() || `클립 ${i + 1} 업로드 실패`);
-        setUploadProgress({ done: i + 1, total: clips.length });
-      }
+        if (!res.ok) throw new Error(await res.text() || `클립 ${clip.index} 업로드 실패`);
+        uploaded += 1;
+        setUploadProgress({ done: uploaded, total: clips.length });
+        setPublishMsg(`클립 업로드 ${uploaded} / ${clips.length}`);
+      };
+      // 워커 4개가 공용 커서에서 다음 클립을 집어 처리한다. 하나라도 실패하면
+      // Promise.all 이 거부되어 바깥 try/catch 로 잡힌다.
+      const runWorker = async () => {
+        for (;;) {
+          const i = cursor;
+          cursor += 1;
+          if (i >= clips.length) return;
+          await uploadOne(clips[i]);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, clips.length) }, runWorker),
+      );
 
       // 인트로 사진이 있으면 클립을 다 올린 뒤, 합치기 직전에 보낸다.
       if (introFile) {
@@ -557,29 +601,74 @@ export default function ManualHighlightPage() {
                 추출해둔 클립은 남지 않아 다시 뽑아야 합니다.
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {tags.map((tag, i) => (
-                  <div
-                    key={tag.id}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '6px 10px', borderRadius: 6,
-                      background: 'var(--surface-input, #16161a)',
-                      fontSize: 13,
-                    }}
-                  >
-                    <span style={{ color: 'var(--muted, #999)', width: 28 }}>{i + 1}</span>
-                    <button style={smallBtn} onClick={() => seekTo(tag.t)}>{fmt(tag.t)}</button>
-                    <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
-                      클립 {fmt(Math.max(0, tag.t - padBefore))} ~ {fmt(tag.t + padAfter)}
-                    </span>
-                    <button
-                      style={{ ...smallBtn, marginLeft: 'auto' }}
-                      onClick={() => removeTag(tag.id)}
+                {tags.map((tag, i) => {
+                  const before = effBefore(tag);
+                  const after = effAfter(tag);
+                  const overridden = tag.before !== undefined || tag.after !== undefined;
+                  const padCell: React.CSSProperties = {
+                    ...numInput, width: 46, padding: '3px 5px', fontSize: 12,
+                  };
+                  return (
+                    <div
+                      key={tag.id}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '6px 10px', borderRadius: 6,
+                        background: 'var(--surface-input, #16161a)',
+                        fontSize: 13, flexWrap: 'wrap',
+                      }}
                     >
-                      삭제
-                    </button>
-                  </div>
-                ))}
+                      <span style={{ color: 'var(--muted, #999)', width: 28 }}>{i + 1}</span>
+                      <button style={smallBtn} onClick={() => seekAndReveal(tag.t)}>{fmt(tag.t)}</button>
+
+                      <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 3 }}>
+                        앞
+                        <input
+                          type="number" min={0} max={60} style={padCell}
+                          value={tag.before ?? ''} placeholder={String(padBefore)}
+                          onChange={(e) => updateTagPad(
+                            tag.id, 'before',
+                            e.target.value === '' ? undefined : Math.max(0, Number(e.target.value) || 0),
+                          )}
+                        />
+                      </label>
+                      <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 3 }}>
+                        뒤
+                        <input
+                          type="number" min={0} max={60} style={padCell}
+                          value={tag.after ?? ''} placeholder={String(padAfter)}
+                          onChange={(e) => updateTagPad(
+                            tag.id, 'after',
+                            e.target.value === '' ? undefined : Math.max(0, Number(e.target.value) || 0),
+                          )}
+                        />
+                      </label>
+
+                      <span style={{ color: overridden ? 'var(--accent, #3b82f6)' : 'var(--muted, #999)', fontSize: 12 }}>
+                        클립 {fmt(Math.max(0, tag.t - before))} ~ {fmt(tag.t + after)}
+                        {overridden ? ' ·개별' : ''}
+                      </span>
+
+                      {overridden ? (
+                        <button
+                          style={smallBtn}
+                          title="전역 기본값으로 되돌리기"
+                          onClick={() => setTags((prev) => prev.map((p) =>
+                            p.id === tag.id ? { id: p.id, t: p.t } : p))}
+                        >
+                          ↺ 기본
+                        </button>
+                      ) : null}
+
+                      <button
+                        style={{ ...smallBtn, marginLeft: 'auto' }}
+                        onClick={() => removeTag(tag.id)}
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
               </>
             )}
