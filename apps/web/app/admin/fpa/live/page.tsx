@@ -432,6 +432,26 @@ function dotFromClientPoint(clientX: number, clientY: number, rect: DOMRect): Pi
   };
 }
 
+// 피치 빈 곳(점이 아닌 곳)에서 우클릭했을 때, 커서에 가장 가까운 점의 인덱스를 찾는다.
+// 점은 작아서 정확히 맞히기 어렵기에 반경(px) 안이면 그 점을 지운다. 반경 밖이면 -1.
+const DOT_HIT_RADIUS_PX = 24;
+function nearestDotIndex(dots: PitchDot[], clientX: number, clientY: number, rect: DOMRect): number {
+  const px = clientX - rect.left;
+  const py = clientY - rect.top;
+  let best = -1;
+  let bestDist = DOT_HIT_RADIUS_PX;
+  dots.forEach((dot, index) => {
+    const dx = (dot.screen_x / 1050) * rect.width - px;
+    const dy = (dot.screen_y / 680) * rect.height - py;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      best = index;
+    }
+  });
+  return best;
+}
+
 function isAllyDot(dot: PitchDot) {
   return (dot.team || 'ally') === 'ally';
 }
@@ -2671,8 +2691,13 @@ export default function FpaLivePage() {
           className={`fpa-pitch fpa-pitch-cream ${armedHere ? 'fpa-pitch-armed' : ''}`}
           onClick={(event) => handleDualPitchClick(side, event)}
           onContextMenu={(event) => {
+            // 점 위 우클릭은 점 자체 핸들러가 처리(그 점 삭제). 여기(빈 곳)로 오면
+            // 커서에 가장 가까운 점을 지우고, 근처에 점이 없을 때만 마지막 점을 지운다.
             event.preventDefault();
-            removeLastDualDot(side);
+            const rect = panelRef.current?.getBoundingClientRect();
+            const idx = rect ? nearestDotIndex(renderDots, event.clientX, event.clientY, rect) : -1;
+            if (idx >= 0) removeDualDotAt(side, idx);
+            else removeLastDualDot(side);
           }}
           onPointerLeave={() => {
             if (arrowPreview?.canvas === 'live' && arrowPreview.side === side) setArrowPreview(null);
@@ -2764,8 +2789,13 @@ export default function FpaLivePage() {
           className={`fpa-pitch fpa-pitch-cream ${armedHere ? 'fpa-pitch-armed' : ''}`}
           onClick={(event) => handleEditPitchClick(side, event)}
           onContextMenu={(event) => {
+            // 점 위 우클릭은 점 자체 핸들러가 처리(그 점 삭제). 빈 곳으로 오면
+            // 커서에 가장 가까운 점을 지우고, 근처에 점이 없을 때만 마지막 점을 지운다.
             event.preventDefault();
-            removeLastEditDot(side);
+            const rect = panelRef.current?.getBoundingClientRect();
+            const idx = rect ? nearestDotIndex(renderDots, event.clientX, event.clientY, rect) : -1;
+            if (idx >= 0) removeEditDotAt(side, idx);
+            else removeLastEditDot(side);
           }}
           onPointerLeave={() => {
             if (arrowPreview?.canvas === 'edit' && arrowPreview.side === side) setArrowPreview(null);
