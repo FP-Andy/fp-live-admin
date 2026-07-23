@@ -66,6 +66,24 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
         return 1280, 720, "30"
 
 
+def _probe_has_audio(path: Path) -> bool:
+    """원본에 오디오 스트림이 있는지. 없으면(무음 촬영본 등) concat 에 무음을 채워야 한다."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=index",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        return bool((result.stdout or "").strip())
+    except subprocess.CalledProcessError:
+        return False
+
+
 def build_produce_args(
     source: Path,
     segments: list[Segment],
@@ -105,6 +123,16 @@ def build_produce_args(
     for seg in valid:
         args += ["-ss", f"{seg.start:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(source)]
 
+    # 오디오 없는 원본(무음 촬영본)은 [k:a] 매칭이 실패하므로 구간별 무음 입력으로 대신한다.
+    has_audio = _probe_has_audio(source)
+    silent_base = clip_base + len(valid)
+    if not has_audio:
+        for seg in valid:
+            args += [
+                "-f", "lavfi", "-t", f"{seg.duration:.3f}",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ]
+
     chains: list[str] = []
     segs: list[tuple[str, str]] = []
 
@@ -120,12 +148,13 @@ def build_produce_args(
     n = len(valid)
     for k in range(n):
         idx = clip_base + k
+        aud = f"[{idx}:a]" if has_audio else f"[{silent_base + k}:a]"
         if has_intro:
             # 인트로와 규격을 맞춘다(하드컷이라 페이드는 없음).
             chains.append(f"[{idx}:v]setsar=1,format=yuv420p[v{idx}]")
-            segs.append((f"[v{idx}]", f"[{idx}:a]"))
+            segs.append((f"[v{idx}]", aud))
         else:
-            segs.append((f"[{idx}:v]", f"[{idx}:a]"))
+            segs.append((f"[{idx}:v]", aud))
 
     n_seg = len(segs)
     concat_inputs = "".join(v + a for v, a in segs)

@@ -29,7 +29,8 @@ class ClaimResult:
 
     @property
     def taken(self) -> bool:
-        """다른 워커가 이미 선점(409)."""
+        """다른 워커가 이미 선점(409). Backend fix/rse-status-passthrough 배포 전제 —
+        그 전 서버는 401(AF)로 둔갑시키므로 배포 전에 돌리면 선점을 인식 못 한다."""
         return self.status_code == 409
 
 
@@ -59,8 +60,8 @@ class FinePlayClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}{_PREFIX}{path}"
 
-    def poll_jobs(self, limit: int | None = None, cursor: str | None = None) -> dict[str, Any]:
-        """§4-1 GET /jobs — 대기 작업 목록 {jobs:[매니페스트], nextCursor}."""
+    def poll_jobs(self, limit: int | None = None, cursor: str | None = None) -> list[dict[str, Any]]:
+        """§4-1 GET /jobs — 대기 작업 목록. 실서버는 매니페스트 배열을 그대로 반환(2026-07-23 실호출 확인)."""
         import httpx
         params: dict[str, Any] = {}
         if limit is not None:
@@ -105,12 +106,22 @@ class FinePlayClient:
             resp.raise_for_status()
             return resp.json() if resp.content else {}
 
-    def heartbeat(self, analysis_request_id: int | str) -> dict[str, Any]:
-        """§4-4 POST /jobs/{id}/heartbeat — lease 연장."""
+    def heartbeat(
+        self, analysis_request_id: int | str, *, lease_seconds: int | None = None
+    ) -> dict[str, Any]:
+        """§4-4 POST /jobs/{id}/heartbeat — lease 연장 → {leaseExpiresAt}.
+
+        body에 fpcWorkerId 필수(없으면 400 VF, 2026-07-23 확인). leaseSeconds 생략 시 기본 86400.
+        """
         import httpx
+        body: dict[str, Any] = {"fpcWorkerId": self.worker_id}
+        if lease_seconds is not None:
+            body["leaseSeconds"] = lease_seconds
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(
-                self._url(f"/jobs/{analysis_request_id}/heartbeat"), headers=self._headers()
+                self._url(f"/jobs/{analysis_request_id}/heartbeat"),
+                headers=self._headers(),
+                json=body,
             )
             resp.raise_for_status()
             return resp.json() if resp.content else {}

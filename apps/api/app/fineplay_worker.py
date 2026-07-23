@@ -140,7 +140,8 @@ def run_once(
 
     decide_clips 는 클립 구간을 정하는 주입 함수(태깅/AI). 여기선 전송 흐름만 엮는다.
     """
-    jobs = client.poll_jobs().get("jobs") or []
+    data = client.poll_jobs()
+    jobs = data if isinstance(data, list) else (data.get("jobs") or [])
     for job in jobs:
         request_id = job.get("analysisRequestId")
         claim = client.claim(request_id, pipeline_version=pipeline_version, lease_seconds=lease_seconds)
