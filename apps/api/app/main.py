@@ -17,6 +17,7 @@ from uuid import UUID
 from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -46,6 +47,7 @@ from .highlight_jobs import (
     cut_clips_for_job,
     delete_job_files,
     download_link_for_job,
+    list_manual_clip_info,
     merge_clips_for_job,
     merge_manual_clips_for_job,
     run_produce_job,
@@ -7455,35 +7457,47 @@ async def upload_manual_clip(
     clip: UploadFile = File(...),
     requested_start: float = Form(...),
     requested_end: float = Form(...),
+    index: int = Form(...),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    """브라우저가 잘라 보낸 클립 하나를 받는다. 순서는 요청 시작 시각으로 정렬한다."""
-    job = _require_manual_job(db, job_id, user)
+    """브라우저가 잘라 보낸 클립 하나를 받는다.
+
+    여러 클립이 동시에 올라오므로(병렬 업로드) 여기서는 job_metadata 를 건드리지 않는다.
+    - 파일명은 클라이언트가 준 고유 index 로 정해 동시 요청끼리 이름이 겹치지 않게 하고,
+    - 구간 정보는 클립마다 독립 사이드카(clip_XXX.json)로 남겨 서로 덮어쓰지 않게 한다.
+    합칠 때 이 사이드카들을 requested_start 순으로 모아 순서를 잡는다(list_manual_clip_info).
+    무거운 디스크 복사는 스레드풀로 넘겨 이벤트 루프(다른 사용자의 요청)를 막지 않는다.
+    """
+    _require_manual_job(db, job_id, user)
     if requested_end <= requested_start:
         raise HTTPException(status_code=400, detail="클립 구간이 올바르지 않습니다.")
+    if index < 1:
+        raise HTTPException(status_code=400, detail="클립 index 가 올바르지 않습니다.")
 
-    metadata = dict(job.job_metadata or {})
-    clip_info = list(metadata.get("clip_info") or [])
-
-    name = f"clip_{len(clip_info) + 1:03d}.mp4"
+    name = f"clip_{index:03d}.mp4"
     target = clips_dir(job_id) / name
-    try:
+
+    def _write_clip() -> None:
         with target.open("wb") as out_file:
             shutil.copyfileobj(clip.file, out_file)
+        # 구간 정보는 파일마다 독립 사이드카로. 동시 업로드끼리 서로 간섭하지 않는다.
+        sidecar = target.with_suffix(".json")
+        sidecar.write_text(
+            json.dumps({
+                "name": name,
+                "requested_start": round(float(requested_start), 3),
+                "requested_end": round(float(requested_end), 3),
+            }),
+            encoding="utf-8",
+        )
+
+    try:
+        await run_in_threadpool(_write_clip)
     finally:
         await clip.close()
 
-    clip_info.append({
-        "name": name,
-        "requested_start": round(float(requested_start), 3),
-        "requested_end": round(float(requested_end), 3),
-    })
-    clip_info.sort(key=lambda c: c["requested_start"])
-    metadata["clip_info"] = clip_info
-    metadata["clips"] = [c["name"] for c in clip_info]
-    update_job(db, job_id, job_metadata=metadata)
-    return {"name": name, "count": len(clip_info)}
+    return {"name": name}
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/intro")
@@ -7525,9 +7539,8 @@ def merge_manual_job(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = _require_manual_job(db, job_id, user)
-    metadata = dict(job.job_metadata or {})
-    if not (metadata.get("clip_info") or []):
+    _require_manual_job(db, job_id, user)
+    if not list_manual_clip_info(job_id):
         raise HTTPException(status_code=409, detail="합칠 클립이 없습니다.")
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
     return {"status": "merging"}

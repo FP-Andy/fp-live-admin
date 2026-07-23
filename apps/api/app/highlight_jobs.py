@@ -26,6 +26,9 @@ DELETE_UPLOAD_AFTER_SUCCESS = os.getenv("HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS",
 # 인트로 사진을 앞에 보여주는 기본 길이(초)와 인트로 앞뒤 페이드 길이(초).
 INTRO_SEC = float(os.getenv("HIGHLIGHT_INTRO_SEC", "1.8"))
 INTRO_FADE_SEC = float(os.getenv("HIGHLIGHT_INTRO_FADE_SEC", "0.3"))
+# 클립과 클립 사이 크로스페이드(디졸브) 길이. 겹치는 만큼 전체 길이가 줄고,
+# 이보다 짧은 클립이 있는 경계에서는 그 경계만 페이드를 자동으로 줄이거나 하드컷한다.
+XFADE_SEC = float(os.getenv("HIGHLIGHT_XFADE_SEC", "0.4"))
 # 합치기 재인코딩 x264 프리셋. 앱 서버(t3.medium, 2vCPU 버스터블)가 약해서
 # ultrafast 로 CPU 부담을 줄여 크레딧 소진 전에 끝낸다. 화질은 crf 로 고정되고
 # 파일만 조금 커진다. veryfast 로 되돌리려면 env 로 바꾼다.
@@ -481,6 +484,32 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
         return 1280, 720, "30"
 
 
+def list_manual_clip_info(job_id: str) -> list[dict]:
+    """수동 태깅 클립들의 구간 정보를 requested_start 순으로 모아 돌려준다.
+
+    업로드는 병렬이라 job_metadata 대신 클립마다 남긴 사이드카(clip_XXX.json)가 근거다.
+    한 요청이 다른 요청의 기록을 덮어쓰지 않도록 파일 단위로 분리해 두었기 때문이다.
+    실제 mp4 가 없는 사이드카(중간 실패 등)는 건너뛴다.
+    """
+    d = clips_dir(job_id)
+    if not d.exists():
+        return []
+    infos: list[dict] = []
+    for sidecar in d.glob("clip_*.json"):
+        try:
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            name = str(data["name"])
+            req_start = float(data["requested_start"])
+            req_end = float(data["requested_end"])
+        except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+            continue
+        if not (d / name).exists():
+            continue
+        infos.append({"name": name, "requested_start": req_start, "requested_end": req_end})
+    infos.sort(key=lambda c: c["requested_start"])
+    return infos
+
+
 def merge_manual_clips_for_job(job_id: str) -> None:
     """수동 태깅 클립들을 정확한 지점으로 다듬어 하나로 합친다.
 
@@ -494,11 +523,16 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         if not job:
             return
         metadata = dict(job.job_metadata or {})
-        clip_info = metadata.get("clip_info") or []
+        clip_info = list_manual_clip_info(job_id)
         if not clip_info:
             update_job(db, job_id, status="error", error_message="합칠 클립이 없습니다.")
             return
 
+        # 사이드카로 확정한 클립 목록을 metadata 에도 반영한다. "수동 결과물" 페이지가
+        # 여기서 클립별 목록·개별 다운로드 링크를 그린다. 병렬 업로드 때는 기록하지
+        # 않고, 합치는 이 단일 태스크에서 한 번에 써 경쟁을 피한다.
+        metadata["clip_info"] = clip_info
+        metadata["clips"] = [c["name"] for c in clip_info]
         metadata["progress"] = _progress_payload("merging", 30, "클립 다듬고 합치는 중")
         update_job(db, job_id, status="merging", job_metadata=_json_safe(metadata))
 
@@ -551,45 +585,77 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         for path, offset, duration in clips_to_use:
             args += ["-ss", f"{offset:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
 
-        # 클립 사이는 하드컷이다(페이드 없음). concat 필터는 모든 입력이 같은 스트림
-        # 구성을 가져야 하는데 원본이 하나라 클립들의 코덱·해상도는 항상 동일하다.
-        # 인트로가 붙을 때만 이미지를 그 규격에 맞추고 앞뒤로 부드럽게 페이드한다.
+        # 클립 사이는 크로스페이드(디졸브)로 잇는다. concat(하드컷) 대신 xfade(영상)+
+        # acrossfade(오디오)를 누적 offset 으로 체인한다. 원본이 하나라 클립들의 규격은
+        # 항상 동일해 xfade 가 안전하다. 인트로가 붙을 때만 이미지를 규격에 맞추고,
+        # 인트로→첫 클립은 지금처럼 하드컷(concat)으로 둔다(크로스페이드는 클립끼리만).
         chains: list[str] = []
-        segments: list[tuple[str, str]] = []
 
+        intro_v = intro_a = None
         if has_intro:
             ifade = INTRO_FADE_SEC
             # 이미지를 클립 해상도·fps·SAR·픽셀포맷에 맞추고, 처음에 검정에서 페이드인만 한다.
-            # 끝에는 페이드아웃하지 않아 인트로가 밝게 유지되다 첫 클립으로 바로 하드컷된다
-            # (인트로→클립 사이 검정 구간 없음). 인트로 오디오는 무음이라 그대로 통과시킨다.
+            # 끝에는 페이드아웃하지 않아 인트로가 밝게 유지되다 첫 클립으로 바로 하드컷된다.
             chains.append(
                 f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
                 f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
                 f"fade=t=in:st=0:d={ifade:.3f}[vintro]"
             )
-            segments.append(("[vintro]", "[1:a]"))
+            intro_v, intro_a = "[vintro]", "[1:a]"
 
+        # 각 클립 영상을 xfade 가 받아들이도록 SAR·픽셀포맷을 통일한다(단일 원본이라 규격 동일).
+        # 오디오는 anull 로 한 번 통과시켜 항상 필터그래프 라벨로 만든다. 그래야 클립이
+        # 하나뿐이라 acrossfade 를 안 거치는 경우에도 raw 입력이 아닌 라벨을 -map 할 수 있다.
+        clip_v: list[str] = []
+        clip_a: list[str] = []
         for k in range(used):
             idx = clip_base + k
-            if has_intro:
-                # 인트로와 규격을 맞추려 SAR·픽셀포맷만 통일한다(페이드는 걸지 않는다).
-                chains.append(f"[{idx}:v]setsar=1,format=yuv420p[v{idx}]")
-                segments.append((f"[v{idx}]", f"[{idx}:a]"))
-            else:
-                # 필터 없이 원본 스트림을 그대로 concat 한다.
-                segments.append((f"[{idx}:v]", f"[{idx}:a]"))
+            chains.append(f"[{idx}:v]setsar=1,format=yuv420p[cv{k}]")
+            chains.append(f"[{idx}:a]anull[ca{k}]")
+            clip_v.append(f"[cv{k}]")
+            clip_a.append(f"[ca{k}]")
 
-        n_seg = len(segments)
-        concat_inputs = "".join(v + a for v, a in segments)
-        # 인트로가 없으면 전처리 체인이 비어 있다. 그때 앞에 세미콜론이 붙지 않게 한다.
-        prefix = ";".join(chains)
-        filter_complex = (f"{prefix};" if prefix else "") + (
-            f"{concat_inputs}concat=n={n_seg}:v=1:a=1[v][a]"
-        )
+        # 클립들을 크로스페이드로 누적 연결. offset 은 그때까지 이어붙인 길이 - 페이드,
+        # 새 길이는 두 스트림 합에서 겹친 페이드만큼 뺀 값이다.
+        lengths = [clips_to_use[k][2] for k in range(used)]
+        if used == 1:
+            v_out, a_out = clip_v[0], clip_a[0]
+        else:
+            acc_len = lengths[0]
+            cur_v, cur_a = clip_v[0], clip_a[0]
+            for i in range(1, used):
+                # 이 경계에 걸 수 있는 페이드는 양쪽 길이를 넘을 수 없다. 짧은 클립이면 줄인다.
+                d = min(XFADE_SEC, acc_len, lengths[i])
+                nv, na = f"[xv{i}]", f"[xa{i}]"
+                if d <= 0.02:
+                    # 페이드를 걸 여유가 없는 경계(아주 짧은 클립)는 이 경계만 하드컷으로.
+                    chains.append(
+                        f"{cur_v}{cur_a}{clip_v[i]}{clip_a[i]}concat=n=2:v=1:a=1{nv}{na}"
+                    )
+                    acc_len = acc_len + lengths[i]
+                else:
+                    offset = max(0.0, acc_len - d)
+                    chains.append(
+                        f"{cur_v}{clip_v[i]}"
+                        f"xfade=transition=fade:duration={d:.3f}:offset={offset:.3f}{nv}"
+                    )
+                    chains.append(f"{cur_a}{clip_a[i]}acrossfade=d={d:.3f}{na}")
+                    acc_len = acc_len + lengths[i] - d
+                cur_v, cur_a = nv, na
+            v_out, a_out = cur_v, cur_a
+
+        if has_intro:
+            # 인트로(하드컷) + 크로스페이드로 이어붙인 클립 묶음.
+            chains.append(f"{intro_v}{intro_a}{v_out}{a_out}concat=n=2:v=1:a=1[v][a]")
+            v_map, a_map = "[v]", "[a]"
+        else:
+            v_map, a_map = v_out, a_out
+
+        filter_complex = ";".join(chains)
         export_path = exports_dir() / f"{job_id}_export.mp4"
         args += [
             "-filter_complex", filter_complex,
-            "-map", "[v]", "-map", "[a]",
+            "-map", v_map, "-map", a_map,
             "-c:v", "libx264", "-preset", MERGE_PRESET, "-crf", "23",
             "-c:a", "aac",
             "-movflags", "+faststart",

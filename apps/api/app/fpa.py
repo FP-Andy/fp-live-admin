@@ -1593,7 +1593,11 @@ def generate_log_entry(
         except (KeyError, TypeError, ValueError):
             pass
     else:
-        if action_code_raw in DEFENSE_ARROW_CODES:
+        if action_code_raw == "pr":
+            # 압박(pr)은 팀 단위 지배력 다툼이라 PC(피치컨트롤 변화)만 의미가 있다.
+            # EPV(전진 위협가치)는 개념이 안 맞아 계산하지 않는다.
+            epv_value = None
+        elif action_code_raw in DEFENSE_ARROW_CODES:
             # 수비: 화살표(start=상대 볼 출발, end=끊은 지점)는 '상대 공' 경로. 상대 공격방향(좌표 뒤집기)으로
             # EPV를 재서, 상대가 만들려던 전진위협 EPV(end)−EPV(start)를 그대로 승계(=prevented threat). EPV-방어만.
             epv_value = _epv_delta(FIELD_W - start_x_adj, start_y, FIELD_W - metric_end_x_adj, metric_end_y)

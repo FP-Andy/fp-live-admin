@@ -427,9 +427,17 @@ function estimatePitchControlDelta(scene: ReplayScene, row: Record<string, strin
   return afterPc - beforePc;
 }
 
+function isPressRow(row: Record<string, string>) {
+  return (row.Action || '').trim().toLowerCase() === 'press';
+}
+
 function actionMetricValue(scene: ReplayScene, row: Record<string, string>, rowIndex: number, key: MetricKey) {
   const persisted = numberMetricValue(metricFromRowOrLog(row, scene.logs[rowIndex], key));
   if (persisted !== null) return persisted;
+  // 압박(Press)은 PC만 의미가 있어 EPV 는 (추정도) 내지 않는다 — 서버 채점과 동일하게 맞춘다.
+  if (isPressRow(row)) {
+    return key === 'PC' ? estimatePitchControlDelta(scene, row, rowIndex) : null;
+  }
   if (key === 'EPV') return estimateEpvDelta(scene, row, rowIndex);
   if (key === 'PC') return estimatePitchControlDelta(scene, row, rowIndex);
   return null;
