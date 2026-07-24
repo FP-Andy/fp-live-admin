@@ -231,8 +231,9 @@ class XGEstimateRequest(BaseModel):
 class XGOTEstimateRequest(BaseModel):
     xg: float = Field(ge=0, le=1)
     is_on_target: bool = False
-    goalmouth_x: float | None = Field(default=None, ge=0, le=1)
-    goalmouth_y: float | None = Field(default=None, ge=0, le=1)
+    # 골대 프레임 기준 좌표 — off-target이면 골대 밖(0~1 범위 밖) 값 허용, on-target 계산 시엔 내부에서 0~1로 클램프
+    goalmouth_x: float | None = Field(default=None, ge=-2, le=3)
+    goalmouth_y: float | None = Field(default=None, ge=-2, le=3)
     is_goal: bool = False
     is_header: bool = False
     is_weak_foot: bool = False
