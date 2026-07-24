@@ -505,6 +505,13 @@ function statInputIsMoveAction(statInput: string) {
   return MOVE_ACTION_CODES.includes(extractActionCode(statInput));
 }
 
+// 슛(d/dd/ddd/db)의 채점 위치는 행위자 점 하나뿐 — 아군 점이 여럿이어도(팀메이트·마커)
+// 다른 점이 슛 위치로 밀리면 xG가 왜곡된다 (백엔드는 dots[-1]을 슛 위치로 사용).
+const SHOT_INPUT_CODES = new Set(['d', 'dd', 'ddd', 'db']);
+function statInputIsShotAction(statInput: string) {
+  return SHOT_INPUT_CODES.has(extractActionCode(statInput));
+}
+
 function statInputIsNumberOnly(statInput: string) {
   return /^\d+$/.test(statInput.trim());
 }
@@ -1716,6 +1723,13 @@ export default function FpaLivePage() {
       const end = beforeAllies.length && afterAllies.length ? pickActor(afterAllies) : start;
       return [start, end];
     }
+    // 슛: 행위자 점만 — slice(0,2) 폴백으로 떨어지면 마지막 점(팀메이트/마커)이 슛 위치가 됨
+    if (statInputIsShotAction(code)) {
+      const start = beforeAllies.length ? pickActor(beforeAllies) : pickActor(afterAllies);
+      if (!start) return [];
+      const end = beforeAllies.length && afterAllies.length ? pickActor(afterAllies) : null;
+      return end ? [start, end] : [start];
+    }
     if (beforeAllies.length && afterAllies.length) return [pickActor(beforeAllies), pickActor(afterAllies)];
     if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
     if (afterAllies.length >= 2) return afterAllies.slice(0, 2);
@@ -1902,6 +1916,13 @@ export default function FpaLivePage() {
     const actorNum = editStatInput.trim().match(/^(\d+)/)?.[1];
     const pickActor = (arr: PitchDot[]) => (actorNum && arr.find((dot) => dot.number === actorNum)) || arr[0];
     if (statInputHasReceiver(editStatInput) && beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
+    // 슛: 행위자 점만 — live 캔버스(submitDotsForCode)와 동일 사유
+    if (statInputIsShotAction(editStatInput)) {
+      const start = beforeAllies.length ? pickActor(beforeAllies) : pickActor(afterAllies);
+      if (!start) return [];
+      const end = beforeAllies.length && afterAllies.length ? pickActor(afterAllies) : null;
+      return end ? [start, end] : [start];
+    }
     if (beforeAllies.length && afterAllies.length) return [pickActor(beforeAllies), pickActor(afterAllies)];
     if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
     if (afterAllies.length >= 2) return afterAllies.slice(0, 2);
