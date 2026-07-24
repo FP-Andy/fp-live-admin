@@ -753,6 +753,7 @@ export default function FpaLivePage() {
       <circle className="fpa-arrow-handle" cx={cx} cy={cy} fill={color} r={13} stroke={color}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => {
+          if (event.button !== 0) return;
           event.stopPropagation();
           draggingArrowRef.current = { index, end, side, canvas, moved: false };
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -1265,6 +1266,7 @@ export default function FpaLivePage() {
       setAfterDots(removeAt);
     }
     if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, sel.side, removedId)));
+    draggingDualDotRef.current = null;
     setSelectedDualDot(null);
     setStatus('선택한 dual pitch 좌표 삭제');
   };
@@ -1278,6 +1280,8 @@ export default function FpaLivePage() {
     else setAfterDots((prev) => prev.filter((_, i) => i !== index));
     // 그 점에 딸린 패스 화살표도 함께 삭제
     if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
+    // 삭제로 인덱스가 당겨지므로, 진행 중이던 드래그 arming은 무효화 (다른 점이 끌려오는 것 방지)
+    draggingDualDotRef.current = null;
     setSelectedDualDot(null);
     setStatus('점 삭제');
   };
@@ -1293,6 +1297,7 @@ export default function FpaLivePage() {
       setAfterDots((prev) => prev.slice(0, -1));
     }
     if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
+    draggingDualDotRef.current = null;
     setSelectedDualDot(null);
   };
 
@@ -1547,6 +1552,7 @@ export default function FpaLivePage() {
     if (side === 'before') setEditBeforeDots((prev) => prev.filter((_, i) => i !== index));
     else setEditAfterDots((prev) => prev.filter((_, i) => i !== index));
     if (removedId) setEditPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
+    draggingDualDotRef.current = null;
     setEditSelectedDot(null);
     setStatus('수정용 피치 점 삭제');
   };
@@ -2797,6 +2803,8 @@ export default function FpaLivePage() {
                 }}
                 onPointerDown={(event) => {
                   if (armedHere) return;
+                  // 우클릭(삭제)에서 드래그가 arming 되면, 삭제로 인덱스가 당겨진 뒤 커서 이동에 다른 점이 끌려온다
+                  if (event.button !== 0) return;
                   event.stopPropagation();
                   draggingDualDotRef.current = { side, index, canvas: 'live' };
                   selectLiveDualDot({ side, index });
@@ -2894,6 +2902,8 @@ export default function FpaLivePage() {
                 }}
                 onPointerDown={(event) => {
                   if (armedHere) return;
+                  // 우클릭(삭제)에서 드래그 arming 금지 — live 캔버스와 동일 사유
+                  if (event.button !== 0) return;
                   event.stopPropagation();
                   draggingDualDotRef.current = { side, index, canvas: 'edit' };
                   selectEditDot({ side, index });
