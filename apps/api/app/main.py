@@ -7629,7 +7629,8 @@ def poll_fineplay_jobs(
 
     claimed: list[str] = []
     skipped = 0
-    for m in data.get("jobs") or []:
+    jobs = data if isinstance(data, list) else (data.get("jobs") or [])
+    for m in jobs:
         rid = m.get("analysisRequestId")
         if rid is None:
             continue
