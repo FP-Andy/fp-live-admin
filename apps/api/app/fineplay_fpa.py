@@ -219,6 +219,12 @@ def scene_action_rows(
             "jersey": jersey or None,
             "playerId": str(entry["playerId"]) if entry and entry.get("playerId") else None,
             "playerName": entry.get("name") if entry else None,
+            # 개인 페이지 "내 액션" 필터용 — 라인업 playerId 가 숫자면 실계정 userId.
+            "userId": (
+                int(str(entry["playerId"]))
+                if entry and str(entry.get("playerId") or "").isdigit()
+                else None
+            ),
             **_row_metrics(row),
         }
         extra = {
