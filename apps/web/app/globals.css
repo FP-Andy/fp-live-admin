@@ -6181,3 +6181,62 @@ a:focus-visible {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(350%); }
 }
+
+/* FPA dual embed 모드(?embed=1) — 클립 결과 탭 iframe 모달에서 콘솔 껍데기 숨김 */
+html.fpa-embed .app-shell {
+  display: block;
+}
+
+html.fpa-embed .sidebar,
+html.fpa-embed .topbar {
+  display: none;
+}
+
+/* match–clip–action 로그 계층: 클립 = 강조 헤더 바, 액션 = 들여쓰기 + 가이드선 안쪽 */
+.fpa-log-clip-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  background: rgba(22, 242, 154, 0.12);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+}
+
+.fpa-log-clip-divider:first-child {
+  margin-top: 2px;
+}
+
+.fpa-log-clip-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.fpa-log-clip-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(22, 242, 154, 0.22);
+  margin-bottom: 6px;
+}
+
+.fpa-log-action-divider {
+  padding: 3px 10px;
+  margin: 2px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.035);
+  border-left: 2px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+}

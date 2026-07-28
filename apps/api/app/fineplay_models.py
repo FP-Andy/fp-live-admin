@@ -92,6 +92,9 @@ class ClipOutput:
         if self.resolution:
             video["resolution"] = self.resolution
         clip: dict[str, Any] = {
+            # 서버 인입 DTO 는 clipKey 만 읽는다(fpcClipId 는 무시됨). 편집룸 등
+            # 콘솔 내부 코드가 fpcClipId 를 읽고 있어 당분간 둘 다 보낸다.
+            "clipKey": self.clip_id,
             "fpcClipId": self.clip_id,
             "sourceVideoId": self.source_video_id,
             "startTime": round(self.start, 3),

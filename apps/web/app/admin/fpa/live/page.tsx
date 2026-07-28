@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
 import { FPA_DRAFT_EVENT, FPA_DRAFT_STORAGE_KEY } from '../../../../components/FpaDraftGuard';
 
@@ -67,6 +67,8 @@ type SavedScene = {
   afterDots: PitchDot[];
   passArrows: PassArrow[];
   primary: number | null;
+  // match–clip–action 계층: 이 액션(장면)이 속한 클립 번호(1부터). 구버전 초안은 1로 간주.
+  clipIndex?: number;
 };
 
 type LogPreview = {
@@ -83,6 +85,8 @@ type LogPreview = {
   EPV?: string;
   PC?: string;
   StatInput?: string; // 원본 스탯 코드 — 장면 저장 시 최종 좌표로 재채점하기 위해 각 행에 보존
+  // 슛 골대 클릭 지점 — "gx,gy,공격방향" (gx,gy 0~1 정규화). 씬 모션 슛 경로 렌더용.
+  GoalMouth?: string;
 };
 
 type PersistedLogRow = LogPreview & {
@@ -637,6 +641,8 @@ export default function FpaLivePage() {
   const [primaryRowIndex, setPrimaryRowIndex] = useState<number | null>(null);
   // 저장된 장면들(순서 보존). 기록된 로그가 이걸 장면 단위로 보여줌.
   const [savedScenes, setSavedScenes] = useState<SavedScene[]>([]);
+  // 지금 쌓고 있는 클립 번호 — "다음 클립 →" 으로 올리면 이후 액션 저장이 새 클립 밑으로 들어간다.
+  const [currentClipIndex, setCurrentClipIndex] = useState(1);
   // 불러와 편집 중인 장면 index (null=새 장면). 저장 시 이 index 자리에 덮어씀 → 순서 유지.
   const [editingSceneIndex, setEditingSceneIndex] = useState<number | null>(null);
   // 패스/크로스: 시작 점에서 코드 입력 후 도착점 클릭 대기. 도착점 클릭 시 [시작,도착] 2점으로 채점.
@@ -841,17 +847,26 @@ export default function FpaLivePage() {
           afterDots,
           passArrows,
           primary: primaryRowIndex,
+          clipIndex: currentClipIndex,
         }]
         : []),
     ];
+    // match–clip–action: SceneIndex = 클립 번호, SceneActionIndex = 클립 안 연번.
+    // 같은 클립의 여러 액션(장면)이 한 SceneIndex 로 묶여 다운스트림(클립 매칭)에 클립 단위로 전달된다.
+    const actionCounters = new Map<number, number>();
     return scenesToPersist.flatMap((scene, sceneIndex) => {
+      const clipIndex = scene.clipIndex ?? 1;
       const sceneState = sceneStateForPersistence(scene, sceneIndex + 1);
-      return scene.rows.map((row, actionIndex) => ({
-        ...row,
-        SceneIndex: String(sceneIndex + 1),
-        SceneActionIndex: String(actionIndex + 1),
-        SceneState: sceneState,
-      }));
+      return scene.rows.map((row) => {
+        const nextSeq = (actionCounters.get(clipIndex) ?? 0) + 1;
+        actionCounters.set(clipIndex, nextSeq);
+        return {
+          ...row,
+          SceneIndex: String(clipIndex),
+          SceneActionIndex: String(nextSeq),
+          SceneState: sceneState,
+        };
+      });
     });
   };
 
@@ -919,7 +934,11 @@ export default function FpaLivePage() {
       if (draft.selectedDualDot) setSelectedDualDot(draft.selectedDualDot);
       if (Array.isArray(draft.logs)) setLogs(draft.logs);
       if (Array.isArray(draft.rows)) setRows(draft.rows);
-      if (Array.isArray(draft.savedScenes)) setSavedScenes(draft.savedScenes);
+      if (Array.isArray(draft.savedScenes)) {
+        setSavedScenes(draft.savedScenes);
+        // 클립 번호 이어가기 — 구버전 초안(clipIndex 없음)은 전부 클립 1로 간주.
+        setCurrentClipIndex(Math.max(1, ...draft.savedScenes.map((s) => s.clipIndex ?? 1)));
+      }
       if (typeof draft.editingSceneIndex === 'number' || draft.editingSceneIndex === null) setEditingSceneIndex(draft.editingSceneIndex ?? null);
       if (Array.isArray(draft.editRows)) setEditRows(draft.editRows);
       if (Array.isArray(draft.editLogs)) setEditLogs(draft.editLogs);
@@ -1327,7 +1346,7 @@ export default function FpaLivePage() {
       return;
     }
     setBusy(true);
-    setStatus('장면 저장 · 최종 좌표로 재채점 중…');
+    setStatus('액션 저장 · 최종 좌표로 재채점 중…');
     const { rows: scoredRows, logs: scoredLogs } = await rescoreSceneRows(rows, logs, {
       before: beforeDots,
       after: afterDots,
@@ -1338,7 +1357,7 @@ export default function FpaLivePage() {
       timeline,
       primary: primaryRowIndex,
     });
-    const snapshot: SavedScene = { rows: scoredRows, logs: scoredLogs, beforeDots, afterDots, passArrows, primary: primaryRowIndex };
+    const snapshot: SavedScene = { rows: scoredRows, logs: scoredLogs, beforeDots, afterDots, passArrows, primary: primaryRowIndex, clipIndex: currentClipIndex };
     const nextBeforeDots = clonePitchDotsForNextScene(afterDots);
     // 저장으로 행이 확정되면 남은 xGOT 대기는 갱신할 행이 없다 — 해제 안 하면 다음 장면 입력이 잠김
     if (pendingXgot?.canvas === 'live') resetXgotState();
@@ -1355,15 +1374,35 @@ export default function FpaLivePage() {
     setPendingDefStart(null);
     setPassArrows([]);
     setBusy(false);
-    setStatus('장면 저장됨 · 최종 좌표로 재채점 완료 — After 좌표를 다음 Before로 복사했습니다');
+    setStatus(`클립 ${currentClipIndex}에 액션 저장됨 · 최종 좌표로 재채점 완료 — After 좌표를 다음 Before로 복사했습니다`);
     // 저장 버튼 클릭으로 포커스가 버튼에 남는다 — 바로 다음 코드 타이핑이 되도록 입력창으로 복귀
     requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
-  // 새 장면: 저장 안 한 현재 장면을 버리고 새로 시작
+  // 새 액션: 저장 안 한 현재 액션을 버리고 새로 시작
   const startNewScene = () => {
     clearCurrentScene();
-    setStatus('현재 장면 비움 (미저장)');
+    setStatus('현재 액션 비움 (미저장)');
+    requestAnimationFrame(() => statInputRef.current?.focus());
+  };
+
+  // 다음/이전 클립: 이후 "액션 저장"이 들어갈 클립 번호를 이동. 미저장 버퍼는 그대로 유지(다음 저장부터 적용).
+  const startNextClip = () => {
+    setCurrentClipIndex((prev) => {
+      const next = prev + 1;
+      setStatus(`클립 ${next} 시작 — 이후 액션 저장은 클립 ${next}에 쌓입니다`);
+      return next;
+    });
+    requestAnimationFrame(() => statInputRef.current?.focus());
+  };
+
+  const startPrevClip = () => {
+    setCurrentClipIndex((prev) => {
+      if (prev <= 1) return prev;
+      const next = prev - 1;
+      setStatus(`클립 ${next}(으)로 이동 — 이후 액션 저장은 클립 ${next}에 쌓입니다`);
+      return next;
+    });
     requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
@@ -1394,7 +1433,7 @@ export default function FpaLivePage() {
     setEditStatInput('');
     setEditPendingPass(null);
     setEditPendingDefStart(null);
-    setStatus(`장면 ${selectedSceneIndex + 1} 수정용 피치로 불러옴 — 아래에서 수정 후 "수정 저장"`);
+    setStatus(`액션 ${selectedSceneIndex + 1} 수정용 피치로 불러옴 — 아래에서 수정 후 "수정 저장"`);
   };
 
   // 수정용 피치 닫기 (저장 안 한 편집은 버림 — 라이브 데이터와 무관)
@@ -1424,18 +1463,19 @@ export default function FpaLivePage() {
     } else if (editingSceneIndex != null && editingSceneIndex > removedIndex) {
       setEditingSceneIndex(editingSceneIndex - 1);
     }
-    setStatus(`장면 ${removedIndex + 1} 삭제됨`);
+    setStatus(`액션 ${removedIndex + 1} 삭제됨`);
   };
 
   // 기록된 로그 전체 삭제 — 저장된 장면 + 현재 작업 장면(캔버스 포함) 모두 비움. 서버에 저장된 데이터는 안 건드림.
   const clearAllRecordedLogs = () => {
     if (!allLogs.length && !savedScenes.length) return;
     const detail = inputMode === 'dual'
-      ? `장면 ${savedScenes.length}개 · 액션 ${allLogs.length}건`
+      ? `액션 ${savedScenes.length}개 · 로그 ${allLogs.length}건`
       : `액션 ${allLogs.length}건`;
     if (!window.confirm(`기록된 로그를 전체 삭제할까요? (${detail})\n삭제하면 되돌릴 수 없습니다.`)) return;
     setSavedScenes([]);
     setSelectedSceneIndex(null);
+    setCurrentClipIndex(1);
     closeSceneEditor();
     clearCurrentScene();
     setDots([]);
@@ -1446,7 +1486,7 @@ export default function FpaLivePage() {
   const saveEditedScene = async () => {
     if (editingSceneIndex == null) return;
     if (!editRows.length) {
-      setStatus('장면에 액션이 없습니다 — 빈 장면은 저장할 수 없습니다');
+      setStatus('액션에 행이 없습니다 — 빈 액션은 저장할 수 없습니다');
       return;
     }
     const savedIndex = editingSceneIndex;
@@ -1472,7 +1512,7 @@ export default function FpaLivePage() {
     };
     setSavedScenes((prev) => prev.map((scene, index) => (index === savedIndex ? snapshot : scene)));
     setBusy(false);
-    setStatus(`장면 ${savedIndex + 1} 수정 저장됨 · 최종 좌표로 재채점 완료`);
+    setStatus(`액션 ${savedIndex + 1} 수정 저장됨 · 최종 좌표로 재채점 완료`);
     closeSceneEditor();
   };
 
@@ -1551,7 +1591,7 @@ export default function FpaLivePage() {
     setEditRows((prev) => prev.filter((_, index) => index !== removedIdx));
     setEditSelectedRowIndex((sel) => (sel == null ? null : sel === removedIdx ? null : sel > removedIdx ? sel - 1 : sel));
     setEditPrimary((p) => (p == null ? p : p === removedIdx ? null : p > removedIdx ? p - 1 : p));
-    setStatus('수정용 장면 액션 삭제');
+    setStatus('수정용 액션 행 삭제');
   };
 
   const resetXgotState = () => {
@@ -1641,8 +1681,13 @@ export default function FpaLivePage() {
       setTargetLogs((prev) => prev.map((log, index) => (
         index === pendingXgot.rowIndex ? mergeMetricsIntoLog(log, { xG: xg, xGOT: xgot }) : log
       )));
+      const goalMouth = goalmouthPoint
+        ? `${goalmouthPoint.x.toFixed(3)},${goalmouthPoint.y.toFixed(3)},${direction}`
+        : undefined;
       setTargetRows((prev) => prev.map((row, index) => (
-        index === pendingXgot.rowIndex ? { ...row, xG: xg, xGOT: xgot } : row
+        index === pendingXgot.rowIndex
+          ? { ...row, xG: xg, xGOT: xgot, ...(goalMouth ? { GoalMouth: goalMouth } : {}) }
+          : row
       )));
       finishXgotFlow(`xGOT=${xgot} 입력 완료 (${estimate.delta >= 0 ? '+' : ''}${estimate.delta}, ${estimate.label})`, pendingXgot.canvas);
     } catch (error) {
@@ -1816,8 +1861,9 @@ export default function FpaLivePage() {
         if (!response.ok) continue;
         const data = await response.json() as { log_text: string; log_data: LogPreview };
         data.log_data.StatInput = code;
-        // xGOT는 백엔드 채점이 만들지 않음(골문클릭 플로우에서 나중에 채워짐) → 재채점이 덮어쓰지 않게 기존값 보존
+        // xGOT·골대좌표는 백엔드 채점이 만들지 않음(골문클릭 플로우에서 채워짐) → 재채점이 덮어쓰지 않게 보존
         if (sceneRows[i].xGOT) data.log_data.xGOT = sceneRows[i].xGOT;
+        if (sceneRows[i].GoalMouth) data.log_data.GoalMouth = sceneRows[i].GoalMouth;
         nextRows[i] = data.log_data;
         nextLogs[i] = data.log_text;
       } catch {
@@ -1880,7 +1926,7 @@ export default function FpaLivePage() {
 
   const scoreEditPass = async (code: string, start: PitchDot, end: PitchDot) => {
     setBusy(true);
-    setStatus('수정용 장면 패스 채점 중');
+    setStatus('수정용 액션 패스 채점 중');
     try {
       const nextRowIndex = editRows.length;
       const response = await apiFetch('/fpa/logs/generate', {
@@ -1908,7 +1954,7 @@ export default function FpaLivePage() {
         return next;
       });
       setEditPrimary((prev) => (prev == null ? nextRowIndex : prev));
-      setStatus('수정용 장면에 패스 추가 · 채점됨');
+      setStatus('수정용 액션에 패스 추가 · 채점됨');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '패스 채점 실패');
     } finally {
@@ -1969,7 +2015,7 @@ export default function FpaLivePage() {
       return;
     }
     setBusy(true);
-    setStatus('수정용 장면 로그 생성 중');
+    setStatus('수정용 액션 로그 생성 중');
     const requestedStatInput = editStatInput;
     const nextRowIndex = editRows.length;
 
@@ -2378,6 +2424,66 @@ export default function FpaLivePage() {
       if (importInputRef.current) {
         importInputRef.current.value = '';
       }
+      setBusy(false);
+    }
+  };
+
+  // 클립 귀속 모드 — 클립 결과 탭에서 새 창(/admin/fpa/live?clipId=...)으로 진입.
+  // 여기서 찍은 씬을 '클립에 저장'하면 그 클립의 action 목록이 된다(전체 교체).
+  const [clipTarget, setClipTarget] = useState<{ id: string; label: string } | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    // embed 모드(클립 결과 탭의 iframe 모달) — 사이드바/탑바를 숨겨 dual 창만 보이게 한다.
+    if (params.get('embed')) document.documentElement.classList.add('fpa-embed');
+    const clipId = params.get('clipId');
+    if (!clipId) return;
+    void (async () => {
+      try {
+        const d = await apiJson<{
+          id: string;
+          team_labels?: { home?: string; away?: string };
+        }>(`/highlight/clip-results/clips/${clipId}`);
+        setClipTarget({
+          id: d.id,
+          label: `${d.team_labels?.home || 'Home'} vs ${d.team_labels?.away || 'Away'}`,
+        });
+        if (d.team_labels?.home) setTeamIdH(d.team_labels.home);
+        if (d.team_labels?.away) setTeamIdA(d.team_labels.away);
+        setInputMode('dual');
+        setStatus(`클립 귀속 모드: ${clipId}`);
+      } catch {
+        setStatus('클립 정보를 불러오지 못했습니다');
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const saveRowsToClip = async () => {
+    if (!clipTarget) return;
+    // 이 창에서 찍은 전부 — 저장된 장면들 + 현재 버퍼(flatten, 장면별 SceneState/주인공 포함).
+    // 버퍼만 보내면 "장면 저장" 후 rows 가 비어 마지막 행만 남는 문제가 있었다.
+    const sourceRows = buildRowsForPersistence();
+    if (!sourceRows.length) {
+      setStatus('클립에 저장할 액션이 없습니다');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiJson<{ actions: unknown[] }>(
+        `/highlight/clip-results/clips/${clipTarget.id}/actions`,
+        { method: 'PUT', body: JSON.stringify({ rows: sourceRows }) },
+      );
+      setStatus(`클립 ${clipTarget.id}에 액션 ${res.actions.length}개 저장 완료 — 결과 탭에서 구간을 조정하세요`);
+      // iframe 모달(parent) 또는 분리 창(opener)으로 떠 있으면 클립 결과 탭에 알려 액션 목록을 즉시 갱신시킨다.
+      const host = window.parent !== window ? window.parent : window.opener;
+      if (host) {
+        host.postMessage({ type: 'fpa-clip-saved', clipId: clipTarget.id }, window.location.origin);
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '클립 저장 실패');
+    } finally {
       setBusy(false);
     }
   };
@@ -2870,7 +2976,7 @@ export default function FpaLivePage() {
     return (
       <section className="fpa-pitch-panel fpa-scene-editor">
         <div className="fpa-panel-header">
-          <div className="fpa-panel-title">수정용 피치 · 장면 {editingSceneIndex + 1} 편집 중</div>
+          <div className="fpa-panel-title">수정용 피치 · 액션 {editingSceneIndex + 1} 편집 중</div>
           <div className="fpa-panel-actions">
             <button onClick={closeSceneEditor} type="button">편집 취소</button>
             <button className="primary" disabled={!editRows.length} onClick={saveEditedScene} type="button">수정 저장</button>
@@ -3037,8 +3143,20 @@ export default function FpaLivePage() {
   const renderLogPanel = () => (
     <section className="fpa-log-panel">
       <div className="fpa-panel-header">
-        <div className="fpa-panel-title">기록된 로그</div>
+        <div className="fpa-panel-title">
+          기록된 로그
+          {clipTarget ? (
+            <span style={{ marginLeft: 8, fontSize: 12, color: '#f59e0b' }}>
+              🎬 클립 귀속: {clipTarget.id} ({clipTarget.label})
+            </span>
+          ) : null}
+        </div>
         <div className="fpa-panel-actions">
+          {clipTarget ? (
+            <button className="primary" disabled={busy} onClick={saveRowsToClip} type="button">
+              클립에 저장
+            </button>
+          ) : null}
           <input
             accept=".xlsx,.xls"
             hidden
@@ -3086,21 +3204,41 @@ export default function FpaLivePage() {
             // dual: 저장된 장면 + 현재 작업 중 장면을 함께 표시한다.
             ? (
               <>
-                {savedScenes.map((scene, sceneIdx) => (
-                <div
-                  className={`fpa-log-scene ${selectedSceneIndex === sceneIdx ? 'selected' : ''} ${editingSceneIndex === sceneIdx ? 'editing' : ''}`}
-                  key={`scene-${sceneIdx}`}
-                  onClick={() => setSelectedSceneIndex(sceneIdx)}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <div className="fpa-log-scene-divider">장면 {sceneIdx + 1}{editingSceneIndex === sceneIdx ? ' (편집 중)' : ''}</div>
-                  {scene.rows.map((row, j) => renderLogRow(row, scene.logs[j], `s${sceneIdx}-${j}`, false, -1))}
-                </div>
-                ))}
+                {(() => {
+                  // match–clip–action: 클립 번호별로 묶어서 표시 — 이전 클립으로 돌아가 저장해도 제 그룹에 들어간다.
+                  // sceneIdx(전역 배열 index)는 선택/수정용으로 유지한다.
+                  const groups = new Map<number, { scene: SavedScene; sceneIdx: number }[]>();
+                  savedScenes.forEach((scene, sceneIdx) => {
+                    const clipIdx = scene.clipIndex ?? 1;
+                    if (!groups.has(clipIdx)) groups.set(clipIdx, []);
+                    groups.get(clipIdx)!.push({ scene, sceneIdx });
+                  });
+                  return [...groups.keys()].sort((a, b) => a - b).map((clipIdx) => (
+                    <Fragment key={`clip-${clipIdx}`}>
+                      <div className="fpa-log-clip-divider">
+                        🎬 클립 {clipIdx}
+                        <span className="fpa-log-clip-count">액션 {groups.get(clipIdx)!.length}개</span>
+                      </div>
+                      <div className="fpa-log-clip-group">
+                        {groups.get(clipIdx)!.map(({ scene, sceneIdx }, actionPos) => (
+                          <div
+                            className={`fpa-log-scene ${selectedSceneIndex === sceneIdx ? 'selected' : ''} ${editingSceneIndex === sceneIdx ? 'editing' : ''}`}
+                            key={`scene-${sceneIdx}`}
+                            onClick={() => setSelectedSceneIndex(sceneIdx)}
+                            role="button"
+                            tabIndex={0}
+                          >
+                            <div className="fpa-log-action-divider">액션 {actionPos + 1}{editingSceneIndex === sceneIdx ? ' (편집 중)' : ''}</div>
+                            {scene.rows.map((row, j) => renderLogRow(row, scene.logs[j], `s${sceneIdx}-${j}`, false, -1))}
+                          </div>
+                        ))}
+                      </div>
+                    </Fragment>
+                  ));
+                })()}
                 {rows.length ? (
                   <div className="fpa-log-scene current" key="current-scene">
-                    <div className="fpa-log-scene-divider">현재 장면 (미저장)</div>
+                    <div className="fpa-log-action-divider">🎬 클립 {currentClipIndex} · 현재 액션 (미저장)</div>
                     {rows.map((row, index) => renderLogRow(row, logs[index], `current-${index}`, false, -1))}
                   </div>
                 ) : null}
@@ -3114,7 +3252,7 @@ export default function FpaLivePage() {
         {inputMode === 'dual' ? (
           <>
             <button disabled={selectedSceneIndex == null} onClick={loadSelectedScene} type="button">
-              선택 장면 수정 (아래 수정용 피치)
+              선택 액션 수정 (아래 수정용 피치)
             </button>
             <button
               className="fpa-scene-del-btn"
@@ -3122,7 +3260,7 @@ export default function FpaLivePage() {
               onClick={deleteSelectedScene}
               type="button"
             >
-              선택 장면 삭제
+              선택 액션 삭제
             </button>
           </>
         ) : (
@@ -3244,10 +3382,10 @@ export default function FpaLivePage() {
     return (
       <section className="fpa-dual-side-box fpa-scene-summary">
         <div className="fpa-panel-header">
-          <div className="fpa-panel-title">장면 요약</div>
+          <div className="fpa-panel-title">액션 요약 · 클립 {currentClipIndex}</div>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button className="fpa-scene-new" onClick={startNewScene} type="button">새 장면</button>
-            <button className="fpa-scene-save" disabled={sceneRows.length === 0} onClick={saveScene} type="button">장면 저장</button>
+            <button className="fpa-scene-new" onClick={startNewScene} type="button">새 액션</button>
+            <button className="fpa-scene-save" disabled={sceneRows.length === 0} onClick={saveScene} type="button">액션 저장</button>
           </div>
         </div>
         <div className="fpa-scene-counts">
@@ -3296,6 +3434,9 @@ export default function FpaLivePage() {
             onClick={() => { if (selectedRowIndex != null) removeLogAt(selectedRowIndex); }}
             type="button"
           >선택 액션 삭제</button>
+          <span style={{ flex: 1 }} />
+          <button className="fpa-scene-new" disabled={currentClipIndex <= 1} onClick={startPrevClip} type="button">← 이전 클립</button>
+          <button className="fpa-scene-new" onClick={startNextClip} type="button">다음 클립 →</button>
         </div>
       </section>
     );

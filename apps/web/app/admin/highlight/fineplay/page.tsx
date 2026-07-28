@@ -24,10 +24,29 @@ type FpJob = {
     progress?: { detail?: string } | null;
     result_payload?: { clips?: unknown[] } | null;
     callback_status?: string;
+    fpa_link?: { match_id: string; our_side: 'home' | 'away' } | null;
+    fpa_enrich_status?: string;
   } | null;
 };
 
-type Tag = { id: string; t: number };
+// team: 태깅 시점에 확정하는 클립 귀속 팀 (A=홈 / D=어웨이).
+type Tag = { id: string; t: number; team: 'home' | 'away' };
+
+type FpaMatch = {
+  id: string;
+  name: string;
+  competition_class: string;
+  metadata?: { home_team?: string; away_team?: string } | null;
+};
+
+function fpaMatchTeams(match: FpaMatch) {
+  const home = match.metadata?.home_team?.trim();
+  const away = match.metadata?.away_team?.trim();
+  if (home && away) return { home, away };
+  const cleaned = match.name.replace(/^\[[^\]]+\]\s*/, '');
+  const [h, a] = cleaned.split(/\s+vs\s+/i).map((part) => part.trim());
+  return { home: h || 'Home', away: a || 'Away' };
+}
 
 const card: React.CSSProperties = {
   background: 'var(--surface-card, #1b1b1f)',
@@ -93,6 +112,16 @@ export default function FineplayJobsPage() {
   const [produceMsg, setProduceMsg] = useState('');
   const [produceError, setProduceError] = useState('');
 
+  // FPA dual 연결 — 선택한 FPA 매치의 씬을 클립에 순서 매칭해 분석 데이터를 함께 보낸다.
+  const [fpaPickerOpen, setFpaPickerOpen] = useState(false);
+  const [fpaMatches, setFpaMatches] = useState<FpaMatch[]>([]);
+  const [fpaMatchId, setFpaMatchId] = useState('');
+  const [fpaMatchName, setFpaMatchName] = useState('');
+  const [fpaTeams, setFpaTeams] = useState<{ home: string; away: string }>({ home: 'Home', away: 'Away' });
+  const [fpaOurSide, setFpaOurSide] = useState<'home' | 'away'>('home');
+  const [fpaSceneCount, setFpaSceneCount] = useState<number | null>(null);
+  const [fpaMsg, setFpaMsg] = useState('');
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const loadJobs = useCallback(async () => {
@@ -123,6 +152,49 @@ export default function FineplayJobsPage() {
     }
   };
 
+  // FPA 매치의 저장 로그를 읽어 씬 개수·팀 라벨을 채운다. name 이 없으면 라벨로 대체.
+  const applyFpaMatch = async (matchId: string, name?: string) => {
+    setFpaMatchId(matchId);
+    setFpaMsg('');
+    setFpaSceneCount(null);
+    try {
+      const saved = await apiJson<{ rows: { SceneIndex?: string }[]; teamid_h: string; teamid_a: string }>(
+        `/fpa/matches/${matchId}/logs`,
+      );
+      const sceneIndexes = new Set(
+        (saved.rows || []).map((r) => (r.SceneIndex || '').trim()).filter(Boolean),
+      );
+      setFpaSceneCount(sceneIndexes.size);
+      const home = saved.teamid_h?.trim();
+      const away = saved.teamid_a?.trim();
+      setFpaTeams({ home: home || 'Home', away: away || 'Away' });
+      setFpaMatchName(name || (home && away ? `${home} vs ${away}` : matchId.slice(0, 8)));
+      if (!sceneIndexes.size) setFpaMsg('이 매치에는 저장된 dual 씬이 없습니다.');
+    } catch (err) {
+      setFpaMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const clearFpaLink = () => {
+    setFpaMatchId('');
+    setFpaMatchName('');
+    setFpaSceneCount(null);
+    setFpaMsg('');
+  };
+
+  const openFpaPicker = async () => {
+    setFpaPickerOpen(true);
+    try {
+      const rows = await apiJson<FpaMatch[]>('/matches');
+      // FPA 로거로 저장된 매치를 앞에, 나머지는 뒤에 (다른 클래스로 만든 매치도 선택 가능).
+      const sorted = [...rows].sort((a, b) =>
+        Number(b.competition_class === 'FPA') - Number(a.competition_class === 'FPA'));
+      setFpaMatches(sorted);
+    } catch (err) {
+      setFpaMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const selectJob = async (job: FpJob) => {
     setSelected(job);
     setSourceUrl('');
@@ -133,6 +205,15 @@ export default function FineplayJobsPage() {
     setPlaying(false);
     setProduceMsg('');
     setProduceError('');
+    setFpaPickerOpen(false);
+    const link = job.job_metadata?.fpa_link;
+    if (link?.match_id) {
+      setFpaOurSide(link.our_side === 'away' ? 'away' : 'home');
+      void applyFpaMatch(link.match_id);
+    } else {
+      clearFpaLink();
+      setFpaOurSide('home');
+    }
     try {
       const res = await apiJson<{ url: string }>(`/highlight/fineplay-jobs/${job.id}/source-url`);
       setSourceUrl(res.url);
@@ -153,13 +234,18 @@ export default function FineplayJobsPage() {
     v.currentTime = Math.max(0, Math.min(v.duration || t, t));
   }, []);
 
-  const addTag = useCallback(() => {
+  const addTag = useCallback((team: 'home' | 'away') => {
     const v = videoRef.current;
     if (!v || !sourceUrl) return;
     const t = v.currentTime;
-    setTags((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, t }]
+    setTags((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, t, team }]
       .sort((a, b) => a.t - b.t));
   }, [sourceUrl]);
+
+  const toggleTagTeam = (id: string) => {
+    setTags((prev) => prev.map((tag) =>
+      tag.id === id ? { ...tag, team: tag.team === 'home' ? 'away' : 'home' } : tag));
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -169,7 +255,8 @@ export default function FineplayJobsPage() {
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
       if (e.code === 'ArrowLeft') { e.preventDefault(); seekTo(videoRef.current.currentTime - 5); return; }
       if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(videoRef.current.currentTime + 5); return; }
-      if (e.key === 's' || e.key === 'S') { e.preventDefault(); addTag(); }
+      if (e.key === 'a' || e.key === 'A') { e.preventDefault(); addTag('home'); return; }
+      if (e.key === 'd' || e.key === 'D') { e.preventDefault(); addTag('away'); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -183,11 +270,13 @@ export default function FineplayJobsPage() {
       const clips = tags.map((tag) => ({
         start: Math.max(0, tag.t - padBefore),
         end: Math.min(duration || tag.t + padAfter, tag.t + padAfter),
+        team: tag.team,
         makeVertical,
       }));
       await apiJson(`/highlight/fineplay-jobs/${selected.id}/produce`, {
         method: 'POST',
-        body: JSON.stringify({ clips }),
+        // fpaMatchId: '' 는 연결 해제 — 서버는 키가 있을 때만 링크를 갱신한다.
+        body: JSON.stringify({ clips, fpaMatchId, fpaOurSide }),
       });
       setProduceMsg('서버에서 클립 만드는 중...');
 
@@ -197,7 +286,8 @@ export default function FineplayJobsPage() {
         if (job.status === 'done') {
           const meta = job.job_metadata || {};
           const n = meta.result_payload?.clips?.length ?? tags.length;
-          setProduceMsg(`완료 — 클립 ${n}개 업로드, 콜백: ${meta.callback_status || '-'}`);
+          const fpaNote = meta.fpa_enrich_status ? `, FPA: ${meta.fpa_enrich_status}` : '';
+          setProduceMsg(`완료 — 클립 ${n}개 업로드, 콜백: ${meta.callback_status || '-'}${fpaNote}`);
           break;
         }
         if (job.status === 'error') throw new Error(job.error_message || '생성 실패');
@@ -298,7 +388,15 @@ export default function FineplayJobsPage() {
               />
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
                 <button style={btn} onClick={togglePlay}>{playing ? '⏸ 정지' : '▶ 재생'}</button>
-                <button style={primaryBtn} onClick={addTag}>＋ 지금 지점 태깅 (S)</button>
+                <button style={primaryBtn} onClick={() => addTag('home')}>
+                  ＋ 홈 {fpaTeams.home !== 'Home' ? fpaTeams.home : ''} 태깅 (A)
+                </button>
+                <button
+                  style={{ ...btn, background: '#7c3aed', borderColor: 'transparent' }}
+                  onClick={() => addTag('away')}
+                >
+                  ＋ 어웨이 {fpaTeams.away !== 'Away' ? fpaTeams.away : ''} 태깅 (D)
+                </button>
                 <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
                   {fmt(current)} / {fmt(duration)}
                 </span>
@@ -320,6 +418,17 @@ export default function FineplayJobsPage() {
                       padding: '6px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
                     }}>
                       <span style={{ color: 'var(--muted, #999)', width: 24 }}>{i + 1}</span>
+                      <button
+                        style={{
+                          ...smallBtn,
+                          background: tag.team === 'home' ? 'var(--accent, #3b82f6)' : '#7c3aed',
+                          borderColor: 'transparent',
+                        }}
+                        title="클릭하면 홈/어웨이 전환"
+                        onClick={() => toggleTagTeam(tag.id)}
+                      >
+                        {tag.team === 'home' ? '홈' : '어웨이'}
+                      </button>
                       <button style={smallBtn} onClick={() => seekTo(tag.t)}>{fmt(tag.t)}</button>
                       <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
                         클립 {fmt(Math.max(0, tag.t - padBefore))} ~ {fmt(tag.t + padAfter)}
@@ -335,11 +444,70 @@ export default function FineplayJobsPage() {
                 </div>
               ) : (
                 <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '10px 0 0' }}>
-                  영상을 보며 <strong>S</strong> 키 또는 태깅 버튼으로 하이라이트 지점을 찍으세요.
+                  영상을 보며 <strong>A</strong>(홈팀) / <strong>D</strong>(어웨이팀) 키 또는
+                  태깅 버튼으로 하이라이트 지점을 찍으세요.
                 </p>
               )}
 
               <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-ghost, #2c2c32)' }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>FPA dual 연결</span>
+                  {fpaMatchId ? (
+                    <>
+                      <span style={{ fontSize: 13 }}>{fpaMatchName}</span>
+                      <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                        씬 {fpaSceneCount ?? '?'}개
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>우리 팀:</span>
+                      {(['home', 'away'] as const).map((side) => (
+                        <button
+                          key={side}
+                          style={fpaOurSide === side ? { ...smallBtn, background: 'var(--accent, #3b82f6)', borderColor: 'transparent' } : smallBtn}
+                          onClick={() => setFpaOurSide(side)}
+                        >
+                          {fpaTeams[side]}
+                        </button>
+                      ))}
+                      <button style={smallBtn} onClick={clearFpaLink}>해제</button>
+                    </>
+                  ) : (
+                    <button style={smallBtn} onClick={() => void openFpaPicker()}>FPA 매치 연결</button>
+                  )}
+                </div>
+                {fpaMatchId && fpaSceneCount !== null && tags.length > 0 && fpaSceneCount !== tags.length ? (
+                  <p style={{ fontSize: 12, color: '#f59e0b', margin: '0 0 8px' }}>
+                    클립 {tags.length}개 ↔ 씬 {fpaSceneCount}개 — 개수가 다르면 앞에서부터 순서대로만 매칭됩니다.
+                  </p>
+                ) : null}
+                {fpaMsg ? (
+                  <p style={{ fontSize: 12, color: '#f59e0b', margin: '0 0 8px' }}>{fpaMsg}</p>
+                ) : null}
+                {fpaPickerOpen && !fpaMatchId ? (
+                  <div style={{
+                    margin: '4px 0 10px', maxHeight: 220, overflowY: 'auto', borderRadius: 6,
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}>
+                    {fpaMatches.length === 0 ? (
+                      <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0, padding: 10 }}>
+                        매치 목록 불러오는 중이거나 저장된 매치가 없습니다.
+                      </p>
+                    ) : fpaMatches.map((m) => (
+                      <div key={m.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 8, fontSize: 13,
+                        padding: '6px 10px', borderBottom: '1px solid var(--border-ghost, #2c2c32)',
+                      }}>
+                        <span style={{ fontSize: 11, color: 'var(--muted, #999)', width: 46 }}>{m.competition_class}</span>
+                        <span>{m.name}</span>
+                        <button
+                          style={{ ...smallBtn, marginLeft: 'auto' }}
+                          onClick={() => { setFpaPickerOpen(false); void applyFpaMatch(m.id, fpaMatchTeams(m).home + ' vs ' + fpaMatchTeams(m).away); }}
+                        >
+                          선택
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button style={primaryBtn} onClick={produce} disabled={producing || !tags.length}>
                     {producing ? '처리 중...' : `⬆ 클립 ${tags.length}개 생성해서 FinePlay로 보내기`}
