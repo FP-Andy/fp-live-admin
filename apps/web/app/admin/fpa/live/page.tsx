@@ -84,9 +84,9 @@ type LogPreview = {
   xGOT?: string;
   EPV?: string;
   PC?: string;
-  StatInput?: string; // 원본 스탯 코드 — 장면 저장 시 최종 좌표로 재채점하기 위해 각 행에 보존
-  // 슛 골대 클릭 지점 — "gx,gy,공격방향" (gx,gy 0~1 정규화). 씬 모션 슛 경로 렌더용.
+  // 슛 골대 클릭 지점 — "gx,gy,공격방향" (gx,gy 0~1 정규화, 빗나간 슛은 범위 밖 값). 씬 모션 슛 경로 렌더용.
   GoalMouth?: string;
+  StatInput?: string; // 원본 스탯 코드 — 장면 저장 시 최종 좌표로 재채점하기 위해 각 행에 보존
 };
 
 type PersistedLogRow = LogPreview & {
@@ -98,14 +98,17 @@ type PersistedLogRow = LogPreview & {
 type MetricKey = 'xG' | 'xGOT' | 'EPV' | 'PC';
 
 type GoalmouthPoint = {
-  x: number;
+  x: number; // 골대 프레임 기준 — 골대 안 0~1, 빗나간 슛은 범위 밖 값
   y: number;
+  viewX: number; // 클릭 영역(타깃) 기준 표시용 좌표 0~1
+  viewY: number;
 };
 
 type PendingXgot = {
   canvas: 'live' | 'edit'; // 어느 캔버스의 슛인지 — 완료 시 그쪽 rows/logs 에 기록
   rowIndex: number;
   xg: number;
+  isOnTarget: boolean; // false(d)면 xGOT=0, 골대 기준 위치만 기록
   isGoal: boolean;
   isHeader: boolean;
   isWeakFoot: boolean;
@@ -237,6 +240,24 @@ function mergeMetricsIntoLog(logText: string, metrics: Partial<Record<MetricKey,
   return parts.join(' | ');
 }
 
+function mergeGoalmouthIntoLog(logText: string, goalmouthText: string) {
+  if (!logText) return logText;
+  const parts = logText.split(' | ');
+  const nextPart = `GoalMouth: ${goalmouthText}`;
+  const existingIndex = parts.findIndex((part) => part.startsWith('GoalMouth: '));
+  if (existingIndex >= 0) {
+    parts[existingIndex] = nextPart;
+    return parts.join(' | ');
+  }
+  const dualIndex = parts.findIndex((part) => part.startsWith('DualState: '));
+  if (dualIndex >= 0) {
+    parts.splice(dualIndex, 0, nextPart);
+  } else {
+    parts.push(nextPart);
+  }
+  return parts.join(' | ');
+}
+
 function extractActionCode(statInput: string) {
   const baseAction = statInput.trim().toLowerCase().split('.', 1)[0] || '';
   const match = baseAction.match(/^\d+([a-z]+)\d*$/i);
@@ -245,8 +266,8 @@ function extractActionCode(statInput: string) {
 
 function shouldPromptXgot(statInput: string, row: LogPreview) {
   const actionCode = extractActionCode(statInput);
-  if (actionCode === 'dd' || actionCode === 'ddd') return true;
-  return row.Action === 'Shot' && /(^|, )On Target|(^|, )Goal/.test(row.Tags || '');
+  if (actionCode === 'd' || actionCode === 'dd' || actionCode === 'ddd') return true;
+  return row.Action === 'Shot' && /(^|, )On Target|(^|, )Off Target|(^|, )Goal/.test(row.Tags || '');
 }
 
 function screenFromMeter(meterX: number, meterY: number) {
@@ -487,6 +508,13 @@ function statInputIsMoveAction(statInput: string) {
   return MOVE_ACTION_CODES.includes(extractActionCode(statInput));
 }
 
+// 슛(d/dd/ddd/db)의 채점 위치는 행위자 점 하나뿐 — 아군 점이 여럿이어도(팀메이트·마커)
+// 다른 점이 슛 위치로 밀리면 xG가 왜곡된다 (백엔드는 dots[-1]을 슛 위치로 사용).
+const SHOT_INPUT_CODES = new Set(['d', 'dd', 'ddd', 'db']);
+function statInputIsShotAction(statInput: string) {
+  return SHOT_INPUT_CODES.has(extractActionCode(statInput));
+}
+
 function statInputIsNumberOnly(statInput: string) {
   return /^\d+$/.test(statInput.trim());
 }
@@ -632,6 +660,7 @@ export default function FpaLivePage() {
   const [selectedDualDot, setSelectedDualDot] = useState<SelectedDualDot | null>(null);
   const [pendingXgot, setPendingXgot] = useState<PendingXgot | null>(null);
   const [goalmouthPoint, setGoalmouthPoint] = useState<GoalmouthPoint | null>(null);
+  const goalmouthFrameRef = useRef<HTMLDivElement | null>(null);
   const [xgotEstimate, setXgotEstimate] = useState<XgotEstimateResult | null>(null);
   const [xgotBusy, setXgotBusy] = useState(false);
   // rows/logs = "현재 작업 중 장면"의 액션 (single 모드는 그냥 flat 로그). 저장된 장면은 savedScenes.
@@ -736,6 +765,7 @@ export default function FpaLivePage() {
       <circle className="fpa-arrow-handle" cx={cx} cy={cy} fill={color} r={13} stroke={color}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => {
+          if (event.button !== 0) return;
           event.stopPropagation();
           draggingArrowRef.current = { index, end, side, canvas, moved: false };
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -1261,6 +1291,7 @@ export default function FpaLivePage() {
       setAfterDots(removeAt);
     }
     if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, sel.side, removedId)));
+    draggingDualDotRef.current = null;
     setSelectedDualDot(null);
     setStatus('선택한 dual pitch 좌표 삭제');
   };
@@ -1274,6 +1305,8 @@ export default function FpaLivePage() {
     else setAfterDots((prev) => prev.filter((_, i) => i !== index));
     // 그 점에 딸린 패스 화살표도 함께 삭제
     if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
+    // 삭제로 인덱스가 당겨지므로, 진행 중이던 드래그 arming은 무효화 (다른 점이 끌려오는 것 방지)
+    draggingDualDotRef.current = null;
     setSelectedDualDot(null);
     setStatus('점 삭제');
   };
@@ -1289,6 +1322,7 @@ export default function FpaLivePage() {
       setAfterDots((prev) => prev.slice(0, -1));
     }
     if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
+    draggingDualDotRef.current = null;
     setSelectedDualDot(null);
   };
 
@@ -1564,6 +1598,7 @@ export default function FpaLivePage() {
     if (side === 'before') setEditBeforeDots((prev) => prev.filter((_, i) => i !== index));
     else setEditAfterDots((prev) => prev.filter((_, i) => i !== index));
     if (removedId) setEditPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
+    draggingDualDotRef.current = null;
     setEditSelectedDot(null);
     setStatus('수정용 피치 점 삭제');
   };
@@ -1610,10 +1645,19 @@ export default function FpaLivePage() {
   };
 
   const handleGoalmouthClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
-    const y = Math.min(Math.max(1 - (event.clientY - rect.top) / rect.height, 0), 1);
-    const nextPoint = { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
+    const targetRect = event.currentTarget.getBoundingClientRect();
+    // 좌표는 골대 프레임 기준 — 프레임 바깥 클릭(빗나간 위치)은 0~1 범위 밖 값으로 기록
+    const frameRect = goalmouthFrameRef.current?.getBoundingClientRect() || targetRect;
+    const x = (event.clientX - frameRect.left) / frameRect.width;
+    const y = 1 - (event.clientY - frameRect.top) / frameRect.height;
+    const viewX = Math.min(Math.max((event.clientX - targetRect.left) / targetRect.width, 0), 1);
+    const viewY = Math.min(Math.max((event.clientY - targetRect.top) / targetRect.height, 0), 1);
+    const nextPoint = {
+      x: Number(x.toFixed(3)),
+      y: Number(y.toFixed(3)),
+      viewX: Number(viewX.toFixed(3)),
+      viewY: Number(viewY.toFixed(3)),
+    };
     setGoalmouthPoint(nextPoint);
     setXgotEstimate(null);
     void requestXgotEstimate(nextPoint);
@@ -1638,7 +1682,7 @@ export default function FpaLivePage() {
         method: 'POST',
         body: JSON.stringify({
           xg: pendingXgot.xg,
-          is_on_target: true,
+          is_on_target: pendingXgot.isOnTarget,
           goalmouth_x: shotPoint.x,
           goalmouth_y: shotPoint.y,
           is_goal: pendingXgot.isGoal,
@@ -1657,7 +1701,9 @@ export default function FpaLivePage() {
 
       const data = await response.json() as { xgot: number; delta: number; label: string };
       setXgotEstimate(data);
-      setStatus(`xGOT=${Number(data.xgot).toFixed(3)} 자동 산출 완료`);
+      setStatus(pendingXgot.isOnTarget
+        ? `xGOT=${Number(data.xgot).toFixed(3)} 자동 산출 완료`
+        : `빗나간 위치 (${shotPoint.x.toFixed(3)}, ${shotPoint.y.toFixed(3)}) 선택됨 — Save로 기록`);
       return data;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'xGOT 계산 실패');
@@ -1676,20 +1722,29 @@ export default function FpaLivePage() {
       setXgotBusy(true);
       const xgot = Number(estimate.xgot).toFixed(3);
       const xg = pendingXgot.xg.toFixed(3);
+      const goalmouthText = goalmouthPoint ? `(${goalmouthPoint.x.toFixed(3)}, ${goalmouthPoint.y.toFixed(3)})` : '';
       const setTargetLogs = pendingXgot.canvas === 'edit' ? setEditLogs : setLogs;
       const setTargetRows = pendingXgot.canvas === 'edit' ? setEditRows : setRows;
-      setTargetLogs((prev) => prev.map((log, index) => (
-        index === pendingXgot.rowIndex ? mergeMetricsIntoLog(log, { xG: xg, xGOT: xgot }) : log
-      )));
+      // 앱 전송용 x,y,direction 형식을 로그·row 양쪽에 동일하게 기록
       const goalMouth = goalmouthPoint
         ? `${goalmouthPoint.x.toFixed(3)},${goalmouthPoint.y.toFixed(3)},${direction}`
         : undefined;
+      setTargetLogs((prev) => prev.map((log, index) => {
+        if (index !== pendingXgot.rowIndex) return log;
+        const merged = mergeMetricsIntoLog(log, { xG: xg, xGOT: xgot });
+        return goalMouth ? mergeGoalmouthIntoLog(merged, goalMouth) : merged;
+      }));
       setTargetRows((prev) => prev.map((row, index) => (
         index === pendingXgot.rowIndex
           ? { ...row, xG: xg, xGOT: xgot, ...(goalMouth ? { GoalMouth: goalMouth } : {}) }
           : row
       )));
-      finishXgotFlow(`xGOT=${xgot} 입력 완료 (${estimate.delta >= 0 ? '+' : ''}${estimate.delta}, ${estimate.label})`, pendingXgot.canvas);
+      finishXgotFlow(
+        pendingXgot.isOnTarget
+          ? `xGOT=${xgot} 입력 완료 (${estimate.delta >= 0 ? '+' : ''}${estimate.delta}, ${estimate.label})`
+          : `빗나간 위치 ${goalmouthText} 기록 완료 (xGOT=0)`,
+        pendingXgot.canvas,
+      );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'xGOT 계산 실패');
     } finally {
@@ -1712,6 +1767,13 @@ export default function FpaLivePage() {
       if (!start) return [];
       const end = beforeAllies.length && afterAllies.length ? pickActor(afterAllies) : start;
       return [start, end];
+    }
+    // 슛: 행위자 점만 — slice(0,2) 폴백으로 떨어지면 마지막 점(팀메이트/마커)이 슛 위치가 됨
+    if (statInputIsShotAction(code)) {
+      const start = beforeAllies.length ? pickActor(beforeAllies) : pickActor(afterAllies);
+      if (!start) return [];
+      const end = beforeAllies.length && afterAllies.length ? pickActor(afterAllies) : null;
+      return end ? [start, end] : [start];
     }
     if (beforeAllies.length && afterAllies.length) return [pickActor(beforeAllies), pickActor(afterAllies)];
     if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
@@ -1861,11 +1923,14 @@ export default function FpaLivePage() {
         if (!response.ok) continue;
         const data = await response.json() as { log_text: string; log_data: LogPreview };
         data.log_data.StatInput = code;
-        // xGOT·골대좌표는 백엔드 채점이 만들지 않음(골문클릭 플로우에서 채워짐) → 재채점이 덮어쓰지 않게 보존
+        // xGOT·GoalMouth는 백엔드 채점이 만들지 않음(골문클릭 플로우에서 나중에 채워짐) → 재채점이 덮어쓰지 않게 기존값 보존
         if (sceneRows[i].xGOT) data.log_data.xGOT = sceneRows[i].xGOT;
         if (sceneRows[i].GoalMouth) data.log_data.GoalMouth = sceneRows[i].GoalMouth;
         nextRows[i] = data.log_data;
-        nextLogs[i] = data.log_text;
+        let mergedLog = data.log_text;
+        if (data.log_data.xGOT) mergedLog = mergeMetricsIntoLog(mergedLog, { xGOT: data.log_data.xGOT });
+        if (data.log_data.GoalMouth) mergedLog = mergeGoalmouthIntoLog(mergedLog, data.log_data.GoalMouth);
+        nextLogs[i] = mergedLog;
       } catch {
         // 개별 행 재채점 실패는 임시값 유지 (전체 저장은 계속)
       }
@@ -1896,6 +1961,13 @@ export default function FpaLivePage() {
     const actorNum = editStatInput.trim().match(/^(\d+)/)?.[1];
     const pickActor = (arr: PitchDot[]) => (actorNum && arr.find((dot) => dot.number === actorNum)) || arr[0];
     if (statInputHasReceiver(editStatInput) && beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
+    // 슛: 행위자 점만 — live 캔버스(submitDotsForCode)와 동일 사유
+    if (statInputIsShotAction(editStatInput)) {
+      const start = beforeAllies.length ? pickActor(beforeAllies) : pickActor(afterAllies);
+      if (!start) return [];
+      const end = beforeAllies.length && afterAllies.length ? pickActor(afterAllies) : null;
+      return end ? [start, end] : [start];
+    }
     if (beforeAllies.length && afterAllies.length) return [pickActor(beforeAllies), pickActor(afterAllies)];
     if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
     if (afterAllies.length >= 2) return afterAllies.slice(0, 2);
@@ -2051,10 +2123,12 @@ export default function FpaLivePage() {
       const rawXg = Number(data.log_data.xG || extractMetricValue(data.log_text, 'xG') || 0);
       if (promptXgot && Number.isFinite(rawXg)) {
         const tags = data.log_data.Tags || '';
+        const isOffTarget = extractActionCode(requestedStatInput) === 'd' || tags.includes('Off Target');
         setPendingXgot({
           canvas: 'edit',
           rowIndex: nextRowIndex,
           xg: Math.min(Math.max(rawXg, 0), 1),
+          isOnTarget: !isOffTarget,
           isGoal: extractActionCode(requestedStatInput) === 'ddd' || tags.includes('Goal'),
           isHeader: tags.includes('Header'),
           isWeakFoot: tags.includes('Weak Foot'),
@@ -2063,7 +2137,9 @@ export default function FpaLivePage() {
         });
         setGoalmouthPoint(null);
         setXgotEstimate(null);
-        setStatus('유효슈팅 로그 추가 완료. 골문 위치를 클릭해 xGOT를 입력하세요');
+        setStatus(isOffTarget
+          ? '슛 로그 추가 완료. 골대 기준 빗나간 위치를 클릭해 기록하세요'
+          : '유효슈팅 로그 추가 완료. 골문 위치를 클릭해 xGOT를 입력하세요');
         return;
       }
       setEditPrimary((prev) => (prev == null ? nextRowIndex : prev));
@@ -2269,10 +2345,12 @@ export default function FpaLivePage() {
       const rawXg = Number(data.log_data.xG || extractMetricValue(data.log_text, 'xG') || 0);
       if (promptXgot && Number.isFinite(rawXg)) {
         const tags = data.log_data.Tags || '';
+        const isOffTarget = extractActionCode(requestedStatInput) === 'd' || tags.includes('Off Target');
         setPendingXgot({
           canvas: 'live',
           rowIndex: nextRowIndex,
           xg: Math.min(Math.max(rawXg, 0), 1),
+          isOnTarget: !isOffTarget,
           isGoal: extractActionCode(requestedStatInput) === 'ddd' || tags.includes('Goal'),
           isHeader: tags.includes('Header'),
           isWeakFoot: tags.includes('Weak Foot'),
@@ -2281,7 +2359,9 @@ export default function FpaLivePage() {
         });
         setGoalmouthPoint(null);
         setXgotEstimate(null);
-        setStatus('유효슈팅 로그 추가 완료. 골문 위치를 클릭해 xGOT를 입력하세요');
+        setStatus(isOffTarget
+          ? '슛 로그 추가 완료. 골대 기준 빗나간 위치를 클릭해 기록하세요'
+          : '유효슈팅 로그 추가 완료. 골문 위치를 클릭해 xGOT를 입력하세요');
         return;
       }
       if (inputMode === 'dual') {
@@ -2737,7 +2817,7 @@ export default function FpaLivePage() {
           </div>
           <div>
             <span>Shot</span>
-            <strong>{pendingXgot.isGoal ? 'Goal' : 'On Target'}</strong>
+            <strong>{pendingXgot.isGoal ? 'Goal' : pendingXgot.isOnTarget ? 'On Target' : 'Off Target'}</strong>
           </div>
           <div>
             <span>xGOT</span>
@@ -2747,20 +2827,20 @@ export default function FpaLivePage() {
 
         <div className="fpa-xgot-body">
           <div className="fpa-goalmouth-target" onClick={handleGoalmouthClick} role="button" tabIndex={0}>
-            <div className="fpa-goalmouth-frame">
+            <div className="fpa-goalmouth-frame" ref={goalmouthFrameRef}>
               <div className="fpa-goalmouth-net" />
               <div className="fpa-goalmouth-post left" />
               <div className="fpa-goalmouth-post right" />
               <div className="fpa-goalmouth-line one" />
               <div className="fpa-goalmouth-line two" />
               <div className="fpa-goalmouth-line horizontal" />
-              {goalmouthPoint ? (
-                <div
-                  className="fpa-goalmouth-point"
-                  style={{ left: `${goalmouthPoint.x * 100}%`, top: `${(1 - goalmouthPoint.y) * 100}%` }}
-                />
-              ) : null}
             </div>
+            {goalmouthPoint ? (
+              <div
+                className="fpa-goalmouth-point"
+                style={{ left: `${goalmouthPoint.viewX * 100}%`, top: `${goalmouthPoint.viewY * 100}%` }}
+              />
+            ) : null}
           </div>
         </div>
 
@@ -2849,6 +2929,8 @@ export default function FpaLivePage() {
                 }}
                 onPointerDown={(event) => {
                   if (armedHere) return;
+                  // 우클릭(삭제)에서 드래그가 arming 되면, 삭제로 인덱스가 당겨진 뒤 커서 이동에 다른 점이 끌려온다
+                  if (event.button !== 0) return;
                   event.stopPropagation();
                   draggingDualDotRef.current = { side, index, canvas: 'live' };
                   selectLiveDualDot({ side, index });
@@ -2946,6 +3028,8 @@ export default function FpaLivePage() {
                 }}
                 onPointerDown={(event) => {
                   if (armedHere) return;
+                  // 우클릭(삭제)에서 드래그 arming 금지 — live 캔버스와 동일 사유
+                  if (event.button !== 0) return;
                   event.stopPropagation();
                   draggingDualDotRef.current = { side, index, canvas: 'edit' };
                   selectEditDot({ side, index });
@@ -3014,7 +3098,7 @@ export default function FpaLivePage() {
                 <div className="fpa-dual-pitch-head">
                   <span>xGOT Input</span>
                   <div>
-                    <span className="fpa-dual-pitch-count">Shot {pendingXgot.isGoal ? 'Goal' : 'On Target'}</span>
+                    <span className="fpa-dual-pitch-count">Shot {pendingXgot.isGoal ? 'Goal' : pendingXgot.isOnTarget ? 'On Target' : 'Off Target'}</span>
                   </div>
                 </div>
                 {renderXgotPanel()}
@@ -3321,7 +3405,7 @@ export default function FpaLivePage() {
             <div className="fpa-dual-pitch-head">
               <span>xGOT Input</span>
               <div>
-                <span className="fpa-dual-pitch-count">Shot {pendingXgot.isGoal ? 'Goal' : 'On Target'}</span>
+                <span className="fpa-dual-pitch-count">Shot {pendingXgot.isGoal ? 'Goal' : pendingXgot.isOnTarget ? 'On Target' : 'Off Target'}</span>
               </div>
             </div>
             {renderXgotPanel()}

@@ -1422,6 +1422,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         log_dict["BeforeGkPointCount"], log_dict["AfterGkPointCount"] = "", ""
         log_dict["BeforeNumberedPointCount"], log_dict["AfterNumberedPointCount"] = "", ""
         log_dict["xG"], log_dict["xGOT"], log_dict["EPV"], log_dict["PC"] = "", "", "", ""
+        log_dict["GoalMouthX"], log_dict["GoalMouthY"] = "", ""
         for part in parts[6:]:
             if part.startswith("Path("):
                 path_text = part.removeprefix("Path(").removesuffix(")")
@@ -1469,6 +1470,11 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
                 log_dict["xGOT"] = metrics.get("xGOT", "")
                 log_dict["EPV"] = metrics.get("EPV", "")
                 log_dict["PC"] = metrics.get("PC", "")
+            elif part.startswith("GoalMouth: "):
+                # 골대 프레임 기준 좌표 — 골대 안 0~1, 빗나간 슛은 범위 밖 값
+                gm_match = re.search(r"GoalMouth: \((.+?), (.+?)\)", part)
+                if gm_match:
+                    log_dict["GoalMouthX"], log_dict["GoalMouthY"] = gm_match.groups()
             elif part.startswith("Pos("):
                 end_pos_match = re.search(r"Pos\((.+?), (.+?)\)", part)
                 if end_pos_match:
@@ -1522,6 +1528,8 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "AfterNumberedPointCount",
         "xG",
         "xGOT",
+        "GoalMouthX",
+        "GoalMouthY",
         "EPV",
         "PC",
     ]
