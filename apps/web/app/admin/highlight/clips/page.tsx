@@ -48,6 +48,8 @@ type ActionRow = {
   startOffset?: number | null;
   endOffset?: number | null;
   extra?: { isPrimary?: boolean } | null;
+  // 24코드 표준 액션 ID(G1~S14) — 서버가 전송 규칙과 같은 로직으로 주석해 준다(검수용).
+  actionCode?: string | null;
 };
 
 type ClipDetail = ClipRow & {
@@ -384,6 +386,22 @@ export default function ClipResultsPage() {
                       {a.extra?.isPrimary ? '★' : '☆'}
                     </button>
                     <span style={{ color: 'var(--muted, #999)', width: 20 }}>{a.seq}</span>
+                    {a.actionCode ? (
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, fontFamily: 'monospace',
+                        padding: '1px 6px', borderRadius: 5, width: 34, textAlign: 'center',
+                        background: a.actionCode.startsWith('G') ? 'rgba(239,68,68,.18)'
+                          : a.actionCode.startsWith('P') ? 'rgba(59,130,246,.18)'
+                          : 'rgba(34,197,94,.18)',
+                        color: a.actionCode.startsWith('G') ? '#f87171'
+                          : a.actionCode.startsWith('P') ? '#60a5fa'
+                          : '#4ade80',
+                      }}>
+                        {a.actionCode}
+                      </span>
+                    ) : (
+                      <span style={{ width: 34 }} />
+                    )}
                     <span style={{ width: 72, fontWeight: 600 }}>{a.actionLabel}</span>
                     <TeamBadge side={a.teamSide} labels={detail.team_labels} />
                     <span style={{ width: 110 }}>

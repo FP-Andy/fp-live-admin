@@ -240,14 +240,16 @@ def scene_action_rows(
             ),
             **_row_metrics(row),
         }
-        coord = _parse_coord(row.get("Coord"))
-        if coord is not None:
-            action["x"], action["y"] = coord
         extra = {
             key: value
             for key, value in (("tags", row.get("Tags")), ("receiver", row.get("Receiver")))
             if str(value or "").strip()
         }
+        coord = _parse_coord(row.get("Coord"))
+        if coord is not None:
+            action["x"], action["y"] = coord
+            # DB(extra 컬럼)에도 보존 — 재전송 때 24코드 OWN/OPP 판정에 필요.
+            extra["x"], extra["y"] = coord
         # 장면 모션 렌더 소스 — before/after 점 스냅샷을 액션 단위로 보존한다.
         scene_state = _parse_scene_state(row.get("SceneState"))
         if scene_state:
@@ -377,6 +379,12 @@ def analysis_from_actions(
             pa["groupIndex"] = ex["groupIndex"]
         if ex.get("isGroupMain") and not pa.get("isGroupMain"):
             pa["isGroupMain"] = True
+        # 재전송 경로(DB) 액션은 좌표가 extra 에만 있다 — 분류 전에 승격.
+        if a.get("x") is None and ex.get("x") is not None:
+            a["x"] = ex.get("x")
+            a["y"] = ex.get("y")
+            pa.setdefault("x", ex.get("x"))
+            pa.setdefault("y", ex.get("y"))
         # 24코드 표준 액션 ID — 표기(라벨)는 앱이 코드 매핑으로 책임진다.
         code = classify_action_code(
             a,
@@ -542,6 +550,30 @@ def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | N
     if name == "Duel":
         return "S11" if not opp else "S12"
     return None
+
+
+def annotate_action_codes(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """직렬화된 DB 액션 목록에 actionCode 를 제자리 주석 — 콘솔 결과 탭 검수용.
+
+    재전송 페이로드와 같은 규칙(좌표는 extra 승격, 뒤 슈팅 연결 시 G2/G3)으로 계산한다.
+    """
+    shot_seqs = [
+        float(a.get("seq") or 0)
+        for a in actions
+        if str(a.get("action") or "") in _SHOT_ACTIONS
+    ]
+    for a in actions:
+        ex = a.get("extra") or {}
+        if a.get("x") is None and ex.get("x") is not None:
+            a["x"] = ex.get("x")
+            a["y"] = ex.get("y")
+        code = classify_action_code(
+            a,
+            later_shot=any(sq > float(a.get("seq") or 0) for sq in shot_seqs),
+        )
+        if code:
+            a["actionCode"] = code
+    return actions
 
 
 def clip_team_fallback_view(clip_team: str | None, our_side: str, team_labels: dict[str, str]) -> dict[str, Any] | None:

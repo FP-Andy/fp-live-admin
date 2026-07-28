@@ -67,6 +67,7 @@ from .fineplay_fpa import (
     FpaScene as FineplayFpaScene,
     action_label as fineplay_action_label,
     analysis_from_actions as fineplay_analysis_from_actions,
+    annotate_action_codes as fineplay_annotate_action_codes,
     equal_split_offsets as fineplay_equal_split_offsets,
     pick_primary as fineplay_pick_primary,
     scene_action_rows as fineplay_scene_action_rows,
@@ -8068,7 +8069,8 @@ def clip_result_detail(
         "end_sec": clip.end_sec,
         "duration_seconds": duration,
         "main_action": clip.main_action,
-        "actions": [_serialize_clip_action(a) for a in actions],
+        "actions": fineplay_annotate_action_codes(
+            [_serialize_clip_action(a) for a in actions]),
     }
     if storage.configured and clip.horizontal_s3_key:
         out["video_url"] = storage.presigned_get(clip.horizontal_s3_key, expires=21600)
@@ -8151,7 +8153,11 @@ def clip_result_put_actions(
         .order_by(HighlightClipAction.seq)
         .all()
     )
-    return {"clip_id": clip_id, "actions": [_serialize_clip_action(a) for a in saved]}
+    return {
+        "clip_id": clip_id,
+        "actions": fineplay_annotate_action_codes(
+            [_serialize_clip_action(a) for a in saved]),
+    }
 
 
 @app.post("/api/highlight/clip-results/clips/{clip_id}/primary")
