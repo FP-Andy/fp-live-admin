@@ -563,6 +563,118 @@ def _pitch_control_delta(
     return round(after_pc - before_pc, 4)
 
 
+PRESS_REGION_MARGIN_M = 5.0
+PRESS_REGION_GRID_STEP_M = 1.0
+
+
+def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    pts = sorted(set(points))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def _press_region_grid(all_points: list[tuple[float, float]]) -> tuple[Any, Any] | None:
+    hull = _convex_hull(all_points)
+    if not hull:
+        return None
+    margin = PRESS_REGION_MARGIN_M
+    step = PRESS_REGION_GRID_STEP_M
+    xs = [p[0] for p in all_points]
+    ys = [p[1] for p in all_points]
+    grid_x = np.arange(max(0.0, min(xs) - margin), min(float(FIELD_W), max(xs) + margin) + step / 2, step)
+    grid_y = np.arange(max(0.0, min(ys) - margin), min(float(FIELD_H), max(ys) + margin) + step / 2, step)
+    if grid_x.size == 0 or grid_y.size == 0:
+        return None
+    mesh_x, mesh_y = np.meshgrid(grid_x, grid_y)
+    px = mesh_x.ravel()
+    py = mesh_y.ravel()
+    if len(hull) >= 3:
+        inside = np.ones(px.shape, dtype=bool)
+        for index in range(len(hull)):
+            ax, ay = hull[index]
+            bx, by = hull[(index + 1) % len(hull)]
+            inside &= (bx - ax) * (py - ay) - (by - ay) * (px - ax) >= 0
+    else:
+        inside = np.zeros(px.shape, dtype=bool)
+    boundary_distance = np.full(px.shape, np.inf)
+    segments = list(zip(hull, hull[1:] + hull[:1])) if len(hull) >= 2 else [(hull[0], hull[0])]
+    for (ax, ay), (bx, by) in segments:
+        dx = bx - ax
+        dy = by - ay
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq <= 0:
+            seg_distance = np.sqrt((px - ax) ** 2 + (py - ay) ** 2)
+        else:
+            t = np.clip(((px - ax) * dx + (py - ay) * dy) / seg_len_sq, 0.0, 1.0)
+            seg_distance = np.sqrt((px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2)
+        boundary_distance = np.minimum(boundary_distance, seg_distance)
+    mask = inside | (boundary_distance <= margin)
+    if not mask.any():
+        return None
+    return px[mask], py[mask]
+
+
+def _region_mean_pitch_control(px: Any, py: Any, home_points: list[tuple[float, float]], away_points: list[tuple[float, float]]) -> float | None:
+    if not home_points or not away_points:
+        return None
+    reaction_time = 0.7
+    shared_player_speed = 5.5
+    tau = 1.15
+
+    def team_control(points: list[tuple[float, float]]) -> Any:
+        arr = np.asarray(points, dtype=float)
+        distance = np.sqrt((px[:, None] - arr[None, :, 0]) ** 2 + (py[:, None] - arr[None, :, 1]) ** 2)
+        arrival_time = reaction_time + distance / shared_player_speed
+        return np.exp(-arrival_time / tau).sum(axis=1)
+
+    home_control = team_control(home_points)
+    away_control = team_control(away_points)
+    denominator = home_control + away_control
+    valid = denominator > 0
+    if not valid.any():
+        return None
+    home_probability = home_control[valid] / denominator[valid]
+    return float(np.mean(home_probability * 2 - 1))
+
+
+def _press_region_pitch_control(dual_state: dict[str, Any] | None) -> tuple[float, float, float] | None:
+    """압박(pr): 점이 아니라 프레임 선수들(before∪after)의 convex hull + 마진 영역을
+    그리드로 깔고, 영역 평균 지배율의 before→after 변화로 잰다. (before_mean, after_mean, delta)"""
+    if not dual_state:
+        return None
+    actor_team = str(dual_state.get("actor_team") or "").lower()
+    before_home, before_away = _dual_points_by_side(dual_state.get("before"), actor_team)
+    after_home, after_away = _dual_points_by_side(dual_state.get("after"), actor_team)
+    if not after_home and not after_away:
+        after_home, after_away = before_home, before_away
+    if not before_home or not before_away or not after_home or not after_away:
+        return None
+    grid = _press_region_grid(before_home + before_away + after_home + after_away)
+    if grid is None:
+        return None
+    px, py = grid
+    before_mean = _region_mean_pitch_control(px, py, before_home, before_away)
+    after_mean = _region_mean_pitch_control(px, py, after_home, after_away)
+    if before_mean is None or after_mean is None:
+        return None
+    return round(before_mean, 4), round(after_mean, 4), round(after_mean - before_mean, 4)
+
+
 def _path_distance(points: list[tuple[float, float]]) -> float:
     if len(points) < 2:
         return 0.0
@@ -1613,7 +1725,12 @@ def generate_log_entry(
             epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
         if epv_value is not None:
             metrics["EPV"] = epv_value
-        pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
+        if action_code_raw == "pr":
+            # 압박은 점 대 점이 아니라 프레임 선수 영역(convex hull+마진) 평균 지배율의 변화로 잰다.
+            press_pc = _press_region_pitch_control(compact_dual_state)
+            pc_value = press_pc[2] if press_pc else None
+        else:
+            pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
         if pc_value is not None:
             metrics["PC"] = pc_value
 
@@ -1800,6 +1917,7 @@ def build_model_config_sheet() -> pd.DataFrame:
         ("pitch_control_formula", "PC(z)=2*P_home(z)-1; P_home=sum(exp(-T_home/tau))/sum(exp(-T_all/tau)); T=reaction_time+distance/shared_player_speed"),
         ("pitch_control_scale", "1=home 100%, 0=balanced, -1=away 100%"),
         ("pitch_control_default_parameters", "reaction_time=0.7s, shared_player_speed=5.5m/s, tau=1.15"),
+        ("press_pc_region", "Press PC = mean PC over 1m-step grid inside convex hull(before∪after frame players) + 5m margin, clipped to pitch; PC_Delta = after_mean - before_mean (same region, both frames)"),
         ("action_score_formula", "BaseWeight * LevelMultiplier * OutcomeMultiplier * ReliabilityFactor"),
     ]
     return pd.DataFrame(rows, columns=["Field", "Value"])
@@ -1912,9 +2030,13 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
         after_home, after_away = _dual_points_by_side(state.get("after") if state else None, actor_team)
         if not after_home and not after_away:
             after_home, after_away = before_home, before_away
-        before_pc = _pitch_control_at(start_x, start_y, before_home, before_away)
-        after_pc = _pitch_control_at(end_x, end_y, after_home, after_away)
-        delta_pc = round(after_pc - before_pc, 4) if before_pc is not None and after_pc is not None else None
+        if str(row.get("EventType") or "") == "Press":
+            press_pc = _press_region_pitch_control(state)
+            before_pc, after_pc, delta_pc = press_pc if press_pc else (None, None, None)
+        else:
+            before_pc = _pitch_control_at(start_x, start_y, before_home, before_away)
+            after_pc = _pitch_control_at(end_x, end_y, after_home, after_away)
+            delta_pc = round(after_pc - before_pc, 4) if before_pc is not None and after_pc is not None else None
         before_values.append(_metric_text_value(before_pc))
         after_values.append(_metric_text_value(after_pc))
         delta_values.append(_metric_text_value(delta_pc))

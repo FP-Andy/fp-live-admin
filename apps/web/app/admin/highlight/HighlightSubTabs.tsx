@@ -9,6 +9,7 @@ const SUB_TABS = [
   { href: '/admin/highlight/manual', label: '수동 태깅' },
   { href: '/admin/highlight/results', label: '수동 결과물' },
   { href: '/admin/highlight/fineplay', label: 'FinePlay 작업' },
+  { href: '/admin/highlight/clips', label: '클립 결과' },
   { href: '/admin/highlight/editroom', label: '편집룸' },
 ];
 

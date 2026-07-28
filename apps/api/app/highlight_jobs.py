@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import subprocess
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,12 +15,15 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .fineplay_client import default_client
+from .fineplay_fpa import clip_team_fallback_view, enrich_result_payload
 from .fineplay_models import ClipSpec, parse_manifest
 from .fineplay_worker import process_job
 from .highlight_produce import Segment
 from .highlight_produce_job import ProduceSpec, run_produce
 from .highlight_storage import default_storage
-from .models import HighlightJob
+from .highlight_storage import output_prefix as storage_output_prefix
+from .scene_motion import attach_scene_motions
+from .models import FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
 DELETE_UPLOAD_AFTER_SUCCESS = os.getenv("HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS", "1") not in {"0", "false", "False"}
@@ -748,6 +752,70 @@ def run_produce_job(job_id: str) -> None:
 FINEPLAY_PIPELINE_VERSION = os.getenv("FINEPLAY_PIPELINE_VERSION", "fpc-transport-v0.1")
 
 
+def _persist_clip_records(
+    db: Session,
+    job_id: str,
+    metadata: dict,
+    payload: dict,
+    clip_teams: dict[str, str | None],
+    action_records: list[dict],
+) -> None:
+    """렌더 결과를 match–clip–action 구조로 기록한다.
+
+    클립 PK = clipKey 라 재렌더 시 같은 행을 덮어쓰고(upsert),
+    액션은 클립 단위 전체 교체라 FPA 재채점·재전송에도 멱등이다.
+    """
+    match_id = metadata.get("match_id")
+    match_uuid = uuid.UUID(str(match_id)) if match_id else None
+    actions_by_key = {r["clip_key"]: r for r in action_records or []}
+
+    for i, clip in enumerate(payload.get("clips") or []):
+        key = str(clip.get("clipKey") or clip.get("fpcClipId") or "").strip()
+        if not key:
+            continue
+        hv = clip.get("highlightVideo") or {}
+        row = db.get(HighlightClip, key)
+        if row is None:
+            row = HighlightClip(id=key, job_id=job_id)
+            db.add(row)
+        row.job_id = job_id
+        row.match_id = match_uuid
+        row.order_index = i
+        row.team_side = clip_teams.get(key)
+        row.source_video_id = str(clip.get("sourceVideoId") or "")
+        row.start_sec = float(clip.get("startTime") or 0)
+        row.end_sec = float(clip.get("endTime") or 0)
+        row.duration_seconds = hv.get("durationSeconds")
+        row.main_action = clip.get("mainAction")
+        row.horizontal_s3_key = hv.get("horizontalS3Key")
+        row.vertical_s3_key = hv.get("verticalS3Key")
+        row.thumbnail_s3_key = hv.get("thumbnailS3Key")
+
+        db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == key).delete()
+        rec = actions_by_key.get(key)
+        if rec:
+            fpa_uuid = uuid.UUID(str(rec["fpa_match_id"])) if rec.get("fpa_match_id") else None
+            for a in rec.get("actions") or []:
+                db.add(HighlightClipAction(
+                    clip_id=key,
+                    seq=int(a.get("seq") or 1),
+                    action_name=str(a.get("action") or ""),
+                    team_side=a.get("teamSide"),
+                    jersey=a.get("jersey"),
+                    player_id=a.get("playerId"),
+                    player_name=a.get("playerName"),
+                    xg=a.get("xg"),
+                    xgot=a.get("xgot"),
+                    epv=a.get("epv"),
+                    pc=a.get("pc"),
+                    fpa_match_id=fpa_uuid,
+                    fpa_scene_index=rec.get("scene_index"),
+                    fpa_scene_action_index=a.get("sceneActionIndex"),
+                    extra=a.get("extra"),
+                ))
+    db.commit()
+
+
 def run_fineplay_produce(job_id: str) -> None:
     """FinePlay 작업(mode=fineplay) 렌더: 태깅된 구간으로 클립별 영상+썸네일을 만들어
     S3(highlights/)에 올리고, 토큰이 설정돼 있으면 결과 콜백까지 보낸다.
@@ -772,6 +840,7 @@ def run_fineplay_produce(job_id: str) -> None:
         default_video = manifest.primary_video.video_id if manifest.primary_video else ""
 
         specs: list[ClipSpec] = []
+        clip_teams: dict[str, str | None] = {}  # clipKey → 태깅 팀(A/D). match–clip–action 기록·페이로드 공용.
         for i, c in enumerate(clips_raw):
             try:
                 start = float(c["start"])
@@ -788,6 +857,8 @@ def run_fineplay_produce(job_id: str) -> None:
                 main_action=c.get("mainAction"),
                 make_vertical=bool(c.get("makeVertical")),
             ))
+            team = str(c.get("team") or "").strip().lower()
+            clip_teams[specs[-1].clip_id] = team if team in ("home", "away") else None
         if not specs:
             update_job(db, job_id, status="error", error_message="유효한 클립 구간이 없습니다.")
             return
@@ -805,6 +876,88 @@ def run_fineplay_produce(job_id: str) -> None:
             return
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+
+        # FPA dual 연결(fpa_link)이 있으면 클립↔씬 순서 매칭으로 분석 필드를 채운다.
+        # 실패해도 잡은 죽이지 않는다 — 전송(영상)은 유효하고 분석만 빠진 것이므로.
+        fpa_link = metadata.get("fpa_link") or {}
+        our_side = str(fpa_link.get("our_side") or "home").strip().lower()
+        lineup = list(manifest.raw.get("lineup") or [])
+        saved = None
+        if fpa_link.get("match_id"):
+            try:
+                saved = db.get(FpaSavedLog, uuid.UUID(str(fpa_link["match_id"])))
+            except Exception:
+                saved = None
+
+        action_records: list[dict] = []
+        if saved is not None:
+            try:
+                warnings, action_records = enrich_result_payload(
+                    payload,
+                    saved,
+                    our_side=our_side,
+                    lineup=lineup,
+                    clip_teams=clip_teams,
+                )
+                metadata["fpa_enrich_status"] = (
+                    f"ok ({'; '.join(warnings)})" if warnings else "ok"
+                )
+                # FPA 장면 모션 렌더·업로드 — 실패해도 전송은 계속한다.
+                motion_warnings: list[str] = []
+                clips_by_key = {
+                    str(cl.get("clipKey") or cl.get("fpcClipId") or ""): cl
+                    for cl in (payload.get("clips") or [])
+                }
+                for record in action_records:
+                    clip_entry = clips_by_key.get(record["clip_key"])
+                    if not clip_entry:
+                        continue
+                    hv = clip_entry.get("highlightVideo") or {}
+                    horizontal = str(hv.get("horizontalS3Key") or "")
+                    prefix = (
+                        horizontal.rsplit("/", 1)[0]
+                        if "/" in horizontal
+                        else storage_output_prefix()
+                    )
+                    motion_warnings += attach_scene_motions(
+                        record["actions"],
+                        (clip_entry.get("teamView") or {}).get("actions"),
+                        clip_key=record["clip_key"],
+                        storage=default_storage(),
+                        prefix=prefix,
+                    )
+                if motion_warnings:
+                    metadata["scene_motion_status"] = "; ".join(motion_warnings)
+                else:
+                    metadata["scene_motion_status"] = "ok"
+            except Exception as exc:
+                metadata["fpa_enrich_status"] = f"failed: {exc}"
+        else:
+            # FPA 저장 로그가 아직 없어도 태깅 팀 귀속(A/D)만은 페이로드에 담는다.
+            team_block = manifest.raw.get("team") or {}
+            opp_block = manifest.raw.get("opponent") or {}
+            opposite = "away" if our_side == "home" else "home"
+            labels = {
+                our_side: str(team_block.get("teamName") or ""),
+                opposite: str(opp_block.get("name") or ""),
+            }
+            for clip in payload.get("clips") or []:
+                key = str(clip.get("clipKey") or clip.get("fpcClipId") or "")
+                view = clip_team_fallback_view(clip_teams.get(key), our_side, labels)
+                if view:
+                    clip["teamView"] = view
+            if fpa_link.get("match_id"):
+                metadata["fpa_enrich_status"] = "failed: 저장된 FPA 로그가 없습니다."
+
+        # match–clip–action 기록. 콜백과 독립 — 실패해도 전송은 계속한다.
+        try:
+            _persist_clip_records(db, job_id, metadata, payload, clip_teams, action_records)
+            metadata["clip_db_status"] = "ok"
+        except Exception as exc:
+            db.rollback()
+            logger.exception("highlight_clips 기록 실패 (job=%s)", job_id)
+            metadata["clip_db_status"] = f"failed: {exc}"
+
         metadata["result_payload"] = payload
 
         client = default_client()

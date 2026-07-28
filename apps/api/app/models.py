@@ -269,3 +269,60 @@ class HighlightJob(Base):
     job_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HighlightClip(Base):
+    """하이라이트 클립 — match–clip–action 구조의 가운데 계층.
+
+    PK = clipKey(fpc-{rid}-NNN): FinePlay 왕복 멱등키와 동일해서 재렌더 시 upsert 된다.
+    team_side 는 태깅 시점(A=홈/D=어웨이)에 확정된 클립 귀속 팀.
+    """
+
+    __tablename__ = "highlight_clips"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("highlight_jobs.id"), nullable=False, index=True)
+    match_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("matches.id"), nullable=True, index=True)
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    team_side: Mapped[str | None] = mapped_column(String, nullable=True)  # 'home' | 'away'
+    source_video_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    start_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    end_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_action: Mapped[str | None] = mapped_column(String, nullable=True)
+    horizontal_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    vertical_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    thumbnail_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HighlightClipAction(Base):
+    """클립 안의 개별 액션 — FPA dual 씬 행 1개가 액션 1개로 귀속된다.
+
+    등번호·팀은 FPA 행 기준(클립 team_side 와 다를 수 있음 — 수비 액션 등).
+    fpa_* 컬럼은 원본 FPA 행 참조(fpa_saved_logs.rows 의 SceneIndex/SceneActionIndex).
+    """
+
+    __tablename__ = "highlight_clip_actions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    clip_id: Mapped[str] = mapped_column(String, ForeignKey("highlight_clips.id", ondelete="CASCADE"), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    action_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    team_side: Mapped[str | None] = mapped_column(String, nullable=True)  # 'home' | 'away'
+    jersey: Mapped[str | None] = mapped_column(String, nullable=True)
+    player_id: Mapped[str | None] = mapped_column(String, nullable=True)  # FinePlay lineup playerId (등번호 매칭 시)
+    player_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    xg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    xgot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    epv: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 클립 내 시간 구간(초, 클립 시작=0). 기본값은 균등 분할, 운영자가 수동 수정.
+    start_offset: Mapped[float | None] = mapped_column(Float, nullable=True)
+    end_offset: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fpa_match_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    fpa_scene_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fpa_scene_action_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # Tags, Receiver 등 부가 정보
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

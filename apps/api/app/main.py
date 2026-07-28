@@ -63,9 +63,20 @@ from .highlight_jobs import (
     upload_dir,
 )
 from .fineplay_client import default_client as fineplay_default_client
+from .fineplay_fpa import (
+    FpaScene as FineplayFpaScene,
+    action_label as fineplay_action_label,
+    analysis_from_actions as fineplay_analysis_from_actions,
+    annotate_action_codes as fineplay_annotate_action_codes,
+    equal_split_offsets as fineplay_equal_split_offsets,
+    pick_primary as fineplay_pick_primary,
+    scene_action_rows as fineplay_scene_action_rows,
+)
 from .fineplay_models import parse_manifest as fineplay_parse_manifest
 from .highlight_storage import default_storage as highlight_default_storage
-from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightJob
+from .highlight_storage import output_prefix as highlight_output_prefix
+from .scene_motion import attach_scene_motions
+from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -283,11 +294,16 @@ def _ensure_runtime_schema() -> None:
     fcm_submission_columns = {column["name"] for column in inspector.get_columns("fcm_submissions")} if "fcm_submissions" in table_names else set()
     fcm_template_columns = {column["name"] for column in inspector.get_columns("fcm_templates")} if "fcm_templates" in table_names else set()
     highlight_job_columns = {column["name"] for column in inspector.get_columns("highlight_jobs")} if "highlight_jobs" in table_names else set()
+    clip_action_columns = {column["name"] for column in inspector.get_columns("highlight_clip_actions")} if "highlight_clip_actions" in table_names else set()
     statements: list[str] = []
 
     if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
         statements.append("CREATE INDEX IF NOT EXISTS ix_highlight_jobs_owner_id ON highlight_jobs (owner_id)")
+
+    if "highlight_clip_actions" in table_names and "start_offset" not in clip_action_columns:
+        statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN start_offset DOUBLE PRECISION")
+        statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN end_offset DOUBLE PRECISION")
 
     if "role" not in user_columns:
         statements.append("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'OPERATOR'")
@@ -7647,8 +7663,45 @@ def poll_fineplay_jobs(
             continue
         manifest = cr.manifest or m
         team = manifest.get("team") or {}
+        opponent = manifest.get("opponent") or {}
         videos = manifest.get("videos") or []
         first = videos[0] if videos else {}
+
+        # match–clip–action 동기화: 클레임 즉시 콘솔 Match 를 만들어 하이라이트와
+        # FPA dual 이 같은 매치를 바라보게 한다. 컨벤션: 홈 슬롯 = FinePlay 신청팀.
+        # 잡을 지우고 재폴링해도 같은 신청 건이면 기존 매치를 재사용한다(중복 방지).
+        team_name = str(team.get("teamName") or "").strip() or "Home"
+        opp_name = str(opponent.get("name") or "").strip() or "Away"
+        match_obj = (
+            db.query(Match)
+            .filter(
+                Match.metadata_json["source"].astext == "fineplay_claim",
+                Match.metadata_json["analysis_request_id"].astext == str(rid),
+            )
+            .first()
+        )
+        if match_obj is None:
+            match_obj = Match(
+                id=uuid.uuid4(),
+                name=f"[FPA | 1R] {team_name} vs {opp_name}",
+                sport="FOOTBALL",
+                competition_class="FPA",
+                round_number=1,
+                archived=True,
+                archived_at=datetime.utcnow(),
+                metadata_json={
+                    "sport": "FOOTBALL",
+                    "home_team": team_name,
+                    "away_team": opp_name,
+                    "first_half_minutes": 45,
+                    "second_half_minutes": 45,
+                    "source": "fineplay_claim",
+                    "analysis_request_id": rid,
+                },
+                operator_id=user.id,
+            )
+            db.add(match_obj)
+
         job = HighlightJob(
             id=job_id,
             owner_id=user.id,
@@ -7660,6 +7713,9 @@ def poll_fineplay_jobs(
                 "analysis_request_id": rid,
                 "manifest": manifest,
                 "clips": [],
+                "match_id": str(match_obj.id),
+                # 홈=신청팀 컨벤션이라 our_side 기본 home. FPA dual 도 이 매치에 찍으면 된다.
+                "fpa_link": {"match_id": str(match_obj.id), "our_side": "home"},
                 "progress": {
                     "phase": "tagging",
                     "percent": 0,
@@ -7671,6 +7727,8 @@ def poll_fineplay_jobs(
         db.add(job)
         claimed.append(job_id)
     db.commit()
+    if claimed:
+        _match_response_cache.clear()
     return {"claimed": claimed, "skipped": skipped}
 
 
@@ -7785,11 +7843,20 @@ def produce_fineplay_job(
 ):
     """태깅된 구간으로 클립 렌더+S3 업로드+결과 콜백을 시작한다.
 
-    body: {clips: [{start, end, mainAction?, makeVertical?}]}
+    body: {clips: [{start, end, mainAction?, makeVertical?}],
+           fpaMatchId?, fpaOurSide?}
+    fpaMatchId 를 주면 그 FPA 매치의 dual 씬을 클립에 순서 매칭해 분석 필드를
+    채운다. 빈 문자열이면 연결 해제, 키 자체가 없으면 기존 연결 유지(편집룸).
     """
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+
+    # 편집룸 재편집은 team 을 안 보낼 수 있다 — 같은 clipId 의 기존 태깅 팀을 승계.
+    prev_teams: dict[str, str] = {}
+    for pc in (job.job_metadata or {}).get("clips") or []:
+        if pc.get("clipId") and pc.get("team"):
+            prev_teams[str(pc["clipId"])] = str(pc["team"])
 
     clips: list[dict] = []
     for c in body.get("clips") or []:
@@ -7799,9 +7866,14 @@ def produce_fineplay_job(
         except (KeyError, TypeError, ValueError):
             raise HTTPException(status_code=400, detail="clips 형식이 올바르지 않습니다.")
         if end > start:
+            team = str(c.get("team") or "").strip().lower()
+            if team not in ("home", "away"):
+                team = prev_teams.get(str(c.get("clipId") or ""), "")
             clips.append({
                 "start": round(start, 3),
                 "end": round(end, 3),
+                # 태깅 시점(A/D)에 확정된 클립 귀속 팀. 구 클라이언트는 미전송 → None.
+                "team": team if team in ("home", "away") else None,
                 "mainAction": c.get("mainAction"),
                 "makeVertical": bool(c.get("makeVertical")),
                 # 편집룸 재편집 시 기존 clipId 를 유지하면 같은 키로 덮어써(멱등) 중복이 없다.
@@ -7812,10 +7884,422 @@ def produce_fineplay_job(
 
     metadata = dict(job.job_metadata or {})
     metadata["clips"] = clips
+
+    if "fpaMatchId" in body:
+        raw_fpa_id = str(body.get("fpaMatchId") or "").strip()
+        if not raw_fpa_id:
+            metadata.pop("fpa_link", None)
+        else:
+            try:
+                fpa_uuid = UUID(raw_fpa_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="fpaMatchId 는 UUID 형식이어야 합니다.")
+            # 저장 로그가 아직 없어도 링크는 허용 — FPA 를 나중에 찍고 재전송하는
+            # 흐름을 막지 않는다. 렌더 시점에 없으면 fpa_enrich_status 에만 기록된다.
+            our_side = str(body.get("fpaOurSide") or "home").strip().lower()
+            if our_side not in ("home", "away"):
+                raise HTTPException(status_code=400, detail="fpaOurSide 는 home 또는 away 여야 합니다.")
+            metadata["fpa_link"] = {"match_id": str(fpa_uuid), "our_side": our_side}
+
     update_job(db, job_id, status="queued", job_metadata=metadata)
 
     background_tasks.add_task(run_fineplay_produce, job_id)
     return {"job_id": job_id, "status": "queued", "clips": len(clips)}
+
+
+# ---------------------------------------------------------------------------
+# 클립 결과 (match–clip–action 열람/편집): 매치 리스트 → 클립 리스트 → 클립 상세
+# dual 팝업이 씬을 클립에 직접 귀속시키고, 콜백은 수동 재전송 버튼으로 보낸다.
+# ---------------------------------------------------------------------------
+
+def _serialize_clip_action(row: HighlightClipAction) -> dict:
+    return {
+        "id": row.id,
+        "seq": row.seq,
+        "action": row.action_name,
+        "actionLabel": fineplay_action_label(row.action_name),
+        "teamSide": row.team_side,
+        "jersey": row.jersey,
+        "playerId": row.player_id,
+        "playerName": row.player_name,
+        "xg": row.xg,
+        "xgot": row.xgot,
+        "epv": row.epv,
+        "pc": row.pc,
+        "startOffset": row.start_offset,
+        "endOffset": row.end_offset,
+        "extra": row.extra,
+    }
+
+
+def _clip_job_context(db: Session, clip: HighlightClip) -> tuple[HighlightJob | None, str, dict[str, str], list[dict]]:
+    """클립이 속한 잡에서 (job, our_side, 팀 라벨, 라인업)을 뽑는다."""
+    job = db.get(HighlightJob, clip.job_id)
+    metadata = (job.job_metadata if job else None) or {}
+    fpa_link = metadata.get("fpa_link") or {}
+    our_side = str(fpa_link.get("our_side") or "home").strip().lower()
+    manifest = metadata.get("manifest") or {}
+    lineup = list(manifest.get("lineup") or [])
+
+    labels: dict[str, str] = {}
+    saved = None
+    if fpa_link.get("match_id"):
+        try:
+            saved = db.get(FpaSavedLog, UUID(str(fpa_link["match_id"])))
+        except (ValueError, TypeError):
+            saved = None
+    if saved is not None and (saved.teamid_h or saved.teamid_a):
+        labels = {"home": saved.teamid_h or "", "away": saved.teamid_a or ""}
+    else:
+        team_name = str((manifest.get("team") or {}).get("teamName") or "")
+        opp_name = str((manifest.get("opponent") or {}).get("name") or "")
+        opposite = "away" if our_side == "home" else "home"
+        labels = {our_side: team_name, opposite: opp_name}
+    return job, our_side, labels, lineup
+
+
+@app.get("/api/highlight/clip-results/matches")
+def clip_result_matches(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립이 추출된 매치 목록 (최신순)."""
+    clips = db.query(HighlightClip).all()
+    groups: dict[str, dict] = {}
+    for c in clips:
+        key = str(c.match_id) if c.match_id else f"job:{c.job_id}"
+        g = groups.setdefault(key, {
+            "match_id": str(c.match_id) if c.match_id else None,
+            "job_id": c.job_id,
+            "clip_count": 0,
+            "updated_at": c.updated_at,
+        })
+        g["clip_count"] += 1
+        if c.updated_at and (g["updated_at"] is None or c.updated_at > g["updated_at"]):
+            g["updated_at"] = c.updated_at
+
+    out = []
+    for g in groups.values():
+        name = None
+        home = away = ""
+        if g["match_id"]:
+            match_obj = db.get(Match, UUID(g["match_id"]))
+            if match_obj:
+                name = match_obj.name
+                meta = match_obj.metadata_json or {}
+                home = str(meta.get("home_team") or "")
+                away = str(meta.get("away_team") or "")
+        job = db.get(HighlightJob, g["job_id"])
+        metadata = (job.job_metadata if job else None) or {}
+        out.append({
+            "match_id": g["match_id"],
+            "job_id": g["job_id"],
+            "name": name or metadata.get("display_name") or g["job_id"],
+            "home_team": home,
+            "away_team": away,
+            "clip_count": g["clip_count"],
+            "callback_status": metadata.get("callback_status"),
+            "analysis_request_id": metadata.get("analysis_request_id"),
+            "updated_at": g["updated_at"].isoformat() if g["updated_at"] else None,
+        })
+    out.sort(key=lambda r: r["updated_at"] or "", reverse=True)
+    return out
+
+
+@app.get("/api/highlight/clip-results/matches/{match_id}/clips")
+def clip_result_clips(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """매치의 클립 리스트 (순서대로, 홈/어웨이 귀속 포함)."""
+    clips = (
+        db.query(HighlightClip)
+        .filter(HighlightClip.match_id == match_id)
+        .order_by(HighlightClip.order_index)
+        .all()
+    )
+    storage = highlight_default_storage()
+    out = []
+    for c in clips:
+        action_count = db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == c.id).count()
+        item = {
+            "id": c.id,
+            "order_index": c.order_index,
+            "team_side": c.team_side,
+            "start_sec": c.start_sec,
+            "end_sec": c.end_sec,
+            "duration_seconds": c.duration_seconds,
+            "main_action": c.main_action,
+            "action_count": action_count,
+        }
+        if storage.configured and c.thumbnail_s3_key:
+            item["thumbnail_url"] = storage.presigned_get(c.thumbnail_s3_key, expires=3600)
+        out.append(item)
+    return {"clips": out}
+
+
+@app.get("/api/highlight/clip-results/clips/{clip_id}")
+def clip_result_detail(
+    clip_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립 상세: 영상 presign + 액션 목록 + 팀 컨텍스트."""
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    job, our_side, labels, _lineup = _clip_job_context(db, clip)
+    actions = (
+        db.query(HighlightClipAction)
+        .filter(HighlightClipAction.clip_id == clip_id)
+        .order_by(HighlightClipAction.seq)
+        .all()
+    )
+    storage = highlight_default_storage()
+    duration = clip.duration_seconds or max(0.0, clip.end_sec - clip.start_sec)
+    out = {
+        "id": clip.id,
+        "job_id": clip.job_id,
+        "match_id": str(clip.match_id) if clip.match_id else None,
+        "team_side": clip.team_side,
+        "our_side": our_side,
+        "team_labels": labels,
+        "start_sec": clip.start_sec,
+        "end_sec": clip.end_sec,
+        "duration_seconds": duration,
+        "main_action": clip.main_action,
+        "actions": fineplay_annotate_action_codes(
+            [_serialize_clip_action(a) for a in actions]),
+    }
+    if storage.configured and clip.horizontal_s3_key:
+        out["video_url"] = storage.presigned_get(clip.horizontal_s3_key, expires=21600)
+    if storage.configured and clip.thumbnail_s3_key:
+        out["thumbnail_url"] = storage.presigned_get(clip.thumbnail_s3_key, expires=3600)
+    return out
+
+
+@app.put("/api/highlight/clip-results/clips/{clip_id}/actions")
+def clip_result_put_actions(
+    clip_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립 액션 전체 교체.
+
+    body: {rows: [FPA LogPreview 행]}  — dual 팝업 저장 (등번호→playerId 조인 서버가 수행)
+      또는 {actions: [{seq, action, teamSide, jersey, startOffset?, endOffset?, ...}]} — 구간 수정 등
+    오프셋이 비면 클립 길이 균등 분할로 채운다.
+    """
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    job, our_side, labels, lineup = _clip_job_context(db, clip)
+
+    if body.get("rows"):
+        rows = list(body["rows"])
+        scene = FineplayFpaScene(index=0, rows=rows, primary_row=fineplay_pick_primary(rows))
+        actions = fineplay_scene_action_rows(scene, our_side=our_side, lineup=lineup)
+    else:
+        actions = []
+        for i, a in enumerate(body.get("actions") or []):
+            action_name = str(a.get("action") or "").strip()
+            if not action_name:
+                continue
+            actions.append({
+                "seq": int(a.get("seq") or i + 1),
+                "action": action_name,
+                "actionLabel": fineplay_action_label(action_name),
+                "teamSide": (str(a.get("teamSide") or "").strip().lower() or None),
+                "jersey": (str(a.get("jersey") or "").strip() or None),
+                "playerId": a.get("playerId"),
+                "playerName": a.get("playerName"),
+                "xg": a.get("xg"),
+                "xgot": a.get("xgot"),
+                "epv": a.get("epv"),
+                "pc": a.get("pc"),
+                "startOffset": a.get("startOffset"),
+                "endOffset": a.get("endOffset"),
+                "extra": a.get("extra"),
+            })
+
+    duration = clip.duration_seconds or max(0.0, clip.end_sec - clip.start_sec)
+    fineplay_equal_split_offsets(actions, duration)
+
+    db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == clip_id).delete()
+    for a in actions:
+        db.add(HighlightClipAction(
+            clip_id=clip_id,
+            seq=int(a.get("seq") or 1),
+            action_name=str(a.get("action") or ""),
+            team_side=a.get("teamSide"),
+            jersey=a.get("jersey"),
+            player_id=a.get("playerId"),
+            player_name=a.get("playerName"),
+            xg=a.get("xg"),
+            xgot=a.get("xgot"),
+            epv=a.get("epv"),
+            pc=a.get("pc"),
+            start_offset=a.get("startOffset"),
+            end_offset=a.get("endOffset"),
+            fpa_scene_action_index=a.get("sceneActionIndex"),
+            extra=a.get("extra"),
+        ))
+    db.commit()
+    saved = (
+        db.query(HighlightClipAction)
+        .filter(HighlightClipAction.clip_id == clip_id)
+        .order_by(HighlightClipAction.seq)
+        .all()
+    )
+    return {
+        "clip_id": clip_id,
+        "actions": fineplay_annotate_action_codes(
+            [_serialize_clip_action(a) for a in saved]),
+    }
+
+
+@app.post("/api/highlight/clip-results/clips/{clip_id}/primary")
+def clip_result_set_primary(
+    clip_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립 대표 액션 지정 — body {seq}. 같은 seq 를 다시 지정하면 해제(자동 규칙 복귀).
+
+    지정값은 액션 extra.isPrimary 로 저장되고, 전송/재전송 때 제목·mainAction 이 이 액션 기준이 된다.
+    """
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    try:
+        seq = int(body.get("seq"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="seq 는 필수입니다.")
+    rows = (
+        db.query(HighlightClipAction)
+        .filter(HighlightClipAction.clip_id == clip_id)
+        .order_by(HighlightClipAction.seq)
+        .all()
+    )
+    if not any(r.seq == seq for r in rows):
+        raise HTTPException(status_code=404, detail=f"seq {seq} 액션이 없습니다.")
+    primary_seq: int | None = None
+    for r in rows:
+        extra = dict(r.extra or {})
+        was_primary = bool(extra.get("isPrimary"))
+        if r.seq == seq and not was_primary:
+            extra["isPrimary"] = True
+            primary_seq = seq
+        else:
+            extra.pop("isPrimary", None)
+        r.extra = extra or None
+    db.commit()
+    return {"clip_id": clip_id, "primary_seq": primary_seq}
+
+
+@app.post("/api/highlight/clip-results/matches/{match_id}/resend")
+def clip_result_resend(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """DB의 clip·action 을 기준으로 결과 페이로드를 재구성해 FinePlay 로 재전송한다."""
+    clips = (
+        db.query(HighlightClip)
+        .filter(HighlightClip.match_id == match_id)
+        .order_by(HighlightClip.order_index)
+        .all()
+    )
+    if not clips:
+        raise HTTPException(status_code=404, detail="이 매치에 클립이 없습니다.")
+    job, our_side, labels, _lineup = _clip_job_context(db, clips[0])
+    if not job:
+        raise HTTPException(status_code=409, detail="클립의 원본 잡이 없습니다.")
+    metadata = dict(job.job_metadata or {})
+    rid = metadata.get("analysis_request_id")
+    manifest = metadata.get("manifest") or {}
+    team_id = (manifest.get("team") or {}).get("teamId")
+    fpa_match_id = (metadata.get("fpa_link") or {}).get("match_id")
+
+    payload_clips = []
+    for c in clips:
+        actions = [
+            _serialize_clip_action(a)
+            for a in db.query(HighlightClipAction)
+            .filter(HighlightClipAction.clip_id == c.id)
+            .order_by(HighlightClipAction.seq)
+            .all()
+        ]
+        for a in actions:
+            a.pop("id", None)
+        # FPA 장면 모션 렌더·업로드 — sceneMotionKey 가 액션에 붙어 teamView.actions 로 나간다.
+        motion_prefix = (
+            c.horizontal_s3_key.rsplit("/", 1)[0]
+            if c.horizontal_s3_key and "/" in c.horizontal_s3_key
+            else highlight_output_prefix()
+        )
+        attach_scene_motions(
+            actions, None,
+            clip_key=c.id,
+            storage=highlight_default_storage(),
+            prefix=motion_prefix,
+        )
+        main_action, team_view, involved = fineplay_analysis_from_actions(
+            actions,
+            clip_team=c.team_side,
+            our_side=our_side,
+            team_labels=labels,
+            fpa_match_id=fpa_match_id,
+        )
+        video: dict = {}
+        if c.horizontal_s3_key:
+            video["horizontalS3Key"] = c.horizontal_s3_key
+        if c.vertical_s3_key:
+            video["verticalS3Key"] = c.vertical_s3_key
+        if c.thumbnail_s3_key:
+            video["thumbnailS3Key"] = c.thumbnail_s3_key
+        if c.duration_seconds is not None:
+            video["durationSeconds"] = round(float(c.duration_seconds), 3)
+        entry = {
+            "clipKey": c.id,
+            "fpcClipId": c.id,
+            "sourceVideoId": c.source_video_id,
+            "startTime": round(float(c.start_sec), 3),
+            "endTime": round(float(c.end_sec), 3),
+            "highlightVideo": video,
+        }
+        if main_action or c.main_action:
+            entry["mainAction"] = main_action or c.main_action
+        if team_view:
+            entry["teamView"] = team_view
+        if involved:
+            entry["involvedPlayers"] = involved
+        payload_clips.append(entry)
+
+    payload = {
+        "analysisRequestId": rid,
+        "teamId": team_id,
+        "pipelineVersion": FINEPLAY_PIPELINE_VERSION,
+        "status": "DONE",
+        "clips": payload_clips,
+    }
+
+    client = fineplay_default_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+    metadata["result_payload"] = payload
+    try:
+        client.post_results(payload)
+        metadata["callback_status"] = "sent"
+    except Exception as exc:
+        metadata["callback_status"] = f"failed: {exc}"
+        update_job(db, job.id, job_metadata=metadata)
+        raise HTTPException(status_code=502, detail=f"콜백 전송 실패: {exc}")
+    update_job(db, job.id, job_metadata=metadata)
+    return {"callback_status": "sent", "clips": len(payload_clips)}
 
 
 def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
