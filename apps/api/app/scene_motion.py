@@ -24,7 +24,12 @@ FIELD_H = 68.0
 # 홈=주황/어웨이=파랑 점 22px, 시안 화살표 4px, 3s ease-out 이동.
 OUT_W = 1050
 OUT_H = 680
-PAD = 0
+# 골대(골라인 바깥)를 그릴 여백 — 피치를 안쪽으로 스케일해 확보. 캔버스 크기는 유지.
+PITCH_MARGIN_X = 26
+_INNER_W = OUT_W - PITCH_MARGIN_X * 2
+_INNER_H = round(_INNER_W * OUT_H / OUT_W)  # 피치 원본 비율 유지
+_INNER_X0 = PITCH_MARGIN_X
+_INNER_Y0 = (OUT_H - _INNER_H) // 2
 
 FPS = 25
 HOLD_BEFORE_SEC = 0.4
@@ -148,47 +153,112 @@ def _find_actor_pair(
 
 
 def _to_px(x: float, y: float) -> tuple[float, float]:
-    inner_w = OUT_W - PAD * 2
-    inner_h = OUT_H - PAD * 2
-    return (PAD + (x / FIELD_W) * inner_w, PAD + (1 - y / FIELD_H) * inner_h)
+    return (
+        _INNER_X0 + (x / FIELD_W) * _INNER_W,
+        _INNER_Y0 + (1 - y / FIELD_H) * _INNER_H,
+    )
 
 
-def _draw_pitch(draw: ImageDraw.ImageDraw) -> None:
-    def rect(x1: float, y1: float, x2: float, y2: float) -> None:
-        a = _to_px(x1, y2)
-        b = _to_px(x2, y1)
-        draw.rectangle([a, b], outline=LINE_COLOR, width=2)
-
-    rect(0, 0, FIELD_W, FIELD_H)
-    # 하프라인 + 센터서클
-    top = _to_px(FIELD_W / 2, FIELD_H)
-    bottom = _to_px(FIELD_W / 2, 0)
-    draw.line([top, bottom], fill=LINE_COLOR, width=2)
-    cx, cy = _to_px(FIELD_W / 2, FIELD_H / 2)
-    r = 9.15 / FIELD_W * (OUT_W - PAD * 2)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=LINE_COLOR, width=2)
-    # 페널티박스(16.5m) / 골에어리어(5.5m)
-    rect(0, 13.84, 16.5, 54.16)
-    rect(FIELD_W - 16.5, 13.84, FIELD_W, 54.16)
-    rect(0, 24.84, 5.5, 43.16)
-    rect(FIELD_W - 5.5, 24.84, FIELD_W, 43.16)
-
+LINE_COLOR = (240, 245, 242)
+LINE_W = 5
 
 _field_img_cache: Image.Image | None = None
 
 
 def _new_frame() -> Image.Image:
-    """콘솔 replay 와 같은 배경 — 다크 배경 위 fpa-field.png(90% 불투명)."""
     global _field_img_cache
+    if _field_img_cache is None:
+        _field_img_cache = _build_background()
     img = Image.new("RGB", (OUT_W, OUT_H), BG_COLOR)
-    if _field_img_cache is None and _FIELD_IMG_PATH.exists():
-        field = Image.open(_FIELD_IMG_PATH).convert("RGB").resize((OUT_W, OUT_H))
-        _field_img_cache = Image.blend(Image.new("RGB", (OUT_W, OUT_H), BG_COLOR), field, 0.9)
-    if _field_img_cache is not None:
-        img.paste(_field_img_cache)
-    else:
-        _draw_pitch(ImageDraw.Draw(img))
+    img.paste(_field_img_cache)
     return img
+
+
+def _build_background() -> Image.Image:
+    """캔버스 전체 합성 배경 — 이음새 없는 스트라이프 잔디 + 경기장 라인 + 골대.
+
+    fpa-field.png 에서 표본한 스트라이프 색(어둠/밝음)·폭(필드/20, 하프당 5+5)·노이즈(σ≈9)로
+    잔디를 캔버스 전체에 깔고, 실측 좌표(_to_px)로 라인을 직접 그린다.
+    이미지 조각 붙이기가 아니라서 여백 이음새·AA 잔상이 원천적으로 없다.
+    """
+    import numpy as np
+
+    dark = np.array([74.0, 139.0, 52.0])
+    light = np.array([84.0, 160.0, 68.0])
+    stripe_w = _INNER_W / 20.0
+    xs = np.arange(OUT_W)
+    stripe_idx = np.floor((xs - _INNER_X0) / stripe_w).astype(int)
+    is_light = (stripe_idx % 2) == 1
+    base_row = np.where(is_light[:, None], light[None, :], dark[None, :])
+    arr = np.tile(base_row[None, :, :], (OUT_H, 1, 1))
+    # 경기장 밖(여백)은 좌우·상하 동일한 톤으로 — 스트라이프가 짝수(20)개라
+    # 좌우 여백 명암이 반대로 떨어져 골대가 비대칭으로 보이는 것을 막는다.
+    surround = dark * 0.92
+    arr[:, :_INNER_X0, :] = surround
+    arr[:, _INNER_X0 + _INNER_W:, :] = surround
+    arr[:_INNER_Y0, :, :] = surround
+    arr[_INNER_Y0 + _INNER_H:, :, :] = surround
+    rng = np.random.default_rng(20260728)  # 결정적 노이즈 — 렌더마다 동일
+    arr = arr + rng.normal(0.0, 9.0, size=arr.shape)
+    arr = np.clip(arr, 0, 255).astype("uint8")
+    img = Image.fromarray(arr, "RGB")
+    draw = ImageDraw.Draw(img)
+    _draw_pitch_lines(draw)
+    _bake_goals(draw)
+    return img
+
+
+def _draw_pitch_lines(draw: ImageDraw.ImageDraw) -> None:
+    """실측 규격 경기장 라인(미터 좌표 → _to_px)."""
+
+    def rect(x1: float, y1: float, x2: float, y2: float) -> None:
+        a = _to_px(x1, y2)
+        b = _to_px(x2, y1)
+        draw.rectangle([a, b], outline=LINE_COLOR, width=LINE_W)
+
+    rect(0, 0, FIELD_W, FIELD_H)
+    draw.line([_to_px(FIELD_W / 2, FIELD_H), _to_px(FIELD_W / 2, 0)],
+              fill=LINE_COLOR, width=LINE_W)
+    # 센터서클(9.15m) + 센터스팟
+    cx, cy = _to_px(FIELD_W / 2, FIELD_H / 2)
+    r = 9.15 / FIELD_W * _INNER_W
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=LINE_COLOR, width=LINE_W)
+    draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=LINE_COLOR)
+    # 페널티박스(16.5m)·골에어리어(5.5m)
+    rect(0, 13.84, 16.5, 54.16)
+    rect(FIELD_W - 16.5, 13.84, FIELD_W, 54.16)
+    rect(0, 24.84, 5.5, 43.16)
+    rect(FIELD_W - 5.5, 24.84, FIELD_W, 43.16)
+    # 페널티스팟(11m) + 아크(스팟 중심 9.15m, 박스 밖 ±53°)
+    for spot_x, a0, a1 in ((11.0, -53, 53), (FIELD_W - 11.0, 127, 233)):
+        sx, sy = _to_px(spot_x, FIELD_H / 2)
+        draw.ellipse([sx - 4, sy - 4, sx + 4, sy + 4], fill=LINE_COLOR)
+        draw.arc([sx - r, sy - r, sx + r, sy + r], a0, a1,
+                 fill=LINE_COLOR, width=LINE_W)
+
+
+def _bake_goals(draw: ImageDraw.ImageDraw) -> None:
+    """골라인 바깥 골대 프레임(그물 없음) — 실측 폭 7.32m(y 30.34~37.66), 깊이 ~2m."""
+    goal_depth = 2.0 / FIELD_W * _INNER_W
+    for side in ("left", "right"):
+        _, y_top = _to_px(0, 37.66)
+        _, y_bot = _to_px(0, 30.34)
+        if side == "left":
+            x_line = _INNER_X0
+            x_out = x_line - goal_depth
+        else:
+            x_line = _INNER_X0 + _INNER_W
+            x_out = x_line + goal_depth
+        # ㄷ자(경기장 쪽 개방) — 골라인 위에 겹치면 그 변만 두꺼워 보인다.
+        # draw.line 조합은 모서리 접합이 어긋나므로, 픽셀 정렬된 사각형 3조각으로 채운다.
+        half = LINE_W // 2
+        yt, yb = round(y_top), round(y_bot)
+        xo, xl = round(x_out), round(x_line)
+        post = [xo - half, yt - half, xo + half, yb + half]
+        top_bar = [min(xo - half, xl), yt - half, max(xo + half, xl), yt + half]
+        bot_bar = [min(xo - half, xl), yb - half, max(xo + half, xl), yb + half]
+        for box in (post, top_bar, bot_bar):
+            draw.rectangle(box, fill=LINE_COLOR)
 
 
 def _draw_arrow(

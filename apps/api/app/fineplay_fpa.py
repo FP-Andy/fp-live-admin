@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -93,6 +94,18 @@ def _parse_float(value: Any) -> float | None:
             return None
         return float(text)
     except (TypeError, ValueError):
+        return None
+
+
+def _parse_coord(value: Any) -> tuple[float, float] | None:
+    """row Coord "Pos(66.13, 38.09)" → (x, y) 미터. 공격방향 정규화 좌표(오른쪽 공격)."""
+    text = str(value or "")
+    m = re.search(r"Pos\(([-\d.]+),\s*([-\d.]+)\)", text)
+    if not m:
+        return None
+    try:
+        return (float(m.group(1)), float(m.group(2)))
+    except ValueError:
         return None
 
 
@@ -227,6 +240,9 @@ def scene_action_rows(
             ),
             **_row_metrics(row),
         }
+        coord = _parse_coord(row.get("Coord"))
+        if coord is not None:
+            action["x"], action["y"] = coord
         extra = {
             key: value
             for key, value in (("tags", row.get("Tags")), ("receiver", row.get("Receiver")))
@@ -347,6 +363,11 @@ def analysis_from_actions(
         {k: v for k, v in a.items() if k not in ("sceneActionIndex", "extra") and v is not None}
         for a in actions
     ]
+    shot_seqs = [
+        float(a.get("seq") or 0)
+        for a in actions
+        if str(a.get("action") or "") in _SHOT_ACTIONS
+    ]
     for a, pa in zip(actions, payload_actions):
         # 정식 xFP 산식 전 임시 자리값 — 앱 점수 UI 프로세스를 끝까지 태우기 위함.
         pa.setdefault("xfpScore", XFP_PLACEHOLDER_SCORE)
@@ -356,6 +377,17 @@ def analysis_from_actions(
             pa["groupIndex"] = ex["groupIndex"]
         if ex.get("isGroupMain") and not pa.get("isGroupMain"):
             pa["isGroupMain"] = True
+        # 24코드 표준 액션 ID — 표기(라벨)는 앱이 코드 매핑으로 책임진다.
+        code = classify_action_code(
+            a,
+            later_shot=any(sq > float(a.get("seq") or 0) for sq in shot_seqs),
+        )
+        if code:
+            pa["actionCode"] = code
+        if a is primary:
+            pa["isClipPrimary"] = True
+            if code:
+                pass  # mainActionCode 는 아래 team_view 조립 후 세팅
 
     labels: list[str] = []
     for a in actions:
@@ -376,6 +408,12 @@ def analysis_from_actions(
         team_view["fpaMatchId"] = fpa_match_id
     if scene_index is not None:
         team_view["sceneIndex"] = scene_index
+    primary_code = next(
+        (pa.get("actionCode") for a, pa in zip(actions, payload_actions) if a is primary),
+        None,
+    )
+    if primary_code:
+        team_view["mainActionCode"] = primary_code
     jersey = str(primary.get("jersey") or "").strip()
     if jersey:
         team_view["mainPlayerJersey"] = jersey
@@ -459,6 +497,51 @@ def build_clip_analysis(
         scene_index=scene.index,
     )
     return main_action, team_view, involved, action_rows
+
+
+_SHOT_ACTIONS = {"Shot", "Goal", "Shot On Target", "Blocked Shot"}
+_DEFENSE_ACTIONS = {"Intercept", "Tackle", "Acquisition", "Cutout", "Block", "Clear"}
+
+
+def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | None:
+    """24개 표준 액션 코드(G1~S14) v0 판정 — 노션 'xFP 24개 액션 정의' 기준.
+
+    1차 로직(2026-07-28 합의): 가장 높은 지표를 받은 기대효과로 군을 정한다 —
+    슈팅류는 G1, 그 외에는 EPV vs PC 큰 쪽(Progression/Possession).
+    진영(OWN/OPP)은 공격방향 정규화 좌표 x>52.5 기준, 좌표 없으면 OPP 가정.
+    패스/크로스 뒤에 같은 클립에서 슈팅이 이어지면 득점 연결(G2/G3).
+    정밀 판정(Direct/Indirect 인과·credit)은 정식 산식 이식 때 개정한다.
+    """
+    name = str(action.get("action") or "")
+    x = action.get("x")
+    opp = (float(x) > 52.5) if isinstance(x, (int, float)) else True
+    epv = float(action.get("epv") or 0)
+    pc = float(action.get("pc") or 0)
+    progression = epv >= pc and epv > 0
+
+    if name in _SHOT_ACTIONS:
+        return "G1"
+    if name == "Pass":
+        if later_shot:
+            return "G2"
+        if progression:
+            return "P1" if not opp else "P2"
+        return "S1" if not opp else "S2"
+    if name == "Cross":
+        return "G3" if later_shot else "P3"
+    if name in ("Dribble", "Breakthrough"):
+        if progression:
+            return "P4" if not opp else "P5"
+        return "S3" if not opp else "S4"
+    if name == "Penetration":
+        return "P6"
+    if name in _DEFENSE_ACTIONS:
+        return "S5" if not opp else "S7"
+    if name == "Press":
+        return "S9"
+    if name == "Duel":
+        return "S11" if not opp else "S12"
+    return None
 
 
 def clip_team_fallback_view(clip_team: str | None, our_side: str, team_labels: dict[str, str]) -> dict[str, Any] | None:
