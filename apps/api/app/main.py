@@ -7961,7 +7961,7 @@ def _clip_job_context(db: Session, clip: HighlightClip) -> tuple[HighlightJob | 
 @app.get("/api/highlight/clip-results/matches")
 def clip_result_matches(
     db: Session = Depends(get_db),
-    user: User = Depends(_require_superuser),
+    user: User = Depends(_require_session_user),
 ):
     """클립이 추출된 매치 목록 (최신순)."""
     clips = db.query(HighlightClip).all()
@@ -8010,7 +8010,7 @@ def clip_result_matches(
 def clip_result_clips(
     match_id: UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(_require_superuser),
+    user: User = Depends(_require_session_user),
 ):
     """매치의 클립 리스트 (순서대로, 홈/어웨이 귀속 포함)."""
     clips = (
@@ -8043,7 +8043,7 @@ def clip_result_clips(
 def clip_result_detail(
     clip_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(_require_superuser),
+    user: User = Depends(_require_session_user),
 ):
     """클립 상세: 영상 presign + 액션 목록 + 팀 컨텍스트."""
     clip = db.get(HighlightClip, clip_id)
@@ -8079,12 +8079,55 @@ def clip_result_detail(
     return out
 
 
+@app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions")
+def clip_result_scene_motions(
+    clip_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """클립 액션들의 장면 모션을 렌더·업로드하고 presign URL 을 돌려준다 (검수용).
+
+    전송(resend/produce)과 같은 attach_scene_motions·S3 키를 쓰므로
+    여기서 보이는 모션이 곧 앱으로 나가는 모션이다. sceneState 가 있는 액션만 생성된다.
+    """
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=409, detail="S3 스토리지가 설정되지 않았습니다.")
+    actions = [
+        _serialize_clip_action(a)
+        for a in db.query(HighlightClipAction)
+        .filter(HighlightClipAction.clip_id == clip_id)
+        .order_by(HighlightClipAction.seq)
+        .all()
+    ]
+    motion_prefix = (
+        clip.horizontal_s3_key.rsplit("/", 1)[0]
+        if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
+        else highlight_output_prefix()
+    )
+    warnings = attach_scene_motions(
+        actions, None,
+        clip_key=clip.id,
+        storage=storage,
+        prefix=motion_prefix,
+    )
+    motions = [
+        {"seq": a.get("seq"), "url": storage.presigned_get(a["sceneMotionKey"], expires=3600)}
+        for a in actions
+        if a.get("sceneMotionKey")
+    ]
+    return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
+
+
 @app.put("/api/highlight/clip-results/clips/{clip_id}/actions")
 def clip_result_put_actions(
     clip_id: str,
     body: dict = Body(default={}),
     db: Session = Depends(get_db),
-    user: User = Depends(_require_superuser),
+    user: User = Depends(_require_session_user),
 ):
     """클립 액션 전체 교체.
 
@@ -8165,7 +8208,7 @@ def clip_result_set_primary(
     clip_id: str,
     body: dict = Body(default={}),
     db: Session = Depends(get_db),
-    user: User = Depends(_require_superuser),
+    user: User = Depends(_require_session_user),
 ):
     """클립 대표 액션 지정 — body {seq}. 같은 seq 를 다시 지정하면 해제(자동 규칙 복귀).
 
@@ -8204,7 +8247,7 @@ def clip_result_set_primary(
 def clip_result_resend(
     match_id: UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(_require_superuser),
+    user: User = Depends(_require_session_user),
 ):
     """DB의 clip·action 을 기준으로 결과 페이로드를 재구성해 FinePlay 로 재전송한다."""
     clips = (

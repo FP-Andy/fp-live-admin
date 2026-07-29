@@ -119,6 +119,8 @@ export default function ClipResultsPage() {
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [motions, setMotions] = useState<{ seq: number; url: string }[]>([]);
+  const [motionMsg, setMotionMsg] = useState('');
 
   const loadMatches = useCallback(async () => {
     try {
@@ -154,6 +156,23 @@ export default function ClipResultsPage() {
     }
   }, []);
 
+  // 장면 모션은 서버가 렌더+S3 업로드까지 하므로(액션당 수 초) 클립 열 때·dual 저장 직후·수동 새로고침에만 부른다.
+  const loadMotions = useCallback(async (clipId: string) => {
+    setMotions([]);
+    setMotionMsg('장면 모션 렌더 중…');
+    try {
+      const res = await apiJson<{ motions: { seq: number; url: string }[]; warnings: string[] }>(
+        `/highlight/clip-results/clips/${clipId}/scene-motions`,
+      );
+      setMotions(res.motions);
+      setMotionMsg(res.motions.length === 0
+        ? '장면 모션 없음 — FPA dual 로 찍어 저장한 액션만 모션이 생성됩니다.'
+        : (res.warnings?.length ? `일부 실패: ${res.warnings.join(' / ')}` : ''));
+    } catch (err) {
+      setMotionMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   // dual 팝업에서 저장하고 돌아오면(창 포커스) 액션을 다시 읽는다.
   useEffect(() => {
     if (!detail) return;
@@ -169,11 +188,12 @@ export default function ClipResultsPage() {
       const data = e.data as { type?: string; clipId?: string };
       if (data?.type === 'fpa-clip-saved' && detail && data.clipId === detail.id) {
         void openClip(detail.id);
+        void loadMotions(detail.id);
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [detail, openClip]);
+  }, [detail, openClip, loadMotions]);
 
   // 대표 액션 지정/해제 — 저장 후 재전송하면 제목·mainAction 이 이 액션 기준이 된다.
   const setPrimaryAction = async (seq: number) => {
@@ -309,7 +329,7 @@ export default function ClipResultsPage() {
                   {fmt(c.start_sec)}~{fmt(c.end_sec)}
                 </span>
                 <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>액션 {c.action_count}개</span>
-                <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => void openClip(c.id)}>상세</button>
+                <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => { void openClip(c.id); void loadMotions(c.id); }}>상세</button>
               </div>
             ))}
           </div>
@@ -423,6 +443,39 @@ export default function ClipResultsPage() {
                 ))}
               </div>
             )}
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <h3 style={{ fontSize: 14, margin: 0 }}>장면 모션 ({motions.length})</h3>
+              <button style={smallBtn} onClick={() => void loadMotions(detail.id)}>모션 새로고침</button>
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                전송 시 앱에 실리는 모션과 동일합니다.
+              </span>
+            </div>
+            {motionMsg ? (
+              <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '0 0 8px' }}>{motionMsg}</p>
+            ) : null}
+            {motions.length > 0 ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                {motions.map((m) => {
+                  const a = actions.find((x) => x.seq === m.seq);
+                  return (
+                    <div key={m.seq} style={{
+                      width: 300, borderRadius: 8, overflow: 'hidden',
+                      background: 'var(--surface-input, #16161a)', border: '1px solid var(--border-ghost, #2c2c32)',
+                    }}>
+                      <video src={m.url} muted autoPlay loop playsInline style={{ width: '100%', display: 'block' }} />
+                      <div style={{ padding: '6px 10px', fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ color: 'var(--muted, #999)' }}>액션 {m.seq}</span>
+                        <span style={{ fontWeight: 600 }}>{a?.actionLabel || ''}</span>
+                        {a?.jersey ? <span style={{ color: 'var(--muted, #999)' }}>#{a.jersey}</span> : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
