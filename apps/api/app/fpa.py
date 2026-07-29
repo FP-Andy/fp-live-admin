@@ -1422,7 +1422,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         log_dict["BeforeGkPointCount"], log_dict["AfterGkPointCount"] = "", ""
         log_dict["BeforeNumberedPointCount"], log_dict["AfterNumberedPointCount"] = "", ""
         log_dict["xG"], log_dict["xGOT"], log_dict["EPV"], log_dict["PC"] = "", "", "", ""
-        log_dict["GoalMouthX"], log_dict["GoalMouthY"] = "", ""
+        log_dict["GoalMouth"], log_dict["GoalMouthX"], log_dict["GoalMouthY"] = "", "", ""
         for part in parts[6:]:
             if part.startswith("Path("):
                 path_text = part.removeprefix("Path(").removesuffix(")")
@@ -1471,10 +1471,17 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
                 log_dict["EPV"] = metrics.get("EPV", "")
                 log_dict["PC"] = metrics.get("PC", "")
             elif part.startswith("GoalMouth: "):
-                # 골대 프레임 기준 좌표 — 골대 안 0~1, 빗나간 슛은 범위 밖 값
-                gm_match = re.search(r"GoalMouth: \((.+?), (.+?)\)", part)
+                # 골대 프레임 기준 좌표 — 골대 안 0~1, 빗나간 슛은 범위 밖 값.
+                # 원문("gx,gy,공격방향")을 그대로 보존해야 불러오기→전송에서 슛 모션 궤적이 살아난다.
+                gm_text = part.removeprefix("GoalMouth: ").strip()
+                log_dict["GoalMouth"] = gm_text
+                gm_match = re.search(r"\((.+?), (.+?)\)", gm_text)
                 if gm_match:
                     log_dict["GoalMouthX"], log_dict["GoalMouthY"] = gm_match.groups()
+                else:
+                    gm_parts = [p.strip() for p in gm_text.split(",")]
+                    if len(gm_parts) >= 2:
+                        log_dict["GoalMouthX"], log_dict["GoalMouthY"] = gm_parts[0], gm_parts[1]
             elif part.startswith("Pos("):
                 end_pos_match = re.search(r"Pos\((.+?), (.+?)\)", part)
                 if end_pos_match:
@@ -1528,6 +1535,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "AfterNumberedPointCount",
         "xG",
         "xGOT",
+        "GoalMouth",
         "GoalMouthX",
         "GoalMouthY",
         "EPV",
@@ -2771,6 +2779,13 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
         tags = clean_value(row.get("Tags", ""))
         dual_state = clean_value(row.get("DualState", ""))
         team_id = clean_value(row.get("TeamID", ""))
+        # 슛 골대 클릭("gx,gy,공격방향") — 없으면 구버전 엑셀의 X/Y+행 공격방향으로 재조립.
+        goal_mouth = clean_value(row.get("GoalMouth", ""))
+        if not goal_mouth:
+            gm_x = clean_value(row.get("GoalMouthX", ""))
+            gm_y = clean_value(row.get("GoalMouthY", ""))
+            if gm_x and gm_y:
+                goal_mouth = f"{gm_x},{gm_y},{direction or 'right'}"
         xg = clean_value(row.get("xG", ""))
         xgot = clean_value(row.get("xGOT", ""))
         epv = clean_value(row.get("EPV", ""))
@@ -2806,6 +2821,8 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
         metrics = _format_metrics({"xG": xg, "xGOT": xgot, "EPV": epv, "PC": pc})
         if metrics:
             log_parts.append(f"Metrics: {metrics}")
+        if goal_mouth:
+            log_parts.append(f"GoalMouth: {goal_mouth}")
         if dual_state:
             log_parts.append(f"DualState: {dual_state}")
         logs.append(" | ".join(log_parts))
@@ -2824,6 +2841,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "xGOT": _parse_metrics(metrics).get("xGOT", "") if metrics else "",
                 "EPV": _parse_metrics(metrics).get("EPV", "") if metrics else "",
                 "PC": _parse_metrics(metrics).get("PC", "") if metrics else "",
+                "GoalMouth": goal_mouth,
                 "SceneIndex": scene_index,
                 "SceneActionIndex": scene_action_index,
                 "SceneState": scene_state,
