@@ -7625,6 +7625,282 @@ def create_produce_job(
 # FinePlay 연동 (영상 왕복): poll+claim → S3 영상 태깅 → 클립 렌더+업로드+콜백
 # ---------------------------------------------------------------------------
 
+@app.get("/api/highlight/archive-jobs")
+def list_archived_jobs(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """아카이브 — '아카이브' 버튼으로 보관 처리된 FinePlay 잡 목록 (사전·일반 모두).
+
+    보관 현황(클립·FPA 장면·원본·콜백)을 한눈에 보여주고, 클립 결과로 들어가
+    수정도 계속 가능하다. 사전 작업은 런칭 후 신청 연결·전송이 이 목록 기반으로 진행된다.
+    """
+    jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.mode == "fineplay")
+        .order_by(desc(HighlightJob.created_at))
+        .all()
+    )
+    rows = []
+    for job in jobs:
+        meta = job.job_metadata or {}
+        if not meta.get("clip_archived"):
+            continue
+        match_id = meta.get("match_id")
+        match_obj = None
+        if match_id:
+            try:
+                match_obj = db.get(Match, UUID(str(match_id)))
+            except (ValueError, TypeError):
+                match_obj = None
+        clips = db.query(HighlightClip).filter(HighlightClip.job_id == job.id).all()
+        clip_ids = [c.id for c in clips]
+        actions = (
+            db.query(HighlightClipAction)
+            .filter(HighlightClipAction.clip_id.in_(clip_ids))
+            .all()
+            if clip_ids
+            else []
+        )
+        # 장면 수 = 클립별 그룹 수 (groupIndex 없던 옛 데이터는 sceneState 보유 행으로 폴백)
+        group_keys: set[tuple] = set()
+        fallback_scenes = 0
+        for a in actions:
+            extra = a.extra or {}
+            if extra.get("groupIndex") is not None:
+                group_keys.add((a.clip_id, extra["groupIndex"]))
+            elif isinstance(extra.get("sceneState"), dict):
+                fallback_scenes += 1
+        scene_count = len(group_keys) + fallback_scenes
+        clips_with_actions = len({a.clip_id for a in actions})
+        rows.append({
+            "job_id": job.id,
+            "match_id": match_id,
+            "name": (match_obj.name if match_obj else None) or meta.get("display_name") or job.id,
+            "status": job.status,
+            "standalone": bool(meta.get("standalone")),
+            "analysis_request_id": meta.get("analysis_request_id"),
+            "clip_count": len(clips),
+            "clips_with_actions": clips_with_actions,
+            "action_count": len(actions),
+            "scene_count": scene_count,
+            "source_deleted": bool(meta.get("source_deleted")),
+            "callback_status": meta.get("callback_status"),
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+        })
+    return {"jobs": rows}
+
+
+@app.get("/api/highlight/fineplay-jobs/archive-readiness")
+def fineplay_archive_readiness(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """잡별 아카이브 가능 여부 — 클립 수와 FPA 데이터(액션)가 들어간 클립 수.
+
+    모든 클립에 액션이 있어야 ready. 작업 목록의 아카이브 버튼 활성화 판단용.
+    """
+    by_job: dict[str, list[str]] = {}
+    for clip_id, job_id in db.query(HighlightClip.id, HighlightClip.job_id).all():
+        by_job.setdefault(job_id, []).append(clip_id)
+    acted = {row[0] for row in db.query(HighlightClipAction.clip_id).distinct().all()}
+    return {
+        "jobs": {
+            job_id: {
+                "clip_count": len(clip_ids),
+                "clips_with_actions": sum(1 for c in clip_ids if c in acted),
+                "ready": bool(clip_ids) and all(c in acted for c in clip_ids),
+            }
+            for job_id, clip_ids in by_job.items()
+        }
+    }
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/archive")
+def archive_fineplay_job(
+    job_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """FinePlay 잡 아카이브 처리/해제 — body {archived: bool}. 사전·일반 모두 가능.
+
+    아카이브되면 작업 목록에서 빠지고 '아카이브' 룸에 나타난다.
+    데이터는 그대로라 언제든 해제·수정 가능하다.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = dict(job.job_metadata or {})
+    archived = bool(body.get("archived", True))
+    if archived:
+        # 모든 클립에 FPA 데이터(액션)가 있어야 아카이브 가능 — 작업 누락 방지.
+        clip_ids = [c.id for c in db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()]
+        if not clip_ids:
+            raise HTTPException(status_code=409, detail="클립이 없습니다 — 먼저 클립을 생성하세요.")
+        acted = {
+            row[0]
+            for row in db.query(HighlightClipAction.clip_id)
+            .filter(HighlightClipAction.clip_id.in_(clip_ids))
+            .distinct()
+            .all()
+        }
+        if len(acted) < len(clip_ids):
+            raise HTTPException(
+                status_code=409,
+                detail=f"모든 클립에 FPA 데이터가 있어야 아카이브할 수 있습니다 — {len(acted)}/{len(clip_ids)} 클립 완료.",
+            )
+    metadata["clip_archived"] = archived
+    metadata["clip_archived_at"] = datetime.utcnow().isoformat() if archived else None
+    update_job(db, job_id, job_metadata=metadata)
+    return {"job_id": job_id, "archived": archived}
+
+
+@app.post("/api/highlight/fineplay-jobs/standalone/upload-url")
+def standalone_upload_url(
+    body: dict = Body(default={}),
+    user: User = Depends(_require_superuser),
+):
+    """사전 작업 풀영상 업로드용 presigned PUT — 신청 없이 콘솔이 직접 원본을 확보한다."""
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+    file_name = str(body.get("file_name") or "match.mp4").strip()
+    safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", file_name) or "match.mp4"
+    key = f"prelaunch/sources/{uuid.uuid4().hex[:8]}/{safe_name}"
+    content_type = "video/mp4" if safe_name.lower().endswith(".mp4") else "application/octet-stream"
+    return {
+        "upload_url": storage.presigned_put(key, expires=7200, content_type=content_type),
+        "s3_key": key,
+        "content_type": content_type,
+    }
+
+
+@app.post("/api/highlight/fineplay-jobs/standalone")
+def create_standalone_fineplay_job(
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """신청(analysis request) 없이 사전 작업 잡을 만든다 — 런칭 전 보관용.
+
+    가상 신청 ID(pre-xxxxxxxx)로 기존 fineplay 파이프라인(태깅→produce→클립 DB)을
+    그대로 태우되, 콜백은 신청 연결 전까지 보류(held)된다. 클레임과 같은 컨벤션으로
+    콘솔 Match 를 함께 만들어 FPA dual 이 같은 매치를 바라보게 한다 (홈=우리 팀).
+    """
+    team_name = str(body.get("team_name") or "").strip()
+    opp_name = str(body.get("opponent_name") or "").strip()
+    video_s3_key = str(body.get("video_s3_key") or "").strip()
+    if not team_name or not opp_name:
+        raise HTTPException(status_code=400, detail="team_name, opponent_name 은 필수입니다.")
+    if not video_s3_key:
+        raise HTTPException(status_code=400, detail="video_s3_key 가 없습니다. 영상을 먼저 업로드하세요.")
+
+    rid = f"pre-{uuid.uuid4().hex[:8]}"
+    job_id = f"fp-{rid}"
+    match_obj = Match(
+        id=uuid.uuid4(),
+        name=f"[FPA | 사전] {team_name} vs {opp_name}",
+        sport="FOOTBALL",
+        competition_class="FPA",
+        round_number=1,
+        archived=True,
+        archived_at=datetime.utcnow(),
+        metadata_json={
+            "sport": "FOOTBALL",
+            "home_team": team_name,
+            "away_team": opp_name,
+            "first_half_minutes": 45,
+            "second_half_minutes": 45,
+            "source": "prelaunch_standalone",
+            "analysis_request_id": rid,
+        },
+        operator_id=user.id,
+    )
+    db.add(match_obj)
+
+    manifest = {
+        "analysisRequestId": rid,
+        "team": {"teamId": "prelaunch", "teamName": team_name},
+        "opponent": {"name": opp_name},
+        "videos": [{
+            "videoId": "v1",
+            "s3Key": video_s3_key,
+            **({"durationSeconds": body["duration_seconds"]} if body.get("duration_seconds") else {}),
+        }],
+        "lineup": [],
+    }
+    job = HighlightJob(
+        id=job_id,
+        owner_id=user.id,
+        status="tagging",
+        mode="fineplay",
+        original_filename=video_s3_key.rsplit("/", 1)[-1] or "prelaunch.mp4",
+        job_metadata={
+            "display_name": team_name,
+            "analysis_request_id": rid,
+            # 신청 미연결 표시 — produce 콜백 보류·재전송 차단·연결 단계 식별에 쓴다.
+            "standalone": True,
+            "manifest": manifest,
+            "clips": [],
+            "match_id": str(match_obj.id),
+            "fpa_link": {"match_id": str(match_obj.id), "our_side": "home"},
+            "progress": {
+                "phase": "tagging",
+                "percent": 0,
+                "detail": "태깅 대기 중 (사전 작업)",
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        },
+    )
+    db.add(job)
+    db.commit()
+    _match_response_cache.clear()
+    return {"job_id": job_id, "match_id": str(match_obj.id), "analysis_request_id": rid}
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/delete-source")
+def delete_standalone_source(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """사전 작업 원본 영상을 S3 에서 지운다 — 보관비 정리.
+
+    클립·썸네일·모션은 독립 파일이라 영향 없다. 단 삭제 후엔 원본 재생·재제작이
+    불가능하므로 제작 완료(done) 상태에서만 허용한다. 클레임 작업(앱 업로드 원본)은
+    FinePlay 쪽 보존 정책 소관이라 여기서 지우지 않는다.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = dict(job.job_metadata or {})
+    if not metadata.get("standalone"):
+        raise HTTPException(status_code=409, detail="사전 작업만 원본을 삭제할 수 있습니다.")
+    if metadata.get("source_deleted"):
+        return {"deleted": [], "already": True}
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail="클립 제작 완료(done) 후에만 원본을 삭제할 수 있습니다.")
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+    videos = (metadata.get("manifest") or {}).get("videos") or []
+    deleted: list[str] = []
+    for v in videos:
+        key = str(v.get("s3Key") or "").strip()
+        # 사전 작업 원본 prefix 밖의 키는 지우지 않는다 (안전장치).
+        if key.startswith("prelaunch/sources/"):
+            try:
+                storage.delete_object(key)
+                deleted.append(key)
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"S3 삭제 실패: {exc}")
+    metadata["source_deleted"] = True
+    metadata["source_deleted_at"] = datetime.utcnow().isoformat()
+    update_job(db, job_id, job_metadata=metadata)
+    return {"deleted": deleted}
+
+
 @app.post("/api/highlight/fineplay-jobs/poll")
 def poll_fineplay_jobs(
     db: Session = Depends(get_db),
@@ -7742,6 +8018,8 @@ def fineplay_source_url(
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    if (job.job_metadata or {}).get("source_deleted"):
+        raise HTTPException(status_code=409, detail="원본이 삭제된 작업입니다 (보관비 정리). 클립은 클립 결과 탭에서 재생됩니다.")
     manifest = fineplay_parse_manifest((job.job_metadata or {}).get("manifest") or {})
     video = manifest.primary_video
     if not video:
@@ -7771,6 +8049,8 @@ def resend_fineplay_callback(
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
     metadata = dict(job.job_metadata or {})
+    if metadata.get("standalone"):
+        raise HTTPException(status_code=409, detail="사전 작업 매치입니다 — 신청 연결 후 전송할 수 있습니다.")
     payload = metadata.get("result_payload")
     if not payload:
         raise HTTPException(status_code=409, detail="보낼 결과가 없습니다. 먼저 클립을 생성하세요.")
@@ -7851,6 +8131,8 @@ def produce_fineplay_job(
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    if (job.job_metadata or {}).get("source_deleted"):
+        raise HTTPException(status_code=409, detail="원본이 삭제된 작업이라 클립을 다시 만들 수 없습니다.")
 
     # 편집룸 재편집은 team 을 안 보낼 수 있다 — 같은 clipId 의 기존 태깅 팀을 승계.
     prev_teams: dict[str, str] = {}
@@ -7884,6 +8166,8 @@ def produce_fineplay_job(
 
     metadata = dict(job.job_metadata or {})
     metadata["clips"] = clips
+    # 자동 전송 없음 — sendCallback=true 일 때만 produce 후 콜백. 기본은 생성만(클립 결과 탭에서 명시 전송).
+    metadata["send_on_produce"] = bool(body.get("sendCallback"))
 
     if "fpaMatchId" in body:
         raw_fpa_id = str(body.get("fpaMatchId") or "").strip()
@@ -8262,6 +8546,8 @@ def clip_result_resend(
     if not job:
         raise HTTPException(status_code=409, detail="클립의 원본 잡이 없습니다.")
     metadata = dict(job.job_metadata or {})
+    if metadata.get("standalone"):
+        raise HTTPException(status_code=409, detail="사전 작업 매치입니다 — 신청 연결 후 전송할 수 있습니다.")
     rid = metadata.get("analysis_request_id")
     manifest = metadata.get("manifest") or {}
     team_id = (manifest.get("team") or {}).get("teamId")

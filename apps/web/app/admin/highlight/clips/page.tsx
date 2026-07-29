@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import { apiJson, type SessionUser } from '../../../../lib/api';
 
@@ -132,12 +132,23 @@ export default function ClipResultsPage() {
     return () => { active = false; };
   }, []);
 
+  // 아카이브 룸 '열어서 수정' 등 ?matchId= 딥링크 진입 시 해당 매치를 바로 연다 (최초 1회).
+  const deepLinkDone = useRef(false);
+
   const loadMatches = useCallback(async () => {
     try {
-      setMatches(await apiJson<MatchRow[]>('/highlight/clip-results/matches'));
+      const rows = await apiJson<MatchRow[]>('/highlight/clip-results/matches');
+      setMatches(rows);
+      if (!deepLinkDone.current) {
+        deepLinkDone.current = true;
+        const target = new URLSearchParams(window.location.search).get('matchId');
+        const m = target ? rows.find((r) => r.match_id === target) : null;
+        if (m) void openMatch(m);
+      }
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { void loadMatches(); }, [loadMatches]);

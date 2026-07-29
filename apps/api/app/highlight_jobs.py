@@ -961,7 +961,13 @@ def run_fineplay_produce(job_id: str) -> None:
         metadata["result_payload"] = payload
 
         client = default_client()
-        if client.configured:
+        if metadata.get("standalone"):
+            # 사전 작업 — 신청이 없으므로 콜백은 연결 단계까지 보류한다. 결과는 DB·S3 에 전부 보관됨.
+            metadata["callback_status"] = "held (사전 작업 — 신청 미연결)"
+        elif not metadata.get("send_on_produce"):
+            # 생성만 — FPA·검수까지 끝낸 뒤 클립 결과 탭에서 명시적으로 전송한다.
+            metadata["callback_status"] = "held (생성만 — 클립 결과에서 전송)"
+        elif client.configured:
             try:
                 client.post_results(payload)
                 metadata["callback_status"] = "sent"

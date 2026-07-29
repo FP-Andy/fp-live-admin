@@ -85,6 +85,18 @@ class S3Storage:
             ExpiresIn=expires,
         )
 
+    def delete_object(self, key: str) -> None:
+        """보관비 정리용 — 제작이 끝난 사전 작업 원본 등을 지운다."""
+        self._client().delete_object(Bucket=self.bucket, Key=key)
+
+    def presigned_put(self, key: str, expires: int = 3600, content_type: str = "video/mp4") -> str:
+        """브라우저 직접 업로드용 — 사전 작업 풀영상처럼 큰 파일을 서버 경유 없이 올린다."""
+        return self._client().generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self.bucket, "Key": key, "ContentType": content_type},
+            ExpiresIn=expires,
+        )
+
 
 def default_storage() -> S3Storage:
     """env 기반 기본 S3 스토리지."""
