@@ -108,6 +108,7 @@ export default function FineplayJobsPage() {
   const [preOpen, setPreOpen] = useState(false);
   const [preTeam, setPreTeam] = useState('');
   const [preOpp, setPreOpp] = useState('');
+  const [preName, setPreName] = useState('');
   const [preFile, setPreFile] = useState<File | null>(null);
   const [preBusy, setPreBusy] = useState(false);
   const [preProgress, setPreProgress] = useState(0);
@@ -201,6 +202,7 @@ export default function FineplayJobsPage() {
           body: JSON.stringify({
             team_name: preTeam.trim(),
             opponent_name: preOpp.trim(),
+            match_name: preName.trim(),
             video_s3_key: videoKey,
           }),
         },
@@ -208,6 +210,7 @@ export default function FineplayJobsPage() {
       setPreMsg(`사전 작업 생성 완료 — ${res.job_id}. 목록에서 태깅을 시작하세요.`);
       setPreTeam('');
       setPreOpp('');
+      setPreName('');
       setPreFile(null);
       await loadJobs();
     } catch (err) {
@@ -456,6 +459,13 @@ export default function FineplayJobsPage() {
               placeholder="상대팀명"
               value={preOpp}
               onChange={(e) => setPreOpp(e.target.value)}
+              disabled={preBusy}
+            />
+            <input
+              style={{ ...numInput, width: 240 }}
+              placeholder="매치명 (비우면 자동: [FPA | 사전] 팀 vs 상대)"
+              value={preName}
+              onChange={(e) => setPreName(e.target.value)}
               disabled={preBusy}
             />
             <input

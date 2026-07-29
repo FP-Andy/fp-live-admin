@@ -7798,9 +7798,11 @@ def create_standalone_fineplay_job(
 
     rid = f"pre-{uuid.uuid4().hex[:8]}"
     job_id = f"fp-{rid}"
+    # 매치명 — 직접 입력, 비우면 컨벤션 자동. 표시용이라 앱 연동(ID 기반)엔 무관.
+    match_name = str(body.get("match_name") or "").strip() or f"[FPA | 사전] {team_name} vs {opp_name}"
     match_obj = Match(
         id=uuid.uuid4(),
-        name=f"[FPA | 사전] {team_name} vs {opp_name}",
+        name=match_name,
         sport="FOOTBALL",
         competition_class="FPA",
         round_number=1,
