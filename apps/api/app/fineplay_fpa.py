@@ -18,11 +18,14 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .xfp_score import score_clip_actions
+
 # FPA Action 명(fpa.ACTION_CODES 값) → FinePlay contributionRole.
 # 서버가 아는 롤: SHOOTER PASSER CROSSER DRIBBLER PENETRATOR INTERCEPTOR PRESSER DUELER
 # (미지의 롤은 경고 후 원문 보존이므로 매핑 없는 액션은 롤을 생략한다.)
 # 임시 xFP 자리값 — 정식 산식(클립별 xFP, ~/xFP calc_action_score 이식) 전까지
-# 모든 액션 xfpScore / 선수 clipScore 를 50으로 고정해 점수 UI 프로세스를 끝까지 검증한다.
+# xFP 정본 v0.1 채점 적용 — 유효 Effect Action 만 xfpScore 를 받는다 (xfp_score.py).
+# 자리값 50 은 유효 액션이 하나도 없는 선수의 clipScore 폴백에만 남는다.
 XFP_PLACEHOLDER_SCORE = 50
 
 ACTION_ROLE_MAP: dict[str, str] = {
@@ -330,10 +333,10 @@ def analysis_from_actions(
 
     씬 기반 enrichment 와 DB 기반 재전송이 공유하는 조립 규칙.
 
-    대표 액션 선정(2단계):
+    대표 액션 선정(3단계):
       1) 클립 결과 탭에서 지정한 명시값(extra.isPrimary) — 최우선.
-      2) 자동: ACTION_SIGNIFICANCE 중요도순, 동급이면 나중(seq 큰) 액션.
-         하이라이트는 결정적 장면으로 끝나는 경우가 많아 마지막 쪽이 대표일 확률이 높다.
+      2) 자동: 정본 v0.1 규칙 — 유효 Effect Action 의 백분위 argmax.
+      3) 폴백(채점 불가 시): ACTION_SIGNIFICANCE 중요도순, 동급이면 나중(seq 큰) 액션.
     (태깅 시 ★(SceneState.primary)는 씬 채점·롤용으로만 쓰고 클립 대표에는 안 쓴다.)
     """
     if not actions:
@@ -346,6 +349,7 @@ def analysis_from_actions(
     )
     if primary is None and primary_seq is not None:
         primary = next((a for a in actions if a.get("seq") == primary_seq), None)
+    explicit_primary = primary is not None
     if primary is None:
         primary = min(
             actions,
@@ -354,11 +358,6 @@ def analysis_from_actions(
                 -float(a.get("seq") or 0),
             ),
         )
-
-    primary_action = str(primary.get("action") or "")
-    primary_side = str(primary.get("teamSide") or "").strip().lower()
-    clip_side = clip_team if clip_team in ("home", "away") else (primary_side or None)
-    is_ours = clip_side == our_side
 
     # 페이로드용 액션(간결형): DB 전용 필드 제외.
     payload_actions = [
@@ -371,8 +370,6 @@ def analysis_from_actions(
         if str(a.get("action") or "") in _SHOT_ACTIONS
     ]
     for a, pa in zip(actions, payload_actions):
-        # 정식 xFP 산식 전 임시 자리값 — 앱 점수 UI 프로세스를 끝까지 태우기 위함.
-        pa.setdefault("xfpScore", XFP_PLACEHOLDER_SCORE)
         # 그룹(FPA 태깅 장면) 정보 — DB 재전송 경로는 extra 에만 있으므로 승격.
         ex = a.get("extra") or {}
         if pa.get("groupIndex") is None and ex.get("groupIndex") is not None:
@@ -392,10 +389,28 @@ def analysis_from_actions(
         )
         if code:
             pa["actionCode"] = code
+
+    # 정본 v0.1 Action xFP — 24코드·연결 슈팅이 준비된 뒤 장면(Event) 규칙으로 채점.
+    # 유효 Effect Action 만 점수를 받는다 (임시 50점 자리값 대체).
+    score_clip_actions(payload_actions)
+
+    # 대표 액션 — 명시 지정이 없으면 정본 규칙(Action Percentile argmax)으로 확정.
+    if not explicit_primary:
+        best = max(
+            (pa for pa in payload_actions if pa.get("xfpPercentile") is not None),
+            key=lambda pa: pa["xfpPercentile"],
+            default=None,
+        )
+        if best is not None:
+            primary = next(a for a, pa in zip(actions, payload_actions) if pa is best)
+    for a, pa in zip(actions, payload_actions):
         if a is primary:
             pa["isClipPrimary"] = True
-            if code:
-                pass  # mainActionCode 는 아래 team_view 조립 후 세팅
+
+    primary_action = str(primary.get("action") or "")
+    primary_side = str(primary.get("teamSide") or "").strip().lower()
+    clip_side = clip_team if clip_team in ("home", "away") else (primary_side or None)
+    is_ours = clip_side == our_side
 
     labels: list[str] = []
     for a in actions:
@@ -472,8 +487,15 @@ def analysis_from_actions(
         role = ACTION_ROLE_MAP.get(str(best.get("action") or ""))
         if role:
             player["contributionRole"] = role
-        # 클립 점수 임시 자리값 — 백엔드가 검증(0~100)·저장하고 경기 단위 평균(matchPlayerScores)도 파생.
-        player["clipScore"] = XFP_PLACEHOLDER_SCORE
+        # 클립 점수 — 그 선수 유효 Effect Action xFP 의 최대값. 유효 액션이 없으면
+        # 자리값 유지 (백엔드가 0~100 검증·저장, 경기 단위 평균 matchPlayerScores 파생).
+        player_seqs = {float(a.get("seq") or 0) for a in player_actions}
+        player_scores = [
+            pa["xfpScore"]
+            for pa in payload_actions
+            if pa.get("xfpScore") is not None and float(pa.get("seq") or 0) in player_seqs
+        ]
+        player["clipScore"] = max(player_scores) if player_scores else XFP_PLACEHOLDER_SCORE
         involved.append(player)
 
     main_action = ACTION_LABELS_KO.get(primary_action) or (primary_action or None)
@@ -553,9 +575,11 @@ def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | N
 
 
 def annotate_action_codes(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """직렬화된 DB 액션 목록에 actionCode 를 제자리 주석 — 콘솔 결과 탭 검수용.
+    """직렬화된 DB 액션 목록에 actionCode·xfpScore 를 제자리 주석 — 콘솔 결과 탭 검수용.
 
-    재전송 페이로드와 같은 규칙(좌표는 extra 승격, 뒤 슈팅 연결 시 G2/G3)으로 계산한다.
+    재전송 페이로드와 같은 규칙(좌표는 extra 승격, 뒤 슈팅 연결 시 G2/G3)으로 계산하고,
+    정본 v0.1 Action xFP 채점(장면 규칙·유효 Effect Action 만 점수)까지 동일하게 돌린다 —
+    콘솔에서 보는 점수 = 앱으로 나가는 점수.
     """
     shot_seqs = [
         float(a.get("seq") or 0)
@@ -567,12 +591,15 @@ def annotate_action_codes(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
         if a.get("x") is None and ex.get("x") is not None:
             a["x"] = ex.get("x")
             a["y"] = ex.get("y")
+        if a.get("groupIndex") is None and ex.get("groupIndex") is not None:
+            a["groupIndex"] = ex["groupIndex"]
         code = classify_action_code(
             a,
             later_shot=any(sq > float(a.get("seq") or 0) for sq in shot_seqs),
         )
         if code:
             a["actionCode"] = code
+    score_clip_actions(actions)
     return actions
 
 

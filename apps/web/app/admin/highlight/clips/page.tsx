@@ -50,6 +50,9 @@ type ActionRow = {
   extra?: { isPrimary?: boolean } | null;
   // 24코드 표준 액션 ID(G1~S14) — 서버가 전송 규칙과 같은 로직으로 주석해 준다(검수용).
   actionCode?: string | null;
+  // 정본 v0.1 Action xFP — 유효 Effect Action 만 값이 있다. 콘솔 표시 = 앱 전송값.
+  xfpScore?: number | null;
+  xfpPercentile?: number | null;
 };
 
 type ClipDetail = ClipRow & {
@@ -446,6 +449,19 @@ export default function ClipResultsPage() {
                       <span style={{ width: 34 }} />
                     )}
                     <span style={{ width: 72, fontWeight: 600 }}>{a.actionLabel}</span>
+                    {a.xfpScore != null ? (
+                      <span
+                        title={a.xfpPercentile != null ? `백분위 ${(a.xfpPercentile * 100).toFixed(1)}%` : undefined}
+                        style={{
+                          width: 58, fontSize: 12, fontWeight: 700,
+                          color: a.xfpScore >= 95 ? '#facc15' : a.xfpScore >= 80 ? '#4ade80' : 'var(--text, #eee)',
+                        }}
+                      >
+                        xFP {a.xfpScore}
+                      </span>
+                    ) : (
+                      <span style={{ width: 58, fontSize: 12, color: 'var(--muted, #666)' }}>—</span>
+                    )}
                     <TeamBadge side={a.teamSide} labels={detail.team_labels} />
                     <span style={{ width: 110 }}>
                       #{a.jersey || '-'}{a.playerName ? ` ${a.playerName}` : ''}
