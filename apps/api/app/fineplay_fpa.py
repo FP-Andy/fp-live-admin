@@ -229,6 +229,8 @@ def scene_action_rows(
         action: dict[str, Any] = {
             "seq": i + 1,
             "sceneActionIndex": int(str(row.get("SceneActionIndex") or i + 1) or i + 1),
+            # dual 시간 기록 — 클립 내 초로 환산해 구간 시작 기본값으로 쓴다 (equal_split_offsets).
+            "recordedTime": _parse_timeline_seconds(row.get("Time")),
             "action": action_name,
             "actionLabel": ACTION_LABELS_KO.get(action_name) or action_name,
             "teamSide": side or None,
@@ -308,11 +310,49 @@ def _assign_action_groups(actions: list[dict[str, Any]], rows: list[dict[str, An
                 extra["isGroupMain"] = True
 
 
+def _parse_timeline_seconds(value: Any) -> float | None:
+    """dual 시간 기록("MM:SS"·"H:MM:SS"·초) → 초. 파싱 불가면 None."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    try:
+        if len(parts) == 1:
+            return float(parts[0])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    except ValueError:
+        return None
+    return None
+
+
 def equal_split_offsets(actions: list[dict[str, Any]], clip_duration: float) -> None:
-    """오프셋이 없는 액션에 클립 길이 균등 분할 기본값을 채운다(제자리 수정)."""
+    """액션 구간(클립 내 초) 채우기 — dual 기록 시간 우선, 나머지 균등 분할(제자리 수정).
+
+    분석관이 dual 에서 클립 내 시간(예: 00:03)으로 기록했으면 그 값이 구간 시작이
+    되어 앱 타임라인·시크와 동기화된다. 클립 길이를 벗어난 값(경기 시계로 찍은
+    경우)은 무시하고 균등 분할로 폴백한다. 콘솔 클립 결과에서 수정하면 그 값이 최우선.
+    """
     n = len(actions)
     if n <= 0 or clip_duration <= 0:
         return
+    # 1) dual 기록 시간 — 클립 범위(+1s 슬랙) 안일 때만 시작으로 채택.
+    for a in actions:
+        if a.get("startOffset") is None:
+            t = a.get("recordedTime")
+            if isinstance(t, (int, float)) and 0 <= t <= clip_duration + 1:
+                a["startOffset"] = round(min(float(t), clip_duration), 2)
+    # 2) 시작이 정해진 액션의 끝 = 다음 액션 시작(있으면) 또는 클립 끝.
+    for i, a in enumerate(actions):
+        if a.get("startOffset") is not None and a.get("endOffset") is None:
+            nxt = next(
+                (float(b["startOffset"]) for b in actions[i + 1:] if b.get("startOffset") is not None),
+                clip_duration,
+            )
+            a["endOffset"] = round(max(nxt, float(a["startOffset"])), 2)
+    # 3) 남은 액션은 기존 균등 분할.
     for i, a in enumerate(actions):
         if a.get("startOffset") is None or a.get("endOffset") is None:
             a["startOffset"] = round(clip_duration * i / n, 2)
@@ -361,7 +401,7 @@ def analysis_from_actions(
 
     # 페이로드용 액션(간결형): DB 전용 필드 제외.
     payload_actions = [
-        {k: v for k, v in a.items() if k not in ("sceneActionIndex", "extra") and v is not None}
+        {k: v for k, v in a.items() if k not in ("sceneActionIndex", "extra", "recordedTime") and v is not None}
         for a in actions
     ]
     shot_seqs = [
@@ -382,6 +422,9 @@ def analysis_from_actions(
             a["y"] = ex.get("y")
             pa.setdefault("x", ex.get("x"))
             pa.setdefault("y", ex.get("y"))
+        # 실패 패스/크로스 — 기록·표시는 하되 점수 계산에서 제외한다.
+        if _is_failed_action(str(a.get("action") or ""), ex):
+            pa["failed"] = True
         # 24코드 표준 액션 ID — 표기(라벨)는 앱이 코드 매핑으로 책임진다.
         code = classify_action_code(
             a,
@@ -531,6 +574,15 @@ def build_clip_analysis(
 
 _SHOT_ACTIONS = {"Shot", "Goal", "Shot On Target", "Blocked Shot"}
 _DEFENSE_ACTIONS = {"Intercept", "Tackle", "Acquisition", "Cutout", "Block", "Clear"}
+# 실패 표시 대상 — 하이라이트 마지막이 실패 패스/크로스로 끝나도 기록은 하되
+# 점수 계산에서 제외한다(태그 "Fail" 기준). 표시·모션(빨간 화살표)만 나간다.
+_FAILABLE_ACTIONS = {"Pass", "Cross"}
+
+
+def _is_failed_action(action_name: str, extra: dict[str, Any] | None) -> bool:
+    if action_name not in _FAILABLE_ACTIONS:
+        return False
+    return "Fail" in str((extra or {}).get("tags") or "")
 
 
 def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | None:
@@ -593,6 +645,8 @@ def annotate_action_codes(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
             a["y"] = ex.get("y")
         if a.get("groupIndex") is None and ex.get("groupIndex") is not None:
             a["groupIndex"] = ex["groupIndex"]
+        if _is_failed_action(str(a.get("action") or ""), ex):
+            a["failed"] = True
         code = classify_action_code(
             a,
             later_shot=any(sq > float(a.get("seq") or 0) for sq in shot_seqs),

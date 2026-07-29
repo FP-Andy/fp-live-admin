@@ -136,6 +136,9 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
     for members in groups.values():
         candidates = []
         for pa in members:
+            # 실패 패스/크로스 — 기록·표시만, 점수 계산 제외.
+            if pa.get("failed"):
+                continue
             code = str(pa.get("actionCode") or "")
             fam = outcome_family(code)
             if not fam:

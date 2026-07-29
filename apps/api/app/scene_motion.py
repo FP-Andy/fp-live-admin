@@ -10,6 +10,7 @@ SceneState(fineplay.fpa.scene_state.v0.1: beforeDots/afterDots)를 받아
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -75,6 +76,17 @@ def _parse_dots(value: Any) -> list[dict[str, Any]]:
 
 # dual 의 수비 화살표 액션 코드 — 상대 볼 경로(start=상대 볼 출발점, end=끊은 지점).
 _DEFENSE_ARROW_CODES = {"aa", "q", "ww", "qw"}
+# 실패 패스/크로스 입력 코드(단자 = 실패) — 빨간 화살표로 구분, 공은 실패 지점까지 이동.
+_FAIL_ARROW_CODES = {"s", "c"}
+# 화살표의 code 는 전체 스탯 입력("10s8"·"5aa.up")이다 — 프론트 statInputActionCode 와
+# 같은 규칙으로 액션 코드만 추출한다 (앞 등번호·뒤 수신 번호·태그(.) 제거).
+_STAT_CODE_RE = re.compile(r"^\d*([a-z]+)\d*$")
+
+
+def _arrow_action_code(stat_input: Any) -> str:
+    base = str(stat_input or "").strip().split(".", 1)[0].lower()
+    m = _STAT_CODE_RE.match(base)
+    return m.group(1) if m else ""
 
 
 def _parse_arrows(value: Any) -> list[dict[str, Any]]:
@@ -102,7 +114,12 @@ def _parse_arrows(value: Any) -> list[dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
-        kind = "defense" if str(item.get("code") or "").strip().lower() in _DEFENSE_ARROW_CODES else "pass"
+        code_l = _arrow_action_code(item.get("code"))
+        kind = (
+            "defense" if code_l in _DEFENSE_ARROW_CODES
+            else "fail" if code_l in _FAIL_ARROW_CODES
+            else "pass"
+        )
         arrows.append({
             "kind": kind,
             "x1": x1 / 1050 * FIELD_W, "y1": (1 - y1 / 680) * FIELD_H,
@@ -283,8 +300,9 @@ def _draw_arrow(
 
     kind='defense' 는 수비 액션(인터셉트·태클·차단·슛블록)으로 그린 상대 볼 경로 —
     dual 캔버스와 동일하게 빨간 선 + 화살촉 없음으로 구분한다.
+    kind='fail' 은 실패 패스/크로스 — 빨간 선 + 화살촉(어디로 보내려다 실패했는지).
     """
-    color = DEFENSE_ARROW_COLOR if kind == "defense" else ARROW_COLOR
+    color = DEFENSE_ARROW_COLOR if kind in ("defense", "fail") else ARROW_COLOR
     draw.line([start, end], fill=color, width=6)
     if kind == "defense":
         return
