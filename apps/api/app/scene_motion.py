@@ -73,13 +73,18 @@ def _parse_dots(value: Any) -> list[dict[str, Any]]:
     return dots
 
 
-def _parse_arrows(value: Any) -> list[dict[str, float]]:
+# dual 의 수비 화살표 액션 코드 — 상대 볼 경로(start=상대 볼 출발점, end=끊은 지점).
+_DEFENSE_ARROW_CODES = {"aa", "q", "ww", "qw"}
+
+
+def _parse_arrows(value: Any) -> list[dict[str, Any]]:
     """SceneState.passArrows — 라이브 캔버스 논리좌표(1050x680, y반전)를 미터로 변환.
 
     같은 패스가 before/after 캔버스에 한 번씩(동일 좌표) 기록되므로
     좌표 기준으로 중복 제거한다 — 안 하면 공이 같은 경로를 두 번 이동한다.
+    화살표의 code(어떤 액션으로 그렸는지)로 수비(상대 볼 경로) 여부를 판별해 넘긴다.
     """
-    arrows: list[dict[str, float]] = []
+    arrows: list[dict[str, Any]] = []
     seen: set[tuple[int, int, int, int]] = set()
     if not isinstance(value, list):
         return arrows
@@ -97,7 +102,9 @@ def _parse_arrows(value: Any) -> list[dict[str, float]]:
         if key in seen:
             continue
         seen.add(key)
+        kind = "defense" if str(item.get("code") or "").strip().lower() in _DEFENSE_ARROW_CODES else "pass"
         arrows.append({
+            "kind": kind,
             "x1": x1 / 1050 * FIELD_W, "y1": (1 - y1 / 680) * FIELD_H,
             "x2": x2 / 1050 * FIELD_W, "y2": (1 - y2 / 680) * FIELD_H,
         })
@@ -261,13 +268,26 @@ def _bake_goals(draw: ImageDraw.ImageDraw) -> None:
             draw.rectangle(box, fill=LINE_COLOR)
 
 
+# 수비 화살표(상대 볼 경로) — dual 캔버스 ARROW_COLORS.defense 와 동일 톤.
+DEFENSE_ARROW_COLOR = (224, 82, 79)
+
+
 def _draw_arrow(
     draw: ImageDraw.ImageDraw,
     start: tuple[float, float],
     end: tuple[float, float],
+    *,
+    kind: str = "pass",
 ) -> None:
-    """시안색 패스 화살표 — 콘솔 replay 의 line(#16c2c2, 4px) + 화살촉."""
-    draw.line([start, end], fill=ARROW_COLOR, width=6)
+    """패스 화살표 — 콘솔 replay 의 line(#16c2c2, 4px) + 화살촉.
+
+    kind='defense' 는 수비 액션(인터셉트·태클·차단·슛블록)으로 그린 상대 볼 경로 —
+    dual 캔버스와 동일하게 빨간 선 + 화살촉 없음으로 구분한다.
+    """
+    color = DEFENSE_ARROW_COLOR if kind == "defense" else ARROW_COLOR
+    draw.line([start, end], fill=color, width=6)
+    if kind == "defense":
+        return
     dx, dy = end[0] - start[0], end[1] - start[1]
     length = math.hypot(dx, dy)
     if length < 1:
@@ -276,7 +296,7 @@ def _draw_arrow(
     head = 19.0
     left = (end[0] - ux * head - uy * head * 0.55, end[1] - uy * head + ux * head * 0.55)
     right = (end[0] - ux * head + uy * head * 0.55, end[1] - uy * head - ux * head * 0.55)
-    draw.polygon([end, left, right], fill=ARROW_COLOR)
+    draw.polygon([end, left, right], fill=color)
 
 
 def _draw_ball(draw: ImageDraw.ImageDraw, x: float, y: float) -> None:
@@ -539,12 +559,13 @@ def render_scene_motion(
             img = _new_frame()
             draw = ImageDraw.Draw(img)
 
-            # 패스 화살표 — 콘솔 replay 와 같은 시안색 실선 + 화살촉.
+            # 패스 화살표(시안) / 수비 상대 볼 경로(빨강, 화살촉 없음) — dual 캔버스와 동일.
             for ar in arrows:
                 _draw_arrow(
                     draw,
                     _to_px(ar["x1"], ar["y1"]),
                     _to_px(ar["x2"], ar["y2"]),
+                    kind=str(ar.get("kind") or "pass"),
                 )
 
             for b, a in pairs:
