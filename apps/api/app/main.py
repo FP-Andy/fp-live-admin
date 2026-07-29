@@ -8247,7 +8247,7 @@ def clip_result_set_primary(
 def clip_result_resend(
     match_id: UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(_require_session_user),
+    user: User = Depends(_require_superuser),
 ):
     """DB의 clip·action 을 기준으로 결과 페이로드를 재구성해 FinePlay 로 재전송한다."""
     clips = (

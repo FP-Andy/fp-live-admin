@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
-import { apiJson } from '../../../../lib/api';
+import { apiJson, type SessionUser } from '../../../../lib/api';
 
 // 클립 결과: match → clip → action 3계층 열람/편집.
 // 클립 상세에서 [FPA dual] 새 창으로 씬을 찍어 클립에 귀속시키고,
@@ -121,6 +121,16 @@ export default function ClipResultsPage() {
   const [busy, setBusy] = useState(false);
   const [motions, setMotions] = useState<{ seq: number; url: string }[]>([]);
   const [motionMsg, setMotionMsg] = useState('');
+  // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
+  const [role, setRole] = useState<SessionUser['role'] | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    apiJson<SessionUser>('/session/me')
+      .then((data) => { if (active) setRole(data.role); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   const loadMatches = useCallback(async () => {
     try {
@@ -270,9 +280,11 @@ export default function ClipResultsPage() {
               <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>›</span>
               <button style={smallBtn} onClick={() => { setSelectedMatch(null); setDetail(null); }}>매치 목록</button>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{selectedMatch.name}</span>
-              <button style={{ ...primaryBtn, marginLeft: 'auto' }} onClick={resend} disabled={busy}>
-                ⬆ FinePlay로 전송
-              </button>
+              {role === 'SUPERADMIN' ? (
+                <button style={{ ...primaryBtn, marginLeft: 'auto' }} onClick={resend} disabled={busy}>
+                  ⬆ FinePlay로 전송
+                </button>
+              ) : null}
             </>
           ) : (
             <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => void loadMatches()}>새로고침</button>
