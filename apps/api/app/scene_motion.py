@@ -335,6 +335,103 @@ def _draw_goal_inset(draw: ImageDraw.ImageDraw, gx: float, gy: float) -> None:
     draw.polygon(pent, fill=(25, 25, 25))
 
 
+def _draw_goal_panel(
+    draw: ImageDraw.ImageDraw,
+    gx: float,
+    gy: float,
+    *,
+    side: str,
+    ball_t: float | None,
+    start_gx: float | None = None,
+) -> None:
+    """공격 반대편 하프를 덮는 대형 정면 골대 뷰 — 슛 궤적(아크)과 공까지 그린다.
+
+    side: 패널이 덮는 하프('left'|'right'). ball_t: None=공 미표시, 0~1=아크 진행률.
+    start_gx: 슈터의 골대 프레임 기준 가로 위치(0=왼쪽 포스트, 1=오른쪽 포스트).
+    정확 좌표가 아니라 방향(왼쪽/중앙/오른쪽)만 반영해 출발점이 항상 패널 안에 있게 한다.
+    None 이면 중앙에서 출발. 범위 밖 gx/gy(빗나간 슛)도 패널 안에서 골대 밖 위치로 표현된다.
+    """
+    margin = 14
+    if side == "left":
+        x0, x1 = margin, OUT_W // 2 - 8
+    else:
+        x0, x1 = OUT_W // 2 + 8, OUT_W - margin
+    y0, y1 = margin, OUT_H - margin
+    draw.rounded_rectangle(
+        [x0, y0, x1, y1], radius=14, fill=(10, 14, 12), outline=(96, 108, 102), width=2,
+    )
+
+    pw = x1 - x0
+    goal_w = pw * 0.8
+    goal_h = goal_w / 3.0  # 7.32:2.44 실제 비율
+    floor_y = y0 + (y1 - y0) * 0.5
+    gx0 = x0 + (pw - goal_w) / 2
+    gx1 = gx0 + goal_w
+    gy0p = floor_y - goal_h
+    # 바닥선
+    draw.line([(x0 + 16, floor_y), (x1 - 16, floor_y)], fill=(150, 160, 155), width=3)
+
+    # 약식 페널티 박스 — 정면 원근에서 보이는 부분만, 골대 크기에 비례.
+    # 골 에어리어는 골대보다 살짝 넓은 사다리꼴로, 페널티 박스는 좌우가 화면 밖이라
+    # 앞선(가로선)만 패널을 가로지른다. 페널티 스팟 포함.
+    box_color = (110, 122, 116)
+    cx = (gx0 + gx1) / 2
+    ghw = goal_w / 2
+    ga_top = ghw * 1.12
+    ga_bot = min(ghw * 1.24, pw / 2 - 14)
+    ga_y = floor_y + goal_h * 0.5
+    draw.line([(cx - ga_top, floor_y), (cx - ga_bot, ga_y)], fill=box_color, width=2)
+    draw.line([(cx + ga_top, floor_y), (cx + ga_bot, ga_y)], fill=box_color, width=2)
+    draw.line([(cx - ga_bot, ga_y), (cx + ga_bot, ga_y)], fill=box_color, width=2)
+    pa_y = floor_y + goal_h * 1.35
+    draw.line([(x0 + 14, pa_y), (x1 - 14, pa_y)], fill=box_color, width=2)
+    spot_y = floor_y + goal_h * 1.0
+    draw.ellipse([cx - 4, spot_y - 4, cx + 4, spot_y + 4], fill=box_color)
+
+    # 네트(은은한 격자)
+    for k in range(1, 8):
+        xx = gx0 + goal_w * k / 8
+        draw.line([(xx, gy0p), (xx, floor_y)], fill=(52, 60, 56), width=2)
+    for k in range(1, 4):
+        yy = gy0p + goal_h * k / 4
+        draw.line([(gx0, yy), (gx1, yy)], fill=(52, 60, 56), width=2)
+    # 골대 프레임(포스트 2 + 크로스바)
+    draw.line([(gx0, floor_y), (gx0, gy0p)], fill=(240, 245, 242), width=6)
+    draw.line([(gx1, floor_y), (gx1, gy0p)], fill=(240, 245, 242), width=6)
+    draw.line([(gx0 - 3, gy0p), (gx1 + 3, gy0p)], fill=(240, 245, 242), width=6)
+
+    # 도착점(골대 클릭 좌표) / 출발점(패널 하단 중앙 = 피치 쪽에서 날아오는 슛)
+    end_x = gx0 + min(max(gx, -0.35), 1.35) * goal_w
+    end_y = floor_y - min(max(gy, 0.0), 1.6) * goal_h
+    # 출발점 가로 = 슈터 방향만 3단계로 반영 (정확 좌표는 패널 밖으로 나갈 수 있음)
+    if start_gx is None or 0.35 <= start_gx <= 0.65:
+        start_x = x0 + pw * 0.5
+    elif start_gx < 0.35:
+        start_x = x0 + pw * 0.22
+    else:
+        start_x = x0 + pw * 0.78
+    start_y = y1 - 22
+    ctrl_x = (start_x + end_x) / 2
+    ctrl_y = min(start_y, end_y) - max(28.0, abs(start_x - end_x) * 0.1)
+
+    def bez(u: float) -> tuple[float, float]:
+        v = 1 - u
+        return (
+            v * v * start_x + 2 * v * u * ctrl_x + u * u * end_x,
+            v * v * start_y + 2 * v * u * ctrl_y + u * u * end_y,
+        )
+
+    # 궤적 점선 (노란 아크)
+    steps = 26
+    pts = [bez(i / steps) for i in range(steps + 1)]
+    for i in range(steps):
+        if i % 2 == 0:
+            draw.line([pts[i], pts[i + 1]], fill=(250, 204, 21), width=4)
+    if ball_t is not None:
+        bx, by = bez(min(max(ball_t, 0.0), 1.0))
+        _draw_ball(draw, bx, by)
+
+
 def _ease(t: float) -> float:
     """콘솔 replay 의 cubic-bezier(0.22,0.84,0.28,1) 근사 — 강한 ease-out."""
     return 1 - (1 - t) ** 3
@@ -349,6 +446,20 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def _load_kr_font(size: int) -> ImageFont.ImageFont:
+    """한글 자막용 — 도커(/app)와 로컬 레포 양쪽에서 KFA 고딕을 찾는다."""
+    candidates = (
+        Path("/app/assets/fonts/KFAGothicBold.otf"),
+        Path(__file__).resolve().parents[3] / "assets" / "fonts" / "KFAGothicBold.otf",
+    )
+    for path in candidates:
+        try:
+            return ImageFont.truetype(str(path), size)
+        except OSError:
+            continue
+    return _load_font(size)
+
+
 def render_scene_motion(
     scene_state: dict[str, Any],
     out_path: Path,
@@ -357,6 +468,7 @@ def render_scene_motion(
     actor_side: str | None = None,
     shot_target: tuple[float, float] | None = None,
     goal_mouth: tuple[float, float] | None = None,
+    caption: str | None = None,
 ) -> bool:
     """SceneState → mp4. 점이 하나도 없으면 False (렌더 생략).
 
@@ -379,6 +491,7 @@ def render_scene_motion(
                 arrows = [{"x1": b["x"], "y1": b["y"], "x2": a["x"], "y2": a["y"]}]
                 # 드리블 공은 행위자 점과 겹치지 않게 발끝(우하단)에 붙인다.
                 ball_offset = (0.9, -1.1)
+    shot_origin_y: float | None = None
     if shot_target is not None:
         # 슛 경로 — 슈터 최종 위치(없으면 마지막 화살표 끝)에서 골라인 지점으로.
         if actor_pair is not None:
@@ -389,9 +502,24 @@ def render_scene_motion(
             sx, sy = FIELD_W / 2, FIELD_H / 2
         arrows.append({"x1": sx, "y1": sy, "x2": shot_target[0], "y2": shot_target[1]})
         ball_offset = (0.0, 0.0)
+        shot_origin_y = sy
 
     font = _load_font(15)
     dot_r = 14.0
+
+    # 슛 장면이면 공격 반대편(비어 있는) 하프를 대형 정면 골대 뷰로 덮는다.
+    # 아크 출발점엔 슈터의 좌우 위치를 골대 프레임 좌표(gx)로 환산해 반영.
+    panel_side: str | None = None
+    panel_start_gx: float | None = None
+    if goal_mouth is not None and shot_target is not None:
+        if shot_target[0] == 0.0:
+            panel_side = "right"
+            if shot_origin_y is not None:
+                panel_start_gx = (shot_origin_y - 30.34) / 7.32
+        else:
+            panel_side = "left"
+            if shot_origin_y is not None:
+                panel_start_gx = (37.66 - shot_origin_y) / 7.32
 
     hold_before = int(HOLD_BEFORE_SEC * FPS)
     move = max(1, int(MOVE_SEC * FPS))
@@ -456,9 +584,39 @@ def render_scene_motion(
                 bpx, bpy = _to_px(bx, by)
                 _draw_ball(draw, bpx, bpy)
 
-            # 정면 골대 인셋 — 슛 액션(골대 클릭 좌표 보유)일 때만.
-            if goal_mouth is not None:
+            # 정면 골대 뷰 — 슛이면 반대편 하프 대형 패널(궤적 포함), 궤적 정보가 없으면 기존 인셋.
+            if panel_side is not None and goal_mouth is not None:
+                n = len(arrows)
+                pos = min(max(t, 0.0), 1.0) * n
+                # 공이 마지막(슛) 세그먼트에 진입한 뒤부터 패널 안 공이 아크를 따라 난다.
+                ball_t_panel = min(pos - (n - 1), 1.0) if n and pos >= n - 1 else None
+                _draw_goal_panel(
+                    draw, goal_mouth[0], goal_mouth[1],
+                    side=panel_side, ball_t=ball_t_panel, start_gx=panel_start_gx,
+                )
+            elif goal_mouth is not None:
                 _draw_goal_inset(draw, goal_mouth[0], goal_mouth[1])
+
+            # 설명 자막(예: "골! #7") — 골대 패널이 왼쪽을 덮으면 공격 하프 쪽으로 비켜 배치.
+            if caption:
+                cfont = _load_kr_font(30)
+                bbox = draw.textbbox((0, 0), caption, font=cfont)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                pad = 12
+                cx0, cy0 = (OUT_W // 2 + 26, 18) if panel_side == "left" else (18, 18)
+                draw.rounded_rectangle(
+                    [cx0, cy0, cx0 + tw + pad * 2, cy0 + th + pad * 2],
+                    radius=10,
+                    fill=(10, 14, 12),
+                    outline=(96, 108, 102),
+                    width=2,
+                )
+                draw.text(
+                    (cx0 + pad - bbox[0], cy0 + pad - bbox[1]),
+                    caption,
+                    font=cfont,
+                    fill=(250, 204, 21),
+                )
 
             img.save(tmpdir / f"f{f:04d}.png")
 
@@ -501,9 +659,16 @@ def _shot_target_from_goal_mouth(value: Any) -> tuple[float, float] | None:
     except (ValueError, IndexError):
         return None
     direction = parts[2].strip().lower() if len(parts) > 2 else "right"
+    # gx 는 슈터 시점(골대 정면) 왼쪽 포스트=0. 탑다운은 y 가 클수록 화면 위이므로,
+    # 오른쪽 공격(+x)을 보는 슈터의 왼쪽 = 화면 위(y=37.66) → gx 증가 = y 감소.
+    # 왼쪽 공격은 시선이 반대라 미러.
     if direction == "left":
-        return (0.0, 37.66 - gx * 7.32)
-    return (FIELD_W, 30.34 + gx * 7.32)
+        return (0.0, 30.34 + gx * 7.32)
+    return (FIELD_W, 37.66 - gx * 7.32)
+
+
+# 장면 그룹핑용 경계 센티널 — sceneState 없는 행을 만나면 그룹을 끊는다.
+_GROUP_BOUNDARY = object()
 
 
 def attach_scene_motions(
@@ -514,7 +679,11 @@ def attach_scene_motions(
     storage: Any,
     prefix: str,
 ) -> list[str]:
-    """extra.sceneState 가 있는 액션마다 모션 mp4 를 렌더·업로드하고 sceneMotionKey 를 단다.
+    """장면(태깅 단위)당 모션 mp4 를 1개 렌더·업로드하고 대표 액션에 sceneMotionKey 를 단다.
+
+    같은 장면의 행들은 동일한 sceneState 를 공유하므로 행마다 렌더하면 같은 모션이
+    중복된다. 그룹(groupIndex, 없으면 연속 동일 sceneState)당 대표 행 하나에만 붙인다.
+    대표 행: 골대 클릭 보유(슛 — 궤적 유지) > 그룹 주 액션(isGroupMain) > 첫 행.
 
     db_actions: extra 를 포함한 상세 액션(렌더 소스). 여기에 sceneMotionKey 도 세팅된다.
     payload_actions: teamView.actions 처럼 extra 가 빠진 병렬 목록(있으면 seq 로 매칭해 세팅).
@@ -524,12 +693,34 @@ def attach_scene_motions(
     if storage is None or not getattr(storage, "configured", False):
         return warnings
     by_seq = {a.get("seq"): a for a in (payload_actions or [])}
+
+    groups: list[list[dict[str, Any]]] = []
+    prev_key: Any = _GROUP_BOUNDARY
     for action in db_actions:
         extra = action.get("extra") or {}
         state = extra.get("sceneState")
         if not isinstance(state, dict):
+            prev_key = _GROUP_BOUNDARY  # 장면 경계 리셋
             continue
-        seq = action.get("seq")
+        gkey = extra.get("groupIndex") if extra.get("groupIndex") is not None else state
+        if prev_key is _GROUP_BOUNDARY or gkey != prev_key:
+            groups.append([])
+        groups[-1].append(action)
+        prev_key = gkey
+
+    for members in groups:
+        rep = next((a for a in members if (a.get("extra") or {}).get("goalMouth")), None)
+        if rep is None:
+            rep = next((a for a in members if (a.get("extra") or {}).get("isGroupMain")), members[0])
+        # 골 장면이면 자막으로 명시 — 득점자 등번호까지.
+        goal_member = next((a for a in members if str(a.get("action") or "") == "Goal"), None)
+        caption = None
+        if goal_member is not None:
+            jersey = str(goal_member.get("jersey") or "").strip()
+            caption = f"골! #{jersey}" if jersey else "골!"
+        extra = rep.get("extra") or {}
+        state = extra.get("sceneState")
+        seq = rep.get("seq")
         key = f"{prefix.rstrip('/')}/scene-motion/{clip_key}-a{seq}.mp4"
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -537,14 +728,15 @@ def attach_scene_motions(
                 if not render_scene_motion(
                     state,
                     out,
-                    actor_jersey=str(action.get("jersey") or "") or None,
-                    actor_side=str(action.get("teamSide") or "") or None,
+                    actor_jersey=str(rep.get("jersey") or "") or None,
+                    actor_side=str(rep.get("teamSide") or "") or None,
                     shot_target=_shot_target_from_goal_mouth(extra.get("goalMouth")),
                     goal_mouth=_goal_mouth_xy(extra.get("goalMouth")),
+                    caption=caption,
                 ):
                     continue
                 storage.upload(out, key, content_type="video/mp4")
-            action["sceneMotionKey"] = key
+            rep["sceneMotionKey"] = key
             target = by_seq.get(seq)
             if target is not None:
                 target["sceneMotionKey"] = key
