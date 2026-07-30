@@ -4329,6 +4329,41 @@ def get_fpa_saved_logs(match_id: UUID, db: Session = Depends(get_db), _user: Use
     return _serialize_fpa_saved_log(db.get(FpaSavedLog, match_id), match_id)
 
 
+@app.get("/api/fpa/matches/{match_id}/fineplay-lineup")
+def get_fpa_fineplay_lineup(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    """이 FPA 매치에 연결된 FinePlay 신청의 라인업 — dual 태깅 등번호 검증용.
+
+    fpa_link.match_id 가 이 매치인 fineplay 잡을 찾아 사이드별 등번호 명단을 준다.
+    연결 잡이 없으면 linked=false (화면은 라인업 패널·경고를 끈다).
+    """
+    target = str(match_id)
+    jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.mode == "fineplay")
+        .order_by(desc(HighlightJob.created_at))
+        .all()
+    )
+    job = next(
+        (
+            j for j in jobs
+            if str(
+                ((j.job_metadata or {}).get("fpa_link") or {}).get("match_id")
+                or (j.job_metadata or {}).get("match_id")
+                or ""
+            ) == target
+        ),
+        None,
+    )
+    if job is None:
+        return {"linked": False, "sides": {}}
+    return {
+        "linked": True,
+        "job_id": job.id,
+        "standalone": bool((job.job_metadata or {}).get("standalone")),
+        "sides": _fineplay_lineup_sides(job),
+    }
+
+
 @app.put("/api/fpa/matches/{match_id}/logs", response_model=FpaSavedLogsResponse)
 def save_fpa_logs(
     match_id: UUID,
@@ -8322,6 +8357,47 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
     }
 
 
+def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
+    """잡의 신청 라인업을 팀 사이드별로 정리한다 — 태깅 화면 등번호 검증용.
+
+    클레임 잡은 매니페스트 라인업(fpa_link.our_side 쪽), 사전 작업 잡은
+    연결된 신청의 links.{side}.lineup. 라인업 없는 사이드는 빠진다(경고 비활성).
+    """
+    sides: dict[str, dict] = {}
+    metadata = (job.job_metadata if job else None) or {}
+
+    def _players(lineup: Any) -> list[dict]:
+        players = []
+        for entry in lineup or []:
+            if not isinstance(entry, dict):
+                continue
+            jersey = str(entry.get("jerseyNumber") or "").strip()
+            if not jersey:
+                continue
+            players.append({
+                "jersey": jersey,
+                "name": str(entry.get("name") or "").strip(),
+                "isSubstitute": bool(entry.get("isSubstitute")),
+            })
+        return players
+
+    manifest = metadata.get("manifest") or {}
+    our_side = str((metadata.get("fpa_link") or {}).get("our_side") or "home").strip().lower()
+    manifest_players = _players(manifest.get("lineup"))
+    if manifest_players:
+        sides[our_side] = {
+            "team_name": str((manifest.get("team") or {}).get("teamName") or ""),
+            "players": manifest_players,
+        }
+    for side, link in (metadata.get("links") or {}).items():
+        if side not in ("home", "away") or not isinstance(link, dict):
+            continue
+        players = _players(link.get("lineup"))
+        if players:
+            sides[side] = {"team_name": str(link.get("team_name") or ""), "players": players}
+    return sides
+
+
 def _clip_job_context(db: Session, clip: HighlightClip) -> tuple[HighlightJob | None, str, dict[str, str], list[dict]]:
     """클립이 속한 잡에서 (job, our_side, 팀 라벨, 라인업)을 뽑는다."""
     job = db.get(HighlightJob, clip.job_id)
@@ -8455,6 +8531,8 @@ def clip_result_detail(
         "team_side": clip.team_side,
         "our_side": our_side,
         "team_labels": labels,
+        # 태깅(클립 귀속 dual)의 등번호 검증용 — 사이드별 신청 라인업.
+        "lineup_sides": _fineplay_lineup_sides(job),
         "start_sec": clip.start_sec,
         "end_sec": clip.end_sec,
         "duration_seconds": duration,

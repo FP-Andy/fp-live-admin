@@ -4396,6 +4396,70 @@ a:focus-visible {
   text-align: center;
 }
 
+/* FinePlay 신청 라인업 패널 + 라인업 밖 등번호 경고 */
+.fpa-lineup-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.fpa-lineup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.fpa-lineup-ok {
+  color: #7fd1a2;
+  font-size: 12px;
+}
+
+.fpa-lineup-side {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fpa-lineup-side-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+}
+
+.fpa-lineup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fpa-lineup-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.fpa-lineup-chip.sub {
+  border-style: dashed;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.fpa-jersey-warn {
+  color: #ffb04f;
+  font-weight: 600;
+}
+
 .fpa-segmented {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
