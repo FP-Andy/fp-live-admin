@@ -8155,24 +8155,37 @@ def fineplay_source_url(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    """태깅 화면에서 재생할 원본 영상의 presigned URL 을 준다 (6시간 유효)."""
+    """태깅 화면에서 재생할 원본 영상들의 presigned URL 을 준다 (6시간 유효).
+
+    한 신청에 영상이 여러 개(전반/후반 분리 촬영 등)면 videos[] 로 전부 준다 —
+    앱이 보낸 순서가 곧 경기 순서. 구 클라이언트 호환으로 첫 영상은 톱레벨에도 남긴다.
+    """
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
     if (job.job_metadata or {}).get("source_deleted"):
         raise HTTPException(status_code=409, detail="원본이 삭제된 작업입니다 (보관비 정리). 클립은 클립 결과 탭에서 재생됩니다.")
     manifest = fineplay_parse_manifest((job.job_metadata or {}).get("manifest") or {})
-    video = manifest.primary_video
-    if not video:
+    if not manifest.videos:
         raise HTTPException(status_code=409, detail="매니페스트에 영상이 없습니다.")
     storage = highlight_default_storage()
     if not storage.configured:
         raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+    videos = [
+        {
+            "videoId": v.video_id,
+            "url": storage.presigned_get(v.s3_key, expires=21600),
+            "durationSeconds": v.duration_seconds,
+            "resolution": v.resolution,
+        }
+        for v in manifest.videos
+    ]
     return {
-        "url": storage.presigned_get(video.s3_key, expires=21600),
-        "videoId": video.video_id,
-        "durationSeconds": video.duration_seconds,
-        "resolution": video.resolution,
+        "url": videos[0]["url"],
+        "videoId": videos[0]["videoId"],
+        "durationSeconds": videos[0]["durationSeconds"],
+        "resolution": videos[0]["resolution"],
+        "videos": videos,
     }
 
 
@@ -8241,6 +8254,8 @@ def fineplay_outputs(
             "end": c.get("endTime"),
             "mainAction": c.get("mainAction"),
             "durationSeconds": hv.get("durationSeconds"),
+            # 다중 영상 잡의 재편집 왕복용 — 편집룸이 그대로 되돌려 보내야 원본이 유지된다.
+            "sourceVideoId": c.get("sourceVideoId"),
         }
         for field, key in (
             ("url", "horizontalS3Key"),
@@ -8299,6 +8314,8 @@ def produce_fineplay_job(
                 "team": team if team in ("home", "away") else None,
                 "mainAction": c.get("mainAction"),
                 "makeVertical": bool(c.get("makeVertical")),
+                # 다중 영상 신청: 태그가 찍힌 원본 영상. 미전송이면 첫 영상으로 간주.
+                "sourceVideoId": (str(c.get("sourceVideoId")).strip() or None) if c.get("sourceVideoId") else None,
                 # 편집룸 재편집 시 기존 clipId 를 유지하면 같은 키로 덮어써(멱등) 중복이 없다.
                 "clipId": (str(c.get("clipId")).strip() or None) if c.get("clipId") else None,
             })

@@ -838,6 +838,20 @@ def run_fineplay_produce(job_id: str) -> None:
         manifest = parse_manifest(manifest_raw)
         rid = manifest.analysis_request_id
         default_video = manifest.primary_video.video_id if manifest.primary_video else ""
+        # 영상별 타임라인이 각자 0부터 시작하므로 전역 순서는 (영상 순서, 시작시간).
+        # 매니페스트 videos[] 순서 = 앱이 보낸 경기 순서. 클립 번호·씬 매칭·order_index 가
+        # 전부 이 정렬을 따른다 (영상 1개면 기존과 동일).
+        video_order = {v.video_id: i for i, v in enumerate(manifest.videos)}
+
+        def _clip_sort_key(c: dict) -> tuple[int, float]:
+            vid = str(c.get("sourceVideoId") or default_video)
+            try:
+                start = float(c.get("start") or 0)
+            except (TypeError, ValueError):
+                start = 0.0
+            return (video_order.get(vid, 0), start)
+
+        clips_raw = sorted(clips_raw, key=_clip_sort_key)
 
         specs: list[ClipSpec] = []
         clip_teams: dict[str, str | None] = {}  # clipKey → 태깅 팀(A/D). match–clip–action 기록·페이로드 공용.
@@ -898,6 +912,7 @@ def run_fineplay_produce(job_id: str) -> None:
                     our_side=our_side,
                     lineup=lineup,
                     clip_teams=clip_teams,
+                    video_order=video_order,
                 )
                 metadata["fpa_enrich_status"] = (
                     f"ok ({'; '.join(warnings)})" if warnings else "ok"

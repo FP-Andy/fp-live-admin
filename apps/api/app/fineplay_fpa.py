@@ -710,10 +710,13 @@ def enrich_result_payload(
     our_side: str,
     lineup: list[dict[str, Any]],
     clip_teams: dict[str, str | None] | None = None,
+    video_order: dict[str, int] | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """결과 콜백 payload 의 clips[] 에 FPA 분석 필드를 채운다(제자리 수정).
 
-    클립은 startTime 오름차순, 씬은 SceneIndex 오름차순으로 1:1 매칭.
+    클립은 (영상 순서, startTime) 오름차순, 씬은 SceneIndex 오름차순으로 1:1 매칭.
+    영상별 타임라인이 각자 0부터라 다중 영상 신청은 video_order(매니페스트 videos[]
+    순서) 없이는 전역 순서가 어긋난다. 미지정이면 startTime 만으로 정렬(영상 1개와 동일).
     반환: (경고 목록, DB 기록용 클립별 액션 레코드
            [{clip_key, fpa_match_id, scene_index, actions}]).
     """
@@ -725,7 +728,14 @@ def enrich_result_payload(
 
     scenes = load_scenes(list(saved_log.rows or []))
     clips = payload.get("clips") or []
-    ordered = sorted(clips, key=lambda c: float(c.get("startTime") or 0))
+    vorder = video_order or {}
+    ordered = sorted(
+        clips,
+        key=lambda c: (
+            vorder.get(str(c.get("sourceVideoId") or ""), 0),
+            float(c.get("startTime") or 0),
+        ),
+    )
 
     if not scenes:
         warnings.append(f"FPA 매치 {saved_log.match_id} 에 저장된 씬이 없습니다.")

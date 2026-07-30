@@ -41,7 +41,15 @@ type FpJob = {
 
 // team: 태깅 시점에 확정하는 클립 귀속 팀 (A=홈 / D=어웨이).
 // padBefore/padAfter: 태그별 앞/뒤 초 오버라이드 — 없으면 전역 기본값을 쓴다.
-type Tag = { id: string; t: number; team: 'home' | 'away'; padBefore?: number; padAfter?: number };
+// videoIdx/videoId: 다중 영상 신청에서 태그가 찍힌 원본(탭). clampEnd: 그 영상 길이(끝 넘김 방지).
+type Tag = {
+  id: string; t: number; team: 'home' | 'away';
+  padBefore?: number; padAfter?: number;
+  videoIdx: number; videoId?: string; clampEnd?: number;
+};
+
+// 신청 원본 영상 하나 — 앱이 보낸 순서(videos[] index)가 곧 경기 순서(전반/후반 등).
+type SourceVideo = { videoId?: string; url: string; durationSeconds?: number | null };
 
 type FpaMatch = {
   id: string;
@@ -123,7 +131,12 @@ export default function FineplayJobsPage() {
   const [preMsg, setPreMsg] = useState('');
 
   const [selected, setSelected] = useState<FpJob | null>(null);
-  const [sourceUrl, setSourceUrl] = useState('');
+  // 다중 영상 신청: 영상 탭으로 전환하며 태깅한다. sourceUrl 은 현재 탭에서 파생.
+  const [sourceVideos, setSourceVideos] = useState<SourceVideo[]>([]);
+  const [activeVideoIdx, setActiveVideoIdx] = useState(0);
+  const sourceUrl = sourceVideos[activeVideoIdx]?.url || '';
+  // 탭 전환 후 이어서 시킹할 시간(다른 영상의 태그 클릭) — 메타데이터 로드 시 적용.
+  const pendingSeekRef = useRef<number | null>(null);
   const [sourceError, setSourceError] = useState('');
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
@@ -375,7 +388,8 @@ export default function FineplayJobsPage() {
 
   const selectJob = async (job: FpJob) => {
     setSelected(job);
-    setSourceUrl('');
+    setSourceVideos([]);
+    setActiveVideoIdx(0);
     setSourceError('');
     setTags([]);
     setDuration(0);
@@ -393,11 +407,26 @@ export default function FineplayJobsPage() {
       setFpaOurSide('home');
     }
     try {
-      const res = await apiJson<{ url: string }>(`/highlight/fineplay-jobs/${job.id}/source-url`);
-      setSourceUrl(res.url);
+      const res = await apiJson<{ url: string; videoId?: string; videos?: SourceVideo[] }>(
+        `/highlight/fineplay-jobs/${job.id}/source-url`,
+      );
+      setSourceVideos(res.videos?.length ? res.videos : [{ videoId: res.videoId, url: res.url }]);
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  // 영상 탭 전환 — 태그는 유지되고, 새로 찍는 태그만 이 영상에 귀속된다.
+  const switchVideo = (idx: number, seekT?: number) => {
+    if (idx === activeVideoIdx) {
+      if (seekT !== undefined) seekTo(seekT);
+      return;
+    }
+    pendingSeekRef.current = seekT ?? null;
+    setActiveVideoIdx(idx);
+    setDuration(sourceVideos[idx]?.durationSeconds || 0);
+    setCurrent(seekT ?? 0);
+    setPlaying(false);
   };
 
   const togglePlay = useCallback(() => {
@@ -416,9 +445,18 @@ export default function FineplayJobsPage() {
     const v = videoRef.current;
     if (!v || !sourceUrl) return;
     const t = v.currentTime;
-    setTags((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, t, team }]
-      .sort((a, b) => a.t - b.t));
-  }, [sourceUrl]);
+    const tag: Tag = {
+      id: `${Date.now()}-${Math.random()}`,
+      t,
+      team,
+      videoIdx: activeVideoIdx,
+      videoId: sourceVideos[activeVideoIdx]?.videoId,
+      clampEnd: v.duration || sourceVideos[activeVideoIdx]?.durationSeconds || undefined,
+    };
+    // 전역 순서 = (영상 순서, 시간) — 영상별 타임라인이 각자 0부터라 시간만으론 섞인다.
+    setTags((prev) => [...prev, tag]
+      .sort((a, b) => (a.videoIdx - b.videoIdx) || (a.t - b.t)));
+  }, [sourceUrl, activeVideoIdx, sourceVideos]);
 
   const toggleTagTeam = (id: string) => {
     setTags((prev) => prev.map((tag) =>
@@ -449,11 +487,14 @@ export default function FineplayJobsPage() {
       const clips = tags.map((tag) => {
         const before = tag.padBefore ?? padBefore;
         const after = tag.padAfter ?? padAfter;
+        // 끝 클램프는 태그가 찍힌 그 영상의 길이 기준 (현재 탭 duration 아님).
+        const cap = tag.clampEnd || (tag.videoIdx === activeVideoIdx ? duration : 0);
         return {
           start: Math.max(0, tag.t - before),
-          end: Math.min(duration || tag.t + after, tag.t + after),
+          end: Math.min(cap || tag.t + after, tag.t + after),
           team: tag.team,
           makeVertical,
+          sourceVideoId: tag.videoId,
         };
       });
       await apiJson(`/highlight/fineplay-jobs/${selected.id}/produce`, {
@@ -731,6 +772,30 @@ export default function FineplayJobsPage() {
             <p style={{ fontSize: 13, color: 'var(--muted, #999)' }}>원본 주소 가져오는 중...</p>
           ) : (
             <>
+              {sourceVideos.length > 1 ? (
+                <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+                  {sourceVideos.map((v, i) => (
+                    <button
+                      key={v.videoId || i}
+                      style={{
+                        ...smallBtn,
+                        ...(i === activeVideoIdx
+                          ? { background: 'var(--accent, #3b82f6)', borderColor: 'transparent' }
+                          : {}),
+                      }}
+                      onClick={() => switchVideo(i)}
+                    >
+                      영상 {i + 1}
+                      {v.durationSeconds ? ` (${fmt(v.durationSeconds)})` : ''}
+                      {' · 태그 '}
+                      {tags.filter((tag) => tag.videoIdx === i).length}
+                    </button>
+                  ))}
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)', alignSelf: 'center' }}>
+                    앱이 보낸 순서 = 경기 순서 — 클립 번호도 이 순서를 따릅니다
+                  </span>
+                </div>
+              ) : null}
               <video
                 ref={videoRef}
                 src={sourceUrl}
@@ -739,6 +804,10 @@ export default function FineplayJobsPage() {
                 onLoadedMetadata={(e) => {
                   setDuration(e.currentTarget.duration || 0);
                   e.currentTarget.playbackRate = speed;
+                  if (pendingSeekRef.current !== null) {
+                    e.currentTarget.currentTime = pendingSeekRef.current;
+                    pendingSeekRef.current = null;
+                  }
                 }}
                 onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
                 onPlay={() => setPlaying(true)}
@@ -786,6 +855,11 @@ export default function FineplayJobsPage() {
                       padding: '6px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
                     }}>
                       <span style={{ color: 'var(--muted, #999)', width: 24 }}>{i + 1}</span>
+                      {sourceVideos.length > 1 ? (
+                        <span style={{ fontSize: 12, color: 'var(--muted, #999)', width: 40 }}>
+                          영상{(tag.videoIdx ?? 0) + 1}
+                        </span>
+                      ) : null}
                       <button
                         style={{
                           ...smallBtn,
@@ -797,7 +871,7 @@ export default function FineplayJobsPage() {
                       >
                         {tag.team === 'home' ? '홈' : '어웨이'}
                       </button>
-                      <button style={smallBtn} onClick={() => seekTo(tag.t)}>{fmt(tag.t)}</button>
+                      <button style={smallBtn} onClick={() => switchVideo(tag.videoIdx ?? 0, tag.t)}>{fmt(tag.t)}</button>
                       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, color: 'var(--muted, #999)' }}>
                         앞 <input
                           type="number" min={0} max={60}

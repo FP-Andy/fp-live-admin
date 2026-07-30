@@ -30,6 +30,8 @@ type OutputClip = {
   end: number;
   mainAction?: string | null;
   durationSeconds?: number | null;
+  // 다중 영상 잡: 이 클립의 원본 영상 — 재편집 왕복 시 그대로 되돌려 보내야 한다.
+  sourceVideoId?: string | null;
   url?: string;
   verticalUrl?: string;
   thumbnailUrl?: string;
@@ -169,6 +171,7 @@ export default function EditRoomPage() {
           end: c.editEnd,
           mainAction: c.mainAction,
           makeVertical: c.makeVertical,
+          sourceVideoId: c.sourceVideoId ?? undefined,
         })),
       };
       await apiJson(`/highlight/fineplay-jobs/${selected.id}/produce`, {
