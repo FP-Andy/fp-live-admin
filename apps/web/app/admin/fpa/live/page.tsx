@@ -524,7 +524,7 @@ function statInputIsNumberOnly(statInput: string) {
 // qw = 슛 블락 → xG(슈터 위치)만으로 채점. end(블록 지점)는 기록용이고 점수에 안 쓰인다.
 //   상대팀은 좌표만 찍으므로 슛 위치 마커가 필요해 화살표를 유지한다 (2026-07-10 결정).
 // 제외: Duel(b/bb)·Clear(w)=포인트 액션.
-const DEFENSE_ARROW_CODES = new Set(['aa', 'q', 'ww', 'qw']);
+const DEFENSE_ARROW_CODES = new Set(['aa', 'q', 'ww', 'qw', 'w']);
 const SHOT_BLOCK_CODES = new Set(['qw']);
 function statInputActionCode(statInput?: string | null) {
   const base = (statInput ?? '').trim().split('.', 1)[0] || '';

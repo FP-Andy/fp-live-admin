@@ -74,8 +74,8 @@ def _parse_dots(value: Any) -> list[dict[str, Any]]:
     return dots
 
 
-# dual 의 수비 화살표 액션 코드 — 상대 볼 경로(start=상대 볼 출발점, end=끊은 지점).
-_DEFENSE_ARROW_CODES = {"aa", "q", "ww", "qw"}
+# dual 의 수비 화살표 액션 코드 — 상대 볼 경로(start=상대 볼 출발점, end=끊은/클리어한 지점).
+_DEFENSE_ARROW_CODES = {"aa", "q", "ww", "qw", "w"}
 # 실패 패스/크로스 입력 코드(단자 = 실패) — 빨간 화살표로 구분, 공은 실패 지점까지 이동.
 _FAIL_ARROW_CODES = {"s", "c"}
 # 화살표의 code 는 전체 스탯 입력("10s8"·"5aa.up")이다 — 프론트 statInputActionCode 와

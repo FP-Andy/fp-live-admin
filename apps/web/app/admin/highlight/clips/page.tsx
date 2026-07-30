@@ -269,11 +269,18 @@ export default function ClipResultsPage() {
     setBusy(true);
     setMsg('');
     try {
-      const res = await apiJson<{ clips: number }>(
+      const res = await apiJson<{ clips?: number; callback_status?: string | Record<string, string> }>(
         `/highlight/clip-results/matches/${selectedMatch.match_id}/resend`,
         { method: 'POST' },
       );
-      setMsg(`FinePlay 전송 완료 — 클립 ${res.clips}개`);
+      // 사전 작업 매치는 연결된 신청(홈/어웨이)별로 나가고 사이드별 상태가 온다.
+      if (res.callback_status && typeof res.callback_status === 'object') {
+        const parts = Object.entries(res.callback_status)
+          .map(([side, st]) => `${side === 'home' ? '홈' : '어웨이'}: ${st}`);
+        setMsg(`FinePlay 팀별 전송 — ${parts.join(' · ')}`);
+      } else {
+        setMsg(`FinePlay 전송 완료 — 클립 ${res.clips}개`);
+      }
       await loadMatches();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));

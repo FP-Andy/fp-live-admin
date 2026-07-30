@@ -29,11 +29,19 @@ type FpJob = {
     clip_archived?: boolean;
     fpa_link?: { match_id: string; our_side: 'home' | 'away' } | null;
     fpa_enrich_status?: string;
+    // 사전 작업 신청 연결 — 한 태깅본을 홈/어웨이 두 신청으로 내보낸다.
+    links?: Partial<Record<'home' | 'away', {
+      analysis_request_id?: string;
+      team_id?: string | null;
+      team_name?: string | null;
+      callback_status?: string | null;
+    }>> | null;
   } | null;
 };
 
 // team: 태깅 시점에 확정하는 클립 귀속 팀 (A=홈 / D=어웨이).
-type Tag = { id: string; t: number; team: 'home' | 'away' };
+// padBefore/padAfter: 태그별 앞/뒤 초 오버라이드 — 없으면 전역 기본값을 쓴다.
+type Tag = { id: string; t: number; team: 'home' | 'away'; padBefore?: number; padAfter?: number };
 
 type FpaMatch = {
   id: string;
@@ -125,6 +133,15 @@ export default function FineplayJobsPage() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [padBefore, setPadBefore] = useState(7);
   const [padAfter, setPadAfter] = useState(4);
+  // 전역 앞/뒤 초 기본값 유지 — 브라우저별 저장(서버 설정 아님), 태그별 오버라이드와 별개.
+  useEffect(() => {
+    const b = Number(localStorage.getItem('fp-clip-pad-before'));
+    const a = Number(localStorage.getItem('fp-clip-pad-after'));
+    if (Number.isFinite(b) && b >= 0 && localStorage.getItem('fp-clip-pad-before') !== null) setPadBefore(b);
+    if (Number.isFinite(a) && a >= 1) setPadAfter(a);
+  }, []);
+  useEffect(() => { localStorage.setItem('fp-clip-pad-before', String(padBefore)); }, [padBefore]);
+  useEffect(() => { localStorage.setItem('fp-clip-pad-after', String(padAfter)); }, [padAfter]);
   const [makeVertical, setMakeVertical] = useState(false);
   const [producing, setProducing] = useState(false);
   const [produceMsg, setProduceMsg] = useState('');
@@ -246,6 +263,54 @@ export default function FineplayJobsPage() {
       await loadJobs();
     } catch (err) {
       setPollMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // 사전 작업 신청 연결 — 사이드별(홈/어웨이)로 FinePlay 신청을 붙인다.
+  const [linkJobId, setLinkJobId] = useState<string | null>(null);
+  const [linkSide, setLinkSide] = useState<'home' | 'away'>('home');
+  const [linkRid, setLinkRid] = useState('');
+  const [linkTeamId, setLinkTeamId] = useState('');
+  const [linkTeamName, setLinkTeamName] = useState('');
+  const [linkManual, setLinkManual] = useState(false);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkMsg, setLinkMsg] = useState('');
+
+  const saveLink = async (job: FpJob) => {
+    if (!linkRid.trim()) {
+      setLinkMsg('analysisRequestId 를 입력하세요.');
+      return;
+    }
+    setLinkBusy(true);
+    setLinkMsg('');
+    try {
+      await apiJson(`/highlight/fineplay-jobs/${job.id}/links/${linkSide}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          analysisRequestId: linkRid.trim(),
+          teamId: linkTeamId.trim(),
+          teamName: linkTeamName.trim(),
+          manual: linkManual,
+        }),
+      });
+      setLinkMsg(`${linkSide === 'home' ? '홈' : '어웨이'} 연결 완료`);
+      setLinkRid('');
+      setLinkTeamId('');
+      setLinkTeamName('');
+      await loadJobs();
+    } catch (err) {
+      setLinkMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  const removeLink = async (job: FpJob, side: 'home' | 'away') => {
+    try {
+      await apiJson(`/highlight/fineplay-jobs/${job.id}/links/${side}`, { method: 'DELETE' });
+      await loadJobs();
+    } catch (err) {
+      setLinkMsg(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -381,12 +446,16 @@ export default function FineplayJobsPage() {
     setProducing(true);
     setProduceError('');
     try {
-      const clips = tags.map((tag) => ({
-        start: Math.max(0, tag.t - padBefore),
-        end: Math.min(duration || tag.t + padAfter, tag.t + padAfter),
-        team: tag.team,
-        makeVertical,
-      }));
+      const clips = tags.map((tag) => {
+        const before = tag.padBefore ?? padBefore;
+        const after = tag.padAfter ?? padAfter;
+        return {
+          start: Math.max(0, tag.t - before),
+          end: Math.min(duration || tag.t + after, tag.t + after),
+          team: tag.team,
+          makeVertical,
+        };
+      });
       await apiJson(`/highlight/fineplay-jobs/${selected.id}/produce`, {
         method: 'POST',
         // fpaMatchId: '' 는 연결 해제 — 서버는 키가 있을 때만 링크를 갱신한다.
@@ -496,8 +565,8 @@ export default function FineplayJobsPage() {
               const meta = job.job_metadata || {};
               const active = selected?.id === job.id;
               return (
+                <div key={job.id}>
                 <div
-                  key={job.id}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
                     padding: '8px 10px', borderRadius: 6,
@@ -552,12 +621,98 @@ export default function FineplayJobsPage() {
                       </button>
                     </span>
                   ) : null}
+                  {meta.standalone ? (
+                    <button
+                      style={smallBtn}
+                      title="FinePlay 신청을 홈/어웨이 사이드별로 연결 — 전송 시 각 팀 관점으로 나간다"
+                      onClick={() => {
+                        setLinkMsg('');
+                        setLinkJobId((prev) => (prev === job.id ? null : job.id));
+                      }}
+                    >
+                      🔗 신청 연결{meta.links ? ` (${Object.keys(meta.links).length}/2)` : ''}
+                    </button>
+                  ) : null}
                   <button
                     style={{ ...smallBtn, marginLeft: job.status === 'done' ? 0 : 'auto' }}
                     onClick={() => void selectJob(job)}
                   >
                     {active ? '선택됨' : job.status === 'done' ? '다시 열기' : '태깅하기'}
                   </button>
+                </div>
+                {meta.standalone && linkJobId === job.id ? (
+                  <div style={{
+                    margin: '4px 0 4px 12px', padding: '10px 12px', borderRadius: 6,
+                    background: 'var(--surface-input, #16161a)', border: '1px dashed var(--border-ghost, #2c2c32)',
+                    display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13,
+                  }}>
+                    {(['home', 'away'] as const).map((side) => {
+                      const link = meta.links?.[side];
+                      return (
+                        <div key={side} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ width: 44, fontWeight: 600 }}>{side === 'home' ? '홈' : '어웨이'}</span>
+                          {link ? (
+                            <>
+                              <span>#{link.analysis_request_id}</span>
+                              {link.team_name ? <span style={{ color: 'var(--muted, #999)' }}>{link.team_name}</span> : null}
+                              {link.callback_status ? (
+                                <span style={{ fontSize: 12, color: link.callback_status === 'sent' ? '#22c55e' : 'var(--muted, #999)' }}>
+                                  · {link.callback_status}
+                                </span>
+                              ) : null}
+                              <button style={{ ...smallBtn, color: '#f87171' }} onClick={() => void removeLink(job, side)}>해제</button>
+                            </>
+                          ) : (
+                            <span style={{ color: 'var(--muted, #777)' }}>미연결</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <select
+                        value={linkSide}
+                        onChange={(e) => setLinkSide(e.target.value as 'home' | 'away')}
+                        style={{ fontSize: 13, padding: '6px 8px', borderRadius: 6, background: 'var(--surface-card, #1b1b1f)', color: 'inherit', border: '1px solid var(--border-ghost, #2c2c32)' }}
+                        disabled={linkBusy}
+                      >
+                        <option value="home">홈</option>
+                        <option value="away">어웨이</option>
+                      </select>
+                      <input
+                        value={linkRid}
+                        onChange={(e) => setLinkRid(e.target.value)}
+                        placeholder="analysisRequestId"
+                        style={{ fontSize: 13, padding: '6px 8px', borderRadius: 6, background: 'var(--surface-card, #1b1b1f)', color: 'inherit', border: '1px solid var(--border-ghost, #2c2c32)', width: 160 }}
+                        disabled={linkBusy}
+                      />
+                      <input
+                        value={linkTeamId}
+                        onChange={(e) => setLinkTeamId(e.target.value)}
+                        placeholder="teamId (claim 실패 시 수동)"
+                        style={{ fontSize: 13, padding: '6px 8px', borderRadius: 6, background: 'var(--surface-card, #1b1b1f)', color: 'inherit', border: '1px solid var(--border-ghost, #2c2c32)', width: 170 }}
+                        disabled={linkBusy}
+                      />
+                      <input
+                        value={linkTeamName}
+                        onChange={(e) => setLinkTeamName(e.target.value)}
+                        placeholder="팀명 (수동)"
+                        style={{ fontSize: 13, padding: '6px 8px', borderRadius: 6, background: 'var(--surface-card, #1b1b1f)', color: 'inherit', border: '1px solid var(--border-ghost, #2c2c32)', width: 120 }}
+                        disabled={linkBusy}
+                      />
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--muted, #999)' }}>
+                        <input type="checkbox" checked={linkManual} onChange={(e) => setLinkManual(e.target.checked)} disabled={linkBusy} />
+                        수동 (claim 생략)
+                      </label>
+                      <button style={primaryBtn} onClick={() => void saveLink(job)} disabled={linkBusy}>
+                        {linkBusy ? '연결 중…' : '연결'}
+                      </button>
+                    </div>
+                    {linkMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{linkMsg}</p> : null}
+                    <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
+                      전송(클립 결과 탭)하면 연결된 사이드별로 각 팀 클립만, 그 팀 라인업으로 재매칭돼 나갑니다. 상대편 액션은 익명 처리됩니다.
+                    </p>
+                  </div>
+                ) : null}
                 </div>
               );
             })}
@@ -643,8 +798,34 @@ export default function FineplayJobsPage() {
                         {tag.team === 'home' ? '홈' : '어웨이'}
                       </button>
                       <button style={smallBtn} onClick={() => seekTo(tag.t)}>{fmt(tag.t)}</button>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, color: 'var(--muted, #999)' }}>
+                        앞 <input
+                          type="number" min={0} max={60}
+                          value={tag.padBefore ?? ''}
+                          placeholder={String(padBefore)}
+                          title="이 클립만 앞 초 오버라이드 — 비우면 전역 기본값"
+                          onChange={(e) => {
+                            const v = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value) || 0);
+                            setTags((prev) => prev.map((x) => (x.id === tag.id ? { ...x, padBefore: v } : x)));
+                          }}
+                          style={numInput}
+                        />
+                      </label>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, color: 'var(--muted, #999)' }}>
+                        뒤 <input
+                          type="number" min={1} max={60}
+                          value={tag.padAfter ?? ''}
+                          placeholder={String(padAfter)}
+                          title="이 클립만 뒤 초 오버라이드 — 비우면 전역 기본값"
+                          onChange={(e) => {
+                            const v = e.target.value === '' ? undefined : Math.max(1, Number(e.target.value) || 1);
+                            setTags((prev) => prev.map((x) => (x.id === tag.id ? { ...x, padAfter: v } : x)));
+                          }}
+                          style={numInput}
+                        />
+                      </label>
                       <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
-                        클립 {fmt(Math.max(0, tag.t - padBefore))} ~ {fmt(tag.t + padAfter)}
+                        클립 {fmt(Math.max(0, tag.t - (tag.padBefore ?? padBefore)))} ~ {fmt(tag.t + (tag.padAfter ?? padAfter))}
                       </span>
                       <button
                         style={{ ...smallBtn, marginLeft: 'auto' }}

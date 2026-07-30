@@ -209,6 +209,40 @@ def _row_metrics(row: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def rematch_action_players(
+    actions: list[dict[str, Any]],
+    *,
+    our_side: str,
+    lineup: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """저장된 액션들을 전송 관점(our_side)에 맞춰 선수 매칭을 다시 한다.
+
+    사전작업은 한 태깅본을 홈/어웨이 두 신청으로 내보내는데, DB 액션은 저장 시점
+    관점으로 playerId 가 붙어 있다. 전송 시점에 우리 팀 행은 그 신청의 라인업으로
+    재매칭하고, 반대편 행은 개인 식별 필드를 뗀다(상대 라인업이 없고, 상대 신청
+    건에 개인 식별 정보를 싣지 않는다). 등번호·팀 사이드·지표는 그대로 남는다.
+    """
+    out: list[dict[str, Any]] = []
+    for action in actions:
+        a = dict(action)
+        side = str(a.get("teamSide") or "").strip().lower()
+        entry = _find_lineup_player(lineup, str(a.get("jersey") or "")) if side == our_side else None
+        if entry:
+            a["playerId"] = str(entry["playerId"]) if entry.get("playerId") else None
+            a["playerName"] = entry.get("name")
+            a["userId"] = (
+                int(str(entry["playerId"]))
+                if str(entry.get("playerId") or "").isdigit()
+                else None
+            )
+        else:
+            a["playerId"] = None
+            a["playerName"] = None
+            a["userId"] = None
+        out.append(a)
+    return out
+
+
 def scene_action_rows(
     scene: FpaScene,
     *,

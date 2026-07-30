@@ -96,11 +96,11 @@ TAG_CODES = {
     "pk": "Penalty",
 }
 TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr", "pn"}
-# 수비 액션(태클/인터셉트/차단) — 상대 '패스 공' 경로를 before 프레임에 화살표로 그림 (2026-07-09 확정).
-# 화살표 start=상대 볼 출발점, end=끊은 지점. 점수 = 상대가 만든 전진위협을 막은 값 =
+# 수비 액션(태클/인터셉트/차단/클리어) — 상대 '패스 공' 경로를 before 프레임에 화살표로 그림 (2026-07-09 확정).
+# 화살표 start=상대 볼 출발점, end=끊은(클리어한) 지점. 점수 = 상대가 만든 전진위협을 막은 값 =
 # '상대 공격방향' 기준 EPV(end)−EPV(start) (prevented threat). 좌표 2개(화살표)로 채점, EPV-방어만 사용.
-# 제외: Duel(b/bb)=경합 포인트, Clear(w)=단독 지점.
-DEFENSE_ARROW_CODES = {"aa", "q", "ww"}
+# 제외: Duel(b/bb)=경합 포인트. Clear(w)는 2026-07-30 화살표 방식으로 편입(점 1개면 기존 단독 지점 하위호환).
+DEFENSE_ARROW_CODES = {"aa", "q", "ww", "w"}
 # Block(qw)=슛블락 — 상대 '슛' 궤적을 before 프레임에 화살표로(start=슈터, end=블록 지점).
 # 점수 = 막은 슛의 xG를 블로커에게 승계(상대 공격방향으로 슈터 위치 뒤집어 estimate_xg) × BLOCK_CREDIT. xG 컬럼 사용.
 SHOT_BLOCK_CODES = {"qw"}
