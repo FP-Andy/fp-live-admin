@@ -107,8 +107,19 @@ const FHL_ITEMS: NavItem[] = [
     label: 'FinePlay',
     icon: '◇',
     match: (pathname) =>
-      pathname.startsWith('/admin/highlight/fineplay') || pathname.startsWith('/admin/highlight/editroom'),
+      pathname.startsWith('/admin/highlight/fineplay') ||
+      pathname.startsWith('/admin/highlight/editroom') ||
+      pathname.startsWith('/admin/highlight/clips') ||
+      pathname.startsWith('/admin/highlight/archive'),
     roles: ['SUPERADMIN'],
+  },
+  // OPERATOR 는 FinePlay 클립 결과(+클립 귀속 FPA)만 접근한다.
+  {
+    href: '/admin/highlight/clips',
+    label: 'FinePlay',
+    icon: '◇',
+    match: (pathname) => pathname.startsWith('/admin/highlight/clips'),
+    roles: ['OPERATOR'],
   },
 ];
 
@@ -207,6 +218,12 @@ function getPageMeta(pathname: string) {
     }
     if (pathname.startsWith('/admin/highlight/completed')) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Completed' };
+    }
+    if (pathname.startsWith('/admin/highlight/clips')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '클립 결과' };
+    }
+    if (pathname.startsWith('/admin/highlight/archive')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '아카이브' };
     }
     return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'AI+Log' };
   }

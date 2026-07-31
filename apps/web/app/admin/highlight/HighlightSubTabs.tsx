@@ -2,19 +2,37 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { apiJson, type SessionUser } from '../../../lib/api';
 
-const SUB_TABS = [
-  { href: '/admin/highlight', label: 'AI Highlight' },
-  { href: '/admin/highlight/player', label: 'Player Clips' },
-  { href: '/admin/highlight/manual', label: '수동 태깅' },
-  { href: '/admin/highlight/results', label: '수동 결과물' },
-  { href: '/admin/highlight/fineplay', label: 'FinePlay 작업' },
+type SubTab = { href: string; label: string; roles?: SessionUser['role'][] };
+
+const SUB_TABS: SubTab[] = [
+  { href: '/admin/highlight', label: 'AI Highlight', roles: ['SUPERADMIN'] },
+  { href: '/admin/highlight/player', label: 'Player Clips', roles: ['SUPERADMIN'] },
+  // 수동 태깅·수동 결과물은 FinePlay 클립 파이프라인으로 대체 — 탭에서 제거 (페이지는 살아있음).
+  { href: '/admin/highlight/fineplay', label: 'FinePlay 작업', roles: ['SUPERADMIN'] },
   { href: '/admin/highlight/clips', label: '클립 결과' },
-  { href: '/admin/highlight/editroom', label: '편집룸' },
+  { href: '/admin/highlight/archive', label: '아카이브', roles: ['SUPERADMIN'] },
+  { href: '/admin/highlight/editroom', label: '편집룸', roles: ['SUPERADMIN'] },
 ];
 
 export default function HighlightSubTabs() {
   const pathname = usePathname() || '';
+  // 세션 로드 전에는 역할 제한 없는 탭만 보여서 OPERATOR 에게 관리자 탭이 깜빡이지 않게 한다.
+  const [role, setRole] = useState<SessionUser['role'] | null>(null);
+  useEffect(() => {
+    let active = true;
+    apiJson<SessionUser>('/session/me')
+      .then((data) => {
+        if (active) setRole(data.role);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+  const tabs = SUB_TABS.filter((tab) => !tab.roles || (role && tab.roles.includes(role)));
   return (
     <div
       style={{
@@ -25,7 +43,7 @@ export default function HighlightSubTabs() {
         paddingBottom: 8,
       }}
     >
-      {SUB_TABS.map((tab) => {
+      {tabs.map((tab) => {
         const active = tab.href === '/admin/highlight'
           ? pathname === '/admin/highlight'
           : pathname.startsWith(tab.href);

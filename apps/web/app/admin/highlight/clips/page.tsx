@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
-import { apiJson } from '../../../../lib/api';
+import { apiJson, type SessionUser } from '../../../../lib/api';
 
 // 클립 결과: match → clip → action 3계층 열람/편집.
 // 클립 상세에서 [FPA dual] 새 창으로 씬을 찍어 클립에 귀속시키고,
@@ -50,6 +50,9 @@ type ActionRow = {
   extra?: { isPrimary?: boolean } | null;
   // 24코드 표준 액션 ID(G1~S14) — 서버가 전송 규칙과 같은 로직으로 주석해 준다(검수용).
   actionCode?: string | null;
+  // 정본 v0.1 Action xFP — 유효 Effect Action 만 값이 있다. 콘솔 표시 = 앱 전송값.
+  xfpScore?: number | null;
+  xfpPercentile?: number | null;
 };
 
 type ClipDetail = ClipRow & {
@@ -119,13 +122,36 @@ export default function ClipResultsPage() {
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [motions, setMotions] = useState<{ seq: number; url: string }[]>([]);
+  const [motionMsg, setMotionMsg] = useState('');
+  // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
+  const [role, setRole] = useState<SessionUser['role'] | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    apiJson<SessionUser>('/session/me')
+      .then((data) => { if (active) setRole(data.role); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  // 아카이브 룸 '열어서 수정' 등 ?matchId= 딥링크 진입 시 해당 매치를 바로 연다 (최초 1회).
+  const deepLinkDone = useRef(false);
 
   const loadMatches = useCallback(async () => {
     try {
-      setMatches(await apiJson<MatchRow[]>('/highlight/clip-results/matches'));
+      const rows = await apiJson<MatchRow[]>('/highlight/clip-results/matches');
+      setMatches(rows);
+      if (!deepLinkDone.current) {
+        deepLinkDone.current = true;
+        const target = new URLSearchParams(window.location.search).get('matchId');
+        const m = target ? rows.find((r) => r.match_id === target) : null;
+        if (m) void openMatch(m);
+      }
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { void loadMatches(); }, [loadMatches]);
@@ -154,6 +180,23 @@ export default function ClipResultsPage() {
     }
   }, []);
 
+  // 장면 모션은 서버가 렌더+S3 업로드까지 하므로(액션당 수 초) 클립 열 때·dual 저장 직후·수동 새로고침에만 부른다.
+  const loadMotions = useCallback(async (clipId: string) => {
+    setMotions([]);
+    setMotionMsg('장면 모션 렌더 중…');
+    try {
+      const res = await apiJson<{ motions: { seq: number; url: string }[]; warnings: string[] }>(
+        `/highlight/clip-results/clips/${clipId}/scene-motions`,
+      );
+      setMotions(res.motions);
+      setMotionMsg(res.motions.length === 0
+        ? '장면 모션 없음 — FPA dual 로 찍어 저장한 액션만 모션이 생성됩니다.'
+        : (res.warnings?.length ? `일부 실패: ${res.warnings.join(' / ')}` : ''));
+    } catch (err) {
+      setMotionMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   // dual 팝업에서 저장하고 돌아오면(창 포커스) 액션을 다시 읽는다.
   useEffect(() => {
     if (!detail) return;
@@ -169,11 +212,12 @@ export default function ClipResultsPage() {
       const data = e.data as { type?: string; clipId?: string };
       if (data?.type === 'fpa-clip-saved' && detail && data.clipId === detail.id) {
         void openClip(detail.id);
+        void loadMotions(detail.id);
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [detail, openClip]);
+  }, [detail, openClip, loadMotions]);
 
   // 대표 액션 지정/해제 — 저장 후 재전송하면 제목·mainAction 이 이 액션 기준이 된다.
   const setPrimaryAction = async (seq: number) => {
@@ -225,11 +269,18 @@ export default function ClipResultsPage() {
     setBusy(true);
     setMsg('');
     try {
-      const res = await apiJson<{ clips: number }>(
+      const res = await apiJson<{ clips?: number; callback_status?: string | Record<string, string> }>(
         `/highlight/clip-results/matches/${selectedMatch.match_id}/resend`,
         { method: 'POST' },
       );
-      setMsg(`FinePlay 전송 완료 — 클립 ${res.clips}개`);
+      // 사전 작업 매치는 연결된 신청(홈/어웨이)별로 나가고 사이드별 상태가 온다.
+      if (res.callback_status && typeof res.callback_status === 'object') {
+        const parts = Object.entries(res.callback_status)
+          .map(([side, st]) => `${side === 'home' ? '홈' : '어웨이'}: ${st}`);
+        setMsg(`FinePlay 팀별 전송 — ${parts.join(' · ')}`);
+      } else {
+        setMsg(`FinePlay 전송 완료 — 클립 ${res.clips}개`);
+      }
       await loadMatches();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
@@ -250,9 +301,11 @@ export default function ClipResultsPage() {
               <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>›</span>
               <button style={smallBtn} onClick={() => { setSelectedMatch(null); setDetail(null); }}>매치 목록</button>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{selectedMatch.name}</span>
-              <button style={{ ...primaryBtn, marginLeft: 'auto' }} onClick={resend} disabled={busy}>
-                ⬆ FinePlay로 전송
-              </button>
+              {role === 'SUPERADMIN' ? (
+                <button style={{ ...primaryBtn, marginLeft: 'auto' }} onClick={resend} disabled={busy}>
+                  ⬆ FinePlay로 전송
+                </button>
+              ) : null}
             </>
           ) : (
             <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => void loadMatches()}>새로고침</button>
@@ -309,7 +362,7 @@ export default function ClipResultsPage() {
                   {fmt(c.start_sec)}~{fmt(c.end_sec)}
                 </span>
                 <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>액션 {c.action_count}개</span>
-                <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => void openClip(c.id)}>상세</button>
+                <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => { void openClip(c.id); void loadMotions(c.id); }}>상세</button>
               </div>
             ))}
           </div>
@@ -403,6 +456,19 @@ export default function ClipResultsPage() {
                       <span style={{ width: 34 }} />
                     )}
                     <span style={{ width: 72, fontWeight: 600 }}>{a.actionLabel}</span>
+                    {a.xfpScore != null ? (
+                      <span
+                        title={a.xfpPercentile != null ? `백분위 ${(a.xfpPercentile * 100).toFixed(1)}%` : undefined}
+                        style={{
+                          width: 58, fontSize: 12, fontWeight: 700,
+                          color: a.xfpScore >= 95 ? '#facc15' : a.xfpScore >= 80 ? '#4ade80' : 'var(--text, #eee)',
+                        }}
+                      >
+                        xFP {a.xfpScore}
+                      </span>
+                    ) : (
+                      <span style={{ width: 58, fontSize: 12, color: 'var(--muted, #666)' }}>—</span>
+                    )}
                     <TeamBadge side={a.teamSide} labels={detail.team_labels} />
                     <span style={{ width: 110 }}>
                       #{a.jersey || '-'}{a.playerName ? ` ${a.playerName}` : ''}
@@ -423,6 +489,39 @@ export default function ClipResultsPage() {
                 ))}
               </div>
             )}
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <h3 style={{ fontSize: 14, margin: 0 }}>장면 모션 ({motions.length})</h3>
+              <button style={smallBtn} onClick={() => void loadMotions(detail.id)}>모션 새로고침</button>
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                전송 시 앱에 실리는 모션과 동일합니다.
+              </span>
+            </div>
+            {motionMsg ? (
+              <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '0 0 8px' }}>{motionMsg}</p>
+            ) : null}
+            {motions.length > 0 ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                {motions.map((m) => {
+                  const a = actions.find((x) => x.seq === m.seq);
+                  return (
+                    <div key={m.seq} style={{
+                      width: 300, borderRadius: 8, overflow: 'hidden',
+                      background: 'var(--surface-input, #16161a)', border: '1px solid var(--border-ghost, #2c2c32)',
+                    }}>
+                      <video src={m.url} muted autoPlay loop playsInline style={{ width: '100%', display: 'block' }} />
+                      <div style={{ padding: '6px 10px', fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ color: 'var(--muted, #999)' }}>액션 {m.seq}</span>
+                        <span style={{ fontWeight: 600 }}>{a?.actionLabel || ''}</span>
+                        {a?.jersey ? <span style={{ color: 'var(--muted, #999)' }}>#{a.jersey}</span> : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

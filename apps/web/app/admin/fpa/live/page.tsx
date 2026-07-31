@@ -89,6 +89,13 @@ type LogPreview = {
   StatInput?: string; // 원본 스탯 코드 — 장면 저장 시 최종 좌표로 재채점하기 위해 각 행에 보존
 };
 
+// FinePlay 신청 라인업(사이드별) — 태깅 등번호 검증용. 서버 lineup_sides / fineplay-lineup 응답과 1:1.
+type LineupSidePlayers = {
+  team_name?: string;
+  players: { jersey: string; name?: string; isSubstitute?: boolean }[];
+};
+type LineupSides = Partial<Record<TeamSide, LineupSidePlayers>>;
+
 type PersistedLogRow = LogPreview & {
   SceneIndex?: string;
   SceneActionIndex?: string;
@@ -524,7 +531,7 @@ function statInputIsNumberOnly(statInput: string) {
 // qw = 슛 블락 → xG(슈터 위치)만으로 채점. end(블록 지점)는 기록용이고 점수에 안 쓰인다.
 //   상대팀은 좌표만 찍으므로 슛 위치 마커가 필요해 화살표를 유지한다 (2026-07-10 결정).
 // 제외: Duel(b/bb)·Clear(w)=포인트 액션.
-const DEFENSE_ARROW_CODES = new Set(['aa', 'q', 'ww', 'qw']);
+const DEFENSE_ARROW_CODES = new Set(['aa', 'q', 'ww', 'qw', 'w']);
 const SHOT_BLOCK_CODES = new Set(['qw']);
 function statInputActionCode(statInput?: string | null) {
   const base = (statInput ?? '').trim().split('.', 1)[0] || '';
@@ -2512,6 +2519,52 @@ export default function FpaLivePage() {
   // 여기서 찍은 씬을 '클립에 저장'하면 그 클립의 action 목록이 된다(전체 교체).
   const [clipTarget, setClipTarget] = useState<{ id: string; label: string } | null>(null);
 
+  // FinePlay 신청 라인업 — 태깅 등번호 검증용. matchId(클레임/사전 잡의 fpa_link 매치)
+  // 또는 클립 귀속 모드의 클립에서 가져온다. 라인업 있는 사이드만 담기며, 그 사이드의
+  // 행위자/리시버 등번호가 명단에 없으면 행에 ⚠ 경고를 띄운다.
+  const [lineupSides, setLineupSides] = useState<LineupSides>({});
+
+  useEffect(() => {
+    const id = matchId.trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      setLineupSides({});
+      return;
+    }
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const d = await apiJson<{ linked: boolean; sides?: LineupSides }>(
+            `/fpa/matches/${id}/fineplay-lineup`,
+          );
+          setLineupSides(d.linked ? d.sides ?? {} : {});
+        } catch {
+          setLineupSides({});
+        }
+      })();
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [matchId]);
+
+  const lineupJerseySets = useMemo(() => {
+    const sets: Partial<Record<TeamSide, Set<string>>> = {};
+    (['home', 'away'] as const).forEach((side) => {
+      const players = lineupSides[side]?.players;
+      if (players?.length) sets[side] = new Set(players.map((p) => p.jersey));
+    });
+    return sets;
+  }, [lineupSides]);
+
+  // 행위자·리시버 중 라인업에 없는 등번호 목록. 라인업 없는 사이드(상대팀 등)는 검증 안 함.
+  const rowMissingJerseys = (row: LogPreview): string[] => {
+    const side = (row.Team || '').trim().toLowerCase();
+    if (side !== 'home' && side !== 'away') return [];
+    const set = lineupJerseySets[side];
+    if (!set) return [];
+    return [row.Player, row.Receiver]
+      .map((value) => (value || '').trim())
+      .filter((jersey) => jersey && !set.has(jersey));
+  };
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -2524,6 +2577,7 @@ export default function FpaLivePage() {
         const d = await apiJson<{
           id: string;
           team_labels?: { home?: string; away?: string };
+          lineup_sides?: LineupSides;
         }>(`/highlight/clip-results/clips/${clipId}`);
         setClipTarget({
           id: d.id,
@@ -2531,6 +2585,7 @@ export default function FpaLivePage() {
         });
         if (d.team_labels?.home) setTeamIdH(d.team_labels.home);
         if (d.team_labels?.away) setTeamIdA(d.team_labels.away);
+        if (d.lineup_sides) setLineupSides(d.lineup_sides);
         setInputMode('dual');
         setStatus(`클립 귀속 모드: ${clipId}`);
       } catch {
@@ -3197,6 +3252,18 @@ export default function FpaLivePage() {
   // 로그 행 1줄. clickable=true(single) → 행 클릭 선택, false(dual 장면 내) → 표시만(장면 그룹이 클릭 처리)
   const renderLogRow = (row: LogPreview, logStr: string | undefined, key: string, clickable: boolean, index: number) => {
     const logParts = logStr?.split(' | ') || [];
+    const missing = rowMissingJerseys(row);
+    const jerseyCell = (jersey: string | undefined, fallback: string) => {
+      const value = (jersey || '').trim();
+      if (value && missing.includes(value)) {
+        return (
+          <span className="fpa-jersey-warn" title={`라인업에 없는 등번호: ${value}`}>
+            {value} ⚠
+          </span>
+        );
+      }
+      return <span>{value || fallback}</span>;
+    };
     return (
       <div
         className={`fpa-log-entry ${clickable && selectedRowIndex === index ? 'selected' : ''}`}
@@ -3209,9 +3276,9 @@ export default function FpaLivePage() {
         <span>{row.Time}</span>
         <span>{row.Team}</span>
         <span>{logParts[2] || '-'}</span>
-        <span>{row.Player}</span>
+        {jerseyCell(row.Player, '')}
         <span>{row.Action}</span>
-        <span>{row.Receiver || '-'}</span>
+        {jerseyCell(row.Receiver, '-')}
         <span>{row.Coord}</span>
         <span>{extractReceiveCoord(logStr) || '-'}</span>
         <span title={row.Tags || '-'}>{row.Tags || '-'}</span>
@@ -3484,6 +3551,7 @@ export default function FpaLivePage() {
           ) : (
             sceneRows.map((row, index) => {
               const isPrimary = primaryRowIndex === index;
+              const missing = rowMissingJerseys(row);
               return (
                 <div
                   className="fpa-scene-action-row"
@@ -3501,6 +3569,9 @@ export default function FpaLivePage() {
                       type="button"
                     >★</button>
                     {row.Team} {row.Player} · {row.Action}{row.Receiver ? ` → ${row.Receiver}` : ''}
+                    {missing.length ? (
+                      <span className="fpa-jersey-warn" title={`라인업에 없는 등번호: ${missing.join(', ')}`}> ⚠ {missing.join(', ')}</span>
+                    ) : null}
                   </span>
                   <span className="metrics">
                     xG {row.xG ?? '-'} · EPV {row.EPV ?? '-'} · PC {row.PC ?? '-'}
@@ -3604,6 +3675,49 @@ export default function FpaLivePage() {
       )}
     </section>
   );
+
+  // FinePlay 신청 라인업 패널 — 라인업 있는 사이드만 표시. 라인업 밖 등번호가 찍힌 행 수도 집계.
+  const renderLineupPanel = () => {
+    const visibleSides = (['home', 'away'] as const).filter((side) => lineupSides[side]?.players?.length);
+    if (!visibleSides.length) return null;
+    const allRows = [...savedScenes.flatMap((scene) => scene.rows), ...rows];
+    const warnRows = allRows.filter((row) => rowMissingJerseys(row).length > 0).length;
+    return (
+      <section className="fpa-lineup-panel">
+        <div className="fpa-lineup-header">
+          <span className="fpa-panel-title">신청 라인업</span>
+          {warnRows > 0 ? (
+            <span className="fpa-jersey-warn">⚠ 라인업에 없는 등번호가 찍힌 액션 {warnRows}건</span>
+          ) : (
+            <span className="fpa-lineup-ok">등번호 전부 라인업과 일치</span>
+          )}
+        </div>
+        {visibleSides.map((side) => {
+          const info = lineupSides[side]!;
+          return (
+            <div className="fpa-lineup-side" key={side}>
+              <span className="fpa-lineup-side-title">
+                {side === 'home' ? '홈' : '어웨이'}
+                {info.team_name ? ` · ${info.team_name}` : ''}
+              </span>
+              <div className="fpa-lineup-chips">
+                {info.players.map((p) => (
+                  <span
+                    className={`fpa-lineup-chip ${p.isSubstitute ? 'sub' : ''}`}
+                    key={`${side}-${p.jersey}`}
+                    title={`${p.name || ''}${p.isSubstitute ? ' (교체명단)' : ''}`.trim()}
+                  >
+                    {p.jersey}
+                    {p.name ? ` ${p.name}` : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </section>
+    );
+  };
 
   return (
     <div className="page-stack">
@@ -3729,6 +3843,8 @@ export default function FpaLivePage() {
             </div>
           </div>
         </div>
+
+        {renderLineupPanel()}
 
         {inputMode === 'dual' ? (
           <>

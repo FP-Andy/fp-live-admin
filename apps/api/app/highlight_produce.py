@@ -38,7 +38,7 @@ class Segment:
         return self.end - self.start
 
 
-def _probe_video_dims(path: Path) -> tuple[int, int, str]:
+def _probe_video_dims(path: Path | str) -> tuple[int, int, str]:
     """원본의 가로·세로·프레임레이트. 인트로 이미지를 이 규격에 맞춘다.
 
     r_frame_rate 는 "30000/1001" 같은 분수라 fps 필터가 그대로 받는다.
@@ -66,7 +66,7 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
         return 1280, 720, "30"
 
 
-def _probe_has_audio(path: Path) -> bool:
+def _probe_has_audio(path: Path | str) -> bool:
     """원본에 오디오 스트림이 있는지. 없으면(무음 촬영본 등) concat 에 무음을 채워야 한다."""
     try:
         result = subprocess.run(
@@ -85,7 +85,7 @@ def _probe_has_audio(path: Path) -> bool:
 
 
 def build_produce_args(
-    source: Path,
+    source: Path | str,
     segments: list[Segment],
     out_path: Path,
     *,
@@ -93,10 +93,14 @@ def build_produce_args(
     intro_duration: float = INTRO_SEC,
     preset: str = MERGE_PRESET,
     crf: str = MERGE_CRF,
+    has_audio: bool | None = None,
 ) -> list[str]:
     """단일 원본 + 구간들로 컷+머지 ffmpeg 인자를 만든다.
 
     유효한 구간이 없으면 ValueError. 반환값은 subprocess 로 그대로 실행 가능한 argv.
+    source 는 로컬 경로 외에 http(s) URL(presigned) 도 받는다 — -ss 가 -i 앞이라
+    ffmpeg 가 range 요청으로 필요한 구간만 읽는다. has_audio 를 주면 프로브를 생략한다
+    (원본 하나로 클립 여러 개를 뽑을 때 URL 프로브 반복 방지).
     """
     valid = [s for s in segments if s.duration > 0]
     if not valid:
@@ -124,7 +128,8 @@ def build_produce_args(
         args += ["-ss", f"{seg.start:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(source)]
 
     # 오디오 없는 원본(무음 촬영본)은 [k:a] 매칭이 실패하므로 구간별 무음 입력으로 대신한다.
-    has_audio = _probe_has_audio(source)
+    if has_audio is None:
+        has_audio = _probe_has_audio(source)
     silent_base = clip_base + len(valid)
     if not has_audio:
         for seg in valid:
@@ -175,7 +180,7 @@ def build_produce_args(
 
 
 def produce_highlight_from_source(
-    source: Path,
+    source: Path | str,
     segments: list[Segment],
     out_path: Path,
     **opts: object,
@@ -186,10 +191,20 @@ def produce_highlight_from_source(
     return out_path
 
 
-def produce_clip(source: Path, start: float, end: float, out_path: Path, *, preset: str = MERGE_PRESET, crf: str = MERGE_CRF) -> Path:
+def produce_clip(
+    source: Path | str,
+    start: float,
+    end: float,
+    out_path: Path,
+    *,
+    preset: str = MERGE_PRESET,
+    crf: str = MERGE_CRF,
+    has_audio: bool | None = None,
+) -> Path:
     """단일 구간을 하나의 클립으로 렌더한다(인트로/워터마크 없음). FinePlay 계약의 클립 단위 산출용."""
     return produce_highlight_from_source(
-        source, [Segment(start, end)], out_path, intro_image=None, preset=preset, crf=crf
+        source, [Segment(start, end)], out_path,
+        intro_image=None, preset=preset, crf=crf, has_audio=has_audio,
     )
 
 
