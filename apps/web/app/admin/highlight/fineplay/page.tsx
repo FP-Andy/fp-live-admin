@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
-import { apiJson } from '../../../../lib/api';
+import { API_BASE, apiJson } from '../../../../lib/api';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 
 // FinePlay 연동 태깅: claim 한 작업의 원본을 S3 스트리밍으로 재생하며 태깅하고,
@@ -112,6 +112,31 @@ function fmt(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function moveItem<T>(arr: T[], from: number, to: number): T[] {
+  if (to < 0 || to >= arr.length) return arr;
+  const next = [...arr];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+// 업로드 전 로컬에서 영상 길이를 읽는다 — 매니페스트에 넣어두면 태깅 탭이
+// 파일을 로드하기 전에도 길이를 보여준다. 실패해도 0 (선택 항목이라 무해).
+function readVideoDuration(file: File): Promise<number> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const el = document.createElement('video');
+    const done = (sec: number) => {
+      URL.revokeObjectURL(url);
+      resolve(Number.isFinite(sec) && sec > 0 ? sec : 0);
+    };
+    el.preload = 'metadata';
+    el.onloadedmetadata = () => done(el.duration);
+    el.onerror = () => done(0);
+    el.src = url;
+  });
+}
+
 export default function FineplayJobsPage() {
   const [jobs, setJobs] = useState<FpJob[]>([]);
   // 잡별 아카이브 준비상태 — 모든 클립에 FPA 데이터가 있어야 버튼 활성화.
@@ -125,9 +150,11 @@ export default function FineplayJobsPage() {
   const [preTeam, setPreTeam] = useState('');
   const [preOpp, setPreOpp] = useState('');
   const [preName, setPreName] = useState('');
-  const [preFile, setPreFile] = useState<File | null>(null);
+  // 영상은 여러 개(전반/후반 분리 촬영 등) — 목록 순서가 곧 경기 순서이자 태깅 탭 순서.
+  const [preFiles, setPreFiles] = useState<File[]>([]);
   const [preBusy, setPreBusy] = useState(false);
   const [preProgress, setPreProgress] = useState(0);
+  const [preUploadIdx, setPreUploadIdx] = useState(0);
   const [preMsg, setPreMsg] = useState('');
 
   const [selected, setSelected] = useState<FpJob | null>(null);
@@ -144,17 +171,21 @@ export default function FineplayJobsPage() {
   const [speed, setSpeed] = useState(1);
 
   const [tags, setTags] = useState<Tag[]>([]);
-  const [padBefore, setPadBefore] = useState(7);
-  const [padAfter, setPadAfter] = useState(4);
+  const [padBefore, setPadBefore] = useState(9);
+  const [padAfter, setPadAfter] = useState(2);
   // 전역 앞/뒤 초 기본값 유지 — 브라우저별 저장(서버 설정 아님), 태그별 오버라이드와 별개.
+  // 키에 -v2 를 붙인 이유: 기본값을 7/4 → 9/2 로 바꿨는데, 옛 키를 그대로 두면
+  // 이미 쓰던 브라우저는 저장된 7/4 를 계속 불러와 새 기본값이 적용되지 않는다.
   useEffect(() => {
-    const b = Number(localStorage.getItem('fp-clip-pad-before'));
-    const a = Number(localStorage.getItem('fp-clip-pad-after'));
-    if (Number.isFinite(b) && b >= 0 && localStorage.getItem('fp-clip-pad-before') !== null) setPadBefore(b);
-    if (Number.isFinite(a) && a >= 1) setPadAfter(a);
+    const rawB = localStorage.getItem('fp-clip-pad-before-v2');
+    const rawA = localStorage.getItem('fp-clip-pad-after-v2');
+    const b = Number(rawB);
+    const a = Number(rawA);
+    if (rawB !== null && Number.isFinite(b) && b >= 0) setPadBefore(b);
+    if (rawA !== null && Number.isFinite(a) && a >= 1) setPadAfter(a);
   }, []);
-  useEffect(() => { localStorage.setItem('fp-clip-pad-before', String(padBefore)); }, [padBefore]);
-  useEffect(() => { localStorage.setItem('fp-clip-pad-after', String(padAfter)); }, [padAfter]);
+  useEffect(() => { localStorage.setItem('fp-clip-pad-before-v2', String(padBefore)); }, [padBefore]);
+  useEffect(() => { localStorage.setItem('fp-clip-pad-after-v2', String(padAfter)); }, [padAfter]);
   const [makeVertical, setMakeVertical] = useState(false);
   const [producing, setProducing] = useState(false);
   const [produceMsg, setProduceMsg] = useState('');
@@ -197,34 +228,46 @@ export default function FineplayJobsPage() {
 
   useEffect(() => { void loadJobs(); }, [loadJobs]);
 
+  // 파일 하나를 presign 받아 S3 로 직접 올리고 키·길이를 돌려준다.
+  // 진행률 표시를 위해 XHR 사용 (presigned URL 이라 쿠키 불필요).
+  const uploadPreFile = async (file: File) => {
+    const presign = await apiJson<{ upload_url: string; s3_key: string; content_type: string }>(
+      '/highlight/fineplay-jobs/standalone/upload-url',
+      { method: 'POST', body: JSON.stringify({ file_name: file.name }) },
+    );
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', presign.upload_url);
+      xhr.setRequestHeader('Content-Type', presign.content_type);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setPreProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(new Error(`업로드 실패 — ${file.name} (${xhr.status})`)));
+      xhr.onerror = () => reject(new Error(`업로드 네트워크 오류 — ${file.name}`));
+      xhr.send(file);
+    });
+    return { s3_key: presign.s3_key, duration_seconds: await readVideoDuration(file) };
+  };
+
   const createStandalone = async () => {
-    if (!preTeam.trim() || !preOpp.trim() || !preFile) {
+    if (!preTeam.trim() || !preOpp.trim() || !preFiles.length) {
       setPreMsg('팀명·상대팀명·영상 파일을 모두 입력하세요.');
       return;
     }
     setPreBusy(true);
     setPreMsg('');
     setPreProgress(0);
+    setPreUploadIdx(0);
     try {
-      const presign = await apiJson<{ upload_url: string; s3_key: string; content_type: string }>(
-        '/highlight/fineplay-jobs/standalone/upload-url',
-        { method: 'POST', body: JSON.stringify({ file_name: preFile.name }) },
-      );
-      // S3 직접 업로드 — 진행률 표시를 위해 XHR 사용 (presigned URL 이라 쿠키 불필요).
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('PUT', presign.upload_url);
-        xhr.setRequestHeader('Content-Type', presign.content_type);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setPreProgress(Math.round((e.loaded / e.total) * 100));
-        };
-        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300
-          ? resolve()
-          : reject(new Error(`업로드 실패 (${xhr.status})`)));
-        xhr.onerror = () => reject(new Error('업로드 네트워크 오류'));
-        xhr.send(preFile);
-      });
-      const videoKey = presign.s3_key;
+      // 순차 업로드 — 동시에 올리면 진행률이 뒤섞이고 업링크만 나눠 먹는다.
+      const videos: { s3_key: string; duration_seconds: number }[] = [];
+      for (let i = 0; i < preFiles.length; i += 1) {
+        setPreUploadIdx(i);
+        setPreProgress(0);
+        videos.push(await uploadPreFile(preFiles[i]));
+      }
       const res = await apiJson<{ job_id: string; analysis_request_id: string }>(
         '/highlight/fineplay-jobs/standalone',
         {
@@ -233,15 +276,18 @@ export default function FineplayJobsPage() {
             team_name: preTeam.trim(),
             opponent_name: preOpp.trim(),
             match_name: preName.trim(),
-            video_s3_key: videoKey,
+            // 순서 = 경기 순서. 태깅 화면의 영상 탭도 이 순서를 따른다.
+            videos,
           }),
         },
       );
-      setPreMsg(`사전 작업 생성 완료 — ${res.job_id}. 목록에서 태깅을 시작하세요.`);
+      setPreMsg(
+        `사전 작업 생성 완료 — ${res.job_id} (영상 ${videos.length}개). 목록에서 태깅을 시작하세요.`,
+      );
       setPreTeam('');
       setPreOpp('');
       setPreName('');
-      setPreFile(null);
+      setPreFiles([]);
       await loadJobs();
     } catch (err) {
       setPreMsg(err instanceof Error ? err.message : String(err));
@@ -277,6 +323,59 @@ export default function FineplayJobsPage() {
     } catch (err) {
       setPollMsg(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  // 경기기록지(xlsx)에서 라인업 채우기 — 신청이 없는 사전 작업은 라인업이 비어 있어
+  // 태깅 등번호 검증이 돌지 않는다. 기록지 시트 하나가 경기 하나에 대응한다.
+  type SheetRow = {
+    sheet: string; matchNo?: string; usable?: boolean; error?: string;
+    home?: { team: string; count: number }; away?: { team: string; count: number };
+  };
+  const [sheetFile, setSheetFile] = useState<File | null>(null);
+  const [sheetRows, setSheetRows] = useState<SheetRow[]>([]);
+  const [sheetSwap, setSheetSwap] = useState(false);
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetMsg, setSheetMsg] = useState('');
+
+  // sheet 를 비워 보내면 저장 없이 목록만 온다 — 어느 경기인지 고르게 하려고.
+  const postSheet = async (job: FpJob, file: File, sheet: string) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('sheet', sheet);
+    fd.append('swap', String(sheetSwap));
+    const res = await fetch(
+      `${API_BASE}/highlight/fineplay-jobs/${job.id}/lineup/from-record-sheet`,
+      { method: 'POST', body: fd, credentials: 'include' },
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.detail || `업로드 실패 (${res.status})`);
+    return data as { applied: boolean; sheets: SheetRow[]; sides?: Record<string, { team: string; count: number }> };
+  };
+
+  const loadSheets = async (job: FpJob, file: File) => {
+    setSheetBusy(true); setSheetMsg(''); setSheetRows([]);
+    try {
+      const data = await postSheet(job, file, '');
+      setSheetFile(file);
+      setSheetRows(data.sheets || []);
+      setSheetMsg(`시트 ${data.sheets?.length ?? 0}개 — 이 경기에 해당하는 시트를 고르세요.`);
+    } catch (err) {
+      setSheetMsg(err instanceof Error ? err.message : String(err));
+    } finally { setSheetBusy(false); }
+  };
+
+  const applySheet = async (job: FpJob, sheet: string) => {
+    if (!sheetFile) return;
+    setSheetBusy(true); setSheetMsg('');
+    try {
+      const data = await postSheet(job, sheetFile, sheet);
+      const parts = Object.entries(data.sides || {})
+        .map(([s, v]) => `${s === 'home' ? '홈' : '어웨이'} ${v.team} ${v.count}명`);
+      setSheetMsg(`${sheet} 적용 완료 — ${parts.join(' · ')}`);
+      await loadJobs();
+    } catch (err) {
+      setSheetMsg(err instanceof Error ? err.message : String(err));
+    } finally { setSheetBusy(false); }
   };
 
   // 사전 작업 신청 연결 — 사이드별(홈/어웨이)로 FinePlay 신청을 붙인다.
@@ -441,6 +540,38 @@ export default function FineplayJobsPage() {
     v.currentTime = Math.max(0, Math.min(v.duration || t, t));
   }, []);
 
+  // 이 시각에 닿으면 자동으로 멈춘다. 클립 미리보기 중에만 값이 들어간다.
+  const stopAtRef = useRef<number | null>(null);
+  // 미리보기가 스스로 건 seek 인지 구분한다. 이게 없으면 미리보기 시작 시의 seek 이
+  // 자기 자신의 정지 예약을 지워버린다.
+  const autoSeekRef = useRef(false);
+
+  // 태그 하나가 실제로 잘려나갈 구간. produce 로 보내는 계산과 반드시 같아야 해서
+  // 여기 한 곳에서만 만든다 — 미리보기와 결과물이 어긋나면 태거가 헛것을 보게 된다.
+  const clipRangeOf = useCallback((tag: Tag) => {
+    const before = tag.padBefore ?? padBefore;
+    const after = tag.padAfter ?? padAfter;
+    const cap = tag.clampEnd || (tag.videoIdx === activeVideoIdx ? duration : 0);
+    return {
+      start: Math.max(0, tag.t - before),
+      end: Math.min(cap || tag.t + after, tag.t + after),
+    };
+  }, [padBefore, padAfter, activeVideoIdx, duration]);
+
+  // 태그를 누르면 태그 시각이 아니라 "클립 시작"으로 가서 끝까지 재생하고 멈춘다.
+  const previewClip = (tag: Tag) => {
+    const { start, end } = clipRangeOf(tag);
+    autoSeekRef.current = true;
+    stopAtRef.current = end;
+    switchVideo(tag.videoIdx ?? 0, start);
+    const v = videoRef.current;
+    if (!v) return;
+    // 태그 목록은 영상 아래에 있다. 목록을 내려보다 눌렀을 때
+    // 영상이 화면 밖이면 재생돼도 못 보니 같이 올려준다.
+    v.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if ((tag.videoIdx ?? 0) === activeVideoIdx) void v.play();
+  };
+
   const addTag = useCallback((team: 'home' | 'away') => {
     const v = videoRef.current;
     if (!v || !sourceUrl) return;
@@ -485,13 +616,11 @@ export default function FineplayJobsPage() {
     setProduceError('');
     try {
       const clips = tags.map((tag) => {
-        const before = tag.padBefore ?? padBefore;
-        const after = tag.padAfter ?? padAfter;
-        // 끝 클램프는 태그가 찍힌 그 영상의 길이 기준 (현재 탭 duration 아님).
-        const cap = tag.clampEnd || (tag.videoIdx === activeVideoIdx ? duration : 0);
+        // 화면에서 미리보기로 확인한 구간과 정확히 같은 값을 보낸다.
+        const { start, end } = clipRangeOf(tag);
         return {
-          start: Math.max(0, tag.t - before),
-          end: Math.min(cap || tag.t + after, tag.t + after),
+          start,
+          end,
           team: tag.team,
           makeVertical,
           sourceVideoId: tag.videoId,
@@ -581,14 +710,63 @@ export default function FineplayJobsPage() {
             <input
               type="file"
               accept="video/mp4,video/*"
+              multiple
+              // 여러 번 나눠 고를 수 있게 이어붙인다. 같은 파일을 다시 고르면
+              // onChange 가 안 뜨므로 value 를 비워 재선택도 받는다.
               style={{ fontSize: 12 }}
-              onChange={(e) => setPreFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const picked = Array.from(e.target.files || []);
+                if (picked.length) setPreFiles((prev) => [...prev, ...picked]);
+                e.target.value = '';
+              }}
               disabled={preBusy}
             />
             <button style={primaryBtn} onClick={() => void createStandalone()} disabled={preBusy}>
-              {preBusy ? `업로드 중 ${preProgress}%` : '생성'}
+              {preBusy
+                ? `업로드 중 ${preUploadIdx + 1}/${preFiles.length} — ${preProgress}%`
+                : '생성'}
             </button>
           </div>
+          {preFiles.length ? (
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                위에서부터 경기 순서 — 태깅 화면의 영상 탭 순서가 됩니다.
+              </span>
+              {preFiles.map((f, i) => (
+                <div
+                  key={`${f.name}-${f.size}-${i}`}
+                  style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}
+                >
+                  <span style={{ color: 'var(--muted, #999)', minWidth: 46 }}>영상 {i + 1}</span>
+                  <span style={{ flex: 1, wordBreak: 'break-all' }}>{f.name}</span>
+                  <span style={{ color: 'var(--muted, #999)' }}>
+                    {(f.size / 1024 / 1024).toFixed(0)}MB
+                  </span>
+                  <button
+                    style={smallBtn}
+                    disabled={preBusy || i === 0}
+                    onClick={() => setPreFiles((prev) => moveItem(prev, i, i - 1))}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    style={smallBtn}
+                    disabled={preBusy || i === preFiles.length - 1}
+                    onClick={() => setPreFiles((prev) => moveItem(prev, i, i + 1))}
+                  >
+                    ↓
+                  </button>
+                  <button
+                    style={smallBtn}
+                    disabled={preBusy}
+                    onClick={() => setPreFiles((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    삭제
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {preMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{preMsg}</p> : null}
         </div>
       ) : null}
@@ -749,6 +927,57 @@ export default function FineplayJobsPage() {
                       </button>
                     </div>
                     {linkMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{linkMsg}</p> : null}
+
+                    <div style={{ borderTop: '1px dashed var(--border-ghost, #2c2c32)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 600 }}>📋 경기기록지에서 라인업</span>
+                        <input
+                          type="file"
+                          accept=".xlsx,.xlsm"
+                          disabled={sheetBusy}
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) void loadSheets(job, f);
+                          }}
+                          style={{ fontSize: 12 }}
+                        />
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--muted, #999)' }}>
+                          <input type="checkbox" checked={sheetSwap} onChange={(e) => setSheetSwap(e.target.checked)} disabled={sheetBusy} />
+                          홈/어웨이 뒤집기
+                        </label>
+                      </div>
+                      {sheetRows.length ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {sheetRows.map((s) => (
+                            <div key={s.sheet} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                              <span style={{ width: 74, color: 'var(--muted, #999)' }}>{s.sheet}</span>
+                              {s.error ? (
+                                <span style={{ color: '#f87171' }}>{s.error}</span>
+                              ) : (
+                                <>
+                                  <span style={{ flex: 1 }}>
+                                    {s.home?.team} ({s.home?.count}) vs {s.away?.team} ({s.away?.count})
+                                  </span>
+                                  <button
+                                    style={smallBtn}
+                                    disabled={sheetBusy || !s.usable}
+                                    title={s.usable ? '이 시트의 라인업을 홈/어웨이에 넣는다' : '선수명단이 비어 있어 넣을 수 없습니다'}
+                                    onClick={() => void applySheet(job, s.sheet)}
+                                  >
+                                    {s.usable ? '적용' : '명단 없음'}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {sheetMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{sheetMsg}</p> : null}
+                      <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
+                        신청이 없는 사전 작업은 라인업이 비어 태깅 등번호 검증이 돌지 않습니다. 기록지 시트 하나가 경기 하나입니다.
+                      </p>
+                    </div>
+
                     <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
                       전송(클립 결과 탭)하면 연결된 사이드별로 각 팀 클립만, 그 팀 라인업으로 재매칭돼 나갑니다. 상대편 액션은 익명 처리됩니다.
                     </p>
@@ -800,7 +1029,9 @@ export default function FineplayJobsPage() {
                 ref={videoRef}
                 src={sourceUrl}
                 controls
-                style={{ width: '100%', maxHeight: 480, background: '#000', borderRadius: 8 }}
+                // 태깅은 화면을 오래 들여다보는 작업이라 영상을 최대한 크게 띄운다.
+                // 고정 px 대신 화면 높이 비례 — 아래 태깅 버튼·타임라인이 잘리지 않는 선.
+                style={{ width: '100%', maxHeight: '68vh', minHeight: 360, background: '#000', borderRadius: 8 }}
                 onLoadedMetadata={(e) => {
                   setDuration(e.currentTarget.duration || 0);
                   e.currentTarget.playbackRate = speed;
@@ -809,7 +1040,24 @@ export default function FineplayJobsPage() {
                     pendingSeekRef.current = null;
                   }
                 }}
-                onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
+                onTimeUpdate={(e) => {
+                  const v = e.currentTarget;
+                  setCurrent(v.currentTime);
+                  // 클립 미리보기 중이면 끝시간에서 멈춘다
+                  const stop = stopAtRef.current;
+                  if (stop !== null && v.currentTime >= stop) {
+                    stopAtRef.current = null;
+                    v.pause();
+                    v.currentTime = stop;
+                  }
+                }}
+                // 사용자가 직접 스크럽하면 미리보기 정지 예약을 푼다 —
+                // 나중에 엉뚱한 지점에서 갑자기 멈추는 걸 막는다.
+                // 미리보기가 스스로 건 seek 은 예외.
+                onSeeking={() => {
+                  if (autoSeekRef.current) { autoSeekRef.current = false; return; }
+                  stopAtRef.current = null;
+                }}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
               />
@@ -871,7 +1119,13 @@ export default function FineplayJobsPage() {
                       >
                         {tag.team === 'home' ? '홈' : '어웨이'}
                       </button>
-                      <button style={smallBtn} onClick={() => switchVideo(tag.videoIdx ?? 0, tag.t)}>{fmt(tag.t)}</button>
+                      <button
+                        style={smallBtn}
+                        title="클립 시작으로 이동해 끝까지 재생 — 실제 잘릴 구간을 그대로 확인"
+                        onClick={() => previewClip(tag)}
+                      >
+                        {fmt(clipRangeOf(tag).start)} → {fmt(clipRangeOf(tag).end)}
+                      </button>
                       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, color: 'var(--muted, #999)' }}>
                         앞 <input
                           type="number" min={0} max={60}

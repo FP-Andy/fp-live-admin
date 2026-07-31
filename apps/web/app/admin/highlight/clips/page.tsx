@@ -264,6 +264,31 @@ export default function ClipResultsPage() {
     }
   };
 
+  // 목록 제목은 Match.name → job display_name 순으로 정해진다.
+  // 서버가 둘 다 갱신하므로 여기선 잡 기준으로만 보내면 된다.
+  const renameMatch = async () => {
+    if (!selectedMatch) return;
+    const next = window.prompt('클립 결과 제목', selectedMatch.name || '');
+    if (next === null) return;
+    const name = next.trim();
+    if (!name || name === selectedMatch.name) return;
+    setBusy(true);
+    setMsg('');
+    try {
+      await apiJson(`/highlight/clip-results/${selectedMatch.job_id}/name`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      });
+      setSelectedMatch({ ...selectedMatch, name });
+      setMsg(`제목을 "${name}" 로 바꿨습니다.`);
+      await loadMatches();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const resend = async () => {
     if (!selectedMatch?.match_id) return;
     setBusy(true);
@@ -302,9 +327,14 @@ export default function ClipResultsPage() {
               <button style={smallBtn} onClick={() => { setSelectedMatch(null); setDetail(null); }}>매치 목록</button>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{selectedMatch.name}</span>
               {role === 'SUPERADMIN' ? (
-                <button style={{ ...primaryBtn, marginLeft: 'auto' }} onClick={resend} disabled={busy}>
-                  ⬆ FinePlay로 전송
-                </button>
+                <>
+                  <button style={smallBtn} onClick={renameMatch} disabled={busy} title="클립 결과 제목 바꾸기">
+                    ✎ 이름 수정
+                  </button>
+                  <button style={{ ...primaryBtn, marginLeft: 'auto' }} onClick={resend} disabled={busy}>
+                    ⬆ FinePlay로 전송
+                  </button>
+                </>
               ) : null}
             </>
           ) : (
@@ -397,7 +427,9 @@ export default function ClipResultsPage() {
             <video
               src={detail.video_url}
               controls
-              style={{ width: '100%', maxHeight: 420, background: '#000', borderRadius: 8 }}
+              // 고정 px 대신 화면 높이 비례 — 큰 모니터에서 그만큼 크게 보인다.
+              // 아래 액션 목록이 바로 이어지므로 태깅 화면(68vh)보다 조금 낮게 잡는다.
+              style={{ width: '100%', maxHeight: '62vh', minHeight: 320, background: '#000', borderRadius: 8 }}
             />
           ) : (
             <p style={{ fontSize: 13, color: 'var(--muted, #999)' }}>영상 URL 을 불러올 수 없습니다 (S3 설정 확인).</p>
