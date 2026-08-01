@@ -40,6 +40,7 @@ from .fpa import (
     parse_logs_to_dataframe,
 )
 from .fpa_model_baselines import build_fpa_model_room_baseline_artifacts, canonicalize_xfp_weights_payload
+from . import record_sheet
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
 from .highlight_jobs import (
     clips_dir,
@@ -7823,6 +7824,12 @@ def standalone_upload_url(
     }
 
 
+def _prelaunch_source_label(videos: list[dict]) -> str:
+    """목록에 보일 원본 이름 — 영상이 여러 개면 '첫파일.mp4 외 2개'."""
+    first = str((videos[0] if videos else {}).get("s3Key") or "").rsplit("/", 1)[-1] or "prelaunch.mp4"
+    return first if len(videos) <= 1 else f"{first} 외 {len(videos) - 1}개"
+
+
 @app.post("/api/highlight/fineplay-jobs/standalone")
 def create_standalone_fineplay_job(
     body: dict = Body(default={}),
@@ -7837,11 +7844,35 @@ def create_standalone_fineplay_job(
     """
     team_name = str(body.get("team_name") or "").strip()
     opp_name = str(body.get("opponent_name") or "").strip()
-    video_s3_key = str(body.get("video_s3_key") or "").strip()
     if not team_name or not opp_name:
         raise HTTPException(status_code=400, detail="team_name, opponent_name 은 필수입니다.")
-    if not video_s3_key:
-        raise HTTPException(status_code=400, detail="video_s3_key 가 없습니다. 영상을 먼저 업로드하세요.")
+
+    # 영상은 여러 개(전반/후반 분리 촬영 등) 올릴 수 있다 — 보낸 순서가 곧 경기 순서.
+    # videos[] 가 정본, 단일 video_s3_key 는 구 클라이언트 호환.
+    raw_videos = body.get("videos")
+    if not isinstance(raw_videos, list) or not raw_videos:
+        raw_videos = [{
+            "s3_key": body.get("video_s3_key"),
+            "duration_seconds": body.get("duration_seconds"),
+        }]
+    source_videos: list[dict] = []
+    for raw in raw_videos:
+        if not isinstance(raw, dict):
+            raw = {"s3_key": raw}
+        key = str(raw.get("s3_key") or "").strip()
+        if not key:
+            continue
+        entry = {"videoId": f"v{len(source_videos) + 1}", "s3Key": key}
+        try:
+            duration = float(raw.get("duration_seconds"))
+        except (TypeError, ValueError):
+            duration = 0.0
+        # 길이는 태깅 탭 표시용 — 없으면 브라우저가 로드하며 채운다.
+        if duration > 0:
+            entry["durationSeconds"] = round(duration, 3)
+        source_videos.append(entry)
+    if not source_videos:
+        raise HTTPException(status_code=400, detail="영상이 없습니다. 영상을 먼저 업로드하세요.")
 
     rid = f"pre-{uuid.uuid4().hex[:8]}"
     job_id = f"fp-{rid}"
@@ -7872,11 +7903,7 @@ def create_standalone_fineplay_job(
         "analysisRequestId": rid,
         "team": {"teamId": "prelaunch", "teamName": team_name},
         "opponent": {"name": opp_name},
-        "videos": [{
-            "videoId": "v1",
-            "s3Key": video_s3_key,
-            **({"durationSeconds": body["duration_seconds"]} if body.get("duration_seconds") else {}),
-        }],
+        "videos": source_videos,
         "lineup": [],
     }
     job = HighlightJob(
@@ -7884,7 +7911,7 @@ def create_standalone_fineplay_job(
         owner_id=user.id,
         status="tagging",
         mode="fineplay",
-        original_filename=video_s3_key.rsplit("/", 1)[-1] or "prelaunch.mp4",
+        original_filename=_prelaunch_source_label(source_videos),
         job_metadata={
             "display_name": team_name,
             "analysis_request_id": rid,
@@ -8019,6 +8046,174 @@ def link_standalone_request(
     metadata["links"] = links
     update_job(db, job_id, job_metadata=metadata)
     return {"job_id": job_id, "side": side, "links": {s: {k: v for k, v in l.items() if k != "lineup"} for s, l in links.items()}}
+
+
+@app.put("/api/highlight/fineplay-jobs/{job_id}/lineup/{side}")
+def set_standalone_lineup(
+    job_id: str,
+    side: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """사전 작업 잡에 신청 없이 라인업만 넣는다 (경기기록지에서 뽑은 명단 등).
+
+    links/{side} 연결 API 는 analysisRequestId 가 필수라, 신청이 아직 없는
+    사전 작업에는 쓸 수 없다. 여기서는 팀명·라인업만 채워 dual 태깅의
+    등번호 검증이 바로 돌게 한다. 나중에 실제 신청이 연결되면 그쪽 값이 덮는다.
+
+    body: {teamName?, lineup: [{number|jerseyNumber, name, position?, isSubstitute?}]}
+    """
+    side = side.strip().lower()
+    if side not in ("home", "away"):
+        raise HTTPException(status_code=400, detail="side 는 home 또는 away 여야 합니다.")
+
+    raw = body.get("lineup")
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(status_code=400, detail="lineup 은 비어 있을 수 없습니다.")
+
+    # 소비처(_fineplay_lineup_sides)가 jerseyNumber 로 읽으므로 그 스키마로 맞춘다.
+    lineup: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        jersey = str(entry.get("jerseyNumber") or entry.get("number") or "").strip()
+        name = str(entry.get("name") or "").strip()
+        if not jersey or not name:
+            continue
+        if jersey in seen:
+            raise HTTPException(status_code=400, detail=f"등번호 {jersey} 가 중복입니다.")
+        seen.add(jersey)
+        item = {"jerseyNumber": jersey, "name": name}
+        position = str(entry.get("position") or "").strip()
+        if position:
+            item["position"] = position
+        if entry.get("isSubstitute"):
+            item["isSubstitute"] = True
+        lineup.append(item)
+
+    if not lineup:
+        raise HTTPException(status_code=400, detail="유효한 선수가 없습니다 (등번호·이름 필요).")
+
+    job, metadata = _require_standalone_job(db, job_id)
+    links = dict(metadata.get("links") or {})
+    link = dict(links.get(side) or {})   # 이미 연결된 신청 정보는 보존한다
+    link["lineup"] = lineup
+    team_name = str(body.get("teamName") or "").strip()
+    if team_name:
+        link["team_name"] = team_name
+    link["lineup_source"] = "manual"
+    link["lineup_updated_at"] = datetime.utcnow().isoformat()
+    links[side] = link
+    metadata["links"] = links
+    update_job(db, job_id, job_metadata=metadata)
+
+    _audit(
+        db, "STANDALONE_LINEUP_SET", "highlight_job",
+        actor=user, target_id=job_id,
+        details={"side": side, "team_name": link.get("team_name"), "count": len(lineup)},
+    )
+    db.commit()
+    return {
+        "job_id": job_id,
+        "side": side,
+        "team_name": link.get("team_name"),
+        "count": len(lineup),
+        "lineup": lineup,
+    }
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/lineup/from-record-sheet")
+async def lineup_from_record_sheet(
+    job_id: str,
+    file: UploadFile = File(...),
+    sheet: str = Form(default=""),
+    swap: bool = Form(default=False),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """경기기록지(xlsx)에서 라인업을 읽어 사전 작업 잡에 넣는다.
+
+    sheet 를 비우면 저장하지 않고 시트 목록만 돌려준다(어느 경기인지 고르게).
+    sheet 를 주면 그 시트의 홈/어웨이 라인업을 links 에 저장한다.
+    swap=true 면 기록지의 홈/어웨이를 뒤집어 넣는다 — 영상 기준과 다를 때.
+    """
+    name = (file.filename or "").lower()
+    if not name.endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="기록지는 xlsx 파일이어야 합니다.")
+
+    _require_standalone_job(db, job_id)   # 사전 작업이 아니면 여기서 막힌다
+    try:
+        sheets = await run_in_threadpool(record_sheet.parse_workbook, await file.read())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _summary(s: dict) -> dict:
+        if "error" in s:
+            return {"sheet": s["sheet"], "error": s["error"]}
+        return {
+            "sheet": s["sheet"],
+            "matchNo": s.get("matchNo", ""),
+            "usable": s.get("usable", False),
+            "home": {"team": s["home"]["team"], "count": len(s["home"]["players"])},
+            "away": {"team": s["away"]["team"], "count": len(s["away"]["players"])},
+        }
+
+    # 시트 미지정 = 미리보기. 아무것도 저장하지 않는다.
+    if not sheet.strip():
+        return {"applied": False, "sheets": [_summary(s) for s in sheets]}
+
+    target = next((s for s in sheets if s.get("sheet") == sheet.strip()), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"시트를 찾을 수 없습니다: {sheet}")
+    if "error" in target:
+        raise HTTPException(status_code=400, detail=f"시트를 읽지 못했습니다: {target['error']}")
+    if not target.get("usable"):
+        raise HTTPException(status_code=400, detail="이 시트는 선수명단이 비어 있습니다.")
+
+    # 잡의 links 를 한 번에 갱신한다 (사이드별로 두 번 쓰면 나중 쓰기가 앞을 덮는다).
+    job, metadata = _require_standalone_job(db, job_id)
+    links = dict(metadata.get("links") or {})
+    applied: dict[str, dict] = {}
+    for side in ("home", "away"):
+        src_side = ("away" if side == "home" else "home") if swap else side
+        parsed = target[src_side]
+        lineup = [
+            {"jerseyNumber": p["jerseyNumber"], "name": p["name"], "position": p["position"]}
+            for p in parsed["players"]
+        ]
+        if not lineup:
+            continue
+        link = dict(links.get(side) or {})
+        link["lineup"] = lineup
+        if parsed["team"]:
+            link["team_name"] = parsed["team"]
+        link["lineup_source"] = f"record_sheet:{target['sheet']}"
+        link["lineup_updated_at"] = datetime.utcnow().isoformat()
+        links[side] = link
+        applied[side] = {"team": parsed["team"], "count": len(lineup)}
+
+    if not applied:
+        raise HTTPException(status_code=400, detail="넣을 라인업이 없습니다.")
+
+    metadata["links"] = links
+    metadata["record_sheet"] = {
+        "filename": file.filename or "",
+        "sheet": target["sheet"],
+        "match_no": target.get("matchNo", ""),
+        "swap": bool(swap),
+        "uploaded_at": datetime.utcnow().isoformat(),
+    }
+    update_job(db, job_id, job_metadata=metadata)
+    _audit(
+        db, "STANDALONE_LINEUP_FROM_SHEET", "highlight_job",
+        actor=user, target_id=job_id,
+        details={"sheet": target["sheet"], "swap": bool(swap), "applied": applied},
+    )
+    db.commit()
+    return {"applied": True, "sheet": target["sheet"], "sides": applied,
+            "sheets": [_summary(s) for s in sheets]}
 
 
 @app.delete("/api/highlight/fineplay-jobs/{job_id}/links/{side}")
@@ -8487,6 +8682,57 @@ def clip_result_matches(
         })
     out.sort(key=lambda r: r["updated_at"] or "", reverse=True)
     return out
+
+
+@app.patch("/api/highlight/clip-results/{job_id}/name")
+def rename_clip_result(
+    job_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립 결과 목록에 뜨는 제목을 바꾼다.
+
+    목록의 제목은 Match.name → job display_name → job_id 순으로 정해진다.
+    Match.name 이 우선이라 display_name 만 고치면 화면이 그대로여서, 둘 다 갱신한다.
+    잡 기준으로 받는 이유: 매치가 아직 없는 결과(match_id=None)도 있기 때문.
+    """
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+    if len(name) > 200:
+        raise HTTPException(status_code=400, detail="이름이 너무 깁니다 (200자 이내).")
+
+    job = db.get(HighlightJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+
+    metadata = dict(job.job_metadata or {})
+    before = metadata.get("display_name")
+    metadata["display_name"] = name
+    job.job_metadata = metadata
+
+    # 이 잡에서 나온 클립이 매치에 묶여 있으면 그 이름도 함께 바꾼다.
+    match_ids = {
+        c.match_id
+        for c in db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()
+        if c.match_id
+    }
+    renamed_matches: list[str] = []
+    for mid in match_ids:
+        match_obj = db.get(Match, mid)
+        if match_obj:
+            match_obj.name = name
+            renamed_matches.append(str(mid))
+
+    _audit(
+        db, "CLIP_RESULT_RENAME", "highlight_job",
+        actor=user, target_id=job_id,
+        match_id=next(iter(match_ids), None),
+        details={"before": before, "after": name, "matches": renamed_matches},
+    )
+    db.commit()
+    return {"job_id": job_id, "name": name, "matches": renamed_matches}
 
 
 @app.get("/api/highlight/clip-results/matches/{match_id}/clips")
