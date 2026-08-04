@@ -32,6 +32,9 @@ _INNER_H = round(_INNER_W * OUT_H / OUT_W)  # 피치 원본 비율 유지
 _INNER_X0 = PITCH_MARGIN_X
 _INNER_Y0 = (OUT_H - _INNER_H) // 2
 
+# 드리블 공-행위자 점 간격 (필드 유닛). 점 반지름과 비슷하게 잡아 살짝 붙게.
+BALL_GAP = 1.42
+
 FPS = 25
 HOLD_BEFORE_SEC = 0.4
 MOVE_SEC = 3.0
@@ -525,10 +528,16 @@ def render_scene_motion(
         if actor_pair is not None:
             b, a = actor_pair
             # 이동이 사실상 없으면(제자리 액션) 공 생략.
-            if math.hypot(a["x"] - b["x"], a["y"] - b["y"]) > 0.8:
+            move = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
+            if move > 0.8:
                 arrows = [{"x1": b["x"], "y1": b["y"], "x2": a["x"], "y2": a["y"]}]
-                # 드리블 공은 행위자 점과 겹치지 않게 발끝(우하단)에 붙인다.
-                ball_offset = (0.9, -1.1)
+                # 드리블 공은 행위자 점과 겹치지 않게 **진행 방향 앞**에 붙인다.
+                # 고정 오프셋이면 어느 쪽으로 몰든 화면상 5시에 붙어 방향이 어긋난다.
+                # 1.42 필드유닛 ≈ 13.5px(9.5px/유닛) — 점 반지름 14px 언저리.
+                ball_offset = (
+                    (a["x"] - b["x"]) / move * BALL_GAP,
+                    (a["y"] - b["y"]) / move * BALL_GAP,
+                )
     shot_origin_y: float | None = None
     if shot_target is not None:
         # 슛 경로 — 슈터 최종 위치(없으면 마지막 화살표 끝)에서 골라인 지점으로.
