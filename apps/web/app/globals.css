@@ -5062,6 +5062,13 @@ a:focus-visible {
   color: var(--text-primary);
 }
 
+/* 부 액션(↳) — 바로 위 ★ 주 액션에 종속. 전송 때 groupIndex 로 묶여 나가는 관계와 같은 표기.
+   border 대신 inset shadow 라 헤더와 열 정렬이 밀리지 않는다. */
+.fpa-log-entry.sub {
+  box-shadow: inset 2px 0 0 rgba(255, 122, 0, 0.45);
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .fpa-log-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

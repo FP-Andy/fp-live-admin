@@ -3250,7 +3250,16 @@ export default function FpaLivePage() {
   };
 
   // 로그 행 1줄. clickable=true(single) → 행 클릭 선택, false(dual 장면 내) → 표시만(장면 그룹이 클릭 처리)
-  const renderLogRow = (row: LogPreview, logStr: string | undefined, key: string, clickable: boolean, index: number) => {
+  // role: 장면(그룹) 안에서의 위치 — 'main'=★ 주 액션, 'sub'=거기 종속된 부 액션(침투 등).
+  // 전송 시 groupIndex/isGroupMain 으로 나가는 관계를 로그에서도 같은 모양으로 보여준다.
+  const renderLogRow = (
+    row: LogPreview,
+    logStr: string | undefined,
+    key: string,
+    clickable: boolean,
+    index: number,
+    role: 'main' | 'sub' | null = null,
+  ) => {
     const logParts = logStr?.split(' | ') || [];
     const missing = rowMissingJerseys(row);
     const jerseyCell = (jersey: string | undefined, fallback: string) => {
@@ -3266,7 +3275,7 @@ export default function FpaLivePage() {
     };
     return (
       <div
-        className={`fpa-log-entry ${clickable && selectedRowIndex === index ? 'selected' : ''}`}
+        className={`fpa-log-entry ${clickable && selectedRowIndex === index ? 'selected' : ''} ${role === 'sub' ? 'sub' : ''}`}
         key={key}
         onClick={clickable ? () => setSelectedRowIndex(index) : undefined}
         role={clickable ? 'button' : undefined}
@@ -3277,7 +3286,10 @@ export default function FpaLivePage() {
         <span>{row.Team}</span>
         <span>{logParts[2] || '-'}</span>
         {jerseyCell(row.Player, '')}
-        <span>{row.Action}</span>
+        <span title={role === 'sub' ? '부 액션 — 위 ★ 주 액션에 종속' : role === 'main' ? '주 액션 (★)' : undefined}>
+          {role === 'sub' ? '↳ ' : role === 'main' ? '★ ' : ''}
+          {row.Action}
+        </span>
         {jerseyCell(row.Receiver, '-')}
         <span>{row.Coord}</span>
         <span>{extractReceiveCoord(logStr) || '-'}</span>
@@ -3289,6 +3301,20 @@ export default function FpaLivePage() {
         <span title={extractDualStateSummary(logStr) || '-'}>{extractDualStateSummary(logStr) || '-'}</span>
       </div>
     );
+  };
+
+  // 장면 안 로그 표시 순서 — 주 액션(★ primary) 먼저, 나머지는 그 아래 종속(↳).
+  // **표시만** 재배치한다. 원본 rows 순서·primary 인덱스는 그대로 두어야 전송 seq·
+  // SceneState.primary(장면 내 행 인덱스) 기준 재채점이 어긋나지 않는다.
+  const sceneRowOrder = (count: number, primary: number | null) => {
+    if (count <= 0) return [];
+    if (count === 1) return [{ j: 0, role: null as 'main' | 'sub' | null }];
+    const main = primary != null && primary >= 0 && primary < count ? primary : 0;
+    const subs = Array.from({ length: count }, (_, j) => j).filter((j) => j !== main);
+    return [
+      { j: main, role: 'main' as 'main' | 'sub' | null },
+      ...subs.map((j) => ({ j, role: 'sub' as 'main' | 'sub' | null })),
+    ];
   };
 
   const renderLogPanel = () => (
@@ -3380,7 +3406,9 @@ export default function FpaLivePage() {
                             tabIndex={0}
                           >
                             <div className="fpa-log-action-divider">액션 {actionPos + 1}{editingSceneIndex === sceneIdx ? ' (편집 중)' : ''}</div>
-                            {scene.rows.map((row, j) => renderLogRow(row, scene.logs[j], `s${sceneIdx}-${j}`, false, -1))}
+                            {sceneRowOrder(scene.rows.length, scene.primary).map(({ j, role }) =>
+                              renderLogRow(scene.rows[j], scene.logs[j], `s${sceneIdx}-${j}`, false, -1, role),
+                            )}
                           </div>
                         ))}
                       </div>
@@ -3390,7 +3418,9 @@ export default function FpaLivePage() {
                 {rows.length ? (
                   <div className="fpa-log-scene current" key="current-scene">
                     <div className="fpa-log-action-divider">🎬 클립 {currentClipIndex} · 현재 액션 (미저장)</div>
-                    {rows.map((row, index) => renderLogRow(row, logs[index], `current-${index}`, false, -1))}
+                    {sceneRowOrder(rows.length, primaryRowIndex).map(({ j, role }) =>
+                      renderLogRow(rows[j], logs[j], `current-${j}`, false, -1, role),
+                    )}
                   </div>
                 ) : null}
               </>
