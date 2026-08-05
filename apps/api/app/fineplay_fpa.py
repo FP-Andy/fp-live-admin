@@ -373,24 +373,43 @@ def equal_split_offsets(actions: list[dict[str, Any]], clip_duration: float) -> 
     if n <= 0 or clip_duration <= 0:
         return
     # 1) dual 기록 시간 — 클립 범위(+1s 슬랙) 안일 때만 시작으로 채택.
+    #    **0 은 '미기록'으로 본다**: dual 시간 입력의 기본값이 "00:00" 이라 시간을 안 적은
+    #    액션까지 0초 기록으로 둔갑하고, 그러면 전 액션이 0 에 몰려(끝=다음 시작=0) 앱
+    #    타임라인 시크가 죽는다. 진짜 클립 첫머리 액션은 아래 분할에서 어차피 0 을 받는다.
     for a in actions:
         if a.get("startOffset") is None:
             t = a.get("recordedTime")
-            if isinstance(t, (int, float)) and 0 <= t <= clip_duration + 1:
+            if isinstance(t, (int, float)) and 0 < t <= clip_duration + 1:
                 a["startOffset"] = round(min(float(t), clip_duration), 2)
-    # 2) 시작이 정해진 액션의 끝 = 다음 액션 시작(있으면) 또는 클립 끝.
+    # 2) 시작이 빈 액션은 **앞뒤 확정값 사이**를 균등 분할한다. 전역 i/n 으로 채우면
+    #    일부만 시간을 적었을 때 뒤 액션이 앞 액션보다 이른 시각으로 밀려 순서가 꼬인다.
+    i = 0
+    while i < n:
+        if actions[i].get("startOffset") is not None:
+            i += 1
+            continue
+        j = i
+        while j < n and actions[j].get("startOffset") is None:
+            j += 1
+        count = j - i
+        has_prev = i > 0
+        lo = float(actions[i - 1]["startOffset"]) if has_prev else 0.0
+        hi = float(actions[j]["startOffset"]) if j < n else clip_duration
+        if hi < lo:
+            hi = lo
+        for k in range(count):
+            # 앞 앵커가 있으면 그 뒤로 밀어 넣고(k+1/count+1), 없으면 클립 시작부터 채운다.
+            frac = (k + 1) / (count + 1) if has_prev else k / max(count, 1)
+            actions[i + k]["startOffset"] = round(lo + (hi - lo) * frac, 2)
+        i = j
+    # 3) 끝 = 다음 액션 시작(없으면 클립 끝). 시작보다 앞서지 않게 클램프.
     for i, a in enumerate(actions):
-        if a.get("startOffset") is not None and a.get("endOffset") is None:
+        if a.get("endOffset") is None:
             nxt = next(
                 (float(b["startOffset"]) for b in actions[i + 1:] if b.get("startOffset") is not None),
                 clip_duration,
             )
             a["endOffset"] = round(max(nxt, float(a["startOffset"])), 2)
-    # 3) 남은 액션은 기존 균등 분할.
-    for i, a in enumerate(actions):
-        if a.get("startOffset") is None or a.get("endOffset") is None:
-            a["startOffset"] = round(clip_duration * i / n, 2)
-            a["endOffset"] = round(clip_duration * (i + 1) / n, 2)
 
 
 def analysis_from_actions(
