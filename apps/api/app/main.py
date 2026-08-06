@@ -9724,6 +9724,10 @@ def _serve_file_with_range(path: Path, request: Request, media_type: str, header
 def list_highlight_jobs(
     limit: int = Query(20, ge=1, le=100),
     mode: str | None = Query(None),
+    # brief=1 이면 무거운 메타데이터(result_payload·clips)를 빼고 개수만 준다.
+    # 목록 화면은 그 내용을 안 쓰는데 job 하나가 최대 22KB 라 조회가 초 단위로
+    # 늘어졌다. 기존 호출부를 깨지 않으려고 옵트인으로 둔다.
+    brief: bool = Query(False),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -9731,7 +9735,7 @@ def list_highlight_jobs(
     if mode:
         query = query.filter(HighlightJob.mode == mode)
     rows = query.order_by(desc(HighlightJob.created_at)).limit(limit).all()
-    return [serialize_job(row) for row in rows]
+    return [serialize_job(row, brief=brief) for row in rows]
 
 
 @app.get("/api/highlight/jobs/{job_id}")

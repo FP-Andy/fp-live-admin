@@ -95,7 +95,18 @@ def update_job(db: Session, job_id: str, **kwargs: object) -> HighlightJob | Non
     return job
 
 
-def serialize_job(job: HighlightJob) -> dict[str, Any]:
+# 목록 응답에서 빼는 무거운 메타데이터 키.
+#
+# 태깅이 끝난(done) job 은 result_payload(클립 분석 결과 전문) 8~16KB + clips 2~4KB
+# 를 달고 있어 태깅 전 job(~1.2KB)의 10~17배다. 목록 API 는 이걸 쓰지도 않으면서
+# 매번 통째로 실어 보냈다.
+#
+# **일을 할수록 느려지는 구조**라 방치하면 안 된다 — job 이 늘어서가 아니라
+# 태깅이 끝날수록 무거운 job 의 비율이 올라간다.
+HEAVY_METADATA_KEYS = ("result_payload", "clips")
+
+
+def serialize_job(job: HighlightJob, brief: bool = False) -> dict[str, Any]:
     metadata = job.job_metadata if isinstance(job.job_metadata, dict) else {}
     progress = metadata.get("progress")
     progress_percent = None
@@ -107,6 +118,15 @@ def serialize_job(job: HighlightJob) -> dict[str, Any]:
         progress_percent = progress
     # 내부 파일시스템 경로는 응답에서 제외한다.
     public_metadata = {k: v for k, v in metadata.items() if k != "reference_image_path"}
+    if brief:
+        # 통째로 빼되 개수는 남긴다 — 목록에서 "클립 N개"를 보여주는 화면이 있다.
+        public_metadata = {k: v for k, v in public_metadata.items() if k not in HEAVY_METADATA_KEYS}
+        clips = metadata.get("clips")
+        if isinstance(clips, list):
+            public_metadata["clips_count"] = len(clips)
+        result_payload = metadata.get("result_payload")
+        if isinstance(result_payload, dict) and isinstance(result_payload.get("clips"), list):
+            public_metadata["result_clips_count"] = len(result_payload["clips"])
     return {
         "id": job.id,
         "owner_id": job.owner_id,
