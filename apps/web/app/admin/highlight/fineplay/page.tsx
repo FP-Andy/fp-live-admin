@@ -120,6 +120,58 @@ function moveItem<T>(arr: T[], from: number, to: number): T[] {
   return next;
 }
 
+// --- 사전 작업 원본 업로드 ---
+// 단일 PUT 은 TCP 연결 하나라, 회선을 다른 트래픽(드라이브 동기화 등)과 나눠 쓰면
+// 그대로 주저앉는다. 큰 파일은 멀티파트로 쪼개 파트를 동시에 올린다. 5GB 한도도 사라진다.
+const MB = 1024 * 1024;
+const MULTIPART_MIN = 64 * MB; // 이보다 작으면 단일 PUT (파트 왕복이 더 비싸다)
+const PART_SIZE_MIN = 32 * MB; // S3 최소 5MB. 32MB면 10GB=320파트로 상한(10000) 여유.
+const UPLOAD_CONCURRENCY = 4;
+const PART_RETRY = 4;
+// 업링크가 다른 트래픽에 굶으면 전송이 에러 없이 그냥 멈춘 채로 남는다(진행률 정지).
+// 일정 시간 진척이 없으면 그 파트를 끊고 다시 올린다.
+const PART_STALL_MS = 60_000;
+
+function partSizeFor(fileSize: number): number {
+  // 파트 수 상한 10000 — 초대형 파일이면 파트를 키운다.
+  return Math.max(PART_SIZE_MIN, Math.ceil(fileSize / 10000 / MB) * MB);
+}
+
+// 파트 하나 PUT. ETag 를 돌려줘야 완료 요청에서 순서를 맞출 수 있다.
+function putPart(url: string, blob: Blob, onLoaded: (bytes: number) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let lastTick = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastTick < PART_STALL_MS) return;
+      clearInterval(watchdog);
+      xhr.abort(); // onabort 가 reject → 상위에서 이 파트만 재시도
+    }, 5_000);
+    const settle = (fn: () => void) => { clearInterval(watchdog); fn(); };
+
+    xhr.open('PUT', url);
+    xhr.upload.onprogress = (e) => {
+      lastTick = Date.now();
+      if (e.lengthComputable) onLoaded(e.loaded);
+    };
+    xhr.onload = () => settle(() => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`파트 업로드 실패 (${xhr.status})`));
+        return;
+      }
+      const etag = xhr.getResponseHeader('ETag');
+      if (!etag) {
+        reject(new Error('파트 ETag 를 읽지 못했습니다 — 버킷 CORS 의 ExposeHeaders 에 ETag 를 추가하세요.'));
+        return;
+      }
+      resolve(etag);
+    });
+    xhr.onerror = () => settle(() => reject(new Error('파트 네트워크 오류')));
+    xhr.onabort = () => settle(() => reject(new Error(`${PART_STALL_MS / 1000}초간 전송 정체 — 파트 재시도`)));
+    xhr.send(blob);
+  });
+}
+
 // 업로드 전 로컬에서 영상 길이를 읽는다 — 매니페스트에 넣어두면 태깅 탭이
 // 파일을 로드하기 전에도 길이를 보여준다. 실패해도 0 (선택 항목이라 무해).
 function readVideoDuration(file: File): Promise<number> {
@@ -230,7 +282,7 @@ export default function FineplayJobsPage() {
 
   // 파일 하나를 presign 받아 S3 로 직접 올리고 키·길이를 돌려준다.
   // 진행률 표시를 위해 XHR 사용 (presigned URL 이라 쿠키 불필요).
-  const uploadPreFile = async (file: File) => {
+  const uploadSinglePut = async (file: File) => {
     const presign = await apiJson<{ upload_url: string; s3_key: string; content_type: string }>(
       '/highlight/fineplay-jobs/standalone/upload-url',
       { method: 'POST', body: JSON.stringify({ file_name: file.name }) },
@@ -248,7 +300,90 @@ export default function FineplayJobsPage() {
       xhr.onerror = () => reject(new Error(`업로드 네트워크 오류 — ${file.name}`));
       xhr.send(file);
     });
-    return { s3_key: presign.s3_key, duration_seconds: await readVideoDuration(file) };
+    return presign.s3_key;
+  };
+
+  // 큰 파일: 파트를 UPLOAD_CONCURRENCY 개씩 동시에 올린다.
+  const uploadMultipart = async (file: File) => {
+    const partSize = partSizeFor(file.size);
+    const partCount = Math.ceil(file.size / partSize);
+    const start = await apiJson<{
+      s3_key: string; upload_id: string; urls: { part_number: number; url: string }[];
+    }>('/highlight/fineplay-jobs/standalone/multipart/start', {
+      method: 'POST',
+      body: JSON.stringify({ file_name: file.name, part_count: partCount }),
+    });
+    const urlOf = new Map(start.urls.map((u) => [u.part_number, u.url]));
+
+    const loaded = new Array<number>(partCount).fill(0);
+    const etags = new Array<string>(partCount);
+    // 파트 4개가 각자 progress 를 쏘므로 퍼센트가 바뀔 때만 setState.
+    let shown = -1;
+    const report = () => {
+      const sum = loaded.reduce((a, b) => a + b, 0);
+      const pct = Math.min(99, Math.round((sum / file.size) * 100));
+      if (pct !== shown) { shown = pct; setPreProgress(pct); }
+    };
+
+    let nextPart = 0;
+    const worker = async () => {
+      for (let i = nextPart++; i < partCount; i = nextPart++) {
+        const blob = file.slice(i * partSize, Math.min(file.size, (i + 1) * partSize));
+        const url = urlOf.get(i + 1);
+        if (!url) throw new Error(`파트 URL 누락 (${i + 1})`);
+        // 긴 업로드는 파트 하나쯤 끊기거나 멈춘다 — 그 파트만 다시 올린다(전체 재업로드 아님).
+        for (let attempt = 1; ; attempt += 1) {
+          try {
+            etags[i] = await putPart(url, blob, (bytes) => { loaded[i] = bytes; report(); });
+            loaded[i] = blob.size;
+            report();
+            break;
+          } catch (err) {
+            loaded[i] = 0;
+            report();
+            if (attempt >= PART_RETRY) throw err;
+            // 진행률만 보면 멈춘 것처럼 보이므로 재시도 중임을 알린다.
+            setPreMsg(`파트 ${i + 1}/${partCount} 재시도 ${attempt}/${PART_RETRY - 1} — ${
+              err instanceof Error ? err.message : String(err)}`);
+            await new Promise((r) => setTimeout(r, 1000 * attempt));
+          }
+        }
+      }
+    };
+
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, partCount) }, () => worker()),
+      );
+      await apiJson('/highlight/fineplay-jobs/standalone/multipart/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          s3_key: start.s3_key,
+          upload_id: start.upload_id,
+          parts: etags.map((etag, i) => ({ part_number: i + 1, etag })),
+        }),
+      });
+    } catch (err) {
+      // 중단해두지 않으면 올라간 파트가 계속 보관비로 남는다.
+      try {
+        await apiJson('/highlight/fineplay-jobs/standalone/multipart/abort', {
+          method: 'POST',
+          body: JSON.stringify({ s3_key: start.s3_key, upload_id: start.upload_id }),
+        });
+      } catch {
+        // 중단 실패는 원래 에러를 덮지 않는다 (버킷 수명주기 규칙으로도 정리된다).
+      }
+      throw err instanceof Error ? new Error(`${file.name}: ${err.message}`) : err;
+    }
+    setPreProgress(100);
+    return start.s3_key;
+  };
+
+  const uploadPreFile = async (file: File) => {
+    const s3_key = file.size > MULTIPART_MIN
+      ? await uploadMultipart(file)
+      : await uploadSinglePut(file);
+    return { s3_key, duration_seconds: await readVideoDuration(file) };
   };
 
   const createStandalone = async () => {

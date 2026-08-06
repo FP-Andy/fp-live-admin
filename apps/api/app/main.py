@@ -7809,19 +7809,112 @@ def standalone_upload_url(
     body: dict = Body(default={}),
     user: User = Depends(_require_superuser),
 ):
-    """사전 작업 풀영상 업로드용 presigned PUT — 신청 없이 콘솔이 직접 원본을 확보한다."""
-    storage = highlight_default_storage()
-    if not storage.configured:
-        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
-    file_name = str(body.get("file_name") or "match.mp4").strip()
-    safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", file_name) or "match.mp4"
-    key = f"prelaunch/sources/{uuid.uuid4().hex[:8]}/{safe_name}"
-    content_type = "video/mp4" if safe_name.lower().endswith(".mp4") else "application/octet-stream"
+    """사전 작업 풀영상 업로드용 presigned PUT — 신청 없이 콘솔이 직접 원본을 확보한다.
+
+    작은 파일 전용 폴백. 큰 파일은 아래 multipart 3종을 쓴다(단일 PUT 은 5GB 한도).
+    """
+    storage = _prelaunch_storage()
+    key, content_type = _prelaunch_source_key(str(body.get("file_name") or ""))
     return {
         "upload_url": storage.presigned_put(key, expires=7200, content_type=content_type),
         "s3_key": key,
         "content_type": content_type,
     }
+
+
+def _prelaunch_storage():
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+    return storage
+
+
+def _prelaunch_source_key(file_name: str) -> tuple[str, str]:
+    """업로드용 원본 키 + Content-Type. prefix 는 삭제 안전장치와 짝이라 여기서만 만든다."""
+    safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", file_name.strip()) or "match.mp4"
+    key = f"prelaunch/sources/{uuid.uuid4().hex[:8]}/{safe_name}"
+    content_type = "video/mp4" if safe_name.lower().endswith(".mp4") else "application/octet-stream"
+    return key, content_type
+
+
+def _require_prelaunch_key(key: str) -> str:
+    """멀티파트 완료·중단이 임의 키를 건드리지 못하게 — 삭제 API 와 같은 prefix 가드."""
+    key = str(key or "").strip()
+    if not key.startswith("prelaunch/sources/"):
+        raise HTTPException(status_code=400, detail="사전 작업 원본 경로가 아닙니다.")
+    return key
+
+
+@app.post("/api/highlight/fineplay-jobs/standalone/multipart/start")
+def standalone_multipart_start(
+    body: dict = Body(default={}),
+    user: User = Depends(_require_superuser),
+):
+    """멀티파트 업로드 시작 — 파트 URL 을 한 번에 발급한다.
+
+    브라우저가 파트를 동시에 올리므로 단일 PUT 처럼 연결 하나에 묶이지 않는다.
+    업로드가 길어질 수 있어 파트 URL 은 6시간짜리로 준다.
+    """
+    storage = _prelaunch_storage()
+    try:
+        part_count = int(body.get("part_count") or 0)
+    except (TypeError, ValueError):
+        part_count = 0
+    if not 1 <= part_count <= 10000:  # S3 파트 수 상한
+        raise HTTPException(status_code=400, detail="part_count 는 1~10000 이어야 합니다.")
+    key, content_type = _prelaunch_source_key(str(body.get("file_name") or ""))
+    try:
+        upload_id = storage.create_multipart(key, content_type=content_type)
+        urls = [
+            {"part_number": n, "url": storage.presigned_upload_part(key, upload_id, n)}
+            for n in range(1, part_count + 1)
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"멀티파트 시작 실패: {exc}")
+    return {"s3_key": key, "upload_id": upload_id, "content_type": content_type, "urls": urls}
+
+
+@app.post("/api/highlight/fineplay-jobs/standalone/multipart/complete")
+def standalone_multipart_complete(
+    body: dict = Body(default={}),
+    user: User = Depends(_require_superuser),
+):
+    """파트를 합쳐 하나의 객체로 만든다. parts = [{part_number, etag}, ...]"""
+    storage = _prelaunch_storage()
+    key = _require_prelaunch_key(body.get("s3_key"))
+    upload_id = str(body.get("upload_id") or "").strip()
+    parts = body.get("parts") or []
+    if not upload_id or not parts:
+        raise HTTPException(status_code=400, detail="upload_id·parts 가 필요합니다.")
+    for p in parts:
+        if not str(p.get("etag") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="파트 ETag 가 비었습니다 — 버킷 CORS 의 ExposeHeaders 에 ETag 를 넣어야 합니다.",
+            )
+    try:
+        storage.complete_multipart(key, upload_id, parts)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"멀티파트 완료 실패: {exc}")
+    return {"s3_key": key, "parts": len(parts)}
+
+
+@app.post("/api/highlight/fineplay-jobs/standalone/multipart/abort")
+def standalone_multipart_abort(
+    body: dict = Body(default={}),
+    user: User = Depends(_require_superuser),
+):
+    """실패·취소 시 정리 — 남은 파트는 지우지 않으면 계속 과금된다."""
+    storage = _prelaunch_storage()
+    key = _require_prelaunch_key(body.get("s3_key"))
+    upload_id = str(body.get("upload_id") or "").strip()
+    if not upload_id:
+        raise HTTPException(status_code=400, detail="upload_id 가 필요합니다.")
+    try:
+        storage.abort_multipart(key, upload_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"멀티파트 중단 실패: {exc}")
+    return {"aborted": key}
 
 
 def _prelaunch_source_label(videos: list[dict]) -> str:

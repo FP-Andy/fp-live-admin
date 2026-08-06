@@ -97,6 +97,49 @@ class S3Storage:
             ExpiresIn=expires,
         )
 
+    # --- 멀티파트 업로드 ---
+    # 단일 PUT 은 연결 1개라 회선을 다른 트래픽과 나눠 쓰면 그대로 주저앉고, 5GB 한도도 있다.
+    # 파트를 나눠 브라우저가 병렬로 올리고, 시작/완료/중단만 서버가 서명한다.
+
+    def create_multipart(self, key: str, content_type: str = "video/mp4") -> str:
+        res = self._client().create_multipart_upload(
+            Bucket=self.bucket, Key=key, ContentType=content_type
+        )
+        return str(res["UploadId"])
+
+    def presigned_upload_part(
+        self, key: str, upload_id: str, part_number: int, expires: int = 21600
+    ) -> str:
+        return self._client().generate_presigned_url(
+            "upload_part",
+            Params={
+                "Bucket": self.bucket,
+                "Key": key,
+                "UploadId": upload_id,
+                "PartNumber": part_number,
+            },
+            ExpiresIn=expires,
+        )
+
+    def complete_multipart(self, key: str, upload_id: str, parts: list[dict]) -> str:
+        """parts = [{"part_number": 1, "etag": "\"...\""}, ...] — 순서·ETag 가 맞아야 한다."""
+        ordered = sorted(parts, key=lambda p: int(p["part_number"]))
+        self._client().complete_multipart_upload(
+            Bucket=self.bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={
+                "Parts": [
+                    {"PartNumber": int(p["part_number"]), "ETag": str(p["etag"])} for p in ordered
+                ]
+            },
+        )
+        return key
+
+    def abort_multipart(self, key: str, upload_id: str) -> None:
+        """중단 — 안 지우면 올라간 파트가 계속 과금된다."""
+        self._client().abort_multipart_upload(Bucket=self.bucket, Key=key, UploadId=upload_id)
+
 
 def default_storage() -> S3Storage:
     """env 기반 기본 S3 스토리지."""
