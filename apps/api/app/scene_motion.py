@@ -131,6 +131,123 @@ def _parse_arrows(value: Any) -> list[dict[str, Any]]:
     return arrows
 
 
+def _chain_path(arrows: list[dict]) -> list[tuple[float, float]]:
+    """화살표 체인 → 공이 지나갈 **연속** 경로.
+
+    각 화살표는 자기 시작점에서 출발한다. 앞 화살표의 끝과 다음 화살표의 시작이
+    떨어져 있으면(인터셉트처럼 흐름이 끊기는 장면) 그 사이를 **직선 구간으로 이어**
+    공이 계속 굴러가게 한다.
+
+    이 규칙을 안 지키면 두 가지로 깨진다:
+    - 화살표를 각각 독립 재생 → 공이 순간이동해 "두 번 나간다"(구 mp4 렌더)
+    - 시작점을 버리고 끝점만 연결 → 모서리를 잘라 화살표와 어긋난다(구 sceneData)
+
+    mp4 와 sceneData 가 이 함수를 공유해야 콘솔 검수 화면과 앱 화면이 일치한다.
+    """
+    return _chain_spans(arrows)[0]
+
+
+def _chain_spans(
+    arrows: list[dict],
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """[_chain_path] + 화살표별 (경로 시작 거리, 길이).
+
+    spans[i] 는 화살표 i 가 전체 경로에서 차지하는 구간이다. 끊긴 곳에 삽입된
+    직선 구간의 길이도 누적에 포함되므로, 이 값으로 그리면 **화살표가 드러나는
+    속도가 공의 진행과 정확히 맞는다.**
+    """
+    path: list[tuple[float, float]] = []
+    spans: list[tuple[float, float]] = []
+    travelled = 0.0
+    for ar in arrows:
+        start = (float(ar["x1"]), float(ar["y1"]))
+        end = (float(ar["x2"]), float(ar["y2"]))
+        if not path:
+            path.append(start)
+        else:
+            gap = math.hypot(path[-1][0] - start[0], path[-1][1] - start[1])
+            if gap > 1e-6:
+                path.append(start)  # 끊긴 구간 — 직선으로 잇는다
+                travelled += gap
+        length = math.hypot(end[0] - start[0], end[1] - start[1])
+        spans.append((travelled, length))
+        travelled += length
+        path.append(end)
+    return path, spans
+
+
+def _reveal_fractions(
+    spans: list[tuple[float, float]], path: list[tuple[float, float]], t: float
+) -> list[float]:
+    """공이 지나간 만큼만 화살표를 그리기 위한 화살표별 진행률(0~1).
+
+    수비 액션의 빨간 선(상대 볼 경로)이 처음부터 다 보이면 가로채이는 흐름이
+    먼저 드러난다 — 공이 지나가면서 그려져야 한다.
+    """
+    total = sum(_path_lengths(path))
+    if total <= 0:
+        return [1.0] * len(spans)
+    travelled = min(max(t, 0.0), 1.0) * total
+    out: list[float] = []
+    for before, length in spans:
+        if length <= 0:
+            out.append(1.0 if travelled >= before else 0.0)
+        else:
+            out.append(min(max((travelled - before) / length, 0.0), 1.0))
+    return out
+
+
+def _path_lengths(path: list[tuple[float, float]]) -> list[float]:
+    return [
+        math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1])
+        for i in range(len(path) - 1)
+    ]
+
+
+def _point_on_path(path: list[tuple[float, float]], t: float) -> tuple[float, float]:
+    """진행률 t(0~1) 위치. **시간은 구간 길이에 비례**해 나눈다.
+
+    구간마다 같은 시간을 주면 짧은 구간에서 느리고 긴 구간에서 갑자기 빨라져
+    경계마다 공이 튄다(앱 xfp_scene_view._segmentAt 과 같은 규칙).
+    """
+    if len(path) == 1:
+        return path[0]
+    lengths = _path_lengths(path)
+    total = sum(lengths)
+    if total <= 0:
+        return path[0]
+    remain = min(max(t, 0.0), 1.0) * total
+    for i, length in enumerate(lengths):
+        if remain <= length or i == len(lengths) - 1:
+            f = 1.0 if length <= 0 else min(max(remain / length, 0.0), 1.0)
+            return (
+                path[i][0] + (path[i + 1][0] - path[i][0]) * f,
+                path[i][1] + (path[i + 1][1] - path[i][1]) * f,
+            )
+        remain -= length
+    return path[-1]
+
+
+def _tail_progress(path: list[tuple[float, float]], t: float) -> float | None:
+    """마지막 구간(슛 세그먼트) 안에서의 진행률 — 아직 진입 전이면 None.
+
+    골대 패널 안 공이 언제 날아갈지 결정한다. 길이 비례 배분이라 마지막 구간의
+    시작 시점도 길이로 계산해야 피치 위 공과 패널 안 공이 이어져 보인다.
+    """
+    if len(path) < 2:
+        return None
+    lengths = _path_lengths(path)
+    total = sum(lengths)
+    if total <= 0:
+        return None
+    start = (total - lengths[-1]) / total
+    if t < start:
+        return None
+    if start >= 1.0:
+        return 1.0
+    return min((t - start) / (1.0 - start), 1.0)
+
+
 def _pair_dots(before: list[dict], after: list[dict]) -> list[tuple[dict, dict]]:
     """replay 룸과 같은 매칭: id → number+teamSide → number → index. 미매칭 after 는 제자리."""
     used: set[int] = set()
@@ -298,16 +415,27 @@ def _draw_arrow(
     end: tuple[float, float],
     *,
     kind: str = "pass",
+    progress: float = 1.0,
 ) -> None:
     """패스 화살표 — 콘솔 replay 의 line(#16c2c2, 4px) + 화살촉.
 
     kind='defense' 는 수비 액션(인터셉트·태클·차단·슛블록)으로 그린 상대 볼 경로 —
     dual 캔버스와 동일하게 빨간 선 + 화살촉 없음으로 구분한다.
     kind='fail' 은 실패 패스/크로스 — 빨간 선 + 화살촉(어디로 보내려다 실패했는지).
+
+    progress 는 공이 이 화살표를 지나간 정도(0~1) — 지나간 만큼만 선을 그리고
+    화살촉은 다 지난 뒤에 찍는다. 미리 그리면 결과가 먼저 보인다.
     """
+    progress = min(max(progress, 0.0), 1.0)
+    if progress <= 0:
+        return
     color = DEFENSE_ARROW_COLOR if kind in ("defense", "fail") else ARROW_COLOR
-    draw.line([start, end], fill=color, width=6)
-    if kind == "defense":
+    tip = (
+        start[0] + (end[0] - start[0]) * progress,
+        start[1] + (end[1] - start[1]) * progress,
+    )
+    draw.line([start, tip], fill=color, width=6)
+    if kind == "defense" or progress < 1:
         return
     dx, dy = end[0] - start[0], end[1] - start[1]
     length = math.hypot(dx, dy)
@@ -553,7 +681,11 @@ def render_scene_motion(
 
     # 공 이동은 패스 체인 우선 — 수비(상대 볼 경로)는 패스가 없는 장면에서만 따라간다.
     # (드리블 폴백·슛 세그먼트가 arrows 에 더해진 뒤 계산해야 한다.)
-    ball_arrows = [ar for ar in arrows if ar.get("kind") != "defense"] or list(arrows)
+    # 공은 **그려지는 모든 화살표**를 순서대로 지난다 — 수비(가로채인 상대 볼 경로)도
+    # 실제로 공이 지나간 길이라 포함한다. 제외하면 그 빨간 선을 공이 영영 지나지
+    # 않아 "공이 지나가면 그려진다"가 성립하지 않고, 공도 상대 패스를 건너뛴다.
+    # 끊긴 화살표 사이는 직선으로 이어 계속 굴린다 — sceneData 와 같은 경로.
+    ball_path, arrow_spans = _chain_spans(arrows)
 
     font = _load_font(15)
     dot_r = 14.0
@@ -591,12 +723,15 @@ def render_scene_motion(
             draw = ImageDraw.Draw(img)
 
             # 패스 화살표(시안) / 수비 상대 볼 경로(빨강, 화살촉 없음) — dual 캔버스와 동일.
-            for ar in arrows:
+            # 공이 지나간 만큼만 그린다(_reveal_fractions).
+            reveal = _reveal_fractions(arrow_spans, ball_path, t)
+            for ar, frac in zip(arrows, reveal):
                 _draw_arrow(
                     draw,
                     _to_px(ar["x1"], ar["y1"]),
                     _to_px(ar["x2"], ar["y2"]),
                     kind=str(ar.get("kind") or "pass"),
+                    progress=frac,
                 )
 
             for b, a in pairs:
@@ -624,24 +759,18 @@ def render_scene_motion(
                 if number:
                     draw.text((px, py), number, fill=text_color, font=font, anchor="mm")
 
-            # 공 — 패스 화살표 체인을 따라 순서대로 이동 (콘솔 replay 의 ball 재현).
-            if ball_arrows:
-                n = len(ball_arrows)
-                pos = min(max(t, 0.0), 1.0) * n
-                idx = min(int(pos), n - 1)
-                local_t = pos - idx
-                ar = ball_arrows[idx]
-                bx = ar["x1"] + (ar["x2"] - ar["x1"]) * local_t + ball_offset[0]
-                by = ar["y1"] + (ar["y2"] - ar["y1"]) * local_t + ball_offset[1]
+            # 공 — 화살표 체인을 이은 연속 경로를 길이 비례 속도로 따라간다.
+            if ball_path:
+                bx, by = _point_on_path(ball_path, t)
+                bx += ball_offset[0]
+                by += ball_offset[1]
                 bpx, bpy = _to_px(bx, by)
                 _draw_ball(draw, bpx, bpy)
 
             # 정면 골대 뷰 — 슛이면 반대편 하프 대형 패널(궤적 포함), 궤적 정보가 없으면 기존 인셋.
             if panel_side is not None and goal_mouth is not None:
-                n = len(ball_arrows)
-                pos = min(max(t, 0.0), 1.0) * n
-                # 공이 마지막(슛) 세그먼트에 진입한 뒤부터 패널 안 공이 아크를 따라 난다.
-                ball_t_panel = min(pos - (n - 1), 1.0) if n and pos >= n - 1 else None
+                # 공이 마지막(슛) 구간에 진입한 뒤부터 패널 안 공이 아크를 따라 난다.
+                ball_t_panel = _tail_progress(ball_path, t)
                 _draw_goal_panel(
                     draw, goal_mouth[0], goal_mouth[1],
                     side=panel_side, ball_t=ball_t_panel, start_gx=panel_start_gx,
@@ -770,10 +899,10 @@ def build_scene_data(
     # 공 경로 — mp4 렌더와 같은 규칙: 화살표 체인 → (없으면) 행위자 이동 → 슛이면 골라인 지점 추가.
     actor_pair = _find_actor_pair(pairs, actor_jersey, actor_side)
     # 공은 패스 화살표 체인을 따른다 — 수비(상대 볼 경로)는 그 장면에 패스가 없을 때만 사용.
-    ball_arrows = [ar for ar in arrows if ar.get("kind") != "defense"] or arrows
     path_m: list[tuple[float, float]] = []
-    if ball_arrows:
-        path_m = [(ball_arrows[0]["x1"], ball_arrows[0]["y1"])] + [(ar["x2"], ar["y2"]) for ar in ball_arrows]
+    if arrows:
+        # mp4 렌더와 같은 규칙 — 수비 화살표도 포함하고, 끊긴 사이는 직선으로 잇는다.
+        path_m = _chain_path(arrows)
     elif actor_pair is not None:
         b, a = actor_pair
         if math.hypot(a["x"] - b["x"], a["y"] - b["y"]) > 0.8:
