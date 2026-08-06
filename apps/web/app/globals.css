@@ -1,3 +1,12 @@
+/* 씬모션 등번호 전용 — 디자이너 핸드오프 정본 폰트(앱 cardnews 와 동일 파일).
+   SceneMotionView 헥사곤 넘버에만 쓴다. */
+@font-face {
+  font-family: 'Giants';
+  src: url('/scene/Giants-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #282828;
   --bg-soft: #2d2d2d;
