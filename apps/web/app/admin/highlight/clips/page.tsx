@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
+import SceneMotionView, { type SceneData } from '../../../../components/SceneMotionView';
 import { apiJson, type SessionUser } from '../../../../lib/api';
 
 // 클립 결과: match → clip → action 3계층 열람/편집.
@@ -122,8 +123,10 @@ export default function ClipResultsPage() {
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
-  const [motions, setMotions] = useState<{ seq: number; url: string }[]>([]);
+  const [motions, setMotions] = useState<{ seq: number; url: string | null; sceneData?: SceneData | null }[]>([]);
   const [motionMsg, setMotionMsg] = useState('');
+  // 기본은 앱과 같은 네이티브 렌더. mp4 는 폴백으로 계속 나가는 산출물이라 토글로 남긴다.
+  const [motionAsMp4, setMotionAsMp4] = useState(false);
   // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
 
@@ -185,7 +188,10 @@ export default function ClipResultsPage() {
     setMotions([]);
     setMotionMsg('장면 모션 렌더 중…');
     try {
-      const res = await apiJson<{ motions: { seq: number; url: string }[]; warnings: string[] }>(
+      const res = await apiJson<{
+        motions: { seq: number; url: string | null; sceneData?: SceneData | null }[];
+        warnings: string[];
+      }>(
         `/highlight/clip-results/clips/${clipId}/scene-motions`,
       );
       setMotions(res.motions);
@@ -527,8 +533,13 @@ export default function ClipResultsPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
               <h3 style={{ fontSize: 14, margin: 0 }}>장면 모션 ({motions.length})</h3>
               <button style={smallBtn} onClick={() => void loadMotions(detail.id)}>모션 새로고침</button>
+              <button style={smallBtn} onClick={() => setMotionAsMp4((v) => !v)}>
+                {motionAsMp4 ? '앱 화면으로' : 'mp4 로'}
+              </button>
               <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
-                전송 시 앱에 실리는 모션과 동일합니다.
+                {motionAsMp4
+                  ? 'mp4 = sceneData 를 못 읽는 구버전 앱용 폴백입니다.'
+                  : '앱이 실제로 그리는 화면(sceneData 네이티브 렌더)입니다.'}
               </span>
             </div>
             {motionMsg ? (
@@ -543,7 +554,18 @@ export default function ClipResultsPage() {
                       width: 300, borderRadius: 8, overflow: 'hidden',
                       background: 'var(--surface-input, #16161a)', border: '1px solid var(--border-ghost, #2c2c32)',
                     }}>
-                      <video src={m.url} muted autoPlay loop playsInline style={{ width: '100%', display: 'block' }} />
+                      {!motionAsMp4 && m.sceneData ? (
+                        <SceneMotionView data={m.sceneData} width={300} />
+                      ) : m.url ? (
+                        <video src={m.url} muted autoPlay loop playsInline style={{ width: '100%', display: 'block' }} />
+                      ) : (
+                        <div style={{
+                          height: 194, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 12, color: 'var(--muted, #999)',
+                        }}>
+                          {motionAsMp4 ? 'mp4 없음' : 'sceneData 없음'}
+                        </div>
+                      )}
                       <div style={{ padding: '6px 10px', fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
                         <span style={{ color: 'var(--muted, #999)' }}>액션 {m.seq}</span>
                         <span style={{ fontWeight: 600 }}>{a?.actionLabel || ''}</span>
