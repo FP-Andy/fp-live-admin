@@ -91,7 +91,6 @@ export default function EditRoomPage() {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [saveError, setSaveError] = useState('');
-  const [resending, setResending] = useState(false);
 
   const sourceRef = useRef<HTMLVideoElement | null>(null);
 
@@ -200,18 +199,6 @@ export default function EditRoomPage() {
     }
   };
 
-  const resendCallback = async () => {
-    if (!selected || resending) return;
-    setResending(true);
-    try {
-      await apiJson(`/highlight/fineplay-jobs/${selected.id}/resend-callback`, { method: 'POST' });
-      setCallbackStatus('sent');
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setResending(false);
-    }
-  };
 
   return (
     <div style={{ width: '100%' }}>
@@ -280,9 +267,12 @@ export default function EditRoomPage() {
             <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
               콜백: {callbackStatus || '-'}
             </span>
-            <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={resendCallback} disabled={resending}>
-              {resending ? '전송 중...' : '콜백 재전송'}
-            </button>
+            {/* 전송 버튼은 두지 않는다 — FinePlay 전송은 '클립 결과' 탭 한 곳에서만.
+                여기서 고친 구간은 같은 clipId 로 덮어써지므로, 클립 결과에서 보내면
+                수정본이 그대로 나간다. */}
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted, #999)' }}>
+              전송은 <strong>클립 결과</strong> 탭에서
+            </span>
           </div>
 
           {sourceUrl ? (

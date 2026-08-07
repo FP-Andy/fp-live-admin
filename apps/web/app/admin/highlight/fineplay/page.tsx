@@ -818,8 +818,10 @@ export default function FineplayJobsPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [togglePlay, seekTo, addTag, sourceUrl]);
 
-  // sendCallback=true 면 생성 직후 FinePlay 전송, false 면 생성만(클립 결과 탭에서 명시 전송).
-  const produce = async (sendCallback: boolean) => {
+  // 생성만 한다. FinePlay 전송은 클립 결과 탭에서만 — 여기서 sendCallback 을
+  // 켤 일이 없어 아예 상수로 굳힌다(전송 창구는 한 곳이어야 한다).
+  const produce = async () => {
+    const sendCallback = false;
     if (!selected || !tags.length || producing) return;
     setProducing(true);
     setProduceError('');
@@ -1261,8 +1263,9 @@ export default function FineplayJobsPage() {
               fontSize: 12, color: '#9ca3af', margin: '0 0 10px', padding: '8px 10px', borderRadius: 6,
               background: 'rgba(156,163,175,.10)', border: '1px dashed var(--border-ghost, #2c2c32)',
             }}>
-              하이라이트만 신청입니다 — <strong>구간만 찍고 생성하면 끝</strong>입니다. FPA dual 태깅·채점·씬모션은
-              전송되지 않으니 연결하지 않아도 됩니다.
+              하이라이트만 신청입니다 — 태깅·클립 생성은 똑같이 하고 <strong>클립 결과에 그대로 보관</strong>됩니다.
+              다만 전송할 때 FPA 채점·씬모션이 실리지 않으니, <strong>FPA 를 찍지 않아도 됩니다</strong>(찍어두면
+              나중에 유료 전환 시 재전송만으로 나갑니다).
             </p>
           ) : null}
           {sourceError ? (
@@ -1441,10 +1444,10 @@ export default function FineplayJobsPage() {
                 </p>
               )}
 
-              {/* 하이라이트만 신청은 FPA 연결 UI 를 접는다 — 찍어도 전송되지 않는다. */}
+              {/* 등급과 무관하게 태깅·클립 생성은 똑같이 한다 — 클립 결과에는 어느 쪽이든
+                  그대로 보관되고, basic 은 '전송할 때 FPA 를 싣지 않는다' 는 차이뿐이다. */}
               <div style={{
                 marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-ghost, #2c2c32)',
-                display: planTier(selected) === 'basic' ? 'none' : undefined,
               }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>FPA dual 연결</span>
@@ -1505,14 +1508,12 @@ export default function FineplayJobsPage() {
                   </div>
                 ) : null}
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button style={btn} onClick={() => void produce(false)} disabled={producing || !tags.length}>
-                    {producing ? '처리 중...' : `🎬 클립 ${tags.length}개 생성만 (클립 결과에 보관)`}
+                  {/* 전송 버튼은 두지 않는다 — FinePlay 전송은 클립 결과 탭 한 곳에서만
+                      한다. 여기서 바로 보내면 구간을 다듬기 전에 나가고, 전송 창구가
+                      둘로 갈려 무엇이 언제 나갔는지 한 곳에서 안 보인다. */}
+                  <button style={primaryBtn} onClick={() => void produce()} disabled={producing || !tags.length}>
+                    {producing ? '처리 중...' : `🎬 클립 ${tags.length}개 생성 (클립 결과에 보관)`}
                   </button>
-                  {!selected?.job_metadata?.standalone ? (
-                    <button style={primaryBtn} onClick={() => void produce(true)} disabled={producing || !tags.length}>
-                      {producing ? '처리 중...' : '⬆ 생성 + FinePlay 전송'}
-                    </button>
-                  ) : null}
                   <label style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input type="checkbox" checked={makeVertical} onChange={(e) => setMakeVertical(e.target.checked)} />
                     세로(9:16)도 생성
