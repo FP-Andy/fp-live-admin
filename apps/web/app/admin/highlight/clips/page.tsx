@@ -429,15 +429,27 @@ export default function ClipResultsPage() {
         }}
       />
     ) : (
-      // 오버라이드된 클립은 ✏️ 로 구분 — 자동 제목인지 사람이 붙인 제목인지
-      // 목록에서 바로 보여야 한다.
-      <span
+      // 고칠 수 있다는 걸 보이게 한다 — 점선 밑줄 + 연필. 그냥 텍스트로 두면
+      // 눌러서 고치는 자리인 줄 아무도 모른다.
+      // 사람이 붙인 제목은 굵게, 자동 제목은 흐리게 — 목록에서 바로 구분된다.
+      <button
+        type="button"
         onClick={() => setTitleEdit({ id: c.id, value: c.title || '' })}
-        title={c.title ? `자동 제목: ${c.main_action || '-'} (눌러서 수정, 비우면 해제)` : '눌러서 제목 지정'}
-        style={{ cursor: 'pointer', fontWeight: c.title ? 600 : 400 }}
+        title={c.title
+          ? `자동 제목: ${c.main_action || '-'} — 눌러서 수정, 비우고 저장하면 자동 제목으로 되돌아갑니다`
+          : '눌러서 클립 제목 지정 (앱 카드에 이 제목이 뜹니다)'}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+          font: 'inherit', fontSize: 13, textAlign: 'left',
+          color: c.title ? 'inherit' : 'var(--muted, #999)',
+          fontWeight: c.title ? 600 : 400,
+          borderBottom: '1px dashed var(--border-ghost, #3a3a42)',
+        }}
       >
-        {c.title ? `✏️ ${c.title}` : (c.main_action || '클립')}
-      </span>
+        {c.title || c.main_action || '제목 없음'}
+        <span style={{ fontSize: 11, opacity: 0.55 }}>✎</span>
+      </button>
     ));
 
   const resend = async () => {
@@ -567,6 +579,11 @@ export default function ClipResultsPage() {
 
       {selectedMatch && !detail ? (
         <div style={card}>
+          <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '0 0 10px' }}>
+            제목(<span style={{ borderBottom: '1px dashed var(--border-ghost, #3a3a42)' }}>밑줄 ✎</span>)을 눌러
+            클립 이름을 고칠 수 있습니다 — 앱 카드에 이 제목이 뜹니다. 비워서 저장하면 FPA 자동 제목으로 돌아갑니다.
+            고친 뒤 <strong>FinePlay로 전송</strong>해야 앱에 반영됩니다.
+          </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {clips.map((c) => (
               <div key={c.id} style={{
