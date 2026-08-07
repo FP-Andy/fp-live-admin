@@ -131,6 +131,44 @@ function ArchivedBadge() {
   );
 }
 
+// 산출 지시 배지 — 작업 탭과 같은 세 갈래로 읽히게 맞춘다. 사전 작업은 tier 가
+// xfp 지만 그건 태깅 기준일 뿐이라, 신청이 붙기 전까지 따로 세워야 운영자가
+// "이건 아직 산출 범위가 안 정해진 건" 이라는 걸 안다.
+function PlanBadge({ plan }: { plan?: MatchRow['plan'] }) {
+  const view = plan?.source === 'standalone' ? 'standalone' : plan?.tier === 'basic' ? 'basic' : 'xfp';
+  const { label, color, bg, title } = view === 'standalone'
+    ? {
+        label: '🔵 사전작업',
+        color: '#a78bfa',
+        bg: 'rgba(167,139,250,.16)',
+        title: '사전 작업 — 태깅은 xFP 기준으로 하고, 전송 범위는 연결된 신청의 옵션이 정합니다',
+      }
+    : view === 'basic'
+      ? {
+          label: '⚪ 하이라이트만',
+          color: '#9ca3af',
+          bg: 'rgba(156,163,175,.16)',
+          title: '하이라이트만 신청 — 전송에 액션·채점·씬모션이 실리지 않습니다',
+        }
+      : {
+          label: '🟣 xFP',
+          color: '#c084fc',
+          bg: 'rgba(192,132,252,.16)',
+          title: 'xFP 산출 신청 — 채점·씬모션까지 전송됩니다',
+        };
+  return (
+    <span
+      style={{
+        fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5, whiteSpace: 'nowrap',
+        background: bg, color,
+      }}
+      title={title}
+    >
+      {label}
+    </span>
+  );
+}
+
 export default function ClipResultsPage() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<MatchRow | null>(null);
@@ -401,9 +439,11 @@ export default function ClipResultsPage() {
                     style={primaryBtn}
                     onClick={resend}
                     disabled={busy}
-                    title={selectedMatch.plan?.tier === 'basic'
-                      ? '하이라이트만 신청 — 클립 영상·썸네일만 전송됩니다(액션·채점 미포함)'
-                      : '클립 영상 + 액션·채점·씬모션을 전송합니다'}
+                    title={selectedMatch.plan?.source === 'standalone'
+                      ? '사전 작업 — 연결된 신청(홈/어웨이)마다 그 신청의 옵션대로 전송됩니다'
+                      : selectedMatch.plan?.tier === 'basic'
+                        ? '하이라이트만 신청 — 클립 영상·썸네일만 전송됩니다(액션·채점 미포함)'
+                        : '클립 영상 + 액션·채점·씬모션을 전송합니다'}
                   >
                     ⬆ FinePlay로 전송{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
                   </button>
@@ -447,18 +487,7 @@ export default function ClipResultsPage() {
                   padding: '8px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
                 }}>
                   <span style={{ fontWeight: 600 }}>{m.name}</span>
-                  <span
-                    style={{
-                      fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5, whiteSpace: 'nowrap',
-                      background: m.plan?.tier === 'basic' ? 'rgba(156,163,175,.16)' : 'rgba(192,132,252,.16)',
-                      color: m.plan?.tier === 'basic' ? '#9ca3af' : '#c084fc',
-                    }}
-                    title={m.plan?.tier === 'basic'
-                      ? '하이라이트만 신청 — 전송에 액션·채점·씬모션이 실리지 않습니다'
-                      : 'xFP 산출 신청 — 채점·씬모션까지 전송됩니다'}
-                  >
-                    {m.plan?.tier === 'basic' ? '⚪ 하이라이트만' : '🟣 xFP'}
-                  </span>
+                  <PlanBadge plan={m.plan} />
                   {m.archived ? <ArchivedBadge /> : null}
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span>
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>클립 {m.clip_count}개</span>

@@ -107,6 +107,14 @@ def resolve_plan(metadata: Any, *, side: str | None = None) -> dict[str, Any]:
     if isinstance(plan, dict) and plan.get("tier") in (TIER_XFP, TIER_BASIC):
         return plan
 
+    if metadata.get("standalone"):
+        # plan 스냅샷이 생기기 전에 만든 사전 작업. 매니페스트에 options 가 없어
+        # 아래 재판정을 태우면 basic 으로 떨어지고, 화면에서 '하이라이트만' 으로
+        # 잘못 읽힌다 — 사전 작업은 정의상 xFP 기준으로 태깅하는 작업이라
+        # 지금 만드는 잡과 같은 스냅샷을 준다. 전송 범위는 여기가 아니라
+        # 위쪽 side 분기(links[side])가 정하므로 무료 건에 분석이 새지 않는다.
+        return {"tier": TIER_XFP, "options": [], "source": "standalone"}
+
     return plan_from_manifest(metadata.get("manifest") or {}, source="manifest")
 
 

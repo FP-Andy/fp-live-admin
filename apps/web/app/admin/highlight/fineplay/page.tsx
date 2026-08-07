@@ -14,6 +14,11 @@ import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 type PlanTier = 'xfp' | 'basic';
 type JobPlan = { tier: PlanTier; options?: string[]; source?: string };
 
+// 화면에서 가르는 구분. tier 는 "전송에 분석을 싣느냐" 만 답하므로 사전 작업이
+// xfp 로 뭉뚱그려진다 — 실제로는 아직 신청이 안 붙어 산출 범위가 미정인 상태라
+// 운영자 입장에선 셋째 갈래다. 의미(tier)는 건드리지 않고 표시만 한 겹 나눈다.
+type PlanView = PlanTier | 'standalone';
+
 type FpJob = {
   id: string;
   status: string;
@@ -54,13 +59,20 @@ function planTier(job: FpJob): PlanTier {
   return job.plan?.tier === 'basic' ? 'basic' : 'xfp';
 }
 
+// 사전 작업을 먼저 걸러낸다 — tier 는 xfp 지만 그건 "태깅은 xFP 기준으로 한다" 는
+// 작업 지시일 뿐이고, 전송 범위는 연결된 신청의 옵션이 정한다.
+function planView(job: FpJob): PlanView {
+  if (job.plan?.source === 'standalone') return 'standalone';
+  return planTier(job);
+}
+
 // 배지 문구 — 옵션명을 그대로 보여줘야 운영자가 "왜 이렇게 판정됐는지" 안다.
 function planBadge(job: FpJob): { label: string; color: string; bg: string; title: string } {
   const plan = job.plan;
   const opts = (plan?.options || []).filter((o) => XFP_OPTION_TYPES.includes(o));
   if (plan?.source === 'standalone') {
     return {
-      label: '⚪ 사전 (옵션 대기)',
+      label: '🔵 사전작업 (옵션 대기)',
       color: '#a78bfa',
       bg: 'rgba(167,139,250,.16)',
       title: '사전 작업 — 태깅은 xFP 기준으로 하고, 전송 범위는 연결된 신청의 옵션으로 정해진다',
@@ -240,9 +252,9 @@ function readVideoDuration(file: File): Promise<number> {
 
 export default function FineplayJobsPage() {
   const [jobs, setJobs] = useState<FpJob[]>([]);
-  // 산출 지시 필터 — 하이라이트만 잡과 xFP 잡은 작업 내용이 다르다. 룸을 나누는
-  // 대신 한 목록에서 걸러 본다(잡의 tier 는 사전 작업 연결로 바뀔 수 있어서).
-  const [tierFilter, setTierFilter] = useState<'all' | PlanTier>('all');
+  // 산출 지시 필터 — 하이라이트만·xFP·사전 작업은 작업 내용이 서로 다르다. 룸을
+  // 나누는 대신 한 목록에서 걸러 본다(잡의 tier 는 사전 작업 연결로 바뀔 수 있어서).
+  const [tierFilter, setTierFilter] = useState<'all' | PlanView>('all');
   // 잡별 아카이브 준비상태 — 모든 클립에 FPA 데이터가 있어야 버튼 활성화.
   const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean }>>({});
   const [listError, setListError] = useState('');
@@ -806,8 +818,10 @@ export default function FineplayJobsPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [togglePlay, seekTo, addTag, sourceUrl]);
 
-  // sendCallback=true 면 생성 직후 FinePlay 전송, false 면 생성만(클립 결과 탭에서 명시 전송).
-  const produce = async (sendCallback: boolean) => {
+  // 생성만 한다. FinePlay 전송은 클립 결과 탭에서만 — 여기서 sendCallback 을
+  // 켤 일이 없어 아예 상수로 굳힌다(전송 창구는 한 곳이어야 한다).
+  const produce = async () => {
+    const sendCallback = false;
     if (!selected || !tags.length || producing) return;
     setProducing(true);
     setProduceError('');
@@ -979,8 +993,9 @@ export default function FineplayJobsPage() {
           <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             {([
               ['all', `전체 ${jobs.length}`],
-              ['xfp', `🟣 xFP ${jobs.filter((j) => planTier(j) === 'xfp').length}`],
-              ['basic', `⚪ 하이라이트만 ${jobs.filter((j) => planTier(j) === 'basic').length}`],
+              ['xfp', `🟣 xFP ${jobs.filter((j) => planView(j) === 'xfp').length}`],
+              ['basic', `⚪ 하이라이트만 ${jobs.filter((j) => planView(j) === 'basic').length}`],
+              ['standalone', `🔵 사전작업 ${jobs.filter((j) => planView(j) === 'standalone').length}`],
             ] as const).map(([key, label]) => (
               <button
                 key={key}
@@ -996,7 +1011,7 @@ export default function FineplayJobsPage() {
             ))}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {jobs.filter((j) => tierFilter === 'all' || planTier(j) === tierFilter).map((job) => {
+            {jobs.filter((j) => tierFilter === 'all' || planView(j) === tierFilter).map((job) => {
               const meta = job.job_metadata || {};
               const active = selected?.id === job.id;
               const badge = planBadge(job);
@@ -1248,8 +1263,9 @@ export default function FineplayJobsPage() {
               fontSize: 12, color: '#9ca3af', margin: '0 0 10px', padding: '8px 10px', borderRadius: 6,
               background: 'rgba(156,163,175,.10)', border: '1px dashed var(--border-ghost, #2c2c32)',
             }}>
-              하이라이트만 신청입니다 — <strong>구간만 찍고 생성하면 끝</strong>입니다. FPA dual 태깅·채점·씬모션은
-              전송되지 않으니 연결하지 않아도 됩니다.
+              하이라이트만 신청입니다 — 태깅·클립 생성은 똑같이 하고 <strong>클립 결과에 그대로 보관</strong>됩니다.
+              다만 전송할 때 FPA 채점·씬모션이 실리지 않으니, <strong>FPA 를 찍지 않아도 됩니다</strong>(찍어두면
+              나중에 유료 전환 시 재전송만으로 나갑니다).
             </p>
           ) : null}
           {sourceError ? (
@@ -1428,10 +1444,10 @@ export default function FineplayJobsPage() {
                 </p>
               )}
 
-              {/* 하이라이트만 신청은 FPA 연결 UI 를 접는다 — 찍어도 전송되지 않는다. */}
+              {/* 등급과 무관하게 태깅·클립 생성은 똑같이 한다 — 클립 결과에는 어느 쪽이든
+                  그대로 보관되고, basic 은 '전송할 때 FPA 를 싣지 않는다' 는 차이뿐이다. */}
               <div style={{
                 marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-ghost, #2c2c32)',
-                display: planTier(selected) === 'basic' ? 'none' : undefined,
               }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>FPA dual 연결</span>
@@ -1492,14 +1508,12 @@ export default function FineplayJobsPage() {
                   </div>
                 ) : null}
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button style={btn} onClick={() => void produce(false)} disabled={producing || !tags.length}>
-                    {producing ? '처리 중...' : `🎬 클립 ${tags.length}개 생성만 (클립 결과에 보관)`}
+                  {/* 전송 버튼은 두지 않는다 — FinePlay 전송은 클립 결과 탭 한 곳에서만
+                      한다. 여기서 바로 보내면 구간을 다듬기 전에 나가고, 전송 창구가
+                      둘로 갈려 무엇이 언제 나갔는지 한 곳에서 안 보인다. */}
+                  <button style={primaryBtn} onClick={() => void produce()} disabled={producing || !tags.length}>
+                    {producing ? '처리 중...' : `🎬 클립 ${tags.length}개 생성 (클립 결과에 보관)`}
                   </button>
-                  {!selected?.job_metadata?.standalone ? (
-                    <button style={primaryBtn} onClick={() => void produce(true)} disabled={producing || !tags.length}>
-                      {producing ? '처리 중...' : '⬆ 생성 + FinePlay 전송'}
-                    </button>
-                  ) : null}
                   <label style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input type="checkbox" checked={makeVertical} onChange={(e) => setMakeVertical(e.target.checked)} />
                     세로(9:16)도 생성
