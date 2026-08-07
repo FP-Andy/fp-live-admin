@@ -395,6 +395,9 @@ export default function ClipResultsPage() {
         { method: 'PATCH', body: JSON.stringify({ title: titleEdit.value.trim() }) },
       );
       setClips((prev) => prev.map((c) => (c.id === res.clip_id ? { ...c, title: res.title } : c)));
+      // 목록·상세 어느 쪽에서 고쳤든 양쪽 다 맞춘다 — 상세에서 고치고 목록으로
+      // 돌아갔을 때 옛 제목이 남아 있으면 저장이 안 된 줄 안다.
+      setDetail((prev) => (prev && prev.id === res.clip_id ? { ...prev, title: res.title } : prev));
       setTitleEdit(null);
       setMsg(res.title ? '제목 저장 — 전송해야 앱에 반영됩니다.' : '제목 해제 — 자동 제목으로 돌아갑니다.');
     } catch (err) {
@@ -403,6 +406,39 @@ export default function ClipResultsPage() {
       setTitleSaving(false);
     }
   };
+
+  // 클립 목록과 상세에서 같은 편집기를 쓴다 — 어디서 열든 고치는 방법이 같아야 한다.
+  const renderTitle = (c: { id: string; title?: string | null; main_action?: string | null }) =>
+    (titleEdit?.id === c.id ? (
+      <input
+        autoFocus
+        value={titleEdit.value}
+        maxLength={60}
+        placeholder={c.main_action || '클립 제목'}
+        onChange={(e) => setTitleEdit({ id: c.id, value: e.target.value })}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void saveTitle();
+          if (e.key === 'Escape') setTitleEdit(null);
+        }}
+        onBlur={() => void saveTitle()}
+        disabled={titleSaving}
+        style={{
+          flex: 1, minWidth: 160, fontSize: 13, padding: '3px 6px', borderRadius: 4,
+          background: 'var(--surface, #1e1e24)', color: 'inherit',
+          border: '1px solid var(--accent, #3b82f6)',
+        }}
+      />
+    ) : (
+      // 오버라이드된 클립은 ✏️ 로 구분 — 자동 제목인지 사람이 붙인 제목인지
+      // 목록에서 바로 보여야 한다.
+      <span
+        onClick={() => setTitleEdit({ id: c.id, value: c.title || '' })}
+        title={c.title ? `자동 제목: ${c.main_action || '-'} (눌러서 수정, 비우면 해제)` : '눌러서 제목 지정'}
+        style={{ cursor: 'pointer', fontWeight: c.title ? 600 : 400 }}
+      >
+        {c.title ? `✏️ ${c.title}` : (c.main_action || '클립')}
+      </span>
+    ));
 
   const resend = async () => {
     if (!selectedMatch?.match_id) return;
@@ -543,38 +579,7 @@ export default function ClipResultsPage() {
                   <img src={c.thumbnail_url} alt="" style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4 }} />
                 ) : null}
                 <TeamBadge side={c.team_side} labels={{ home: selectedMatch.home_team, away: selectedMatch.away_team }} />
-                {titleEdit?.id === c.id ? (
-                  <input
-                    autoFocus
-                    value={titleEdit.value}
-                    maxLength={60}
-                    placeholder={c.main_action || '클립 제목'}
-                    onChange={(e) => setTitleEdit({ id: c.id, value: e.target.value })}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void saveTitle();
-                      if (e.key === 'Escape') setTitleEdit(null);
-                    }}
-                    onBlur={() => void saveTitle()}
-                    disabled={titleSaving}
-                    style={{
-                      flex: 1, minWidth: 160, fontSize: 13, padding: '3px 6px', borderRadius: 4,
-                      background: 'var(--surface, #1e1e24)', color: 'inherit',
-                      border: '1px solid var(--accent, #3b82f6)',
-                    }}
-                  />
-                ) : (
-                  <>
-                    {/* 제목을 눌러 바로 고친다. 오버라이드된 클립은 ✏️ 로 구분 — 자동
-                        제목인지 사람이 붙인 제목인지 목록에서 바로 보여야 한다. */}
-                    <span
-                      onClick={() => setTitleEdit({ id: c.id, value: c.title || '' })}
-                      title={c.title ? `자동 제목: ${c.main_action || '-'} (눌러서 수정, 비우면 해제)` : '눌러서 제목 지정'}
-                      style={{ cursor: 'pointer', fontWeight: c.title ? 600 : 400 }}
-                    >
-                      {c.title ? `✏️ ${c.title}` : (c.main_action || '클립')}
-                    </span>
-                  </>
-                )}
+                {renderTitle(c)}
                 <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
                   {fmt(c.start_sec)}~{fmt(c.end_sec)}
                 </span>
@@ -590,7 +595,10 @@ export default function ClipResultsPage() {
         <div style={card}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
             <button style={smallBtn} onClick={() => setDetail(null)}>← 클립 목록</button>
-            <span style={{ fontWeight: 600 }}>{detail.id}</span>
+            {/* 클립을 열어 보면서 바로 제목을 붙일 수 있어야 한다 — 목록으로
+                되돌아가 고치게 만들면 검수 흐름이 끊긴다. */}
+            {renderTitle(detail)}
+            <span style={{ fontSize: 11, color: 'var(--muted, #666)' }}>{detail.id}</span>
             <TeamBadge side={detail.team_side} labels={detail.team_labels} />
             <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
               {fmt(detail.start_sec)}~{fmt(detail.end_sec)} · {Math.round(detail.duration_seconds || 0)}초

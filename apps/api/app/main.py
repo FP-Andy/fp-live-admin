@@ -8989,6 +8989,8 @@ def clip_result_detail(
         "end_sec": clip.end_sec,
         "duration_seconds": duration,
         "main_action": clip.main_action,
+        # 운영자 지정 제목(오버라이드). null 이면 자동 제목이 나간다.
+        "title": clip.title,
         "actions": fineplay_annotate_action_codes(
             [_serialize_clip_action(a) for a in actions]),
     }
