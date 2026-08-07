@@ -69,6 +69,7 @@ from .fineplay_fpa import (
     action_label as fineplay_action_label,
     analysis_from_actions as fineplay_analysis_from_actions,
     annotate_action_codes as fineplay_annotate_action_codes,
+    canonical_action_name as fineplay_canonical_action_name,
     equal_split_offsets as fineplay_equal_split_offsets,
     pick_primary as fineplay_pick_primary,
     rematch_action_players as fineplay_rematch_action_players,
@@ -8686,11 +8687,17 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
     user_id = row.user_id
     if user_id is None and str(row.player_id or "").isdigit():
         user_id = int(row.player_id)
+    # 결과 태그를 액션 이름에 반영한다 — 승격 규칙이 생기기 전에 저장된 행은
+    # 골도 "Shot" 으로 남아 있어서, 재전송하면 다시 "슈팅" 으로 뭉개져 나간다.
+    # tags 는 extra 에 그대로 있으므로 마이그레이션 없이 읽는 쪽에서 되살린다.
+    action_name = fineplay_canonical_action_name(
+        row.action_name, (row.extra or {}).get("tags")
+    )
     return {
         "id": row.id,
         "seq": row.seq,
-        "action": row.action_name,
-        "actionLabel": fineplay_action_label(row.action_name),
+        "action": action_name,
+        "actionLabel": fineplay_action_label(action_name),
         "teamSide": row.team_side,
         "jersey": row.jersey,
         "playerId": row.player_id,

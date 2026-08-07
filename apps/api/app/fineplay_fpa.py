@@ -34,6 +34,8 @@ ACTION_ROLE_MAP: dict[str, str] = {
     "Shot On Target": "SHOOTER",
     "Blocked Shot": "SHOOTER",
     "Pass": "PASSER",
+    "Assist": "PASSER",
+    "Key Pass": "PASSER",
     "Cross": "CROSSER",
     "Dribble": "DRIBBLER",
     "Breakthrough": "DRIBBLER",
@@ -73,11 +75,16 @@ ACTION_LABELS_KO: dict[str, str] = {
     "Throw-in": "스로인",
     "Sprint": "스프린트",
     "Miss": "미스",
+    # dual 은 어시스트·키패스를 독립 액션이 아니라 Pass 의 태그로 찍는다.
+    # 아래 canonical_action_name 이 태그를 보고 이 이름으로 승격한다.
+    "Assist": "어시스트",
+    "Key Pass": "키패스",
 }
 
 # 주요선수 롤 결정용 액션 중요도(앞일수록 높음) — 한 선수가 여러 액션이면 가장 중요한 것.
 ACTION_SIGNIFICANCE = [
     "Goal", "Shot On Target", "Shot", "Blocked Shot",
+    "Assist", "Key Pass",
     "Cross", "Breakthrough", "Penetration", "Dribble", "Pass",
     "Intercept", "Tackle", "Press", "Duel",
 ]
@@ -196,6 +203,41 @@ def _significance(action: str) -> int:
         return len(ACTION_SIGNIFICANCE)
 
 
+# 결과를 액션 이름으로 승격하는 규칙. dual 은 결과를 Action 이 아니라 Tags 에 찍는다
+# (슈팅은 d/dd/ddd/db 가 전부 Shot + result tag, 키패스·어시스트도 Pass 의 태그).
+# 그래서 승격하지 않으면 골도 유효슛도 전부 "슈팅" 한 덩어리로 앱에 나간다.
+_ACTION_PROMOTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    # 앞에 오는 태그가 우선 — 골은 유효슈팅이기도 하므로 순서가 곧 우선순위다.
+    "Shot": (("Goal", "Goal"), ("On Target", "Shot On Target"), ("Blocked", "Blocked Shot")),
+    "Pass": (("Assist", "Assist"), ("Key Pass", "Key Pass")),
+}
+
+
+def _tags_of(value: Any) -> set[str]:
+    return {part.strip() for part in str(value or "").split(",") if part.strip()}
+
+
+def canonical_action_name(action: Any, tags: Any) -> str:
+    """dual 행의 (Action, Tags) → 결과까지 반영한 액션 이름.
+
+    "Shot" + "Goal" → "Goal", "Pass" + "Assist" → "Assist". 승격된 이름은
+    ACTION_LABELS_KO·ACTION_SIGNIFICANCE·ACTION_ROLE_MAP·_SHOT_ACTIONS 가 이미
+    알고 있어서, 라벨(골/유효 슈팅/어시스트)과 대표 액션 랭크가 함께 살아난다.
+    24코드(actionCode)는 승격 전후가 같으므로 채점은 흔들리지 않는다.
+
+    실패한 액션은 승격하지 않는다 — "Fail" 이 붙은 패스는 어시스트일 수 없고,
+    승격해 버리면 _is_failed_action 이 놓쳐 점수 제외가 풀린다.
+    """
+    name = str(action or "").strip()
+    tag_set = _tags_of(tags)
+    if "Fail" in tag_set:
+        return name
+    for tag, promoted in _ACTION_PROMOTIONS.get(name, ()):
+        if tag in tag_set:
+            return promoted
+    return name
+
+
 def _row_metrics(row: dict[str, Any]) -> dict[str, float]:
     return {
         key: value
@@ -256,7 +298,9 @@ def scene_action_rows(
     """
     actions: list[dict[str, Any]] = []
     for i, row in enumerate(scene.rows):
-        action_name = str(row.get("Action") or "")
+        # 결과 태그(Goal/On Target/Assist…)를 액션 이름에 반영한다 — 안 하면
+        # 골·유효슛·빗나간 슛이 전부 "슈팅" 하나로 뭉개져 앱까지 나간다.
+        action_name = canonical_action_name(row.get("Action"), row.get("Tags"))
         side = str(row.get("Team") or "").strip().lower()
         jersey = str(row.get("Player") or "").strip()
         entry = _find_lineup_player(lineup, jersey) if side == our_side else None
@@ -626,6 +670,8 @@ def build_clip_analysis(
 
 
 _SHOT_ACTIONS = {"Shot", "Goal", "Shot On Target", "Blocked Shot"}
+# 승격된 패스류 — 24코드 판정에서 빠지면 actionCode 가 없어 점수까지 사라진다.
+_PASS_ACTIONS = {"Pass", "Assist", "Key Pass"}
 _DEFENSE_ACTIONS = {"Intercept", "Tackle", "Acquisition", "Cutout", "Block", "Clear"}
 # 실패 표시 대상 — 하이라이트 마지막이 실패 패스/크로스로 끝나도 기록은 하되
 # 점수 계산에서 제외한다(태그 "Fail" 기준). 표시·모션(빨간 화살표)만 나간다.
@@ -656,8 +702,10 @@ def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | N
 
     if name in _SHOT_ACTIONS:
         return "G1"
-    if name == "Pass":
-        if later_shot:
+    if name in _PASS_ACTIONS:
+        # 어시스트·키패스는 정의상 슈팅으로 이어진 패스라 later_shot 을 따지지 않는다
+        # (승격 근거가 태그이므로, 씬이 잘려 뒤 슈팅이 같은 클립에 없어도 득점 연결이다).
+        if later_shot or name in ("Assist", "Key Pass"):
             return "G2"
         if progression:
             return "P1" if not opp else "P2"
