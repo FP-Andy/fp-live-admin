@@ -290,6 +290,9 @@ class HighlightClip(Base):
     end_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     main_action: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 운영자가 손으로 붙인 클립 제목. NULL 이면 FPA 대표 액션에서 자동 생성한
+    # 제목이 그대로 나간다 — 값이 있을 때만 그 자리를 덮어쓰는 오버라이드다.
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
     horizontal_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
     vertical_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
     thumbnail_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
