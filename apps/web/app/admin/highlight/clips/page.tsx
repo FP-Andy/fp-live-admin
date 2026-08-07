@@ -11,12 +11,17 @@ import { apiJson, type SessionUser } from '../../../../lib/api';
 type MatchRow = {
   match_id: string | null;
   job_id: string;
+  // 산출 지시 — basic(하이라이트만) 이면 전송에 채점·액션이 실리지 않는다.
+  plan?: { tier: 'xfp' | 'basic'; options?: string[]; source?: string } | null;
   name: string;
   home_team: string;
   away_team: string;
   clip_count: number;
   callback_status?: string | null;
   analysis_request_id?: number | string;
+  // 아카이브된 잡은 기본 목록에서 빠진다 — '아카이브 포함' 토글이나 아카이브 룸 딥링크로만 보인다.
+  archived?: boolean;
+  archived_at?: string | null;
   updated_at?: string | null;
 };
 
@@ -114,6 +119,17 @@ function TeamBadge({ side, labels }: { side?: string | null; labels?: { home?: s
   );
 }
 
+function ArchivedBadge() {
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5,
+      background: 'rgba(148,163,184,.18)', color: '#94a3b8',
+    }}>
+      아카이브됨
+    </span>
+  );
+}
+
 export default function ClipResultsPage() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<MatchRow | null>(null);
@@ -126,6 +142,7 @@ export default function ClipResultsPage() {
   const [motionMsg, setMotionMsg] = useState('');
   // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -139,12 +156,18 @@ export default function ClipResultsPage() {
   const deepLinkDone = useRef(false);
 
   const loadMatches = useCallback(async () => {
+    // 딥링크 진입은 대상이 아카이브된 잡일 수 있으므로 항상 포함해서 받아온다 (표시는 아래에서 거른다).
+    const target = deepLinkDone.current
+      ? null
+      : new URLSearchParams(window.location.search).get('matchId');
+    const include = showArchived || !!target;
     try {
-      const rows = await apiJson<MatchRow[]>('/highlight/clip-results/matches');
+      const rows = await apiJson<MatchRow[]>(
+        `/highlight/clip-results/matches${include ? '?include_archived=1' : ''}`,
+      );
       setMatches(rows);
       if (!deepLinkDone.current) {
         deepLinkDone.current = true;
-        const target = new URLSearchParams(window.location.search).get('matchId');
         const m = target ? rows.find((r) => r.match_id === target) : null;
         if (m) void openMatch(m);
       }
@@ -152,7 +175,7 @@ export default function ClipResultsPage() {
       setMsg(err instanceof Error ? err.message : String(err));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [showArchived]);
 
   useEffect(() => { void loadMatches(); }, [loadMatches]);
 
@@ -289,6 +312,29 @@ export default function ClipResultsPage() {
     }
   };
 
+  // 아카이브: 이 매치를 클립 결과·FinePlay 작업 목록에서 빼 '아카이브' 룸으로 보낸다 (데이터는 그대로).
+  // 해제하면 양쪽 목록으로 돌아온다. 서버가 '모든 클립에 FPA 데이터' 조건을 검사한다.
+  const toggleArchive = async (archived: boolean) => {
+    if (!selectedMatch) return;
+    setBusy(true);
+    setMsg('');
+    try {
+      await apiJson(`/highlight/fineplay-jobs/${selectedMatch.job_id}/archive`, {
+        method: 'POST',
+        body: JSON.stringify({ archived }),
+      });
+      setSelectedMatch({ ...selectedMatch, archived });
+      setMsg(archived
+        ? "아카이브 완료 — 클립 결과 목록에서 빠지고 '아카이브' 탭에서 관리합니다. 이 화면에선 계속 수정할 수 있습니다."
+        : '아카이브 해제 — 클립 결과·FinePlay 작업 목록으로 돌아왔습니다.');
+      await loadMatches();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const resend = async () => {
     if (!selectedMatch?.match_id) return;
     setBusy(true);
@@ -314,6 +360,9 @@ export default function ClipResultsPage() {
     }
   };
 
+  // 딥링크 진입 땐 아카이브 잡까지 받아오므로, 목록 표시는 토글 기준으로 다시 거른다.
+  const visibleMatches = showArchived ? matches : matches.filter((m) => !m.archived);
+
   return (
     <div style={{ width: '100%' }}>
       <HighlightSubTabs />
@@ -326,19 +375,51 @@ export default function ClipResultsPage() {
               <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>›</span>
               <button style={smallBtn} onClick={() => { setSelectedMatch(null); setDetail(null); }}>매치 목록</button>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{selectedMatch.name}</span>
+              {selectedMatch.archived ? <ArchivedBadge /> : null}
               {role === 'SUPERADMIN' ? (
                 <>
                   <button style={smallBtn} onClick={renameMatch} disabled={busy} title="클립 결과 제목 바꾸기">
                     ✎ 이름 수정
                   </button>
-                  <button style={{ ...primaryBtn, marginLeft: 'auto' }} onClick={resend} disabled={busy}>
-                    ⬆ FinePlay로 전송
+                  <button
+                    style={{ ...smallBtn, marginLeft: 'auto' }}
+                    onClick={() => void toggleArchive(!selectedMatch.archived)}
+                    disabled={busy}
+                    title={selectedMatch.archived
+                      ? '아카이브 해제 — 클립 결과·FinePlay 작업 목록으로 되돌립니다'
+                      : '아카이브로 이동 — 목록에서 빠지지만 데이터는 그대로, 언제든 해제 가능'}
+                  >
+                    {selectedMatch.archived ? '↩ 아카이브 해제' : '📦 아카이브'}
+                  </button>
+                  <button
+                    style={primaryBtn}
+                    onClick={resend}
+                    disabled={busy}
+                    title={selectedMatch.plan?.tier === 'basic'
+                      ? '하이라이트만 신청 — 클립 영상·썸네일만 전송됩니다(액션·채점 미포함)'
+                      : '클립 영상 + 액션·채점·씬모션을 전송합니다'}
+                  >
+                    ⬆ FinePlay로 전송{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
                   </button>
                 </>
               ) : null}
             </>
           ) : (
-            <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => void loadMatches()}>새로고침</button>
+            <>
+              <button
+                style={{
+                  ...smallBtn,
+                  marginLeft: 'auto',
+                  background: showArchived ? 'var(--accent, #3b82f6)' : 'var(--button-dark, #2a2a30)',
+                  borderColor: showArchived ? 'transparent' : 'var(--border-ghost, #3a3a42)',
+                }}
+                onClick={() => setShowArchived((v) => !v)}
+                title="아카이브된 매치까지 함께 보기"
+              >
+                {showArchived ? '아카이브 포함 ✓' : '아카이브 포함'}
+              </button>
+              <button style={btn} onClick={() => void loadMatches()}>새로고침</button>
+            </>
           )}
         </div>
         {msg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}</p> : null}
@@ -346,18 +427,33 @@ export default function ClipResultsPage() {
 
       {!selectedMatch ? (
         <div style={card}>
-          {matches.length === 0 ? (
+          {visibleMatches.length === 0 ? (
             <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
-              추출된 클립이 없습니다. FinePlay 작업 탭에서 클립을 생성하면 여기에 매치별로 쌓입니다.
+              {matches.length === 0
+                ? '추출된 클립이 없습니다. FinePlay 작업 탭에서 클립을 생성하면 여기에 매치별로 쌓입니다.'
+                : "진행 중인 작업이 없습니다 — 모두 아카이브됨. '아카이브 포함'을 켜거나 '아카이브' 탭에서 볼 수 있습니다."}
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {matches.map((m) => (
+              {visibleMatches.map((m) => (
                 <div key={m.job_id} style={{
                   display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
                   padding: '8px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
                 }}>
                   <span style={{ fontWeight: 600 }}>{m.name}</span>
+                  <span
+                    style={{
+                      fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5, whiteSpace: 'nowrap',
+                      background: m.plan?.tier === 'basic' ? 'rgba(156,163,175,.16)' : 'rgba(192,132,252,.16)',
+                      color: m.plan?.tier === 'basic' ? '#9ca3af' : '#c084fc',
+                    }}
+                    title={m.plan?.tier === 'basic'
+                      ? '하이라이트만 신청 — 전송에 액션·채점·씬모션이 실리지 않습니다'
+                      : 'xFP 산출 신청 — 채점·씬모션까지 전송됩니다'}
+                  >
+                    {m.plan?.tier === 'basic' ? '⚪ 하이라이트만' : '🟣 xFP'}
+                  </span>
+                  {m.archived ? <ArchivedBadge /> : null}
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span>
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>클립 {m.clip_count}개</span>
                   {m.callback_status ? (

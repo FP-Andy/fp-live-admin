@@ -75,7 +75,7 @@ export default function ClipArchivePage() {
         method: 'POST',
         body: JSON.stringify({ archived: false }),
       });
-      setMsg(`아카이브 해제 — ${row.name}. FinePlay 작업 목록으로 돌아갔습니다.`);
+      setMsg(`아카이브 해제 — ${row.name}. FinePlay 작업·클립 결과 목록으로 돌아갔습니다.`);
       await load();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
@@ -111,8 +111,9 @@ export default function ClipArchivePage() {
           <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => void load()}>새로고침</button>
         </div>
         <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: '6px 0 0' }}>
-          클립 결과 작업이 끝난 매치 보관함 — 데이터는 그대로 유지되고, 열어서 언제든 수정할 수
-          있습니다. 사전 매치는 런칭 후 신청 연결·전송이 여기서 진행됩니다.
+          클립 결과 작업이 끝난 매치 보관함 — FinePlay 작업·클립 결과 목록에서는 빠지고 여기로 모입니다.
+          데이터는 그대로라 열어서 언제든 수정할 수 있고, 해제하면 양쪽 목록으로 되돌아갑니다.
+          사전 매치는 런칭 후 신청 연결·전송이 여기서 진행됩니다.
         </p>
         {msg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}</p> : null}
       </div>

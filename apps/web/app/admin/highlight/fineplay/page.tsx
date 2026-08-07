@@ -9,9 +9,15 @@ import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 // 구간을 서버로 보내면 서버가 클립 렌더 → S3 업로드 → 결과 콜백까지 처리한다.
 // 원본을 내려받지도, 브라우저에서 자르지도 않는다.
 
+// 산출 지시 — 신청 옵션(BASIC_HIGHLIGHT / FREE_XFP_TOKEN / XFP_SINGLE / FULL_REPORT)
+// 으로 서버가 판정한다. basic 이면 FPA dual 태깅 없이 구간만 잘라 보내면 된다.
+type PlanTier = 'xfp' | 'basic';
+type JobPlan = { tier: PlanTier; options?: string[]; source?: string };
+
 type FpJob = {
   id: string;
   status: string;
+  plan?: JobPlan | null;
   original_filename: string;
   display_name?: string | null;
   error_message?: string | null;
@@ -35,8 +41,51 @@ type FpJob = {
       team_id?: string | null;
       team_name?: string | null;
       callback_status?: string | null;
+      plan?: JobPlan | null;
+      plan_tier?: PlanTier;
+      player_match?: string;
     }>> | null;
   } | null;
+};
+
+const XFP_OPTION_TYPES = ['FREE_XFP_TOKEN', 'XFP_SINGLE', 'FULL_REPORT'];
+
+function planTier(job: FpJob): PlanTier {
+  return job.plan?.tier === 'basic' ? 'basic' : 'xfp';
+}
+
+// 배지 문구 — 옵션명을 그대로 보여줘야 운영자가 "왜 이렇게 판정됐는지" 안다.
+function planBadge(job: FpJob): { label: string; color: string; bg: string; title: string } {
+  const plan = job.plan;
+  const opts = (plan?.options || []).filter((o) => XFP_OPTION_TYPES.includes(o));
+  if (plan?.source === 'standalone') {
+    return {
+      label: '⚪ 사전 (옵션 대기)',
+      color: '#a78bfa',
+      bg: 'rgba(167,139,250,.16)',
+      title: '사전 작업 — 태깅은 xFP 기준으로 하고, 전송 범위는 연결된 신청의 옵션으로 정해진다',
+    };
+  }
+  if (plan?.tier === 'basic') {
+    return {
+      label: '⚪ 하이라이트만',
+      color: '#9ca3af',
+      bg: 'rgba(156,163,175,.16)',
+      title: plan?.source === 'none'
+        ? '신청 옵션 정보가 없어 하이라이트만으로 판정 (안전 폴백)'
+        : 'BASIC_HIGHLIGHT 단독 신청 — FPA dual 태깅 불필요, 클립 영상만 전송된다',
+    };
+  }
+  return {
+    label: `🟣 xFP 분석${opts.length ? ` · ${opts.join(', ')}` : ''}`,
+    color: '#c084fc',
+    bg: 'rgba(192,132,252,.16)',
+    title: 'xFP 산출 신청 — FPA dual 태깅까지 하고 채점·씬모션이 함께 전송된다',
+  };
+}
+
+const badgeStyle: React.CSSProperties = {
+  fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5, whiteSpace: 'nowrap',
 };
 
 // team: 태깅 시점에 확정하는 클립 귀속 팀 (A=홈 / D=어웨이).
@@ -120,6 +169,58 @@ function moveItem<T>(arr: T[], from: number, to: number): T[] {
   return next;
 }
 
+// --- 사전 작업 원본 업로드 ---
+// 단일 PUT 은 TCP 연결 하나라, 회선을 다른 트래픽(드라이브 동기화 등)과 나눠 쓰면
+// 그대로 주저앉는다. 큰 파일은 멀티파트로 쪼개 파트를 동시에 올린다. 5GB 한도도 사라진다.
+const MB = 1024 * 1024;
+const MULTIPART_MIN = 64 * MB; // 이보다 작으면 단일 PUT (파트 왕복이 더 비싸다)
+const PART_SIZE_MIN = 32 * MB; // S3 최소 5MB. 32MB면 10GB=320파트로 상한(10000) 여유.
+const UPLOAD_CONCURRENCY = 4;
+const PART_RETRY = 4;
+// 업링크가 다른 트래픽에 굶으면 전송이 에러 없이 그냥 멈춘 채로 남는다(진행률 정지).
+// 일정 시간 진척이 없으면 그 파트를 끊고 다시 올린다.
+const PART_STALL_MS = 60_000;
+
+function partSizeFor(fileSize: number): number {
+  // 파트 수 상한 10000 — 초대형 파일이면 파트를 키운다.
+  return Math.max(PART_SIZE_MIN, Math.ceil(fileSize / 10000 / MB) * MB);
+}
+
+// 파트 하나 PUT. ETag 를 돌려줘야 완료 요청에서 순서를 맞출 수 있다.
+function putPart(url: string, blob: Blob, onLoaded: (bytes: number) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let lastTick = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastTick < PART_STALL_MS) return;
+      clearInterval(watchdog);
+      xhr.abort(); // onabort 가 reject → 상위에서 이 파트만 재시도
+    }, 5_000);
+    const settle = (fn: () => void) => { clearInterval(watchdog); fn(); };
+
+    xhr.open('PUT', url);
+    xhr.upload.onprogress = (e) => {
+      lastTick = Date.now();
+      if (e.lengthComputable) onLoaded(e.loaded);
+    };
+    xhr.onload = () => settle(() => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`파트 업로드 실패 (${xhr.status})`));
+        return;
+      }
+      const etag = xhr.getResponseHeader('ETag');
+      if (!etag) {
+        reject(new Error('파트 ETag 를 읽지 못했습니다 — 버킷 CORS 의 ExposeHeaders 에 ETag 를 추가하세요.'));
+        return;
+      }
+      resolve(etag);
+    });
+    xhr.onerror = () => settle(() => reject(new Error('파트 네트워크 오류')));
+    xhr.onabort = () => settle(() => reject(new Error(`${PART_STALL_MS / 1000}초간 전송 정체 — 파트 재시도`)));
+    xhr.send(blob);
+  });
+}
+
 // 업로드 전 로컬에서 영상 길이를 읽는다 — 매니페스트에 넣어두면 태깅 탭이
 // 파일을 로드하기 전에도 길이를 보여준다. 실패해도 0 (선택 항목이라 무해).
 function readVideoDuration(file: File): Promise<number> {
@@ -139,8 +240,11 @@ function readVideoDuration(file: File): Promise<number> {
 
 export default function FineplayJobsPage() {
   const [jobs, setJobs] = useState<FpJob[]>([]);
+  // 산출 지시 필터 — 하이라이트만 잡과 xFP 잡은 작업 내용이 다르다. 룸을 나누는
+  // 대신 한 목록에서 걸러 본다(잡의 tier 는 사전 작업 연결로 바뀔 수 있어서).
+  const [tierFilter, setTierFilter] = useState<'all' | PlanTier>('all');
   // 잡별 아카이브 준비상태 — 모든 클립에 FPA 데이터가 있어야 버튼 활성화.
-  const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean }>>({});
+  const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean }>>({});
   const [listError, setListError] = useState('');
   const [polling, setPolling] = useState(false);
   const [pollMsg, setPollMsg] = useState('');
@@ -209,7 +313,10 @@ export default function FineplayJobsPage() {
 
   const loadJobs = useCallback(async () => {
     try {
-      const rows = await apiJson<FpJob[]>('/highlight/jobs?mode=fineplay&limit=100');
+      // brief=1: 목록은 result_payload(8~16KB)·clips 를 안 쓴다. 이걸 빼지 않으면
+      // 태깅이 끝난 job 이 늘수록 목록 조회가 느려진다(2026-08-05: 31건에 13초).
+      // 상세는 아래 /highlight/jobs/{id} 폴링이 따로 가져오므로 화면 동작은 그대로다.
+      const rows = await apiJson<FpJob[]>('/highlight/jobs?mode=fineplay&limit=100&brief=1');
       // 아카이브된 작업은 '아카이브' 룸에서 관리 — 작업 목록에선 숨긴다.
       setJobs(rows.filter((j) => !j.job_metadata?.clip_archived));
       setListError('');
@@ -230,7 +337,7 @@ export default function FineplayJobsPage() {
 
   // 파일 하나를 presign 받아 S3 로 직접 올리고 키·길이를 돌려준다.
   // 진행률 표시를 위해 XHR 사용 (presigned URL 이라 쿠키 불필요).
-  const uploadPreFile = async (file: File) => {
+  const uploadSinglePut = async (file: File) => {
     const presign = await apiJson<{ upload_url: string; s3_key: string; content_type: string }>(
       '/highlight/fineplay-jobs/standalone/upload-url',
       { method: 'POST', body: JSON.stringify({ file_name: file.name }) },
@@ -248,7 +355,90 @@ export default function FineplayJobsPage() {
       xhr.onerror = () => reject(new Error(`업로드 네트워크 오류 — ${file.name}`));
       xhr.send(file);
     });
-    return { s3_key: presign.s3_key, duration_seconds: await readVideoDuration(file) };
+    return presign.s3_key;
+  };
+
+  // 큰 파일: 파트를 UPLOAD_CONCURRENCY 개씩 동시에 올린다.
+  const uploadMultipart = async (file: File) => {
+    const partSize = partSizeFor(file.size);
+    const partCount = Math.ceil(file.size / partSize);
+    const start = await apiJson<{
+      s3_key: string; upload_id: string; urls: { part_number: number; url: string }[];
+    }>('/highlight/fineplay-jobs/standalone/multipart/start', {
+      method: 'POST',
+      body: JSON.stringify({ file_name: file.name, part_count: partCount }),
+    });
+    const urlOf = new Map(start.urls.map((u) => [u.part_number, u.url]));
+
+    const loaded = new Array<number>(partCount).fill(0);
+    const etags = new Array<string>(partCount);
+    // 파트 4개가 각자 progress 를 쏘므로 퍼센트가 바뀔 때만 setState.
+    let shown = -1;
+    const report = () => {
+      const sum = loaded.reduce((a, b) => a + b, 0);
+      const pct = Math.min(99, Math.round((sum / file.size) * 100));
+      if (pct !== shown) { shown = pct; setPreProgress(pct); }
+    };
+
+    let nextPart = 0;
+    const worker = async () => {
+      for (let i = nextPart++; i < partCount; i = nextPart++) {
+        const blob = file.slice(i * partSize, Math.min(file.size, (i + 1) * partSize));
+        const url = urlOf.get(i + 1);
+        if (!url) throw new Error(`파트 URL 누락 (${i + 1})`);
+        // 긴 업로드는 파트 하나쯤 끊기거나 멈춘다 — 그 파트만 다시 올린다(전체 재업로드 아님).
+        for (let attempt = 1; ; attempt += 1) {
+          try {
+            etags[i] = await putPart(url, blob, (bytes) => { loaded[i] = bytes; report(); });
+            loaded[i] = blob.size;
+            report();
+            break;
+          } catch (err) {
+            loaded[i] = 0;
+            report();
+            if (attempt >= PART_RETRY) throw err;
+            // 진행률만 보면 멈춘 것처럼 보이므로 재시도 중임을 알린다.
+            setPreMsg(`파트 ${i + 1}/${partCount} 재시도 ${attempt}/${PART_RETRY - 1} — ${
+              err instanceof Error ? err.message : String(err)}`);
+            await new Promise((r) => setTimeout(r, 1000 * attempt));
+          }
+        }
+      }
+    };
+
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, partCount) }, () => worker()),
+      );
+      await apiJson('/highlight/fineplay-jobs/standalone/multipart/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          s3_key: start.s3_key,
+          upload_id: start.upload_id,
+          parts: etags.map((etag, i) => ({ part_number: i + 1, etag })),
+        }),
+      });
+    } catch (err) {
+      // 중단해두지 않으면 올라간 파트가 계속 보관비로 남는다.
+      try {
+        await apiJson('/highlight/fineplay-jobs/standalone/multipart/abort', {
+          method: 'POST',
+          body: JSON.stringify({ s3_key: start.s3_key, upload_id: start.upload_id }),
+        });
+      } catch {
+        // 중단 실패는 원래 에러를 덮지 않는다 (버킷 수명주기 규칙으로도 정리된다).
+      }
+      throw err instanceof Error ? new Error(`${file.name}: ${err.message}`) : err;
+    }
+    setPreProgress(100);
+    return start.s3_key;
+  };
+
+  const uploadPreFile = async (file: File) => {
+    const s3_key = file.size > MULTIPART_MIN
+      ? await uploadMultipart(file)
+      : await uploadSinglePut(file);
+    return { s3_key, duration_seconds: await readVideoDuration(file) };
   };
 
   const createStandalone = async () => {
@@ -311,14 +501,14 @@ export default function FineplayJobsPage() {
     }
   };
 
-  // 작업이 끝난 잡을 아카이브 룸으로 보낸다 (데이터 그대로, 목록만 이동).
+  // 작업이 끝난 잡을 아카이브 룸으로 보낸다 — 이 목록과 '클립 결과' 양쪽에서 빠진다 (데이터는 그대로).
   const archiveJob = async (job: FpJob) => {
     try {
       await apiJson(`/highlight/fineplay-jobs/${job.id}/archive`, {
         method: 'POST',
         body: JSON.stringify({ archived: true }),
       });
-      setPollMsg(`아카이브 완료 — ${job.id}. '아카이브' 탭에서 볼 수 있습니다.`);
+      setPollMsg(`아카이브 완료 — ${job.id}. 클립 결과 목록에서도 빠지고 '아카이브' 탭으로 이동합니다.`);
       await loadJobs();
     } catch (err) {
       setPollMsg(err instanceof Error ? err.message : String(err));
@@ -385,6 +575,9 @@ export default function FineplayJobsPage() {
   const [linkTeamId, setLinkTeamId] = useState('');
   const [linkTeamName, setLinkTeamName] = useState('');
   const [linkManual, setLinkManual] = useState(false);
+  // 수동 연결의 산출 지시 — claim 이 되면 매니페스트 옵션이 이겨서 이 값은 무시된다.
+  // 끄면 그 사이드는 하이라이트만(채점·씬모션 미전송) 나간다.
+  const [linkXfp, setLinkXfp] = useState(true);
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkMsg, setLinkMsg] = useState('');
 
@@ -403,6 +596,9 @@ export default function FineplayJobsPage() {
           teamId: linkTeamId.trim(),
           teamName: linkTeamName.trim(),
           manual: linkManual,
+          options: linkXfp
+            ? [{ optionType: 'BASIC_HIGHLIGHT', selected: true }, { optionType: 'XFP_SINGLE', selected: true }]
+            : [{ optionType: 'BASIC_HIGHLIGHT', selected: true }],
         }),
       });
       setLinkMsg(`${linkSide === 'home' ? '홈' : '어웨이'} 연결 완료`);
@@ -779,10 +975,30 @@ export default function FineplayJobsPage() {
         </div>
       ) : (
         <div style={card}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            {([
+              ['all', `전체 ${jobs.length}`],
+              ['xfp', `🟣 xFP ${jobs.filter((j) => planTier(j) === 'xfp').length}`],
+              ['basic', `⚪ 하이라이트만 ${jobs.filter((j) => planTier(j) === 'basic').length}`],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                style={{
+                  ...smallBtn,
+                  background: tierFilter === key ? 'var(--button-dark, #2a2a30)' : 'transparent',
+                  border: `1px solid ${tierFilter === key ? 'var(--accent, #3b82f6)' : 'var(--border-ghost, #2c2c32)'}`,
+                }}
+                onClick={() => setTierFilter(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {jobs.map((job) => {
+            {jobs.filter((j) => tierFilter === 'all' || planTier(j) === tierFilter).map((job) => {
               const meta = job.job_metadata || {};
               const active = selected?.id === job.id;
+              const badge = planBadge(job);
               return (
                 <div key={job.id}>
                 <div
@@ -795,6 +1011,9 @@ export default function FineplayJobsPage() {
                 >
                   <span style={{ fontWeight: 600 }}>{meta.display_name || job.original_filename}</span>
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{meta.analysis_request_id}</span>
+                  <span style={{ ...badgeStyle, background: badge.bg, color: badge.color }} title={badge.title}>
+                    {badge.label}
+                  </span>
                   {String(meta.analysis_request_id || '').startsWith('pre-') ? (
                     <span style={{
                       fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5,
@@ -830,8 +1049,8 @@ export default function FineplayJobsPage() {
                         style={{ ...smallBtn, opacity: readiness[job.id]?.ready ? 1 : 0.45 }}
                         disabled={!readiness[job.id]?.ready}
                         title={readiness[job.id]?.ready
-                          ? '아카이브 룸으로 이동 — 데이터는 그대로, 언제든 해제·수정 가능'
-                          : `모든 클립에 FPA 데이터가 있어야 아카이브 가능 — 현재 ${readiness[job.id]?.clips_with_actions ?? 0}/${readiness[job.id]?.clip_count ?? '?'} 클립 완료`}
+                          ? '아카이브 룸으로 이동 — 이 목록과 클립 결과에서 빠집니다. 데이터는 그대로, 언제든 해제·수정 가능'
+                          : `모든 클립에 FPA 데이터가 있어야 아카이브 가능 — 현재 ${readiness[job.id]?.clips_with_actions ?? 0}/${readiness[job.id]?.clip_count ?? '?'} 클립 완료 (하이라이트만 신청은 이 조건이 면제됩니다)`}
                         onClick={() => void archiveJob(job)}
                       >
                         📦 아카이브{readiness[job.id] && !readiness[job.id].ready
@@ -874,6 +1093,21 @@ export default function FineplayJobsPage() {
                             <>
                               <span>#{link.analysis_request_id}</span>
                               {link.team_name ? <span style={{ color: 'var(--muted, #999)' }}>{link.team_name}</span> : null}
+                              <span style={{
+                                ...badgeStyle,
+                                background: (link.plan?.tier ?? link.plan_tier) === 'basic' ? 'rgba(156,163,175,.16)' : 'rgba(192,132,252,.16)',
+                                color: (link.plan?.tier ?? link.plan_tier) === 'basic' ? '#9ca3af' : '#c084fc',
+                              }}>
+                                {(link.plan?.tier ?? link.plan_tier) === 'basic' ? '하이라이트만' : 'xFP'}
+                              </span>
+                              {link.player_match ? (
+                                <span
+                                  style={{ fontSize: 12, color: link.player_match.startsWith('0/') ? '#f59e0b' : 'var(--muted, #999)' }}
+                                  title="전송 시 이 팀 라인업으로 재매칭된 액션 수 — 0 이면 등번호가 라인업과 안 맞는 것"
+                                >
+                                  · 선수매칭 {link.player_match}
+                                </span>
+                              ) : null}
                               {link.callback_status ? (
                                 <span style={{ fontSize: 12, color: link.callback_status === 'sent' ? '#22c55e' : 'var(--muted, #999)' }}>
                                   · {link.callback_status}
@@ -921,6 +1155,13 @@ export default function FineplayJobsPage() {
                       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--muted, #999)' }}>
                         <input type="checkbox" checked={linkManual} onChange={(e) => setLinkManual(e.target.checked)} disabled={linkBusy} />
                         수동 (claim 생략)
+                      </label>
+                      <label
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--muted, #999)' }}
+                        title="이 사이드에 xFP(채점·씬모션)를 함께 보낼지 — claim 이 되면 신청 옵션이 우선한다. 끄면 클립 영상만 나간다"
+                      >
+                        <input type="checkbox" checked={linkXfp} onChange={(e) => setLinkXfp(e.target.checked)} disabled={linkBusy} />
+                        xFP 산출
                       </label>
                       <button style={primaryBtn} onClick={() => void saveLink(job)} disabled={linkBusy}>
                         {linkBusy ? '연결 중…' : '연결'}
@@ -992,9 +1233,24 @@ export default function FineplayJobsPage() {
 
       {selected ? (
         <div style={card}>
-          <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>
-            태깅 — {selected.job_metadata?.display_name || selected.original_filename}
+          <h3 style={{ fontSize: 15, margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>태깅 — {selected.job_metadata?.display_name || selected.original_filename}</span>
+            <span
+              style={{ ...badgeStyle, background: planBadge(selected).bg, color: planBadge(selected).color }}
+              title={planBadge(selected).title}
+            >
+              {planBadge(selected).label}
+            </span>
           </h3>
+          {planTier(selected) === 'basic' ? (
+            <p style={{
+              fontSize: 12, color: '#9ca3af', margin: '0 0 10px', padding: '8px 10px', borderRadius: 6,
+              background: 'rgba(156,163,175,.10)', border: '1px dashed var(--border-ghost, #2c2c32)',
+            }}>
+              하이라이트만 신청입니다 — <strong>구간만 찍고 생성하면 끝</strong>입니다. FPA dual 태깅·채점·씬모션은
+              전송되지 않으니 연결하지 않아도 됩니다.
+            </p>
+          ) : null}
           {sourceError ? (
             <p style={{ fontSize: 13, color: '#ef4444' }}>원본 재생 실패: {sourceError}</p>
           ) : !sourceUrl ? (
@@ -1171,7 +1427,11 @@ export default function FineplayJobsPage() {
                 </p>
               )}
 
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-ghost, #2c2c32)' }}>
+              {/* 하이라이트만 신청은 FPA 연결 UI 를 접는다 — 찍어도 전송되지 않는다. */}
+              <div style={{
+                marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-ghost, #2c2c32)',
+                display: planTier(selected) === 'basic' ? 'none' : undefined,
+              }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>FPA dual 연결</span>
                   {fpaMatchId ? (
