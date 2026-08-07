@@ -212,6 +212,15 @@ _ACTION_PROMOTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "Pass": (("Assist", "Assist"), ("Key Pass", "Key Pass")),
 }
 
+# 승격된 이름 → 원래 액션. 승격이 이름을 갈아치우기 때문에 이게 없으면 골이
+# 슈팅 집계에서 빠진다 — 골은 골이면서 슈팅이고, 어시스트는 어시스트면서 패스다.
+# 두 층을 다 실어 보내야 소비하는 쪽이 원하는 층으로 셀 수 있다.
+_ACTION_BASE: dict[str, str] = {
+    promoted: base
+    for base, rules in _ACTION_PROMOTIONS.items()
+    for _tag, promoted in rules
+}
+
 
 def _tags_of(value: Any) -> set[str]:
     return {part.strip() for part in str(value or "").split(",") if part.strip()}
@@ -236,6 +245,20 @@ def canonical_action_name(action: Any, tags: Any) -> str:
         if tag in tag_set:
             return promoted
     return name
+
+
+def base_action_name(action: Any) -> str:
+    """승격된 이름 → 원래 액션. "Goal"→"Shot", "Assist"→"Pass".
+
+    집계하는 쪽이 두 층을 다 셀 수 있게 payload 에 baseAction 으로 함께 싣는다.
+    골은 골이면서 슈팅이고 어시스트는 어시스트면서 패스인데, 승격은 이름을
+    갈아치우므로 이게 없으면 골이 슈팅 집계에서 통째로 빠진다.
+
+    승격 대상이 아닌 액션(크로스·드리블 등)은 자기 자신이 base 다 — 모든 액션이
+    baseAction 을 갖게 해서 소비하는 쪽이 예외 없이 한 필드만 보면 되게 한다.
+    """
+    name = str(action or "").strip()
+    return _ACTION_BASE.get(name, name)
 
 
 def _row_metrics(row: dict[str, Any]) -> dict[str, float]:
@@ -310,6 +333,8 @@ def scene_action_rows(
             # dual 시간 기록 — 클립 내 초로 환산해 구간 시작 기본값으로 쓴다 (equal_split_offsets).
             "recordedTime": _parse_timeline_seconds(row.get("Time")),
             "action": action_name,
+            # 집계용 상위 층 — 골도 슈팅으로, 어시스트도 패스로 세지게 한다.
+            "baseAction": base_action_name(action_name),
             "actionLabel": ACTION_LABELS_KO.get(action_name) or action_name,
             "teamSide": side or None,
             "jersey": jersey or None,
@@ -617,7 +642,10 @@ def analysis_from_actions(
                 "jerseyNumber": best.get("jersey"),
                 "actions": [
                     {k: v for k, v in a.items()
-                     if k in ("seq", "action", "actionLabel", "xg", "xgot", "epv", "pc", "startOffset", "endOffset")
+                     # baseAction 필수 — 백엔드 득점·도움 집계가 이 배열을 센다
+                     # (docs/handoff_2026-08-07_goal_assist_ranking.md).
+                     if k in ("seq", "action", "baseAction", "actionLabel",
+                              "xg", "xgot", "epv", "pc", "startOffset", "endOffset")
                      and v is not None}
                     for a in player_actions
                 ],

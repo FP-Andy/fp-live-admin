@@ -69,6 +69,7 @@ from .fineplay_fpa import (
     action_label as fineplay_action_label,
     analysis_from_actions as fineplay_analysis_from_actions,
     annotate_action_codes as fineplay_annotate_action_codes,
+    base_action_name as fineplay_base_action_name,
     canonical_action_name as fineplay_canonical_action_name,
     equal_split_offsets as fineplay_equal_split_offsets,
     pick_primary as fineplay_pick_primary,
@@ -8697,6 +8698,8 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
         "id": row.id,
         "seq": row.seq,
         "action": action_name,
+        # 집계용 상위 층 — 골도 슈팅으로, 어시스트도 패스로 세지게 한다.
+        "baseAction": fineplay_base_action_name(action_name),
         "actionLabel": fineplay_action_label(action_name),
         "teamSide": row.team_side,
         "jersey": row.jersey,

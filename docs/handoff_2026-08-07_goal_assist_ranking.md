@@ -33,15 +33,28 @@ XfpPlayerProfileEntity.goalProductionScore / assistProductionScore
 
 지금까지 dual 태깅의 **결과가 태그에만 있고 액션 이름에는 반영되지 않아**, 골·유효슛·빗나간 슛이 전부 `"Shot"` 하나로, 어시스트·키패스·일반 패스가 전부 `"Pass"` 하나로 나갔습니다. 이번에 콘솔에서 승격하도록 고쳤습니다.
 
-| 원본 (dual) | 결과 태그 | 전송되는 `action` | `actionLabel` |
-|---|---|---|---|
-| `Shot` | `Goal` | **`Goal`** | 골 |
-| `Shot` | `On Target` | **`Shot On Target`** | 유효 슈팅 |
-| `Shot` | `Blocked` | **`Blocked Shot`** | 블록된 슈팅 |
-| `Shot` | (없음 / `Off Target`) | `Shot` | 슈팅 |
-| `Pass` | `Assist` | **`Assist`** | 어시스트 |
-| `Pass` | `Key Pass` | **`Key Pass`** | 키패스 |
-| `Pass` | (그 외) | `Pass` | 패스 |
+액션마다 **두 층**을 함께 보냅니다.
+
+| 필드 | 뜻 | 예 |
+|---|---|---|
+| `action` | 결과까지 반영한 **구체 액션** | `Goal`, `Shot On Target`, `Assist` |
+| `baseAction` | 그 액션의 **상위 분류** | `Shot`, `Pass` |
+| `actionLabel` | 표시용 한글 (판정에 쓰지 마십시오) | 골, 유효 슈팅, 어시스트 |
+
+| 원본 (dual) | 결과 태그 | `action` | `baseAction` | `actionLabel` |
+|---|---|---|---|---|
+| `Shot` | `Goal` | **`Goal`** | `Shot` | 골 |
+| `Shot` | `On Target` | **`Shot On Target`** | `Shot` | 유효 슈팅 |
+| `Shot` | `Blocked` | **`Blocked Shot`** | `Shot` | 블록된 슈팅 |
+| `Shot` | (없음 / `Off Target`) | `Shot` | `Shot` | 슈팅 |
+| `Pass` | `Assist` | **`Assist`** | `Pass` | 어시스트 |
+| `Pass` | `Key Pass` | **`Key Pass`** | `Pass` | 키패스 |
+| `Pass` | (그 외) | `Pass` | `Pass` | 패스 |
+| `Cross` 등 그 외 | — | `Cross` | `Cross` | 크로스 |
+
+> **`baseAction`이 있는 이유**: `action`은 골일 때 `Goal`로 바뀌므로, `action == "Shot"`만 세면 **골이 슈팅 집계에서 통째로 빠집니다.** 골은 골이면서 슈팅이고, 어시스트는 어시스트이면서 패스입니다. 두 층을 다 실어 보내니 원하는 층으로 세십시오.
+>
+> 승격 대상이 아닌 액션도 `baseAction`을 갖습니다(자기 자신). 예외 처리 없이 한 필드만 보면 됩니다.
 
 - `Fail` 태그가 붙은 행은 승격하지 않습니다(실패한 패스는 어시스트일 수 없음).
 - 24코드(`actionCode`)는 승격 전후가 같습니다 — 슈팅류는 계속 `G1`, 패스류는 `G2`. **기존 채점 로직에 영향 없습니다.**
@@ -51,7 +64,7 @@ XfpPlayerProfileEntity.goalProductionScore / assistProductionScore
 ```jsonc
 "teamView": {
   "actions": [
-    { "seq": 3, "action": "Goal", "actionLabel": "골",
+    { "seq": 3, "action": "Goal", "baseAction": "Shot", "actionLabel": "골",
       "teamSide": "home", "jersey": "10",
       "playerId": "9003", "userId": 9003, "actionCode": "G1", "xg": 0.31 }
   ]
@@ -59,7 +72,9 @@ XfpPlayerProfileEntity.goalProductionScore / assistProductionScore
 "involvedPlayers": [
   { "playerId": "9003", "playerName": "홍길동", "contributionRole": "SHOOTER",
     "playerView": { "jerseyNumber": "10",
-      "actions": [ { "seq": 3, "action": "Goal", "actionLabel": "골", "xg": 0.31 } ] } }
+      "actions": [
+        { "seq": 3, "action": "Goal", "baseAction": "Shot", "actionLabel": "골", "xg": 0.31 }
+      ] } }
 ]
 ```
 
@@ -81,10 +96,18 @@ XfpPlayerProfileEntity.goalProductionScore / assistProductionScore
 
 ### 4-2. 계산 규칙
 
-```
-득점(goals)   = 그 선수의 액션 중 action == "Goal"   인 것의 개수
-도움(assists) = 그 선수의 액션 중 action == "Assist" 인 것의 개수
-```
+그 선수의 액션 배열에서 셉니다. **어느 층으로 세느냐가 지표를 결정합니다.**
+
+| 지표 | 조건 | 골 포함 여부 |
+|---|---|---|
+| **득점** | `action == "Goal"` | — |
+| **도움** | `action == "Assist"` | — |
+| **슈팅** | `baseAction == "Shot"` | ✅ 골·유효슛·블록·빗나감 전부 |
+| 유효슈팅 | `action in ("Goal", "Shot On Target")` | ✅ |
+| **패스** | `baseAction == "Pass"` | ✅ 어시스트·키패스 포함 |
+| 키패스 | `action == "Key Pass"` | — |
+
+> ⚠️ **슈팅을 `action == "Shot"`으로 세지 마십시오.** 골은 `action`이 `"Goal"`로 바뀌므로 그렇게 세면 골이 슈팅에서 빠집니다. 슈팅은 반드시 `baseAction`으로 세십시오.
 
 - 한 클립 안에서 같은 선수가 여러 번 나올 수 있으므로 **액션 단위로 셉니다**(클립 단위 아님).
 - 문자열 완전 일치로 판정하십시오. `actionLabel`(한글)은 표시용이라 판정 기준으로 쓰지 마십시오.
