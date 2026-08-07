@@ -303,7 +303,11 @@ def _ensure_runtime_schema() -> None:
     fcm_template_columns = {column["name"] for column in inspector.get_columns("fcm_templates")} if "fcm_templates" in table_names else set()
     highlight_job_columns = {column["name"] for column in inspector.get_columns("highlight_jobs")} if "highlight_jobs" in table_names else set()
     clip_action_columns = {column["name"] for column in inspector.get_columns("highlight_clip_actions")} if "highlight_clip_actions" in table_names else set()
+    clip_columns = {column["name"] for column in inspector.get_columns("highlight_clips")} if "highlight_clips" in table_names else set()
     statements: list[str] = []
+
+    if "highlight_clips" in table_names and "title" not in clip_columns:
+        statements.append("ALTER TABLE highlight_clips ADD COLUMN title VARCHAR")
 
     if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
@@ -8881,6 +8885,43 @@ def rename_clip_result(
     return {"job_id": job_id, "name": name, "matches": renamed_matches}
 
 
+@app.patch("/api/highlight/clip-results/clips/{clip_id}/title")
+def clip_result_set_title(
+    clip_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립 제목 오버라이드 — 앱 카드에 뜰 제목을 운영자가 직접 정한다.
+
+    비우면(빈 문자열/null) 해제되고 FPA 대표 액션에서 만든 자동 제목으로 돌아간다.
+    값이 있을 때만 전송 페이로드의 제목 자리를 덮으므로, 손대지 않은 클립은
+    지금과 완전히 같게 나간다.
+
+    저장만 하고 전송하지 않는다 — 반영하려면 클립 결과에서 전송하면 된다
+    (clipKey 가 멱등키라 재전송하면 제목만 바뀐 채로 덮어써진다).
+    """
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+
+    raw = body.get("title")
+    title = str(raw or "").strip() or None
+    if title and len(title) > 60:
+        raise HTTPException(status_code=400, detail="제목이 너무 깁니다 (60자 이내).")
+
+    before = clip.title
+    clip.title = title
+    _audit(
+        db, "CLIP_TITLE_SET", "highlight_clip",
+        actor=user, target_id=clip_id,
+        match_id=clip.match_id,
+        details={"before": before, "after": title},
+    )
+    db.commit()
+    return {"clip_id": clip_id, "title": title, "auto_title": clip.main_action}
+
+
 @app.get("/api/highlight/clip-results/matches/{match_id}/clips")
 def clip_result_clips(
     match_id: UUID,
@@ -8906,6 +8947,8 @@ def clip_result_clips(
             "end_sec": c.end_sec,
             "duration_seconds": c.duration_seconds,
             "main_action": c.main_action,
+            # 운영자 지정 제목(오버라이드). null 이면 자동 제목이 나간다.
+            "title": c.title,
             "action_count": action_count,
         }
         if storage.configured and c.thumbnail_s3_key:
@@ -9181,8 +9224,11 @@ def _build_clip_result_payload(
                 "endTime": round(float(c.end_sec), 3),
                 "highlightVideo": video,
             }
-            if c.main_action:
-                entry["mainAction"] = c.main_action
+            # 하이라이트만 건은 teamView 가 통째로 빠져 제목 자리가 mainAction 뿐이다.
+            if c.title or c.main_action:
+                entry["mainAction"] = c.title or c.main_action
+            if c.title:
+                entry["title"] = c.title
             payload_clips.append(entry)
             continue
         actions = [
@@ -9234,6 +9280,13 @@ def _build_clip_result_payload(
         }
         if main_action or c.main_action:
             entry["mainAction"] = main_action or c.main_action
+        if c.title:
+            # 앱 카드 제목 1순위는 teamView.displayActionLabel("패스 후 7번의 슈팅")
+            # 이라 그 자리를 덮어야 실제로 바뀐다. mainAction·mainActionCode·
+            # sequenceSummary 는 그대로 둔다 — 대표 액션 정보는 잃지 않는다.
+            entry["title"] = c.title
+            if team_view:
+                team_view["displayActionLabel"] = c.title
         if team_view:
             entry["teamView"] = team_view
         if involved:

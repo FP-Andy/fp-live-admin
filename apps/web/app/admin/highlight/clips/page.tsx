@@ -34,6 +34,8 @@ type ClipRow = {
   end_sec: number;
   duration_seconds?: number | null;
   main_action?: string | null;
+  // 운영자가 지정한 제목(오버라이드). null 이면 FPA 대표 액션 자동 제목이 나간다.
+  title?: string | null;
   action_count: number;
   thumbnail_url?: string;
 };
@@ -184,6 +186,9 @@ export default function ClipResultsPage() {
   // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  // 제목 편집 중인 클립. null 이면 편집 중 아님. 비워서 저장하면 오버라이드 해제.
+  const [titleEdit, setTitleEdit] = useState<{ id: string; value: string } | null>(null);
+  const [titleSaving, setTitleSaving] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -379,6 +384,26 @@ export default function ClipResultsPage() {
     }
   };
 
+  // 저장만 한다 — 앱에 반영하려면 위 'FinePlay로 전송' 을 눌러야 한다.
+  // clipKey 가 멱등키라 재전송하면 제목만 바뀐 채로 덮어써진다.
+  const saveTitle = async () => {
+    if (!titleEdit || titleSaving) return;
+    setTitleSaving(true);
+    try {
+      const res = await apiJson<{ clip_id: string; title: string | null }>(
+        `/highlight/clip-results/clips/${titleEdit.id}/title`,
+        { method: 'PATCH', body: JSON.stringify({ title: titleEdit.value.trim() }) },
+      );
+      setClips((prev) => prev.map((c) => (c.id === res.clip_id ? { ...c, title: res.title } : c)));
+      setTitleEdit(null);
+      setMsg(res.title ? '제목 저장 — 전송해야 앱에 반영됩니다.' : '제목 해제 — 자동 제목으로 돌아갑니다.');
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTitleSaving(false);
+    }
+  };
+
   const resend = async () => {
     if (!selectedMatch?.match_id) return;
     setBusy(true);
@@ -518,7 +543,38 @@ export default function ClipResultsPage() {
                   <img src={c.thumbnail_url} alt="" style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4 }} />
                 ) : null}
                 <TeamBadge side={c.team_side} labels={{ home: selectedMatch.home_team, away: selectedMatch.away_team }} />
-                <span>{c.main_action || '클립'}</span>
+                {titleEdit?.id === c.id ? (
+                  <input
+                    autoFocus
+                    value={titleEdit.value}
+                    maxLength={60}
+                    placeholder={c.main_action || '클립 제목'}
+                    onChange={(e) => setTitleEdit({ id: c.id, value: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void saveTitle();
+                      if (e.key === 'Escape') setTitleEdit(null);
+                    }}
+                    onBlur={() => void saveTitle()}
+                    disabled={titleSaving}
+                    style={{
+                      flex: 1, minWidth: 160, fontSize: 13, padding: '3px 6px', borderRadius: 4,
+                      background: 'var(--surface, #1e1e24)', color: 'inherit',
+                      border: '1px solid var(--accent, #3b82f6)',
+                    }}
+                  />
+                ) : (
+                  <>
+                    {/* 제목을 눌러 바로 고친다. 오버라이드된 클립은 ✏️ 로 구분 — 자동
+                        제목인지 사람이 붙인 제목인지 목록에서 바로 보여야 한다. */}
+                    <span
+                      onClick={() => setTitleEdit({ id: c.id, value: c.title || '' })}
+                      title={c.title ? `자동 제목: ${c.main_action || '-'} (눌러서 수정, 비우면 해제)` : '눌러서 제목 지정'}
+                      style={{ cursor: 'pointer', fontWeight: c.title ? 600 : 400 }}
+                    >
+                      {c.title ? `✏️ ${c.title}` : (c.main_action || '클립')}
+                    </span>
+                  </>
+                )}
                 <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
                   {fmt(c.start_sec)}~{fmt(c.end_sec)}
                 </span>
