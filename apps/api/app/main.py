@@ -8966,6 +8966,9 @@ def clip_result_scene_motions(
 
     전송(resend/produce)과 같은 attach_scene_motions·S3 키를 쓰므로
     여기서 보이는 모션이 곧 앱으로 나가는 모션이다. sceneState 가 있는 액션만 생성된다.
+
+    sceneData 도 같이 준다 — 앱은 이걸로 네이티브 렌더하고 mp4 는 폴백이다.
+    콘솔이 mp4 만 보여주면 앱 화면과 다른 걸 검수하게 되므로 둘 다 내려보낸다.
     """
     clip = db.get(HighlightClip, clip_id)
     if not clip:
@@ -8991,10 +8994,17 @@ def clip_result_scene_motions(
         storage=storage,
         prefix=motion_prefix,
     )
+    # mp4 렌더가 실패해도 sceneData 는 남을 수 있다(반대도 마찬가지) — 둘 중 하나라도 있으면 내려준다.
     motions = [
-        {"seq": a.get("seq"), "url": storage.presigned_get(a["sceneMotionKey"], expires=3600)}
+        {
+            "seq": a.get("seq"),
+            "url": storage.presigned_get(a["sceneMotionKey"], expires=3600)
+            if a.get("sceneMotionKey")
+            else None,
+            "sceneData": a.get("sceneData"),
+        }
         for a in actions
-        if a.get("sceneMotionKey")
+        if a.get("sceneMotionKey") or a.get("sceneData")
     ]
     return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
 

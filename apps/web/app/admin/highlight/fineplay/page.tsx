@@ -314,7 +314,8 @@ export default function FineplayJobsPage() {
   const loadJobs = useCallback(async () => {
     try {
       // brief=1: 목록은 result_payload(8~16KB)·clips 를 안 쓴다. 이걸 빼지 않으면
-      // 태깅이 끝난 job 이 늘수록 목록 조회가 느려진다(2026-08-05: 31건에 13초).
+      // 태깅이 끝난 job 이 늘수록 목록 조회가 느려진다
+      // (2026-08-05 실측: 31건에 13초, 응답 211KB → 41KB).
       // 상세는 아래 /highlight/jobs/{id} 폴링이 따로 가져오므로 화면 동작은 그대로다.
       const rows = await apiJson<FpJob[]>('/highlight/jobs?mode=fineplay&limit=100&brief=1');
       // 아카이브된 작업은 '아카이브' 룸에서 관리 — 작업 목록에선 숨긴다.
