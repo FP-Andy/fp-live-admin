@@ -14,6 +14,11 @@ import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 type PlanTier = 'xfp' | 'basic';
 type JobPlan = { tier: PlanTier; options?: string[]; source?: string };
 
+// 화면에서 가르는 구분. tier 는 "전송에 분석을 싣느냐" 만 답하므로 사전 작업이
+// xfp 로 뭉뚱그려진다 — 실제로는 아직 신청이 안 붙어 산출 범위가 미정인 상태라
+// 운영자 입장에선 셋째 갈래다. 의미(tier)는 건드리지 않고 표시만 한 겹 나눈다.
+type PlanView = PlanTier | 'standalone';
+
 type FpJob = {
   id: string;
   status: string;
@@ -54,13 +59,20 @@ function planTier(job: FpJob): PlanTier {
   return job.plan?.tier === 'basic' ? 'basic' : 'xfp';
 }
 
+// 사전 작업을 먼저 걸러낸다 — tier 는 xfp 지만 그건 "태깅은 xFP 기준으로 한다" 는
+// 작업 지시일 뿐이고, 전송 범위는 연결된 신청의 옵션이 정한다.
+function planView(job: FpJob): PlanView {
+  if (job.plan?.source === 'standalone') return 'standalone';
+  return planTier(job);
+}
+
 // 배지 문구 — 옵션명을 그대로 보여줘야 운영자가 "왜 이렇게 판정됐는지" 안다.
 function planBadge(job: FpJob): { label: string; color: string; bg: string; title: string } {
   const plan = job.plan;
   const opts = (plan?.options || []).filter((o) => XFP_OPTION_TYPES.includes(o));
   if (plan?.source === 'standalone') {
     return {
-      label: '⚪ 사전 (옵션 대기)',
+      label: '🔵 사전작업 (옵션 대기)',
       color: '#a78bfa',
       bg: 'rgba(167,139,250,.16)',
       title: '사전 작업 — 태깅은 xFP 기준으로 하고, 전송 범위는 연결된 신청의 옵션으로 정해진다',
@@ -240,9 +252,9 @@ function readVideoDuration(file: File): Promise<number> {
 
 export default function FineplayJobsPage() {
   const [jobs, setJobs] = useState<FpJob[]>([]);
-  // 산출 지시 필터 — 하이라이트만 잡과 xFP 잡은 작업 내용이 다르다. 룸을 나누는
-  // 대신 한 목록에서 걸러 본다(잡의 tier 는 사전 작업 연결로 바뀔 수 있어서).
-  const [tierFilter, setTierFilter] = useState<'all' | PlanTier>('all');
+  // 산출 지시 필터 — 하이라이트만·xFP·사전 작업은 작업 내용이 서로 다르다. 룸을
+  // 나누는 대신 한 목록에서 걸러 본다(잡의 tier 는 사전 작업 연결로 바뀔 수 있어서).
+  const [tierFilter, setTierFilter] = useState<'all' | PlanView>('all');
   // 잡별 아카이브 준비상태 — 모든 클립에 FPA 데이터가 있어야 버튼 활성화.
   const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean }>>({});
   const [listError, setListError] = useState('');
@@ -979,8 +991,9 @@ export default function FineplayJobsPage() {
           <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             {([
               ['all', `전체 ${jobs.length}`],
-              ['xfp', `🟣 xFP ${jobs.filter((j) => planTier(j) === 'xfp').length}`],
-              ['basic', `⚪ 하이라이트만 ${jobs.filter((j) => planTier(j) === 'basic').length}`],
+              ['xfp', `🟣 xFP ${jobs.filter((j) => planView(j) === 'xfp').length}`],
+              ['basic', `⚪ 하이라이트만 ${jobs.filter((j) => planView(j) === 'basic').length}`],
+              ['standalone', `🔵 사전작업 ${jobs.filter((j) => planView(j) === 'standalone').length}`],
             ] as const).map(([key, label]) => (
               <button
                 key={key}
@@ -996,7 +1009,7 @@ export default function FineplayJobsPage() {
             ))}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {jobs.filter((j) => tierFilter === 'all' || planTier(j) === tierFilter).map((job) => {
+            {jobs.filter((j) => tierFilter === 'all' || planView(j) === tierFilter).map((job) => {
               const meta = job.job_metadata || {};
               const active = selected?.id === job.id;
               const badge = planBadge(job);
