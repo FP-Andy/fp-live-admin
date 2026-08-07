@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .db import SessionLocal
 from .fineplay_client import default_client
 from .fineplay_fpa import clip_team_fallback_view, enrich_result_payload
+from .fineplay_plan import prepare_payload, resolve_plan, xfp_enabled
 from .fineplay_models import ClipSpec, parse_manifest
 from .fineplay_worker import process_job
 from .highlight_produce import Segment
@@ -99,7 +100,9 @@ def update_job(db: Session, job_id: str, **kwargs: object) -> HighlightJob | Non
 #
 # 태깅이 끝난(done) job 은 result_payload(클립 분석 결과 전문) 8~16KB + clips 2~4KB
 # 를 달고 있어 태깅 전 job(~1.2KB)의 10~17배다. 목록 API 는 이걸 쓰지도 않으면서
-# 매번 통째로 실어 보냈다.
+# 매번 통째로 실어 보냈고, 앱 서버가 t3.medium(2 vCPU 버스터블)이라 클립 렌더로
+# CPU 가 스로틀되면 재직렬화 비용이 job 당 0.86초까지 늘어졌다
+# (2026-08-05 실측: 31건 조회 13초, 그중 done 11건이 9.5초).
 #
 # **일을 할수록 느려지는 구조**라 방치하면 안 된다 — job 이 늘어서가 아니라
 # 태깅이 끝날수록 무거운 job 의 비율이 올라간다.
@@ -132,6 +135,9 @@ def serialize_job(job: HighlightJob, brief: bool = False) -> dict[str, Any]:
         "owner_id": job.owner_id,
         "status": job.status,
         "mode": job.mode,
+        # 산출 지시(하이라이트만 / xFP 분석) — claim 스냅샷이 없는 옛 잡도
+        # 매니페스트에서 판정해 항상 채운다. 화면은 이 한 곳만 보면 된다.
+        "plan": resolve_plan(metadata) if job.mode == "fineplay" else None,
         "original_filename": job.original_filename,
         "display_name": metadata.get("display_name"),
         "jersey_number": metadata.get("jersey_number"),
@@ -824,6 +830,7 @@ def _persist_clip_records(
                     jersey=a.get("jersey"),
                     player_id=a.get("playerId"),
                     player_name=a.get("playerName"),
+                    user_id=a.get("userId"),
                     xg=a.get("xg"),
                     xgot=a.get("xgot"),
                     epv=a.get("epv"),
@@ -923,8 +930,15 @@ def run_fineplay_produce(job_id: str) -> None:
             except Exception:
                 saved = None
 
+        # 산출 지시 — 하이라이트만(basic)인 신청은 채점·씬모션을 아예 만들지 않는다.
+        # 페이로드에서 빼는 게 아니라 렌더·업로드 단계를 통째로 건너뛴다.
+        xfp_on = xfp_enabled(metadata)
+
         action_records: list[dict] = []
-        if saved is not None:
+        if not xfp_on:
+            metadata["fpa_enrich_status"] = "skipped (하이라이트만 — BASIC_HIGHLIGHT)"
+            metadata["scene_motion_status"] = "skipped (하이라이트만)"
+        elif saved is not None:
             try:
                 warnings, action_records = enrich_result_payload(
                     payload,
@@ -993,6 +1007,8 @@ def run_fineplay_produce(job_id: str) -> None:
             logger.exception("highlight_clips 기록 실패 (job=%s)", job_id)
             metadata["clip_db_status"] = f"failed: {exc}"
 
+        # 전송 관문 — basic 이면 분석 산출물이 남아 있어도 여기서 떨어진다(안전망).
+        payload = prepare_payload(payload, metadata)
         metadata["result_payload"] = payload
 
         client = default_client()

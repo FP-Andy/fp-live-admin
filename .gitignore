@@ -43,3 +43,6 @@ filed.png
 
 # ffmpeg.wasm core는 node_modules에서 빌드 시 복사한다 (31MB 바이너리라 커밋하지 않음)
 apps/web/public/ffmpeg/
+
+# 로컬 전용 docker compose 오버라이드 (포트 충돌 우회 등)
+infra/app/docker-compose.override.yml

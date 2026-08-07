@@ -314,6 +314,9 @@ class HighlightClipAction(Base):
     jersey: Mapped[str | None] = mapped_column(String, nullable=True)
     player_id: Mapped[str | None] = mapped_column(String, nullable=True)  # FinePlay lineup playerId (등번호 매칭 시)
     player_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # playerId 가 숫자면 실계정 userId — 앱 개인 페이지 "내 액션" 필터가 이걸로 건다.
+    # 컬럼이 없던 시절엔 재전송 페이로드에서 통째로 빠져 나갔다(에코 결락).
+    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     xg: Mapped[float | None] = mapped_column(Float, nullable=True)
     xgot: Mapped[float | None] = mapped_column(Float, nullable=True)
     epv: Mapped[float | None] = mapped_column(Float, nullable=True)

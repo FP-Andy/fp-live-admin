@@ -75,6 +75,12 @@ from .fineplay_fpa import (
     scene_action_rows as fineplay_scene_action_rows,
 )
 from .fineplay_models import parse_manifest as fineplay_parse_manifest
+from .fineplay_plan import (
+    plan_from_manifest as fineplay_plan_from_manifest,
+    prepare_payload as fineplay_prepare_payload,
+    resolve_plan as fineplay_resolve_plan,
+    xfp_enabled as fineplay_xfp_enabled,
+)
 from .highlight_storage import default_storage as highlight_default_storage
 from .highlight_storage import output_prefix as highlight_output_prefix
 from .scene_motion import attach_scene_motions
@@ -306,6 +312,9 @@ def _ensure_runtime_schema() -> None:
     if "highlight_clip_actions" in table_names and "start_offset" not in clip_action_columns:
         statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN start_offset DOUBLE PRECISION")
         statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN end_offset DOUBLE PRECISION")
+
+    if "highlight_clip_actions" in table_names and "user_id" not in clip_action_columns:
+        statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN user_id BIGINT")
 
     if "role" not in user_columns:
         statements.append("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'OPERATOR'")
@@ -7747,21 +7756,26 @@ def fineplay_archive_readiness(
     """잡별 아카이브 가능 여부 — 클립 수와 FPA 데이터(액션)가 들어간 클립 수.
 
     모든 클립에 액션이 있어야 ready. 작업 목록의 아카이브 버튼 활성화 판단용.
+    단 하이라이트만(basic) 신청은 FPA 태깅을 하지 않으므로 액션 조건이 면제된다
+    — 안 그러면 무료 건은 영원히 아카이브가 안 된다.
     """
     by_job: dict[str, list[str]] = {}
     for clip_id, job_id in db.query(HighlightClip.id, HighlightClip.job_id).all():
         by_job.setdefault(job_id, []).append(clip_id)
     acted = {row[0] for row in db.query(HighlightClipAction.clip_id).distinct().all()}
-    return {
-        "jobs": {
-            job_id: {
-                "clip_count": len(clip_ids),
-                "clips_with_actions": sum(1 for c in clip_ids if c in acted),
-                "ready": bool(clip_ids) and all(c in acted for c in clip_ids),
-            }
-            for job_id, clip_ids in by_job.items()
+    jobs = {j.id: j for j in db.query(HighlightJob).filter(HighlightJob.id.in_(list(by_job.keys()))).all()}
+    out = {}
+    for job_id, clip_ids in by_job.items():
+        job = jobs.get(job_id)
+        needs_fpa = fineplay_xfp_enabled((job.job_metadata if job else None) or {})
+        with_actions = sum(1 for c in clip_ids if c in acted)
+        out[job_id] = {
+            "clip_count": len(clip_ids),
+            "clips_with_actions": with_actions,
+            "needs_fpa": needs_fpa,
+            "ready": bool(clip_ids) and (not needs_fpa or with_actions == len(clip_ids)),
         }
-    }
+    return {"jobs": out}
 
 
 @app.post("/api/highlight/fineplay-jobs/{job_id}/archive")
@@ -7786,18 +7800,20 @@ def archive_fineplay_job(
         clip_ids = [c.id for c in db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()]
         if not clip_ids:
             raise HTTPException(status_code=409, detail="클립이 없습니다 — 먼저 클립을 생성하세요.")
-        acted = {
-            row[0]
-            for row in db.query(HighlightClipAction.clip_id)
-            .filter(HighlightClipAction.clip_id.in_(clip_ids))
-            .distinct()
-            .all()
-        }
-        if len(acted) < len(clip_ids):
-            raise HTTPException(
-                status_code=409,
-                detail=f"모든 클립에 FPA 데이터가 있어야 아카이브할 수 있습니다 — {len(acted)}/{len(clip_ids)} 클립 완료.",
-            )
+        # 하이라이트만(basic) 신청은 FPA 태깅을 하지 않으므로 액션 조건을 면제한다.
+        if fineplay_xfp_enabled(metadata):
+            acted = {
+                row[0]
+                for row in db.query(HighlightClipAction.clip_id)
+                .filter(HighlightClipAction.clip_id.in_(clip_ids))
+                .distinct()
+                .all()
+            }
+            if len(acted) < len(clip_ids):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"모든 클립에 FPA 데이터가 있어야 아카이브할 수 있습니다 — {len(acted)}/{len(clip_ids)} 클립 완료.",
+                )
     metadata["clip_archived"] = archived
     metadata["clip_archived_at"] = datetime.utcnow().isoformat() if archived else None
     update_job(db, job_id, job_metadata=metadata)
@@ -8008,6 +8024,9 @@ def create_standalone_fineplay_job(
         job_metadata={
             "display_name": team_name,
             "analysis_request_id": rid,
+            # 사전 작업은 xFP 태깅을 하려고 만드는 작업이라 작업 지시는 xfp 고정.
+            # 실제 전송 범위는 연결된 신청(links[side])의 옵션으로 사이드별 판정한다.
+            "plan": {"tier": "xfp", "options": [], "source": "standalone"},
             # 신청 미연결 표시 — produce 콜백 보류·재전송 차단·연결 단계 식별에 쓴다.
             "standalone": True,
             "manifest": manifest,
@@ -8093,10 +8112,13 @@ def link_standalone_request(
     한 영상·한 태깅본을 두 팀 신청으로 내보내는 사전 작업 전용 흐름 — 클레임 잡의
     단일 fpa_link(our_side) 컨벤션은 그대로 두고, 사전 작업만 links.{home,away} 를 쓴다.
 
-    body: {analysisRequestId, teamId?, teamName?, lineup?, manual?}
-    FinePlay claim 이 되면 매니페스트의 팀·라인업을 쓰고, 클라이언트 미설정이거나
+    body: {analysisRequestId, teamId?, teamName?, lineup?, options?, manual?}
+    FinePlay claim 이 되면 매니페스트의 팀·라인업·옵션을 쓰고, 클라이언트 미설정이거나
     manual=true 면 body 값으로 수동 연결한다(재매칭 = 같은 side 에 다시 PUT —
     이미 다른 잡이 claim 한 신청은 재-claim 이 거부되므로 manual 로 붙인다).
+
+    옵션은 이 사이드의 산출 범위를 정한다 — 수동 연결에서 options 를 안 주면
+    basic(하이라이트만)으로 떨어지므로, 대행 신청은 options 를 함께 넘겨야 한다.
     """
     side = side.strip().lower()
     if side not in ("home", "away"):
@@ -8114,6 +8136,7 @@ def link_standalone_request(
     team_id = str(body.get("teamId") or "").strip() or None
     team_name = str(body.get("teamName") or "").strip() or None
     lineup = list(body.get("lineup") or [])
+    options = body.get("options") if isinstance(body.get("options"), list) else None
     client = fineplay_default_client()
     if client.configured and not body.get("manual"):
         try:
@@ -8127,12 +8150,17 @@ def link_standalone_request(
         team_id = str(team.get("teamId") or "").strip() or team_id
         team_name = str(team.get("teamName") or "").strip() or team_name
         lineup = list(manifest.get("lineup") or []) or lineup
+        if isinstance(manifest.get("options"), list):
+            options = manifest["options"]
 
     links[side] = {
         "analysis_request_id": rid,
         "team_id": team_id,
         "team_name": team_name,
         "lineup": lineup,
+        # 이 사이드의 산출 지시 — 없으면 basic 폴백(resolve_plan).
+        "options": options if options is not None else [],
+        "plan": fineplay_plan_from_manifest({"options": options or []}, source="link"),
         "linked_at": datetime.utcnow().isoformat(),
         "callback_status": None,
     }
@@ -8417,6 +8445,10 @@ def poll_fineplay_jobs(
                 "display_name": team.get("teamName"),
                 "analysis_request_id": rid,
                 "manifest": manifest,
+                # 산출 지시 — 이 신청이 하이라이트만인지 xFP 분석까지인지.
+                # claim 스냅샷으로 굳힌다(노션 §5): 이후 신청 옵션이 바뀌어도
+                # 이미 받은 작업의 범위는 흔들리지 않는다.
+                "plan": fineplay_plan_from_manifest(manifest),
                 "clips": [],
                 "match_id": str(match_obj.id),
                 # 홈=신청팀 컨벤션이라 our_side 기본 home. FPA dual 도 이 매치에 찍으면 된다.
@@ -8496,6 +8528,8 @@ def resend_fineplay_callback(
     payload = metadata.get("result_payload")
     if not payload:
         raise HTTPException(status_code=409, detail="보낼 결과가 없습니다. 먼저 클립을 생성하세요.")
+    # 옛 잡은 basic 판정 이전에 만든 payload 라 분석이 실려 있을 수 있다 — 관문 통과.
+    payload = fineplay_prepare_payload(payload, metadata)
     client = fineplay_default_client()
     if not client.configured:
         raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
@@ -8643,6 +8677,11 @@ def produce_fineplay_job(
 # ---------------------------------------------------------------------------
 
 def _serialize_clip_action(row: HighlightClipAction) -> dict:
+    # user_id 컬럼이 생기기 전에 저장된 액션은 NULL 이다 — playerId 가 숫자면
+    # 실계정 id 이므로 그대로 되살린다(재전송 페이로드 에코 복구).
+    user_id = row.user_id
+    if user_id is None and str(row.player_id or "").isdigit():
+        user_id = int(row.player_id)
     return {
         "id": row.id,
         "seq": row.seq,
@@ -8652,6 +8691,8 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
         "jersey": row.jersey,
         "playerId": row.player_id,
         "playerName": row.player_name,
+        # 계약 §5-2 에코 — 이게 빠지면 앱 "내 액션" 필터가 클립을 못 찾는다.
+        "userId": user_id,
         "xg": row.xg,
         "xgot": row.xgot,
         "epv": row.epv,
@@ -8731,10 +8772,15 @@ def _clip_job_context(db: Session, clip: HighlightClip) -> tuple[HighlightJob | 
 
 @app.get("/api/highlight/clip-results/matches")
 def clip_result_matches(
+    include_archived: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """클립이 추출된 매치 목록 (최신순)."""
+    """클립이 추출된 매치 목록 (최신순).
+
+    아카이브된 잡은 기본으로 빠진다 — '아카이브' 룸에서 관리하고, 해제하면 다시 돌아온다.
+    아카이브 룸의 '열어서 수정' 딥링크는 include_archived=1 로 불러 계속 열 수 있다.
+    """
     clips = db.query(HighlightClip).all()
     groups: dict[str, dict] = {}
     for c in clips:
@@ -8762,15 +8808,22 @@ def clip_result_matches(
                 away = str(meta.get("away_team") or "")
         job = db.get(HighlightJob, g["job_id"])
         metadata = (job.job_metadata if job else None) or {}
+        archived = bool(metadata.get("clip_archived"))
+        if archived and not include_archived:
+            continue
         out.append({
             "match_id": g["match_id"],
             "job_id": g["job_id"],
+            # 산출 지시 — basic 매치는 채점 열·xFP 배지를 숨기고 전송도 영상만 나간다.
+            "plan": fineplay_resolve_plan(metadata),
             "name": name or metadata.get("display_name") or g["job_id"],
             "home_team": home,
             "away_team": away,
             "clip_count": g["clip_count"],
             "callback_status": metadata.get("callback_status"),
             "analysis_request_id": metadata.get("analysis_request_id"),
+            "archived": archived,
+            "archived_at": metadata.get("clip_archived_at"),
             "updated_at": g["updated_at"].isoformat() if g["updated_at"] else None,
         })
     out.sort(key=lambda r: r["updated_at"] or "", reverse=True)
@@ -8992,6 +9045,7 @@ def clip_result_put_actions(
                 "jersey": (str(a.get("jersey") or "").strip() or None),
                 "playerId": a.get("playerId"),
                 "playerName": a.get("playerName"),
+                "userId": a.get("userId"),
                 "xg": a.get("xg"),
                 "xgot": a.get("xgot"),
                 "epv": a.get("epv"),
@@ -9014,6 +9068,7 @@ def clip_result_put_actions(
             jersey=a.get("jersey"),
             player_id=a.get("playerId"),
             player_name=a.get("playerName"),
+            user_id=a.get("userId"),
             xg=a.get("xg"),
             xgot=a.get("xgot"),
             epv=a.get("epv"),
@@ -9088,12 +9143,17 @@ def _build_clip_result_payload(
     team_id: str | None,
     lineup: list[dict] | None = None,
     side_filter: str | None = None,
+    include_analysis: bool = True,
 ) -> dict:
     """DB의 clip·action 으로 FinePlay 결과 페이로드를 조립한다.
 
     lineup 을 주면 전송 관점(our_side)으로 선수 매칭을 다시 한다 — 사전 작업의
     팀별 전송용. side_filter 를 주면 그 팀 클립만 담는다(team_side 없는 옛 클립은
     양쪽 다 포함).
+
+    include_analysis=False (하이라이트만 신청) 면 액션·채점·씬모션을 조립하지
+    않는다 — DB 에 태깅 데이터가 남아 있어도 전송에는 싣지 않는다(나중에 유료로
+    전환되면 True 로 재전송하면 그대로 나간다).
     """
     metadata = dict(job.job_metadata or {})
     fpa_match_id = (metadata.get("fpa_link") or {}).get("match_id")
@@ -9101,6 +9161,29 @@ def _build_clip_result_payload(
     payload_clips = []
     for c in clips:
         if side_filter and c.team_side and c.team_side != side_filter:
+            continue
+        if not include_analysis:
+            # 하이라이트만 — 영상·구간·대표 액션명까지. 액션 조회도 하지 않는다.
+            video: dict = {}
+            if c.horizontal_s3_key:
+                video["horizontalS3Key"] = c.horizontal_s3_key
+            if c.vertical_s3_key:
+                video["verticalS3Key"] = c.vertical_s3_key
+            if c.thumbnail_s3_key:
+                video["thumbnailS3Key"] = c.thumbnail_s3_key
+            if c.duration_seconds is not None:
+                video["durationSeconds"] = round(float(c.duration_seconds), 3)
+            entry = {
+                "clipKey": c.id,
+                "fpcClipId": c.id,
+                "sourceVideoId": c.source_video_id,
+                "startTime": round(float(c.start_sec), 3),
+                "endTime": round(float(c.end_sec), 3),
+                "highlightVideo": video,
+            }
+            if c.main_action:
+                entry["mainAction"] = c.main_action
+            payload_clips.append(entry)
             continue
         actions = [
             _serialize_clip_action(a)
@@ -9202,6 +9285,9 @@ def clip_result_resend(
             link = links.get(side)
             if not link:
                 continue
+            # 사이드별 산출 지시 — 연결된 신청의 옵션이 기준이다(한 태깅본이라도
+            # 한 팀은 유료, 다른 팀은 무료로 신청했을 수 있다).
+            side_xfp = fineplay_xfp_enabled(metadata, side=side)
             payload = _build_clip_result_payload(
                 db, clips, job,
                 our_side=side,
@@ -9210,7 +9296,21 @@ def clip_result_resend(
                 team_id=link.get("team_id"),
                 lineup=list(link.get("lineup") or []),
                 side_filter=side,
+                include_analysis=side_xfp,
             )
+            payload = fineplay_prepare_payload(payload, metadata, side=side)
+            link["plan_tier"] = "xfp" if side_xfp else "basic"
+            # 라인업 재매칭 결과를 표면화한다 — 등번호가 안 맞으면 rematch 가
+            # 우리 팀 행의 playerId 까지 조용히 지워서 선수 귀속이 통째로 비게 된다.
+            if side_xfp:
+                ours = [
+                    a
+                    for clip in payload["clips"]
+                    for a in ((clip.get("teamView") or {}).get("actions") or [])
+                    if str(a.get("teamSide") or "").lower() == side
+                ]
+                matched = sum(1 for a in ours if a.get("playerId"))
+                link["player_match"] = f"{matched}/{len(ours)}"
             if not payload["clips"]:
                 statuses[side] = "skipped: 해당 팀 클립 없음"
                 link["callback_status"] = statuses[side]
@@ -9240,7 +9340,9 @@ def clip_result_resend(
         labels=labels,
         rid=rid,
         team_id=team_id,
+        include_analysis=fineplay_xfp_enabled(metadata),
     )
+    payload = fineplay_prepare_payload(payload, metadata)
     metadata["result_payload"] = payload
     try:
         client.post_results(payload)
