@@ -78,7 +78,13 @@ def _direction(log_text: str) -> str:
 
 
 def _recomputed_epv(log_text: str) -> float | None:
-    """로그의 끊은 지점 좌표로 현재 산식(소유권 전환가치)을 다시 계산."""
+    """로그의 끊은 지점 좌표로 현재 산식(소유권 전환가치)을 다시 계산.
+
+    공격방향(direction)을 못 읽으면 계산하지 않는다 — 임의로 가정하면 x 를 뒤집을지가
+    갈려 값이 좌우 반전된 채 조용히 저장된다. 못 고치는 것보다 나쁘다.
+    """
+    if _direction(log_text) not in ("left", "right"):
+        return None
     positions = _POS.findall(log_text or "")
     if not positions:
         return None
@@ -112,7 +118,10 @@ def _plan_for_log(saved: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]
             "scene_action": row.get("SceneActionIndex"),
         }
         if expected is None:
-            skips.append(dict(item, reason="좌표 없음(로그에 Pos 미기록)"))
+            reason = ("공격방향(direction) 없음 — 좌우 반전 위험이라 건너뜀"
+                      if _direction(log_text) not in ("left", "right")
+                      else "좌표 없음(로그에 Pos 미기록)")
+            skips.append(dict(item, reason=reason))
             continue
         if stored is not None and abs(stored - expected) < 10 ** -_DECIMALS / 2:
             continue  # 이미 새 산식
