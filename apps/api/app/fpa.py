@@ -544,6 +544,24 @@ def _pitch_control_at(x: Any, y: Any, home_points: list[tuple[float, float]], aw
     return round((home_probability * 2) - 1, 4)
 
 
+def _actor_pc_sign(actor_team: Any) -> float:
+    """홈 기준 PC → 행위자 기준으로 뒤집는 부호.
+
+    `_pitch_control_at` 은 항상 홈 기준(+1=홈 완전지배)이라, 어웨이 팀 액션은 그대로 쓰면
+    의미가 반대가 된다 — 어웨이가 공간을 잡을수록 ΔPC 가 음수라 `MAX(0,ΔPC)` 에서 탈락하고,
+    반대로 공간을 내준 액션이 양수로 점수를 받았다. 채점이 보는 건 '행위자 팀의 이득'이므로
+    어웨이면 -1 을 곱해 기준을 맞춘다.
+
+    actor_team 이 비어 있으면(구버전 로그) 뒤집을 근거가 없어 홈 기준 원본을 그대로 둔다.
+    """
+    return -1.0 if str(actor_team or "").lower() == "away" else 1.0
+
+
+def _drop_negative_zero(value: float) -> float:
+    """-0.0 → 0.0. 부호를 뒤집으면 델타가 0 일 때 -0.0 이 되어 'PC=-0.000' 으로 찍힌다."""
+    return value + 0.0
+
+
 def _pitch_control_delta(
     dual_state: dict[str, Any] | None,
     start_point: tuple[float, float],
@@ -560,7 +578,7 @@ def _pitch_control_delta(
     after_pc = _pitch_control_at(end_point[0], end_point[1], after_home, after_away)
     if before_pc is None or after_pc is None:
         return None
-    return round(after_pc - before_pc, 4)
+    return _drop_negative_zero(round(_actor_pc_sign(actor_team) * (after_pc - before_pc), 4))
 
 
 PRESS_REGION_MARGIN_M = 5.0
@@ -654,7 +672,10 @@ def _region_mean_pitch_control(px: Any, py: Any, home_points: list[tuple[float, 
 
 def _press_region_pitch_control(dual_state: dict[str, Any] | None) -> tuple[float, float, float] | None:
     """압박(pr): 점이 아니라 프레임 선수들(before∪after)의 convex hull + 마진 영역을
-    그리드로 깔고, 영역 평균 지배율의 before→after 변화로 잰다. (before_mean, after_mean, delta)"""
+    그리드로 깔고, 영역 평균 지배율의 before→after 변화로 잰다. (before_mean, after_mean, delta)
+
+    반환값은 `_actor_pc_sign` 으로 행위자 기준을 맞춘 뒤 나간다 — 셋 다 같은 부호를 쓰므로
+    delta = after − before 관계는 그대로 유지된다."""
     if not dual_state:
         return None
     actor_team = str(dual_state.get("actor_team") or "").lower()
@@ -672,7 +693,12 @@ def _press_region_pitch_control(dual_state: dict[str, Any] | None) -> tuple[floa
     after_mean = _region_mean_pitch_control(px, py, after_home, after_away)
     if before_mean is None or after_mean is None:
         return None
-    return round(before_mean, 4), round(after_mean, 4), round(after_mean - before_mean, 4)
+    sign = _actor_pc_sign(actor_team)
+    return (
+        _drop_negative_zero(round(sign * before_mean, 4)),
+        _drop_negative_zero(round(sign * after_mean, 4)),
+        _drop_negative_zero(round(sign * (after_mean - before_mean), 4)),
+    )
 
 
 def _path_distance(points: list[tuple[float, float]]) -> float:
@@ -1919,11 +1945,12 @@ def build_model_config_sheet() -> pd.DataFrame:
         ("quick_dsl_version", "fpa_quick_dsl_v0.2-draft"),
         ("xg_model_version", "fp_xg_shared_estimator"),
         ("epv_model_version", "fp_epv_state_value_proxy_v0.2"),
-        ("pitch_control_model_version", "equal_speed_freeze_frame_pc_v0.2"),
+        ("pitch_control_model_version", "equal_speed_freeze_frame_pc_v0.3"),
         ("shot_formula", "1 / (1 + EXP(-(b0 + b1*distance + b2*angle + b3*header + b4*pressure)))"),
         ("epv_formula", "EPV_Delta = After_EPV - Before_EPV"),
         ("pitch_control_formula", "PC(z)=2*P_home(z)-1; P_home=sum(exp(-T_home/tau))/sum(exp(-T_all/tau)); T=reaction_time+distance/shared_player_speed"),
         ("pitch_control_scale", "1=home 100%, 0=balanced, -1=away 100%"),
+        ("pitch_control_sign_convention", "v0.3: reported PC/PC_Delta are actor-relative — away-actor values are negated so +1 always means the acting team controls (v0.2 reported raw home-relative values)"),
         ("pitch_control_default_parameters", "reaction_time=0.7s, shared_player_speed=5.5m/s, tau=1.15"),
         ("press_pc_region", "Press PC = mean PC over 1m-step grid inside convex hull(before∪after frame players) + 5m margin, clipped to pitch; PC_Delta = after_mean - before_mean (same region, both frames)"),
         ("action_score_formula", "BaseWeight * LevelMultiplier * OutcomeMultiplier * ReliabilityFactor"),
@@ -2039,12 +2066,21 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
         if not after_home and not after_away:
             after_home, after_away = before_home, before_away
         if str(row.get("EventType") or "") == "Press":
+            # _press_region_pitch_control 은 이미 행위자 기준으로 부호를 맞춰 돌려준다.
             press_pc = _press_region_pitch_control(state)
             before_pc, after_pc, delta_pc = press_pc if press_pc else (None, None, None)
         else:
-            before_pc = _pitch_control_at(start_x, start_y, before_home, before_away)
-            after_pc = _pitch_control_at(end_x, end_y, after_home, after_away)
-            delta_pc = round(after_pc - before_pc, 4) if before_pc is not None and after_pc is not None else None
+            # 시트에 찍히는 Before/After/Delta 도 채점값과 같은 행위자 기준으로 통일한다.
+            sign = _actor_pc_sign(actor_team)
+            raw_before = _pitch_control_at(start_x, start_y, before_home, before_away)
+            raw_after = _pitch_control_at(end_x, end_y, after_home, after_away)
+            before_pc = _drop_negative_zero(round(sign * raw_before, 4)) if raw_before is not None else None
+            after_pc = _drop_negative_zero(round(sign * raw_after, 4)) if raw_after is not None else None
+            delta_pc = (
+                _drop_negative_zero(round(sign * (raw_after - raw_before), 4))
+                if raw_before is not None and raw_after is not None
+                else None
+            )
         before_values.append(_metric_text_value(before_pc))
         after_values.append(_metric_text_value(after_pc))
         delta_values.append(_metric_text_value(delta_pc))
@@ -2054,7 +2090,10 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
     has_dual_state = sheet.get("BeforeStatePoints", "").fillna("").astype(str).str.len() > 0
     dual_tier = sheet.get("DualInputTier", "").fillna("").astype(str).replace("", "minimal")
     sheet["InputTier"] = np.where(has_dual_state, "dual_pitch_" + dual_tier, "single_pitch")
-    sheet["Formula"] = "PC(z)=2*P_home(z)-1 from equal-speed home/away player coordinates; PC_Delta = After_PC - Before_PC"
+    sheet["Formula"] = (
+        "PC(z)=2*P_home(z)-1 from equal-speed home/away player coordinates; "
+        "PC_Delta = After_PC - Before_PC; actor-relative (away actions negated)"
+    )
     return sheet
 
 

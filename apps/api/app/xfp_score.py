@@ -8,6 +8,11 @@
 정본 규칙(05_산식_정본):
 - 원시 기대효과: Goal=xG(연결이면 연결 슈팅 xG×크레딧), Progression=MAX(0,ΔEPV),
   Possession=MAX(0,ΔPC). dual 채점의 epv/pc 는 이미 델타값이다(_epv_delta·_pitch_control_delta).
+  ΔPC 는 fpa.py 에서 행위자 기준으로 부호를 맞춰 들어온다(_actor_pc_sign) — 홈 기준 원본을
+  그대로 쓰면 어웨이 팀 액션의 부호가 반대라 MAX(0,ΔPC) 에서 통째로 탈락한다.
+- 수비(S5/S7)는 예외: Outcome 은 Possession 이지만 원시 기대효과는 ΔPC 가 아니라
+  **막아낸 위협**이다(태클·차단·컷아웃·클리어=상대 공격방향 ΔEPV, 블록=막은 슛 xG).
+  fpa.py 가 이미 그렇게 재고 있고, 앵커도 그 단위의 곡선(progression·goal)으로 잰다.
 - Effect Action: 한 Event(장면)당 Outcome 별 최대 1개·전체 최대 3개, 동일 Action ID 중복 금지.
 - Action xFP: Action ID 기준 백분위 → 50~100 조각 변환(01 시트 H열).
 - 대표 Action = argmax(Action Percentile) — UI 라벨일 뿐, 다른 유효 Action 집계를 제외하지 않음.
@@ -27,6 +32,13 @@ _ANCHORS_PATH = Path(__file__).parent / "xfp_anchors_v0.json"
 
 # G2/G3 연결 기여 크레딧 — 정본에 수치 미확정(v0). 연결 슈팅 xG × credit.
 LINK_CREDIT = 0.7
+
+# 수비 액션(태클·차단·컷아웃·클리어·블록)의 24코드. 자기 진영 S5 / 상대 진영 S7.
+# Outcome 군은 Possession 이지만 **ΔPC 로 채점하지 않는다** — `fpa.py` 가 이미 이들을
+# '막아낸 위협'으로 재고 있다(DEFENSE_ARROW_CODES=상대 공격방향 ΔEPV, SHOT_BLOCK_CODES=
+# 막은 슛 xG). ΔPC 를 쓰면 수비는 정의상 '상대 통제 공간 → 우리 통제'로 통제 경계를
+# 넘는 행위라 ΔPC 가 늘 최대치에 붙어, 막은 위협이 0 이거나 음수인 액션까지 만점이 됐다.
+DEFENSE_CODES = frozenset({"S5", "S7"})
 
 
 @lru_cache(maxsize=1)
@@ -66,13 +78,18 @@ def percentile_to_score(p: float) -> int:
     return int(round(s))
 
 
-def raw_to_percentile(code: str, raw: float) -> float | None:
-    """원시 기대효과 → 백분위(0~1). 앵커 테이블 선형 보간, 액션 ID 오버라이드 우선."""
+def raw_to_percentile(code: str, raw: float, basis: str | None = None) -> float | None:
+    """원시 기대효과 → 백분위(0~1). 앵커 테이블 선형 보간, 액션 ID 오버라이드 우선.
+
+    basis 는 어느 군의 앵커 곡선으로 잴지 — 생략하면 코드의 Outcome 군을 쓴다.
+    수비처럼 Outcome 군(Possession)과 실제 측정 단위(막아낸 EPV·xG)가 다른 코드는
+    `effect_basis` 가 돌려주는 군을 넘겨야 스케일이 맞는다.
+    """
     if raw is None or raw <= 0:
         return None
     table = _anchors()
     vals = (table.get("actions") or {}).get(code) or (table.get("families") or {}).get(
-        outcome_family(code) or ""
+        basis or outcome_family(code) or ""
     )
     if not vals:
         return None
@@ -90,9 +107,22 @@ def raw_to_percentile(code: str, raw: float) -> float | None:
     return pts[-1]
 
 
+def effect_basis(code: str, action: dict[str, Any]) -> str | None:
+    """이 액션을 실제로 무엇으로 재는지 = 앵커 곡선을 고르는 군.
+
+    보통은 Outcome 군과 같다. 수비(DEFENSE_CODES)만 다르다 — Outcome 은 Possession
+    이지만 측정값은 ΔPC 가 아니라 **막아낸 위협**이다(`fpa.py` 의 DEFENSE_ARROW_CODES /
+    SHOT_BLOCK_CODES). 슛블락은 막은 슛의 xG 라 goal 곡선, 나머지(태클·차단·컷아웃·
+    클리어)는 상대 공격방향으로 잰 ΔEPV 라 progression 곡선으로 잰다. 둘 다 다른
+    액션의 xG·EPV 와 같은 단위라 새 앵커 없이 그대로 맞물린다.
+    """
+    if code in DEFENSE_CODES:
+        return "goal" if float(action.get("xg") or 0) > 0 else "progression"
+    return outcome_family(code)
+
+
 def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None) -> float | None:
     """액션의 원시 기대효과. 유효성 미달(<=0·근거 없음)이면 None."""
-    fam = outcome_family(code)
     if code == "G1":
         v = float(action.get("xg") or 0)
         return v if v > 0 else None
@@ -100,6 +130,11 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
         if linked_shot_xg is None or linked_shot_xg <= 0:
             return None
         return linked_shot_xg * LINK_CREDIT
+    # 수비는 Outcome 이 Possession 이어도 ΔPC 를 쓰지 않는다 — 아래 주석 참조.
+    fam = effect_basis(code, action)
+    if fam == "goal":  # 슛블락 — 막은 슛의 xG(×BLOCK_CREDIT)가 xG 컬럼에 들어온다.
+        v = float(action.get("xg") or 0)
+        return v if v > 0 else None
     if fam == "progression":
         v = float(action.get("epv") or 0)
         return v if v > 0 else None
@@ -146,7 +181,8 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             raw = _raw_effect(code, pa, linked_shot_xg(float(pa.get("seq") or 0)))
             if raw is None:
                 continue
-            p = raw_to_percentile(code, raw)
+            # 중복 제거(fam)는 Outcome 군 기준 그대로, 백분위는 실제 측정 단위 기준으로.
+            p = raw_to_percentile(code, raw, effect_basis(code, pa))
             if p is None:
                 continue
             candidates.append((pa, code, fam, raw, p))
