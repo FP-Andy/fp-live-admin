@@ -482,6 +482,38 @@ def _epv_delta(start_x: Any, start_y: Any, end_x: Any, end_y: Any) -> float | No
     return round(after - before, 4)
 
 
+# 수비 전환가치에서 '상대가 잃은 위협' 쪽에 주는 비중. 나머지가 '우리가 얻은 위치'.
+# 0.65 = 우리 지역 수비가 항상 위에 오면서, 하이프레스 회복이 중앙에서 평범하게
+# 주운 볼보다는 위로 올라오는 지점(w를 키우면 우리 지역이, 줄이면 하이프레스가 세진다).
+DEFENSE_TURNOVER_WEIGHT = 0.65
+
+
+def _defense_turnover_value(end_x_adj: Any, end_y: Any) -> float | None:
+    """수비 액션의 가치 = 그 지점에서 일어난 소유권 이전의 크기.
+
+    끊는 순간 두 가지가 동시에 일어난다 — 상대는 그 자리에서 갖고 있던 위협을 잃고,
+    우리는 그 자리에서 새 공격을 시작한다. 같은 지점이라도 두 팀은 반대로 공격하므로
+    EPV 가 서로 다르다(우리 골문 앞: 상대 0.0597 vs 우리 0.0069). 그래서 두 값을
+    모두 재고 비중으로 섞는다 — 우리 지역에서는 '상대가 잃은 위협'이, 상대 지역에서는
+    '우리가 얻은 위치'가 저절로 지배한다.
+
+    이전 방식(상대 공격방향 ΔEPV = 상대가 그 패스로 늘린 양)은 '상대가 잃은 것' 만
+    봤고, 그마저도 상대 진영에서는 상대에게도 빌드업 구간이라 0 에 가까웠다. 그래서
+    가장 가치 있는 하이프레스 차단이 최하점을 받았다(0.0015 → 53점).
+
+    end_x_adj/end_y 는 우리 태깅 기준(공격방향 정규화) 좌표 — 끊은 지점이다.
+    """
+    x_value = _finite_float(end_x_adj)
+    if x_value is None:
+        return None
+    ours = _epv_state_value(x_value, end_y)
+    theirs = _epv_state_value(FIELD_W - x_value, end_y)
+    if ours is None or theirs is None:
+        return None
+    weight = DEFENSE_TURNOVER_WEIGHT
+    return round(weight * theirs + (1.0 - weight) * ours, 4)
+
+
 def _point_team_side(point: dict[str, Any], actor_team: str | None = None) -> str:
     side = str(point.get("team_side") or point.get("teamSide") or "").lower()
     if side in {"home", "away"}:
@@ -1752,9 +1784,10 @@ def generate_log_entry(
             # EPV(전진 위협가치)는 개념이 안 맞아 계산하지 않는다.
             epv_value = None
         elif action_code_raw in DEFENSE_ARROW_CODES:
-            # 수비: 화살표(start=상대 볼 출발, end=끊은 지점)는 '상대 공' 경로. 상대 공격방향(좌표 뒤집기)으로
-            # EPV를 재서, 상대가 만들려던 전진위협 EPV(end)−EPV(start)를 그대로 승계(=prevented threat). EPV-방어만.
-            epv_value = _epv_delta(FIELD_W - start_x_adj, start_y, FIELD_W - metric_end_x_adj, metric_end_y)
+            # 수비: 끊은 지점에서 일어난 소유권 이전의 크기로 잰다 (_defense_turnover_value).
+            # 화살표(start=상대 볼 출발, end=끊은 지점)의 end 가 그 지점이고, 화살표가 없으면
+            # 찍은 점 자체가 곧 끊은 지점이라 점 1개로 찍어도 채점된다.
+            epv_value = _defense_turnover_value(metric_end_x_adj, metric_end_y)
         else:
             epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
         if epv_value is not None:
@@ -1948,6 +1981,11 @@ def build_model_config_sheet() -> pd.DataFrame:
         ("pitch_control_model_version", "equal_speed_freeze_frame_pc_v0.3"),
         ("shot_formula", "1 / (1 + EXP(-(b0 + b1*distance + b2*angle + b3*header + b4*pressure)))"),
         ("epv_formula", "EPV_Delta = After_EPV - Before_EPV"),
+        ("defense_value_formula",
+         f"Defense(tackle/intercept/cutout/clear) = {DEFENSE_TURNOVER_WEIGHT}*EPV_opponent(win_point) "
+         f"+ {round(1 - DEFENSE_TURNOVER_WEIGHT, 2)}*EPV_own(win_point); "
+         "possession-swap value at the point the ball was won, not a delta along the ball path "
+         "(v0.2 used opponent-frame dEPV, which read ~0 for high-press wins). Block uses blocked-shot xG."),
         ("pitch_control_formula", "PC(z)=2*P_home(z)-1; P_home=sum(exp(-T_home/tau))/sum(exp(-T_all/tau)); T=reaction_time+distance/shared_player_speed"),
         ("pitch_control_scale", "1=home 100%, 0=balanced, -1=away 100%"),
         ("pitch_control_sign_convention", "v0.3: reported PC/PC_Delta are actor-relative — away-actor values are negated so +1 always means the acting team controls (v0.2 reported raw home-relative values)"),

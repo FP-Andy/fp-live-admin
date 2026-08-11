@@ -10,9 +10,9 @@
   Possession=MAX(0,ΔPC). dual 채점의 epv/pc 는 이미 델타값이다(_epv_delta·_pitch_control_delta).
   ΔPC 는 fpa.py 에서 행위자 기준으로 부호를 맞춰 들어온다(_actor_pc_sign) — 홈 기준 원본을
   그대로 쓰면 어웨이 팀 액션의 부호가 반대라 MAX(0,ΔPC) 에서 통째로 탈락한다.
-- 수비(S5/S7)는 예외: Outcome 은 Possession 이지만 원시 기대효과는 ΔPC 가 아니라
-  **막아낸 위협**이다(태클·차단·컷아웃·클리어=상대 공격방향 ΔEPV, 블록=막은 슛 xG).
-  fpa.py 가 이미 그렇게 재고 있고, 앵커도 그 단위의 곡선(progression·goal)으로 잰다.
+- 수비(S5/S7)는 예외: Outcome 은 Possession 이지만 원시 기대효과가 ΔPC 가 아니다.
+  태클·차단·컷아웃·클리어 = 끊은 지점의 소유권 전환가치(fpa._defense_turnover_value,
+  전용 defense 곡선), 블록 = 막은 슛 xG(goal 곡선).
 - Effect Action: 한 Event(장면)당 Outcome 별 최대 1개·전체 최대 3개, 동일 Action ID 중복 금지.
 - Action xFP: Action ID 기준 백분위 → 50~100 조각 변환(01 시트 H열).
 - 대표 Action = argmax(Action Percentile) — UI 라벨일 뿐, 다른 유효 Action 집계를 제외하지 않음.
@@ -111,13 +111,13 @@ def effect_basis(code: str, action: dict[str, Any]) -> str | None:
     """이 액션을 실제로 무엇으로 재는지 = 앵커 곡선을 고르는 군.
 
     보통은 Outcome 군과 같다. 수비(DEFENSE_CODES)만 다르다 — Outcome 은 Possession
-    이지만 측정값은 ΔPC 가 아니라 **막아낸 위협**이다(`fpa.py` 의 DEFENSE_ARROW_CODES /
-    SHOT_BLOCK_CODES). 슛블락은 막은 슛의 xG 라 goal 곡선, 나머지(태클·차단·컷아웃·
-    클리어)는 상대 공격방향으로 잰 ΔEPV 라 progression 곡선으로 잰다. 둘 다 다른
-    액션의 xG·EPV 와 같은 단위라 새 앵커 없이 그대로 맞물린다.
+    이지만 측정값이 ΔPC 가 아니다(`fpa.py`). 슛블락은 막은 슛의 xG 라 goal 곡선을
+    그대로 쓰고, 나머지(태클·차단·컷아웃·클리어)는 끊은 지점의 **소유권 전환가치**
+    (`_defense_turnover_value`)라 EPV 와 단위는 같아도 델타가 아니라 레벨이라 스케일이
+    다르다 — 전용 defense 곡선으로 잰다.
     """
     if code in DEFENSE_CODES:
-        return "goal" if float(action.get("xg") or 0) > 0 else "progression"
+        return "goal" if float(action.get("xg") or 0) > 0 else "defense"
     return outcome_family(code)
 
 
@@ -135,7 +135,7 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
     if fam == "goal":  # 슛블락 — 막은 슛의 xG(×BLOCK_CREDIT)가 xG 컬럼에 들어온다.
         v = float(action.get("xg") or 0)
         return v if v > 0 else None
-    if fam == "progression":
+    if fam in ("progression", "defense"):  # 수비 전환가치도 EPV 컬럼으로 들어온다.
         v = float(action.get("epv") or 0)
         return v if v > 0 else None
     if fam == "possession":
