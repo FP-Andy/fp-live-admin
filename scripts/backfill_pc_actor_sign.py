@@ -22,6 +22,9 @@
 
 멱등성
 ------
+**경기 단위로 커밋**한다 — 전체를 한 트랜잭션으로 묶으면 처리한 행의 잠금이 스크립트가
+끝날 때까지 유지돼, 그동안 콘솔에서 같은 경기를 저장하려는 시도가 대기한다.
+
 부호를 그냥 뒤집으면 두 번 돌릴 때 원위치한다. 그래서 **DualState 로 PC 를 다시 계산해**
 저장값과 비교하고, '뒤집으면 재계산값과 맞는' 행만 고친다 — 이미 고쳐진 행은 저장값이
 재계산값과 같으므로 건너뛴다. 재계산이 불가능하거나(좌표 파싱 실패 등) 뒤집어도
@@ -164,10 +167,16 @@ def main() -> int:
             query = query.filter(FpaSavedLog.match_id.in_(args.match_id))
         if args.since:
             query = query.filter(FpaSavedLog.updated_at >= datetime.strptime(args.since, "%Y-%m-%d"))
-        saved_logs = query.order_by(FpaSavedLog.updated_at).all()
+        # 경기 id 만 먼저 받고 한 건씩 조회한다 — 큰 JSONB 를 전부 메모리에 쌓지 않고,
+        # 커밋도 경기마다 끊어 잠금 시간을 짧게 유지한다(전체를 한 트랜잭션으로 묶으면
+        # 처리한 행의 잠금이 스크립트가 끝날 때까지 유지돼 콘솔 저장이 대기한다).
+        match_ids = [row[0] for row in query.order_by(FpaSavedLog.updated_at).with_entities(FpaSavedLog.match_id)]
 
         total_fix = total_skip = touched_matches = clip_action_fix = 0
-        for saved in saved_logs:
+        for match_id in match_ids:
+            saved = db.get(FpaSavedLog, match_id)
+            if saved is None:
+                continue
             fixes, skips = _plan_for_log(saved)
             if not fixes and not skips:
                 continue
@@ -217,8 +226,9 @@ def main() -> int:
                 action.pc = round(new_pc, 4) + 0.0
                 clip_action_fix += 1
 
+            db.commit()  # 경기 단위로 끊는다 — 잠금 시간을 짧게, 중단돼도 재실행으로 이어짐
+
         if args.apply:
-            db.commit()
             print(f"\n반영 완료 — 경기 {touched_matches}건 · FPA 행 {total_fix}건 · "
                   f"클립 액션 {clip_action_fix}건 · 보류 {total_skip}건")
         else:

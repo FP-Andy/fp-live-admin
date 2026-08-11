@@ -30,6 +30,14 @@ generate_log_entry 와 같은 규칙). 끊은 지점 = 두 번째 `Pos(...)`, �
 저장값을 건드리지 않고 좌표에서 **새로 계산**해 덮어쓰므로, 몇 번을 돌려도 결과가
 같다. 이미 새 산식으로 저장된 행은 계산값이 같아 변경 목록에 뜨지 않는다.
 
+운영 부담
+--------
+**경기 단위로 커밋**한다. 전체를 한 트랜잭션으로 묶으면 처리한 행의 잠금이 스크립트가
+끝날 때까지 유지돼, 그동안 콘솔에서 같은 경기를 저장하려는 시도가 대기한다. 경기마다
+끊으면 잠금이 수십 ms 로 짧아지고, 중간에 멈춰도 멱등이라 다시 돌리면 남은 것만
+처리된다. 경기도 한 건씩 읽어(match_id 목록 → 개별 조회) 큰 JSONB 를 통째로 메모리에
+쌓지 않는다.
+
 사용법
 ------
     DATABASE_URL=... python3 scripts/backfill_defense_epv.py            # 미리보기
@@ -153,7 +161,13 @@ def main() -> int:
             query = query.filter(FpaSavedLog.updated_at >= datetime.strptime(args.since, "%Y-%m-%d"))
 
         total_fix = total_skip = touched_matches = clip_action_fix = 0
-        for saved in query.order_by(FpaSavedLog.updated_at).all():
+        # 경기 id 만 먼저 받고 한 건씩 조회한다 — 큰 JSONB 를 전부 메모리에 쌓지 않고,
+        # 커밋도 경기마다 끊어 잠금 시간을 짧게 유지한다.
+        match_ids = [row[0] for row in query.order_by(FpaSavedLog.updated_at).with_entities(FpaSavedLog.match_id)]
+        for match_id in match_ids:
+            saved = db.get(FpaSavedLog, match_id)
+            if saved is None:
+                continue
             fixes, skips = _plan_for_log(saved)
             if not fixes and not skips:
                 continue
@@ -197,8 +211,9 @@ def main() -> int:
                 action.epv = round(new_epv, 4)
                 clip_action_fix += 1
 
+            db.commit()  # 경기 단위로 끊는다 — 잠금 시간을 짧게, 중단돼도 재실행으로 이어짐
+
         if args.apply:
-            db.commit()
             print(f"\n반영 완료 — 경기 {touched_matches}건 · FPA 행 {total_fix}건 · "
                   f"클립 액션 {clip_action_fix}건 · 보류 {total_skip}건")
         else:
