@@ -2186,12 +2186,21 @@ export default function FpaLivePage() {
         if (!arrowDrag.moved && !isEditArrow) pushDualUndo();
         arrowDrag.moved = true;
         const coords = dotFromClientPoint(event.clientX, event.clientY, arrowRect);
-        (isEditArrow ? setEditPassArrows : setPassArrows)((prev) => prev.map((arrow, idx) => {
-          if (idx !== arrowDrag.index) return arrow;
-          return arrowDrag.end === 'end'
-            ? { ...arrow, x2: coords.screen_x, y2: coords.screen_y }
-            : { ...arrow, x1: coords.screen_x, y1: coords.screen_y };
-        }));
+        (isEditArrow ? setEditPassArrows : setPassArrows)((prev) => {
+          const target = prev[arrowDrag.index];
+          if (!target) return prev;
+          const patch = arrowDrag.end === 'end'
+            ? { x2: coords.screen_x, y2: coords.screen_y }
+            : { x1: coords.screen_x, y1: coords.screen_y };
+          // 화살표는 before/after 캔버스에 같은 rowIndex 로 한 벌씩 있다(미러 복사본).
+          // 끌고 있는 쪽만 옮기면 좌표가 갈려서, 씬모션이 옛 경로와 새 경로를 잇달아
+          // 두 번 재생한다(scene_motion._parse_arrows 의 짝 맞추기가 rowIndex 기준).
+          // 점 드래그가 startId 로 양쪽을 같이 옮기는 것과 같은 규칙.
+          return prev.map((arrow, idx) => {
+            const isMirror = target.rowIndex !== undefined && arrow.rowIndex === target.rowIndex;
+            return idx === arrowDrag.index || isMirror ? { ...arrow, ...patch } : arrow;
+          });
+        });
         return;
       }
       const dragging = draggingDualDotRef.current;

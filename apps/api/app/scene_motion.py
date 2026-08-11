@@ -95,12 +95,20 @@ def _arrow_action_code(stat_input: Any) -> str:
 def _parse_arrows(value: Any) -> list[dict[str, Any]]:
     """SceneState.passArrows — 라이브 캔버스 논리좌표(1050x680, y반전)를 미터로 변환.
 
-    같은 패스가 before/after 캔버스에 한 번씩(동일 좌표) 기록되므로
-    좌표 기준으로 중복 제거한다 — 안 하면 공이 같은 경로를 두 번 이동한다.
+    같은 패스가 before/after 캔버스에 한 번씩 기록되므로 하나만 남긴다. 짝 키는
+    **rowIndex**(미러 복사본이 공유하는 값)다 — 좌표로 맞추면 한쪽 캔버스에서만
+    궤적을 고친 화살표가 서로 다른 값이 되어 중복 제거를 빠져나가고, 공이 옛 경로와
+    새 경로를 잇달아 두 번 지나간다(그 사이는 _chain_path 가 직선으로 이어 되돌아온다).
+    rowIndex 가 없는 구버전 기록은 종전대로 좌표로 맞춘다.
+
+    양쪽이 갈렸을 때는 **before 쪽을 정본으로** 삼는다 — 미러가 before→after 방향이라
+    before 가 원본 캔버스다.
+
     화살표의 code(어떤 액션으로 그렸는지)로 수비(상대 볼 경로) 여부를 판별해 넘긴다.
     """
     arrows: list[dict[str, Any]] = []
-    seen: set[tuple[int, int, int, int]] = set()
+    index_by_key: dict[Any, int] = {}
+    side_by_key: dict[Any, str] = {}
     if not isinstance(value, list):
         return arrows
     for item in value:
@@ -113,21 +121,30 @@ def _parse_arrows(value: Any) -> list[dict[str, Any]]:
             continue
         if not all(math.isfinite(v) for v in (x1, y1, x2, y2)):
             continue
-        key = (round(x1), round(y1), round(x2), round(y2))
-        if key in seen:
-            continue
-        seen.add(key)
+        row_index = item.get("rowIndex")
+        key: Any = ("row", row_index) if row_index is not None else (round(x1), round(y1), round(x2), round(y2))
+        side = str(item.get("side") or "").lower()
         code_l = _arrow_action_code(item.get("code"))
         kind = (
             "defense" if code_l in _DEFENSE_ARROW_CODES
             else "fail" if code_l in _FAIL_ARROW_CODES
             else "pass"
         )
-        arrows.append({
+        arrow = {
             "kind": kind,
             "x1": x1 / 1050 * FIELD_W, "y1": (1 - y1 / 680) * FIELD_H,
             "x2": x2 / 1050 * FIELD_W, "y2": (1 - y2 / 680) * FIELD_H,
-        })
+        }
+        if key in index_by_key:
+            # 이미 담은 짝이 before 가 아니고 이번 게 before 면 정본으로 교체한다.
+            # 순서(체인 순번)는 처음 자리를 유지해야 공 경로가 어긋나지 않는다.
+            if side == "before" and side_by_key.get(key) != "before":
+                arrows[index_by_key[key]] = arrow
+                side_by_key[key] = side
+            continue
+        index_by_key[key] = len(arrows)
+        side_by_key[key] = side
+        arrows.append(arrow)
     return arrows
 
 
