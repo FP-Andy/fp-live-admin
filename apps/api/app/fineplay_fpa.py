@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .xfp_score import score_clip_actions
+from .xfp_score import prefer_progression, score_clip_actions
 
 # FPA Action 명(fpa.ACTION_CODES 값) → FinePlay contributionRole.
 # 서버가 아는 롤: SHOOTER PASSER CROSSER DRIBBLER PENETRATOR INTERCEPTOR PRESSER DUELER
@@ -725,13 +725,18 @@ def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | N
     진영(OWN/OPP)은 공격방향 정규화 좌표 x>52.5 기준, 좌표 없으면 OPP 가정.
     패스/크로스 뒤에 같은 클립에서 슈팅이 이어지면 득점 연결(G2/G3).
     정밀 판정(Direct/Indirect 인과·credit)은 정식 산식 이식 때 개정한다.
+
+    '큰 쪽' 을 무엇으로 재나 (2026-08-13 개정): 원값(`epv >= pc`)이 아니라 **두 축의
+    최종 점수**를 비교한다(xfp_score.prefer_progression). 원값 비교는 단위가 5배
+    다른 두 값을 맞대던 것이라, ΔPC 가 중앙값만 넘으면 전진이 무조건 탈락했다 —
+    근거와 실측은 xfp_score.py 의 `axis_scores` 위 주석에 있다.
     """
     name = str(action.get("action") or "")
     x = action.get("x")
     opp = (float(x) > 52.5) if isinstance(x, (int, float)) else True
-    epv = float(action.get("epv") or 0)
-    pc = float(action.get("pc") or 0)
-    progression = epv >= pc and epv > 0
+
+    def progression_wins(prog_code: str, poss_code: str) -> bool:
+        return prefer_progression(action, progression_code=prog_code, possession_code=poss_code)
 
     if name in _SHOT_ACTIONS:
         return "G1"
@@ -740,15 +745,13 @@ def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | N
         # (승격 근거가 태그이므로, 씬이 잘려 뒤 슈팅이 같은 클립에 없어도 득점 연결이다).
         if later_shot or name in ("Assist", "Key Pass"):
             return "G2"
-        if progression:
-            return "P1" if not opp else "P2"
-        return "S1" if not opp else "S2"
+        prog_code, poss_code = ("P1", "S1") if not opp else ("P2", "S2")
+        return prog_code if progression_wins(prog_code, poss_code) else poss_code
     if name == "Cross":
         return "G3" if later_shot else "P3"
     if name in ("Dribble", "Breakthrough"):
-        if progression:
-            return "P4" if not opp else "P5"
-        return "S3" if not opp else "S4"
+        prog_code, poss_code = ("P4", "S3") if not opp else ("P5", "S4")
+        return prog_code if progression_wins(prog_code, poss_code) else poss_code
     if name == "Penetration":
         return "P6"
     if name in _DEFENSE_ACTIONS:
