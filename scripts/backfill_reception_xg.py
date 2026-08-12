@@ -49,7 +49,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps" / "api"))
 
-from app.fpa import _reception_chance_xg  # noqa: E402
+from app.fpa import _dual_opponent_dots, _packing_ratio, _reception_chance_xg  # noqa: E402
 from app.fineplay_fpa import canonical_action_name  # noqa: E402
 
 # 받는 사람이 있는 패스류만 대상. 승격된 이름(Assist/Key Pass)도 포함한다.
@@ -135,7 +135,7 @@ def main() -> int:
             action = canonical_action_name(row.action_name, extra.get("tags"))
             if action not in PASS_ACTIONS:
                 continue
-            if row.reception_xg is not None and not args.force:
+            if row.reception_xg is not None and row.packing is not None and not args.force:
                 continue
 
             item = {"clip": row.clip_id, "seq": row.seq, "action": action, "row": row}
@@ -150,19 +150,29 @@ def main() -> int:
                 skips.append(dict(item, reason="받은 지점 좌표 없음(리시버 번호·프레임 결락)"))
                 continue
 
+            actor_side = str(row.team_side or "").strip().lower() or None
+            state = extra.get("sceneState")
             end_x_adj = (105.0 - point[0]) if direction == "left" else point[0]
             value = _reception_chance_xg(
-                extra.get("sceneState"),
-                str(row.team_side or "").strip().lower() or None,
-                direction,
-                end_x_adj,
-                point[1],
-                _tags_of(extra),
+                state, actor_side, direction, end_x_adj, point[1], _tags_of(extra),
             )
             if value is None:
                 skips.append(dict(item, reason="계산 실패(좌표 비정상)"))
                 continue
+
+            # 패킹 — 시작 좌표(extra.x/y)가 있어야 계산된다. 없으면 None 으로 두고
+            # 넘어간다(가산 0 = 기존 동작). reception_xg 는 그대로 채운다.
+            packing = None
+            sx, sy = extra.get("x"), extra.get("y")
+            if sx is not None and sy is not None:
+                start_x_adj = (105.0 - float(sx)) if direction == "left" else float(sx)
+                packing = _packing_ratio(
+                    _dual_opponent_dots(state, actor_side, direction),
+                    start_x_adj, float(sy), end_x_adj, point[1],
+                )
+
             fixes.append(dict(item, value=round(value, _DECIMALS),
+                              packing=None if packing is None else round(packing, _DECIMALS),
                               point=point, direction=direction))
 
         by_clip: dict[str, list[dict[str, Any]]] = {}
@@ -176,9 +186,10 @@ def main() -> int:
             shown = clip_fixes if args.verbose else clip_fixes[:5]
             for item in shown:
                 old = "—" if item["row"].reception_xg is None else f"{item['row'].reception_xg:.4f}"
+                pk = "—" if item["packing"] is None else f"{item['packing']:.2f}"
                 print(f"  - seq {item['seq']:>3} {item['action']:<10} "
                       f"받은지점 ({item['point'][0]:>5.1f},{item['point'][1]:>5.1f}) "
-                      f"{item['direction']:<5} {old} → {item['value']:.4f}")
+                      f"{item['direction']:<5} xRC {old} → {item['value']:.4f}  패킹 {pk}")
             if not args.verbose and len(clip_fixes) > 5:
                 print(f"    … 외 {len(clip_fixes) - 5}건")
             for item in clip_skips:
@@ -188,6 +199,8 @@ def main() -> int:
                 continue
             for item in clip_fixes:
                 item["row"].reception_xg = item["value"]
+                if item["packing"] is not None:
+                    item["row"].packing = item["packing"]
             db.commit()  # 클립 단위로 끊는다 — 잠금 시간을 짧게, 중단돼도 재실행으로 이어짐
 
         print()

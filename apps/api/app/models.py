@@ -326,6 +326,8 @@ class HighlightClipAction(Base):
     # 받은 뒤의 드리블·돌파는 슈터의 몫이므로 패서 점수에 섞지 않는다.
     # 어시스트/키패스 채점이 이 값을 쓴다 (fpa._reception_chance_xg).
     reception_xg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 패킹 — 그 패스가 넘어선 상대의 비율(0~1). 어시스트 가산에 쓰인다.
+    packing: Mapped[float | None] = mapped_column(Float, nullable=True)
     epv: Mapped[float | None] = mapped_column(Float, nullable=True)
     pc: Mapped[float | None] = mapped_column(Float, nullable=True)
     # 클립 내 시간 구간(초, 클립 시작=0). 기본값은 균등 분할, 운영자가 수동 수정.

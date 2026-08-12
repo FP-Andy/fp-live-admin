@@ -87,19 +87,34 @@ ASSIST_SCORE_BANDS: dict[str, tuple[int, int]] = {
     "Assist": (74, 95),
 }
 
+# 패킹 가산의 최대 비중(밴드 폭 대비). 74~95 밴드에서 최대 약 5점.
+# 받은 지점이 똑같이 좋아도 '수비를 몇 명 넘겨 넣어줬나' 로 갈리게 하는 항이다.
+#
+# 왜 xG 델타가 아니라 패킹인가 — 실측(로컬 14건) 상관계수:
+#     corr(받은지점 xG, ΔxG)  = +0.97   ← 기본 점수와 사실상 같은 정보
+#     corr(받은지점 xG, 패킹)  = -0.24   ← 독립적인 정보원(수비 배치)
+# 어시스트는 대개 시작 지점이 골에서 멀어 시작 xG≈0 이라 ΔxG ≈ 받은 xG 가 된다.
+# 그걸 가산으로 얹으면 같은 값을 두 번 세는 셈이라 순위가 거의 안 바뀐다.
+ASSIST_PACKING_BONUS = 0.25
+
 
 def assist_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
     """어시스트 밴드 안 점수. 밴드가 없는 액션이면 None(=공통 변환을 그대로 쓴다).
 
-    밴드 안 위치는 원시값(받은 지점 기대득점)의 백분위 그대로다 — 슛처럼 별도
-    shape 을 두지 않는 이유는, 어시스트의 가치를 가르는 축이 '만들어 준 자리의 질'
-    하나뿐이기 때문이다(코스 품질 같은 두 번째 축이 없다).
+    밴드 안 위치 = 받은 지점 기대득점의 백분위 + 패킹 가산.
+    패킹(fpa._packing_ratio)은 그 패스가 넘어선 상대의 비율이라, '하프라인에서 박스로
+    한 방에 넣어준 패스' 와 '박스 옆에서 툭 내준 패스' 를 가른다 — 받은 지점이 같아도.
+    값이 없으면(프레임 없음·상대 점 부족) 가산 0 이라 기존 동작 그대로다.
     """
     band = ASSIST_SCORE_BANDS.get(str(action.get("action") or ""))
     if band is None:
         return None
     lo, hi = band
-    return int(round(lo + (hi - lo) * max(0.0, min(1.0, percentile))))
+    shape = max(0.0, min(1.0, percentile))
+    packing = action.get("packing")
+    if packing is not None:
+        shape = min(1.0, shape + ASSIST_PACKING_BONUS * max(0.0, min(1.0, float(packing))))
+    return int(round(lo + (hi - lo) * shape))
 
 
 @lru_cache(maxsize=1)
