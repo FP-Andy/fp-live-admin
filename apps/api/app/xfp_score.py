@@ -13,6 +13,10 @@
 - 수비(S5/S7)는 예외: Outcome 은 Possession 이지만 원시 기대효과가 ΔPC 가 아니다.
   태클·차단·컷아웃·클리어 = 끊은 지점의 소유권 전환가치(fpa._defense_turnover_value,
   전용 defense 곡선), 블록 = 막은 슛 xG(goal 곡선).
+- 슛(G1)도 예외: 24코드는 하나여도 **결과가 점수를 가른다**. 슛·블록 [50,78] ·
+  유효슛 [74,90] · 골 [84,100] 밴드를 쓰고, 밴드 안 위치는 골문 안 코스 품질이
+  주축이며 xG 는 그 위의 난이도 보정이다(shot_outcome_score). 코드는 전부 G1
+  그대로라 집계·앱 계약은 안 바뀐다.
 - Effect Action: 한 Event(장면)당 Outcome 별 최대 1개·전체 최대 3개, 동일 Action ID 중복 금지.
 - Action xFP: Action ID 기준 백분위 → 50~100 조각 변환(01 시트 H열).
 - 대표 Action = argmax(Action Percentile) — UI 라벨일 뿐, 다른 유효 Action 집계를 제외하지 않음.
@@ -39,6 +43,33 @@ LINK_CREDIT = 0.7
 # 막은 슛 xG). ΔPC 를 쓰면 수비는 정의상 '상대 통제 공간 → 우리 통제'로 통제 경계를
 # 넘는 행위라 ΔPC 가 늘 최대치에 붙어, 막은 위협이 0 이거나 음수인 액션까지 만점이 됐다.
 DEFENSE_CODES = frozenset({"S5", "S7"})
+
+# ── 슛 결과별 차등 채점 ──────────────────────────────────────────────────────
+# 슛·유효슛·골은 24코드가 전부 G1 이고 원시 기대효과도 xG 하나뿐이라, 골이든 빗나간
+# 슛이든 xG 가 같으면 점수가 같았다. 결과가 점수를 가르도록 결과별 밴드를 둔다.
+#
+# 상한은 '닿아야 할 목표' 가 아니라 **점근선**이다 — shape=1(최저 xG + 완벽한 코스)
+# 일 때만 꼭대기에 닿아서, 실전 값은 상한 두어 점 아래에 머문다.
+SHOT_SCORE_BANDS: dict[str, tuple[int, int]] = {
+    "Shot": (50, 78),
+    # 블록된 슛은 골문에 닿지 못해 xGOT 이 0 이다 — 코스를 잴 근거가 없어 빗나간 슛과 같은 밴드.
+    "Blocked Shot": (50, 78),
+    "Shot On Target": (74, 90),
+    "Goal": (84, 100),
+}
+
+# xGOT(main._estimate_xgot)은 코스 품질만이 아니라
+#     xgot = 0.58*xG + 0.24*코너 + 0.14*배치 + 보정
+# 이라 xG 를 절반 넘게 품고 있다. 날것으로 쓰면 'xG 0.03 + 최고 코스'(0.386)와
+# 'xG 0.60 + 최악 코스'(0.352)가 거의 같은 값이 되어 둘을 구분할 수 없다.
+# 그래서 xG 성분을 걷어내고 **순수 코스 품질**만 남긴다.
+XG_SHARE_IN_XGOT = 0.58
+PLACEMENT_SPAN = 0.38      # 0.24(코너) + 0.14(배치) = 코스 성분이 차지할 수 있는 최대 폭
+GOAL_BONUS_IN_XGOT = 0.03  # _estimate_xgot 이 골에 얹는 가산 — 밴드가 이미 골을 올리므로 뺀다
+
+# 난이도 보정 강도(λ). 0.5 이상이면 'xG 높고 코스 높음' 과 'xG 높고 코스 낮음' 의
+# 순서가 뒤집힌다 — 반드시 0.5 미만이어야 한다.
+SHOT_DIFFICULTY_WEIGHT = 0.30
 
 
 @lru_cache(maxsize=1)
@@ -121,6 +152,68 @@ def effect_basis(code: str, action: dict[str, Any]) -> str | None:
     return outcome_family(code)
 
 
+def shot_placement_quality(action: dict[str, Any]) -> float | None:
+    """골문 안 어디로 보냈나 = 순수 코스 품질(0~1). 잴 근거가 없으면 None.
+
+    xGOT 에서 xG 성분(XG_SHARE_IN_XGOT)과 골 가산을 걷어내면 `0.24*코너 + 0.14*배치`
+    만 남는다 — 이게 선수가 실제로 한 일(코스 선택)이다. xGOT 을 날것으로 쓰면
+    xG 가 절반 넘게 섞여 '어려운 자리에서 톱코너' 와 '쉬운 자리에서 키퍼 정면' 이
+    같은 값이 된다.
+
+    xGOT 미기록(None)과 빗나감(0.0)은 다르다 — 전자는 근거 없음이라 None 을 돌려
+    호출부가 중립 처리하게 하고, 후자는 코스 품질 0 이 맞다.
+    """
+    xgot = action.get("xgot")
+    if xgot is None:
+        return None
+    try:
+        raw = float(xgot)
+    except (TypeError, ValueError):
+        return None
+    if str(action.get("action") or "") == "Goal":
+        raw -= GOAL_BONUS_IN_XGOT
+    xg = float(action.get("xg") or 0)
+    return max(0.0, min(1.0, (raw - XG_SHARE_IN_XGOT * xg) / PLACEMENT_SPAN))
+
+
+def shot_outcome_shape(action: dict[str, Any]) -> float:
+    """유효슛·골의 밴드 안 위치(0~1).
+
+        shape = T + λ·Q·(1 − 2T)      T=코스 품질, Q=xG 백분위
+
+    `(1 − 2T)` 가 Q 의 **부호를 뒤집는 게 핵심**이다:
+      - 코스가 좋으면(T→1) xG 가 낮을수록 가점 — 어려운 걸 해냈다
+      - 코스가 나쁘면(T→0) xG 가 높을수록 가점 — 자리는 잡았다
+    그래서 'xG 낮고 코스 높음 > xG 높고 코스 높음 > xG 높고 코스 낮음 > xG 낮고
+    코스 낮음' 순서가 나온다. 단순 가중합으로는 이 순서를 만들 수 없다(두 요구가
+    반대 방향이라 선형 결합은 한쪽으로만 단조가 된다).
+    """
+    t = shot_placement_quality(action)
+    if t is None:
+        # xGOT 미기록 — 코스를 판단할 근거가 없다. 중립값 T=0.5 를 넣으면 식에서
+        # Q 항이 (1−2·0.5)=0 으로 사라져 밴드 중앙이 된다. 없는 근거로 점수를
+        # 올리지도 내리지도 않는다는 뜻이다.
+        return 0.5
+    q = raw_to_percentile("G1", float(action.get("xg") or 0), "goal") or 0.0
+    return max(0.0, min(1.0, t + SHOT_DIFFICULTY_WEIGHT * q * (1.0 - 2.0 * t)))
+
+
+def shot_outcome_score(action: dict[str, Any]) -> int | None:
+    """슛 결과(슛·블록·유효슛·골)별 차등 점수. 슛류가 아니거나 근거가 없으면 None."""
+    band = SHOT_SCORE_BANDS.get(str(action.get("action") or ""))
+    if band is None:
+        return None
+    lo, hi = band
+    if str(action.get("action") or "") in ("Shot", "Blocked Shot"):
+        # 골문 안 코스가 없는 슛 — 기존대로 xG 만으로 잰다(현행 로직 유지).
+        shape = raw_to_percentile("G1", float(action.get("xg") or 0), "goal")
+        if shape is None:
+            return None
+    else:
+        shape = shot_outcome_shape(action)
+    return int(round(lo + (hi - lo) * shape))
+
+
 def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None) -> float | None:
     """액션의 원시 기대효과. 유효성 미달(<=0·근거 없음)이면 None."""
     if code == "G1":
@@ -201,5 +294,10 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             if len(chosen) >= 3:
                 break
         for pa, code, fam, raw, p in chosen:
-            pa["xfpScore"] = percentile_to_score(p)
+            # 슛(G1)만 결과별 밴드로 잰다. 나머지는 정본 백분위 변환 그대로.
+            # xfpPercentile 은 어느 쪽이든 'xG·EPV·PC 의 백분위' 라는 뜻을 유지한다 —
+            # 슛에서는 이제 점수와 1:1 대응하지 않으므로 대표 액션 선정은 점수 기준이다
+            # (fineplay_fpa.analysis_from_actions 참조).
+            outcome_score = shot_outcome_score(pa) if code == "G1" else None
+            pa["xfpScore"] = outcome_score if outcome_score is not None else percentile_to_score(p)
             pa["xfpPercentile"] = round(p, 4)

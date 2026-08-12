@@ -559,11 +559,14 @@ def analysis_from_actions(
     # 유효 Effect Action 만 점수를 받는다 (임시 50점 자리값 대체).
     score_clip_actions(payload_actions)
 
-    # 대표 액션 — 명시 지정이 없으면 정본 규칙(Action Percentile argmax)으로 확정.
+    # 대표 액션 — 명시 지정이 없으면 점수 argmax, 동점이면 백분위로 가른다.
+    # 정본은 Action Percentile argmax 였고 점수가 백분위의 단조 함수였을 땐 같은 뜻이었다.
+    # 슛이 결과별 밴드로 바뀌면서 둘이 갈라진다 — 저 xG 골(98점·백분위 0.20)이
+    # 어시스트(72점·백분위 0.31)에 밀려 대표를 뺏기므로, 기준을 점수로 옮긴다.
     if not explicit_primary:
         best = max(
-            (pa for pa in payload_actions if pa.get("xfpPercentile") is not None),
-            key=lambda pa: pa["xfpPercentile"],
+            (pa for pa in payload_actions if pa.get("xfpScore") is not None),
+            key=lambda pa: (pa["xfpScore"], pa.get("xfpPercentile") or 0.0),
             default=None,
         )
         if best is not None:
