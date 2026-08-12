@@ -75,6 +75,32 @@ SHOT_DIFFICULTY_WEIGHT = 0.30
 # 일반 패스는 뒤에 슛이 있어도 그 슛과의 인과가 약해 기존 연결 슛 xG 를 그대로 쓴다.
 RECEPTION_XG_ACTIONS = frozenset({"Assist", "Key Pass"})
 
+# 어시스트 점수 밴드. 어시스트는 정의상 득점으로 이어진 패스라 **하방이 있어야 한다** —
+# 밴드가 없으면 35m 중거리 골을 만든 어시스트가 51점, 즉 '할 수 있는 가장 나쁜
+# 액션(50점)' 과 사실상 같은 자리에 떨어진다. 골이 났는데도.
+#
+# 하한 74 = 유효슛 밴드 하한과 같은 자리. '슛까지 갔다' 와 같은 바닥에서 시작한다.
+# 상한 95 = 골 밴드(84~100) 안쪽. 뛰어난 어시스트가 평범한 골을 이길 수 있지만,
+#           최고의 골(100)은 못 넘는다.
+# 키패스(슛까지만 간 패스)는 아직 밴드가 없다 — 별도 결정 대기.
+ASSIST_SCORE_BANDS: dict[str, tuple[int, int]] = {
+    "Assist": (74, 95),
+}
+
+
+def assist_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
+    """어시스트 밴드 안 점수. 밴드가 없는 액션이면 None(=공통 변환을 그대로 쓴다).
+
+    밴드 안 위치는 원시값(받은 지점 기대득점)의 백분위 그대로다 — 슛처럼 별도
+    shape 을 두지 않는 이유는, 어시스트의 가치를 가르는 축이 '만들어 준 자리의 질'
+    하나뿐이기 때문이다(코스 품질 같은 두 번째 축이 없다).
+    """
+    band = ASSIST_SCORE_BANDS.get(str(action.get("action") or ""))
+    if band is None:
+        return None
+    lo, hi = band
+    return int(round(lo + (hi - lo) * max(0.0, min(1.0, percentile))))
+
 
 @lru_cache(maxsize=1)
 def _anchors() -> dict[str, Any]:
@@ -308,10 +334,10 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             if len(chosen) >= 3:
                 break
         for pa, code, fam, raw, p in chosen:
-            # 슛(G1)만 결과별 밴드로 잰다. 나머지는 정본 백분위 변환 그대로.
-            # xfpPercentile 은 어느 쪽이든 'xG·EPV·PC 의 백분위' 라는 뜻을 유지한다 —
-            # 슛에서는 이제 점수와 1:1 대응하지 않으므로 대표 액션 선정은 점수 기준이다
+            # 결과별 밴드를 쓰는 액션 — 슛(G1)과 어시스트(G2). 나머지는 정본 변환 그대로.
+            # xfpPercentile 은 어느 쪽이든 '원시값의 백분위' 라는 뜻을 유지한다 —
+            # 밴드를 쓰면 점수와 1:1 대응하지 않으므로 대표 액션 선정은 점수 기준이다
             # (fineplay_fpa.analysis_from_actions 참조).
-            outcome_score = shot_outcome_score(pa) if code == "G1" else None
-            pa["xfpScore"] = outcome_score if outcome_score is not None else percentile_to_score(p)
+            banded = shot_outcome_score(pa) if code == "G1" else assist_outcome_score(pa, p)
+            pa["xfpScore"] = banded if banded is not None else percentile_to_score(p)
             pa["xfpPercentile"] = round(p, 4)
