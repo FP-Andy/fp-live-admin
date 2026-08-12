@@ -18,7 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .xfp_score import prefer_progression, score_clip_actions
+from .fpa import press_movement_shares
+from .xfp_score import PRESS_CODE, prefer_progression, press_share_score, score_clip_actions
 
 # FPA Action 명(fpa.ACTION_CODES 값) → FinePlay contributionRole.
 # 서버가 아는 롤: SHOOTER PASSER CROSSER DRIBBLER PENETRATOR INTERCEPTOR PRESSER DUELER
@@ -492,6 +493,7 @@ def analysis_from_actions(
     fpa_match_id: str | None = None,
     scene_index: int | None = None,
     primary_seq: int | None = None,
+    lineup: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, dict[str, Any], list[dict[str, Any]]]:
     """액션 목록 → (mainAction, teamView, involvedPlayers).
 
@@ -502,6 +504,10 @@ def analysis_from_actions(
       2) 자동: 정본 v0.1 규칙 — 유효 Effect Action 의 백분위 argmax.
       3) 폴백(채점 불가 시): ACTION_SIGNIFICANCE 중요도순, 동급이면 나중(seq 큰) 액션.
     (태깅 시 ★(SceneState.primary)는 씬 채점·롤용으로만 쓰고 클립 대표에는 안 쓴다.)
+
+    lineup 은 압박(S9) 점수 분배에만 쓴다 — 압박은 번호 없이 찍혀 액션 행에 행위자가
+    없으므로, 프레임 이동량으로 가려낸 등번호를 라인업에서 playerId 로 바꿔야 한다.
+    없으면 이미 involvedPlayers 에 있는 선수의 점수만 올린다(`_attach_press_shares`).
     """
     if not actions:
         fallback = clip_team_fallback_view(clip_team, our_side, team_labels)
@@ -671,8 +677,71 @@ def analysis_from_actions(
         player["clipScore"] = max(player_scores) if player_scores else XFP_PLACEHOLDER_SCORE
         involved.append(player)
 
+    _attach_press_shares(actions, payload_actions, involved, our_side=our_side, lineup=lineup)
+
     main_action = ACTION_LABELS_KO.get(primary_action) or (primary_action or None)
     return main_action, team_view, involved
+
+
+def _attach_press_shares(
+    actions: list[dict[str, Any]],
+    payload_actions: list[dict[str, Any]],
+    involved: list[dict[str, Any]],
+    *,
+    our_side: str,
+    lineup: list[dict[str, Any]] | None,
+) -> None:
+    """압박(S9) 점수를 프레임 이동량 비율로 압박자들에게 붙인다(제자리).
+
+    압박은 팀 단위라 번호 없이 찍혀 위 by_player 루프에 들어오지 못한다 — 그래서 채점된
+    점수가 어느 선수에게도 도달하지 않았다. 여기서 프레임의 아군 이동량으로 압박자를
+    가려내(fpa.press_movement_shares) 각자의 몫을 clipScore 에 반영한다.
+
+    clipScore 는 그 선수 액션 점수의 **max** 이므로, 다른 액션이 더 높으면 그대로 유지된다
+    — 압박이 점수를 깎는 일은 없다. 액션 행이 아예 없던 순수 압박자는 새로 만들어 넣는다
+    (그게 압박 장면의 일반적인 형태다).
+
+    라인업이 없으면(상대 팀 클립·매칭 실패) playerId 를 만들 수 없어 새 선수는 못 넣는다.
+    이미 있는 선수의 점수만 올린다 — 조용히 틀린 playerId 를 만드는 것보다 낫다.
+    """
+    by_id = {str(p["playerId"]): p for p in involved}
+    side = str(our_side or "").strip().lower()
+
+    for action, payload in zip(actions, payload_actions):
+        if payload.get("actionCode") != PRESS_CODE:
+            continue
+        team_score = payload.get("xfpScore")
+        if team_score is None:
+            continue
+        # 압박한 팀 기준으로만 나눈다 — 상대 팀 압박은 우리 라인업에 없다.
+        actor_side = str(action.get("teamSide") or "").strip().lower()
+        if side and actor_side and actor_side != side:
+            continue
+        state = _parse_scene_state((action.get("extra") or {}).get("sceneState"))
+        shares = press_movement_shares(state, actor_side or side)
+        if not shares:
+            continue
+        # 비율 자체는 페이로드에 싣지 않는다 — fineplay_plan._ACTION_ANALYSIS_KEYS 는
+        # 무료(basic) 건에서 **떼어낼** 키 목록이라, 거기 없는 새 필드는 그대로 새어 나간다.
+        # 분배 결과는 involvedPlayers.clipScore 로 이미 드러나고 그건 basic 에서 제거된다.
+        for jersey, share in shares.items():
+            entry = _find_lineup_player(lineup or [], jersey)
+            player_id = str(entry["playerId"]) if entry and entry.get("playerId") else None
+            score = press_share_score(int(team_score), share)
+            player = by_id.get(player_id) if player_id else None
+            if player is None:
+                if player_id is None:
+                    continue  # 라인업에 없는 등번호 — 새 선수를 만들 근거가 없다
+                player = {
+                    "playerId": player_id,
+                    "playerName": entry.get("name") if entry else None,
+                    "playerView": {"jerseyNumber": jersey, "actions": []},
+                    "contributionRole": ACTION_ROLE_MAP.get("Press"),
+                    "clipScore": XFP_PLACEHOLDER_SCORE,
+                }
+                involved.append(player)
+                by_id[player_id] = player
+            player["clipScore"] = max(int(player.get("clipScore") or XFP_PLACEHOLDER_SCORE), score)
 
 
 def build_clip_analysis(
@@ -697,6 +766,7 @@ def build_clip_analysis(
         our_side=our_side,
         team_labels=team_labels,
         fpa_match_id=fpa_match_id,
+        lineup=lineup,
         scene_index=scene.index,
     )
     return main_action, team_view, involved, action_rows

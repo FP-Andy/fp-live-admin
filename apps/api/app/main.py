@@ -9281,6 +9281,7 @@ def _build_clip_result_payload(
             our_side=our_side,
             team_labels=labels,
             fpa_match_id=fpa_match_id,
+            lineup=lineup,
         )
         video: dict = {}
         if c.horizontal_s3_key:

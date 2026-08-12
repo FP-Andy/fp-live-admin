@@ -49,6 +49,10 @@ LINK_CREDIT = 0.7
 # 넘는 행위라 ΔPC 가 늘 최대치에 붙어, 막은 위협이 0 이거나 음수인 액션까지 만점이 됐다.
 DEFENSE_CODES = frozenset({"S5", "S7"})
 
+# 압박 — possession 군이지만 점이 아니라 영역 평균으로 재는 유일한 코드
+# (fpa._press_region_pitch_control). 소유 밴드 제외·점수 분배가 이 코드에 걸린다.
+PRESS_CODE = "S9"
+
 # ── 슛 결과별 차등 채점 ──────────────────────────────────────────────────────
 # 슛·유효슛·골은 24코드가 전부 G1 이고 원시 기대효과도 xG 하나뿐이라, 골이든 빗나간
 # 슛이든 xG 가 같으면 점수가 같았다. 결과가 점수를 가르도록 결과별 밴드를 둔다.
@@ -143,7 +147,7 @@ POSSESSION_SCORE_BAND: tuple[int, int] = (50, 80)
 # 델타 스케일이 점 방식보다 한 자리 작은데(`scripts/pc_anchor_rebake.py` 머리말), S9
 # 전용 앵커가 아직 없어 점 곡선으로 채점되는 중이다 — 즉 이미 과소채점 상태다. 여기서
 # 상한까지 누르면 같은 오차를 두 번 깎는 셈이라, S9 전용 앵커가 들어온 뒤 다시 판단한다.
-POSSESSION_BAND_EXCLUDED_CODES = frozenset({"S9"})
+POSSESSION_BAND_EXCLUDED_CODES = frozenset({PRESS_CODE})
 
 
 def possession_outcome_score(code: str, action: dict[str, Any], percentile: float) -> int | None:
@@ -154,6 +158,32 @@ def possession_outcome_score(code: str, action: dict[str, Any], percentile: floa
         return None
     lo, hi = POSSESSION_SCORE_BAND
     return int(round(lo + (hi - lo) * max(0.0, min(1.0, percentile))))
+
+
+# ── 압박(S9) 점수 분배 ──────────────────────────────────────────────────────
+# 압박은 팀 단위 행위라 번호 없이 찍히고, 그래서 채점된 점수가 **어느 선수에게도 붙지
+# 않았다** — `fineplay_fpa.analysis_from_actions` 의 by_player 는 playerId 가 있는 행만
+# 담는데 압박 행은 등번호가 비어 있다. 설계 의도는 처음부터 '압박자=프레임에 찍힌 아군'
+# 이었고(fpa.py 의 ACTION_CODES 주석·설정 도움말) 분배 공식만 미구현이었다.
+#
+# 분배는 프레임 이동량으로 한다(fpa.press_movement_shares). 이동량이 곧 '누가 조였나' 다.
+XFP_BASE_SCORE = 50  # percentile_to_score 의 바닥 = fineplay_fpa.XFP_PLACEHOLDER_SCORE
+
+
+def press_share_score(team_score: int, share: float) -> int:
+    """압박 팀 점수를 개인 기여 비율로 깎은 점수. share=1 이면 팀 점수 그대로.
+
+        점수 = 50 + (팀 점수 − 50) × 비율
+
+    50 을 축으로 깎는다 — 팀 점수를 그대로 곱하면(예: 96×0.5=48) 기본점수 50 아래로
+    내려가 '아무것도 안 한 것보다 나쁜 압박' 이 되어버린다. 50 은 '유효 액션 없음' 의
+    자리이므로 기여가 0 에 가까운 선수가 수렴할 곳이 정확히 거기다.
+
+    팀 점수 자체(백분위 곡선·앵커)는 건드리지 않는다 — S9 전용 앵커가 없어 점 곡선으로
+    채점되는 문제는 별건이고, 분배는 그 위에 얹는 층이다.
+    """
+    s = max(0.0, min(1.0, float(share)))
+    return int(round(XFP_BASE_SCORE + (team_score - XFP_BASE_SCORE) * s))
 
 
 def pass_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
