@@ -536,6 +536,91 @@ def _dual_opponent_dots(
     return out
 
 
+# 압박(pr) 점수 분배 — 프레임 이동량으로 '누가 실제로 조였나' 를 가른다.
+#
+# 이 값보다 덜 움직인 점은 압박자로 세지 않는다. 좌표 태깅 오차가 실측 σ≈1.5m 수준이라
+# 그 아래 움직임은 조인 게 아니라 잡음이다. 그리고 이 문턱이 '성실하게 많이 찍을수록
+# 점수 받는 선수가 늘어나는' 함정을 막는다 — 프레임에 세워만 둔 선수는 0 이 된다.
+PRESS_MIN_MOVE_M = 2.0
+
+
+def press_movement_shares(
+    dual_state: dict[str, Any] | None,
+    actor_team: str | None = None,
+) -> dict[str, float]:
+    """압박자별 이동량 비율 `{등번호: 0~1}` — 가장 많이 움직인 선수가 1.0.
+
+    압박(pr)은 팀 단위 행위라 번호 없이 입력되어(fpa.py 의 ACTION_CODES 주석) 액션 행에
+    행위자가 없다. 그래서 채점된 S9 점수가 어느 선수에게도 붙지 못했다. 프레임의 아군 점이
+    before→after 로 얼마나 움직였는지로 압박자를 가려내 그 점수를 나눠 붙인다.
+
+    **합이 아니라 최대값으로 정규화한다.** 비율(share = d_i / Σd)로 나누면 세 명이 함께
+    조인 잘 된 압박이 각자 1/3 을 받아 혼자 쫓아간 압박보다 개인 점수가 낮아진다 —
+    조직적 압박이 더 좋은 축구인데 반대로 채점된다. 최대값 정규화는 '가장 많이 조인 선수가
+    팀 성과를 온전히 받고, 덜 움직인 선수는 비례해 깎인다' 가 된다.
+
+    번호로 before↔after 를 짝짓는다. 좌표로 짝지으면 서로 스쳐 지난 두 선수를 뒤바꾼다
+    (씬모션 화살표 미러 버그와 같은 함정). 번호가 없는 점(상대·GK 미표기 등)은 짝을 못
+    지으므로 제외된다.
+
+    키 이름이 경로마다 다르다 — 태깅 시점 dual_state 는 "before"/"after", 저장된
+    extra.sceneState 는 "beforeDots"/"afterDots" 다. 둘 다 받는다(`_dual_opponent_dots`
+    와 같은 이유 — 한쪽만 보면 재전송 경로에서 프레임을 통째로 놓친다).
+
+    공격방향 정규화는 하지 않는다 — 이동 거리는 좌우 반전에 불변이다.
+    """
+    state = dual_state or {}
+
+    def ally_points(live_key: str, stored_key: str) -> dict[str, tuple[float, float]]:
+        points = state.get(live_key)
+        if not isinstance(points, list):
+            points = state.get(stored_key)
+        if not isinstance(points, list):
+            return {}
+        side = str(actor_team or "").strip().lower()
+        out: dict[str, tuple[float, float]] = {}
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            number = str(point.get("number") or "").strip()
+            if not number:
+                continue
+            x_value = _finite_float(point.get("meter_x", point.get("x")))
+            y_value = _finite_float(point.get("meter_y", point.get("y")))
+            if x_value is None or y_value is None:
+                continue
+            dot_side = _point_team_side(point, actor_team)
+            # 행위자 팀만. 사이드가 안 잡히면(구버전 로그) team=="ally" 로 판단한다.
+            if dot_side:
+                if side and dot_side != side:
+                    continue
+            elif str(point.get("team") or "").strip().lower() != "ally":
+                continue
+            out[number] = (x_value, y_value)
+        return out
+
+    before = ally_points("before", "beforeDots")
+    after = ally_points("after", "afterDots")
+    if not before or not after:
+        return {}
+
+    moves: dict[str, float] = {}
+    for number, start in before.items():
+        end = after.get(number)
+        if end is None:
+            continue
+        distance = math.hypot(end[0] - start[0], end[1] - start[1])
+        if distance >= PRESS_MIN_MOVE_M:
+            moves[number] = distance
+    if not moves:
+        return {}
+
+    peak = max(moves.values())
+    if peak <= 0:
+        return {}
+    return {number: round(distance / peak, 4) for number, distance in moves.items()}
+
+
 def _packing_ratio(
     opponents: list[dict[str, Any]],
     start_x_adj: Any,

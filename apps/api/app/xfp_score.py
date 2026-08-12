@@ -17,6 +17,13 @@
   유효슛 [74,90] · 골 [84,100] 밴드를 쓰고, 밴드 안 위치는 골문 안 코스 품질이
   주축이며 xG 는 그 위의 난이도 보정이다(shot_outcome_score). 코드는 전부 G1
   그대로라 집계·앱 계약은 안 바뀐다.
+- 소유(ΔPC로 재는 S1~S4·S11/S12)도 예외: 측정이 분석관 태깅에 가장 크게 흔들리는
+  축이라 상한을 내려 [50,80]으로 압축한다(POSSESSION_SCORE_BAND). 편차가 몇 '점'으로
+  보이는지는 곡선 기울기에 비례하므로, 범위 압축이 그 편차를 직접 줄인다. 하한 50은
+  '유효 액션 없음'의 자리라 건드리지 않는다.
+- 압박(S9)도 예외: 같은 possession 군이지만 전용 밴드 [65,90](PRESS_SCORE_BAND). 태그
+  자체가 '압박이 걸렸다'는 판정이라 하한이 서고, 팀 점수는 프레임 이동량 비율로 압박자
+  개인에게 나뉜다(press_share_score · fpa.press_movement_shares).
 - Effect Action: 한 Event(장면)당 Outcome 별 최대 1개·전체 최대 3개, 동일 Action ID 중복 금지.
 - Action xFP: Action ID 기준 백분위 → 50~100 조각 변환(01 시트 H열).
 - 대표 Action = argmax(Action Percentile) — UI 라벨일 뿐, 다른 유효 Action 집계를 제외하지 않음.
@@ -39,10 +46,23 @@ LINK_CREDIT = 0.7
 
 # 수비 액션(태클·차단·컷아웃·클리어·블록)의 24코드. 자기 진영 S5 / 상대 진영 S7.
 # Outcome 군은 Possession 이지만 **ΔPC 로 채점하지 않는다** — `fpa.py` 가 이미 이들을
-# '막아낸 위협'으로 재고 있다(DEFENSE_ARROW_CODES=상대 공격방향 ΔEPV, SHOT_BLOCK_CODES=
-# 막은 슛 xG). ΔPC 를 쓰면 수비는 정의상 '상대 통제 공간 → 우리 통제'로 통제 경계를
-# 넘는 행위라 ΔPC 가 늘 최대치에 붙어, 막은 위협이 0 이거나 음수인 액션까지 만점이 됐다.
+# 다른 값으로 재고 있다:
+#   DEFENSE_ARROW_CODES(태클·인터셉트·컷아웃·클리어) = 끊은 지점의 **소유권 전환가치**
+#     (`fpa._defense_turnover_value` = 0.65×상대기준 EPV + 0.35×우리기준 EPV). EPV 와
+#     단위는 같아도 두 지점의 차가 아니라 한 지점의 레벨이라 스케일이 다르다 → defense 곡선.
+#   SHOT_BLOCK_CODES(블록) = 막은 슛 xG × BLOCK_CREDIT → goal 곡선.
+# ΔPC 를 쓰면 수비는 정의상 '상대 통제 공간 → 우리 통제'로 통제 경계를 넘는 행위라
+# ΔPC 가 늘 최대치에 붙어, 막은 위협이 0 이거나 음수인 액션까지 만점이 됐다.
+#
+# 전환가치는 '상대 공격방향 ΔEPV'(= 상대가 그 패스로 늘린 양)를 대체한 것이다. 옛 방식은
+# 상대 진영이 상대에게도 빌드업 구간이라 0 에 가까워, 가장 가치 있는 하이프레스 차단이
+# 최하점을 받았다(0.0015 → 53점). 기존 행은 옛 값이 남아 있어 백필이 필요하다
+# (`scripts/backfill_defense_epv.py`) — 어시스트와 달리 원시값 자체가 바뀌었기 때문이다.
 DEFENSE_CODES = frozenset({"S5", "S7"})
+
+# 압박 — possession 군이지만 점이 아니라 영역 평균으로 재는 유일한 코드
+# (fpa._press_region_pitch_control). 전용 밴드(PRESS_SCORE_BAND)와 점수 분배가 여기 걸린다.
+PRESS_CODE = "S9"
 
 # ── 슛 결과별 차등 채점 ──────────────────────────────────────────────────────
 # 슛·유효슛·골은 24코드가 전부 G1 이고 원시 기대효과도 xG 하나뿐이라, 골이든 빗나간
@@ -107,6 +127,91 @@ PASS_SCORE_BANDS: dict[str, tuple[int, int]] = {
 # 그걸 가산으로 얹으면 같은 값을 두 번 세는 셈이라 순위가 거의 안 바뀐다.
 PASS_PACKING_BONUS = 0.25
 
+# ── 소유(ΔPC) 축의 점수 범위 압축 ────────────────────────────────────────────
+# 소유는 **측정 자체가 분석관 태깅에 크게 흔들리는 축**이다. ΔPC 는 프레임에 찍힌
+# 전원에 대한 비율식(fpa._pitch_control_at)이라, 경기적으로 무관한 아군을 한둘 더
+# 찍었는지로 값이 움직인다. 같은 장면을 40명이 각자 태깅하는 시뮬레이션(좌표 오차
+# σ=1.5m, 상대 1~5명 — `fpa.py` 가 기록한 실측 범위)에서:
+#
+#     점수 표준편차 7.8점 · 최대−최소 폭 30.7점
+#
+# 편차가 몇 '점' 으로 나타나는지는 **곡선 기울기에 비례**하므로, 범위를 좁히면 그만큼
+# 직접 줄어든다 — 같은 태깅 편차에서 50~100 은 7.7점, 50~80 은 5.4점(−33%).
+#
+# 그리고 소유가 100 까지 갈 이유가 없다. 슛 밴드를 결과별로 나눈 것과 같은 논리다 —
+# 볼을 지킨 행위가 골과 같은 상한을 가질 근거가 없다.
+#
+# **하한은 50 그대로 둔다 — 좁히는 건 상한으로만 한다.** 50 은 `fineplay_fpa`의
+# XFP_PLACEHOLDER_SCORE(='유효 액션 없음')와 같은 자리다. 하한을 55 로 올리면 가치가
+# 0 에 가까운 소유 태그 하나가 '아무것도 안 찍음'(50)을 이기고, clipScore 는 그 선수
+# 액션 점수의 **max** 이며 경기 점수는 그 평균이라(fineplay_fpa.py:671) 그 +5 가 그대로
+# 선수 점수로 흘러간다 — 태그를 찍을수록 유리한 구조가 된다. 어시스트(74)·골(84)의
+# 하한이 50 보다 높은 건 '슛·골이 실제로 났다' 는 사실이 근거인데, 소유엔 그게 없다.
+# 폭 30 은 상한만 내려도 얻는다 — 50~80 의 편차 감소는 55~85 와 사실상 같다(5.4 vs 5.3점).
+#
+# 적용 경계는 **effect_basis 가 possession 인 코드만** — 즉 실제로 ΔPC 로 재는
+# S1/S2(소유 패스)·S3/S4(소유 드리블)·S11/S12(듀얼)다. 수비(S5/S7)는 Outcome 이
+# Possession 이어도 ΔPC 로 재지 않으므로(DEFENSE_CODES 주석 참조) 건드리지 않고,
+# 압박(S9)은 같은 군이어도 성격이 달라 전용 밴드를 쓴다(PRESS_SCORE_BAND).
+POSSESSION_SCORE_BAND: tuple[int, int] = (50, 80)
+
+# 압박(S9)은 같은 possession 군이어도 **전용 밴드**를 쓴다.
+#
+# 하한 65 — 압박은 태그 자체가 판정이다. 분석관이 `pr` 을 찍었다는 건 '압박이 걸렸다' 는
+# 뜻이라(실패한 압박은 애초에 안 찍는다), 어시스트(74)·골(84) 하한과 같은 근거가 선다.
+# 소유 패스와 결정적으로 다른 지점이다 — 소유는 ΔPC>0 이기만 하면 붙어서 '가치 0 에 가까운
+# 태그' 가 존재하지만, 압박은 그런 게 없다.
+#
+# 상한 90 — 골(100)·어시스트(95)보다 낮게 둔다. 압박은 볼을 되찾을 조건을 만든 행위지
+# 되찾은 것 자체가 아니다(그건 태클·인터셉트가 따로 받는다).
+#
+# 부수 효과로 **앵커 오차가 완화된다.** 압박만 점이 아니라 영역 평균으로 재서 델타
+# 스케일이 다른데(`scripts/pc_anchor_rebake.py` 머리말) S9 전용 앵커가 아직 없어 점
+# 곡선으로 채점되는 중이다. 폭 25 로 좁히면 그 곡선 오차가 점수에 미치는 폭도 그만큼 준다.
+# 전용 앵커가 들어오면 밴드는 그대로 두고 곡선만 갈아끼우면 된다.
+PRESS_SCORE_BAND: tuple[int, int] = (65, 90)
+
+
+def possession_outcome_score(code: str, action: dict[str, Any], percentile: float) -> int | None:
+    """ΔPC 로 재는 액션의 밴드 안 점수. 그 축이 아니면 None(=공통 변환 그대로)."""
+    if effect_basis(code, action) != "possession":
+        return None
+    lo, hi = PRESS_SCORE_BAND if code == PRESS_CODE else POSSESSION_SCORE_BAND
+    return int(round(lo + (hi - lo) * max(0.0, min(1.0, percentile))))
+
+
+# ── 압박(S9) 점수 분배 ──────────────────────────────────────────────────────
+# 압박은 팀 단위 행위라 번호 없이 찍히고, 그래서 채점된 점수가 **어느 선수에게도 붙지
+# 않았다** — `fineplay_fpa.analysis_from_actions` 의 by_player 는 playerId 가 있는 행만
+# 담는데 압박 행은 등번호가 비어 있다. 설계 의도는 처음부터 '압박자=프레임에 찍힌 아군'
+# 이었고(fpa.py 의 ACTION_CODES 주석·설정 도움말) 분배 공식만 미구현이었다.
+#
+# 분배는 프레임 이동량으로 한다(fpa.press_movement_shares). 이동량이 곧 '누가 조였나' 다.
+XFP_BASE_SCORE = 50  # percentile_to_score 의 바닥 = fineplay_fpa.XFP_PLACEHOLDER_SCORE
+
+
+def press_share_score(team_score: int, share: float) -> int:
+    """압박 팀 점수를 개인 기여 비율로 깎은 점수. share=1 이면 팀 점수 그대로.
+
+        점수 = 50 + (팀 점수 − 50) × 비율
+
+    50 을 축으로 깎는다 — 팀 점수를 그대로 곱하면(예: 90×0.5=45) 기본점수 50 아래로
+    내려가 '아무것도 안 한 것보다 나쁜 압박' 이 되어버린다. 50 은 '유효 액션 없음' 의
+    자리이므로 기여가 0 에 가까운 선수가 수렴할 곳이 정확히 거기다.
+
+    PRESS_SCORE_BAND 하한 65 와의 관계 — **하한은 팀 행위에 붙지 개인에 붙지 않는다.**
+    '압박이 걸렸다' 는 판정은 장면 하나에 대한 것이고, 그 안에서 누가 얼마나 조였는지는
+    이동량이 가른다. 그래서 가장 많이 조인 선수(비율 1.0)가 팀 점수를 온전히 받아 하한
+    65 를 보장받고, 곁다리로 따라간 선수는 그 아래로 내려간다. 개인마다 65 를 깔면
+    프레임에 많이 찍을수록 65 짜리 선수가 늘어나는 구조가 된다(패킹에서 절대 인원수를
+    버린 것과 같은 이유). 애초에 조이지 않은 선수는 PRESS_MIN_MOVE_M 문턱에서 빠진다.
+
+    팀 점수 자체(백분위 곡선·앵커)는 건드리지 않는다 — S9 전용 앵커가 없어 점 곡선으로
+    채점되는 문제는 별건이고, 분배는 그 위에 얹는 층이다.
+    """
+    s = max(0.0, min(1.0, float(share)))
+    return int(round(XFP_BASE_SCORE + (team_score - XFP_BASE_SCORE) * s))
+
 
 def pass_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
     """어시스트·키패스 밴드 안 점수. 밴드가 없는 액션이면 None(=공통 변환 그대로).
@@ -125,6 +230,71 @@ def pass_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
     if packing is not None:
         shape = min(1.0, shape + PASS_PACKING_BONUS * max(0.0, min(1.0, float(packing))))
     return int(round(lo + (hi - lo) * shape))
+
+
+# ── 경로 판정: 전진/소유 중 어느 축으로 채점할지 ─────────────────────────────
+# 패스·드리블은 ΔEPV(전진)와 ΔPC(소유)를 **둘 다** 갖는다. 그런데 24코드는 액션당
+# 하나(P* 아니면 S*)이고 코드가 곧 채점 재료를 정하므로, 하나를 고르고 나머지를 버려야
+# 한다. 그 선택을 `axis_scores` → `prefer_progression` 이 한다.
+#
+# 왜 원값 비교(`epv >= pc`)를 버렸나
+# --------------------------------
+# 두 값은 단위가 다르다. 같은 백분위를 만드는 원값이 일관되게 5배 차이난다:
+#
+#     백분위 0.25 → ΔEPV 0.0072 · ΔPC 0.0375   (5.2배)
+#     백분위 0.75 → ΔEPV 0.0275 · ΔPC 0.1500   (5.5배)
+#
+# 그런데 ΔEPV 는 전진 앵커 최상단이 0.075 언저리라 그 위로 올라갈 수 없다. ΔPC 0.075
+# 는 소유 곡선에서 백분위 0.47 — 겨우 중간이다. 즉 **ΔPC 가 중앙값만 넘어서면 전진이
+# 아무리 커도 `epv >= pc` 가 거짓이 되어 전진 경로가 후보에서 사라졌다.** 큰 전진 패스가
+# 소유로 빠져 94점 대신 60점을 받았다(최대 −34점).
+#
+# 왜 백분위 비교가 아니라 점수 비교인가
+# ----------------------------------
+# 백분위끼리 비교하면 단위는 맞지만 **경계에서 점수가 불연속으로 뛴다** — 두 축의 밴드가
+# 다르므로(전진 50~100 · 소유 50~80) 같은 백분위에서 최대 18점 차이가 난다. 그리고 ΔPC
+# 는 태깅에 크게 흔들리는 값이라(찍은 인원·좌표) 경계를 자주 넘나든다. 합성 실험에서
+# 백분위 비교는 경로 플립률이 3.7% → 20.8% 로 뛰었다.
+#
+# 최종 점수의 max 를 쓰면 두 연속함수의 max 라 **경계에서 연속**이다. 플립이 나도 점수가
+# 안 튄다. 그리고 max 는 대개 더 안정적인 전진 축을 따라가게 되므로(ΔEPV 는 볼 좌표
+# 4개만 쓰고 다른 선수 위치와 무관하다 — fpa._epv_delta), ΔPC 의 변동이 최종 점수에
+# 거의 닿지 못한다. 같은 실험에서 분석관 간 점수 표준편차가 5.7점 → 3.0점(−47%)이었다.
+#
+# 소유 상한(POSSESSION_SCORE_BAND)은 그대로 유효하다 — 전진이 없는 액션(ΔEPV ≤ 0,
+# 후진·횡패스)은 전진 점수가 아예 없어 소유 점수가 그대로 최종값이 된다.
+def axis_scores(
+    action: dict[str, Any], *, progression_code: str, possession_code: str
+) -> tuple[int | None, int | None]:
+    """(전진 점수, 소유 점수). 그 축의 원시값이 없거나 0 이하면 그쪽은 None."""
+    prog: int | None = None
+    epv = float(action.get("epv") or 0)
+    if epv > 0:
+        p = raw_to_percentile(progression_code, epv, "progression")
+        if p is not None:
+            prog = percentile_to_score(p)
+
+    poss: int | None = None
+    pc = float(action.get("pc") or 0)
+    if pc > 0:
+        p = raw_to_percentile(possession_code, pc, "possession")
+        if p is not None:
+            banded = possession_outcome_score(possession_code, action, p)
+            poss = banded if banded is not None else percentile_to_score(p)
+
+    return prog, poss
+
+
+def prefer_progression(action: dict[str, Any], *, progression_code: str, possession_code: str) -> bool:
+    """전진 축으로 채점해야 하나 — 두 축의 최종 점수를 비교해 높은 쪽.
+
+    둘 다 없으면 False(소유 코드로 떨어지고, 원시값이 없어 점수는 붙지 않는다) —
+    원값 비교 시절과 같은 동작이다.
+    """
+    prog, poss = axis_scores(action, progression_code=progression_code, possession_code=possession_code)
+    if prog is None:
+        return False
+    return poss is None or prog >= poss
 
 
 @lru_cache(maxsize=1)
@@ -363,6 +533,12 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             # xfpPercentile 은 어느 쪽이든 '원시값의 백분위' 라는 뜻을 유지한다 —
             # 밴드를 쓰면 점수와 1:1 대응하지 않으므로 대표 액션 선정은 점수 기준이다
             # (fineplay_fpa.analysis_from_actions 참조).
-            banded = shot_outcome_score(pa) if code == "G1" else pass_outcome_score(pa, p)
+            if code == "G1":
+                banded = shot_outcome_score(pa)
+            else:
+                # 어시스트·키패스 밴드가 먼저다 — 이들은 G2(goal 군)라 소유 압축과 겹치지 않는다.
+                banded = pass_outcome_score(pa, p)
+                if banded is None:
+                    banded = possession_outcome_score(code, pa, p)
             pa["xfpScore"] = banded if banded is not None else percentile_to_score(p)
             pa["xfpPercentile"] = round(p, 4)
