@@ -75,16 +75,26 @@ SHOT_DIFFICULTY_WEIGHT = 0.30
 # 일반 패스는 뒤에 슛이 있어도 그 슛과의 인과가 약해 기존 연결 슛 xG 를 그대로 쓴다.
 RECEPTION_XG_ACTIONS = frozenset({"Assist", "Key Pass"})
 
-# 어시스트 점수 밴드. 어시스트는 정의상 득점으로 이어진 패스라 **하방이 있어야 한다** —
-# 밴드가 없으면 35m 중거리 골을 만든 어시스트가 51점, 즉 '할 수 있는 가장 나쁜
-# 액션(50점)' 과 사실상 같은 자리에 떨어진다. 골이 났는데도.
+# 찬스 창출 패스의 점수 밴드. 이들은 정의상 슛·득점으로 이어진 패스라 **하방이
+# 있어야 한다** — 밴드가 없으면 35m 중거리 골을 만든 어시스트가 51점, 즉 '할 수
+# 있는 가장 나쁜 액션(50점)' 과 사실상 같은 자리에 떨어진다. 골이 났는데도.
 #
-# 하한 74 = 유효슛 밴드 하한과 같은 자리. '슛까지 갔다' 와 같은 바닥에서 시작한다.
-# 상한 95 = 골 밴드(84~100) 안쪽. 뛰어난 어시스트가 평범한 골을 이길 수 있지만,
-#           최고의 골(100)은 못 넘는다.
-# 키패스(슛까지만 간 패스)는 아직 밴드가 없다 — 별도 결정 대기.
-ASSIST_SCORE_BANDS: dict[str, tuple[int, int]] = {
+# 어시스트 하한 74 = 유효슛 밴드 하한과 같은 자리. '슛까지 갔다' 와 같은 바닥에서
+# 시작한다. 상한 95 는 골 밴드(84~100) 안쪽이라, 뛰어난 어시스트가 평범한 골을
+# 이길 수는 있어도 최고의 골(100)은 못 넘는다.
+#
+# 밴드는 **액션 이름**으로 붙는다 — 즉 분석관이 태그를 단 것만 받는다.
+# `later_shot`(클립 뒤쪽에 슛이 있음)으로 자동 승격된 패스는 이름이 "Pass" 라
+# 밴드가 없다. 의도한 것이다: later_shot 은 '사이에 드리블·패스가 몇 개 껴 있어도
+# 뒤에 슛만 있으면 참' 이라 인과가 약하고, 태그는 분석관이 '이게 그 패스다' 라고
+# 판단한 정보다. 약한 신호에까지 하방을 깔면 먼 패스가 과대평가된다.
+PASS_SCORE_BANDS: dict[str, tuple[int, int]] = {
     "Assist": (74, 95),
+    # 키패스는 어시스트와 **패서가 한 일이 같다** — 차이는 받은 사람이 넣었느냐뿐이고
+    # 그건 슈터의 몫이다(연결 슛 xG 계승을 폐기한 것과 같은 논리). 그래서 격차를
+    # 슛 밴드의 결과 격차(유효슛↔골 10점)보다 훨씬 작게 둔다. 골이 났다는 사실에
+    # 소폭 가중만 주는 셈이다.
+    "Key Pass": (70, 92),
 }
 
 # 패킹 가산의 최대 비중(밴드 폭 대비). 74~95 밴드에서 최대 약 5점.
@@ -95,25 +105,25 @@ ASSIST_SCORE_BANDS: dict[str, tuple[int, int]] = {
 #     corr(받은지점 xG, 패킹)  = -0.24   ← 독립적인 정보원(수비 배치)
 # 어시스트는 대개 시작 지점이 골에서 멀어 시작 xG≈0 이라 ΔxG ≈ 받은 xG 가 된다.
 # 그걸 가산으로 얹으면 같은 값을 두 번 세는 셈이라 순위가 거의 안 바뀐다.
-ASSIST_PACKING_BONUS = 0.25
+PASS_PACKING_BONUS = 0.25
 
 
-def assist_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
-    """어시스트 밴드 안 점수. 밴드가 없는 액션이면 None(=공통 변환을 그대로 쓴다).
+def pass_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
+    """어시스트·키패스 밴드 안 점수. 밴드가 없는 액션이면 None(=공통 변환 그대로).
 
     밴드 안 위치 = 받은 지점 기대득점의 백분위 + 패킹 가산.
     패킹(fpa._packing_ratio)은 그 패스가 넘어선 상대의 비율이라, '하프라인에서 박스로
     한 방에 넣어준 패스' 와 '박스 옆에서 툭 내준 패스' 를 가른다 — 받은 지점이 같아도.
     값이 없으면(프레임 없음·상대 점 부족) 가산 0 이라 기존 동작 그대로다.
     """
-    band = ASSIST_SCORE_BANDS.get(str(action.get("action") or ""))
+    band = PASS_SCORE_BANDS.get(str(action.get("action") or ""))
     if band is None:
         return None
     lo, hi = band
     shape = max(0.0, min(1.0, percentile))
     packing = action.get("packing")
     if packing is not None:
-        shape = min(1.0, shape + ASSIST_PACKING_BONUS * max(0.0, min(1.0, float(packing))))
+        shape = min(1.0, shape + PASS_PACKING_BONUS * max(0.0, min(1.0, float(packing))))
     return int(round(lo + (hi - lo) * shape))
 
 
@@ -353,6 +363,6 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             # xfpPercentile 은 어느 쪽이든 '원시값의 백분위' 라는 뜻을 유지한다 —
             # 밴드를 쓰면 점수와 1:1 대응하지 않으므로 대표 액션 선정은 점수 기준이다
             # (fineplay_fpa.analysis_from_actions 참조).
-            banded = shot_outcome_score(pa) if code == "G1" else assist_outcome_score(pa, p)
+            banded = shot_outcome_score(pa) if code == "G1" else pass_outcome_score(pa, p)
             pa["xfpScore"] = banded if banded is not None else percentile_to_score(p)
             pa["xfpPercentile"] = round(p, 4)
