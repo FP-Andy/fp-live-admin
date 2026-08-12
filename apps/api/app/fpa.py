@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .fcm_cards import render_reference_heatmap, render_reference_passmap
 from .xg import estimate_xg as shared_estimate_xg
+from .xg_cone import estimate_xg_with_cone
 
 FIELD_W = 105
 FIELD_H = 68
@@ -400,7 +401,7 @@ def _decode_dual_pitch_state(value: Any) -> dict[str, Any] | None:
 
 def _format_metrics(metrics: dict[str, Any]) -> str:
     parts: list[str] = []
-    for key in ["xG", "xGOT", "EPV", "PC"]:
+    for key in ["xG", "xGOT", "xRC", "EPV", "PC"]:
         value = metrics.get(key)
         if value in (None, ""):
             continue
@@ -422,7 +423,7 @@ def _parse_metrics(value: Any) -> dict[str, str]:
         key, raw_value = raw_part.split("=", 1)
         key = key.strip()
         raw_value = raw_value.strip()
-        if key in {"xG", "xGOT", "EPV", "PC"} and raw_value:
+        if key in {"xG", "xGOT", "xRC", "EPV", "PC"} and raw_value:
             metrics[key] = raw_value
     return metrics
 
@@ -480,6 +481,61 @@ def _epv_delta(start_x: Any, start_y: Any, end_x: Any, end_y: Any) -> float | No
     if before is None or after is None:
         return None
     return round(after - before, 4)
+
+
+# 받는 사람이 있는 패스류 코드 — 이 액션만 '받은 지점 기대득점(xRC)' 을 잰다.
+PASS_CHANCE_CODES = {"z", "zz", "s", "ss", "c", "cc"}
+
+
+def _reception_chance_xg(
+    dual_state: dict[str, Any] | None,
+    actor_team: str | None,
+    direction: str,
+    end_x_adj: Any,
+    end_y: Any,
+    tags: set[str] | list[str] | None = None,
+) -> float | None:
+    """패스를 **받은 지점**의 기대득점(수비콘 반영). 어시스트 채점의 원시값.
+
+    왜 실제 슛 지점의 xG 를 안 쓰나
+    ------------------------------
+    어시스트는 '마지막 패스' 일 뿐, 받은 자리에서 곧바로 때린 골만 어시스트가 되는
+    게 아니다. 받은 뒤 드리블로 수비를 제치고 각을 만들어 넣었다면 **그건 슈터의
+    온전한 액션**이다. 그런데 연결 슛 xG 를 계승하면 그 드리블의 결과가 패서 점수를
+    올리거나 내린다. 패서가 한 일은 '동료를 이 자리에 세워준 것' 까지다.
+
+    그래서 슛 지점이 아니라 **받은 지점** 의 기대득점을 쓴다. 델타(시작점 대비 증가분)
+    가 아니라 레벨인 이유는, 패서가 골에 더 가까웠던 마이너스 패스·컷백이 음수로
+    떨어져 점수가 통째로 사라지기 때문이다(실측 fpc-1-004 에서 확인).
+
+    수비콘을 반영해 '받는 순간 그 자리가 얼마나 열려 있었나' 까지 본다 — 같은 좌표라도
+    수비가 앞을 막고 있으면 만들어 준 기회의 질이 낮다. 프레임이 없거나 상대 점이
+    없으면 수비콘은 0 이 되어 위치만으로 계산된다(= xg.estimate_xg 와 같은 값).
+
+    좌표는 이미 공격방향 정규화된 값(*_adj). 프레임의 상대 점도 같은 규칙으로 뒤집는다.
+    """
+    ex = _finite_float(end_x_adj)
+    ey = _finite_float(end_y)
+    if ex is None or ey is None:
+        return None
+
+    home_pts, away_pts = _dual_points_by_side((dual_state or {}).get("before"), actor_team)
+    side = str(actor_team or "").strip().lower()
+    opponents_raw = away_pts if side == "home" else home_pts if side == "away" else []
+    defenders = [
+        {"x": (FIELD_W - px) if direction == "left" else px, "y": py}
+        for px, py in opponents_raw
+    ]
+
+    tag_set = set(tags or ())
+    try:
+        received = estimate_xg_with_cone(
+            "HOME", "L2R", ex, ey,
+            "Header" in tag_set, "Weak Foot" in tag_set, defenders,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return round(float(received["xg_open"]), 4)
 
 
 # 수비 전환가치에서 '상대가 잃은 위협' 쪽에 주는 비중. 나머지가 '우리가 얻은 위치'.
@@ -1526,6 +1582,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
                 metrics = _parse_metrics(part)
                 log_dict["xG"] = metrics.get("xG", "")
                 log_dict["xGOT"] = metrics.get("xGOT", "")
+                log_dict["xRC"] = metrics.get("xRC", "")
                 log_dict["EPV"] = metrics.get("EPV", "")
                 log_dict["PC"] = metrics.get("PC", "")
             elif part.startswith("GoalMouth: "):
@@ -1593,6 +1650,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "AfterNumberedPointCount",
         "xG",
         "xGOT",
+        "xRC",
         "GoalMouth",
         "GoalMouthX",
         "GoalMouthY",
@@ -1792,6 +1850,15 @@ def generate_log_entry(
             epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
         if epv_value is not None:
             metrics["EPV"] = epv_value
+        if action_code_raw in PASS_CHANCE_CODES:
+            # 받는 사람이 있는 패스류만 — 받은 지점의 기대득점(수비콘 반영).
+            # 어시스트 채점이 이 값을 쓰고, 일반 패스는 기록·검수용으로만 남는다.
+            reception_xg = _reception_chance_xg(
+                compact_dual_state, team, direction,
+                metric_end_x_adj, metric_end_y, deduped_tags,
+            )
+            if reception_xg is not None:
+                metrics["xRC"] = reception_xg
         if action_code_raw == "pr":
             # 압박은 점 대 점이 아니라 프레임 선수 영역(convex hull+마진) 평균 지배율의 변화로 잰다.
             press_pc = _press_region_pitch_control(compact_dual_state)
@@ -1831,6 +1898,8 @@ def generate_log_entry(
             "DualState": dual_state_text,
             "xG": _metric_text_value(metrics.get("xG")),
             "xGOT": "",
+            # 슛 기회 창출량 — 패스류만 채워진다(PASS_CHANCE_CODES).
+            "xRC": _metric_text_value(metrics.get("xRC")),
             "EPV": _metric_text_value(metrics.get("EPV")),
             "PC": _metric_text_value(metrics.get("PC")),
         },
@@ -1905,6 +1974,7 @@ def build_canonical_events_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
         "EndY_adj",
         "xG",
         "xGOT",
+        "xRC",
         "EPV",
         "PC",
     ]
@@ -2865,6 +2935,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 goal_mouth = f"{gm_x},{gm_y},{direction or 'right'}"
         xg = clean_value(row.get("xG", ""))
         xgot = clean_value(row.get("xGOT", ""))
+        xrc = clean_value(row.get("xRC", ""))
         epv = clean_value(row.get("EPV", ""))
         pc = clean_value(row.get("PC", ""))
         # 장면 경계는 이 세 컬럼에만 있다. 떨어뜨리면 불러오기 후 전 로그가 한 장면으로 합쳐진다.
@@ -2895,7 +2966,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
             log_parts.append(f"Path({path_points})")
         if tags:
             log_parts.append(f"Tags: {tags}")
-        metrics = _format_metrics({"xG": xg, "xGOT": xgot, "EPV": epv, "PC": pc})
+        metrics = _format_metrics({"xG": xg, "xGOT": xgot, "xRC": xrc, "EPV": epv, "PC": pc})
         if metrics:
             log_parts.append(f"Metrics: {metrics}")
         if goal_mouth:
@@ -2916,6 +2987,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "DualState": dual_state,
                 "xG": _parse_metrics(metrics).get("xG", "") if metrics else "",
                 "xGOT": _parse_metrics(metrics).get("xGOT", "") if metrics else "",
+                "xRC": _parse_metrics(metrics).get("xRC", "") if metrics else "",
                 "EPV": _parse_metrics(metrics).get("EPV", "") if metrics else "",
                 "PC": _parse_metrics(metrics).get("PC", "") if metrics else "",
                 "GoalMouth": goal_mouth,

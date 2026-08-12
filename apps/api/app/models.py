@@ -322,6 +322,10 @@ class HighlightClipAction(Base):
     user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     xg: Mapped[float | None] = mapped_column(Float, nullable=True)
     xgot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 패스를 받은 지점의 기대득점(수비콘 반영) — 실제 슛 지점이 아니다.
+    # 받은 뒤의 드리블·돌파는 슈터의 몫이므로 패서 점수에 섞지 않는다.
+    # 어시스트/키패스 채점이 이 값을 쓴다 (fpa._reception_chance_xg).
+    reception_xg: Mapped[float | None] = mapped_column(Float, nullable=True)
     epv: Mapped[float | None] = mapped_column(Float, nullable=True)
     pc: Mapped[float | None] = mapped_column(Float, nullable=True)
     # 클립 내 시간 구간(초, 클립 시작=0). 기본값은 균등 분할, 운영자가 수동 수정.

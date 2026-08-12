@@ -321,6 +321,8 @@ def _ensure_runtime_schema() -> None:
 
     if "highlight_clip_actions" in table_names and "user_id" not in clip_action_columns:
         statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN user_id BIGINT")
+    if "highlight_clip_actions" in table_names and "reception_xg" not in clip_action_columns:
+        statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN reception_xg DOUBLE PRECISION")
 
     if "role" not in user_columns:
         statements.append("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'OPERATOR'")
@@ -8709,6 +8711,8 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
         "userId": user_id,
         "xg": row.xg,
         "xgot": row.xgot,
+        # 슛 기회 창출량 — 어시스트 채점 근거. 재전송 경로에서도 살아야 한다.
+        "receptionXg": row.reception_xg,
         "epv": row.epv,
         "pc": row.pc,
         "startOffset": row.start_offset,
@@ -9126,6 +9130,7 @@ def clip_result_put_actions(
             user_id=a.get("userId"),
             xg=a.get("xg"),
             xgot=a.get("xgot"),
+            reception_xg=a.get("receptionXg"),
             epv=a.get("epv"),
             pc=a.get("pc"),
             start_offset=a.get("startOffset"),

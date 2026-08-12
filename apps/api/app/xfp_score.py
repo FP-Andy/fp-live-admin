@@ -71,6 +71,10 @@ GOAL_BONUS_IN_XGOT = 0.03  # _estimate_xgot 이 골에 얹는 가산 — 밴드�
 # 순서가 뒤집힌다 — 반드시 0.5 미만이어야 한다.
 SHOT_DIFFICULTY_WEIGHT = 0.30
 
+# '받은 지점 기대득점(receptionXg)' 으로 채점하는 액션. 어시스트·키패스만이다 —
+# 일반 패스는 뒤에 슛이 있어도 그 슛과의 인과가 약해 기존 연결 슛 xG 를 그대로 쓴다.
+RECEPTION_XG_ACTIONS = frozenset({"Assist", "Key Pass"})
+
 
 @lru_cache(maxsize=1)
 def _anchors() -> dict[str, Any]:
@@ -220,6 +224,16 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
         v = float(action.get("xg") or 0)
         return v if v > 0 else None
     if code in ("G2", "G3"):
+        # 어시스트·키패스는 **받은 지점의 기대득점**으로 잰다(fpa._reception_chance_xg).
+        # 연결 슛 xG 를 계승하면, 받은 뒤 드리블로 수비를 제치고 각을 만든 몫까지
+        # 패서 점수에 섞인다 — 그건 슈터의 온전한 액션이다. 패서가 한 일은 '동료를
+        # 그 자리에 세워준 것' 까지이고, 그 자리의 가치가 곧 어시스트의 값이다.
+        if str(action.get("action") or "") in RECEPTION_XG_ACTIONS:
+            received = action.get("receptionXg")
+            if received is not None and float(received) > 0:
+                return float(received)
+            # 값이 없으면(프레임 없는 옛 행·single 모드) 기존 방식으로 넘어간다.
+            # 여기서 None 을 돌려주면 점수가 통째로 사라진다(실제로 그 회귀가 있었다).
         if linked_shot_xg is None or linked_shot_xg <= 0:
             return None
         return linked_shot_xg * LINK_CREDIT
