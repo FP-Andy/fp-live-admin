@@ -2126,6 +2126,18 @@ export default function FpaLivePage() {
         return nextRows;
       });
       setEditStatInput('');
+      // 라이브 캔버스와 같은 이유로 xGOT 분기보다 앞에서 번호를 붙인다 —
+      // 슛은 아래에서 return 하므로 뒤에 두면 슛 점만 번호를 못 받는다.
+      const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
+      const actorSel = editSelectedDot;
+      const actorTarget = actorSel ? (actorSel.side === 'before' ? editBeforeDots : editAfterDots)[actorSel.index] : undefined;
+      const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
+      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+        const assign = (prev: PitchDot[]) =>
+          prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
+        if (actorSel.side === 'before') setEditBeforeDots(assign);
+        else setEditAfterDots(assign);
+      }
       const promptXgot = shouldPromptXgot(requestedStatInput, data.log_data);
       const rawXg = Number(data.log_data.xG || extractMetricValue(data.log_text, 'xG') || 0);
       if (promptXgot && Number.isFinite(rawXg)) {
@@ -2150,17 +2162,7 @@ export default function FpaLivePage() {
         return;
       }
       setEditPrimary((prev) => (prev == null ? nextRowIndex : prev));
-      // 비패스 액션: 선택된 점에 행위자 번호 지정 (패스는 도착점 클릭으로 별도 처리)
-      const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
-      const actorSel = editSelectedDot;
-      const actorTarget = actorSel ? (actorSel.side === 'before' ? editBeforeDots : editAfterDots)[actorSel.index] : undefined;
-      const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
-      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
-        const assign = (prev: PitchDot[]) =>
-          prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
-        if (actorSel.side === 'before') setEditBeforeDots(assign);
-        else setEditAfterDots(assign);
-      }
+      // 행위자 번호 지정은 위(xGOT 분기 앞)에서 이미 끝났다 — 여기선 결과만 알린다.
       setStatus(actorOnOpponent
         ? '액션 추가됨 · 행위자 번호는 상대 점에 안 붙었습니다 — 아군 점 선택 후 재지정하세요'
         : '수정용 장면에 액션 추가 완료');
@@ -2357,6 +2359,21 @@ export default function FpaLivePage() {
         return nextRows;
       });
       setStatInput('');
+      // 행위자 번호 지정은 xGOT 분기보다 **앞에서** 한다 — 슛(d/dd/ddd/db)은 아래에서
+      // xGOT 입력을 띄우며 return 하므로, 뒤에 두면 슛 점만 번호를 영영 못 받는다.
+      // 그러면 sceneState 에 number 가 없어 scene_motion._find_actor_pair 가 실패하고
+      // 씬모션 공이 하프라인 정중앙(FIELD_W/2, FIELD_H/2)에서 출발한다.
+      // 아군 점에만 붙인다 — 상대 점 선택 시 지정 스킵(오염 방지).
+      const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
+      const actorSel = selectedDualDot;
+      const actorTarget = actorSel ? (actorSel.side === 'before' ? beforeDots : afterDots)[actorSel.index] : undefined;
+      const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
+      if (inputMode === 'dual' && actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+        const assign = (prev: PitchDot[]) =>
+          prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
+        if (actorSel.side === 'before') setBeforeDots(assign);
+        else setAfterDots(assign);
+      }
       const promptXgot = inputMode === 'dual' && shouldPromptXgot(requestedStatInput, data.log_data);
       const rawXg = Number(data.log_data.xG || extractMetricValue(data.log_text, 'xG') || 0);
       if (promptXgot && Number.isFinite(rawXg)) {
@@ -2383,18 +2400,7 @@ export default function FpaLivePage() {
       if (inputMode === 'dual') {
         // 좌표(점)는 유지 — 같은 장면에 액션 계속 누적. 초기화는 "새 장면"에서만 (xFP/fpa)
         setPrimaryRowIndex((prev) => (prev == null ? nextRowIndex : prev));
-        // 비패스 액션: 방금 찍은(선택된) 점에 행위자 번호 지정 (패스는 위에서 도착점 클릭으로 별도 처리)
-        const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
-        const actorSel = selectedDualDot;
-        const actorTarget = actorSel ? (actorSel.side === 'before' ? beforeDots : afterDots)[actorSel.index] : undefined;
-        // 행위자 번호는 아군 점에만 — 상대(away) 점 선택 시 지정 스킵(오염 방지)
-        const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
-        if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
-          const assign = (prev: PitchDot[]) =>
-            prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
-          if (actorSel.side === 'before') setBeforeDots(assign);
-          else setAfterDots(assign);
-        }
+        // 행위자 번호 지정은 위(xGOT 분기 앞)에서 이미 끝났다 — 여기선 결과만 알린다.
         setStatus(actorOnOpponent
           ? '로그 추가됨 · 단 행위자 번호는 상대 점에 안 붙었습니다 — 아군 점 선택 후 재지정하세요'
           : '로그 추가 완료');
