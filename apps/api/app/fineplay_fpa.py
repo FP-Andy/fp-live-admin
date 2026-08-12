@@ -267,6 +267,8 @@ def _row_metrics(row: dict[str, Any]) -> dict[str, float]:
         for key, value in (
             ("xg", _parse_float(row.get("xG"))),
             ("xgot", _parse_float(row.get("xGOT"))),
+            ("receptionXg", _parse_float(row.get("xRC"))),
+            ("packing", _parse_float(row.get("xPK"))),
             ("epv", _parse_float(row.get("EPV"))),
             ("pc", _parse_float(row.get("PC"))),
         )
@@ -593,7 +595,7 @@ def analysis_from_actions(
         "teamLabel": team_labels.get(clip_side or "") or None,
         "sequenceSummary": "→".join(labels[:4]),
         "actions": payload_actions,
-        **{k: primary[k] for k in ("xg", "xgot", "epv", "pc") if primary.get(k) is not None},
+        **{k: primary[k] for k in ("xg", "xgot", "receptionXg", "packing", "epv", "pc") if primary.get(k) is not None},
     }
     if fpa_match_id:
         team_view["fpaMatchId"] = fpa_match_id
@@ -648,11 +650,11 @@ def analysis_from_actions(
                      # baseAction 필수 — 백엔드 득점·도움 집계가 이 배열을 센다
                      # (docs/handoff_2026-08-07_goal_assist_ranking.md).
                      if k in ("seq", "action", "baseAction", "actionLabel",
-                              "xg", "xgot", "epv", "pc", "startOffset", "endOffset")
+                              "xg", "xgot", "receptionXg", "packing", "epv", "pc", "startOffset", "endOffset")
                      and v is not None}
                     for a in player_actions
                 ],
-                **{k: best[k] for k in ("xg", "xgot", "epv", "pc") if best.get(k) is not None},
+                **{k: best[k] for k in ("xg", "xgot", "receptionXg", "packing", "epv", "pc") if best.get(k) is not None},
             },
         }
         role = ACTION_ROLE_MAP.get(str(best.get("action") or ""))

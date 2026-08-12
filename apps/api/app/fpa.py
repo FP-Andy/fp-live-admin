@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import math
 import os
 import re
 import zipfile
@@ -19,6 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .fcm_cards import render_reference_heatmap, render_reference_passmap
 from .xg import estimate_xg as shared_estimate_xg
+from .xg_cone import estimate_xg_with_cone
 
 FIELD_W = 105
 FIELD_H = 68
@@ -400,7 +402,7 @@ def _decode_dual_pitch_state(value: Any) -> dict[str, Any] | None:
 
 def _format_metrics(metrics: dict[str, Any]) -> str:
     parts: list[str] = []
-    for key in ["xG", "xGOT", "EPV", "PC"]:
+    for key in ["xG", "xGOT", "xRC", "xPK", "EPV", "PC"]:
         value = metrics.get(key)
         if value in (None, ""):
             continue
@@ -422,7 +424,7 @@ def _parse_metrics(value: Any) -> dict[str, str]:
         key, raw_value = raw_part.split("=", 1)
         key = key.strip()
         raw_value = raw_value.strip()
-        if key in {"xG", "xGOT", "EPV", "PC"} and raw_value:
+        if key in {"xG", "xGOT", "xRC", "xPK", "EPV", "PC"} and raw_value:
             metrics[key] = raw_value
     return metrics
 
@@ -480,6 +482,159 @@ def _epv_delta(start_x: Any, start_y: Any, end_x: Any, end_y: Any) -> float | No
     if before is None or after is None:
         return None
     return round(after - before, 4)
+
+
+# 받는 사람이 있는 패스류 코드 — 이 액션만 '받은 지점 기대득점(xRC)' 과 패킹(xPK) 을 잰다.
+PASS_CHANCE_CODES = {"z", "zz", "s", "ss", "c", "cc"}
+
+# 패킹 — 패스 선분에서 좌우 이 폭(m) 안의 상대만 센다. 반대편 터치라인에 서 있던
+# 수비수까지 '제쳤다' 고 세면 값이 부풀기 때문이다.
+PACKING_CORRIDOR_M = 15.0
+# 프레임에 이보다 적게 찍혔으면 비율이 불안정하다(1명 중 1명 제침 = 100%). 가산 0.
+PACKING_MIN_OPPONENTS = 3
+
+
+def _dual_opponent_dots(
+    dual_state: dict[str, Any] | None,
+    actor_team: str | None,
+    direction: str,
+) -> list[dict[str, Any]]:
+    """프레임의 상대 점 — 공격방향 정규화 + **role 보존**.
+
+    `_dual_points_by_side` 는 (x, y) 만 돌려주어 role 이 사라진다. 그러면 골키퍼를
+    가려낼 수 없어 xg_cone 의 include_gk=False 가 무력해진다(항상 필드 선수로 센다).
+    패킹도 키퍼를 '제쳤다' 고 세면 안 되므로 여기서 role 을 살려 넘긴다.
+
+    키 이름이 경로마다 다르다 — 태깅 시점의 dual_state 는 "before", 저장된
+    extra.sceneState 는 "beforeDots"(fineplay_fpa._parse_scene_state)다. 둘 다 받는다.
+    한쪽만 보면 백필·재전송 경로에서 프레임을 통째로 놓쳐 수비콘과 패킹이 조용히
+    0/None 이 된다.
+    """
+    state = dual_state or {}
+    points = state.get("before")
+    if not isinstance(points, list):
+        points = state.get("beforeDots")
+    if not isinstance(points, list):
+        return []
+    side = str(actor_team or "").strip().lower()
+    out: list[dict[str, Any]] = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        x_value = _finite_float(point.get("meter_x", point.get("x")))
+        y_value = _finite_float(point.get("meter_y", point.get("y")))
+        if x_value is None or y_value is None:
+            continue
+        dot_side = _point_team_side(point, actor_team)
+        if not dot_side or dot_side == side:
+            continue  # 아군(또는 사이드 불명)은 제외 — 남는 게 상대다
+        out.append({
+            "x": (FIELD_W - x_value) if direction == "left" else x_value,
+            "y": y_value,
+            "role": str(point.get("role") or "").strip().lower() or None,
+        })
+    return out
+
+
+def _packing_ratio(
+    opponents: list[dict[str, Any]],
+    start_x_adj: Any,
+    start_y: Any,
+    end_x_adj: Any,
+    end_y: Any,
+) -> float | None:
+    """그 패스가 넘어선 상대의 **비율**(0~1). 근거가 부족하면 None.
+
+    '넘어섰다' = 패스 전 공보다 골에 가까웠고, 패스 후 공보다 골에서 멀어진 상대.
+    골까지의 거리로 판정하므로 뒤로 간 패스는 자동으로 0 이 된다.
+
+    절대 인원수가 아니라 비율을 쓰는 이유
+    ----------------------------------
+    프레임에 상대를 몇 명 찍느냐는 분석관마다 다르다(실측 1~5명). 절대 수를 쓰면
+    성실하게 많이 찍을수록 점수가 올라가는 구조가 된다 — 압박(pr) 지표에서 이미
+    겪은 함정이다. 비율로 재면 그 편차가 줄고, 표본이 너무 적으면(<
+    PACKING_MIN_OPPONENTS) 아예 근거 없음(None)으로 돌린다.
+
+    골키퍼는 세지 않는다 — 키퍼를 '제쳤다' 고 말하지 않는다.
+    """
+    sx = _finite_float(start_x_adj)
+    sy = _finite_float(start_y)
+    ex = _finite_float(end_x_adj)
+    ey = _finite_float(end_y)
+    if sx is None or sy is None or ex is None or ey is None:
+        return None
+
+    field = [o for o in opponents if o.get("role") != "gk"]
+    if len(field) < PACKING_MIN_OPPONENTS:
+        return None
+
+    goal_x, goal_y = FIELD_W, FIELD_H / 2
+    d_start = math.hypot(goal_x - sx, goal_y - sy)
+    d_end = math.hypot(goal_x - ex, goal_y - ey)
+    if d_end >= d_start:
+        return 0.0  # 전진하지 않은 패스는 넘어선 수비가 없다
+
+    vx, vy = ex - sx, ey - sy
+    seg_len2 = vx * vx + vy * vy
+    passed = 0
+    for o in field:
+        ox, oy = float(o["x"]), float(o["y"])
+        if not (d_end < math.hypot(goal_x - ox, goal_y - oy) < d_start):
+            continue
+        # 복도 밖(패스 선분에서 좌우로 먼) 상대는 제외
+        if seg_len2 > 0:
+            t = max(0.0, min(1.0, ((ox - sx) * vx + (oy - sy) * vy) / seg_len2))
+            px, py = sx + t * vx, sy + t * vy
+            if math.hypot(ox - px, oy - py) > PACKING_CORRIDOR_M / 2:
+                continue
+        passed += 1
+    return round(passed / len(field), 4)
+
+
+def _reception_chance_xg(
+    dual_state: dict[str, Any] | None,
+    actor_team: str | None,
+    direction: str,
+    end_x_adj: Any,
+    end_y: Any,
+    tags: set[str] | list[str] | None = None,
+) -> float | None:
+    """패스를 **받은 지점**의 기대득점(수비콘 반영). 어시스트 채점의 원시값.
+
+    왜 실제 슛 지점의 xG 를 안 쓰나
+    ------------------------------
+    어시스트는 '마지막 패스' 일 뿐, 받은 자리에서 곧바로 때린 골만 어시스트가 되는
+    게 아니다. 받은 뒤 드리블로 수비를 제치고 각을 만들어 넣었다면 **그건 슈터의
+    온전한 액션**이다. 그런데 연결 슛 xG 를 계승하면 그 드리블의 결과가 패서 점수를
+    올리거나 내린다. 패서가 한 일은 '동료를 이 자리에 세워준 것' 까지다.
+
+    그래서 슛 지점이 아니라 **받은 지점** 의 기대득점을 쓴다. 델타(시작점 대비 증가분)
+    가 아니라 레벨인 이유는, 패서가 골에 더 가까웠던 마이너스 패스·컷백이 음수로
+    떨어져 점수가 통째로 사라지기 때문이다(실측 fpc-1-004 에서 확인).
+
+    수비콘을 반영해 '받는 순간 그 자리가 얼마나 열려 있었나' 까지 본다 — 같은 좌표라도
+    수비가 앞을 막고 있으면 만들어 준 기회의 질이 낮다. 프레임이 없거나 상대 점이
+    없으면 수비콘은 0 이 되어 위치만으로 계산된다(= xg.estimate_xg 와 같은 값).
+
+    좌표는 이미 공격방향 정규화된 값(*_adj). 프레임의 상대 점도 같은 규칙으로 뒤집는다.
+    """
+    ex = _finite_float(end_x_adj)
+    ey = _finite_float(end_y)
+    if ex is None or ey is None:
+        return None
+
+    # role 을 살려 넘긴다 — 안 그러면 xg_cone 이 골키퍼를 필드 선수로 세어 이중계산된다.
+    defenders = _dual_opponent_dots(dual_state, actor_team, direction)
+
+    tag_set = set(tags or ())
+    try:
+        received = estimate_xg_with_cone(
+            "HOME", "L2R", ex, ey,
+            "Header" in tag_set, "Weak Foot" in tag_set, defenders,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return round(float(received["xg_open"]), 4)
 
 
 # 수비 전환가치에서 '상대가 잃은 위협' 쪽에 주는 비중. 나머지가 '우리가 얻은 위치'.
@@ -1526,6 +1681,8 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
                 metrics = _parse_metrics(part)
                 log_dict["xG"] = metrics.get("xG", "")
                 log_dict["xGOT"] = metrics.get("xGOT", "")
+                log_dict["xRC"] = metrics.get("xRC", "")
+                log_dict["xPK"] = metrics.get("xPK", "")
                 log_dict["EPV"] = metrics.get("EPV", "")
                 log_dict["PC"] = metrics.get("PC", "")
             elif part.startswith("GoalMouth: "):
@@ -1593,6 +1750,8 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "AfterNumberedPointCount",
         "xG",
         "xGOT",
+        "xRC",
+        "xPK",
         "GoalMouth",
         "GoalMouthX",
         "GoalMouthY",
@@ -1792,6 +1951,22 @@ def generate_log_entry(
             epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
         if epv_value is not None:
             metrics["EPV"] = epv_value
+        if action_code_raw in PASS_CHANCE_CODES:
+            # 받는 사람이 있는 패스류만 — 받은 지점의 기대득점(수비콘 반영).
+            # 어시스트 채점이 이 값을 쓰고, 일반 패스는 기록·검수용으로만 남는다.
+            reception_xg = _reception_chance_xg(
+                compact_dual_state, team, direction,
+                metric_end_x_adj, metric_end_y, deduped_tags,
+            )
+            if reception_xg is not None:
+                metrics["xRC"] = reception_xg
+            # 패킹 — 그 패스가 넘어선 상대의 비율. 어시스트 가산에 쓰인다.
+            packing = _packing_ratio(
+                _dual_opponent_dots(compact_dual_state, team, direction),
+                start_x_adj, start_y, metric_end_x_adj, metric_end_y,
+            )
+            if packing is not None:
+                metrics["xPK"] = packing
         if action_code_raw == "pr":
             # 압박은 점 대 점이 아니라 프레임 선수 영역(convex hull+마진) 평균 지배율의 변화로 잰다.
             press_pc = _press_region_pitch_control(compact_dual_state)
@@ -1831,6 +2006,10 @@ def generate_log_entry(
             "DualState": dual_state_text,
             "xG": _metric_text_value(metrics.get("xG")),
             "xGOT": "",
+            # 슛 기회 창출량 — 패스류만 채워진다(PASS_CHANCE_CODES).
+            "xRC": _metric_text_value(metrics.get("xRC")),
+            # 패킹 — 넘어선 상대 비율(패스류만).
+            "xPK": _metric_text_value(metrics.get("xPK")),
             "EPV": _metric_text_value(metrics.get("EPV")),
             "PC": _metric_text_value(metrics.get("PC")),
         },
@@ -1905,6 +2084,8 @@ def build_canonical_events_sheet(analyzed: pd.DataFrame) -> pd.DataFrame:
         "EndY_adj",
         "xG",
         "xGOT",
+        "xRC",
+        "xPK",
         "EPV",
         "PC",
     ]
@@ -2865,6 +3046,8 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 goal_mouth = f"{gm_x},{gm_y},{direction or 'right'}"
         xg = clean_value(row.get("xG", ""))
         xgot = clean_value(row.get("xGOT", ""))
+        xrc = clean_value(row.get("xRC", ""))
+        xpk = clean_value(row.get("xPK", ""))
         epv = clean_value(row.get("EPV", ""))
         pc = clean_value(row.get("PC", ""))
         # 장면 경계는 이 세 컬럼에만 있다. 떨어뜨리면 불러오기 후 전 로그가 한 장면으로 합쳐진다.
@@ -2895,7 +3078,7 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
             log_parts.append(f"Path({path_points})")
         if tags:
             log_parts.append(f"Tags: {tags}")
-        metrics = _format_metrics({"xG": xg, "xGOT": xgot, "EPV": epv, "PC": pc})
+        metrics = _format_metrics({"xG": xg, "xGOT": xgot, "xRC": xrc, "xPK": xpk, "EPV": epv, "PC": pc})
         if metrics:
             log_parts.append(f"Metrics: {metrics}")
         if goal_mouth:
@@ -2916,6 +3099,8 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "DualState": dual_state,
                 "xG": _parse_metrics(metrics).get("xG", "") if metrics else "",
                 "xGOT": _parse_metrics(metrics).get("xGOT", "") if metrics else "",
+                "xRC": _parse_metrics(metrics).get("xRC", "") if metrics else "",
+                "xPK": _parse_metrics(metrics).get("xPK", "") if metrics else "",
                 "EPV": _parse_metrics(metrics).get("EPV", "") if metrics else "",
                 "PC": _parse_metrics(metrics).get("PC", "") if metrics else "",
                 "GoalMouth": goal_mouth,

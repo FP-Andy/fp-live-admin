@@ -833,6 +833,8 @@ def _persist_clip_records(
                     user_id=a.get("userId"),
                     xg=a.get("xg"),
                     xgot=a.get("xgot"),
+                    reception_xg=a.get("receptionXg"),
+                    packing=a.get("packing"),
                     epv=a.get("epv"),
                     pc=a.get("pc"),
                     fpa_match_id=fpa_uuid,
