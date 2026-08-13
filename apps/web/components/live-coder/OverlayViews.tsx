@@ -239,9 +239,6 @@ function Scoreboard({ snapshot }: { snapshot: BroadcastSnapshot }) {
   if (!state.scoreboard_visible) return null;
   return (
     <div className={`lc-scorebug ${isGoal ? 'goal-flash' : ''}`}>
-      <div className="lc-bug-brand">
-        <img src="/live-coder/fineplay-logo.png" alt="Fine Play" />
-      </div>
       <div className="lc-bug-teams">
         <div className="lc-bug-team" style={homeColorStyle}>
           <span>{teamLogo(state.home_logo_url, snapshot.match.home.name, 'lc-bug-team-logo')}<b>{homeLabel}</b></span>
@@ -298,7 +295,7 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
                 className="lc-attack-lane"
                 key={lane.label}
                 style={{
-                  animationDelay: `${Number(laneOrder.get(lane.label) || 0) * 650}ms`,
+                  animationDelay: `${Number(laneOrder.get(lane.label) || 0) * 1000}ms`,
                   transformBox: 'view-box',
                   transformOrigin: `${lane.x}px 496px`,
                 }}
@@ -312,9 +309,6 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
         <div className="lc-attack-percent-row">
           {lanes.map((lane) => <strong key={lane.label}>{fmtPct(lane.value)}</strong>)}
         </div>
-      </div>
-      <div className="lc-attack-brand">
-        <img src="/live-coder/fineplay-logo.png" alt="Fine Play" />
       </div>
     </div>
   );
@@ -352,7 +346,6 @@ function XgCard({ snapshot }: { snapshot: BroadcastSnapshot }) {
     <div className="lc-xg-map-card">
       <div className="lc-xg-map-head">
         <strong>xG Map</strong>
-        <img src="/live-coder/fineplay-logo.png" alt="Fine Play" />
       </div>
       <svg className="lc-xg-map-pitch" viewBox="0 0 1000 760" preserveAspectRatio="xMidYMid meet">
         <rect className="lc-xg-pitch-line" x={pitch.x} y={pitch.y} width={pitch.width} height={pitch.height} rx="24" />
@@ -391,9 +384,6 @@ function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
           <span className="away" style={{ width: `${Math.max(0, Math.min(100, away))}%`, backgroundColor: awayColor }} />
           <strong className="home-pct">{fmtPct(home)}</strong>
           <strong className="away-pct">{fmtPct(away)}</strong>
-        </div>
-        <div className="lc-possession-brand">
-          <img src="/live-coder/fineplay-logo.png" alt="Fine Play" />
         </div>
       </div>
       <div className="lc-team-crest away">{teamLogo(snapshot.broadcast_state.away_logo_url, snapshot.match.away.name)}</div>
@@ -465,9 +455,6 @@ function Dominance({ snapshot, fullscreen = false }: { snapshot: BroadcastSnapsh
           ))}
         </svg>
       </div>
-      <div className="lc-dominance-brand">
-        <img src="/live-coder/fineplay-logo.png" alt="Fine Play" />
-      </div>
     </div>
   );
 }
@@ -516,7 +503,6 @@ function Fullscreen({ snapshot }: { snapshot: BroadcastSnapshot }) {
     <div className="lc-fullscreen-card">
       <span>{graphic}</span>
       <strong>{snapshot.match.home.name} {snapshot.match.home.score} - {snapshot.match.away.score} {snapshot.match.away.name}</strong>
-      <div className="lc-card-brand">Fine Play</div>
     </div>
   );
 }
