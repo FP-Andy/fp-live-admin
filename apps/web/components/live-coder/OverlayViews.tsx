@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { apiJson } from '../../lib/api';
 import type { BroadcastSnapshot } from './types';
 
 type OverlayKind = 'scoreboard' | 'card-analysis' | 'analysis' | 'possession' | 'event' | 'fullscreen';
+type CaptureGraphic = 'ATTACK_DIRECTION_HOME' | 'ATTACK_DIRECTION_AWAY' | 'ATTACK_DIRECTION_BOTH' | 'XG' | 'POSSESSION' | 'MATCH_DOMINANCE';
 type FadePhase = 'enter' | 'shown' | 'exit';
 type FadedOverlay = {
   key: string;
@@ -257,7 +259,7 @@ function Scoreboard({ snapshot }: { snapshot: BroadcastSnapshot }) {
   );
 }
 
-function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team: 'HOME' | 'AWAY' }) {
+function AttackDirection({ snapshot, team, paired = false }: { snapshot: BroadcastSnapshot; team: 'HOME' | 'AWAY'; paired?: boolean }) {
   const row = snapshot.analysis.attack_direction?.find((item) => item.team === team);
   const ratio = row?.direction_ratio || {};
   const state = snapshot.broadcast_state;
@@ -269,7 +271,7 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
     { label: 'R', value: Number(ratio.right_pct || 0), x: 545 },
   ];
   return (
-    <div className="lc-analysis-card compact">
+    <div className={`lc-analysis-card compact${paired ? ' lc-attack-direction-pair-card' : ''}`}>
       <div className="lc-attack-head">
         <div className="lc-attack-team-logo">{teamLogo(logoUrl, teamName)}</div>
         <strong>{teamName}</strong>
@@ -303,6 +305,15 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
       <div className="lc-attack-brand">
         <img src="/live-coder/fineplay-logo.png" alt="Fine Play" />
       </div>
+    </div>
+  );
+}
+
+function AttackDirectionBoth({ snapshot }: { snapshot: BroadcastSnapshot }) {
+  return (
+    <div className="lc-attack-direction-pair">
+      <AttackDirection snapshot={snapshot} team="HOME" paired />
+      <AttackDirection snapshot={snapshot} team="AWAY" paired />
     </div>
   );
 }
@@ -460,6 +471,7 @@ function Analysis({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const graphic = snapshot.broadcast_state.active_graphic;
   if (graphic === 'ATTACK_DIRECTION_HOME') return <AttackDirection snapshot={snapshot} team="HOME" />;
   if (graphic === 'ATTACK_DIRECTION_AWAY') return <AttackDirection snapshot={snapshot} team="AWAY" />;
+  if (graphic === 'ATTACK_DIRECTION_BOTH') return <AttackDirectionBoth snapshot={snapshot} />;
   if (graphic === 'XG') return <XgCard snapshot={snapshot} />;
   return null;
 }
@@ -506,10 +518,27 @@ function Fullscreen({ snapshot }: { snapshot: BroadcastSnapshot }) {
 }
 
 export default function OverlayView({ matchId, kind }: { matchId: string; kind: OverlayKind }) {
+  const searchParams = useSearchParams();
   const snapshot = useSnapshot(matchId, kind === 'scoreboard' ? 1000 : 3000, kind === 'scoreboard' ? 'scoreboard' : undefined);
   const [scale, setScale] = useState(1);
-  const displayKey = snapshot ? overlayDisplayKey(kind, snapshot) : null;
-  const faded = useFadedOverlay(snapshot, displayKey);
+  const requestedGraphic = searchParams.get('render') as CaptureGraphic | null;
+  const allowedGraphic = requestedGraphic && (
+    ((kind === 'analysis' || kind === 'card-analysis') && ['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'ATTACK_DIRECTION_BOTH', 'XG'].includes(requestedGraphic)) ||
+    (kind === 'possession' && requestedGraphic === 'POSSESSION') ||
+    (kind === 'fullscreen' && requestedGraphic === 'MATCH_DOMINANCE')
+  ) ? requestedGraphic : null;
+  const renderedSnapshot = useMemo(() => {
+    if (!snapshot || !allowedGraphic) return snapshot;
+    const state = { ...snapshot.broadcast_state };
+    if (allowedGraphic === 'POSSESSION') state.possession_visible = true;
+    if (allowedGraphic === 'MATCH_DOMINANCE') state.fullscreen_graphic = 'MATCH_DOMINANCE';
+    if (['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'ATTACK_DIRECTION_BOTH', 'XG'].includes(allowedGraphic)) {
+      state.active_graphic = allowedGraphic as BroadcastSnapshot['broadcast_state']['active_graphic'];
+    }
+    return { ...snapshot, broadcast_state: state };
+  }, [allowedGraphic, snapshot]);
+  const displayKey = renderedSnapshot ? overlayDisplayKey(kind, renderedSnapshot) : null;
+  const faded = useFadedOverlay(renderedSnapshot, displayKey);
 
   useEffect(() => {
     document.documentElement.classList.add('live-coder-overlay-document');
@@ -532,7 +561,7 @@ export default function OverlayView({ matchId, kind }: { matchId: string; kind: 
 
   if (!snapshot) return null;
   return (
-    <main className="lc-overlay-root" style={{ transform: `scale(${scale})` }}>
+    <main className="lc-overlay-root" data-live-coder-capture-ready={faded ? 'true' : undefined} style={{ transform: `scale(${scale})` }}>
       {faded ? (
         <div className={`lc-fade-slot ${faded.phase}`}>
           {kind === 'scoreboard' ? <Scoreboard snapshot={faded.snapshot} /> : null}
