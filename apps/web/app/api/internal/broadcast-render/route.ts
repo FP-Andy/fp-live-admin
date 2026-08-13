@@ -56,10 +56,10 @@ export async function POST(request: NextRequest) {
         }, config.motionSelector);
       }
       const frames: string[] = [];
-      // The final frame is deliberately after the longest Live Coder sequence
-      // (attack lanes: 3 × 180ms delay + 700ms rise), so PNG is always settled
-      // while WebP preserves the intermediate motion frames.
-      for (const delay of [70, 160, 220, 300, 420]) {
+      // One WebP loop is exactly three seconds. The final capture follows the
+      // longest sequence (three ordered attack lanes), so PNG is settled while
+      // the WebP retains the intermediate motion states.
+      for (const delay of [80, 520, 600, 700, 1100]) {
         await page.waitForTimeout(delay);
         frames.push((await page.screenshot({ type: 'png', omitBackground: true })).toString('base64'));
       }

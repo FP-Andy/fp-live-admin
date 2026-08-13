@@ -616,21 +616,21 @@ body.live-coder-overlay-body::after {
   vector-effect: non-scaling-stroke;
   stroke-dasharray: 900;
   stroke-dashoffset: 900;
-  animation: lcXgLineDraw 520ms ease-out 360ms forwards;
+  animation: lcXgLineDraw 900ms ease-out 700ms forwards;
 }
 
 .lc-xg-shot-dot {
   fill: #ff7900;
   transform-box: fill-box;
   transform-origin: center;
-  animation: lcXgDotIn 260ms ease-out both;
+  animation: lcXgDotIn 600ms ease-out both;
 }
 
 .lc-xg-goal-star {
   fill: #f5f50b;
   transform-box: fill-box;
   transform-origin: center;
-  animation: lcXgStarIn 360ms cubic-bezier(.15, 1.2, .4, 1) 820ms both;
+  animation: lcXgStarIn 650ms cubic-bezier(.15, 1.2, .4, 1) 1850ms both;
 }
 
 @keyframes lcXgDotIn {
@@ -747,7 +747,7 @@ body.live-coder-overlay-body::after {
 .lc-attack-lane {
   transform-box: fill-box;
   transform-origin: center bottom;
-  animation: lcAttackLaneRise 700ms cubic-bezier(.2, .85, .25, 1) both;
+  animation: lcAttackLaneRise 1350ms cubic-bezier(.2, .85, .25, 1) both;
 }
 
 @keyframes lcAttackLaneRise {
@@ -870,7 +870,7 @@ body.live-coder-overlay-body::after {
   top: 0;
   display: block;
   height: 100%;
-  animation-duration: 780ms;
+  animation-duration: 2800ms;
   animation-timing-function: cubic-bezier(.2, .9, .2, 1);
   animation-fill-mode: both;
 }
@@ -6447,7 +6447,7 @@ html.fpa-embed .topbar {
 .broadcast-empty, .broadcast-loading, .broadcast-error { padding: 24px; border-radius: 14px; color: #68717d; background: #fff; border: 1px solid #e0e4e9; }
 .broadcast-error { color: #b42318; border-color: #f2c7c3; }
 
-.broadcast-live-url-list { display: grid; gap: 10px; margin-top: 22px; }
+.broadcast-live-url-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 22px; }
 .broadcast-asset-urls { display: grid; gap: 6px; padding: 14px 16px; border: 1px solid #e0e4e9; border-radius: 12px; background: #fff; box-shadow: 0 8px 20px rgba(26, 34, 46, .04); }
 .broadcast-asset-urls > strong { color: #2d333b; font-size: .82rem; }
 .broadcast-asset-url { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
@@ -6461,4 +6461,5 @@ html.fpa-embed .topbar {
   .broadcast-showroom { padding: 34px 16px 60px; }
   .broadcast-section-heading { display: block; }
   .broadcast-section-heading p { margin-top: 7px; }
+  .broadcast-live-url-list { grid-template-columns: 1fr; }
 }
