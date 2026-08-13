@@ -746,6 +746,28 @@ body.live-coder-overlay-body::after {
   display: block;
 }
 
+/* The showroom keeps its original three-live-graphic contract.  For the
+   attack-direction slot we place the two unmodified Live Coder cards together
+   on the 16:9 canvas instead of replacing them with a simplified chart. */
+.lc-attack-direction-pair {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 24px;
+  padding: 0 54px 22px;
+}
+
+.lc-analysis-card.compact.lc-attack-direction-pair-card {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  flex: 0 0 780px;
+  transform: scale(0.9);
+  transform-origin: bottom center;
+}
+
 .lc-goal-frame {
   height: 260px;
   border: 12px solid #8e9aad;

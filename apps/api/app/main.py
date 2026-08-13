@@ -91,6 +91,7 @@ from .broadcast_assets import (
     BroadcastAssetStore,
     DOMINANCE_ASSET_TYPES,
     LIVE_ASSET_TYPES,
+    render_live_coder_asset_pairs,
     store_asset_pair,
 )
 from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
@@ -1955,6 +1956,7 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     manifest = _broadcast_assets_manifest(match_obj)
     store = BroadcastAssetStore()
     match_key = str(match_obj.id)
+    live_rendered = render_live_coder_asset_pairs(snapshot, LIVE_ASSET_TYPES)
 
     live: dict[str, dict] = {}
     for asset_type in LIVE_ASSET_TYPES:
@@ -1963,6 +1965,7 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
             f"{match_key}/live/{asset_type}/latest",
             asset_type,
             snapshot,
+            rendered=live_rendered[asset_type],
         ).as_dict()
     manifest["live"] = live
 
@@ -1978,6 +1981,7 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
                 asset_type,
                 snapshot,
                 immutable=True,
+                rendered=live_rendered[asset_type],
             ).as_dict()
             for asset_type in LIVE_ASSET_TYPES
         }
@@ -1986,12 +1990,14 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     dominance = dict(manifest.get("dominance") or {})
     for minute, asset_type, slot in ((45, "match-dominance-halftime", "halftime"), (90, "match-dominance-fulltime", "fulltime")):
         if clock_ms >= minute * 60_000 and slot not in dominance:
+            dominance_rendered = render_live_coder_asset_pairs(snapshot, [asset_type])
             dominance[slot] = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
                 snapshot,
                 immutable=True,
+                rendered=dominance_rendered[asset_type],
             ).as_dict()
     manifest["dominance"] = dominance
     manifest["last_generated_at"] = datetime.utcnow().isoformat()

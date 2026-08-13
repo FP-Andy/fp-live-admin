@@ -14,6 +14,8 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apk add --no-cache chromium nss freetype harfbuzz font-noto-cjk
+ENV CHROMIUM_PATH=/usr/bin/chromium-browser
 ARG NEXT_PUBLIC_API_BASE=/api
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 COPY --from=builder /app/.next ./.next

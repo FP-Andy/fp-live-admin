@@ -1,9 +1,11 @@
 # Broadcast showroom
 
 `broadcast.fineludens.kr` is the public gallery and public asset origin for
-FinePlay broadcast graphics.  The gallery is intentionally separate from the
+FinePlay broadcast graphics. The gallery is intentionally separate from the
 authenticated operations console, while image writes remain server-side or use
-the protected FPC refresh endpoint.
+the protected FPC refresh endpoint. Assets are captured from the existing Live
+Coder overlays at their native 1920×1080 composition, so the public image and
+the operator's OBS graphic are the same visual source.
 
 ## Asset contract
 
@@ -53,6 +55,10 @@ BROADCAST_CDN_BASE_URL=https://<cloudfront-distribution-domain>
 BROADCAST_INGEST_KEY=<long-random-secret>
 BROADCAST_ASSET_REFRESH_SECONDS=60
 ```
+
+`BROADCAST_LIVE_CODER_RENDER_URL` defaults to the internal web renderer in the
+compose stack. Its Chromium runtime is intentionally private to Docker; the
+capture endpoint is not exposed through Nginx.
 
 When S3 settings are omitted, assets stay in `/app/runtime/broadcast/assets`
 and are served by the API; this is suitable for local development only.  In

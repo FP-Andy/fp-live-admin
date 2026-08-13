@@ -1,4 +1,4 @@
-export type BroadcastGraphic = null | 'ATTACK_DIRECTION_HOME' | 'ATTACK_DIRECTION_AWAY' | 'XG';
+export type BroadcastGraphic = null | 'ATTACK_DIRECTION_HOME' | 'ATTACK_DIRECTION_AWAY' | 'ATTACK_DIRECTION_BOTH' | 'XG';
 export type BroadcastEventGraphic = null | 'GOAL' | 'YELLOW_CARD' | 'RED_CARD' | 'SUBSTITUTION';
 export type BroadcastFullscreenGraphic = null | 'LINEUP' | 'HALFTIME' | 'FULLTIME' | 'MATCH_DOMINANCE';
 

@@ -11,11 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
+import base64
 import os
 from pathlib import Path
 import re
 from urllib.parse import quote
 
+import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -248,6 +250,64 @@ def render_asset_pair(asset_type: str, snapshot: dict) -> tuple[bytes, bytes]:
     return _encode_png(renderer(snapshot)), _encode_animated_webp(renderer, snapshot)
 
 
+def _encode_captured_webp(png_frames: list[bytes]) -> bytes:
+    """Encode the Live Coder's own entrance animation as animated WebP."""
+    if not png_frames:
+        raise ValueError("Live Coder capture did not return frames")
+    images = [Image.open(BytesIO(frame)).convert("RGBA") for frame in png_frames]
+    buffer = BytesIO()
+    images[0].save(
+        buffer,
+        format="WEBP",
+        save_all=True,
+        append_images=images[1:],
+        duration=(90, 110, 130, 180, 1900)[:len(images)],
+        loop=0,
+        lossless=False,
+        quality=92,
+        method=6,
+    )
+    return buffer.getvalue()
+
+
+def render_live_coder_asset_pairs(snapshot: dict, asset_types: tuple[str, ...] | list[str]) -> dict[str, tuple[bytes, bytes]]:
+    """Capture the actual Live Coder overlay instead of redrawing it in Python."""
+    render_url = os.getenv("BROADCAST_LIVE_CODER_RENDER_URL", "").strip()
+    if not render_url:
+        return {asset_type: render_asset_pair(asset_type, snapshot) for asset_type in asset_types}
+    match = snapshot.get("match") if isinstance(snapshot.get("match"), dict) else {}
+    match_id = str(match.get("id") or "").strip()
+    if not match_id:
+        raise ValueError("Live Coder capture requires a match id")
+    timeout = float(os.getenv("BROADCAST_LIVE_CODER_RENDER_TIMEOUT_SECONDS", "45"))
+    try:
+        response = httpx.post(
+            render_url,
+            json={"match_id": match_id, "asset_types": list(asset_types)},
+            headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Live Coder capture request failed: {exc}") from exc
+    payload = response.json()
+    raw_assets = payload.get("assets") if isinstance(payload, dict) else None
+    if not isinstance(raw_assets, dict):
+        raise RuntimeError("Live Coder capture response did not contain assets")
+    result: dict[str, tuple[bytes, bytes]] = {}
+    for asset_type in asset_types:
+        raw = raw_assets.get(asset_type)
+        frames_raw = raw.get("frames") if isinstance(raw, dict) else None
+        if not isinstance(frames_raw, list) or not frames_raw:
+            raise RuntimeError(f"Live Coder capture omitted {asset_type}")
+        try:
+            frames = [base64.b64decode(str(frame), validate=True) for frame in frames_raw]
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(f"Live Coder capture returned invalid {asset_type} frame data") from exc
+        result[asset_type] = (frames[-1], _encode_captured_webp(frames))
+    return result
+
+
 @dataclass(frozen=True)
 class StoredAsset:
     png_url: str
@@ -329,8 +389,15 @@ class BroadcastAssetStore:
         return self._local_path(self._safe_relative_path(relative_path))
 
 
-def store_asset_pair(store: BroadcastAssetStore, relative_base: str, asset_type: str, snapshot: dict, immutable: bool = False) -> StoredAsset:
-    png, webp = render_asset_pair(asset_type, snapshot)
+def store_asset_pair(
+    store: BroadcastAssetStore,
+    relative_base: str,
+    asset_type: str,
+    snapshot: dict,
+    immutable: bool = False,
+    rendered: tuple[bytes, bytes] | None = None,
+) -> StoredAsset:
+    png, webp = rendered or render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
     generated_at = datetime.utcnow().isoformat()
     cache_control = "public, max-age=31536000, immutable" if immutable else "public, max-age=55, must-revalidate"
     png_url = store.put(f"{relative_base}.png", png, "image/png", cache_control, generated_at)
