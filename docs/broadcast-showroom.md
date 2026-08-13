@@ -19,15 +19,16 @@ The API creates the same graphic in two formats:
 During a live match, the following fixed URLs are replaced every minute:
 
 ```text
-broadcast/{match_id}/live/attack-direction/latest.{png,webp}
+broadcast/{match_id}/live/attack-direction-home/latest.{png,webp}
+broadcast/{match_id}/live/attack-direction-away/latest.{png,webp}
 broadcast/{match_id}/live/possession/latest.{png,webp}
 broadcast/{match_id}/live/xg-shot-map/latest.{png,webp}
 ```
 
-At 15, 30, 45, 60, 75 and 90 minutes the three live graphics are written to
-immutable archive keys.  At 45 and 90 minutes a separate match-dominance asset
-is written as well.  A completed 90-minute match therefore has 20 images in
-each format: 18 live-graphic archive images plus half-time and full-time
+At 15, 30, 45, 60, 75 and 90 minutes the four live graphics are written to
+immutable archive keys. At 45 and 90 minutes a separate match-dominance asset
+is written as well. A completed 90-minute match therefore has 26 images in
+each format: 24 live-graphic archive images plus half-time and full-time
 dominance images.
 
 ## Public APIs

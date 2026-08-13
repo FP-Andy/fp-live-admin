@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 CANVAS = (1280, 720)
-LIVE_ASSET_TYPES = ("attack-direction", "possession", "xg-shot-map")
+LIVE_ASSET_TYPES = ("attack-direction-home", "attack-direction-away", "possession", "xg-shot-map")
 DOMINANCE_ASSET_TYPES = ("match-dominance-halftime", "match-dominance-fulltime")
 
 _FONT_CACHE: dict[tuple[int, bool], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
