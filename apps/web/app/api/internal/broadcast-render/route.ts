@@ -6,6 +6,10 @@ export const dynamic = 'force-dynamic';
 
 type AssetType = 'attack-direction-home' | 'attack-direction-away' | 'possession' | 'xg-shot-map' | 'match-dominance-halftime' | 'match-dominance-fulltime';
 
+const WEBP_LOOP_MS = 3_000;
+const WEBP_FRAME_MS = 100;
+const WEBP_FRAME_COUNT = WEBP_LOOP_MS / WEBP_FRAME_MS;
+
 const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string; motionSelector?: string }> = {
   'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME', motionSelector: '.lc-attack-lane' },
   'attack-direction-away': { path: 'analysis', graphic: 'ATTACK_DIRECTION_AWAY', motionSelector: '.lc-attack-lane' },
@@ -56,11 +60,14 @@ export async function POST(request: NextRequest) {
         }, config.motionSelector);
       }
       const frames: string[] = [];
-      // One WebP loop is exactly three seconds. The final capture follows the
-      // longest sequence (three ordered attack lanes), so PNG is settled while
-      // the WebP retains the intermediate motion states.
-      for (const delay of [80, 520, 600, 700, 1100]) {
-        await page.waitForTimeout(delay);
+      // Capture at 10fps instead of preserving only a handful of key frames.
+      // It keeps the WebP light enough for overlays while making the three-second
+      // Live Coder entrance motion continuous rather than step-like.
+      const captureStartedAt = Date.now();
+      for (let index = 0; index < WEBP_FRAME_COUNT; index += 1) {
+        const targetElapsed = index * WEBP_FRAME_MS;
+        const remaining = targetElapsed - (Date.now() - captureStartedAt);
+        if (remaining > 0) await page.waitForTimeout(remaining);
         frames.push((await page.screenshot({ type: 'png', omitBackground: true })).toString('base64'));
       }
       result[assetType] = { frames };

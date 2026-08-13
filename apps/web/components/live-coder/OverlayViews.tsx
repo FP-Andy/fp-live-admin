@@ -294,7 +294,15 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
             const strokeWidth = 16 + clamp(lane.value, 0, 100) * 0.42;
             const y2 = 496 - length;
             return (
-              <g className="lc-attack-lane" key={lane.label} style={{ animationDelay: `${Number(laneOrder.get(lane.label) || 0) * 650}ms` }}>
+              <g
+                className="lc-attack-lane"
+                key={lane.label}
+                style={{
+                  animationDelay: `${Number(laneOrder.get(lane.label) || 0) * 650}ms`,
+                  transformBox: 'view-box',
+                  transformOrigin: `${lane.x}px 496px`,
+                }}
+              >
                 <line x1={lane.x} x2={lane.x} y1="496" y2={y2} strokeWidth={strokeWidth} />
                 <path d={`M ${lane.x - strokeWidth * 0.72} ${y2 + strokeWidth * 0.75} L ${lane.x} ${y2 - strokeWidth * 0.9} L ${lane.x + strokeWidth * 0.72} ${y2 + strokeWidth * 0.75}`} strokeWidth={Math.max(10, strokeWidth * 0.45)} />
               </g>

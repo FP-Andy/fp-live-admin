@@ -261,9 +261,9 @@ def _encode_captured_webp(png_frames: list[bytes]) -> bytes:
         format="WEBP",
         save_all=True,
         append_images=images[1:],
-        # Must match the three-second capture cadence in the internal web
-        # renderer: 0.08 → 0.60 → 1.20 → 1.90 → 3.00 seconds.
-        duration=(520, 600, 700, 1100, 80)[:len(images)],
+        # The internal web renderer captures thirty 100ms frames: this makes
+        # the three-second CSS entrance motion fluid in the exported WebP.
+        duration=(100,) * len(images),
         loop=0,
         lossless=False,
         quality=92,
