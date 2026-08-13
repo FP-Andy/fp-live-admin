@@ -9,6 +9,7 @@ import math
 import re
 import shutil
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any
@@ -2049,7 +2050,7 @@ async def broadcast_asset_worker(stop_event: asyncio.Event) -> None:
                 except Exception as exc:
                     # One malformed match or temporary S3 failure must not stop
                     # refreshes for every other concurrent live match.
-                    print(f"broadcast asset refresh failed for {match_obj.id}: {exc}")
+                    print(f"broadcast asset refresh failed for {match_obj.id}: {exc}\n{traceback.format_exc()}")
                     db.rollback()
         finally:
             db.close()
