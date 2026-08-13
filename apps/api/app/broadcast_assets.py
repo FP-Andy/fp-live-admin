@@ -281,7 +281,9 @@ def render_live_coder_asset_pairs(snapshot: dict, asset_types: tuple[str, ...] |
     match_id = str(match.get("id") or "").strip()
     if not match_id:
         raise ValueError("Live Coder capture requires a match id")
-    timeout = float(os.getenv("BROADCAST_LIVE_CODER_RENDER_TIMEOUT_SECONDS", "45"))
+    # Four HD overlays each contain thirty motion frames. Allow enough time for
+    # a complete refresh under transient load instead of discarding the batch.
+    timeout = float(os.getenv("BROADCAST_LIVE_CODER_RENDER_TIMEOUT_SECONDS", "90"))
     try:
         response = httpx.post(
             render_url,
