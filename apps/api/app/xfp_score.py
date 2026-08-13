@@ -11,8 +11,10 @@
   ΔPC 는 fpa.py 에서 행위자 기준으로 부호를 맞춰 들어온다(_actor_pc_sign) — 홈 기준 원본을
   그대로 쓰면 어웨이 팀 액션의 부호가 반대라 MAX(0,ΔPC) 에서 통째로 탈락한다.
 - 수비(S5/S7)는 예외: Outcome 은 Possession 이지만 원시 기대효과가 ΔPC 가 아니다.
-  태클·차단·컷아웃·클리어 = 끊은 지점의 소유권 전환가치(fpa._defense_turnover_value,
-  전용 defense 곡선), 블록 = 막은 슛 xG(goal 곡선).
+  태클·인터셉트·컷아웃·클리어 = 끊은 지점의 소유권 전환가치 × 회수 성공도
+  (fpa._defense_turnover_value · DEFENSE_RETENTION, 전용 defense 곡선),
+  블록 = 막은 슛 xG(goal 곡선). 네 액션의 순서는 산식의 회수 성공도가 만든다 —
+  액션별 앵커로는 못 만든다(백분위가 그 곡선 자신의 분포로 매겨져 상쇄된다).
 - 슛(G1)도 예외: 24코드는 하나여도 **결과가 점수를 가른다**. 슛·블록 [50,78] ·
   유효슛 [74,90] · 골 [84,100] 밴드를 쓰고, 밴드 안 위치는 골문 안 코스 품질이
   주축이며 xG 는 그 위의 난이도 보정이다(shot_outcome_score). 코드는 전부 G1
@@ -198,9 +200,12 @@ def effect_basis(code: str, action: dict[str, Any]) -> str | None:
 
     보통은 Outcome 군과 같다. 수비(DEFENSE_CODES)만 다르다 — Outcome 은 Possession
     이지만 측정값이 ΔPC 가 아니다(`fpa.py`). 슛블락은 막은 슛의 xG 라 goal 곡선을
-    그대로 쓰고, 나머지(태클·차단·컷아웃·클리어)는 끊은 지점의 **소유권 전환가치**
+    그대로 쓰고, 나머지(태클·인터셉트·컷아웃·클리어)는 끊은 지점의 **소유권 전환가치**
     (`_defense_turnover_value`)라 EPV 와 단위는 같아도 델타가 아니라 레벨이라 스케일이
     다르다 — 전용 defense 곡선으로 잰다.
+
+    네 액션이 **한 곡선을 공유하는 것이 설계**다. 액션마다 곡선을 따로 주면 회수
+    성공도(DEFENSE_RETENTION)의 곱셈이 백분위에서 상쇄돼 순서가 사라진다.
     """
     if code in DEFENSE_CODES:
         return "goal" if float(action.get("xg") or 0) > 0 else "defense"

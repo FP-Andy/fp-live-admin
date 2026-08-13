@@ -642,15 +642,54 @@ def _reception_chance_xg(
 # 주운 볼보다는 위로 올라오는 지점(w를 키우면 우리 지역이, 줄이면 하이프레스가 세진다).
 DEFENSE_TURNOVER_WEIGHT = 0.65
 
+# 회수 성공도 — 그 수비 행위 뒤 **우리가 실제로 공을 갖고 나오는 정도** (0~1).
+#
+# 뒤 항('우리가 얻은 위치')에만 곱한다. 앞 항('상대가 잃은 위협')은 누가 어떻게 끊든
+# 똑같이 일어나기 때문이다. 클리어도 위협은 확실히 지운다 — 다만 공을 넘겨줄 뿐이다.
+#
+# 이 구조라서 계수가 위치에 따라 저절로 조절된다:
+#   - 우리 박스 안은 우리 EPV 가 원래 작아(0.007) 네 액션이 96~99 로 붙는다.
+#     걷어내는 게 정답인 상황이고, 그 높은 점수는 위치 항이 벌어준 것이다.
+#   - 상대 진영은 우리 EPV 가 커서(0.054) 계수가 지배한다 — 하이프레스 인터셉트 92 점,
+#     같은 자리에서 아무렇게나 걷어낸 클리어 51 점.
+# 계수를 최종값에 통째로 곱하는 안(박스 안 클리어까지 일괄 감점)은 이 성질을 잃어
+# 버렸다 — 위치는 이미 앞 항이 값을 매겼는데 계수로 또 매기면 이중계상이다.
+#
+# 순서는 왜 여기(산식)에 있고 앵커에 없나 — 백분위는 그 곡선 자신의 분포 안에서
+# 매겨진다. 액션마다 곡선을 따로 주면 곱셈이 상쇄돼(중간짜리 클리어 = 중간 백분위)
+# 순서가 통째로 사라진다. 네 액션이 **한 곡선(families.defense)** 을 공유해야
+# 계수가 살아남는다. 앵커가 맡을 일은 순서가 아니라 눈금(점수대) 재보정이다.
+#
+# 값의 근거 — 그 행위 뒤 우리 팀이 공을 통제하는가:
+#   인터셉트  1.00  패스 길목을 읽고 깨끗하게 가져온다. 앞을 보고 시작한다
+#   태클      0.90  뺏어내지만 볼이 흘러 재경합이 되는 경우가 있다.
+#                   대신 통제 중이던 상대 한 명을 제거한다는 값이 인터셉트엔 없다
+#   컷아웃    0.55  끊기는 했는데 태클도 인터셉트도 아닌 잔여 범주.
+#                   깨끗한 건은 앞의 두 라벨이 먼저 가져가므로 평균이 아래 앉는다
+#   클리어    0.20  위협만 지우고 소유는 포기한다. 상대 재점유가 흔하다
+# 실측 회수율이 쌓이면 이 사전(prior)을 데이터로 갈아끼운다.
+DEFENSE_RETENTION = {
+    "Intercept": 1.00,
+    "Tackle": 0.90,
+    "Cutout": 0.55,
+    "Clear": 0.20,
+}
+# 모르는 수비 액션 — 잔여 범주와 같게 본다(DEFENSE_ARROW_CODES 는 위 넷이 전부라 방어용).
+DEFENSE_RETENTION_DEFAULT = 0.55
 
-def _defense_turnover_value(end_x_adj: Any, end_y: Any) -> float | None:
-    """수비 액션의 가치 = 그 지점에서 일어난 소유권 이전의 크기.
+
+def _defense_turnover_value(end_x_adj: Any, end_y: Any, action_name: Any = None) -> float | None:
+    """수비 액션의 가치 = 그 지점에서 일어난 소유권 이전의 크기 × 회수 성공도.
 
     끊는 순간 두 가지가 동시에 일어난다 — 상대는 그 자리에서 갖고 있던 위협을 잃고,
     우리는 그 자리에서 새 공격을 시작한다. 같은 지점이라도 두 팀은 반대로 공격하므로
     EPV 가 서로 다르다(우리 골문 앞: 상대 0.0597 vs 우리 0.0069). 그래서 두 값을
     모두 재고 비중으로 섞는다 — 우리 지역에서는 '상대가 잃은 위협'이, 상대 지역에서는
     '우리가 얻은 위치'가 저절로 지배한다.
+
+    뒤 항에는 회수 성공도(DEFENSE_RETENTION)를 곱한다 — '우리가 새 공격을 시작한다'
+    는 실제로 공을 갖고 나왔을 때만 참이기 때문이다. action_name 을 안 주면 곱하지
+    않는다(옛 호출 호환).
 
     이전 방식(상대 공격방향 ΔEPV = 상대가 그 패스로 늘린 양)은 '상대가 잃은 것' 만
     봤고, 그마저도 상대 진영에서는 상대에게도 빌드업 구간이라 0 에 가까웠다. 그래서
@@ -665,8 +704,12 @@ def _defense_turnover_value(end_x_adj: Any, end_y: Any) -> float | None:
     theirs = _epv_state_value(FIELD_W - x_value, end_y)
     if ours is None or theirs is None:
         return None
+    retention = (
+        1.0 if action_name is None
+        else DEFENSE_RETENTION.get(str(action_name), DEFENSE_RETENTION_DEFAULT)
+    )
     weight = DEFENSE_TURNOVER_WEIGHT
-    return round(weight * theirs + (1.0 - weight) * ours, 4)
+    return round(weight * theirs + (1.0 - weight) * retention * ours, 4)
 
 
 def _point_team_side(point: dict[str, Any], actor_team: str | None = None) -> str:
@@ -1943,10 +1986,11 @@ def generate_log_entry(
             # EPV(전진 위협가치)는 개념이 안 맞아 계산하지 않는다.
             epv_value = None
         elif action_code_raw in DEFENSE_ARROW_CODES:
-            # 수비: 끊은 지점에서 일어난 소유권 이전의 크기로 잰다 (_defense_turnover_value).
-            # 화살표(start=상대 볼 출발, end=끊은 지점)의 end 가 그 지점이고, 화살표가 없으면
-            # 찍은 점 자체가 곧 끊은 지점이라 점 1개로 찍어도 채점된다.
-            epv_value = _defense_turnover_value(metric_end_x_adj, metric_end_y)
+            # 수비: 끊은 지점에서 일어난 소유권 이전의 크기 × 회수 성공도로 잰다
+            # (_defense_turnover_value). 화살표(start=상대 볼 출발, end=끊은 지점)의 end 가
+            # 그 지점이고, 화살표가 없으면 찍은 점 자체가 곧 끊은 지점이라 점 1개로 찍어도
+            # 채점된다. 액션 이름이 회수 성공도를 가른다(태클/인터셉트/컷아웃/클리어).
+            epv_value = _defense_turnover_value(metric_end_x_adj, metric_end_y, action_name)
         else:
             epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
         if epv_value is not None:
