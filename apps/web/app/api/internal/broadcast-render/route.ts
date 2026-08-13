@@ -7,8 +7,8 @@ export const dynamic = 'force-dynamic';
 type AssetType = 'attack-direction-home' | 'attack-direction-away' | 'possession' | 'xg-shot-map' | 'match-dominance-halftime' | 'match-dominance-fulltime';
 
 const WEBP_LOOP_MS = 3_000;
-const WEBP_FRAME_MS = 100;
-const WEBP_FRAME_COUNT = WEBP_LOOP_MS / WEBP_FRAME_MS;
+const WEBP_FRAME_COUNT = 45;
+const WEBP_FRAME_MS = WEBP_LOOP_MS / WEBP_FRAME_COUNT;
 
 const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string; motionSelector?: string }> = {
   'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME', motionSelector: '.lc-attack-lane' },
@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
         }, config.motionSelector);
       }
       const frames: string[] = [];
-      // Capture at 10fps instead of preserving only a handful of key frames.
+      // Capture at 15fps instead of preserving only a handful of key frames.
       // It keeps the WebP light enough for overlays while making the three-second
       // Live Coder entrance motion continuous rather than step-like.
       for (let index = 0; index < WEBP_FRAME_COUNT; index += 1) {

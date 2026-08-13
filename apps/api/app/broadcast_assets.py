@@ -261,9 +261,13 @@ def _encode_captured_webp(png_frames: list[bytes]) -> bytes:
         format="WEBP",
         save_all=True,
         append_images=images[1:],
-        # The internal web renderer captures thirty 100ms frames: this makes
-        # the three-second CSS entrance motion fluid in the exported WebP.
-        duration=(100,) * len(images),
+        # Divide the exact three-second loop across the captured 15fps frames.
+        # Integer millisecond rounding is distributed, so the total is always
+        # exactly 3,000ms even when the frame count changes.
+        duration=tuple(
+            round((index + 1) * 3_000 / len(images)) - round(index * 3_000 / len(images))
+            for index in range(len(images))
+        ),
         loop=0,
         lossless=False,
         quality=92,
