@@ -52,25 +52,32 @@ export async function POST(request: NextRequest) {
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'networkidle', timeout: 20_000 });
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 12_000 });
       if (config.motionSelector) {
-        // Navigation waits for the data request to settle, which can be after
-        // the CSS animation has already finished. Restart the exact Live Coder
-        // motion immediately before capture so each WebP frame is distinct.
+        // Freeze the CSS motion at each intended timeline point. Screenshot
+        // encoding is slower than 100ms on the production renderer, so merely
+        // waiting between captures would skip frames and make the WebP jerky.
         await page.evaluate((selector) => {
           const elements = [...document.querySelectorAll<HTMLElement>(selector)];
-          for (const element of elements) element.style.animation = 'none';
+          for (const element of elements) {
+            element.dataset.broadcastMotionDelay = getComputedStyle(element).animationDelay || '0ms';
+            element.style.animationPlayState = 'paused';
+          }
           void document.body.offsetHeight;
-          for (const element of elements) element.style.removeProperty('animation');
         }, config.motionSelector);
       }
       const frames: string[] = [];
       // Capture at 10fps instead of preserving only a handful of key frames.
       // It keeps the WebP light enough for overlays while making the three-second
       // Live Coder entrance motion continuous rather than step-like.
-      const captureStartedAt = Date.now();
       for (let index = 0; index < WEBP_FRAME_COUNT; index += 1) {
-        const targetElapsed = index * WEBP_FRAME_MS;
-        const remaining = targetElapsed - (Date.now() - captureStartedAt);
-        if (remaining > 0) await page.waitForTimeout(remaining);
+        if (config.motionSelector) {
+          await page.evaluate(({ selector, elapsed }) => {
+            for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+              const baseDelay = element.dataset.broadcastMotionDelay || '0ms';
+              element.style.animationDelay = `calc(${baseDelay} - ${elapsed}ms)`;
+            }
+            void document.body.offsetHeight;
+          }, { selector: config.motionSelector, elapsed: index * WEBP_FRAME_MS });
+        }
         frames.push((await page.screenshot({ type: 'png', omitBackground: true })).toString('base64'));
       }
       result[assetType] = { frames };
