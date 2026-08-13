@@ -308,6 +308,15 @@ def render_live_coder_asset_pairs(snapshot: dict, asset_types: tuple[str, ...] |
         if not isinstance(raw_assets, dict):
             raise RuntimeError(f"Live Coder capture response omitted assets for {asset_type}")
         raw = raw_assets.get(asset_type)
+        if isinstance(raw, dict) and isinstance(raw.get("png"), str) and isinstance(raw.get("webp"), str):
+            try:
+                result[asset_type] = (
+                    base64.b64decode(raw["png"], validate=True),
+                    base64.b64decode(raw["webp"], validate=True),
+                )
+                continue
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError(f"Live Coder capture returned invalid encoded {asset_type}") from exc
         frames_raw = raw.get("frames") if isinstance(raw, dict) else None
         if not isinstance(frames_raw, list) or not frames_raw:
             raise RuntimeError(f"Live Coder capture omitted {asset_type}")

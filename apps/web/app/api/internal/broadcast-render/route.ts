@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 
 export const runtime = 'nodejs';
@@ -9,6 +10,37 @@ type AssetType = 'attack-direction-home' | 'attack-direction-away' | 'possession
 const WEBP_LOOP_MS = 3_000;
 const WEBP_FRAME_COUNT = 45;
 const WEBP_FRAME_MS = WEBP_LOOP_MS / WEBP_FRAME_COUNT;
+
+function createWebpEncoder(frameRate: number) {
+  const encoder = spawn('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'image2pipe', '-framerate', String(frameRate), '-vcodec', 'png', '-i', 'pipe:0',
+    '-loop', '0', '-c:v', 'libwebp', '-lossless', '0', '-q:v', '92', '-preset', 'picture', '-an',
+    '-f', 'webp', 'pipe:1',
+  ]);
+  const chunks: Buffer[] = [];
+  let stderr = '';
+  encoder.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+  encoder.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  const complete = new Promise<void>((resolve, reject) => {
+    encoder.once('error', reject);
+    encoder.once('close', (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg exited with ${code}: ${stderr}`)));
+  });
+  return {
+    async write(frame: Buffer) {
+      if (encoder.stdin.write(frame)) return;
+      await new Promise<void>((resolve, reject) => {
+        encoder.stdin.once('drain', resolve);
+        encoder.stdin.once('error', reject);
+      });
+    },
+    async finish() {
+      encoder.stdin.end();
+      await complete;
+      return Buffer.concat(chunks);
+    },
+  };
+}
 
 const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string; motionSelector?: string }> = {
   'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME', motionSelector: '.lc-attack-lane' },
@@ -42,13 +74,10 @@ export async function POST(request: NextRequest) {
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   });
   try {
-    const result: Record<string, { frames: string[] }> = {};
+    const result: Record<string, { png: string; webp: string }> = {};
     for (const assetType of [...new Set(assetTypes)]) {
       const config = RENDER_CONFIG[assetType];
-      // The source overlay is 1920×1080 and scales proportionally in the
-      // capture page.  720×405 preserves its 16:9 layout while keeping the
-      // 45-frame render below the API worker's memory ceiling.
-      const page = await browser.newPage({ viewport: { width: 720, height: 405 }, deviceScaleFactor: 1 });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'networkidle', timeout: 20_000 });
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 12_000 });
       if (config.motionSelector) {
@@ -67,11 +96,14 @@ export async function POST(request: NextRequest) {
           void document.body.offsetHeight;
         }, config.motionSelector);
       }
-      const frames: string[] = [];
-      // Capture at 15fps instead of preserving only a handful of key frames.
+      const frameCount = config.motionSelector ? WEBP_FRAME_COUNT : 1;
+      const encoder = createWebpEncoder(config.motionSelector ? WEBP_FRAME_COUNT / 3 : 1);
+      let settledPng = Buffer.alloc(0);
+      // Frames are streamed into ffmpeg immediately. This avoids retaining a
+      // complete 45-frame PNG sequence in the API worker's memory.
       // It keeps the WebP light enough for overlays while making the three-second
       // Live Coder entrance motion continuous rather than step-like.
-      for (let index = 0; index < WEBP_FRAME_COUNT; index += 1) {
+      for (let index = 0; index < frameCount; index += 1) {
         if (config.motionSelector) {
           await page.evaluate(({ selector, elapsed }) => {
             for (const element of document.querySelectorAll<HTMLElement>(selector)) {
@@ -79,11 +111,12 @@ export async function POST(request: NextRequest) {
               element.style.animationDelay = `calc(${baseDelay} - ${elapsed}ms)`;
             }
             void document.body.offsetHeight;
-          }, { selector: config.motionSelector, elapsed: index * WEBP_FRAME_MS });
+          }, { selector: config.motionSelector, elapsed: index === frameCount - 1 ? WEBP_LOOP_MS : index * WEBP_FRAME_MS });
         }
-        frames.push((await page.screenshot({ type: 'png', omitBackground: true })).toString('base64'));
+        settledPng = await page.screenshot({ type: 'png', omitBackground: true });
+        await encoder.write(settledPng);
       }
-      result[assetType] = { frames };
+      result[assetType] = { png: settledPng.toString('base64'), webp: (await encoder.finish()).toString('base64') };
       await page.close();
     }
     return NextResponse.json({ assets: result });
