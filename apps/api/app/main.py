@@ -1956,35 +1956,35 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     manifest = _broadcast_assets_manifest(match_obj)
     store = BroadcastAssetStore()
     match_key = str(match_obj.id)
-    live_rendered = render_live_coder_asset_pairs(snapshot, LIVE_ASSET_TYPES)
-
     live: dict[str, dict] = {}
+    archive = dict(manifest.get("archive") or {})
+    pending_archive_minutes = [
+        minute
+        for minute in (15, 30, 45, 60, 75, 90)
+        if clock_ms >= minute * 60_000 and str(minute) not in archive
+    ]
     for asset_type in LIVE_ASSET_TYPES:
+        # A multi-frame capture is intentionally produced and stored one asset
+        # at a time. Keeping all four 45-frame sequences in RAM at once can
+        # exhaust the worker during the regular one-minute refresh.
+        rendered = render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
         live[asset_type] = store_asset_pair(
             store,
             f"{match_key}/live/{asset_type}/latest",
             asset_type,
             snapshot,
-            rendered=live_rendered[asset_type],
+            rendered=rendered,
         ).as_dict()
-    manifest["live"] = live
-
-    archive = dict(manifest.get("archive") or {})
-    for minute in (15, 30, 45, 60, 75, 90):
-        minute_key = str(minute)
-        if clock_ms < minute * 60_000 or minute_key in archive:
-            continue
-        archive[minute_key] = {
-            asset_type: store_asset_pair(
+        for minute in pending_archive_minutes:
+            archive.setdefault(str(minute), {})[asset_type] = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
                 snapshot,
                 immutable=True,
-                rendered=live_rendered[asset_type],
+                rendered=rendered,
             ).as_dict()
-            for asset_type in LIVE_ASSET_TYPES
-        }
+    manifest["live"] = live
     manifest["archive"] = archive
 
     dominance = dict(manifest.get("dominance") or {})
