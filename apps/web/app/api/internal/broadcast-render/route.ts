@@ -58,7 +58,10 @@ export async function POST(request: NextRequest) {
         await page.evaluate((selector) => {
           const elements = [...document.querySelectorAll<HTMLElement>(selector)];
           for (const element of elements) {
-            element.dataset.broadcastMotionDelay = getComputedStyle(element).animationDelay || '0ms';
+            // Attack lanes receive their stagger value as a React inline style.
+            // Prefer that source; computed shorthand values may lose it when a
+            // just-finished animation is paused for capture.
+            element.dataset.broadcastMotionDelay = element.style.animationDelay || getComputedStyle(element).animationDelay || '0ms';
             element.style.animationPlayState = 'paused';
           }
           void document.body.offsetHeight;
