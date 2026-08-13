@@ -261,7 +261,9 @@ def _encode_captured_webp(png_frames: list[bytes]) -> bytes:
         format="WEBP",
         save_all=True,
         append_images=images[1:],
-        duration=(90, 110, 130, 180, 1900)[:len(images)],
+        # Must match the three-second capture cadence in the internal web
+        # renderer: 0.08 → 0.60 → 1.20 → 1.90 → 3.00 seconds.
+        duration=(520, 600, 700, 1100, 80)[:len(images)],
         loop=0,
         lossless=False,
         quality=92,
