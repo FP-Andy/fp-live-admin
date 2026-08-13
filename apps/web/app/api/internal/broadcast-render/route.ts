@@ -45,10 +45,10 @@ export async function POST(request: NextRequest) {
     const result: Record<string, { frames: string[] }> = {};
     for (const assetType of [...new Set(assetTypes)]) {
       const config = RENDER_CONFIG[assetType];
-      // Broadcast assets are delivered as HD overlays. Rendering at 1280×720
-      // keeps the 30-frame WebP generation inside the minute refresh window
-      // without trading away practical broadcast quality.
-      const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+      // The source overlay is 1920×1080 and scales proportionally in the
+      // capture page.  720×405 preserves its 16:9 layout while keeping the
+      // 45-frame render below the API worker's memory ceiling.
+      const page = await browser.newPage({ viewport: { width: 720, height: 405 }, deviceScaleFactor: 1 });
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'networkidle', timeout: 20_000 });
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 12_000 });
       if (config.motionSelector) {
