@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""저장된 수비 액션의 EPV 를 현재 산식(소유권 전환가치)으로 다시 계산한다.
+"""저장된 수비 액션의 EPV 를 현재 산식(소유권 전환가치 × 회수 성공도)으로 다시 계산한다.
 
 배경
 ----
 수비 액션의 EPV 는 **태깅 시점에 계산돼 DB 에 저장**된다. 산식이 바뀌어도 이미
-저장된 행은 옛 값을 그대로 들고 있다. 지금 저장된 값은 옛 방식(상대 공격방향
-ΔEPV = 상대가 그 패스로 늘린 양, 0.003~0.005 수준)이라, 새 defense 앵커의
-하한(0.0144)보다 작아 **전부 최저점(50점)** 으로 나온다.
+저장된 행은 옛 값을 그대로 들고 있다. 이 스크립트가 필요한 산식 개정이 두 번 있었다:
 
-이 스크립트는 저장된 좌표로 `_defense_turnover_value` 를 다시 돌려 EPV 를 채운다.
-재태깅은 필요 없다 — 필요한 건 '끊은 지점' 좌표뿐이고 로그에 남아 있다.
+1. 옛 방식(상대 공격방향 ΔEPV = 상대가 그 패스로 늘린 양, 0.003~0.005 수준)은
+   새 defense 앵커의 하한(0.0144)보다 작아 **전부 최저점(50점)** 으로 나온다.
+2. 소유권 전환가치에 **회수 성공도**(fpa.DEFENSE_RETENTION — 인터셉트 1.00 /
+   태클 0.90 / 컷아웃 0.55 / 클리어 0.20)가 붙었다. 이걸 안 돌리면 네 액션이
+   끊은 지점만 같으면 같은 점수로 남는다.
+
+이 스크립트는 저장된 좌표와 **액션 이름**으로 `_defense_turnover_value` 를 다시
+돌려 EPV 를 채운다. 재태깅은 필요 없다 — 필요한 건 '끊은 지점' 좌표와 액션
+이름뿐이고 둘 다 로그·행에 남아 있다.
 
 무엇을 고치나
 ------------
@@ -85,8 +90,11 @@ def _direction(log_text: str) -> str:
     return parts[2].lower() if len(parts) > 2 else ""
 
 
-def _recomputed_epv(log_text: str) -> float | None:
-    """로그의 끊은 지점 좌표로 현재 산식(소유권 전환가치)을 다시 계산.
+def _recomputed_epv(log_text: str, action_name: str) -> float | None:
+    """로그의 끊은 지점 좌표로 현재 산식(소유권 전환가치 × 회수 성공도)을 다시 계산.
+
+    action_name 을 반드시 넘긴다 — 안 넘기면 회수 성공도가 1.0 으로 붙어 태클·클리어가
+    다시 같은 값이 된다(그걸 없애려고 넣은 계수다).
 
     공격방향(direction)을 못 읽으면 계산하지 않는다 — 임의로 가정하면 x 를 뒤집을지가
     갈려 값이 좌우 반전된 채 조용히 저장된다. 못 고치는 것보다 나쁘다.
@@ -101,7 +109,7 @@ def _recomputed_epv(log_text: str) -> float | None:
         float(positions[0][0]), float(positions[0][1])
     )
     end_x_adj = FIELD_W - end_x if _direction(log_text) == "left" else end_x
-    return _defense_turnover_value(end_x_adj, end_y)
+    return _defense_turnover_value(end_x_adj, end_y, action_name)
 
 
 def _plan_for_log(saved: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -112,14 +120,15 @@ def _plan_for_log(saved: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]
     for index, row in enumerate(saved.rows or []):
         if not isinstance(row, dict):
             continue
-        if str(row.get("Action") or "") not in DEFENSE_ACTION_NAMES:
+        action_name = str(row.get("Action") or "")
+        if action_name not in DEFENSE_ACTION_NAMES:
             continue
         log_text = logs[index] if index < len(logs) else ""
-        expected = _recomputed_epv(log_text)
+        expected = _recomputed_epv(log_text, action_name)
         stored = _parse_float(row.get("EPV"))
         item = {
             "index": index,
-            "action": str(row.get("Action") or ""),
+            "action": action_name,
             "stored": stored,
             "expected": expected,
             "scene": row.get("SceneIndex"),

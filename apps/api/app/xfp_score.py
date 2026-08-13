@@ -11,8 +11,10 @@
   ΔPC 는 fpa.py 에서 행위자 기준으로 부호를 맞춰 들어온다(_actor_pc_sign) — 홈 기준 원본을
   그대로 쓰면 어웨이 팀 액션의 부호가 반대라 MAX(0,ΔPC) 에서 통째로 탈락한다.
 - 수비(S5/S7)는 예외: Outcome 은 Possession 이지만 원시 기대효과가 ΔPC 가 아니다.
-  태클·차단·컷아웃·클리어 = 끊은 지점의 소유권 전환가치(fpa._defense_turnover_value,
-  전용 defense 곡선), 블록 = 막은 슛 xG(goal 곡선).
+  태클·인터셉트·컷아웃·클리어 = 끊은 지점의 소유권 전환가치 × 회수 성공도
+  (fpa._defense_turnover_value · DEFENSE_RETENTION, 전용 defense 곡선),
+  블록 = 막은 슛 xG(goal 곡선). 네 액션의 순서는 산식의 회수 성공도가 만든다 —
+  액션별 앵커로는 못 만든다(백분위가 그 곡선 자신의 분포로 매겨져 상쇄된다).
 - 슛(G1)도 예외: 24코드는 하나여도 **결과가 점수를 가른다**. 슛·블록 [50,78] ·
   유효슛 [74,90] · 골 [84,100] 밴드를 쓰고, 밴드 안 위치는 골문 안 코스 품질이
   주축이며 xG 는 그 위의 난이도 보정이다(shot_outcome_score). 코드는 전부 G1
@@ -368,9 +370,12 @@ def effect_basis(code: str, action: dict[str, Any]) -> str | None:
 
     보통은 Outcome 군과 같다. 수비(DEFENSE_CODES)만 다르다 — Outcome 은 Possession
     이지만 측정값이 ΔPC 가 아니다(`fpa.py`). 슛블락은 막은 슛의 xG 라 goal 곡선을
-    그대로 쓰고, 나머지(태클·차단·컷아웃·클리어)는 끊은 지점의 **소유권 전환가치**
+    그대로 쓰고, 나머지(태클·인터셉트·컷아웃·클리어)는 끊은 지점의 **소유권 전환가치**
     (`_defense_turnover_value`)라 EPV 와 단위는 같아도 델타가 아니라 레벨이라 스케일이
     다르다 — 전용 defense 곡선으로 잰다.
+
+    네 액션이 **한 곡선을 공유하는 것이 설계**다. 액션마다 곡선을 따로 주면 회수
+    성공도(DEFENSE_RETENTION)의 곱셈이 백분위에서 상쇄돼 순서가 사라진다.
     """
     if code in DEFENSE_CODES:
         return "goal" if float(action.get("xg") or 0) > 0 else "defense"
@@ -473,10 +478,12 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
 
 
 def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
-    """장면(Event) 규칙대로 유효 Effect Action 에 xfpScore·xfpPercentile 을 주석한다(제자리).
+    """정본 규칙대로 유효 Effect Action 에 xfpScore·xfpPercentile 을 주석한다(제자리).
 
     입력은 actionCode·groupIndex 가 이미 붙은 페이로드 액션 목록. 선정되지 못한
     액션은 점수 없이 남는다 (정본: 유효 Effect Action 만 점수화).
+
+    중복 제거는 (장면, 행위자) 단위다 — 아래 groups 주석 참조.
     """
     # 연결 슈팅(G1) 목록 — G2/G3 의 '연결 슈팅 xG' 는 그 액션 뒤 첫 슈팅의 xG.
     shots = sorted(
@@ -491,9 +498,29 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
                 return x
         return None
 
+    # 중복 제거 단위는 **행위자** 다 (장면이 아니다).
+    #
+    # 정본(xFP 24개 액션 정의 3.5.1)은 "한 event_id 는 조건을 충족하면 G·P·S Action 을
+    # 각각 하나씩 생성할 수 있다" 고 쓴다 — 중복 방지의 단위가 event, 곧 한 선수의 한 행위다.
+    # 3.5.2 는 못을 박는다: "대표 Action 선택은 화면의 요약 규칙일 뿐, 나머지 Action 을
+    # 점수·6축에서 제외하는 규칙이 아니다."
+    #
+    # 그런데 groupIndex 는 event 가 아니라 **장면** 이다(fineplay_fpa._assign_action_groups —
+    # 같은 SceneState 를 공유하는 여러 선수의 여러 행). 장면 단위로 "Outcome 군당 1개" 를
+    # 걸면 서로 무관한 선수들이 서로를 밀어낸다:
+    #   - 골 장면에서 어시스트(G2)가 슈팅(G1)에 밀려 무득점 — 둘 다 goal 군
+    #   - 소유 패스(S2)·수비(S5/S7)·압박(S9)·듀얼(S11/S12)이 전부 possession 군이라
+    #     한 장면에 같이 찍히면 넷 중 하나만 살아남는다
+    #   - 전진 패스와 짝지어진 침투(P6)가 거의 항상 탈락한다 — 둘 다 progression 군
+    # 행위자로 쪼개면 각자 자기 행위의 점수를 받는다. 한 선수가 한 장면에서 여러 번
+    # 찍혀도 그 안에서는 정본 규칙(군당 1개·최대 3개)이 그대로 걸리고, 선수 점수는
+    # clipScore = max(액션 점수) 라 인플레도 생기지 않는다.
+    #
+    # 등번호가 없는 행(압박 'pr' 은 팀 단위라 번호를 안 찍는다)은 팀별로 한 덩어리가 된다.
     groups: dict[Any, list[dict[str, Any]]] = {}
     for i, pa in enumerate(payload_actions):
-        key = pa.get("groupIndex") if pa.get("groupIndex") is not None else f"solo-{i}"
+        scene = pa.get("groupIndex") if pa.get("groupIndex") is not None else f"solo-{i}"
+        key = (scene, pa.get("teamSide"), pa.get("jersey"))
         groups.setdefault(key, []).append(pa)
 
     for members in groups.values():
