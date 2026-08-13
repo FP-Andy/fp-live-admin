@@ -4,10 +4,11 @@ import { chromium } from 'playwright-core';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type AssetType = 'attack-direction' | 'possession' | 'xg-shot-map' | 'match-dominance-halftime' | 'match-dominance-fulltime';
+type AssetType = 'attack-direction-home' | 'attack-direction-away' | 'possession' | 'xg-shot-map' | 'match-dominance-halftime' | 'match-dominance-fulltime';
 
 const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string }> = {
-  'attack-direction': { path: 'analysis', graphic: 'ATTACK_DIRECTION_BOTH' },
+  'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME' },
+  'attack-direction-away': { path: 'analysis', graphic: 'ATTACK_DIRECTION_AWAY' },
   possession: { path: 'possession', graphic: 'POSSESSION' },
   'xg-shot-map': { path: 'analysis', graphic: 'XG' },
   'match-dominance-halftime': { path: 'fullscreen', graphic: 'MATCH_DOMINANCE' },
@@ -44,7 +45,10 @@ export async function POST(request: NextRequest) {
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'networkidle', timeout: 20_000 });
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 12_000 });
       const frames: string[] = [];
-      for (const delay of [60, 100, 120, 160, 240]) {
+      // The final frame is deliberately after the longest Live Coder sequence
+      // (attack lanes: 3 × 180ms delay + 700ms rise), so PNG is always settled
+      // while WebP preserves the intermediate motion frames.
+      for (const delay of [70, 160, 220, 300, 420]) {
         await page.waitForTimeout(delay);
         frames.push((await page.screenshot({ type: 'png', omitBackground: true })).toString('base64'));
       }

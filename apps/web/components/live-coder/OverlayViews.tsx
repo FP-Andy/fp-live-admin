@@ -7,7 +7,7 @@ import { apiJson } from '../../lib/api';
 import type { BroadcastSnapshot } from './types';
 
 type OverlayKind = 'scoreboard' | 'card-analysis' | 'analysis' | 'possession' | 'event' | 'fullscreen';
-type CaptureGraphic = 'ATTACK_DIRECTION_HOME' | 'ATTACK_DIRECTION_AWAY' | 'ATTACK_DIRECTION_BOTH' | 'XG' | 'POSSESSION' | 'MATCH_DOMINANCE';
+type CaptureGraphic = 'ATTACK_DIRECTION_HOME' | 'ATTACK_DIRECTION_AWAY' | 'XG' | 'POSSESSION' | 'MATCH_DOMINANCE';
 type FadePhase = 'enter' | 'shown' | 'exit';
 type FadedOverlay = {
   key: string;
@@ -259,7 +259,7 @@ function Scoreboard({ snapshot }: { snapshot: BroadcastSnapshot }) {
   );
 }
 
-function AttackDirection({ snapshot, team, paired = false }: { snapshot: BroadcastSnapshot; team: 'HOME' | 'AWAY'; paired?: boolean }) {
+function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team: 'HOME' | 'AWAY' }) {
   const row = snapshot.analysis.attack_direction?.find((item) => item.team === team);
   const ratio = row?.direction_ratio || {};
   const state = snapshot.broadcast_state;
@@ -270,8 +270,11 @@ function AttackDirection({ snapshot, team, paired = false }: { snapshot: Broadca
     { label: 'C', value: Number(ratio.center_pct || 0), x: 390 },
     { label: 'R', value: Number(ratio.right_pct || 0), x: 545 },
   ];
+  const laneOrder = new Map([...lanes]
+    .sort((left, right) => right.value - left.value)
+    .map((lane, index) => [lane.label, index]));
   return (
-    <div className={`lc-analysis-card compact${paired ? ' lc-attack-direction-pair-card' : ''}`}>
+    <div className="lc-analysis-card compact">
       <div className="lc-attack-head">
         <div className="lc-attack-team-logo">{teamLogo(logoUrl, teamName)}</div>
         <strong>{teamName}</strong>
@@ -291,7 +294,7 @@ function AttackDirection({ snapshot, team, paired = false }: { snapshot: Broadca
             const strokeWidth = 16 + clamp(lane.value, 0, 100) * 0.42;
             const y2 = 496 - length;
             return (
-              <g className="lc-attack-lane" key={lane.label}>
+              <g className="lc-attack-lane" key={lane.label} style={{ animationDelay: `${Number(laneOrder.get(lane.label) || 0) * 180}ms` }}>
                 <line x1={lane.x} x2={lane.x} y1="496" y2={y2} strokeWidth={strokeWidth} />
                 <path d={`M ${lane.x - strokeWidth * 0.72} ${y2 + strokeWidth * 0.75} L ${lane.x} ${y2 - strokeWidth * 0.9} L ${lane.x + strokeWidth * 0.72} ${y2 + strokeWidth * 0.75}`} strokeWidth={Math.max(10, strokeWidth * 0.45)} />
               </g>
@@ -305,15 +308,6 @@ function AttackDirection({ snapshot, team, paired = false }: { snapshot: Broadca
       <div className="lc-attack-brand">
         <img src="/live-coder/fineplay-logo.png" alt="Fine Play" />
       </div>
-    </div>
-  );
-}
-
-function AttackDirectionBoth({ snapshot }: { snapshot: BroadcastSnapshot }) {
-  return (
-    <div className="lc-attack-direction-pair">
-      <AttackDirection snapshot={snapshot} team="HOME" paired />
-      <AttackDirection snapshot={snapshot} team="AWAY" paired />
     </div>
   );
 }
@@ -356,8 +350,8 @@ function XgCard({ snapshot }: { snapshot: BroadcastSnapshot }) {
         <rect className="lc-xg-pitch-line" x={pitch.x} y={pitch.y} width={pitch.width} height={pitch.height} rx="24" />
         <rect className="lc-xg-pitch-line" x={box.x} y={box.y} width={box.width} height={box.height} rx="22" />
         <path className="lc-xg-pitch-line" d={`M ${goal.x} ${pitch.y} V ${goal.y + 24} Q ${goal.x} ${goal.y} ${goal.x + 24} ${goal.y} H ${goal.x + goal.width - 24} Q ${goal.x + goal.width} ${goal.y} ${goal.x + goal.width} ${goal.y + 24} V ${pitch.y}`} />
-        <line className="lc-xg-shot-line" x1={shotPoint.x} y1={shotPoint.y} x2={targetPoint.x} y2={targetPoint.y} />
         <circle className="lc-xg-shot-dot" cx={shotPoint.x} cy={shotPoint.y} r="34" />
+        <line className="lc-xg-shot-line" x1={shotPoint.x} y1={shotPoint.y} x2={targetPoint.x} y2={targetPoint.y} />
         <polygon className="lc-xg-goal-star" points={starPoints(targetPoint.x, targetPoint.y)} />
       </svg>
       <div className="lc-xg-map-bottom">
@@ -377,13 +371,16 @@ function XgCard({ snapshot }: { snapshot: BroadcastSnapshot }) {
 function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = Number(snapshot.analysis.possession?.home_pct || 0);
   const away = Number(snapshot.analysis.possession?.away_pct || 0);
+  const homeColor = snapshot.broadcast_state.home_color || '#ff7417';
+  const awayColor = snapshot.broadcast_state.away_color || '#3d22f3';
   return (
     <div className="lc-possession">
       <div className="lc-team-crest">{teamLogo(snapshot.broadcast_state.home_logo_url, snapshot.match.home.name)}</div>
       <div className="lc-possession-core">
         <div className="lc-possession-title">볼 점유율(%)</div>
         <div className="lc-possession-bar">
-          <span className="home" style={{ width: `${Math.max(0, Math.min(100, home))}%` }} />
+          <span className="home" style={{ width: `${Math.max(0, Math.min(100, home))}%`, backgroundColor: homeColor }} />
+          <span className="away" style={{ width: `${Math.max(0, Math.min(100, away))}%`, backgroundColor: awayColor }} />
           <strong className="home-pct">{fmtPct(home)}</strong>
           <strong className="away-pct">{fmtPct(away)}</strong>
         </div>
@@ -471,7 +468,6 @@ function Analysis({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const graphic = snapshot.broadcast_state.active_graphic;
   if (graphic === 'ATTACK_DIRECTION_HOME') return <AttackDirection snapshot={snapshot} team="HOME" />;
   if (graphic === 'ATTACK_DIRECTION_AWAY') return <AttackDirection snapshot={snapshot} team="AWAY" />;
-  if (graphic === 'ATTACK_DIRECTION_BOTH') return <AttackDirectionBoth snapshot={snapshot} />;
   if (graphic === 'XG') return <XgCard snapshot={snapshot} />;
   return null;
 }
@@ -523,7 +519,7 @@ export default function OverlayView({ matchId, kind }: { matchId: string; kind: 
   const [scale, setScale] = useState(1);
   const requestedGraphic = searchParams.get('render') as CaptureGraphic | null;
   const allowedGraphic = requestedGraphic && (
-    ((kind === 'analysis' || kind === 'card-analysis') && ['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'ATTACK_DIRECTION_BOTH', 'XG'].includes(requestedGraphic)) ||
+    ((kind === 'analysis' || kind === 'card-analysis') && ['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'XG'].includes(requestedGraphic)) ||
     (kind === 'possession' && requestedGraphic === 'POSSESSION') ||
     (kind === 'fullscreen' && requestedGraphic === 'MATCH_DOMINANCE')
   ) ? requestedGraphic : null;
@@ -532,7 +528,7 @@ export default function OverlayView({ matchId, kind }: { matchId: string; kind: 
     const state = { ...snapshot.broadcast_state };
     if (allowedGraphic === 'POSSESSION') state.possession_visible = true;
     if (allowedGraphic === 'MATCH_DOMINANCE') state.fullscreen_graphic = 'MATCH_DOMINANCE';
-    if (['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'ATTACK_DIRECTION_BOTH', 'XG'].includes(allowedGraphic)) {
+    if (['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'XG'].includes(allowedGraphic)) {
       state.active_graphic = allowedGraphic as BroadcastSnapshot['broadcast_state']['active_graphic'];
     }
     return { ...snapshot, broadcast_state: state };

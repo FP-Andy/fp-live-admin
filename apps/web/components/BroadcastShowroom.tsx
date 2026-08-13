@@ -25,7 +25,8 @@ type BroadcastMatch = {
 };
 
 const LIVE_LABELS: Record<string, string> = {
-  'attack-direction': '공격 방향',
+  'attack-direction-home': '공격 방향 · 홈',
+  'attack-direction-away': '공격 방향 · 어웨이',
   possession: '점유율',
   'xg-shot-map': 'xG 샷 맵',
 };
@@ -63,6 +64,32 @@ function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
       </a>
       <footer>{formatTime(asset.generated_at)}</footer>
     </article>
+  );
+}
+
+function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
+  const [copied, setCopied] = useState<string | null>(null);
+  if (!asset) return null;
+  const copy = async (format: 'PNG' | 'WebP', url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(format);
+      window.setTimeout(() => setCopied(null), 1600);
+    } catch {
+      setCopied(null);
+    }
+  };
+  return (
+    <div className="broadcast-asset-urls">
+      <strong>{title}</strong>
+      {([['PNG', asset.png_url], ['WebP', asset.webp_url]] as const).map(([format, url]) => (
+        <div className="broadcast-asset-url" key={format}>
+          <span>{format}</span>
+          <a href={url} target="_blank" rel="noreferrer" title={url}>{url}</a>
+          <button type="button" onClick={() => copy(format, url)}>{copied === format ? '복사됨' : '복사'}</button>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -135,6 +162,9 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
         <span>{match.status} · {match.competition_class} R{match.round_number}</span>
         <h1>{match.home_team} <i>vs</i> {match.away_team}</h1>
         <p>{match.name} · 마지막 생성 {formatTime(match.generated_at)}</p>
+        <div className="broadcast-live-url-list" aria-label="실시간 에셋 URL">
+          {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetUrlLinks key={type} title={label} asset={match.assets.live?.[type]} />)}
+        </div>
       </section>
 
       <section className="broadcast-section">
@@ -145,7 +175,7 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
       </section>
 
       <section className="broadcast-section">
-        <div className="broadcast-section-heading"><h2>15분 아카이브</h2><p>15·30·45·60·75·90분의 라이브 그래픽 18장을 고정 보관합니다.</p></div>
+        <div className="broadcast-section-heading"><h2>15분 아카이브</h2><p>15·30·45·60·75·90분의 라이브 그래픽 24장을 고정 보관합니다.</p></div>
         {archiveMinutes.map((minute) => (
           <div className="broadcast-archive-row" key={minute}>
             <h3>{minuteLabel(minute)}</h3>
