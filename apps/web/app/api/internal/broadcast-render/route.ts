@@ -37,7 +37,14 @@ function createWebpEncoder(frameRate: number) {
     async finish() {
       encoder.stdin.end();
       await complete;
-      return Buffer.concat(chunks);
+      const webp = Buffer.concat(chunks);
+      // WebP's RIFF header needs the total payload size. ffmpeg cannot seek
+      // back to fill it when muxing to stdout, so write it after concatenation.
+      if (webp.subarray(0, 4).toString() !== 'RIFF' || webp.subarray(8, 12).toString() !== 'WEBP') {
+        throw new Error('ffmpeg did not return a valid WebP container');
+      }
+      webp.writeUInt32LE(webp.length - 8, 4);
+      return webp;
     },
   };
 }
