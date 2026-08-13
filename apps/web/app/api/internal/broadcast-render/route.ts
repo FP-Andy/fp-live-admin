@@ -6,11 +6,11 @@ export const dynamic = 'force-dynamic';
 
 type AssetType = 'attack-direction-home' | 'attack-direction-away' | 'possession' | 'xg-shot-map' | 'match-dominance-halftime' | 'match-dominance-fulltime';
 
-const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string }> = {
-  'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME' },
-  'attack-direction-away': { path: 'analysis', graphic: 'ATTACK_DIRECTION_AWAY' },
-  possession: { path: 'possession', graphic: 'POSSESSION' },
-  'xg-shot-map': { path: 'analysis', graphic: 'XG' },
+const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string; motionSelector?: string }> = {
+  'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME', motionSelector: '.lc-attack-lane' },
+  'attack-direction-away': { path: 'analysis', graphic: 'ATTACK_DIRECTION_AWAY', motionSelector: '.lc-attack-lane' },
+  possession: { path: 'possession', graphic: 'POSSESSION', motionSelector: '.lc-possession-bar span' },
+  'xg-shot-map': { path: 'analysis', graphic: 'XG', motionSelector: '.lc-xg-shot-dot, .lc-xg-shot-line, .lc-xg-goal-star' },
   'match-dominance-halftime': { path: 'fullscreen', graphic: 'MATCH_DOMINANCE' },
   'match-dominance-fulltime': { path: 'fullscreen', graphic: 'MATCH_DOMINANCE' },
 };
@@ -44,6 +44,17 @@ export async function POST(request: NextRequest) {
       const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'networkidle', timeout: 20_000 });
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 12_000 });
+      if (config.motionSelector) {
+        // Navigation waits for the data request to settle, which can be after
+        // the CSS animation has already finished. Restart the exact Live Coder
+        // motion immediately before capture so each WebP frame is distinct.
+        await page.evaluate((selector) => {
+          const elements = [...document.querySelectorAll<HTMLElement>(selector)];
+          for (const element of elements) element.style.animation = 'none';
+          void document.body.offsetHeight;
+          for (const element of elements) element.style.removeProperty('animation');
+        }, config.motionSelector);
+      }
       const frames: string[] = [];
       // The final frame is deliberately after the longest Live Coder sequence
       // (attack lanes: 3 × 180ms delay + 700ms rise), so PNG is always settled
