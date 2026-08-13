@@ -86,6 +86,12 @@ from .fineplay_plan import (
 from .highlight_storage import default_storage as highlight_default_storage
 from .highlight_storage import output_prefix as highlight_output_prefix
 from .scene_motion import attach_scene_motions
+from .broadcast_assets import (
+    BroadcastAssetStore,
+    DOMINANCE_ASSET_TYPES,
+    LIVE_ASSET_TYPES,
+    store_asset_pair,
+)
 from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
 from .schemas import (
     ArchiveMatchRequest,
@@ -144,6 +150,7 @@ worker_stop_event = asyncio.Event()
 worker_task: asyncio.Task | None = None
 system_monitor_task: asyncio.Task | None = None
 schedule_slack_task: asyncio.Task | None = None
+broadcast_asset_task: asyncio.Task | None = None
 SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
@@ -182,6 +189,8 @@ FCM_TEMPLATE_RUNTIME_DIR = FCM_RUNTIME_DIR / "templates"
 FPA_MODEL_ROOM_DIR = Path(os.getenv("FPA_MODEL_ROOM_DIR", "/app/runtime/fpa_model_room")).resolve()
 BROADCAST_RUNTIME_DIR = Path(os.getenv("BROADCAST_RUNTIME_DIR", "/app/runtime/broadcast")).resolve()
 BROADCAST_LOGO_DIR = BROADCAST_RUNTIME_DIR / "logos"
+BROADCAST_ASSET_REFRESH_SECONDS = max(10, int(os.getenv("BROADCAST_ASSET_REFRESH_SECONDS", "60")))
+BROADCAST_INGEST_KEY = os.getenv("BROADCAST_INGEST_KEY", "").strip()
 
 FPA_MODEL_ROOM_SLOTS: dict[str, dict[str, str]] = {
     "xg": {
@@ -1467,7 +1476,7 @@ def _probe_hls_url(hls_url: str | None) -> dict:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global worker_task, system_monitor_task, schedule_slack_task
+    global worker_task, system_monitor_task, schedule_slack_task, broadcast_asset_task
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
     ensure_highlight_runtime_dirs()
@@ -1480,6 +1489,7 @@ async def startup() -> None:
     worker_task = asyncio.create_task(outbox_worker(worker_stop_event))
     system_monitor_task = asyncio.create_task(system_monitor_worker(worker_stop_event))
     schedule_slack_task = asyncio.create_task(schedule_slack_worker(worker_stop_event))
+    broadcast_asset_task = asyncio.create_task(broadcast_asset_worker(worker_stop_event))
 
 
 @app.on_event("shutdown")
@@ -1491,6 +1501,8 @@ async def shutdown() -> None:
         await system_monitor_task
     if schedule_slack_task:
         await schedule_slack_task
+    if broadcast_asset_task:
+        await broadcast_asset_task
 
 
 def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
@@ -1901,6 +1913,150 @@ def _build_scoreboard_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
         "analysis": {},
         "updated_at": datetime.utcnow().isoformat(),
     }
+
+
+def _broadcast_assets_manifest(match_obj: Match) -> dict:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    raw = metadata.get("broadcast_assets") if isinstance(metadata.get("broadcast_assets"), dict) else {}
+    return {
+        "version": 1,
+        "live": dict(raw.get("live") or {}),
+        "archive": dict(raw.get("archive") or {}),
+        "dominance": dict(raw.get("dominance") or {}),
+        "last_generated_at": raw.get("last_generated_at"),
+    }
+
+
+def _broadcast_is_running(match_obj: Match, db: Session) -> bool:
+    state = _broadcast_state(match_obj)
+    latest_state = _latest_state(match_obj.id, db)
+    return bool(state.get("clock_running") or (latest_state and latest_state.running))
+
+
+def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
+    match = snapshot.get("match") if isinstance(snapshot.get("match"), dict) else {}
+    return max(0, int(match.get("fla_clock_ms") or match.get("clock_ms") or 0))
+
+
+def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
+    """Render current live assets and capture the six archive slots once each.
+
+    Rendering is deliberately idempotent: the moving `latest` assets overwrite
+    their fixed keys every minute, while archive keys are created only once.
+    """
+    if _normalize_sport(getattr(match_obj, "sport", None)) != "FOOTBALL":
+        return None
+    if not force and (match_obj.archived or not _broadcast_is_running(match_obj, db)):
+        return None
+
+    snapshot = _build_broadcast_snapshot(match_obj, db)
+    clock_ms = _broadcast_clock_from_snapshot(snapshot)
+    manifest = _broadcast_assets_manifest(match_obj)
+    store = BroadcastAssetStore()
+    match_key = str(match_obj.id)
+
+    live: dict[str, dict] = {}
+    for asset_type in LIVE_ASSET_TYPES:
+        live[asset_type] = store_asset_pair(
+            store,
+            f"{match_key}/live/{asset_type}/latest",
+            asset_type,
+            snapshot,
+        ).as_dict()
+    manifest["live"] = live
+
+    archive = dict(manifest.get("archive") or {})
+    for minute in (15, 30, 45, 60, 75, 90):
+        minute_key = str(minute)
+        if clock_ms < minute * 60_000 or minute_key in archive:
+            continue
+        archive[minute_key] = {
+            asset_type: store_asset_pair(
+                store,
+                f"{match_key}/archive/{minute}/{asset_type}",
+                asset_type,
+                snapshot,
+                immutable=True,
+            ).as_dict()
+            for asset_type in LIVE_ASSET_TYPES
+        }
+    manifest["archive"] = archive
+
+    dominance = dict(manifest.get("dominance") or {})
+    for minute, asset_type, slot in ((45, "match-dominance-halftime", "halftime"), (90, "match-dominance-fulltime", "fulltime")):
+        if clock_ms >= minute * 60_000 and slot not in dominance:
+            dominance[slot] = store_asset_pair(
+                store,
+                f"{match_key}/archive/{minute}/{asset_type}",
+                asset_type,
+                snapshot,
+                immutable=True,
+            ).as_dict()
+    manifest["dominance"] = dominance
+    manifest["last_generated_at"] = datetime.utcnow().isoformat()
+
+    metadata = dict(match_obj.metadata_json or {})
+    metadata["broadcast_assets"] = manifest
+    match_obj.metadata_json = metadata
+    db.commit()
+    return manifest
+
+
+def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    teams = _team_names_from_match(match_obj)
+    latest_state = _latest_state(match_obj.id, db)
+    running = _broadcast_is_running(match_obj, db)
+    manifest = _broadcast_assets_manifest(match_obj)
+    return {
+        "match_id": str(match_obj.id),
+        "name": match_obj.name,
+        "home_team": teams["HOME"],
+        "away_team": teams["AWAY"],
+        "competition_class": _normalize_competition_class(match_obj.competition_class),
+        "round_number": int(match_obj.round_number or 1),
+        "status": "LIVE" if running else "OPEN",
+        "clock_ms": int(latest_state.clock_ms) if latest_state else 0,
+        "archived": bool(match_obj.archived),
+        "assets": manifest,
+        "generated_at": manifest.get("last_generated_at"),
+        "created_at": match_obj.created_at.isoformat(),
+        "metadata": {"home_color": _broadcast_state(match_obj).get("home_color"), "away_color": _broadcast_state(match_obj).get("away_color")},
+    }
+
+
+def _require_broadcast_ingest_key(x_broadcast_key: str | None = Header(default=None, alias="X-Broadcast-Key")) -> None:
+    if not BROADCAST_INGEST_KEY:
+        raise HTTPException(status_code=503, detail="BROADCAST_INGEST_KEY is not configured")
+    if not x_broadcast_key or not hmac.compare_digest(x_broadcast_key, BROADCAST_INGEST_KEY):
+        raise HTTPException(status_code=401, detail="Invalid broadcast ingest key")
+
+
+async def broadcast_asset_worker(stop_event: asyncio.Event) -> None:
+    """Keeps the public latest assets fresh without any broadcaster request work."""
+    while not stop_event.is_set():
+        db = SessionLocal()
+        try:
+            matches = (
+                db.query(Match)
+                .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
+                .order_by(Match.created_at.desc())
+                .all()
+            )
+            for match_obj in matches:
+                try:
+                    _refresh_broadcast_assets(match_obj, db)
+                except Exception as exc:
+                    # One malformed match or temporary S3 failure must not stop
+                    # refreshes for every other concurrent live match.
+                    print(f"broadcast asset refresh failed for {match_obj.id}: {exc}")
+                    db.rollback()
+        finally:
+            db.close()
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=BROADCAST_ASSET_REFRESH_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 def _require_football_match_for_partner(match_id: UUID, db: Session) -> Match:
@@ -5597,6 +5753,61 @@ def get_broadcast_snapshot(match_id: UUID, view: str | None = Query(default=None
     return snapshot
 
 
+@app.get("/api/broadcast/v1/live-matches")
+def list_broadcast_live_matches(db: Session = Depends(get_db)):
+    """Public showroom index.  Only open football matches are discoverable."""
+    rows = (
+        db.query(Match)
+        .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
+        .order_by(Match.created_at.desc())
+        .all()
+    )
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "matches": [_broadcast_public_match(row, db) for row in rows],
+    }
+
+
+@app.get("/api/broadcast/v1/matches/{match_id}")
+def get_broadcast_showroom_match(match_id: UUID, db: Session = Depends(get_db)):
+    row = _require_football_match_for_partner(match_id, db)
+    return _broadcast_public_match(row, db)
+
+
+@app.post("/api/broadcast/v1/matches/{match_id}/refresh")
+def refresh_broadcast_assets(
+    match_id: UUID,
+    finalize: bool = Query(default=False),
+    _auth: None = Depends(_require_broadcast_ingest_key),
+    db: Session = Depends(get_db),
+):
+    """FPC can call this after pushing new data instead of waiting for the minute worker."""
+    row = _require_football_match_for_partner(match_id, db)
+    manifest = _refresh_broadcast_assets(row, db, force=finalize)
+    if manifest is None:
+        raise HTTPException(status_code=409, detail="Match is not running; use finalize=true only after the final data write")
+    return {"ok": True, "match_id": str(match_id), "assets": manifest}
+
+
+@app.get("/api/broadcast/assets/{asset_path:path}")
+def get_broadcast_asset(asset_path: str):
+    """Development fallback. Production returns the CDN URL directly from manifests."""
+    store = BroadcastAssetStore()
+    try:
+        path = store.resolve_local(asset_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid asset path") from exc
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Asset is served from configured CDN")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Broadcast asset not found")
+    suffix = path.suffix.lower()
+    media_type = "image/webp" if suffix == ".webp" else "image/png"
+    is_latest = "/live/" in f"/{asset_path}" and path.stem == "latest"
+    cache_control = "public, max-age=55, must-revalidate" if is_latest else "public, max-age=31536000, immutable"
+    return FileResponse(str(path), media_type=media_type, headers={"Cache-Control": cache_control})
+
+
 @app.post("/api/matches/{match_id}/archive")
 def archive_match(
     match_id: UUID,
@@ -5611,6 +5822,10 @@ def archive_match(
 
     if body.archived:
         _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Archive")
+        # Capture the final 90-minute slot before the match leaves the minute
+        # worker's active set.  If the asset origin is unavailable, do not
+        # silently archive a match without its promised public deliverables.
+        _refresh_broadcast_assets(row, db, force=True)
         if body.stop_stream:
             _gateway_stop_stream(match_id)
         row.archived = True
