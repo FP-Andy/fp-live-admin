@@ -22,6 +22,19 @@ type BroadcastMatch = {
   clock_ms: number;
   assets: AssetManifest;
   generated_at?: string | null;
+  branding?: {
+    home_logo_url?: string;
+    away_logo_url?: string;
+    home_color?: string;
+    away_color?: string;
+  };
+};
+
+type BroadcastMatchList = {
+  generated_at: string;
+  matches: BroadcastMatch[];
+  competition_classes: string[];
+  pagination: { page: number; page_size: number; total: number; total_pages: number };
 };
 
 const LIVE_LABELS: Record<string, string> = {
@@ -37,6 +50,14 @@ function formatTime(value?: string | null) {
   if (!value) return '아직 생성되지 않음';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
+}
+
+function TeamMark({ name, logoUrl, color }: { name: string; logoUrl?: string; color?: string }) {
+  return (
+    <span className="broadcast-team-mark" style={{ borderColor: color || '#d7dce2' }} aria-label={name}>
+      {logoUrl ? <img src={logoUrl} alt={`${name} 로고`} /> : <b>{name.slice(0, 1)}</b>}
+    </span>
+  );
 }
 
 function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
@@ -124,8 +145,18 @@ function useBroadcastResource<T>(url: string) {
 }
 
 export function BroadcastShowroomIndex() {
-  const { data, error } = useBroadcastResource<{ generated_at: string; matches: BroadcastMatch[] }>('/api/broadcast/v1/live-matches');
+  const [competitionClass, setCompetitionClass] = useState('');
+  const [page, setPage] = useState(1);
+  const requestUrl = useMemo(() => {
+    const query = new URLSearchParams({ page: String(page), page_size: '10' });
+    if (competitionClass) query.set('competition_class', competitionClass);
+    return `/api/broadcast/v1/live-matches?${query.toString()}`;
+  }, [competitionClass, page]);
+  const { data, error } = useBroadcastResource<BroadcastMatchList>(requestUrl);
   const matches = data?.matches || [];
+  const pagination = data?.pagination;
+  const totalPages = pagination?.total_pages || 1;
+  const pageNumbers = Array.from({ length: totalPages }, (_, index) => index + 1);
   return (
     <main className="broadcast-showroom">
       <section className="broadcast-hero">
@@ -135,16 +166,46 @@ export function BroadcastShowroomIndex() {
         <small>마지막 목록 갱신: {formatTime(data?.generated_at)}</small>
       </section>
       {error ? <p className="broadcast-error">목록을 불러오지 못했습니다: {error}</p> : null}
-      <section className="broadcast-match-grid">
-        {matches.map((match) => (
-          <Link className="broadcast-match-card" href={`/matches/${match.match_id}`} key={match.match_id}>
-            <div className="broadcast-match-top"><span className={match.status === 'LIVE' ? 'live' : 'open'}>{match.status}</span><small>{match.competition_class} · R{match.round_number}</small></div>
-            <strong>{match.home_team} <i>vs</i> {match.away_team}</strong>
-            <p>{match.name}</p>
-            <footer>{match.assets.live && Object.keys(match.assets.live).length ? '최신 그래픽 준비됨' : '그래픽 생성 대기'}</footer>
-          </Link>
-        ))}
-        {!error && data && !matches.length ? <p className="broadcast-empty">현재 쇼룸에 표시할 미아카이브 경기가 없습니다.</p> : null}
+      <section className="broadcast-match-list-section">
+        <div className="broadcast-list-toolbar">
+          <div><h2>경기 선택</h2><p>대회별로 최근 생성된 미아카이브 경기를 확인합니다.</p></div>
+          <label>
+            <span>대회 필터</span>
+            <select
+              value={competitionClass}
+              onChange={(event) => { setCompetitionClass(event.target.value); setPage(1); }}
+            >
+              <option value="">전체 대회</option>
+              {(data?.competition_classes || []).map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="broadcast-match-list" role="table" aria-label="쇼룸 경기 목록">
+          <div className="broadcast-match-list-head" role="row">
+            <span>번호</span><span>대회</span><span>경기</span><span>상태</span><span>그래픽</span>
+          </div>
+          {matches.map((match, index) => (
+            <Link className="broadcast-match-list-row" href={`/matches/${match.match_id}`} key={match.match_id} role="row">
+              <span className="broadcast-match-number">{((pagination?.page || 1) - 1) * 10 + index + 1}</span>
+              <span className="broadcast-competition-chip">{match.competition_class} · {match.round_number}R</span>
+              <span className="broadcast-match-teams">
+                <TeamMark name={match.home_team} logoUrl={match.branding?.home_logo_url} color={match.branding?.home_color} />
+                <strong>{match.home_team} <i>vs</i> {match.away_team}</strong>
+                <TeamMark name={match.away_team} logoUrl={match.branding?.away_logo_url} color={match.branding?.away_color} />
+              </span>
+              <span className={`broadcast-status ${match.status === 'LIVE' ? 'live' : 'open'}`}>{match.status}</span>
+              <span className="broadcast-list-ready">{match.assets.live && Object.keys(match.assets.live).length ? '준비됨 →' : '생성 대기 →'}</span>
+            </Link>
+          ))}
+        </div>
+        {!error && data && !matches.length ? <p className="broadcast-empty">선택한 대회에 표시할 미아카이브 경기가 없습니다.</p> : null}
+        {pagination && pagination.total > 0 ? (
+          <nav className="broadcast-pagination" aria-label="경기 목록 페이지">
+            <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1}>이전</button>
+            {pageNumbers.map((value) => <button type="button" className={value === page ? 'current' : ''} onClick={() => setPage(value)} key={value}>{value}</button>)}
+            <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages}>다음</button>
+          </nav>
+        ) : null}
       </section>
     </main>
   );
@@ -162,6 +223,17 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
         <span>{match.status} · {match.competition_class} R{match.round_number}</span>
         <h1>{match.home_team} <i>vs</i> {match.away_team}</h1>
         <p>{match.name} · 마지막 생성 {formatTime(match.generated_at)}</p>
+        <div className="broadcast-team-branding" aria-label="팀 브랜딩">
+          <div>
+            <TeamMark name={match.home_team} logoUrl={match.branding?.home_logo_url} color={match.branding?.home_color} />
+            <span><small>HOME</small><strong>{match.home_team}</strong><em style={{ backgroundColor: match.branding?.home_color || '#ff7900' }} /></span>
+          </div>
+          <div>
+            <TeamMark name={match.away_team} logoUrl={match.branding?.away_logo_url} color={match.branding?.away_color} />
+            <span><small>AWAY</small><strong>{match.away_team}</strong><em style={{ backgroundColor: match.branding?.away_color || '#3d22f3' }} /></span>
+          </div>
+          <a href={`https://console.fineludens.kr/admin/live-coder/match/${match.match_id}`} target="_blank" rel="noreferrer">팀 로고·대표 색상 설정 →</a>
+        </div>
         <div className="broadcast-live-url-list" aria-label="실시간 에셋 URL">
           {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetUrlLinks key={type} title={label} asset={match.assets.live?.[type]} />)}
         </div>

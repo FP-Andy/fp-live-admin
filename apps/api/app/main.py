@@ -2015,6 +2015,7 @@ def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
     latest_state = _latest_state(match_obj.id, db)
     running = _broadcast_is_running(match_obj, db)
     manifest = _broadcast_assets_manifest(match_obj)
+    broadcast_state = _broadcast_state(match_obj)
     return {
         "match_id": str(match_obj.id),
         "name": match_obj.name,
@@ -2028,7 +2029,12 @@ def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
         "assets": manifest,
         "generated_at": manifest.get("last_generated_at"),
         "created_at": match_obj.created_at.isoformat(),
-        "metadata": {"home_color": _broadcast_state(match_obj).get("home_color"), "away_color": _broadcast_state(match_obj).get("away_color")},
+        "branding": {
+            "home_logo_url": broadcast_state.get("home_logo_url") or "",
+            "away_logo_url": broadcast_state.get("away_logo_url") or "",
+            "home_color": broadcast_state.get("home_color"),
+            "away_color": broadcast_state.get("away_color"),
+        },
     }
 
 
@@ -5761,17 +5767,37 @@ def get_broadcast_snapshot(match_id: UUID, view: str | None = Query(default=None
 
 
 @app.get("/api/broadcast/v1/live-matches")
-def list_broadcast_live_matches(db: Session = Depends(get_db)):
-    """Public showroom index.  Only open football matches are discoverable."""
+def list_broadcast_live_matches(
+    competition_class: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """Public showroom index with FPC-style competition filtering and paging."""
+    base_query = db.query(Match).filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
+    competition_rows = base_query.with_entities(Match.competition_class).distinct().all()
+    competition_classes = sorted({_normalize_competition_class(row[0]) for row in competition_rows})
+    selected_class = _normalize_competition_class(competition_class) if competition_class else None
+    if selected_class:
+        base_query = base_query.filter(Match.competition_class == selected_class)
+    total = base_query.count()
     rows = (
-        db.query(Match)
-        .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
+        base_query
         .order_by(Match.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
     return {
         "generated_at": datetime.utcnow().isoformat(),
         "matches": [_broadcast_public_match(row, db) for row in rows],
+        "competition_classes": competition_classes,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": max(1, math.ceil(total / page_size)),
+        },
     }
 
 
