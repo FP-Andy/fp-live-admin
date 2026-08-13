@@ -31,10 +31,14 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.I
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
     filename = "KFAGothicBold.otf" if bold else "KFAGothicRegular.otf"
-    candidates = (
-        Path("/app/assets/fonts") / filename,
-        Path(__file__).resolve().parents[3] / "assets" / "fonts" / filename,
-    )
+    # The API image runs from ``/app/app`` in Docker, while local development
+    # runs from ``<repo>/apps/api/app``.  Do not index a fixed parent in both
+    # cases: ``/app/app`` only has two parents and would abort rendering before
+    # the mounted ``/app/assets/fonts`` path is even checked.
+    module_path = Path(__file__).resolve()
+    candidates = [Path("/app/assets/fonts") / filename]
+    if len(module_path.parents) > 3:
+        candidates.append(module_path.parents[3] / "assets" / "fonts" / filename)
     for path in candidates:
         if path.exists():
             _FONT_CACHE[key] = ImageFont.truetype(str(path), size=size)
