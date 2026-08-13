@@ -285,25 +285,28 @@ def render_live_coder_asset_pairs(snapshot: dict, asset_types: tuple[str, ...] |
     match_id = str(match.get("id") or "").strip()
     if not match_id:
         raise ValueError("Live Coder capture requires a match id")
-    # Four HD overlays each contain thirty motion frames. Allow enough time for
-    # a complete refresh under transient load instead of discarding the batch.
+    # Each HD overlay has a multi-frame motion timeline. Allow enough time for
+    # a complete capture under transient load instead of discarding the batch.
     timeout = float(os.getenv("BROADCAST_LIVE_CODER_RENDER_TIMEOUT_SECONDS", "90"))
-    try:
-        response = httpx.post(
-            render_url,
-            json={"match_id": match_id, "asset_types": list(asset_types)},
-            headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
-            timeout=timeout,
-        )
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"Live Coder capture request failed: {exc}") from exc
-    payload = response.json()
-    raw_assets = payload.get("assets") if isinstance(payload, dict) else None
-    if not isinstance(raw_assets, dict):
-        raise RuntimeError("Live Coder capture response did not contain assets")
     result: dict[str, tuple[bytes, bytes]] = {}
     for asset_type in asset_types:
+        # Sending all four 45-frame overlays in one JSON response can exceed
+        # the API worker's memory budget. Capture one asset at a time instead:
+        # peak memory stays bounded while the final output contract is identical.
+        try:
+            response = httpx.post(
+                render_url,
+                json={"match_id": match_id, "asset_types": [asset_type]},
+                headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Live Coder capture request failed for {asset_type}: {exc}") from exc
+        payload = response.json()
+        raw_assets = payload.get("assets") if isinstance(payload, dict) else None
+        if not isinstance(raw_assets, dict):
+            raise RuntimeError(f"Live Coder capture response omitted assets for {asset_type}")
         raw = raw_assets.get(asset_type)
         frames_raw = raw.get("frames") if isinstance(raw, dict) else None
         if not isinstance(frames_raw, list) or not frames_raw:
