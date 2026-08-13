@@ -745,8 +745,9 @@ body.live-coder-overlay-body::after {
 }
 
 .lc-attack-lane {
-  transform-box: fill-box;
-  transform-origin: center bottom;
+  /* Every lane, including 0%, scales from the common pitch baseline. */
+  transform-box: view-box;
+  transform-origin: center 496px;
   animation: lcAttackLaneRise 1350ms cubic-bezier(.2, .85, .25, 1) both;
 }
 
@@ -6407,8 +6408,10 @@ html.fpa-embed .topbar {
 }
 
 .broadcast-hero { max-width: 780px; margin-bottom: 48px; }
+.broadcast-match-hero { max-width: none; }
 .broadcast-hero > span, .broadcast-hero small { display: block; color: #d75d00; font-size: .78rem; font-weight: 800; letter-spacing: .14em; }
 .broadcast-hero h1 { margin: 12px 0; font-size: clamp(2.2rem, 5vw, 4.4rem); letter-spacing: -.05em; }
+.broadcast-match-hero h1 { white-space: nowrap; }
 .broadcast-hero h1 i, .broadcast-match-card i { color: #949aa4; font-style: normal; }
 .broadcast-hero p { color: #5f6670; font-size: 1.05rem; line-height: 1.65; }
 .broadcast-hero small { margin-top: 18px; color: #737b87; font-weight: 600; letter-spacing: .03em; }
@@ -6462,4 +6465,5 @@ html.fpa-embed .topbar {
   .broadcast-section-heading { display: block; }
   .broadcast-section-heading p { margin-top: 7px; }
   .broadcast-live-url-list { grid-template-columns: 1fr; }
+  .broadcast-match-hero h1 { white-space: normal; }
 }
