@@ -263,9 +263,9 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
   const teamName = team === 'HOME' ? state.home_label || snapshot.match.home.name : state.away_label || snapshot.match.away.name;
   const logoUrl = team === 'HOME' ? state.home_logo_url : state.away_logo_url;
   const lanes = [
-    { label: 'L', value: Number(ratio.left_pct || 0), x: 235 },
-    { label: 'C', value: Number(ratio.center_pct || 0), x: 390 },
-    { label: 'R', value: Number(ratio.right_pct || 0), x: 545 },
+    { label: 'L', value: Number(ratio.left_pct || 0), count: Number(ratio.left_count || 0), x: 235 },
+    { label: 'C', value: Number(ratio.center_pct || 0), count: Number(ratio.center_count || 0), x: 390 },
+    { label: 'R', value: Number(ratio.right_pct || 0), count: Number(ratio.right_count || 0), x: 545 },
   ];
   const laneOrder = new Map([...lanes]
     .sort((left, right) => right.value - left.value)
@@ -307,7 +307,12 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
           })}
         </svg>
         <div className="lc-attack-percent-row">
-          {lanes.map((lane) => <strong key={lane.label}>{fmtPct(lane.value)}</strong>)}
+          {lanes.map((lane) => (
+            <div key={lane.label}>
+              <strong>{fmtPct(lane.value)}</strong>
+              <span>{lane.count}회</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -512,6 +517,7 @@ export default function OverlayView({ matchId, kind }: { matchId: string; kind: 
   const snapshot = useSnapshot(matchId, kind === 'scoreboard' ? 1000 : 3000, kind === 'scoreboard' ? 'scoreboard' : undefined);
   const [scale, setScale] = useState(1);
   const requestedGraphic = searchParams.get('render') as CaptureGraphic | null;
+  const requestedXgEventId = searchParams.get('xg_event_id');
   const allowedGraphic = requestedGraphic && (
     ((kind === 'analysis' || kind === 'card-analysis') && ['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'XG'].includes(requestedGraphic)) ||
     (kind === 'possession' && requestedGraphic === 'POSSESSION') ||
@@ -525,8 +531,9 @@ export default function OverlayView({ matchId, kind }: { matchId: string; kind: 
     if (['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'XG'].includes(allowedGraphic)) {
       state.active_graphic = allowedGraphic as BroadcastSnapshot['broadcast_state']['active_graphic'];
     }
+    if (allowedGraphic === 'XG' && requestedXgEventId) state.selected_xg_event_id = requestedXgEventId;
     return { ...snapshot, broadcast_state: state };
-  }, [allowedGraphic, snapshot]);
+  }, [allowedGraphic, requestedXgEventId, snapshot]);
   const displayKey = renderedSnapshot ? overlayDisplayKey(kind, renderedSnapshot) : null;
   const faded = useFadedOverlay(renderedSnapshot, displayKey);
 

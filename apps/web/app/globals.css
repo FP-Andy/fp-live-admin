@@ -744,10 +744,26 @@ body.live-coder-overlay-body::after {
   grid-template-columns: repeat(3, 1fr);
   padding: 0 96px;
   color: #f4f7fb;
+  text-align: center;
+}
+
+.lc-attack-percent-row > div {
+  display: grid;
+  gap: 10px;
+}
+
+.lc-attack-percent-row strong {
+  color: #f4f7fb;
   font-size: 62px;
   font-weight: 820;
   line-height: 1;
-  text-align: center;
+}
+
+.lc-attack-percent-row span {
+  color: rgba(244, 247, 251, 0.68);
+  font-size: 26px;
+  font-weight: 720;
+  line-height: 1;
 }
 
 .lc-attack-brand {
