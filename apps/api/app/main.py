@@ -1934,9 +1934,14 @@ def _broadcast_assets_manifest(match_obj: Match) -> dict:
 
 
 def _broadcast_is_running(match_obj: Match, db: Session) -> bool:
-    state = _broadcast_state(match_obj)
+    """Use the FLA match clock as the broadcast asset lifecycle authority.
+
+    Live Coder has its own presentation clock for scorebug controls. It must
+    never start or stop the showroom renderer; the renderer follows the state
+    written by the FLA match workspace instead.
+    """
     latest_state = _latest_state(match_obj.id, db)
-    return bool(state.get("clock_running") or (latest_state and latest_state.running))
+    return bool(latest_state and latest_state.running)
 
 
 def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
