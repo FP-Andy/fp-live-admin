@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
 """수비 실측 분포를 뽑아 defense 앵커(눈금)를 재보정한다.
 
+⛔ 먼저 읽을 것 — 이 스크립트는 현재 설계 판단과 충돌한다 (2026-08-14)
+--------------------------------------------------------------------
+defense 앵커는 이제 **'가치 눈금'** 이다. 실측 빈도 분포가 아니라, 산식이 낼 수 있는
+값 범위(위치 x 4액션)를 덮는 척도로 굽는다. 의도적인 선택이다.
+
+이 스크립트가 하는 일은 그 반대다 — **실측 분포에 곡선을 맞춘다.** 실제 수비는 자기
+진영에 몰려 있고 거기 값이 높으므로, 돌리면 곡선이 위로 올라가고 **미드필드 수비
+점수가 더 떨어진다.** "하프라인 태클은 어차피 하위권" 이 되는 것이다. 바로 그게
+문제라고 판단해서 반대 방향으로 개정했다(측면 태클 58 → 75).
+
+그러니 이걸 돌리기 전에 **그 판단부터 다시 검토할 것.** 자세한 배경은
+`xfp_anchors_v0.json` 의 `defense_scale_note` 를 읽어라. 그냥 돌리면 조용히 뒤집힌다.
+
+아래는 '실측 분포로 가는' 쪽을 택했을 때를 위해 남겨둔 원문이다.
+
 배경
 ----
 `xfp_anchors_v0.json` 의 defense 앵커는 실측 태깅 분포가 없어 `_defense_turnover_value`
-를 **피치 전역 1m 격자(6,968점)** 에 뿌린 분위수로 잠정 산출한 값이다(파일 source 참조).
+를 **피치 전역 1m 격자** 에 뿌린 분위수로 산출한 값이다(파일 source 참조).
 그런데 실제 수비는 피치에 고르게 퍼지지 않고 **자기 진영에 몰린다.** 이 스크립트는
 **실제로 태깅된 수비 액션**의 값 분포를 뽑아 곡선을 다시 앉힌다.
 
@@ -193,7 +208,21 @@ def main() -> int:
     parser.add_argument("--min-samples", type=int, default=100, help="이 표본수 미만이면 --write 거부 (기본 100)")
     parser.add_argument("--match-id", action="append", default=[], help="대상 경기 UUID (반복 지정 가능)")
     parser.add_argument("--verbose", action="store_true", help="건너뛴 행을 전부 출력")
+    parser.add_argument(
+        "--i-know-this-flips-the-value-scale",
+        action="store_true",
+        help="defense 앵커를 '가치 눈금' 에서 '실측 분포' 로 되돌린다는 것을 알고 있다 (--write 에 필요)",
+    )
     args = parser.parse_args()
+
+    print("⛔ 경고 — defense 앵커는 현재 '가치 눈금' 이다 (실측 빈도 분포가 아니다).")
+    print("   이 스크립트는 곡선을 실측 분포에 맞추므로, 미드필드 수비 점수가 더")
+    print("   내려간다. xfp_anchors_v0.json 의 defense_scale_note 를 먼저 읽을 것.")
+    print()
+    if args.write and not args.i_know_this_flips_the_value_scale:
+        print("--write 는 --i-know-this-flips-the-value-scale 없이는 거부한다.")
+        print("미리보기만 하려면 --write 를 빼고 다시 실행하라.")
+        return 2
 
     from app.db import SessionLocal
     from app.models import FpaSavedLog

@@ -15,6 +15,9 @@
   (fpa._defense_turnover_value · DEFENSE_RETENTION, 전용 defense 곡선),
   블록 = 막은 슛 xG(goal 곡선). 네 액션의 순서는 산식의 회수 성공도가 만든다 —
   액션별 앵커로는 못 만든다(백분위가 그 곡선 자신의 분포로 매겨져 상쇄된다).
+  defense 곡선은 '가치 눈금' 이다 — 산식이 낼 수 있는 값 범위(위치 x 4액션)를 덮게
+  굽는다. 실측 빈도 분포에 맞추면 미드필드 수비가 정의상 하위권이 된다
+  (xfp_anchors_v0.json 의 defense_scale_note).
 - 슛(G1)도 예외: 24코드는 하나여도 **결과가 점수를 가른다**. 슛·블록 [50,78] ·
   유효슛 [74,90] · 골 [84,100] 밴드를 쓰고, 밴드 안 위치는 골문 안 코스 품질이
   주축이며 xG 는 그 위의 난이도 보정이다(shot_outcome_score). 코드는 전부 G1
@@ -50,8 +53,9 @@ LINK_CREDIT = 0.7
 # Outcome 군은 Possession 이지만 **ΔPC 로 채점하지 않는다** — `fpa.py` 가 이미 이들을
 # 다른 값으로 재고 있다:
 #   DEFENSE_ARROW_CODES(태클·인터셉트·컷아웃·클리어) = 끊은 지점의 **소유권 전환가치**
-#     (`fpa._defense_turnover_value` = 0.65×상대기준 EPV + 0.35×우리기준 EPV). EPV 와
-#     단위는 같아도 두 지점의 차가 아니라 한 지점의 레벨이라 스케일이 다르다 → defense 곡선.
+#     (`fpa._defense_turnover_value` = 0.65×상대기준 EPV + 0.35×회수성공도×우리기준 EPV).
+#     EPV 와 단위는 같아도 두 지점의 차가 아니라 한 지점의 레벨이라 스케일이 다르고,
+#     각도 항도 수비 전용 바닥(DEFENSE_CENTRALITY_FLOOR)을 쓴다 → 전용 defense 곡선.
 #   SHOT_BLOCK_CODES(블록) = 막은 슛 xG × BLOCK_CREDIT → goal 곡선.
 # ΔPC 를 쓰면 수비는 정의상 '상대 통제 공간 → 우리 통제'로 통제 경계를 넘는 행위라
 # ΔPC 가 늘 최대치에 붙어, 막은 위협이 0 이거나 음수인 액션까지 만점이 됐다.

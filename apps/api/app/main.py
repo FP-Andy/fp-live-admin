@@ -322,6 +322,10 @@ def _ensure_runtime_schema() -> None:
     if "highlight_clips" in table_names and "title" not in clip_columns:
         statements.append("ALTER TABLE highlight_clips ADD COLUMN title VARCHAR")
 
+    # dual 태깅 원본 보관 — 클립을 다시 열어 이어서 수정할 수 있게 한다.
+    if "highlight_clips" in table_names and "fpa_scenes" not in clip_columns:
+        statements.append("ALTER TABLE highlight_clips ADD COLUMN fpa_scenes JSONB")
+
     if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
         statements.append("CREATE INDEX IF NOT EXISTS ix_highlight_jobs_owner_id ON highlight_jobs (owner_id)")
@@ -9250,6 +9254,9 @@ def clip_result_detail(
         "team_labels": labels,
         # 태깅(클립 귀속 dual)의 등번호 검증용 — 사이드별 신청 라인업.
         "lineup_sides": _fineplay_lineup_sides(job),
+        # dual 태깅 원본 — 팝업이 이걸 받아 찍었던 장면을 그대로 되살린다.
+        # 이 컬럼이 생기기 전에 저장된 클립은 null 이라 복원할 수 없다(재태깅하면 생긴다).
+        "fpa_scenes": clip.fpa_scenes,
         "start_sec": clip.start_sec,
         "end_sec": clip.end_sec,
         "duration_seconds": duration,
@@ -9364,6 +9371,13 @@ def clip_result_put_actions(
                 "endOffset": a.get("endOffset"),
                 "extra": a.get("extra"),
             })
+
+    # dual 태깅 원본 보관 — 클립을 다시 열었을 때 찍은 그대로 되살리기 위한 것이다.
+    # rows 에서 파생되는 액션과 달리 손실 없이 그대로 둔다(models.HighlightClip.fpa_scenes).
+    # scenes 가 실려 온 저장(=dual 팝업)에서만 갱신한다 — 구간 수정처럼 actions 만 보내는
+    # 요청은 태깅을 건드리지 않으므로 기존 원본을 지우면 안 된다.
+    if body.get("scenes") is not None:
+        clip.fpa_scenes = body["scenes"]
 
     duration = clip.duration_seconds or max(0.0, clip.end_sec - clip.start_sec)
     fineplay_equal_split_offsets(actions, duration)
