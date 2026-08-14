@@ -29,6 +29,9 @@
 - 압박(S9)도 예외: 같은 possession 군이지만 전용 밴드 [65,90](PRESS_SCORE_BAND). 태그
   자체가 '압박이 걸렸다'는 판정이라 하한이 서고, 팀 점수는 프레임 이동량 비율로 압박자
   개인에게 나뉜다(press_share_score · fpa.press_movement_shares).
+- 돌파(Breakthrough)도 예외: 드리블과 24코드가 같아 '제쳤다'가 점수에 안 들어가므로,
+  완성된 점수를 [70,100]으로 옮긴다(BREAKTHROUGH_SCORE_BAND). 백분위를 다시 펴는
+  다른 밴드와 달리 **아핀 변환이라 분포 모양이 보존**되고, 축과 무관하게 마지막에 건다.
 - Effect Action: 한 Event(장면)당 Outcome 별 최대 1개·전체 최대 3개, 동일 Action ID 중복 금지.
 - Action xFP: Action ID 기준 백분위 → 50~100 조각 변환(01 시트 H열).
 - 대표 Action = argmax(Action Percentile) — UI 라벨일 뿐, 다른 유효 Action 집계를 제외하지 않음.
@@ -177,6 +180,39 @@ POSSESSION_SCORE_BAND: tuple[int, int] = (50, 80)
 # 전용 앵커가 들어오면 밴드는 그대로 두고 곡선만 갈아끼우면 된다.
 PRESS_SCORE_BAND: tuple[int, int] = (65, 90)
 
+# ── 돌파(Breakthrough) 하한 ─────────────────────────────────────────────────
+# 돌파와 드리블은 24코드가 같다(P4/P5·S3/S4 — classify_action_code 가 한 분기로 묶는다).
+# 그래서 채점 재료가 ΔEPV·ΔPC 뿐이고, 이건 **어디서 어디로 갔는지**의 함수다. 즉
+# '상대를 제쳤다' 는 사실이 점수에 한 톨도 안 들어간다:
+#
+#     빈 공간에서 (70,34)→(80,34) 드리블      67점
+#     수비 셋 제치고 (70,34)→(80,34) 돌파     67점   ← 같다
+#
+# 돌파는 태깅 단계에서 이미 '제쳤다' 는 판정이 끝난 태그다(제치지 못했으면 드리블로
+# 찍는다). 압박(pr) 하한 65 와 같은 근거다 — 태그 자체가 판정인 액션.
+#
+# **분포 모양은 그대로 두고 구간만 올린다.** 백분위를 선형으로 펴는 기존 밴드 방식
+# (PASS_SCORE_BANDS·SHOT_SCORE_BANDS)과 다르다: 그 방식은 변환표의 구간별 기울기를
+# 지워 분포가 눌린다. 여기서는 완성된 점수(50~100)를 그대로 [70,100] 으로 옮기는
+# 아핀 변환이라, 드리블 분포의 순서·간격 비율이 보존된다.
+#
+#     자기 진영 10m  55 → 73      상대 진영 18m  77 → 86
+#     상대 진영 10m  67 → 80      박스까지 20m   90 → 94
+#
+# **축과 무관하게** 최종 점수에 건다. 옆으로 간 돌파는 ΔEPV≤0 이라 소유 축(50~80)으로
+# 떨어지는데, 거기만 빼면 "돌파는 최소 70" 이 깨진다. 소유 축의 낮은 상한은 아핀
+# 변환 뒤에도 그대로 남는다(80 → 88).
+#
+# ⚠️ 실패한 돌파는 지금 점수에서 안 빠진다. fineplay_fpa._FAILABLE_ACTIONS 가
+# {Pass, Cross} 뿐이라 코드 `e`(실패 돌파)에 Fail 태그가 붙어도 그대로 채점된다.
+# **실패 코드를 안 찍는다는 운영 전제로 이 하한을 넣었다**(2026-08-14 결정). 전제가
+# 깨지면 — 실패 돌파가 성공한 드리블보다 높아진다(6m 뺏긴 돌파 60 → 76). 그때는
+# 밴드를 손대지 말고 _FAILABLE_ACTIONS 에 Breakthrough 를 넣어라.
+BREAKTHROUGH_SCORE_BAND: tuple[int, int] = (70, 100)
+
+# percentile_to_score 의 출력 범위 — 위 아핀 변환의 원본 구간이다.
+SCORE_RANGE: tuple[int, int] = (50, 100)
+
 
 def possession_outcome_score(code: str, action: dict[str, Any], percentile: float) -> int | None:
     """ΔPC 로 재는 액션의 밴드 안 점수. 그 축이 아니면 None(=공통 변환 그대로)."""
@@ -217,6 +253,24 @@ def press_share_score(team_score: int, share: float) -> int:
     """
     s = max(0.0, min(1.0, float(share)))
     return int(round(XFP_BASE_SCORE + (team_score - XFP_BASE_SCORE) * s))
+
+
+def breakthrough_band_score(action: dict[str, Any], score: int) -> int:
+    """돌파면 완성된 점수를 [70,100] 으로 옮긴다. 그 외 액션은 그대로.
+
+    아핀 변환이라 **분포 모양이 보존**된다 — 드리블에서 55/67/77/90 이던 것이
+    73/80/86/94 가 되고 순서·간격 비율은 그대로다. 백분위를 다시 펴지 않는 이유는
+    BREAKTHROUGH_SCORE_BAND 주석 참조.
+
+    축(전진/소유)을 가리지 않고 최종 점수에 건다 — 옆으로 간 돌파만 소유 축으로
+    떨어져 하한을 못 받는 일이 없게.
+    """
+    if str(action.get("action") or "") != "Breakthrough":
+        return score
+    lo, hi = BREAKTHROUGH_SCORE_BAND
+    base_lo, base_hi = SCORE_RANGE
+    shape = (score - base_lo) / (base_hi - base_lo)
+    return int(round(lo + (hi - lo) * max(0.0, min(1.0, shape))))
 
 
 def pass_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
@@ -571,5 +625,9 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
                 banded = pass_outcome_score(pa, p)
                 if banded is None:
                     banded = possession_outcome_score(code, pa, p)
-            pa["xfpScore"] = banded if banded is not None else percentile_to_score(p)
+            # 돌파 하한은 **맨 마지막**에 건다 — 어느 축·어느 밴드를 거쳤든 최종 점수를
+            # [70,100] 으로 옮긴다(BREAKTHROUGH_SCORE_BAND).
+            pa["xfpScore"] = breakthrough_band_score(
+                pa, banded if banded is not None else percentile_to_score(p)
+            )
             pa["xfpPercentile"] = round(p, 4)
