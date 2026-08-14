@@ -464,7 +464,20 @@ def _finite_float(value: Any) -> float | None:
     return number
 
 
-def _epv_state_value(x: Any, y: Any) -> float | None:
+# 각도 항의 바닥 — 터치라인(centrality=0)에서 전진 항이 몇 배로 깎이는가.
+# 0.45 는 **공격** 모델의 값이다. '이 지점에서 때리면 얼마나 들어가나' 를 재기 때문에
+# 슛각이 없는 터치라인이 반 이하로 눌린다. 수비는 다른 것을 묻는다 → DEFENSE_CENTRALITY_FLOOR.
+EPV_CENTRALITY_FLOOR = 0.45
+
+
+def _epv_state_value(x: Any, y: Any, *, centrality_floor: float = EPV_CENTRALITY_FLOOR) -> float | None:
+    """그 지점의 상태가치(기대득점). 공격 기준이 기본이다.
+
+    centrality_floor 는 각도 민감도만 바꾼다 — 나머지 항(전진·박스 가산)은 그대로다.
+    수비 전환가치만 이 값을 올려 부른다(_defense_turnover_value 주석 참조). 공식을
+    복제하지 않고 파라미터로 뺀 이유는, 두 벌로 두면 한쪽만 고쳐져 조용히 어긋나기
+    때문이다.
+    """
     x_value = _finite_float(x)
     y_value = _finite_float(y)
     if x_value is None or y_value is None:
@@ -472,7 +485,8 @@ def _epv_state_value(x: Any, y: Any) -> float | None:
     progress = max(0.0, min(1.0, x_value / FIELD_W))
     centrality = max(0.0, 1.0 - abs(y_value - FIELD_H / 2) / (FIELD_H / 2))
     box_boost = 0.012 if x_value >= 88.5 and 13.84 < y_value < 54.16 else 0.0
-    value = 0.006 + 0.011 * progress + 0.038 * (progress**2.35) * (0.45 + 0.55 * centrality) + box_boost
+    angle = centrality_floor + (1.0 - centrality_floor) * centrality
+    value = 0.006 + 0.011 * progress + 0.038 * (progress**2.35) * angle + box_boost
     return round(min(0.085, value), 4)
 
 
@@ -727,6 +741,23 @@ def _reception_chance_xg(
 # 주운 볼보다는 위로 올라오는 지점(w를 키우면 우리 지역이, 줄이면 하이프레스가 세진다).
 DEFENSE_TURNOVER_WEIGHT = 0.65
 
+# 수비 전환가치가 쓰는 각도 항의 바닥 (공격은 EPV_CENTRALITY_FLOOR=0.45).
+#
+# 왜 수비만 완만한가
+# ------------------
+# 0.45 는 '이 지점에서 슛하면 얼마나 들어가나' 를 재는 **공격 모델의 각도 항**이다.
+# 터치라인은 슛각이 없으니 전진 항이 반 이하로 눌린다. 수비가 묻는 것은 다르다:
+#   - 제거한 위협: 측면 볼의 위험은 거기서 때리는 슛이 아니라 **크로스·컷백으로
+#     전개되는 것**이다. 슛각 모델은 이걸 구조적으로 과소평가한다.
+#   - 얻은 소유: 뺏어서 시작하는 우리 공격의 가치는 애초에 각도와 상관이 옅다.
+# 그래서 측면을 중앙과 같게 만드는 게 아니라(0.70 < 1.0 이라 여전히 측면이 낮다),
+# **깎는 폭만 절반으로** 줄인다.
+#
+# 이걸 넣기 전 실측: 하프라인 측면 태클 58점 / 상대 진영 측면 태클 51점 — 측면 행
+# 전체가 바닥이었고, 상대 골문 앞에서 볼을 뺏는 하이프레스가 최저점이었다.
+# 중앙 값(박스 98·자기 진영 91·하프라인 80)은 이 변경으로 움직이지 않는다.
+DEFENSE_CENTRALITY_FLOOR = 0.70
+
 # 회수 성공도 — 그 수비 행위 뒤 **우리가 실제로 공을 갖고 나오는 정도** (0~1).
 #
 # 뒤 항('우리가 얻은 위치')에만 곱한다. 앞 항('상대가 잃은 위협')은 누가 어떻게 끊든
@@ -776,6 +807,9 @@ def _defense_turnover_value(end_x_adj: Any, end_y: Any, action_name: Any = None)
     는 실제로 공을 갖고 나왔을 때만 참이기 때문이다. action_name 을 안 주면 곱하지
     않는다(옛 호출 호환).
 
+    상태가치의 각도 항은 수비 전용 바닥(DEFENSE_CENTRALITY_FLOOR)을 쓴다. 공격 모델의
+    각도 항을 그대로 쓰면 터치라인이 반 이하로 눌려 측면 수비가 통째로 바닥을 쳤다.
+
     이전 방식(상대 공격방향 ΔEPV = 상대가 그 패스로 늘린 양)은 '상대가 잃은 것' 만
     봤고, 그마저도 상대 진영에서는 상대에게도 빌드업 구간이라 0 에 가까웠다. 그래서
     가장 가치 있는 하이프레스 차단이 최하점을 받았다(0.0015 → 53점).
@@ -785,8 +819,9 @@ def _defense_turnover_value(end_x_adj: Any, end_y: Any, action_name: Any = None)
     x_value = _finite_float(end_x_adj)
     if x_value is None:
         return None
-    ours = _epv_state_value(x_value, end_y)
-    theirs = _epv_state_value(FIELD_W - x_value, end_y)
+    # 각도 항은 수비 전용 바닥을 쓴다 — 공격 EPV(패스·드리블 델타)는 그대로 0.45 다.
+    ours = _epv_state_value(x_value, end_y, centrality_floor=DEFENSE_CENTRALITY_FLOOR)
+    theirs = _epv_state_value(FIELD_W - x_value, end_y, centrality_floor=DEFENSE_CENTRALITY_FLOOR)
     if ours is None or theirs is None:
         return None
     retention = (
