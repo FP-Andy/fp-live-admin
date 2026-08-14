@@ -85,8 +85,12 @@ export async function POST(request: NextRequest) {
     for (const assetType of [...new Set(assetTypes)]) {
       const config = RENDER_CONFIG[assetType];
       const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
-      await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'networkidle', timeout: 20_000 });
-      await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 12_000 });
+      // The overlay polls its snapshot endpoint continuously, so `networkidle`
+      // is not a stable readiness signal: a poll can keep the page "busy" until
+      // the navigation timeout expires. Wait for the document and then for the
+      // explicit capture marker rendered by OverlayView instead.
+      await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 20_000 });
       if (config.motionSelector) {
         // Freeze the CSS motion at each intended timeline point. Screenshot
         // encoding is slower than 100ms on the production renderer, so merely
