@@ -2688,6 +2688,8 @@ export default function FpaLivePage() {
       try {
         const d = await apiJson<{
           id: string;
+          // 클립 귀속 팀(태깅 시점 A=홈/D=어웨이) — dual 의 행위 팀 기본값이 된다.
+          team_side?: string | null;
           team_labels?: { home?: string; away?: string };
           lineup_sides?: LineupSides;
           action_count?: number;
@@ -2710,6 +2712,20 @@ export default function FpaLivePage() {
         if (d.lineup_sides) setLineupSides(d.lineup_sides);
         setInputMode('dual');
 
+        // 행위 팀을 클립 귀속 팀으로 맞춘다 — 홈 고정이면 어웨이 클립마다 손으로 바꿔야 하고,
+        // 안 바꾸고 찍으면 아군/상대가 뒤집혀 채점까지 어긋난다.
+        // 점 찍는 레이어도 같이 맞춘다: 팀만 바꾸면 첫 점이 **상대 점**으로 찍힌다
+        // (relationForTeamSide 가 activeLayer 의 teamSide 를 행위 팀과 비교한다).
+        // 저장된 태깅이 있으면 아래에서 그때 실제로 쓴 값이 이걸 덮는다.
+        //
+        // 이 창에 아직 저장 안 한 작업이 남아 있으면 건드리지 않는다 — 초안이 복원한
+        // 팀·레이어를 여기서 갈아치우면, 이미 찍어둔 점들과 아군/상대 관계가 어긋난다.
+        const clipSide = String(d.team_side || '').trim().toLowerCase();
+        if (!draftHadContentRef.current && (clipSide === 'home' || clipSide === 'away')) {
+          setTeam(clipSide);
+          setActiveLayer(clipSide === 'away' ? 'away_field' : 'home_field');
+        }
+
         // 저장해 둔 태깅 되살리기 — 나중에 고칠 일이 생겼을 때 이어서 수정하기 위한 것.
         const restored = d.fpa_scenes?.scenes;
         if (draftHadContentRef.current) {
@@ -2719,7 +2735,11 @@ export default function FpaLivePage() {
           setSavedScenes(restored);
           setCurrentClipIndex(Math.max(1, ...restored.map((s) => s.clipIndex ?? 1)));
           if (d.fpa_scenes?.half) setHalf(d.fpa_scenes.half);
-          if (d.fpa_scenes?.team) setTeam(d.fpa_scenes.team);
+          if (d.fpa_scenes?.team) {
+            // 저장된 태깅이 실제로 쓴 행위 팀 — 클립 귀속 팀보다 이쪽이 정본이다.
+            setTeam(d.fpa_scenes.team);
+            setActiveLayer(d.fpa_scenes.team === 'away' ? 'away_field' : 'home_field');
+          }
           if (d.fpa_scenes?.direction) setDirection(d.fpa_scenes.direction);
           const actionCount = restored.reduce((sum, s) => sum + s.rows.length, 0);
           if (d.fpa_scenes?.reconstructed) {
@@ -2737,6 +2757,12 @@ export default function FpaLivePage() {
           // scripts/backfill_clip_fpa_scenes.py 도 아직 안 돌았거나, 돌렸는데 그림·스탯
           // 코드가 모자라 복원 대상에서 빠진 클립이다.
           setStatus(`클립 귀속 모드: ${clipId} — 이 클립은 태깅 원본이 남아 있지 않습니다(복원 백필 대상이 아니거나 미실행)`);
+        } else if (clipSide === 'home' || clipSide === 'away') {
+          // 새로 찍는 클립 — 팀이 자동으로 맞춰졌다는 걸 알려준다. 틀리면 바꾸면 된다.
+          const sideName = clipSide === 'away'
+            ? `어웨이${d.team_labels?.away ? `(${d.team_labels.away})` : ''}`
+            : `홈${d.team_labels?.home ? `(${d.team_labels.home})` : ''}`;
+          setStatus(`클립 귀속 모드: ${clipId} — 팀을 ${sideName} 로 맞췄습니다 (필요하면 바꾸세요)`);
         } else {
           setStatus(`클립 귀속 모드: ${clipId}`);
         }
