@@ -749,7 +749,7 @@ body.live-coder-overlay-body::after {
 
 .lc-attack-percent-row > div {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .lc-attack-percent-row strong {
@@ -761,8 +761,8 @@ body.live-coder-overlay-body::after {
 
 .lc-attack-percent-row span {
   color: rgba(244, 247, 251, 0.68);
-  font-size: 26px;
-  font-weight: 720;
+  font-size: 62px;
+  font-weight: 820;
   line-height: 1;
 }
 
