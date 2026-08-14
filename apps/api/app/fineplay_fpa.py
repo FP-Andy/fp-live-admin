@@ -778,7 +778,12 @@ _PASS_ACTIONS = {"Pass", "Assist", "Key Pass"}
 _DEFENSE_ACTIONS = {"Intercept", "Tackle", "Acquisition", "Cutout", "Block", "Clear"}
 # 실패 표시 대상 — 하이라이트 마지막이 실패 패스/크로스로 끝나도 기록은 하되
 # 점수 계산에서 제외한다(태그 "Fail" 기준). 표시·모션(빨간 화살표)만 나간다.
-_FAILABLE_ACTIONS = {"Pass", "Cross"}
+#
+# 경합(Duel)이 여기 든 이유는 다르다. 패스·크로스는 실패해도 '시도' 라는 의미가 남지만,
+# **경합은 이겼냐 졌냐가 액션의 전부**다. 진 경합에 점수가 붙으면 태그 자체가 무의미해진다.
+# 실제로 그랬다 — 로컬에 남은 유일한 경합 행이 Fail 인데 ΔPC=0.102 로 68점을 받고 있었고,
+# 경합을 위치 기반(xfp_score.DUEL_CODES)으로 바꾸면 그 자리에서 77점이 된다.
+_FAILABLE_ACTIONS = {"Pass", "Cross", "Duel"}
 
 
 def _is_failed_action(action_name: str, extra: dict[str, Any] | None) -> bool:
