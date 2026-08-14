@@ -641,6 +641,8 @@ type DualUndoSnapshot = {
 
 export default function FpaLivePage() {
   const didHydrateRef = useRef(false);
+  // 세션 초안에 실제 작업물이 들어 있었나 — 클립 복원이 그걸 덮어쓰지 않게 하는 잠금.
+  const draftHadContentRef = useRef(false);
   const pitchRef = useRef<HTMLDivElement | null>(null);
   const beforePitchRef = useRef<HTMLDivElement | null>(null);
   const afterPitchRef = useRef<HTMLDivElement | null>(null);
@@ -872,22 +874,26 @@ export default function FpaLivePage() {
   const allLogs = [...savedScenes.flatMap((scene) => scene.logs), ...logs];
   const allRows = [...savedScenes.flatMap((scene) => scene.rows), ...rows];
 
+  // 저장 대상 장면 = 이미 저장된 장면들 + 아직 버퍼에 있는 현재 장면.
+  // 버퍼를 빼면 "장면 저장" 을 누르지 않고 클립 저장한 경우 마지막 장면이 통째로 날아간다.
+  const collectScenesForPersistence = (): SavedScene[] => [
+    ...savedScenes,
+    ...(rows.length
+      ? [{
+        rows,
+        logs,
+        beforeDots,
+        afterDots,
+        passArrows,
+        primary: primaryRowIndex,
+        clipIndex: currentClipIndex,
+      }]
+      : []),
+  ];
+
   const buildRowsForPersistence = () => {
     if (inputMode !== 'dual') return allRows;
-    const scenesToPersist: SavedScene[] = [
-      ...savedScenes,
-      ...(rows.length
-        ? [{
-          rows,
-          logs,
-          beforeDots,
-          afterDots,
-          passArrows,
-          primary: primaryRowIndex,
-          clipIndex: currentClipIndex,
-        }]
-        : []),
-    ];
+    const scenesToPersist = collectScenesForPersistence();
     // match–clip–action: SceneIndex = 클립 번호, SceneActionIndex = 클립 안 연번.
     // 같은 클립의 여러 액션(장면)이 한 SceneIndex 로 묶여 다운스트림(클립 매칭)에 클립 단위로 전달된다.
     const actionCounters = new Map<number, number>();
@@ -976,6 +982,9 @@ export default function FpaLivePage() {
         // 클립 번호 이어가기 — 구버전 초안(clipIndex 없음)은 전부 클립 1로 간주.
         setCurrentClipIndex(Math.max(1, ...draft.savedScenes.map((s) => s.clipIndex ?? 1)));
       }
+      // 클립 복원(서버 fpa_scenes)이 이 초안을 덮어쓰지 않게 표시해 둔다 — 초안은 아직
+      // 저장 안 한 작업일 수 있어서, 서버본으로 갈아치우면 그게 통째로 날아간다.
+      if (draft.savedScenes?.length || draft.rows?.length) draftHadContentRef.current = true;
       if (typeof draft.editingSceneIndex === 'number' || draft.editingSceneIndex === null) setEditingSceneIndex(draft.editingSceneIndex ?? null);
       if (Array.isArray(draft.editRows)) setEditRows(draft.editRows);
       if (Array.isArray(draft.editLogs)) setEditLogs(draft.editLogs);
@@ -1945,6 +1954,91 @@ export default function FpaLivePage() {
     return { rows: nextRows, logs: nextLogs };
   };
 
+  // 옛 기록에서 되살린 태깅은 공격방향을 못 되짚었다(백필이 추측하지 않는다).
+  // 틀린 방향으로 채점하면 EPV·PC 가 통째로 좌우 반전돼 조용히 잘못된 값이 남으므로,
+  // 재채점·저장처럼 **점수를 다시 만드는 행동** 앞에서 한 번 확인을 받는다.
+  const confirmRestoredDirection = (actionLabel: string) => {
+    if (!needsDirectionConfirm) return true;
+    const ok = window.confirm(
+      '이 태깅은 옛 기록에서 되살린 것이라 하프와 공격방향이 복원되지 않았습니다.\n\n'
+      + `현재 설정: ${half} · 공격방향 ${direction === 'right' ? '오른쪽 →' : '← 왼쪽'}\n\n`
+      + `이대로 ${actionLabel}하면 이 설정으로 채점합니다. 방향이 틀리면 모든 지표가 좌우 반전됩니다.\n`
+      + '맞습니까?',
+    );
+    if (!ok) {
+      setStatus(`${actionLabel}을 멈췄습니다 — 하프·공격방향을 고친 뒤 다시 시도하세요`);
+      return false;
+    }
+    setNeedsDirectionConfirm(false);
+    return true;
+  };
+
+  // 저장된 장면의 채점 맥락(하프·공격방향·행위팀·시각)을 복구한다.
+  //
+  // SavedScene 은 이 넷을 따로 안 들고 있다 — 대신 로그 문자열의 앞부분이
+  // "1H | home | right | 12:34 | …" 형식이라 거기서 되짚는다. 옛 기록에서 되살린
+  // 장면은 그 자리가 '?' 라서(백필이 방향을 추측하지 않는다) 화면의 현재 설정으로
+  // 떨어진다 — 그래서 복원본은 저장 전에 방향 확인을 받는다.
+  const sceneScoringContext = (scene: SavedScene) => {
+    const parts = (scene.logs?.[0] || '').split(' | ').map((part) => part.trim());
+    const loggedHalf = parts[0] === '1H' || parts[0] === '2H' ? parts[0] : null;
+    const loggedDirection = parts[2] === 'left' || parts[2] === 'right' ? parts[2] : null;
+    const primaryRow = scene.primary != null ? scene.rows[scene.primary] : undefined;
+    const rowTeam = (primaryRow?.Team || scene.rows[0]?.Team || '').trim().toLowerCase();
+    return {
+      half: loggedHalf ?? half,
+      direction: loggedDirection ?? direction,
+      actorTeam: rowTeam === 'home' || rowTeam === 'away' ? rowTeam : team,
+      timeline: primaryRow?.Time || scene.rows[0]?.Time || timeline,
+    };
+  };
+
+  // 저장된 장면 전부를 **지금 서버 로직**으로 다시 채점한다.
+  //
+  // 왜 필요한가: EPV·PC·xG 는 찍는 시점에 계산돼 행에 박히고, '클립에 저장' 은 그 행을
+  // 그대로 보낸다. 그래서 채점 산식이 바뀌어도 이미 찍은 클립은 옛 값을 계속 들고 있다.
+  // (백분위 눈금 = 앵커는 페이로드 조립 때마다 다시 읽으므로 이 버튼과 무관하게 바로 반영된다.
+  //  이 버튼이 고치는 건 원시값 쪽이다.)
+  const rescoreAllScenes = async () => {
+    if (!savedScenes.length) {
+      setStatus('재채점할 저장된 장면이 없습니다');
+      return;
+    }
+    if (rows.length) {
+      setStatus('현재 액션이 버퍼에 남아 있습니다 — 먼저 "장면 저장" 을 누르세요');
+      return;
+    }
+    if (!confirmRestoredDirection('재채점')) return;
+    setBusy(true);
+    const next: SavedScene[] = [];
+    let changed = 0;
+    for (let i = 0; i < savedScenes.length; i += 1) {
+      const scene = savedScenes[i];
+      setStatus(`현재 로직으로 재채점 중… (${i + 1}/${savedScenes.length})`);
+      const ctx = sceneScoringContext(scene);
+      const { rows: scoredRows, logs: scoredLogs } = await rescoreSceneRows(scene.rows, scene.logs, {
+        before: scene.beforeDots,
+        after: scene.afterDots,
+        arrows: scene.passArrows,
+        ...ctx,
+        primary: scene.primary,
+      });
+      scoredRows.forEach((row, j) => {
+        const before = scene.rows[j];
+        if (before.EPV !== row.EPV || before.PC !== row.PC || before.xG !== row.xG) changed += 1;
+      });
+      next.push({ ...scene, rows: scoredRows, logs: scoredLogs });
+    }
+    setSavedScenes(next);
+    setBusy(false);
+    const total = next.reduce((sum, scene) => sum + scene.rows.length, 0);
+    setStatus(
+      changed
+        ? `재채점 완료 — ${total}건 중 ${changed}건의 지표가 바뀌었습니다. "클립에 저장" 을 눌러야 반영됩니다`
+        : `재채점 완료 — ${total}건 모두 현재 로직과 같은 값입니다(저장 불필요)`,
+    );
+  };
+
   const buildDualPitchPayload = () => {
     if (inputMode !== 'dual') return undefined;
     return {
@@ -2533,6 +2627,9 @@ export default function FpaLivePage() {
   // 클립 귀속 모드 — 클립 결과 탭에서 새 창(/admin/fpa/live?clipId=...)으로 진입.
   // 여기서 찍은 씬을 '클립에 저장'하면 그 클립의 action 목록이 된다(전체 교체).
   const [clipTarget, setClipTarget] = useState<{ id: string; label: string } | null>(null);
+  // 옛 액션에서 되살린 태깅인가 — 하프·공격방향이 원본에 없어 복원할 수 없었다는 뜻이다.
+  // 방향이 틀린 채로 저장하면 모든 지표가 좌우 반전되므로, 저장 전에 한 번 확인을 받는다.
+  const [needsDirectionConfirm, setNeedsDirectionConfirm] = useState(false);
 
   // FinePlay 신청 라인업 — 태깅 등번호 검증용. matchId(클레임/사전 잡의 fpa_link 매치)
   // 또는 클립 귀속 모드의 클립에서 가져온다. 라인업 있는 사이드만 담기며, 그 사이드의
@@ -2593,6 +2690,16 @@ export default function FpaLivePage() {
           id: string;
           team_labels?: { home?: string; away?: string };
           lineup_sides?: LineupSides;
+          action_count?: number;
+          actions?: unknown[];
+          fpa_scenes?: {
+            half?: '1H' | '2H' | null;
+            team?: 'home' | 'away' | null;
+            direction?: 'left' | 'right' | null;
+            // 옛 액션에서 되살린 것 — 하프·공격방향은 원본에 없어 비어 있다.
+            reconstructed?: boolean;
+            scenes?: SavedScene[];
+          } | null;
         }>(`/highlight/clip-results/clips/${clipId}`);
         setClipTarget({
           id: d.id,
@@ -2602,7 +2709,37 @@ export default function FpaLivePage() {
         if (d.team_labels?.away) setTeamIdA(d.team_labels.away);
         if (d.lineup_sides) setLineupSides(d.lineup_sides);
         setInputMode('dual');
-        setStatus(`클립 귀속 모드: ${clipId}`);
+
+        // 저장해 둔 태깅 되살리기 — 나중에 고칠 일이 생겼을 때 이어서 수정하기 위한 것.
+        const restored = d.fpa_scenes?.scenes;
+        if (draftHadContentRef.current) {
+          // 이 창에 아직 저장 안 한 작업이 남아 있다. 서버본으로 덮으면 그게 날아간다.
+          setStatus(`클립 귀속 모드: ${clipId} — 저장 안 한 작업이 있어 복원을 건너뛰었습니다`);
+        } else if (restored?.length) {
+          setSavedScenes(restored);
+          setCurrentClipIndex(Math.max(1, ...restored.map((s) => s.clipIndex ?? 1)));
+          if (d.fpa_scenes?.half) setHalf(d.fpa_scenes.half);
+          if (d.fpa_scenes?.team) setTeam(d.fpa_scenes.team);
+          if (d.fpa_scenes?.direction) setDirection(d.fpa_scenes.direction);
+          const actionCount = restored.reduce((sum, s) => sum + s.rows.length, 0);
+          if (d.fpa_scenes?.reconstructed) {
+            // 옛 액션에서 되살린 것 — 하프·공격방향은 그 시절 저장에 없어 못 되짚는다.
+            setNeedsDirectionConfirm(true);
+            setStatus(
+              `클립 귀속 모드: ${clipId} — 옛 기록에서 장면 ${restored.length}개(액션 ${actionCount}개)를 되살렸습니다.`
+              + ' ⚠ 하프·공격방향은 복원할 수 없으니 저장 전에 반드시 확인하세요',
+            );
+          } else {
+            setStatus(`클립 귀속 모드: ${clipId} — 저장된 장면 ${restored.length}개(액션 ${actionCount}개)를 불러왔습니다`);
+          }
+        } else if (d.action_count || d.actions?.length) {
+          // 액션은 있는데 태깅 원본이 없다 = fpa_scenes 가 생기기 전에 저장됐고
+          // scripts/backfill_clip_fpa_scenes.py 도 아직 안 돌았거나, 돌렸는데 그림·스탯
+          // 코드가 모자라 복원 대상에서 빠진 클립이다.
+          setStatus(`클립 귀속 모드: ${clipId} — 이 클립은 태깅 원본이 남아 있지 않습니다(복원 백필 대상이 아니거나 미실행)`);
+        } else {
+          setStatus(`클립 귀속 모드: ${clipId}`);
+        }
       } catch {
         setStatus('클립 정보를 불러오지 못했습니다');
       }
@@ -2619,11 +2756,31 @@ export default function FpaLivePage() {
       setStatus('클립에 저장할 액션이 없습니다');
       return;
     }
+    if (!confirmRestoredDirection('저장')) return;
     setBusy(true);
     try {
       const res = await apiJson<{ actions: unknown[] }>(
         `/highlight/clip-results/clips/${clipTarget.id}/actions`,
-        { method: 'PUT', body: JSON.stringify({ rows: sourceRows }) },
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            rows: sourceRows,
+            // 태깅 원본 — 액션(rows 에서 파생)과 별개로 **찍은 그대로** 남긴다.
+            // 이걸 안 남기면 클립을 다시 열었을 때 되살릴 수가 없다: 액션 스키마에는
+            // StatInput(재채점용 원본 코드)·로그 텍스트·하프/공격방향이 없고,
+            // 서버가 sceneState 에서 점 스냅샷만 추려 scene_index 도 버리기 때문이다.
+            scenes: {
+              schema: 'fineplay.fpa.clip_scenes.v0.1',
+              savedAt: new Date().toISOString(),
+              half,
+              team,
+              direction,
+              teamIdH,
+              teamIdA,
+              scenes: collectScenesForPersistence(),
+            },
+          }),
+        },
       );
       setStatus(`클립 ${clipTarget.id}에 액션 ${res.actions.length}개 저장 완료 — 결과 탭에서 구간을 조정하세요`);
       // iframe 모달(parent) 또는 분리 창(opener)으로 떠 있으면 클립 결과 탭에 알려 액션 목록을 즉시 갱신시킨다.
@@ -3345,9 +3502,20 @@ export default function FpaLivePage() {
         </div>
         <div className="fpa-panel-actions">
           {clipTarget ? (
-            <button className="primary" disabled={busy} onClick={saveRowsToClip} type="button">
-              클립에 저장
-            </button>
+            <>
+              {/* 채점 산식이 바뀐 뒤 옛 클립을 열었을 때 — 행에 박힌 옛 지표를 지금 로직으로 다시 계산한다. */}
+              <button
+                disabled={busy || !savedScenes.length}
+                onClick={() => void rescoreAllScenes()}
+                title="저장된 장면 전부를 현재 채점 로직으로 다시 계산합니다 (저장은 따로 눌러야 반영)"
+                type="button"
+              >
+                🔄 현재 로직으로 재채점
+              </button>
+              <button className="primary" disabled={busy} onClick={saveRowsToClip} type="button">
+                클립에 저장
+              </button>
+            </>
           ) : null}
           <input
             accept=".xlsx,.xls"

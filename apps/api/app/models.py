@@ -296,6 +296,21 @@ class HighlightClip(Base):
     horizontal_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
     vertical_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
     thumbnail_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    # dual 태깅 원본 — 저장할 때 받은 장면 구조(savedScenes)를 **손대지 않고** 통째로 둔다.
+    # {schema, savedAt, half, direction, teamIdH, teamIdA, scenes:[{rows, logs,
+    #  beforeDots, afterDots, passArrows, primary, clipIndex}]}
+    #
+    # 왜 액션(highlight_clip_actions)에서 되살리지 않나
+    # -----------------------------------------------
+    # 액션은 '점수를 매기고 앱으로 보내기 위한' 파생형이라 태깅을 되돌릴 정보가 빠진다.
+    # StatInput(재채점용 원본 스탯 코드)·로그 텍스트·하프/공격방향이 저장 경로에서
+    # 사라지고, _parse_scene_state 는 점 스냅샷만 남기고 scene_index 도 버린다.
+    # 그 상태로 화면만 되살리면 다시 저장할 때 재채점이 어긋난다 — 반쪽 복원이
+    # 아예 복원 안 되는 것보다 위험하다. 그래서 받은 그대로 따로 보관한다.
+    #
+    # 이 컬럼이 없던 시절 저장된 클립은 NULL 이다 → 복원 불가로 표시하고, 다시 찍어
+    # 저장하면 그때부터 복원된다.
+    fpa_scenes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
