@@ -47,7 +47,15 @@ export type BroadcastSnapshot = {
     possession?: { home_pct?: number; away_pct?: number } | null;
     attack_direction?: Array<{
       team: 'HOME' | 'AWAY';
-      direction_ratio?: { left_pct?: number; center_pct?: number; right_pct?: number; total_count?: number };
+      direction_ratio?: {
+        left_pct?: number;
+        center_pct?: number;
+        right_pct?: number;
+        left_count?: number;
+        center_count?: number;
+        right_count?: number;
+        total_count?: number;
+      };
     }>;
     xg?: Array<{
       team: 'HOME' | 'AWAY';

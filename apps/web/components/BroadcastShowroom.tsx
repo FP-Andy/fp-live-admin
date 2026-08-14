@@ -7,6 +7,7 @@ type AssetPair = { png_url: string; webp_url: string; generated_at?: string };
 type AssetManifest = {
   live?: Record<string, AssetPair>;
   archive?: Record<string, Record<string, AssetPair>>;
+  xg_goals?: Record<string, AssetPair & { event_id?: string; event_clock?: string; event_clock_ms?: number; team?: string }>;
   dominance?: Record<string, AssetPair>;
   last_generated_at?: string | null;
 };
@@ -43,6 +44,7 @@ const LIVE_LABELS: Record<string, string> = {
   possession: '점유율',
   'xg-shot-map': 'xG 샷 맵',
 };
+const ARCHIVE_LABELS = Object.fromEntries(Object.entries(LIVE_LABELS).filter(([type]) => type !== 'xg-shot-map'));
 
 const minuteLabel = (value: string) => `${value}분`;
 
@@ -214,6 +216,7 @@ export function BroadcastShowroomIndex() {
 export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
   const { data: match, error } = useBroadcastResource<BroadcastMatch>(`/api/broadcast/v1/matches/${matchId}`);
   const archiveMinutes = useMemo(() => Object.keys(match?.assets.archive || {}).sort((a, b) => Number(a) - Number(b)), [match]);
+  const goalXgAssets = useMemo(() => Object.values(match?.assets.xg_goals || {}).sort((a, b) => Number(a.event_clock_ms || 0) - Number(b.event_clock_ms || 0)), [match]);
   if (error) return <main className="broadcast-showroom"><p className="broadcast-error">경기를 불러오지 못했습니다: {error}</p></main>;
   if (!match) return <main className="broadcast-showroom"><p className="broadcast-loading">그래픽을 불러오는 중입니다.</p></main>;
   return (
@@ -247,16 +250,24 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
       </section>
 
       <section className="broadcast-section">
-        <div className="broadcast-section-heading"><h2>15분 아카이브</h2><p>15·30·45·60·75·90분의 라이브 그래픽 24장을 고정 보관합니다.</p></div>
+        <div className="broadcast-section-heading"><h2>15분 아카이브</h2><p>15·30·45·60·75·90분의 공격 방향·점유율 그래픽 18장을 고정 보관합니다.</p></div>
         {archiveMinutes.map((minute) => (
           <div className="broadcast-archive-row" key={minute}>
             <h3>{minuteLabel(minute)}</h3>
             <div className="broadcast-assets-grid">
-              {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetCard key={type} title={label} asset={match.assets.archive?.[minute]?.[type]} />)}
+              {Object.entries(ARCHIVE_LABELS).map(([type, label]) => <AssetCard key={type} title={label} asset={match.assets.archive?.[minute]?.[type]} />)}
             </div>
           </div>
         ))}
         {!archiveMinutes.length ? <p className="broadcast-empty">첫 15분 아카이브가 생성되면 이곳에 추가됩니다.</p> : null}
+      </section>
+
+      <section className="broadcast-section">
+        <div className="broadcast-section-heading"><h2>xG 득점 아카이브</h2><p>득점이 기록될 때마다 해당 슈팅의 xG 샷맵을 1장씩 고정 보관합니다.</p></div>
+        <div className="broadcast-assets-grid">
+          {goalXgAssets.map((asset, index) => <AssetCard key={asset.event_id || index} title={`득점 ${index + 1}${asset.event_clock ? ` · ${asset.event_clock}` : ''}`} asset={asset} />)}
+        </div>
+        {!goalXgAssets.length ? <p className="broadcast-empty">득점이 기록되면 해당 xG 샷맵이 이곳에 추가됩니다.</p> : null}
       </section>
 
       <section className="broadcast-section">

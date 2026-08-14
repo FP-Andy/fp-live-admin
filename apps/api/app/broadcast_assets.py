@@ -232,7 +232,7 @@ def _encode_animated_webp(renderer, *args, **kwargs) -> bytes:
     phases = (0.18, 0.36, 0.56, 0.78, 1.0, 1.0)
     frames = [renderer(*args, phase=phase, **kwargs).convert("RGBA") for phase in phases]
     buffer = BytesIO()
-    frames[0].save(buffer, format="WEBP", save_all=True, append_images=frames[1:], duration=(90, 90, 90, 110, 160, 1800), loop=0, lossless=False, quality=88, method=6)
+    frames[0].save(buffer, format="WEBP", save_all=True, append_images=frames[1:], duration=(300, 300, 300, 300, 400, 1400), loop=1, lossless=False, quality=88, method=6)
     return buffer.getvalue()
 
 
@@ -268,7 +268,7 @@ def _encode_captured_webp(png_frames: list[bytes]) -> bytes:
             round((index + 1) * 3_000 / len(images)) - round(index * 3_000 / len(images))
             for index in range(len(images))
         ),
-        loop=0,
+        loop=1,
         lossless=False,
         quality=92,
         method=6,
@@ -276,7 +276,12 @@ def _encode_captured_webp(png_frames: list[bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def render_live_coder_asset_pairs(snapshot: dict, asset_types: tuple[str, ...] | list[str]) -> dict[str, tuple[bytes, bytes]]:
+def render_live_coder_asset_pairs(
+    snapshot: dict,
+    asset_types: tuple[str, ...] | list[str],
+    *,
+    xg_event_id: str | None = None,
+) -> dict[str, tuple[bytes, bytes]]:
     """Capture the actual Live Coder overlay instead of redrawing it in Python."""
     render_url = os.getenv("BROADCAST_LIVE_CODER_RENDER_URL", "").strip()
     if not render_url:
@@ -296,7 +301,11 @@ def render_live_coder_asset_pairs(snapshot: dict, asset_types: tuple[str, ...] |
         try:
             response = httpx.post(
                 render_url,
-                json={"match_id": match_id, "asset_types": [asset_type]},
+                json={
+                    "match_id": match_id,
+                    "asset_types": [asset_type],
+                    **({"xg_event_id": xg_event_id} if asset_type == "xg-shot-map" and xg_event_id else {}),
+                },
                 headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
                 timeout=timeout,
             )

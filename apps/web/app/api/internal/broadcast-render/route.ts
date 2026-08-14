@@ -15,7 +15,9 @@ function createWebpEncoder(frameRate: number) {
   const encoder = spawn('ffmpeg', [
     '-hide_banner', '-loglevel', 'error',
     '-f', 'image2pipe', '-framerate', String(frameRate), '-vcodec', 'png', '-i', 'pipe:0',
-    '-loop', '0', '-c:v', 'libwebp', '-lossless', '0', '-q:v', '92', '-preset', 'picture', '-an',
+  // A broadcast entrance should play through once and hold on the final
+  // frame. WebP loop=0 is infinite in ffmpeg, while loop=1 plays once.
+  '-loop', '1', '-c:v', 'libwebp', '-lossless', '0', '-q:v', '92', '-preset', 'picture', '-an',
     '-f', 'webp', 'pipe:1',
   ]);
   const chunks: Buffer[] = [];
@@ -67,9 +69,10 @@ export async function POST(request: NextRequest) {
   if (expectedToken && request.headers.get('x-broadcast-render-token') !== expectedToken) {
     return NextResponse.json({ detail: 'Unauthorized renderer request' }, { status: 401 });
   }
-  const body = await request.json().catch(() => null) as { match_id?: unknown; asset_types?: unknown } | null;
+  const body = await request.json().catch(() => null) as { match_id?: unknown; asset_types?: unknown; xg_event_id?: unknown } | null;
   const matchId = typeof body?.match_id === 'string' ? body.match_id : '';
   const assetTypes = Array.isArray(body?.asset_types) ? body.asset_types.filter(isAssetType) : [];
+  const xgEventId = typeof body?.xg_event_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.xg_event_id) ? body.xg_event_id : '';
   if (!/^[0-9a-f-]{36}$/i.test(matchId) || !assetTypes.length) {
     return NextResponse.json({ detail: 'match_id and asset_types are required' }, { status: 400 });
   }
@@ -89,7 +92,8 @@ export async function POST(request: NextRequest) {
       // is not a stable readiness signal: a poll can keep the page "busy" until
       // the navigation timeout expires. Wait for the document and then for the
       // explicit capture marker rendered by OverlayView instead.
-      await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      const xgEventQuery = assetType === 'xg-shot-map' && xgEventId ? `&xg_event_id=${encodeURIComponent(xgEventId)}` : '';
+      await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}${xgEventQuery}`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 20_000 });
       if (config.motionSelector) {
         // Freeze the CSS motion at each intended timeline point. Screenshot

@@ -1928,6 +1928,7 @@ def _broadcast_assets_manifest(match_obj: Match) -> dict:
         "version": 1,
         "live": dict(raw.get("live") or {}),
         "archive": dict(raw.get("archive") or {}),
+        "xg_goals": dict(raw.get("xg_goals") or {}),
         "dominance": dict(raw.get("dominance") or {}),
         "last_generated_at": raw.get("last_generated_at"),
     }
@@ -1950,10 +1951,11 @@ def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
 
 
 def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
-    """Render current live assets and capture the six archive slots once each.
+    """Render current live assets and capture their required archive points.
 
-    Rendering is deliberately idempotent: the moving `latest` assets overwrite
-    their fixed keys every minute, while archive keys are created only once.
+    Direction and possession graphics are fixed at six FLA time-clock points.
+    xG shot maps are instead fixed once for every goal event, so three goals
+    produce exactly three immutable shot-map artifacts.
     """
     if _normalize_sport(getattr(match_obj, "sport", None)) != "FOOTBALL":
         return None
@@ -1967,6 +1969,7 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     match_key = str(match_obj.id)
     live: dict[str, dict] = {}
     archive = dict(manifest.get("archive") or {})
+    xg_goals = dict(manifest.get("xg_goals") or {})
     pending_archive_minutes = [
         minute
         for minute in (15, 30, 45, 60, 75, 90)
@@ -1984,17 +1987,56 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
             snapshot,
             rendered=rendered,
         ).as_dict()
-        for minute in pending_archive_minutes:
-            archive.setdefault(str(minute), {})[asset_type] = store_asset_pair(
-                store,
-                f"{match_key}/archive/{minute}/{asset_type}",
-                asset_type,
-                snapshot,
-                immutable=True,
-                rendered=rendered,
-            ).as_dict()
+        if asset_type != "xg-shot-map":
+            for minute in pending_archive_minutes:
+                archive.setdefault(str(minute), {})[asset_type] = store_asset_pair(
+                    store,
+                    f"{match_key}/archive/{minute}/{asset_type}",
+                    asset_type,
+                    snapshot,
+                    immutable=True,
+                    rendered=rendered,
+                ).as_dict()
     manifest["live"] = live
     manifest["archive"] = archive
+
+    # Store one immutable xG shot map for each actual goal, independently of
+    # the 15-minute archive schedule. Rendering with the goal's event id keeps
+    # the trajectory animation focused on that specific scoring shot.
+    xg_rows = snapshot.get("analysis", {}).get("xg") or []
+    for goal in xg_rows:
+        if not isinstance(goal, dict) or not goal.get("is_goal"):
+            continue
+        event_id = str(goal.get("event_id") or "").strip()
+        if not event_id or event_id in xg_goals:
+            continue
+        goal_snapshot = {
+            **snapshot,
+            "broadcast_state": {
+                **(snapshot.get("broadcast_state") or {}),
+                "selected_xg_event_id": event_id,
+            },
+        }
+        rendered_goal = render_live_coder_asset_pairs(
+            goal_snapshot,
+            ["xg-shot-map"],
+            xg_event_id=event_id,
+        )["xg-shot-map"]
+        xg_goals[event_id] = {
+            **store_asset_pair(
+                store,
+                f"{match_key}/goals/{event_id}/xg-shot-map",
+                "xg-shot-map",
+                goal_snapshot,
+                immutable=True,
+                rendered=rendered_goal,
+            ).as_dict(),
+            "event_id": event_id,
+            "event_clock_ms": int(goal.get("event_clock_ms") or 0),
+            "event_clock": str(goal.get("event_clock") or ""),
+            "team": str(goal.get("team") or ""),
+        }
+    manifest["xg_goals"] = xg_goals
 
     dominance = dict(manifest.get("dominance") or {})
     for minute, asset_type, slot in ((45, "match-dominance-halftime", "halftime"), (90, "match-dominance-fulltime", "fulltime")):
@@ -3173,6 +3215,9 @@ def _build_partner_match_result(match_id: UUID, db: Session) -> dict:
                 "left_pct": (left / total * 100.0) if total else 0.0,
                 "center_pct": (center / total * 100.0) if total else 0.0,
                 "right_pct": (right / total * 100.0) if total else 0.0,
+                "left_count": left,
+                "center_count": center,
+                "right_count": right,
                 "total_count": total,
             },
         }
