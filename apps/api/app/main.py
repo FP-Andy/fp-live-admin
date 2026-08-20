@@ -8466,6 +8466,7 @@ def link_standalone_request(
     team_id = str(body.get("teamId") or "").strip() or None
     team_name = str(body.get("teamName") or "").strip() or None
     lineup = list(body.get("lineup") or [])
+    formation = str(body.get("formation") or "").strip()
     options = body.get("options") if isinstance(body.get("options"), list) else None
     client = fineplay_default_client()
     if client.configured and not body.get("manual"):
@@ -8480,6 +8481,7 @@ def link_standalone_request(
         team_id = str(team.get("teamId") or "").strip() or team_id
         team_name = str(team.get("teamName") or "").strip() or team_name
         lineup = list(manifest.get("lineup") or []) or lineup
+        formation = str(manifest.get("formation") or "").strip() or formation
         if isinstance(manifest.get("options"), list):
             options = manifest["options"]
 
@@ -8488,6 +8490,9 @@ def link_standalone_request(
         "team_id": team_id,
         "team_name": team_name,
         "lineup": lineup,
+        # 라인업 사전 배치용 — 슬롯 id(player_{라인}_{순번})만으로는 변형(윙백형·다이아몬드 등)을
+        # 못 살리므로 포메이션 키를 함께 남긴다. 매니페스트에 없으면 빈 문자열.
+        "formation": formation,
         # 이 사이드의 산출 지시 — 없으면 basic 폴백(resolve_plan).
         "options": options if options is not None else [],
         "plan": fineplay_plan_from_manifest({"options": options or []}, source="link"),
@@ -9065,6 +9070,10 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
                 "jersey": jersey,
                 "name": str(entry.get("name") or "").strip(),
                 "isSubstitute": bool(entry.get("isSubstitute")),
+                # 앱 FormationSlot.id — 'gk' | 'player_{라인}_{순번}' | 'c{행}_{열}'(커스텀) | 'SUB'.
+                # 화면이 이걸로 before 프레임에 라인업을 포메이션대로 미리 배치한다
+                # (영상만 보고 등번호를 찾는 게 dual 태깅에서 제일 오래 걸리는 일이라서).
+                "positionSlot": str(entry.get("positionSlot") or "").strip(),
             })
         return players
 
@@ -9074,6 +9083,9 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
     if manifest_players:
         sides[our_side] = {
             "team_name": str((manifest.get("team") or {}).get("teamName") or ""),
+            # 포메이션 키('4-3-3', '5-3-2 윙백형' …). 매니페스트에 없으면 빈 문자열이고,
+            # 화면이 슬롯 id 집합에서 라인 구성을 역산한다(변형 접미사만 못 살린다).
+            "formation": str(manifest.get("formation") or "").strip(),
             "players": manifest_players,
         }
     for side, link in (metadata.get("links") or {}).items():
@@ -9081,7 +9093,11 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
             continue
         players = _players(link.get("lineup"))
         if players:
-            sides[side] = {"team_name": str(link.get("team_name") or ""), "players": players}
+            sides[side] = {
+                "team_name": str(link.get("team_name") or ""),
+                "formation": str(link.get("formation") or "").strip(),
+                "players": players,
+            }
     return sides
 
 

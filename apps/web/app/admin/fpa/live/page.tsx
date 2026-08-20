@@ -92,7 +92,11 @@ type LogPreview = {
 // FinePlay 신청 라인업(사이드별) — 태깅 등번호 검증용. 서버 lineup_sides / fineplay-lineup 응답과 1:1.
 type LineupSidePlayers = {
   team_name?: string;
-  players: { jersey: string; name?: string; isSubstitute?: boolean }[];
+  // 포메이션 키('4-3-3', '5-3-2 윙백형' …). 매니페스트에 없으면 빈 문자열 —
+  // 그때는 슬롯 id 에서 라인 구성을 역산한다(linesFromSlotIds).
+  formation?: string;
+  // positionSlot = 앱 FormationSlot.id. 사전 배치가 이걸로 자리를 잡는다.
+  players: { jersey: string; name?: string; isSubstitute?: boolean; positionSlot?: string }[];
 };
 type LineupSides = Partial<Record<TeamSide, LineupSidePlayers>>;
 
@@ -282,6 +286,149 @@ function screenFromMeter(meterX: number, meterY: number) {
     screen_x: Number(((meterX / 105) * 1050).toFixed(2)),
     screen_y: Number((((68 - meterY) / 68) * 680).toFixed(2)),
   };
+}
+
+/* ── 라인업 사전 배치 ────────────────────────────────────────────────────────
+   영상만 보고 등번호를 찾아내는 게 dual 태깅에서 제일 오래 걸린다. 신청에 이미
+   라인업이 실려 오므로, before 프레임에 포메이션대로 등번호 점을 미리 깔아준다.
+
+   앱(FinePlay)이 보내는 positionSlot 은 FormationSlot.id 다:
+     'gk' | 'player_{라인}_{순번}' | 'c{행}_{열}'(커스텀 5×5) | 'SUB'(교체)
+   좌표는 앱의 buildPresetSlots() 가 포메이션 문자열에서 만들어내므로 그 규칙을
+   그대로 옮긴다. 포메이션 문자열이 안 오면 슬롯 id 집합에서 라인 구성을 역산한다
+   — 숫자('4-3-3')는 복원되고 변형 접미사(윙백형·압박형·다이아몬드)만 못 살린다. */
+
+type FormationSlotGrid = { id: string; gridX: number; gridY: number };
+
+// 앱 buildPresetSlots 이식. gridX 0(좌)~4(우), gridY 는 GK=20 최대 / 수비가 최소.
+function buildFormationSlots(formationKey: string, lines: number[]): FormationSlotGrid[] {
+  const slots: FormationSlotGrid[] = [{ id: 'gk', gridX: 2, gridY: 20 }];
+  const lineCount = lines.length;
+  if (!lineCount) return slots;
+
+  const gridYValues = lineCount === 2 ? [5, 15]
+    : lineCount === 3 ? [5, 10, 15]
+    : lineCount === 4 ? [4, 8, 12, 16]
+    : lineCount === 5 ? [4, 7, 10, 13, 16]
+    : lines.map((_, i) => 5 + i * 3);
+
+  for (let i = 0; i < lineCount; i += 1) {
+    const playerCount = lines[i];
+    const gridY = gridYValues[i];
+    // 인원수가 표에 없는 경우의 공통 폴백 — 0~4 에 고르게 편다.
+    const spread = () => Array.from({ length: playerCount }, (_, j) => (
+      playerCount === 1 ? 2 : Math.round((4 / (playerCount - 1)) * j)
+    ));
+
+    let xCoords: number[];
+    if (i === 0) {                                   // 최후방 수비 라인
+      xCoords = playerCount === 3 ? [1, 2, 3]
+        : playerCount === 4 ? [0, 1, 3, 4]
+        : playerCount === 5 ? [0, 1, 2, 3, 4]
+        : spread();
+    } else if (i === lineCount - 1) {                // 최전방 공격 라인
+      xCoords = playerCount === 1 ? [2]
+        : playerCount === 2 ? [1, 3]
+        : playerCount === 3 ? [0, 2, 4]
+        : playerCount === 4 ? [0, 1, 3, 4]
+        : spread();
+    } else if (lineCount === 3) {                    // 3라인의 허리
+      xCoords = playerCount === 2 ? [1, 3]
+        : playerCount === 3 ? [1, 2, 3]
+        : playerCount === 4 ? [0, 1, 3, 4]
+        : playerCount === 5 ? [0, 1, 2, 3, 4]
+        : spread();
+    } else if (lineCount === 4 && i === 1) {         // 4라인의 수비형 허리
+      xCoords = playerCount === 1 ? [2]
+        : playerCount === 2 ? [1, 3]
+        : playerCount === 3 ? [1, 2, 3]
+        : playerCount === 4 ? [0, 1, 3, 4]
+        : spread();
+    } else if (lineCount === 4) {                    // 4라인의 공격형 허리
+      xCoords = playerCount === 1 ? [2]
+        : playerCount === 2 ? [1, 3]
+        : playerCount === 3 ? [0, 2, 4]
+        : playerCount === 4 ? [0, 1, 3, 4]
+        : spread();
+    } else {
+      xCoords = spread();
+    }
+
+    for (let j = 0; j < playerCount; j += 1) {
+      let gridXFinal = xCoords[j];
+      let gridYFinal = gridY;
+      // 변형은 gridY 를 옮겨 새 라인을 만든다 — 행 매핑이 자동으로 한 줄 더 잡는다.
+      if (formationKey.includes('윙백형')) {
+        if (i === 0 && (gridXFinal === 0 || gridXFinal === 4)) gridYFinal = gridY + 2;
+        else if (lineCount === 3 && i === 1 && playerCount === 4 && (gridXFinal === 0 || gridXFinal === 4)) gridYFinal = 7;
+      }
+      if (formationKey.includes('압박형') && i > 0) gridYFinal += 2;
+      if (formationKey.includes('다이아몬드') && i === 1 && playerCount === 4) {
+        if (j === 0) { gridXFinal = 2; gridYFinal = gridY - 2; }
+        else if (j === 1) gridXFinal = 1;
+        else if (j === 2) gridXFinal = 3;
+        else if (j === 3) { gridXFinal = 2; gridYFinal = gridY + 2; }
+      }
+      slots.push({ id: `player_${i}_${j}`, gridX: gridXFinal, gridY: gridYFinal });
+    }
+  }
+  return slots;
+}
+
+// 커스텀 5×5 자유 배치 슬롯 — 앱 buildCustomGridSlots 와 같은 규칙(0행이 최하단=GK 줄).
+// 쓰인 자리만 모으면 0행이 비었을 때 행 지도가 앞뒤로 뒤집히므로 25칸을 전부 만든다.
+const CUSTOM_GK_GRID_Y = 100;
+function buildCustomGridSlots(): FormationSlotGrid[] {
+  const slots: FormationSlotGrid[] = [];
+  for (let row = 0; row < 5; row += 1) {
+    for (let col = 0; col < 5; col += 1) {
+      slots.push({ id: `c${row}_${col}`, gridX: col, gridY: row === 0 ? CUSTOM_GK_GRID_Y : row });
+    }
+  }
+  return slots;
+}
+
+// 슬롯 id 집합 → 라인별 인원수. 포메이션 문자열이 없을 때 숫자 구성을 역산한다.
+function linesFromSlotIds(ids: string[]): number[] {
+  const counts = new Map<number, number>();
+  ids.forEach((id) => {
+    const m = /^player_(\d+)_(\d+)$/.exec(id);
+    if (!m) return;
+    const line = Number(m[1]);
+    counts.set(line, Math.max(counts.get(line) ?? 0, Number(m[2]) + 1));
+  });
+  if (!counts.size) return [];
+  const maxLine = Math.max(...Array.from(counts.keys()));
+  return Array.from({ length: maxLine + 1 }, (_, i) => counts.get(i) ?? 0);
+}
+
+// 앱 buildFormationYMap 과 같은 규칙: GK(최대 gridY)=행 0, 나머지는 gridY 오름차순.
+function rowMapFromSlots(slots: FormationSlotGrid[]): Map<number, number> {
+  const ys = slots.map((s) => s.gridY);
+  const gkY = Math.max(...ys);
+  const outfield = Array.from(new Set(ys.filter((y) => y !== gkY))).sort((a, b) => a - b);
+  const map = new Map<number, number>([[gkY, 0]]);
+  outfield.forEach((y, i) => map.set(y, i + 1));
+  return map;
+}
+
+// 킥오프 형태로 자기 진영에 세운다 — 태거가 실제 위치로 끌어 옮기는 출발점.
+const LINEUP_GK_X = 5;      // 자기 골문 앞
+const LINEUP_BACK_X = 18;   // 최후방 필드 라인
+const LINEUP_FRONT_X = 48;  // 하프라인 조금 앞
+const LINEUP_Y_MARGIN = 7;  // 터치라인 여유
+
+/** 행·격자열 → 미터 좌표. attacksRight=false 면 피치를 180° 돌린다(x·y 동시 반전). */
+function lineupMeters(row: number, rowCount: number, gridX: number, attacksRight: boolean) {
+  const outfieldSpans = Math.max(1, rowCount - 2);
+  const x = row === 0
+    ? LINEUP_GK_X
+    : LINEUP_BACK_X + ((row - 1) / outfieldSpans) * (LINEUP_FRONT_X - LINEUP_BACK_X);
+  // 공격 방향을 바라볼 때 gridX 0 이 왼쪽 = y 큰 쪽.
+  const y = 68 - LINEUP_Y_MARGIN - (gridX / 4) * (68 - 2 * LINEUP_Y_MARGIN);
+  return attacksRight
+    ? { meter_x: Number(x.toFixed(2)), meter_y: Number(y.toFixed(2)) }
+    : { meter_x: Number((105 - x).toFixed(2)), meter_y: Number((68 - y).toFixed(2)) };
 }
 
 function toPayloadDot(dot: PitchDot, actorTeam?: TeamSide) {
@@ -2680,6 +2827,94 @@ export default function FpaLivePage() {
     return sets;
   }, [lineupSides]);
 
+  // 신청 라인업을 before 프레임에 포메이션대로 깔아준다.
+  // 영상만 보고 등번호를 찾는 수고를 없애는 게 목적이라, 정확한 위치가 아니라
+  // '누가 어느 자리에 있는지' 를 먼저 세워두고 태거가 끌어 옮기게 한다.
+  // 교체 선수(positionSlot='SUB')는 좌표가 없으므로 선발만 놓는다.
+  const placeLineupOnBefore = () => {
+    const sidesWithLineup = (['home', 'away'] as const)
+      .filter((side) => (lineupSides[side]?.players?.length ?? 0) > 0);
+    if (!sidesWithLineup.length) {
+      setStatus('신청 라인업이 없습니다 — 이 경기에 연결된 FinePlay 신청을 먼저 확인하세요');
+      return;
+    }
+    if (beforeDots.length && !window.confirm(
+      `before 에 찍힌 점 ${beforeDots.length}개를 지우고 라인업으로 새로 배치할까요?`,
+    )) return;
+
+    // direction 은 '지금 선택된 팀(team)' 의 공격 방향이다. 홈 기준으로 환산해 둔다.
+    const homeAttacksRight = team === 'home' ? direction === 'right' : direction === 'left';
+
+    const nextDots: PitchDot[] = [];
+    const placed: string[] = [];
+    let skipped = 0;
+
+    sidesWithLineup.forEach((side) => {
+      const info = lineupSides[side];
+      const starters = (info?.players ?? []).filter((p) => !p.isSubstitute
+        && p.positionSlot
+        && p.positionSlot.toUpperCase() !== 'SUB');
+      if (!starters.length) return;
+
+      const slotIds = starters.map((p) => p.positionSlot as string);
+      const isCustom = slotIds.some((id) => /^c\d+_\d+$/.test(id));
+      const slots = isCustom
+        ? buildCustomGridSlots()
+        : buildFormationSlots(info?.formation ?? '', linesFromSlotIds(slotIds));
+      if (!slots.length) return;
+
+      const gridById = new Map(slots.map((s) => [s.id, s]));
+      const rowMap = rowMapFromSlots(slots);
+      const rowCount = Math.max(...Array.from(rowMap.values())) + 1;
+      const attacksRight = side === 'home' ? homeAttacksRight : !homeAttacksRight;
+
+      let sidePlaced = 0;
+      starters.forEach((player) => {
+        const grid = gridById.get(player.positionSlot as string);
+        if (!grid) { skipped += 1; return; }
+        sidePlaced += 1;
+        // 커스텀 격자는 0행(gridY=100)이 곧 GK 줄이다 — 앱의 buildCustomGridSlots 규칙.
+        const isGk = grid.id === 'gk' || (isCustom && grid.gridY === CUSTOM_GK_GRID_Y);
+        const layerKey = `${side}_${isGk ? 'gk' : 'field'}`;
+        const layer = DUAL_LAYERS.find((entry) => entry.key === layerKey) ?? DUAL_LAYERS[0];
+        const meters = lineupMeters(rowMap.get(grid.gridY) ?? 0, rowCount, grid.gridX, attacksRight);
+        nextDots.push({
+          id: newDotId(),
+          ...meters,
+          ...screenFromMeter(meters.meter_x, meters.meter_y),
+          team: relationForTeamSide(side, team),
+          teamSide: side,
+          layer: layer.key,
+          role: layer.role,
+          color: layer.color,
+          number: player.jersey,
+        });
+      });
+      if (sidePlaced) placed.push(`${side === 'home' ? '홈' : '어웨이'} ${sidePlaced}명`);
+    });
+
+    if (!nextDots.length) {
+      setStatus('배치할 선발 선수가 없습니다 — 라인업에 포지션 정보가 없을 수 있습니다');
+      return;
+    }
+
+    pushDualUndo();
+    // 옛 점을 참조하던 화살표는 함께 지운다 (clearDualDots 와 같은 규칙).
+    const clearedIds = new Set(beforeDots.map((dot) => dot.id).filter(Boolean));
+    setPassArrows((prev) => prev.filter((arrow) => {
+      if (arrow.side === 'before') return false;
+      if (arrow.startId && clearedIds.has(arrow.startId)) return false;
+      return true;
+    }));
+    setBeforeDots(nextDots);
+    setSelectedDualDot(null);
+    setStatus(
+      `라인업 배치 완료 — ${placed.join(' · ')}`
+      + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : '')
+      + ' · 실제 위치로 끌어 옮기세요',
+    );
+  };
+
   // 행위자·리시버 중 라인업에 없는 등번호 목록. 라인업 없는 사이드(상대팀 등)는 검증 안 함.
   const rowMissingJerseys = (row: LogPreview): string[] => {
     const side = (row.Team || '').trim().toLowerCase();
@@ -3769,6 +4004,26 @@ export default function FpaLivePage() {
     </div>
   );
 
+  // 신청 라인업이 있는 사이드 수 — 버튼 활성화·라벨에 쓴다.
+  const lineupSidesWithPlayers = (['home', 'away'] as const)
+    .filter((side) => (lineupSides[side]?.players?.length ?? 0) > 0);
+
+  const renderLineupPrefillControl = () => (
+    <div className="fpa-live-control-group">
+      <span>라인업</span>
+      <button
+        type="button"
+        onClick={placeLineupOnBefore}
+        disabled={busy || !lineupSidesWithPlayers.length}
+        title={lineupSidesWithPlayers.length
+          ? 'before 프레임에 신청 라인업을 포메이션대로 배치합니다 (선발만)'
+          : '이 경기에 연결된 FinePlay 신청 라인업이 없습니다'}
+      >
+        before 에 배치
+      </button>
+    </div>
+  );
+
   // 레이아웃 A: Input State 를 피치 위 가로 바로 (clip UX)
   const renderDualInputBar = () => (
     <section className="fpa-dual-input-bar">
@@ -3776,6 +4031,7 @@ export default function FpaLivePage() {
       {renderDirectionControl()}
       {renderHalfControl()}
       {renderTeamControl()}
+      {renderLineupPrefillControl()}
     </section>
   );
 
