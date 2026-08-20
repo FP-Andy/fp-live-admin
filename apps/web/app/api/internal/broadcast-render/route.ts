@@ -54,8 +54,12 @@ export async function POST(request: NextRequest) {
       const config = RENDER_CONFIG[assetType];
       const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
       const xgEventQuery = assetType === 'shot-xg' && xgEventId ? `&xg_event_id=${encodeURIComponent(xgEventId)}` : '';
-      await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}${xgEventQuery}`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
-      await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 20_000 });
+      await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}${xgEventQuery}`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      // The overlay loads its FLA snapshot on the client.  A freshly deployed
+      // Next.js server can need longer than the initial DOM load before that
+      // data mounts, so wait for the actual capture root rather than failing
+      // after the previous fixed 20-second window.
+      await page.waitForSelector('[data-live-coder-capture-ready="true"]', { state: 'attached', timeout: 30_000 });
       const capture = async (layer: 'background' | 'asset') => {
         await page.evaluate((nextLayer) => {
           document.querySelector('main.lc-overlay-root')?.setAttribute('data-broadcast-capture-layer', nextLayer);
