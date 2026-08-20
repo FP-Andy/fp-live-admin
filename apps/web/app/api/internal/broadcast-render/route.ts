@@ -71,6 +71,12 @@ export async function POST(request: NextRequest) {
       // logos) so an unavailable logo cannot hold up an entire render.
       await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>('img[data-broadcast-template="true"]'))
         .every((image) => image.complete && image.naturalWidth > 0), { timeout: 30_000 });
+      // Uploaded team logos are served from the same app and normally arrive
+      // immediately.  Give them a short, separate wait so a new crest is not
+      // omitted from the first PNG after upload, without treating an optional
+      // external logo URL as a hard failure for the whole graphic.
+      await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>('img[data-broadcast-logo="true"]'))
+        .every((image) => image.complete && image.naturalWidth > 0), { timeout: 4_000 }).catch(() => undefined);
       const capture = async (layer: 'background' | 'asset') => {
         await page.evaluate((nextLayer) => {
           document.querySelector('main.lc-overlay-root')?.setAttribute('data-broadcast-capture-layer', nextLayer);

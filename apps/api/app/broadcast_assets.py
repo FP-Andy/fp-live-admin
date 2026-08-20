@@ -406,7 +406,7 @@ def store_asset_pair(
     background_url = store.put(
         # Bump this filename only when the static template design changes;
         # immutable CDN caching then remains safe for every broadcast client.
-        f"{relative_base}/background-v2.png",
+        f"{relative_base}/background-v3.png",
         background_png,
         "image/png",
         "public, max-age=31536000, immutable",

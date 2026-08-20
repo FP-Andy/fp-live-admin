@@ -8,6 +8,7 @@ import json
 import math
 import re
 import shutil
+import threading
 import time
 import traceback
 import uuid
@@ -193,6 +194,9 @@ BROADCAST_RUNTIME_DIR = Path(os.getenv("BROADCAST_RUNTIME_DIR", "/app/runtime/br
 BROADCAST_LOGO_DIR = BROADCAST_RUNTIME_DIR / "logos"
 BROADCAST_ASSET_REFRESH_SECONDS = max(10, int(os.getenv("BROADCAST_ASSET_REFRESH_SECONDS", "60")))
 BROADCAST_INGEST_KEY = os.getenv("BROADCAST_INGEST_KEY", "").strip()
+_broadcast_asset_render_lock = threading.Lock()
+_broadcast_branding_refresh_lock = threading.Lock()
+_broadcast_branding_refresh_timers: dict[str, threading.Timer] = {}
 
 FPA_MODEL_ROOM_SLOTS: dict[str, dict[str, str]] = {
     "xg": {
@@ -1963,7 +1967,7 @@ def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
     return max(0, int(match.get("fla_clock_ms") or match.get("clock_ms") or 0))
 
 
-def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
+def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
     """Render current live assets and capture their required archive points.
 
     The five live comparison graphics are fixed at six FLA time-clock points.
@@ -2071,6 +2075,40 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     match_obj.metadata_json = metadata
     db.commit()
     return manifest
+
+
+def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
+    """Serialize browser captures so concurrent updates cannot compete for Chromium."""
+    with _broadcast_asset_render_lock:
+        return _refresh_broadcast_assets_unlocked(match_obj, db, force=force)
+
+
+def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
+    """Publish branding changes to the public PNG URLs without waiting a minute."""
+    match_key = str(match_id)
+
+    def render_latest() -> None:
+        db = SessionLocal()
+        try:
+            match_obj = db.get(Match, match_id)
+            if match_obj:
+                _refresh_broadcast_assets(match_obj, db)
+        except Exception as exc:
+            db.rollback()
+            print(f"broadcast branding refresh failed for {match_key}: {exc}\n{traceback.format_exc()}")
+        finally:
+            db.close()
+            with _broadcast_branding_refresh_lock:
+                _broadcast_branding_refresh_timers.pop(match_key, None)
+
+    with _broadcast_branding_refresh_lock:
+        previous = _broadcast_branding_refresh_timers.get(match_key)
+        if previous and previous.is_alive():
+            previous.cancel()
+        timer = threading.Timer(0.35, render_latest)
+        timer.daemon = True
+        _broadcast_branding_refresh_timers[match_key] = timer
+        timer.start()
 
 
 def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
@@ -5721,6 +5759,8 @@ def put_broadcast_state(match_id: UUID, body: dict = Body(default_factory=dict),
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
+    if any(key in body for key in {"home_label", "away_label", "home_color", "away_color", "home_score", "away_score"}):
+        _queue_broadcast_branding_refresh(match_id)
     return next_state
 
 
@@ -5767,6 +5807,7 @@ async def upload_broadcast_logo(
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
+    _queue_broadcast_branding_refresh(match_id)
     return next_state
 
 
