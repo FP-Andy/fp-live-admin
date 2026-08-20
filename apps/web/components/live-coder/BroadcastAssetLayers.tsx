@@ -179,12 +179,22 @@ function selectedShot(snapshot: BroadcastSnapshot) {
   return rows.find((item) => item.event_id === selected) || rows[rows.length - 1] || null;
 }
 
-function starPoints(cx: number, cy: number, outer = 11, inner = 5) {
-  return Array.from({ length: 10 }, (_, index) => {
-    const angle = -Math.PI / 2 + index * Math.PI / 5;
-    const radius = index % 2 ? inner : outer;
-    return `${cx + Math.cos(angle) * radius},${cy + Math.sin(angle) * radius}`;
-  }).join(' ');
+function shotRouteTransform(source: { x: number; y: number }, target: { x: number; y: number }) {
+  // The supplied Shot xG SVG runs from its white ball (113.7, 184.7) to its
+  // mint goal ball (12.7, 12.7). Map that authored route onto live event
+  // coordinates so the original ball, arrow and trail stay together.
+  const assetStart = { x: 113.737, y: 184.739 };
+  const assetEnd = { x: 12.737, y: 12.739 };
+  const dx = assetEnd.x - assetStart.x;
+  const dy = assetEnd.y - assetStart.y;
+  const vx = target.x - source.x;
+  const vy = target.y - source.y;
+  const lengthSq = dx * dx + dy * dy;
+  const a = (vx * dx + vy * dy) / lengthSq;
+  const b = (vy * dx - vx * dy) / lengthSq;
+  const tx = source.x - (a * assetStart.x - b * assetStart.y);
+  const ty = source.y - (b * assetStart.x + a * assetStart.y);
+  return `matrix(${a} ${b} ${-b} ${a} ${tx} ${ty})`;
 }
 
 function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
@@ -197,6 +207,7 @@ function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const source = { x: 31 + (shotY / 68) * 300, y: 336 - ((shotX - 70) / 35) * 167 };
   const target = { x: 31 + goalmouthX * 300, y: 32 + (1 - goalmouthY) * 100 };
   const minute = Math.max(0, Math.round(Number(row?.event_clock_ms || 0) / 60_000));
+  const routeTransform = shotRouteTransform(source, target);
   const style = { '--team-color': shotTeam.color } as CSSProperties;
   return (
     <section className="bc-frame bc-shot-xg" style={style}>
@@ -204,14 +215,12 @@ function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
       <Layer>
         <DesignArtboard className="bc-shot-xg-artboard">
           <svg className="bc-shot-xg-route" viewBox="0 0 362 447" aria-label="슈팅 궤적">
-            <defs><linearGradient id="bc-shot-xg-gradient" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stopColor="var(--team-color)" stopOpacity=".25" /><stop offset="1" stopColor="var(--team-color)" /></linearGradient></defs>
-            <circle className="bc-shot-xg-dot" cx={source.x} cy={source.y} r="8" />
-            <line className="bc-shot-xg-line" x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
-            <polygon className="bc-shot-xg-star" points={starPoints(target.x, target.y)} />
+            <image href="/broadcast/templates/shot-xg/asset.svg" width="127" height="198" transform={routeTransform} />
           </svg>
           <TeamLogo url={shotTeam.logoUrl} name={shotTeam.name} className="bc-shot-xg-logo" />
-          <div className="bc-shot-xg-player"><b>득점 {minute}'</b><strong>{row?.player_name || shotTeam.name}</strong></div>
-          <div className="bc-shot-xg-value"><span>골 기대값</span><strong>{Number(row?.xg || 0).toFixed(2)}</strong></div>
+          <div className="bc-shot-xg-player"><b><span>득점 {minute}'</span><em>{shotTeam.name}</em></b><strong>{row?.player_name || shotTeam.name}</strong></div>
+          <i className="bc-shot-xg-divider" aria-hidden="true" />
+          <div className="bc-shot-xg-value"><strong>{Number(row?.xg || 0).toFixed(2)}</strong><span>골 기대값</span></div>
         </DesignArtboard>
       </Layer>
     </section>
