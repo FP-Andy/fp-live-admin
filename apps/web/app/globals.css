@@ -6582,8 +6582,7 @@ html.fpa-embed .topbar {
 .bc-attack-template { left: 82px; top: 58px; width: 570px; height: 996px; }
 .bc-attack-artboard { left: 82px; top: 58px; width: 238px; height: 415px; transform: scale(2.4); }
 .bc-attack-team-name { position: absolute; top: 20px; left: 12px; right: 12px; overflow: hidden; color: #fff; font-size: 25px; font-weight: 800; letter-spacing: -1.65px; line-height: 1.16; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.bc-attack-copy { top: 70px; left: 25px; width: 188px; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: -.68px; }
-.bc-attack-copy b { color: rgba(255,255,255,.9); font-weight: 700; }
+.bc-attack-copy { top: 70px; left: 0; display: block; width: 238px; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: -.68px; text-align: center; }
 .bc-attack-arrows { top: 0; left: 0; width: 238px; height: 415px; }
 .bc-attack-arrow { stroke: none; }
 .bc-attack-values { top: 354px; left: 15px; width: 208px; }
@@ -6651,7 +6650,7 @@ html.fpa-embed .topbar {
 .bc-shots-team-name { position: absolute; top: 183px; width: 108px; overflow: hidden; color: rgba(255,255,255,.9); font-size: 11px; font-weight: 700; letter-spacing: -.65px; line-height: 1.05; text-align: center; overflow-wrap: anywhere; }.bc-shots-team-name.home { left: 0; }.bc-shots-team-name.away { right: 0; }
 .bc-shots-grid { transform: translateX(-12px); }
 
-.bc-xg-team-name { position: absolute; top: 112px; width: 82px; overflow: hidden; color: rgba(255,255,255,.92); font-size: 11px; font-weight: 700; letter-spacing: -.65px; line-height: 1.05; text-align: center; overflow-wrap: anywhere; }.bc-xg-team-name.home { left: 2px; }.bc-xg-team-name.away { right: 2px; }
-.bc-xg-logo { top: 60px; }.bc-xg-logo.home { left: 22px; }.bc-xg-logo.away { right: 22px; }
+.bc-xg-team-name { position: absolute; top: 143px; width: 82px; overflow: hidden; color: rgba(255,255,255,.92); font-size: 11px; font-weight: 700; letter-spacing: -.65px; line-height: 1.05; text-align: center; overflow-wrap: anywhere; }.bc-xg-team-name.home { left: 2px; }.bc-xg-team-name.away { right: 2px; }
+.bc-xg-logo { top: 91px; }.bc-xg-logo.home { left: 22px; }.bc-xg-logo.away { right: 22px; }
 .bc-xg-bars { position: absolute; left: 148px; width: 302px; height: 11px; }.bc-xg-bars.expected { top: 93px; }.bc-xg-bars.score { top: 147px; }
 .bc-xg-bars i { position: absolute; top: 0; display: block; height: 11px; }.bc-xg-bars .home { right: 50%; background: var(--home-color); }.bc-xg-bars .away { left: 50%; background: var(--away-color); }

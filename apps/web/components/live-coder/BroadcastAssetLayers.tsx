@@ -79,13 +79,13 @@ function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side
       <Layer>
         <DesignArtboard className="bc-attack-artboard">
           <strong className="bc-attack-team-name">{currentTeam.name}</strong>
-          <div className="bc-attack-copy"><span>공격 방향 · 비율</span><b>전개 횟수</b></div>
+          <div className="bc-attack-copy">공격 방향 · 비율 · 전개 횟수</div>
           <svg className="bc-attack-arrows" viewBox="0 0 238 415" aria-label="공격 방향">
             <defs>
               {lanes.map((lane) => <linearGradient id={`bc-attack-gradient-${lane.key}`} key={lane.key} x1="0" y1="1" x2="0" y2="0">
                 <stop offset="0" stopColor="var(--team-color)" stopOpacity="0" />
                 <stop offset=".42" stopColor="var(--team-color)" stopOpacity={0.36 + Number(ranked.get(lane.key) || 0) * 0.08} />
-                <stop offset="1" stopColor="var(--team-color)" stopOpacity={1 - Number(ranked.get(lane.key) || 0) * 0.14} />
+                <stop offset="1" stopColor="var(--team-color)" stopOpacity="1" />
               </linearGradient>)}
             </defs>
             {lanes.map((lane) => {
