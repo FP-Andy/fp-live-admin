@@ -25,7 +25,7 @@ export type FcmEligibleMatch = {
   awayTeam: string;
 };
 
-const MATCH_NAME_PATTERN = /^\[(?<competition>[A-Z0-9-]+)\s\|\s(?<round>\d+)R\]\s(?<home>.+)\svs\s(?<away>.+)$/;
+const MATCH_NAME_PATTERN = /^\[(?<competition>[A-Z0-9가-힣-]+)\s\|\s(?<round>\d+)R\]\s(?<home>.+)\svs\s(?<away>.+)$/;
 
 function normalizeCompetitionClass(value?: string | null): string | null {
   const normalized = (value || '').trim().toUpperCase();
