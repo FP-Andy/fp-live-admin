@@ -142,6 +142,31 @@ def _parse_scene_state(value: Any) -> dict[str, Any] | None:
     return state or None
 
 
+def _actor_needs_check(row: dict[str, Any]) -> bool:
+    """이 행의 행위자 등번호가 '확인필요' 로 표시됐나.
+
+    영상으로 번호를 확정하지 못해 추측으로 찍은 점에 태거가 붙이는 표시다. 표시는 점에
+    달려 있으므로(SceneState 의 before/after 점 스냅샷) 행의 등번호와 같은 점을 찾아 읽는다.
+    프런트 원본은 camelCase(needsCheck), dual_pitch 페이로드는 snake_case(needs_check) 라
+    둘 다 본다.
+    """
+    jersey = str(row.get("Player") or "").strip()
+    if not jersey:
+        return False
+    state = _parse_scene_state(row.get("SceneState"))
+    if not state:
+        return False
+    for key in ("beforeDots", "afterDots"):
+        for dot in state.get(key) or []:
+            if not isinstance(dot, dict):
+                continue
+            if str(dot.get("number") or "").strip() != jersey:
+                continue
+            if dot.get("needsCheck") or dot.get("needs_check"):
+                return True
+    return False
+
+
 def _pick_primary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """SceneState.primary(행 인덱스)가 있으면 그 행, 없으면 슈팅류 → 첫 행 순."""
     state_text = next((r.get("SceneState") for r in rows if r.get("SceneState")), None)
@@ -356,6 +381,11 @@ def scene_action_rows(
             for key, value in (("tags", row.get("Tags")), ("receiver", row.get("Receiver")))
             if str(value or "").strip()
         }
+        # 등번호 식별 불확실 — 앱이 "이 액션은 10번이 아닐 수도 있다" 를 알 수 있게 함께 보낸다.
+        # extra 에도 넣어 DB 왕복(재전송)에서 살아남게 한다.
+        if _actor_needs_check(row):
+            action["needsCheck"] = True
+            extra["needsCheck"] = True
         coord = _parse_coord(row.get("Coord"))
         if coord is not None:
             action["x"], action["y"] = coord

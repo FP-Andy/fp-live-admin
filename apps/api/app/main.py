@@ -9041,6 +9041,8 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
         # 슛 기회 창출량 — 어시스트 채점 근거. 재전송 경로에서도 살아야 한다.
         "receptionXg": row.reception_xg,
         "packing": row.packing,
+        # 등번호 식별 불확실 표시 — extra 에 저장돼 있으므로 재전송 때도 최상위로 되살린다.
+        **({"needsCheck": True} if (row.extra or {}).get("needsCheck") else {}),
         "epv": row.epv,
         "pc": row.pc,
         "startOffset": row.start_offset,

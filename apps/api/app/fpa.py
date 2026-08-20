@@ -362,6 +362,9 @@ def _compact_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> dict[str, An
                     value = str(point.get(source_key) or "").strip()
                     if value:
                         compact_point[target_key] = value
+                # 등번호 식별 불확실 표시 — 로그(DualState)에 남아야 재채점·복원에서 살아남는다.
+                if point.get("needs_check") or point.get("needsCheck"):
+                    compact_point["needs_check"] = True
                 points.append(compact_point)
             except (KeyError, TypeError, ValueError):
                 continue

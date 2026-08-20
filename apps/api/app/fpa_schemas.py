@@ -12,6 +12,8 @@ class FpaDot(BaseModel):
     layer: str | None = Field(default=None, max_length=40)
     number: str | None = Field(default=None, max_length=20)
     id: str | None = Field(default=None, max_length=64)
+    # 등번호 식별 불확실 — 영상으로 번호를 확정하지 못해 추측으로 찍었다는 표시.
+    needs_check: bool | None = None
 
 
 class FpaPitchState(BaseModel):

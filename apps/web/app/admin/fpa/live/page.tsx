@@ -37,6 +37,9 @@ type PitchDot = {
   role?: string;     // field | gk (레이어)
   color?: string;    // 레이어 색
   number?: string;   // 등번호 — stat input 코드의 행위자 번호가 제출 시 그 점에 지정됨 (xFP/fpa)
+  // 등번호 식별이 불확실함 — 영상으로 번호를 확정하지 못해 추측으로 찍었다는 표시.
+  // 저장·전송에 함께 실려 앱이 "이 액션의 등번호는 확실하지 않다" 를 알 수 있게 한다.
+  needsCheck?: boolean;
 };
 
 type PitchSide = 'before' | 'after';
@@ -99,6 +102,10 @@ type LineupSidePlayers = {
   players: { jersey: string; name?: string; isSubstitute?: boolean; positionSlot?: string }[];
 };
 type LineupSides = Partial<Record<TeamSide, LineupSidePlayers>>;
+
+// 화면에서 교체를 반영한 뒤의 명단 한 명. positionSlot 이 자리를 들고 다니므로,
+// 교체 선수가 나간 선수의 positionSlot 을 넘겨받으면 그 자리에 그대로 배치된다.
+type RosterPlayer = { jersey: string; name?: string; positionSlot: string; isSubstitute: boolean };
 
 type PersistedLogRow = LogPreview & {
   SceneIndex?: string;
@@ -298,11 +305,11 @@ function screenFromMeter(meterX: number, meterY: number) {
    그대로 옮긴다. 포메이션 문자열이 안 오면 슬롯 id 집합에서 라인 구성을 역산한다
    — 숫자('4-3-3')는 복원되고 변형 접미사(윙백형·압박형·다이아몬드)만 못 살린다. */
 
-type FormationSlotGrid = { id: string; gridX: number; gridY: number };
+type FormationSlotGrid = { id: string; gridX: number; gridY: number; position: string };
 
 // 앱 buildPresetSlots 이식. gridX 0(좌)~4(우), gridY 는 GK=20 최대 / 수비가 최소.
 function buildFormationSlots(formationKey: string, lines: number[]): FormationSlotGrid[] {
-  const slots: FormationSlotGrid[] = [{ id: 'gk', gridX: 2, gridY: 20 }];
+  const slots: FormationSlotGrid[] = [{ id: 'gk', gridX: 2, gridY: 20, position: 'GK' }];
   const lineCount = lines.length;
   if (!lineCount) return slots;
 
@@ -320,56 +327,70 @@ function buildFormationSlots(formationKey: string, lines: number[]): FormationSl
       playerCount === 1 ? 2 : Math.round((4 / (playerCount - 1)) * j)
     ));
 
+    // 자리 좌표와 포지션 라벨을 함께 만든다 — 라벨은 명단 패널에서 보여준다.
+    const fill = (name: string) => Array.from({ length: playerCount }, () => name);
     let xCoords: number[];
+    let positions: string[];
     if (i === 0) {                                   // 최후방 수비 라인
-      xCoords = playerCount === 3 ? [1, 2, 3]
-        : playerCount === 4 ? [0, 1, 3, 4]
-        : playerCount === 5 ? [0, 1, 2, 3, 4]
-        : spread();
+      [xCoords, positions] = playerCount === 3 ? [[1, 2, 3], ['CB', 'CB', 'CB']]
+        : playerCount === 4 ? [[0, 1, 3, 4], ['LB', 'CB', 'CB', 'RB']]
+        : playerCount === 5 ? [[0, 1, 2, 3, 4], ['LB', 'CB', 'CB', 'CB', 'RB']]
+        : [spread(), fill('CB')];
     } else if (i === lineCount - 1) {                // 최전방 공격 라인
-      xCoords = playerCount === 1 ? [2]
-        : playerCount === 2 ? [1, 3]
-        : playerCount === 3 ? [0, 2, 4]
-        : playerCount === 4 ? [0, 1, 3, 4]
-        : spread();
+      [xCoords, positions] = playerCount === 1 ? [[2], ['ST']]
+        : playerCount === 2 ? [[1, 3], ['ST', 'ST']]
+        : playerCount === 3 ? [[0, 2, 4], ['LW', 'ST', 'RW']]
+        : playerCount === 4 ? [[0, 1, 3, 4], ['LW', 'CF', 'CF', 'RW']]
+        : [spread(), fill('ST')];
     } else if (lineCount === 3) {                    // 3라인의 허리
-      xCoords = playerCount === 2 ? [1, 3]
-        : playerCount === 3 ? [1, 2, 3]
-        : playerCount === 4 ? [0, 1, 3, 4]
-        : playerCount === 5 ? [0, 1, 2, 3, 4]
-        : spread();
+      [xCoords, positions] = playerCount === 2 ? [[1, 3], ['LCM', 'RCM']]
+        : playerCount === 3 ? [[1, 2, 3], ['LCM', 'CM', 'RCM']]
+        : playerCount === 4 ? [[0, 1, 3, 4], ['LM', 'LCM', 'RCM', 'RM']]
+        : playerCount === 5 ? [[0, 1, 2, 3, 4], ['LM', 'LCM', 'CM', 'RCM', 'RM']]
+        : [spread(), fill('CM')];
     } else if (lineCount === 4 && i === 1) {         // 4라인의 수비형 허리
-      xCoords = playerCount === 1 ? [2]
-        : playerCount === 2 ? [1, 3]
-        : playerCount === 3 ? [1, 2, 3]
-        : playerCount === 4 ? [0, 1, 3, 4]
-        : spread();
+      [xCoords, positions] = playerCount === 1 ? [[2], ['DM']]
+        : playerCount === 2 ? [[1, 3], ['LDM', 'RDM']]
+        : playerCount === 3 ? [[1, 2, 3], ['LDM', 'DM', 'RDM']]
+        : playerCount === 4 ? [[0, 1, 3, 4], ['LM', 'LDM', 'RDM', 'RM']]
+        : [spread(), fill('DM')];
     } else if (lineCount === 4) {                    // 4라인의 공격형 허리
-      xCoords = playerCount === 1 ? [2]
-        : playerCount === 2 ? [1, 3]
-        : playerCount === 3 ? [0, 2, 4]
-        : playerCount === 4 ? [0, 1, 3, 4]
-        : spread();
+      [xCoords, positions] = playerCount === 1 ? [[2], ['CAM']]
+        : playerCount === 2 ? [[1, 3], ['LAM', 'RAM']]
+        : playerCount === 3 ? [[0, 2, 4], ['LAM', 'CAM', 'RAM']]
+        : playerCount === 4 ? [[0, 1, 3, 4], ['LAM', 'LCM', 'RCM', 'RAM']]
+        : [spread(), fill('AM')];
     } else {
-      xCoords = spread();
+      [xCoords, positions] = [spread(), fill('CM')];
+    }
+
+    // 스위퍼: 최후방 중앙을 SW 로 바꾼다 (좌표는 그대로).
+    if (formationKey.includes('스위퍼') && i === 0) {
+      positions = positions.map((name, j) => (xCoords[j] === 2 ? 'SW' : name));
     }
 
     for (let j = 0; j < playerCount; j += 1) {
       let gridXFinal = xCoords[j];
       let gridYFinal = gridY;
+      let positionFinal = positions[j];
       // 변형은 gridY 를 옮겨 새 라인을 만든다 — 행 매핑이 자동으로 한 줄 더 잡는다.
       if (formationKey.includes('윙백형')) {
-        if (i === 0 && (gridXFinal === 0 || gridXFinal === 4)) gridYFinal = gridY + 2;
-        else if (lineCount === 3 && i === 1 && playerCount === 4 && (gridXFinal === 0 || gridXFinal === 4)) gridYFinal = 7;
+        if (i === 0 && (gridXFinal === 0 || gridXFinal === 4)) {
+          positionFinal = gridXFinal === 0 ? 'LWB' : 'RWB';
+          gridYFinal = gridY + 2;
+        } else if (lineCount === 3 && i === 1 && playerCount === 4 && (gridXFinal === 0 || gridXFinal === 4)) {
+          positionFinal = gridXFinal === 0 ? 'LWB' : 'RWB';
+          gridYFinal = 7;
+        }
       }
       if (formationKey.includes('압박형') && i > 0) gridYFinal += 2;
       if (formationKey.includes('다이아몬드') && i === 1 && playerCount === 4) {
-        if (j === 0) { gridXFinal = 2; gridYFinal = gridY - 2; }
-        else if (j === 1) gridXFinal = 1;
-        else if (j === 2) gridXFinal = 3;
-        else if (j === 3) { gridXFinal = 2; gridYFinal = gridY + 2; }
+        if (j === 0) { positionFinal = 'DM'; gridXFinal = 2; gridYFinal = gridY - 2; }
+        else if (j === 1) { positionFinal = 'LCM'; gridXFinal = 1; }
+        else if (j === 2) { positionFinal = 'RCM'; gridXFinal = 3; }
+        else if (j === 3) { positionFinal = 'CAM'; gridXFinal = 2; gridYFinal = gridY + 2; }
       }
-      slots.push({ id: `player_${i}_${j}`, gridX: gridXFinal, gridY: gridYFinal });
+      slots.push({ id: `player_${i}_${j}`, gridX: gridXFinal, gridY: gridYFinal, position: positionFinal });
     }
   }
   return slots;
@@ -382,7 +403,7 @@ function buildCustomGridSlots(): FormationSlotGrid[] {
   const slots: FormationSlotGrid[] = [];
   for (let row = 0; row < 5; row += 1) {
     for (let col = 0; col < 5; col += 1) {
-      slots.push({ id: `c${row}_${col}`, gridX: col, gridY: row === 0 ? CUSTOM_GK_GRID_Y : row });
+      slots.push({ id: `c${row}_${col}`, gridX: col, gridY: row === 0 ? CUSTOM_GK_GRID_Y : row, position: row === 0 ? 'GK' : '' });
     }
   }
   return slots;
@@ -441,6 +462,7 @@ function toPayloadDot(dot: PitchDot, actorTeam?: TeamSide) {
     layer?: string;
     number?: string;
     id?: string;
+    needs_check?: boolean;
   } = {
     meter_x: dot.meter_x,
     meter_y: dot.meter_y,
@@ -452,6 +474,7 @@ function toPayloadDot(dot: PitchDot, actorTeam?: TeamSide) {
   if (dot.layer) payload.layer = dot.layer;
   if (dot.number) payload.number = dot.number;
   if (dot.id) payload.id = dot.id;
+  if (dot.needsCheck) payload.needs_check = true;
   return payload;
 }
 
@@ -652,6 +675,29 @@ function clonePitchDotsWithIdMap(dotsToClone: PitchDot[]) {
 function statInputHasReceiver(statInput: string) {
   const baseAction = statInput.trim().split('.', 1)[0] || '';
   return /^\d+[a-z]+\d+$/i.test(baseAction);
+}
+
+function statInputReceiverNumber(statInput: string) {
+  return statInput.trim().split('.', 1)[0]?.match(/^\d+[a-z]+(\d+)$/i)?.[1];
+}
+
+/** 등번호로 아군 점을 찾는다 (before 우선).
+
+    라인업을 미리 깔면 번호가 이미 점에 붙어 있다. 그때는 **어디를 클릭했든** 그 번호의
+    점이 행위자여야 한다 — 예전엔 선택된 점을 행위자로 삼고 거기에 번호를 덮어써서,
+    2번 점을 클릭한 채 `11ss4` 를 넣으면 2번이 11번으로 바뀌어 버렸다.
+    번호가 안 붙은 수기 태깅에서는 못 찾으므로, 호출부가 기존처럼 선택 점으로 떨어진다. */
+function findAllyDotByNumber(
+  number: string | undefined,
+  before: PitchDot[],
+  after: PitchDot[],
+): { side: PitchSide; index: number; dot: PitchDot } | null {
+  if (!number) return null;
+  const beforeIndex = before.findIndex((dot) => isAllyDot(dot) && dot.number === number);
+  if (beforeIndex >= 0) return { side: 'before', index: beforeIndex, dot: before[beforeIndex] };
+  const afterIndex = after.findIndex((dot) => isAllyDot(dot) && dot.number === number);
+  if (afterIndex >= 0) return { side: 'after', index: afterIndex, dot: after[afterIndex] };
+  return null;
 }
 
 // 드리블/돌파/침투: 도착점은 행위자가 after 프레임에서 서 있는 위치다. 리시버가 붙으면 패스 계열.
@@ -1518,6 +1564,39 @@ export default function FpaLivePage() {
     setSelectedDualDot(null);
   };
 
+  // 선택한 점의 '확인필요' 표시를 켜고 끈다.
+  // 영상으로 등번호를 확정하지 못해 추측으로 찍었을 때 쓴다 — 표시는 저장·전송에
+  // 함께 실려 앱이 "이 액션의 등번호는 확실하지 않다" 를 알 수 있게 한다.
+  // 장면 수정 캔버스가 열려 있으면 그쪽 선택을, 아니면 라이브 선택을 대상으로 한다.
+  const toggleDotNeedsCheck = () => {
+    const editing = editingSceneIndex != null && editSelectedDot;
+    const sel = editing ? editSelectedDot : selectedDualDot;
+    if (!sel) {
+      setStatus('확인필요를 표시할 점을 먼저 클릭하세요');
+      return;
+    }
+    const dots = editing
+      ? (sel.side === 'before' ? editBeforeDots : editAfterDots)
+      : (sel.side === 'before' ? beforeDots : afterDots);
+    const target = dots[sel.index];
+    if (!target) return;
+    const next = !target.needsCheck;
+    const apply = (prev: PitchDot[]) =>
+      prev.map((dot, index) => (index === sel.index ? { ...dot, needsCheck: next } : dot));
+    if (editing) {
+      if (sel.side === 'before') setEditBeforeDots(apply);
+      else setEditAfterDots(apply);
+    } else {
+      pushDualUndo();
+      if (sel.side === 'before') setBeforeDots(apply);
+      else setAfterDots(apply);
+    }
+    const who = target.number ? `${target.number}번` : '번호 없는 점';
+    setStatus(next
+      ? `확인필요 표시 — ${who} · 등번호가 확실하지 않다는 뜻으로 앱까지 전달됩니다`
+      : `확인필요 해제 — ${who}`);
+  };
+
   const copyBeforeToAfter = () => {
     pushDualUndo();
     const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeDots);
@@ -1933,7 +2012,17 @@ export default function FpaLivePage() {
     // pn/dribble 등 이동 액션: 첫 ally([0])가 아니라 코드 앞번호(행위자)와 일치하는 점을 before·after에서 골라 변위 계산
     const actorNum = code.trim().match(/^(\d+)/)?.[1];
     const pickActor = (arr: PitchDot[]) => (actorNum && arr.find((dot) => dot.number === actorNum)) || arr[0];
-    if (statInputHasReceiver(code) && beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
+    // 패스/크로스: 행위자·리시버 번호가 찍혀 있으면 그 두 점을 쓴다.
+    // 라인업을 미리 깔면 아군 점이 11개라, 앞의 두 점을 집던 예전 방식은 엉뚱한 좌표를 골랐다.
+    if (statInputHasReceiver(code)) {
+      const receiverNum = statInputReceiverNumber(code);
+      const start = (actorNum && beforeAllies.find((dot) => dot.number === actorNum)) || beforeAllies[0];
+      const end = (receiverNum && beforeAllies.find((dot) => dot.number === receiverNum && dot !== start))
+        || (receiverNum && afterAllies.find((dot) => dot.number === receiverNum))
+        || beforeAllies.find((dot) => dot !== start);
+      if (start && end) return [start, end];
+      if (beforeAllies.length >= 2) return beforeAllies.slice(0, 2);
+    }
     // 이동 액션은 시작=before 행위자, 도착=after 행위자. 입력 시점엔 after 가 아직 없으므로
     // [시작, 시작] 으로 임시 채점하고, 장면 저장 시 rescoreSceneRows 가 프레임으로 확정한다.
     if (statInputIsMoveAction(code)) {
@@ -2310,7 +2399,9 @@ export default function FpaLivePage() {
       const actorNum = code.match(/^(\d+)/)?.[1];
       const actorSel = editSelectedDot;
       const actorTarget = actorSel ? (actorSel.side === 'before' ? editBeforeDots : editAfterDots)[actorSel.index] : undefined;
-      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+      // 라이브와 같은 규칙 — 그 번호의 점이 이미 있으면 클릭한 점을 건드리지 않는다.
+      const actorByNumber = findAllyDotByNumber(actorNum, editBeforeDots, editAfterDots);
+      if (!actorByNumber && actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
         const assign = (prev: PitchDot[]) =>
           prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
         if (actorSel.side === 'before') setEditBeforeDots(assign);
@@ -2323,20 +2414,25 @@ export default function FpaLivePage() {
     }
     // 패스/크로스(받는번호 O) = 시작 점 선택 후 도착점 클릭까지 채점 지연 (라이브와 동일)
     if (statInputHasReceiver(editStatInput)) {
-      const sel = editSelectedDot;
+      const editActorNum = editStatInput.trim().match(/^(\d+)/)?.[1];
+      // 번호가 이미 찍힌 점이 있으면 그 점이 행위자다 (클릭 위치보다 우선).
+      const actorByNumber = findAllyDotByNumber(editActorNum, editBeforeDots, editAfterDots);
+      const sel = actorByNumber
+        ? { side: actorByNumber.side, index: actorByNumber.index }
+        : editSelectedDot;
       const dotsArr = sel?.side === 'before' ? editBeforeDots : editAfterDots;
       const startDot = sel ? dotsArr[sel.index] : undefined;
       if (!sel || !startDot) {
-        setStatus('수정용 피치에서 패스 시작 점을 먼저 찍으세요');
+        setStatus('수정용 피치에서 패스 시작 점을 먼저 찍으세요 (또는 시작 선수 번호가 찍혀 있어야 합니다)');
         return;
       }
       if (!isAllyDot(startDot)) {
         setStatus('패스 시작 점은 아군 점이어야 합니다 (상대 점 선택됨)');
         return;
       }
-      const actorNum = editStatInput.trim().match(/^(\d+)/)?.[1];
-      if (actorNum) {
-        const assign = (prev: PitchDot[]) => prev.map((dot, index) => (index === sel.index ? { ...dot, number: actorNum } : dot));
+      // 번호로 찾았으면 이미 그 점에 번호가 있으므로 덮어쓰지 않는다.
+      if (editActorNum && !actorByNumber) {
+        const assign = (prev: PitchDot[]) => prev.map((dot, index) => (index === sel.index ? { ...dot, number: editActorNum } : dot));
         if (sel.side === 'before') setEditBeforeDots(assign);
         else setEditAfterDots(assign);
       }
@@ -2383,8 +2479,9 @@ export default function FpaLivePage() {
       const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
       const actorSel = editSelectedDot;
       const actorTarget = actorSel ? (actorSel.side === 'before' ? editBeforeDots : editAfterDots)[actorSel.index] : undefined;
-      const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
-      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+      const actorByNumber = findAllyDotByNumber(actorNum, editBeforeDots, editAfterDots);
+      const actorOnOpponent = !actorByNumber && !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
+      if (!actorByNumber && actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
         const assign = (prev: PitchDot[]) =>
           prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
         if (actorSel.side === 'before') setEditBeforeDots(assign);
@@ -2525,7 +2622,9 @@ export default function FpaLivePage() {
       const actorNum = code.match(/^(\d+)/)?.[1];
       const actorSel = selectedDualDot;
       const actorTarget = actorSel ? (actorSel.side === 'before' ? beforeDots : afterDots)[actorSel.index] : undefined;
-      if (actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+      // 그 번호의 점이 이미 있으면 클릭한 점을 건드리지 않는다.
+      const actorByNumber = findAllyDotByNumber(actorNum, beforeDots, afterDots);
+      if (!actorByNumber && actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
         const assign = (prev: PitchDot[]) =>
           prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
         if (actorSel.side === 'before') setBeforeDots(assign);
@@ -2539,8 +2638,10 @@ export default function FpaLivePage() {
     // 패스/크로스(받는번호 O) = 2점(시작·도착). 점 1개만 찍고 코드 입력 → 채점은 도착점 클릭 시 (xFP/fpa)
     if (inputMode === 'dual' && statInputHasReceiver(statInput)) {
       const actorNum = statInput.trim().match(/^(\d+)/)?.[1];
-      let side: PitchSide | undefined = selectedDualDot?.side;
-      let startIndex: number | undefined = selectedDualDot?.index;
+      // 번호가 이미 찍힌 점이 있으면 그 점이 행위자다 — 클릭 위치보다 우선한다.
+      const actorByNumber = findAllyDotByNumber(actorNum, beforeDots, afterDots);
+      let side: PitchSide | undefined = actorByNumber?.side ?? selectedDualDot?.side;
+      let startIndex: number | undefined = actorByNumber?.index ?? selectedDualDot?.index;
       let startDot =
         side != null && startIndex != null ? (side === 'before' ? beforeDots : afterDots)[startIndex] : undefined;
       // 선택이 없으면(예: 장면 저장 후 after→before 복사 직후) 코드의 행위자 번호로 시작 점 탐색 → 그 점에서 화살표 시작
@@ -2567,7 +2668,8 @@ export default function FpaLivePage() {
         setStatus('패스 시작 점은 아군 점이어야 합니다 (상대 점 선택됨)');
         return;
       }
-      if (actorNum) {
+      // 번호로 찾은 경우엔 이미 그 점에 번호가 있으므로 덮어쓸 일이 없다.
+      if (actorNum && !actorByNumber) {
         const idx = startIndex;
         const targetSide = side;
         const assign = (prev: PitchDot[]) => prev.map((dot, index) => (index === idx ? { ...dot, number: actorNum } : dot));
@@ -2622,8 +2724,10 @@ export default function FpaLivePage() {
       const actorNum = requestedStatInput.trim().match(/^(\d+)/)?.[1];
       const actorSel = selectedDualDot;
       const actorTarget = actorSel ? (actorSel.side === 'before' ? beforeDots : afterDots)[actorSel.index] : undefined;
-      const actorOnOpponent = !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
-      if (inputMode === 'dual' && actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
+      // 번호가 이미 붙은 점이 있으면 그 점이 행위자다 — 클릭한 점의 번호를 덮어쓰지 않는다.
+      const actorByNumber = inputMode === 'dual' ? findAllyDotByNumber(actorNum, beforeDots, afterDots) : null;
+      const actorOnOpponent = !actorByNumber && !!(actorSel && actorNum && actorTarget && !isAllyDot(actorTarget));
+      if (inputMode === 'dual' && !actorByNumber && actorSel && actorNum && actorTarget && isAllyDot(actorTarget)) {
         const assign = (prev: PitchDot[]) =>
           prev.map((dot, index) => (index === actorSel.index ? { ...dot, number: actorNum } : dot));
         if (actorSel.side === 'before') setBeforeDots(assign);
@@ -2792,10 +2896,57 @@ export default function FpaLivePage() {
   // 방향이 틀린 채로 저장하면 모든 지표가 좌우 반전되므로, 저장 전에 한 번 확인을 받는다.
   const [needsDirectionConfirm, setNeedsDirectionConfirm] = useState(false);
 
-  // FinePlay 신청 라인업 — 태깅 등번호 검증용. matchId(클레임/사전 잡의 fpa_link 매치)
-  // 또는 클립 귀속 모드의 클립에서 가져온다. 라인업 있는 사이드만 담기며, 그 사이드의
-  // 행위자/리시버 등번호가 명단에 없으면 행에 ⚠ 경고를 띄운다.
+  // FinePlay 신청 라인업 — before 프레임 사전 배치의 원본. matchId(클레임/사전 잡의
+  // fpa_link 매치) 또는 클립 귀속 모드의 클립에서 가져온다. 라인업 있는 사이드만 담긴다.
   const [lineupSides, setLineupSides] = useState<LineupSides>({});
+
+  // 피치 오른쪽 패널 탭 — 액션 목록 / 신청 명단
+  const [sidePanelTab, setSidePanelTab] = useState<'actions' | 'roster'>('actions');
+  // 명단 탭에서 보고 있는 팀
+  const [rosterTeam, setRosterTeam] = useState<TeamSide>('home');
+
+  // 교체 반영 — 신청 시점 명단과 실제 출전이 다를 때 화면에서만 선발↔교체를 맞바꾼다.
+  // 서버에 저장하지 않는다(신청 원본은 그대로 두고, 배치할 때만 이 결과를 쓴다).
+  const [rosterOverride, setRosterOverride] = useState<Partial<Record<TeamSide, RosterPlayer[]>>>({});
+  // 라인업이 새로 로드되면(경기·클립 전환) 교체 반영을 버린다 — 다른 경기 명단이 섞이면 안 된다.
+  useEffect(() => { setRosterOverride({}); }, [lineupSides]);
+
+  const effectiveRoster = useMemo(() => {
+    const out: Partial<Record<TeamSide, RosterPlayer[]>> = {};
+    (['home', 'away'] as const).forEach((side) => {
+      const players = lineupSides[side]?.players;
+      if (!players?.length) return;
+      out[side] = rosterOverride[side] ?? players.map((p) => ({
+        jersey: p.jersey,
+        name: p.name,
+        positionSlot: p.positionSlot ?? '',
+        // 앱은 교체를 isSubstitute 또는 positionSlot='SUB' 둘 중 하나로 표시한다.
+        isSubstitute: Boolean(p.isSubstitute) || (p.positionSlot ?? '').toUpperCase() === 'SUB',
+      }));
+    });
+    return out;
+  }, [lineupSides, rosterOverride]);
+
+  // 선발 한 명과 교체 한 명을 맞바꾼다 — 들어온 선수가 나간 선수의 자리(positionSlot)를 그대로 받는다.
+  const swapRosterPlayers = (side: TeamSide, dragJersey: string, dropJersey: string) => {
+    const list = effectiveRoster[side];
+    if (!list || dragJersey === dropJersey) return;
+    const a = list.find((p) => p.jersey === dragJersey);
+    const b = list.find((p) => p.jersey === dropJersey);
+    // 선발↔교체만 의미가 있다. 같은 구역끼리 끌면 자리만 흔들리므로 막는다.
+    if (!a || !b || a.isSubstitute === b.isSubstitute) return;
+    setRosterOverride((prev) => ({
+      ...prev,
+      [side]: list.map((p) => {
+        if (p.jersey === a.jersey) return { ...p, positionSlot: b.positionSlot, isSubstitute: b.isSubstitute };
+        if (p.jersey === b.jersey) return { ...p, positionSlot: a.positionSlot, isSubstitute: a.isSubstitute };
+        return p;
+      }),
+    }));
+    const goingIn = a.isSubstitute ? a : b;
+    const goingOut = a.isSubstitute ? b : a;
+    setStatus(`교체 반영 — ${side === 'home' ? '홈' : '어웨이'} ${goingOut.jersey} → ${goingIn.jersey} · "before 에 배치" 를 다시 누르세요`);
+  };
 
   useEffect(() => {
     const id = matchId.trim();
@@ -2818,22 +2969,15 @@ export default function FpaLivePage() {
     return () => clearTimeout(timer);
   }, [matchId]);
 
-  const lineupJerseySets = useMemo(() => {
-    const sets: Partial<Record<TeamSide, Set<string>>> = {};
-    (['home', 'away'] as const).forEach((side) => {
-      const players = lineupSides[side]?.players;
-      if (players?.length) sets[side] = new Set(players.map((p) => p.jersey));
-    });
-    return sets;
-  }, [lineupSides]);
 
   // 신청 라인업을 before 프레임에 포메이션대로 깔아준다.
   // 영상만 보고 등번호를 찾는 수고를 없애는 게 목적이라, 정확한 위치가 아니라
   // '누가 어느 자리에 있는지' 를 먼저 세워두고 태거가 끌어 옮기게 한다.
   // 교체 선수(positionSlot='SUB')는 좌표가 없으므로 선발만 놓는다.
   const placeLineupOnBefore = () => {
+    // 신청 원본이 아니라 '교체 반영된' 명단을 쓴다 — 명단 탭에서 바꾼 결과가 그대로 나간다.
     const sidesWithLineup = (['home', 'away'] as const)
-      .filter((side) => (lineupSides[side]?.players?.length ?? 0) > 0);
+      .filter((side) => (effectiveRoster[side]?.length ?? 0) > 0);
     if (!sidesWithLineup.length) {
       setStatus('신청 라인업이 없습니다 — 이 경기에 연결된 FinePlay 신청을 먼저 확인하세요');
       return;
@@ -2850,17 +2994,15 @@ export default function FpaLivePage() {
     let skipped = 0;
 
     sidesWithLineup.forEach((side) => {
-      const info = lineupSides[side];
-      const starters = (info?.players ?? []).filter((p) => !p.isSubstitute
-        && p.positionSlot
-        && p.positionSlot.toUpperCase() !== 'SUB');
+      const starters = (effectiveRoster[side] ?? []).filter((p) => !p.isSubstitute && p.positionSlot);
       if (!starters.length) return;
 
-      const slotIds = starters.map((p) => p.positionSlot as string);
+      const slotIds = starters.map((p) => p.positionSlot);
       const isCustom = slotIds.some((id) => /^c\d+_\d+$/.test(id));
       const slots = isCustom
         ? buildCustomGridSlots()
-        : buildFormationSlots(info?.formation ?? '', linesFromSlotIds(slotIds));
+        // 포메이션 키는 교체와 무관하므로 신청 원본에서 읽는다.
+        : buildFormationSlots(lineupSides[side]?.formation ?? '', linesFromSlotIds(slotIds));
       if (!slots.length) return;
 
       const gridById = new Map(slots.map((s) => [s.id, s]));
@@ -2870,7 +3012,7 @@ export default function FpaLivePage() {
 
       let sidePlaced = 0;
       starters.forEach((player) => {
-        const grid = gridById.get(player.positionSlot as string);
+        const grid = gridById.get(player.positionSlot);
         if (!grid) { skipped += 1; return; }
         sidePlaced += 1;
         // 커스텀 격자는 0행(gridY=100)이 곧 GK 줄이다 — 앱의 buildCustomGridSlots 규칙.
@@ -2913,17 +3055,6 @@ export default function FpaLivePage() {
       + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : '')
       + ' · 실제 위치로 끌어 옮기세요',
     );
-  };
-
-  // 행위자·리시버 중 라인업에 없는 등번호 목록. 라인업 없는 사이드(상대팀 등)는 검증 안 함.
-  const rowMissingJerseys = (row: LogPreview): string[] => {
-    const side = (row.Team || '').trim().toLowerCase();
-    if (side !== 'home' && side !== 'away') return [];
-    const set = lineupJerseySets[side];
-    if (!set) return [];
-    return [row.Player, row.Receiver]
-      .map((value) => (value || '').trim())
-      .filter((jersey) => jersey && !set.has(jersey));
   };
 
   useEffect(() => {
@@ -3416,7 +3547,7 @@ export default function FpaLivePage() {
             const selected = selectedDualDot?.side === side && selectedDualDot.index === index;
             return (
               <div
-                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''}`}
+                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''}`}
                 key={`${side}-${index}-${dot.left}-${dot.top}`}
                 onClick={(event) => {
                   // 화살표 그리는 중엔 점을 선택하지 않고 피치로 흘려보냄 (끊은 지점이 수비수 점 위인 경우가 흔함)
@@ -3447,6 +3578,7 @@ export default function FpaLivePage() {
                 tabIndex={0}
               >
                 {dot.label}
+                {dot.needsCheck ? <span className="fpa-dot-check">?</span> : null}
               </div>
             );
           })}
@@ -3516,7 +3648,7 @@ export default function FpaLivePage() {
             const selected = editSelectedDot?.side === side && editSelectedDot.index === index;
             return (
               <div
-                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''}`}
+                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''}`}
                 key={`edit-${side}-${index}-${dot.left}-${dot.top}`}
                 onClick={(event) => {
                   if (armedHere) return;
@@ -3546,6 +3678,7 @@ export default function FpaLivePage() {
                 tabIndex={0}
               >
                 {dot.label}
+                {dot.needsCheck ? <span className="fpa-dot-check">?</span> : null}
               </div>
             );
           })}
@@ -3708,18 +3841,9 @@ export default function FpaLivePage() {
     role: 'main' | 'sub' | null = null,
   ) => {
     const logParts = logStr?.split(' | ') || [];
-    const missing = rowMissingJerseys(row);
-    const jerseyCell = (jersey: string | undefined, fallback: string) => {
-      const value = (jersey || '').trim();
-      if (value && missing.includes(value)) {
-        return (
-          <span className="fpa-jersey-warn" title={`라인업에 없는 등번호: ${value}`}>
-            {value} ⚠
-          </span>
-        );
-      }
-      return <span>{value || fallback}</span>;
-    };
+    const jerseyCell = (jersey: string | undefined, fallback: string) => (
+      <span>{(jersey || '').trim() || fallback}</span>
+    );
     return (
       <div
         className={`fpa-log-entry ${clickable && selectedRowIndex === index ? 'selected' : ''} ${role === 'sub' ? 'sub' : ''}`}
@@ -4021,6 +4145,14 @@ export default function FpaLivePage() {
       >
         before 에 배치
       </button>
+      <button
+        type="button"
+        onClick={toggleDotNeedsCheck}
+        disabled={busy}
+        title="선택한 점의 등번호가 확실하지 않다고 표시합니다 — 저장·전송에 함께 실립니다"
+      >
+        ? 확인필요
+      </button>
     </div>
   );
 
@@ -4035,19 +4167,126 @@ export default function FpaLivePage() {
     </section>
   );
 
-  // 피치 오른쪽 장면 요약 — 현재 작업 중 장면(rows 버퍼)의 액션들 + primary, codex 채점(xG/EPV/PC)
+  // 명단 탭 — 팀 탭으로 한쪽씩 보고, 선발/교체를 끌어다 맞바꾼다.
+  // 신청 원본은 그대로 두고 화면 상태만 바뀌며, 'before 에 배치' 가 이 결과를 읽는다.
+  const renderRosterTab = () => {
+    const sides = (['home', 'away'] as const).filter((side) => effectiveRoster[side]?.length);
+    if (!sides.length) {
+      return (
+        <div className="fpa-roster-empty">
+          신청 라인업이 없습니다.<br />
+          연결된 FinePlay 신청이 있어야 명단이 뜹니다.
+        </div>
+      );
+    }
+    // 라인업이 한쪽만 있으면 그쪽으로 붙잡아 둔다.
+    const side = sides.includes(rosterTeam) ? rosterTeam : sides[0];
+    const list = effectiveRoster[side] ?? [];
+    const starters = list.filter((p) => !p.isSubstitute);
+    const subs = list.filter((p) => p.isSubstitute);
+    const info = lineupSides[side];
+
+    // 슬롯 id → 포지션 라벨. 자리를 아는 선발에만 붙는다.
+    const slotIds = starters.map((p) => p.positionSlot).filter(Boolean);
+    const isCustom = slotIds.some((id) => /^c\d+_\d+$/.test(id));
+    const slots = isCustom
+      ? buildCustomGridSlots()
+      : buildFormationSlots(info?.formation ?? '', linesFromSlotIds(slotIds));
+    const positionById = new Map(slots.map((slot) => [slot.id, slot.position]));
+
+    const row = (player: RosterPlayer) => (
+      <div
+        className={`fpa-roster-row ${player.isSubstitute ? 'sub' : ''}`}
+        data-team={side}
+        draggable
+        key={`${side}-${player.jersey}`}
+        onDragStart={(event) => {
+          event.dataTransfer.setData('text/plain', `${side}:${player.jersey}`);
+          event.dataTransfer.effectAllowed = 'move';
+        }}
+        onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }}
+        onDrop={(event) => {
+          event.preventDefault();
+          const [dragSide, dragJersey] = (event.dataTransfer.getData('text/plain') || '').split(':');
+          if (dragSide === side && dragJersey) swapRosterPlayers(side, dragJersey, player.jersey);
+        }}
+        title={`끌어서 ${player.isSubstitute ? '선발' : '교체'} 선수와 맞바꾸기`}
+      >
+        <span className="no">{player.jersey}</span>
+        <span className="pos">{positionById.get(player.positionSlot) || (player.isSubstitute ? 'SUB' : '–')}</span>
+        <span className="nm">{player.name || '이름 없음'}</span>
+      </div>
+    );
+
+    return (
+      <div className="fpa-roster-tab">
+        <div className="fpa-roster-tabs">
+          {(['home', 'away'] as const).map((s) => {
+            const roster = effectiveRoster[s];
+            return (
+              <button
+                className={`${side === s ? 'on' : ''}`}
+                data-team={s}
+                disabled={!roster?.length}
+                key={s}
+                onClick={() => setRosterTeam(s)}
+                type="button"
+              >
+                <span className="t">{s === 'home' ? '홈' : '어웨이'}</span>
+                <span className="c">{roster?.length ? `${roster.filter((p) => !p.isSubstitute).length}+${roster.filter((p) => p.isSubstitute).length}` : '없음'}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="fpa-roster-meta">
+          {info?.team_name || (side === 'home' ? '홈' : '어웨이')}
+          {info?.formation ? <b>{info.formation}</b> : null}
+        </div>
+        <div className="fpa-roster-list">
+          <div className="fpa-roster-sec">선발 {starters.length}</div>
+          {starters.length ? starters.map(row) : <div className="fpa-roster-empty-line">없음</div>}
+          <div className="fpa-roster-sec">교체명단 {subs.length}</div>
+          {subs.length ? subs.map(row) : <div className="fpa-roster-empty-line">없음</div>}
+        </div>
+        <div className="fpa-roster-hint">
+          교체가 있었다면 들어온 선수를 나간 선수 위로 끌어 놓으세요.
+          그다음 <b>“before 에 배치”</b> 를 다시 누르면 바뀐 선발로 깔립니다.
+        </div>
+      </div>
+    );
+  };
+
+  // 피치 오른쪽 패널 — [액션] 현재 장면의 액션들 / [명단] 신청 라인업(교체 반영)
   const renderSceneSummary = () => {
     const overload = dualPointSummary.afterAllyCount - dualPointSummary.afterOpponentCount;
     const sceneRows = rows;
+    const rosterCount = (['home', 'away'] as const)
+      .reduce((sum, side) => sum + (effectiveRoster[side]?.length ?? 0), 0);
     return (
       <section className="fpa-dual-side-box fpa-scene-summary">
         <div className="fpa-panel-header">
-          <div className="fpa-panel-title">액션 요약 · 클립 {currentClipIndex}</div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button className="fpa-scene-new" onClick={startNewScene} type="button">새 액션</button>
-            <button className="fpa-scene-save" disabled={sceneRows.length === 0} onClick={saveScene} type="button">액션 저장</button>
+          <div className="fpa-side-tabs">
+            <button
+              className={sidePanelTab === 'actions' ? 'active' : ''}
+              onClick={() => setSidePanelTab('actions')}
+              type="button"
+            >액션 {sceneRows.length}</button>
+            <button
+              className={sidePanelTab === 'roster' ? 'active' : ''}
+              onClick={() => setSidePanelTab('roster')}
+              type="button"
+            >명단 {rosterCount}</button>
           </div>
+          {sidePanelTab === 'actions' ? (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="fpa-scene-new" onClick={startNewScene} type="button">새 액션</button>
+              <button className="fpa-scene-save" disabled={sceneRows.length === 0} onClick={saveScene} type="button">액션 저장</button>
+            </div>
+          ) : null}
         </div>
+        {sidePanelTab === 'roster' ? renderRosterTab() : (
+        <>
+        <div className="fpa-panel-title fpa-scene-clip-label">액션 요약 · 클립 {currentClipIndex}</div>
         <div className="fpa-scene-counts">
           <span>Ally {dualPointSummary.afterAllyCount}</span>
           <span>Opp {dualPointSummary.afterOpponentCount}</span>
@@ -4060,7 +4299,6 @@ export default function FpaLivePage() {
           ) : (
             sceneRows.map((row, index) => {
               const isPrimary = primaryRowIndex === index;
-              const missing = rowMissingJerseys(row);
               return (
                 <div
                   className="fpa-scene-action-row"
@@ -4078,9 +4316,6 @@ export default function FpaLivePage() {
                       type="button"
                     >★</button>
                     {row.Team} {row.Player} · {row.Action}{row.Receiver ? ` → ${row.Receiver}` : ''}
-                    {missing.length ? (
-                      <span className="fpa-jersey-warn" title={`라인업에 없는 등번호: ${missing.join(', ')}`}> ⚠ {missing.join(', ')}</span>
-                    ) : null}
                   </span>
                   <span className="metrics">
                     xG {row.xG ?? '-'} · EPV {row.EPV ?? '-'} · PC {row.PC ?? '-'}
@@ -4102,6 +4337,8 @@ export default function FpaLivePage() {
           <button className="fpa-scene-new" disabled={currentClipIndex <= 1} onClick={startPrevClip} type="button">← 이전 클립</button>
           <button className="fpa-scene-new" onClick={startNextClip} type="button">다음 클립 →</button>
         </div>
+        </>
+        )}
       </section>
     );
   };
@@ -4184,49 +4421,6 @@ export default function FpaLivePage() {
       )}
     </section>
   );
-
-  // FinePlay 신청 라인업 패널 — 라인업 있는 사이드만 표시. 라인업 밖 등번호가 찍힌 행 수도 집계.
-  const renderLineupPanel = () => {
-    const visibleSides = (['home', 'away'] as const).filter((side) => lineupSides[side]?.players?.length);
-    if (!visibleSides.length) return null;
-    const allRows = [...savedScenes.flatMap((scene) => scene.rows), ...rows];
-    const warnRows = allRows.filter((row) => rowMissingJerseys(row).length > 0).length;
-    return (
-      <section className="fpa-lineup-panel">
-        <div className="fpa-lineup-header">
-          <span className="fpa-panel-title">신청 라인업</span>
-          {warnRows > 0 ? (
-            <span className="fpa-jersey-warn">⚠ 라인업에 없는 등번호가 찍힌 액션 {warnRows}건</span>
-          ) : (
-            <span className="fpa-lineup-ok">등번호 전부 라인업과 일치</span>
-          )}
-        </div>
-        {visibleSides.map((side) => {
-          const info = lineupSides[side]!;
-          return (
-            <div className="fpa-lineup-side" key={side}>
-              <span className="fpa-lineup-side-title">
-                {side === 'home' ? '홈' : '어웨이'}
-                {info.team_name ? ` · ${info.team_name}` : ''}
-              </span>
-              <div className="fpa-lineup-chips">
-                {info.players.map((p) => (
-                  <span
-                    className={`fpa-lineup-chip ${p.isSubstitute ? 'sub' : ''}`}
-                    key={`${side}-${p.jersey}`}
-                    title={`${p.name || ''}${p.isSubstitute ? ' (교체명단)' : ''}`.trim()}
-                  >
-                    {p.jersey}
-                    {p.name ? ` ${p.name}` : ''}
-                  </span>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </section>
-    );
-  };
 
   return (
     <div className="page-stack">
@@ -4353,7 +4547,6 @@ export default function FpaLivePage() {
           </div>
         </div>
 
-        {renderLineupPanel()}
 
         {inputMode === 'dual' ? (
           <>
