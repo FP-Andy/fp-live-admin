@@ -2109,27 +2109,35 @@ def _require_broadcast_ingest_key(x_broadcast_key: str | None = Header(default=N
         raise HTTPException(status_code=401, detail="Invalid broadcast ingest key")
 
 
+def _refresh_all_broadcast_assets() -> None:
+    """Run the blocking browser capture work outside the API event loop."""
+    db = SessionLocal()
+    try:
+        matches = (
+            db.query(Match)
+            .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
+            .order_by(Match.created_at.desc())
+            .all()
+        )
+        for match_obj in matches:
+            try:
+                _refresh_broadcast_assets(match_obj, db)
+            except Exception as exc:
+                # One malformed match or temporary S3 failure must not stop
+                # refreshes for every other concurrent live match.
+                print(f"broadcast asset refresh failed for {match_obj.id}: {exc}\n{traceback.format_exc()}")
+                db.rollback()
+    finally:
+        db.close()
+
+
 async def broadcast_asset_worker(stop_event: asyncio.Event) -> None:
-    """Keeps the public latest assets fresh without any broadcaster request work."""
+    """Keeps the public latest assets fresh without blocking overlay API reads."""
     while not stop_event.is_set():
-        db = SessionLocal()
-        try:
-            matches = (
-                db.query(Match)
-                .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
-                .order_by(Match.created_at.desc())
-                .all()
-            )
-            for match_obj in matches:
-                try:
-                    _refresh_broadcast_assets(match_obj, db)
-                except Exception as exc:
-                    # One malformed match or temporary S3 failure must not stop
-                    # refreshes for every other concurrent live match.
-                    print(f"broadcast asset refresh failed for {match_obj.id}: {exc}\n{traceback.format_exc()}")
-                    db.rollback()
-        finally:
-            db.close()
+        # The capture renderer loads the overlay, which calls this API for its
+        # snapshot.  _refresh_broadcast_assets uses synchronous HTTP/browser
+        # calls, so keeping it on the event loop would deadlock that request.
+        await asyncio.to_thread(_refresh_all_broadcast_assets)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=BROADCAST_ASSET_REFRESH_SECONDS)
         except asyncio.TimeoutError:
