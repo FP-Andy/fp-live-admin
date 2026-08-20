@@ -6472,8 +6472,11 @@ html.fpa-embed .topbar {
 .broadcast-asset-card { overflow: hidden; border: 1px solid #e0e4e9; border-radius: 18px; background: #fff; box-shadow: 0 12px 30px rgba(26, 34, 46, .05); }
 .broadcast-asset-card header { display: flex; justify-content: space-between; align-items: center; padding: 14px 14px 12px 18px; }
 .broadcast-asset-card header > strong { font-size: .94rem; }
+.broadcast-png-badge { padding: 5px 7px; border-radius: 6px; color: #6a737e; background: #edf0f3; font-size: .62rem; font-weight: 800; letter-spacing: .03em; }
 .broadcast-asset-card a { display: block; aspect-ratio: 16 / 9; background: #f2f4f6; }
 .broadcast-asset-card img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.broadcast-layer-preview { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; background: #18202a; }
+.broadcast-layer-preview img { position: absolute; inset: 0; width: 100%; height: 100%; }
 .broadcast-asset-card footer { padding: 10px 18px; color: #737b87; font-size: .7rem; }
 .broadcast-format-toggle { display: flex; gap: 4px; padding: 3px; border-radius: 8px; background: #eef1f4; }
 .broadcast-format-toggle button { border: 0; border-radius: 6px; padding: 5px 7px; color: #68717d; background: transparent; cursor: pointer; font-size: .68rem; font-weight: 700; }
@@ -6509,3 +6512,54 @@ html.fpa-embed .topbar {
   .broadcast-team-branding > div { min-width: calc(50% - 6px); flex: 1; }
   .broadcast-team-branding a { width: 100%; margin-left: 0; }
 }
+
+/* Broadcast showroom capture layers. Both URLs use this shared HD canvas. */
+.bc-capture-root { width: 1920px; height: 1080px; transform-origin: top left; }
+.bc-frame { position: absolute; inset: 0; width: 1920px; height: 1080px; overflow: hidden; color: #fff; font-family: Arial, 'Noto Sans KR', sans-serif; }
+.bc-background-layer, .bc-asset-layer { position: absolute; inset: 0; }
+.bc-template { display: block; position: absolute; }
+.bc-asset-layer { pointer-events: none; }
+[data-broadcast-capture-layer='background'] .bc-asset-layer { visibility: hidden; }
+[data-broadcast-capture-layer='asset'] .bc-background-layer { visibility: hidden; }
+.bc-logo-fallback { display: grid; place-items: center; color: #fff; background: rgba(255,255,255,.12); font-size: 20px; font-weight: 900; }
+
+.bc-attack { --team-color: #f36b21; }
+.bc-attack-template { left: 82px; top: 58px; width: 570px; height: 994px; }
+.bc-attack-team { position: absolute; left: 126px; top: 105px; display: flex; width: 482px; align-items: center; gap: 16px; overflow: hidden; font-size: 32px; font-weight: 800; white-space: nowrap; }
+.bc-attack-team img, .bc-attack-team .bc-logo-fallback { flex: 0 0 auto; width: 54px; height: 54px; border-radius: 50%; object-fit: contain; }
+.bc-attack-copy { position: absolute; top: 212px; left: 125px; display: flex; width: 485px; justify-content: space-between; color: rgba(255,255,255,.78); font-size: 16px; font-weight: 700; }
+.bc-attack-copy b { color: rgba(255,255,255,.56); }
+.bc-attack-arrows { position: absolute; top: 58px; left: 82px; width: 570px; height: 994px; overflow: visible; }
+.bc-attack-arrow { fill: none; stroke: var(--team-color); stroke-linecap: round; stroke-linejoin: round; transform-box: fill-box; transform-origin: center bottom; }
+.bc-attack-values { position: absolute; top: 895px; left: 113px; display: grid; width: 510px; grid-template-columns: repeat(3, 1fr); text-align: center; }
+.bc-attack-values strong, .bc-attack-values span { display: block; color: #fff; font-size: 44px; font-weight: 900; letter-spacing: -2px; line-height: 1; }
+.bc-attack-values span { margin-top: 9px; color: rgba(255,255,255,.72); font-size: 32px; letter-spacing: -1px; }
+
+.bc-possession-frame { --home-color: #f36b21; --away-color: #1687d4; }
+.bc-possession-background { top: 710px; right: auto; bottom: auto; left: 270px; width: 1380px; height: 248px; border: 1px solid rgba(255,255,255,.18); border-radius: 28px; background: rgba(9,18,30,.96); box-shadow: 0 22px 60px rgba(0,0,0,.28); }
+.bc-possession-background div { position: absolute; top: 122px; right: 44px; left: 44px; height: 44px; border-radius: 22px; background: rgba(255,255,255,.12); }
+.bc-possession-background span { position: absolute; top: 35px; left: 44px; font-size: 24px; font-weight: 800; letter-spacing: .08em; }
+.bc-possession-team { position: absolute; top: 751px; display: flex; width: 470px; align-items: center; gap: 16px; }
+.bc-possession-team.home { left: 316px; }.bc-possession-team.away { right: 316px; justify-content: flex-end; text-align: right; }
+.bc-possession-team img, .bc-possession-team .bc-logo-fallback { width: 52px; height: 52px; border-radius: 50%; object-fit: contain; }
+.bc-possession-team strong { max-width: 220px; overflow: hidden; font-size: 24px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.bc-possession-team b { font-size: 54px; font-weight: 900; letter-spacing: -3px; }.bc-possession-team.home b { color: var(--home-color); }.bc-possession-team.away b { color: var(--away-color); }
+.bc-possession-track { position: absolute; top: 832px; left: 314px; display: flex; width: 1292px; height: 44px; overflow: hidden; border-radius: 22px; }
+.bc-possession-track i { display: block; height: 44px; }.bc-possession-track .home { width: var(--home-pct); border-radius: 22px 0 0 22px; background: var(--home-color); }.bc-possession-track .away { width: var(--away-pct); border-radius: 0 22px 22px 0; background: var(--away-color); }
+
+.bc-shots { --home-color: #f36b21; --away-color: #1687d4; }
+.bc-shots-template { top: 306px; left: 380px; width: 1160px; height: 570px; }
+.bc-shots-team { position: absolute; top: 417px; display: flex; width: 340px; align-items: center; gap: 14px; font-size: 25px; font-weight: 800; white-space: nowrap; }.bc-shots-team.home { left: 446px; }.bc-shots-team.away { right: 446px; justify-content: flex-end; text-align: right; }.bc-shots-team img, .bc-shots-team .bc-logo-fallback { width: 52px; height: 52px; border-radius: 50%; object-fit: contain; }
+.bc-shots-numbers { position: absolute; top: 530px; display: flex; flex-direction: column; gap: 45px; font-size: 77px; font-weight: 900; line-height: .8; }.bc-shots-numbers.home { left: 614px; color: var(--home-color); }.bc-shots-numbers.away { right: 614px; color: var(--away-color); text-align: right; }
+.bc-shots-labels { position: absolute; top: 548px; left: 850px; display: flex; width: 220px; flex-direction: column; gap: 48px; color: rgba(255,255,255,.77); font-size: 18px; font-weight: 800; text-align: center; }
+
+.bc-shot-xg { --team-color: #f36b21; }.bc-shot-xg-template { top: 120px; left: 80px; width: 680px; height: 840px; }.bc-shot-xg-static-copy-mask { position: absolute; top: 777px; left: 102px; width: 625px; height: 136px; border-radius: 0 0 18px 18px; background: linear-gradient(180deg, #1b2b3f 0%, #0b111d 100%); }
+.bc-shot-xg-route { position: absolute; top: 120px; left: 80px; width: 680px; height: 840px; overflow: visible; }.bc-shot-xg-line { stroke: var(--team-color); stroke-width: 7; stroke-linecap: round; }.bc-shot-xg-dot { fill: var(--team-color); stroke: #fff; stroke-width: 4; }.bc-shot-xg-star { fill: var(--team-color); stroke: #fff; stroke-width: 3; }
+.bc-shot-xg-player { position: absolute; top: 835px; left: 124px; display: flex; width: 360px; align-items: center; gap: 12px; font-size: 24px; font-weight: 800; }.bc-shot-xg-player img, .bc-shot-xg-player .bc-logo-fallback { width: 44px; height: 44px; border-radius: 50%; object-fit: contain; }.bc-shot-xg-player span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.bc-shot-xg-player b { color: var(--team-color); }
+.bc-shot-xg-value { position: absolute; top: 822px; left: 578px; text-align: right; }.bc-shot-xg-value span { display: block; color: rgba(255,255,255,.55); font-size: 14px; font-weight: 800; }.bc-shot-xg-value strong { display: block; color: var(--team-color); font-size: 52px; line-height: 1; }
+
+.bc-xg-comparison { --home-color: #f36b21; --away-color: #1687d4; }.bc-xg-comparison-template { top: 340px; left: 270px; width: 1380px; height: 418px; }
+.bc-xg-team { position: absolute; top: 421px; display: flex; width: 345px; align-items: center; gap: 15px; color: #18202c; font-size: 23px; font-weight: 800; }.bc-xg-team.home { left: 325px; }.bc-xg-team.away { right: 325px; justify-content: flex-end; text-align: right; }.bc-xg-team img, .bc-xg-team .bc-logo-fallback { width: 52px; height: 52px; border-radius: 50%; background: #202938; color: #fff; object-fit: contain; }
+.bc-xg-row { position: absolute; left: 519px; display: grid; width: 882px; grid-template-columns: 85px 1fr 85px; align-items: center; gap: 14px; font-size: 42px; font-weight: 900; line-height: 1; }.bc-xg-row.expected { top: 535px; }.bc-xg-row.score { top: 645px; }.bc-xg-row b:first-child { color: var(--home-color); }.bc-xg-row b:last-child { color: var(--away-color); text-align: right; }.bc-xg-row div { display: flex; height: 32px; overflow: hidden; border-radius: 18px; background: rgba(0,0,0,.1); }.bc-xg-row i { display: block; height: 100%; }.bc-xg-row .home { width: var(--home-xg); background: var(--home-color); }.bc-xg-row .away { width: var(--away-xg); background: var(--away-color); }.bc-xg-row.score div { height: 12px; }.bc-xg-row.score .home { width: var(--home-score); }.bc-xg-row.score .away { width: var(--away-score); }
+
+.bc-dominance { --home-color: #f36b21; --away-color: #1687d4; }.bc-dominance-template { inset: 0; width: 1920px; height: 1080px; }.bc-dominance-team { position: absolute; top: 86px; display: flex; width: 440px; align-items: center; gap: 17px; font-size: 28px; font-weight: 900; }.bc-dominance-team.home { left: 115px; }.bc-dominance-team.away { right: 115px; justify-content: flex-end; text-align: right; }.bc-dominance-team img, .bc-dominance-team .bc-logo-fallback { width: 62px; height: 62px; border-radius: 50%; object-fit: contain; }.bc-dominance-plot { position: absolute; inset: 0; width: 1920px; height: 1080px; }.bc-dominance-plot line { stroke: rgba(255,255,255,.5); stroke-width: 2; }.bc-dominance-plot polyline { fill: none; stroke: url(#bc-dominance-team-gradient); stroke-linecap: round; stroke-linejoin: round; stroke-width: 8; }

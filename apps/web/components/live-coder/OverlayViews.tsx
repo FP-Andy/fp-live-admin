@@ -5,9 +5,10 @@ import type { CSSProperties } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { apiJson } from '../../lib/api';
 import type { BroadcastSnapshot } from './types';
+import { BroadcastAssetLayers, type BroadcastCaptureGraphic } from './BroadcastAssetLayers';
 
 type OverlayKind = 'scoreboard' | 'card-analysis' | 'analysis' | 'possession' | 'event' | 'fullscreen';
-type CaptureGraphic = 'ATTACK_DIRECTION_HOME' | 'ATTACK_DIRECTION_AWAY' | 'XG' | 'POSSESSION' | 'MATCH_DOMINANCE';
+type CaptureGraphic = BroadcastCaptureGraphic;
 type FadePhase = 'enter' | 'shown' | 'exit';
 type FadedOverlay = {
   key: string;
@@ -518,20 +519,24 @@ export default function OverlayView({ matchId, kind }: { matchId: string; kind: 
   const [scale, setScale] = useState(1);
   const requestedGraphic = searchParams.get('render') as CaptureGraphic | null;
   const requestedXgEventId = searchParams.get('xg_event_id');
-  const allowedGraphic = requestedGraphic && (
-    ((kind === 'analysis' || kind === 'card-analysis') && ['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'XG'].includes(requestedGraphic)) ||
-    (kind === 'possession' && requestedGraphic === 'POSSESSION') ||
-    (kind === 'fullscreen' && requestedGraphic === 'MATCH_DOMINANCE')
-  ) ? requestedGraphic : null;
+  const allowedGraphic = requestedGraphic && [
+    'ATTACK_DIRECTION_HOME',
+    'ATTACK_DIRECTION_AWAY',
+    'POSSESSION',
+    'SHOTS_COMPARISON',
+    'SHOT_XG',
+    'XG_COMPARISON',
+    'MATCH_DOMINANCE',
+  ].includes(requestedGraphic) ? requestedGraphic : null;
   const renderedSnapshot = useMemo(() => {
     if (!snapshot || !allowedGraphic) return snapshot;
     const state = { ...snapshot.broadcast_state };
     if (allowedGraphic === 'POSSESSION') state.possession_visible = true;
     if (allowedGraphic === 'MATCH_DOMINANCE') state.fullscreen_graphic = 'MATCH_DOMINANCE';
-    if (['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY', 'XG'].includes(allowedGraphic)) {
+    if (['ATTACK_DIRECTION_HOME', 'ATTACK_DIRECTION_AWAY'].includes(allowedGraphic)) {
       state.active_graphic = allowedGraphic as BroadcastSnapshot['broadcast_state']['active_graphic'];
     }
-    if (allowedGraphic === 'XG' && requestedXgEventId) state.selected_xg_event_id = requestedXgEventId;
+    if (allowedGraphic === 'SHOT_XG' && requestedXgEventId) state.selected_xg_event_id = requestedXgEventId;
     return { ...snapshot, broadcast_state: state };
   }, [allowedGraphic, requestedXgEventId, snapshot]);
   const displayKey = renderedSnapshot ? overlayDisplayKey(kind, renderedSnapshot) : null;
@@ -558,8 +563,13 @@ export default function OverlayView({ matchId, kind }: { matchId: string; kind: 
 
   if (!snapshot) return null;
   return (
-    <main className="lc-overlay-root" data-live-coder-capture-ready={faded ? 'true' : undefined} style={{ transform: `scale(${scale})` }}>
-      {faded ? (
+    <main
+      className={`lc-overlay-root${allowedGraphic ? ' bc-capture-root' : ''}`}
+      data-live-coder-capture-ready={(allowedGraphic || faded) ? 'true' : undefined}
+      style={{ transform: `scale(${scale})` }}
+    >
+      {allowedGraphic && renderedSnapshot ? <BroadcastAssetLayers snapshot={renderedSnapshot} graphic={allowedGraphic} /> : null}
+      {!allowedGraphic && faded ? (
         <div className={`lc-fade-slot ${faded.phase}`}>
           {kind === 'scoreboard' ? <Scoreboard snapshot={faded.snapshot} /> : null}
           {kind === 'analysis' || kind === 'card-analysis' ? <Analysis snapshot={faded.snapshot} /> : null}

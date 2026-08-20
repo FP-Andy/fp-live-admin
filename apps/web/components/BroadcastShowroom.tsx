@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
-type AssetPair = { png_url: string; webp_url: string; generated_at?: string };
+type AssetPair = { background_url: string; asset_url: string; generated_at?: string; width?: number; height?: number };
 type AssetManifest = {
   live?: Record<string, AssetPair>;
   archive?: Record<string, Record<string, AssetPair>>;
@@ -42,9 +42,10 @@ const LIVE_LABELS: Record<string, string> = {
   'attack-direction-home': '공격 방향 · 홈',
   'attack-direction-away': '공격 방향 · 어웨이',
   possession: '점유율',
-  'xg-shot-map': 'xG 샷 맵',
+  'shots-comparison': '슈팅 비교',
+  'xg-comparison': 'xG 비교',
 };
-const ARCHIVE_LABELS = Object.fromEntries(Object.entries(LIVE_LABELS).filter(([type]) => type !== 'xg-shot-map'));
+const ARCHIVE_LABELS = LIVE_LABELS;
 
 const minuteLabel = (value: string) => `${value}분`;
 
@@ -63,7 +64,6 @@ function TeamMark({ name, logoUrl, color }: { name: string; logoUrl?: string; co
 }
 
 function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
-  const [format, setFormat] = useState<'webp' | 'png'>('webp');
   if (!asset) {
     return (
       <article className="broadcast-asset-card broadcast-asset-pending">
@@ -72,18 +72,17 @@ function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
       </article>
     );
   }
-  const url = format === 'webp' ? asset.webp_url : asset.png_url;
   return (
     <article className="broadcast-asset-card">
       <header>
         <strong>{title}</strong>
-        <div className="broadcast-format-toggle" aria-label={`${title} format`}>
-          <button className={format === 'webp' ? 'selected' : ''} onClick={() => setFormat('webp')}>WebP</button>
-          <button className={format === 'png' ? 'selected' : ''} onClick={() => setFormat('png')}>PNG</button>
-        </div>
+        <span className="broadcast-png-badge">HD PNG · 2 Layers</span>
       </header>
-      <a href={url} target="_blank" rel="noreferrer" title="원본 자산 열기">
-        <img src={url} alt={`${title} ${format.toUpperCase()}`} />
+      <a href={asset.asset_url} target="_blank" rel="noreferrer" title="에셋 PNG 열기">
+        <span className="broadcast-layer-preview">
+          <img src={asset.background_url} alt={`${title} 배경`} />
+          <img src={asset.asset_url} alt={`${title} 데이터 에셋`} />
+        </span>
       </a>
       <footer>{formatTime(asset.generated_at)}</footer>
     </article>
@@ -93,7 +92,7 @@ function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
 function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
   const [copied, setCopied] = useState<string | null>(null);
   if (!asset) return null;
-  const copy = async (format: 'PNG' | 'WebP', url: string) => {
+  const copy = async (format: '배경' | '에셋', url: string) => {
     try {
       await navigator.clipboard.writeText(url);
       setCopied(format);
@@ -105,7 +104,7 @@ function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
   return (
     <div className="broadcast-asset-urls">
       <strong>{title}</strong>
-      {([['PNG', asset.png_url], ['WebP', asset.webp_url]] as const).map(([format, url]) => (
+      {([['배경', asset.background_url], ['에셋', asset.asset_url]] as const).map(([format, url]) => (
         <div className="broadcast-asset-url" key={format}>
           <span>{format}</span>
           <a href={url} target="_blank" rel="noreferrer" title={url}>{url}</a>
@@ -164,7 +163,7 @@ export function BroadcastShowroomIndex() {
       <section className="broadcast-hero">
         <span>FINEPLAY BROADCAST</span>
         <h1>라이브 그래픽 쇼룸</h1>
-        <p>매분 업데이트되는 PNG와 Animated WebP를 중계 오버레이 또는 웹에서 바로 사용합니다.</p>
+        <p>HD PNG 배경과 투명 에셋을 겹쳐 중계 오버레이 또는 웹에서 바로 사용합니다.</p>
         <small>마지막 목록 갱신: {formatTime(data?.generated_at)}</small>
       </section>
       {error ? <p className="broadcast-error">목록을 불러오지 못했습니다: {error}</p> : null}
@@ -243,14 +242,14 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
       </section>
 
       <section className="broadcast-section">
-        <div className="broadcast-section-heading"><h2>실시간 그래픽</h2><p>중계 오버레이에는 Animated WebP, 호환용으로 PNG URL을 제공합니다.</p></div>
+        <div className="broadcast-section-heading"><h2>실시간 그래픽</h2><p>배경 PNG는 고정하고, 데이터 에셋 PNG만 새로 받아 방송 장비에서 3초 진입 모션을 적용합니다.</p></div>
         <div className="broadcast-assets-grid">
           {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetCard key={type} title={label} asset={match.assets.live?.[type]} />)}
         </div>
       </section>
 
       <section className="broadcast-section">
-        <div className="broadcast-section-heading"><h2>15분 아카이브</h2><p>15·30·45·60·75·90분의 공격 방향·점유율 그래픽 18장을 고정 보관합니다.</p></div>
+        <div className="broadcast-section-heading"><h2>15분 아카이브</h2><p>15·30·45·60·75·90분에 생성한 라이브 비교 그래픽을 고정 보관합니다.</p></div>
         {archiveMinutes.map((minute) => (
           <div className="broadcast-archive-row" key={minute}>
             <h3>{minuteLabel(minute)}</h3>
@@ -263,11 +262,11 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
       </section>
 
       <section className="broadcast-section">
-        <div className="broadcast-section-heading"><h2>xG 득점 아카이브</h2><p>득점이 기록될 때마다 해당 슈팅의 xG 샷맵을 1장씩 고정 보관합니다.</p></div>
+        <div className="broadcast-section-heading"><h2>Shot xG 득점 아카이브</h2><p>득점이 기록될 때마다 해당 슈팅의 Shot xG 그래픽을 1장씩 고정 보관합니다.</p></div>
         <div className="broadcast-assets-grid">
           {goalXgAssets.map((asset, index) => <AssetCard key={asset.event_id || index} title={`득점 ${index + 1}${asset.event_clock ? ` · ${asset.event_clock}` : ''}`} asset={asset} />)}
         </div>
-        {!goalXgAssets.length ? <p className="broadcast-empty">득점이 기록되면 해당 xG 샷맵이 이곳에 추가됩니다.</p> : null}
+        {!goalXgAssets.length ? <p className="broadcast-empty">득점이 기록되면 해당 Shot xG 그래픽이 이곳에 추가됩니다.</p> : null}
       </section>
 
       <section className="broadcast-section">
