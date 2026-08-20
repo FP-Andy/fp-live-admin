@@ -1205,10 +1205,11 @@ export default function MatchPage() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-      if (e.code === 'Space') {
-        e.preventDefault();
-        toggleRun();
-      } else if (e.code === 'KeyQ') {
+      // Space 로 경기 시계를 켜고 끄던 단축키는 뺐다 (2026-08-14).
+      // 방송 중 오타 한 번에 시계가 멈추는데, 그게 일어난 걸 화면 보기 전엔 모른다.
+      // 나머지 단축키(점유 Q/W/E · 레인 A/S/D · Enter)는 잘못 눌러도 되돌리기 쉬워 남긴다.
+      // 시계는 Timer 패널의 Start/Pause 버튼으로만 조작한다.
+      if (e.code === 'KeyQ') {
         changePossession('HOME');
       } else if (e.code === 'KeyW') {
         changePossession('AWAY');
@@ -1521,7 +1522,16 @@ export default function MatchPage() {
                 {displayClockLabel(clockMs)}
                 {clockSpeed === 2 ? <span style={{ fontSize: 14, marginLeft: 6 }}>×2</span> : null}
               </strong>
-              <button className={running ? 'btn-active' : ''} onClick={toggleRun} disabled={!canWrite}>Start/Pause <span className="kbd">Space</span></button>
+              {/* Space 단축키를 뺐으므로 kbd 배지도 없앤다. 그리고 클릭 뒤 포커스를 놓는다 —
+                  버튼에 포커스가 남아 있으면 브라우저 기본 동작으로 Space 가 다시 이 버튼을
+                  누른다(단축키를 없앤 의미가 사라진다). */}
+              <button
+                className={running ? 'btn-active' : ''}
+                onClick={(e) => { e.currentTarget.blur(); toggleRun(); }}
+                disabled={!canWrite}
+              >
+                Start/Pause
+              </button>
               <button className="btn-secondary" onClick={resetClock} disabled={!canWrite}>Reset</button>
               <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>
               <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>
