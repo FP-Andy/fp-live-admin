@@ -92,13 +92,16 @@ function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side
               const laneRank = Number(ranked.get(lane.key) || 0);
               const height = 40 + clamp(lane.value, 0, 100) * 2.48;
               const top = 342 - height;
-              const shaft = (5.5 + clamp(lane.value, 0, 100) * 0.075) * 2;
-              const headWidth = shaft * 2.7;
-              const headHeight = shaft * 2.25;
+              // Keep the designer's arrowhead proportions.  Only the stem
+              // is widened so the direction cue stays sharp at HD scale.
+              const headShaft = 5.5 + clamp(lane.value, 0, 100) * 0.075;
+              const shaft = headShaft * 2;
+              const headWidth = headShaft * 2.7;
+              const headHeight = headShaft * 2.25;
               return (
                 <g className="bc-attack-arrow" key={lane.key} opacity={1 - laneRank * 0.13}>
                   <rect x={lane.x - shaft / 2} y={top + headHeight * .7} width={shaft} height={342 - top} fill={`url(#bc-attack-gradient-${lane.key})`} />
-                  <path d={`M ${lane.x} ${top} L ${lane.x - headWidth} ${top + headHeight} L ${lane.x - shaft / 2} ${top + headHeight} L ${lane.x - shaft / 2} ${top + headHeight * 1.42} L ${lane.x + shaft / 2} ${top + headHeight * 1.42} L ${lane.x + shaft / 2} ${top + headHeight} L ${lane.x + headWidth} ${top + headHeight} Z`} fill="var(--team-color)" />
+                  <path d={`M ${lane.x} ${top} L ${lane.x - headWidth} ${top + headHeight} L ${lane.x - headShaft / 2} ${top + headHeight} L ${lane.x - headShaft / 2} ${top + headHeight * 1.42} L ${lane.x + headShaft / 2} ${top + headHeight * 1.42} L ${lane.x + headShaft / 2} ${top + headHeight} L ${lane.x + headWidth} ${top + headHeight} Z`} fill="var(--team-color)" />
                 </g>
               );
             })}
