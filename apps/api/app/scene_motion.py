@@ -148,6 +148,42 @@ def _parse_arrows(value: Any) -> list[dict[str, Any]]:
     return arrows
 
 
+# 걷어낸 공이 터치라인 밖으로 나가는 꼬리를 붙일 최소 거리(m).
+# 이미 라인에 붙어 찍은 클리어는 꼬리가 1픽셀짜리라 붙여도 안 보이고,
+# 마지막 프레임에서 공만 살짝 튀어 보인다.
+CLEAR_EXIT_MIN_M = 1.5
+
+
+def _clear_exit_point(x: float, y: float) -> tuple[float, float] | None:
+    """걷어낸 지점 → **가장 가까운 터치라인** 위의 지점. 너무 가까우면 None.
+
+    공격방향을 안 봐도 되는 게 이 규칙의 장점이다 — y 하나로 결정되므로 방향
+    정보가 없는 장면(옛 기록에서 복원한 클립 등)에서도 똑같이 동작한다.
+    라인 **위**에서 끝낸다(밖으로 더 보내지 않는다) — 핸드오프 좌표계가 0~68 이라
+    범위를 넘기면 앱·mp4 가 서로 다르게 자를 수 있다.
+    """
+    near_y = 0.0 if y <= FIELD_H / 2 else FIELD_H
+    if abs(near_y - y) < CLEAR_EXIT_MIN_M:
+        return None
+    return (x, near_y)
+
+
+def _with_clear_exit(path: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """공 경로 끝에 '터치라인 밖으로' 꼬리를 붙인다 (클리어 전용).
+
+    클리어는 화살표가 '상대 볼 출발점 → 끊은 지점' 이라 공이 걷어낸 자리에서 그냥
+    멈춘다 — 보는 쪽에선 치워냈다는 느낌이 전혀 안 난다. 그래서 끝점에서 가장 가까운
+    터치라인까지 한 구간을 더 굴린다.
+
+    **그려진 화살표는 건드리지 않는다.** 이 꼬리는 태깅된 경로가 아니라 연출이라,
+    측정된 선처럼 보이면 안 된다(공만 지나간다). 채점에도 안 들어간다 — 렌더 전용이다.
+    """
+    if not path:
+        return path
+    exit_point = _clear_exit_point(path[-1][0], path[-1][1])
+    return path if exit_point is None else [*path, exit_point]
+
+
 def _chain_path(arrows: list[dict]) -> list[tuple[float, float]]:
     """화살표 체인 → 공이 지나갈 **연속** 경로.
 
@@ -655,11 +691,15 @@ def render_scene_motion(
     shot_target: tuple[float, float] | None = None,
     goal_mouth: tuple[float, float] | None = None,
     caption: str | None = None,
+    clear_exit: bool = False,
 ) -> bool:
     """SceneState → mp4. 점이 하나도 없으면 False (렌더 생략).
 
     공 경로: passArrows 가 있으면 화살표 체인, 없으면(드리블 등) 행위자 점의
     before→after 이동을 따라간다(actor_jersey/actor_side 로 행위자 점을 찾는다).
+
+    clear_exit=True 면 경로 끝에 터치라인까지 한 구간을 더 붙인다(클리어 연출 —
+    _with_clear_exit). 슛이 있는 장면에는 안 붙인다: 그 장면의 끝은 슛이다.
     """
     before = _parse_dots(scene_state.get("beforeDots") or scene_state.get("before"))
     after = _parse_dots(scene_state.get("afterDots") or scene_state.get("after"))
@@ -703,6 +743,11 @@ def render_scene_motion(
     # 않아 "공이 지나가면 그려진다"가 성립하지 않고, 공도 상대 패스를 건너뛴다.
     # 끊긴 화살표 사이는 직선으로 이어 계속 굴린다 — sceneData 와 같은 경로.
     ball_path, arrow_spans = _chain_spans(arrows)
+    if clear_exit and shot_target is None:
+        # 화살표 뒤에 붙는 꼬리다 — spans 는 그대로 두므로 화살표는 공이 지나가며
+        # 다 그려지고, 그 뒤로 공만 라인 밖으로 굴러 나간다(_reveal_fractions 는
+        # 경로 전체 길이 기준이라 자동으로 맞는다).
+        ball_path = _with_clear_exit(ball_path)
 
     font = _load_font(15)
     dot_r = 14.0
@@ -878,6 +923,7 @@ def build_scene_data(
     goal_mouth_text: Any = None,
     caption: str | None = None,
     movers: list[dict[str, Any]] | None = None,
+    clear_exit: bool = False,
 ) -> dict[str, Any] | None:
     """SceneState → 앱 네이티브 씬모션(씬모션ui_handoff scene_view.dart)용 좌표 데이터.
 
@@ -932,6 +978,10 @@ def build_scene_data(
             else:
                 path_m = [(FIELD_W / 2, FIELD_H / 2)]
         path_m.append(shot_target)
+    elif clear_exit:
+        # 클리어 — 걷어낸 자리에서 가장 가까운 터치라인까지 공만 더 굴린다.
+        # mp4(render_scene_motion)와 같은 규칙이라 콘솔 검수와 앱 화면이 일치한다.
+        path_m = _with_clear_exit(path_m)
 
     # 이동 셰브론(핸드오프 arrow_move_*) — 드리블/돌파=공 있는 이동, 침투=공 없는 이동.
     # 행위자 점의 before→after 이동 방향으로 회전, 위치는 이동 경로 중점.
@@ -1045,6 +1095,10 @@ def attach_scene_motions(
                     "side": str(member.get("teamSide") or "") or None,
                     "type": mtype,
                 })
+        # 클리어 연출 — 걷어낸 자리에서 공이 터치라인 밖으로 나가게 꼬리를 붙인다.
+        # 그룹 안에 클리어가 있으면 그 장면의 끝은 '치워냈다' 이므로 대표 행이
+        # 무엇이든 붙인다. 슛이 같이 있으면 붙이지 않는다(끝이 슛이다 — 각 함수가 판단).
+        clear_exit = any(str(m.get("action") or "") == "Clear" for m in members)
         # 앱 네이티브 씬모션용 좌표 데이터 — 스토리지·렌더와 무관하게 항상 싣는다.
         # (앱은 sceneData 우선, 없으면 sceneMotionKey mp4 폴백)
         data = build_scene_data(
@@ -1054,6 +1108,7 @@ def attach_scene_motions(
             goal_mouth_text=extra.get("goalMouth"),
             caption=caption,
             movers=movers,
+            clear_exit=clear_exit,
         )
         if data:
             rep["sceneData"] = data
@@ -1073,6 +1128,7 @@ def attach_scene_motions(
                     shot_target=_shot_target_from_goal_mouth(extra.get("goalMouth")),
                     goal_mouth=_goal_mouth_xy(extra.get("goalMouth")),
                     caption=caption,
+                    clear_exit=clear_exit,
                 ):
                     continue
                 storage.upload(out, key, content_type="video/mp4")
