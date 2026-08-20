@@ -532,13 +532,21 @@ function statInputIsNumberOnly(statInput: string) {
 //   상대팀은 좌표만 찍으므로 슛 위치 마커가 필요해 화살표를 유지한다 (2026-07-10 결정).
 // 제외: Duel(b/bb)·Clear(w)=포인트 액션.
 const DEFENSE_ARROW_CODES = new Set(['aa', 'q', 'ww', 'qw', 'w']);
+// 경합(b/bb)도 볼 경로를 화살표로 그린다 — 시작=볼이 온 곳, 끝=경합 지점.
+// 끝점이 곧 채점 좌표라, 화살표를 그리면 after 프레임에서 위치를 다시 잡을 필요가 없다.
+const DUEL_ARROW_CODES = new Set(['b', 'bb']);
+// 두 번 클릭으로 **볼 경로**를 그리는 액션 전체 — 색·선종류·끝점 마커를 패스와 달리 준다.
+const BALL_PATH_ARROW_CODES = new Set([...DEFENSE_ARROW_CODES, ...DUEL_ARROW_CODES]);
 const SHOT_BLOCK_CODES = new Set(['qw']);
 function statInputActionCode(statInput?: string | null) {
   const base = (statInput ?? '').trim().split('.', 1)[0] || '';
   return base.match(/^\d+([a-z]+)$/i)?.[1].toLowerCase() ?? '';
 }
-function statInputIsDefenseArrow(statInput?: string | null) {
-  return DEFENSE_ARROW_CODES.has(statInputActionCode(statInput));
+function statInputIsBallPathArrow(statInput?: string | null) {
+  return BALL_PATH_ARROW_CODES.has(statInputActionCode(statInput));
+}
+function statInputIsDuelArrow(statInput?: string | null) {
+  return DUEL_ARROW_CODES.has(statInputActionCode(statInput));
 }
 function statInputIsShotBlock(statInput?: string | null) {
   return SHOT_BLOCK_CODES.has(statInputActionCode(statInput));
@@ -552,7 +560,7 @@ type ArrowArm = { side: PitchSide; code: string; stage: 'start' | 'end'; sx: num
 const ARROW_COLORS = { pass: '#16c2c2', defense: '#e0524f' } as const;
 type ArrowKind = keyof typeof ARROW_COLORS;
 function arrowKind(code?: string): ArrowKind {
-  return statInputIsDefenseArrow(code) ? 'defense' : 'pass';
+  return statInputIsBallPathArrow(code) ? 'defense' : 'pass';
 }
 
 // 각 클릭이 무엇을 뜻하는지 — 피치 배지와 하단 상태바가 같은 문구를 쓴다
@@ -560,7 +568,10 @@ function arrowArmHint(code: string, stage: 'start' | 'end') {
   if (statInputIsShotBlock(code)) {
     return stage === 'start' ? '슛 위치(슈터) 클릭 · xG 채점 기준' : '블록 지점 클릭 · 기록용';
   }
-  if (statInputIsDefenseArrow(code)) {
+  if (statInputIsDuelArrow(code)) {
+    return stage === 'start' ? '볼이 온 곳 클릭' : '경합 지점 클릭 · 채점 기준';
+  }
+  if (statInputIsBallPathArrow(code)) {
     return stage === 'start' ? '상대 볼 출발점 클릭' : '끊은 지점 클릭';
   }
   return '패스 도착점 클릭';
@@ -2145,8 +2156,8 @@ export default function FpaLivePage() {
       assignNumberToEditSelectedDot(editStatInput.trim());
       return;
     }
-    // 수비(태클/인터셉트/차단/블록) = 상대 공 경로를 Before 에 화살표로 (라이브와 동일)
-    if (statInputIsDefenseArrow(editStatInput)) {
+    // 볼 경로를 화살표로 그리는 액션 — 수비(태클/인터셉트/차단/블록)와 경합. (라이브와 동일)
+    if (statInputIsBallPathArrow(editStatInput)) {
       const code = editStatInput.trim();
       // 수비 행위자 번호를 선택된 아군 점에 반영 (라이브와 동일)
       const actorNum = code.match(/^(\d+)/)?.[1];
@@ -2357,8 +2368,11 @@ export default function FpaLivePage() {
       assignNumberToLiveSelectedDot(statInput.trim());
       return;
     }
-    // 수비(태클/인터셉트/차단/블록) = 상대 공 경로를 Before 에 화살표로. 코드 입력 후 2번 클릭(출발점→끊은지점)
-    if (inputMode === 'dual' && statInputIsDefenseArrow(statInput)) {
+    // 볼 경로를 Before 에 화살표로 그리는 액션. 코드 입력 후 2번 클릭.
+    //   수비(태클/인터셉트/차단/블록) = 상대 공 경로 (출발점 → 끊은 지점)
+    //   경합(b/bb)              = 볼이 온 경로 (볼이 온 곳 → 경합 지점)
+    // 끝점이 곧 채점 좌표라, 경합은 화살표를 그리면 after 프레임 조정이 필요 없어진다.
+    if (inputMode === 'dual' && statInputIsBallPathArrow(statInput)) {
       const code = statInput.trim();
       // 수비 행위자 번호(예: 4q의 4)는 방금 찍은(선택된) 아군 점에 반영 — 화살표는 상대 공 경로라 점과 별개
       const actorNum = code.match(/^(\d+)/)?.[1];

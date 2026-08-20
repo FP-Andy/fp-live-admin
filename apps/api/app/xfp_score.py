@@ -22,7 +22,11 @@
   유효슛 [74,90] · 골 [84,100] 밴드를 쓰고, 밴드 안 위치는 골문 안 코스 품질이
   주축이며 xG 는 그 위의 난이도 보정이다(shot_outcome_score). 코드는 전부 G1
   그대로라 집계·앱 계약은 안 바뀐다.
-- 소유(ΔPC로 재는 S1~S4·S11/S12)도 예외: 측정이 분석관 태깅에 가장 크게 흔들리는
+- 경합(S11/S12)도 예외: 볼 도착점을 안 찍는 점 액션이라 ΔEPV가 정의상 0이고, 남는
+  재료가 ΔPC 하나뿐이었다. 경합 승리는 소유권 획득 사건이므로 수비와 같은 전환가치·
+  같은 defense 곡선으로 재고(회수계수 Duel=0.85), 진 경합은 점수에서 뺀다
+  (_FAILABLE_ACTIONS). 측정 지점은 after 프레임의 행위자 좌표다.
+- 소유(ΔPC로 재는 S1~S4)도 예외: 측정이 분석관 태깅에 가장 크게 흔들리는
   축이라 상한을 내려 [50,80]으로 압축한다(POSSESSION_SCORE_BAND). 편차가 몇 '점'으로
   보이는지는 곡선 기울기에 비례하므로, 범위 압축이 그 편차를 직접 줄인다. 하한 50은
   '유효 액션 없음'의 자리라 건드리지 않는다.
@@ -68,6 +72,19 @@ LINK_CREDIT = 0.7
 # 최하점을 받았다(0.0015 → 53점). 기존 행은 옛 값이 남아 있어 백필이 필요하다
 # (`scripts/backfill_defense_epv.py`) — 어시스트와 달리 원시값 자체가 바뀌었기 때문이다.
 DEFENSE_CODES = frozenset({"S5", "S7"})
+
+# 경합(듀얼)의 24코드. 자기 진영 S11 / 상대 진영 S12.
+#
+# 수비(S5/S7)와 **같은 이유로** ΔPC 를 안 쓴다. 경합은 볼 도착점을 안 찍는 점 액션이라
+# ΔEPV 가 정의상 0 이고, 그래서 남는 재료가 ΔPC 하나뿐이었다 — 위 POSSESSION_SCORE_BAND
+# 주석이 "태깅 편차에 가장 크게 흔들린다" 고 적어둔 바로 그 축이다. 게다가 정작 가진
+# 정보인 '어디서 이겼나' 는 점수에 전혀 안 들어갔다.
+#
+# 경합 승리는 태클·인터셉트와 같은 소유권 획득 사건이므로 같은 전환가치로 재고
+# (fpa._defense_turnover_value, 회수계수 Duel=0.85), 같은 defense 곡선을 쓴다.
+# 진 경합은 애초에 점수에서 빠진다(fineplay_fpa._FAILABLE_ACTIONS) — 경합은 이겼냐
+# 졌냐가 액션의 전부라, 진 것에 점수가 붙으면 태그 자체가 무의미해진다.
+DUEL_CODES = frozenset({"S11", "S12"})
 
 # 압박 — possession 군이지만 점이 아니라 영역 평균으로 재는 유일한 코드
 # (fpa._press_region_pitch_control). 전용 밴드(PRESS_SCORE_BAND)와 점수 분배가 여기 걸린다.
@@ -159,9 +176,9 @@ PASS_PACKING_BONUS = 0.25
 # 폭 30 은 상한만 내려도 얻는다 — 50~80 의 편차 감소는 55~85 와 사실상 같다(5.4 vs 5.3점).
 #
 # 적용 경계는 **effect_basis 가 possession 인 코드만** — 즉 실제로 ΔPC 로 재는
-# S1/S2(소유 패스)·S3/S4(소유 드리블)·S11/S12(듀얼)다. 수비(S5/S7)는 Outcome 이
-# Possession 이어도 ΔPC 로 재지 않으므로(DEFENSE_CODES 주석 참조) 건드리지 않고,
-# 압박(S9)은 같은 군이어도 성격이 달라 전용 밴드를 쓴다(PRESS_SCORE_BAND).
+# S1/S2(소유 패스)·S3/S4(소유 드리블)다. 수비(S5/S7)와 경합(S11/S12)은 Outcome 이
+# Possession 이어도 ΔPC 로 재지 않으므로(DEFENSE_CODES·DUEL_CODES 주석 참조) 건드리지
+# 않고, 압박(S9)은 같은 군이어도 성격이 달라 전용 밴드를 쓴다(PRESS_SCORE_BAND).
 POSSESSION_SCORE_BAND: tuple[int, int] = (50, 80)
 
 # 압박(S9)은 같은 possession 군이어도 **전용 밴드**를 쓴다.
@@ -437,6 +454,9 @@ def effect_basis(code: str, action: dict[str, Any]) -> str | None:
     """
     if code in DEFENSE_CODES:
         return "goal" if float(action.get("xg") or 0) > 0 else "defense"
+    # 경합도 같다 — 이긴 자리의 소유권 전환가치로 재므로 defense 곡선(DUEL_CODES 주석).
+    if code in DUEL_CODES:
+        return "defense"
     return outcome_family(code)
 
 

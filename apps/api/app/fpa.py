@@ -103,6 +103,24 @@ TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr", "pn"}
 # '상대 공격방향' 기준 EPV(end)−EPV(start) (prevented threat). 좌표 2개(화살표)로 채점, EPV-방어만 사용.
 # 제외: Duel(b/bb)=경합 포인트. Clear(w)는 2026-07-30 화살표 방식으로 편입(점 1개면 기존 단독 지점 하위호환).
 DEFENSE_ARROW_CODES = {"aa", "q", "ww", "w"}
+
+# 경합(Duel) — 화살표가 아니라 **경합 포인트**다. 볼이 어디로 갔는지는 안 찍는다.
+#
+# 그래서 시작=끝이라 ΔEPV 가 정의상 0 이고(실데이터 확인: `EPV=0.000`), 남는 재료가
+# ΔPC 하나뿐이었다. 그건 프레임에 찍힌 전원의 합에 대한 비율이라 분석관이 몇 명을
+# 찍었는지에 값이 흔들리는 축이다(POSSESSION_SCORE_BAND 주석의 시뮬레이션 참조).
+# 즉 경합은 **가장 못 믿을 지표 하나에 100% 의존**하고 있었고, 정작 가진 정보인
+# '어디서 이겼나' 는 점수에 전혀 안 들어갔다.
+#
+# 경합 승리는 태클·인터셉트와 같은 **소유권 획득 사건**이므로 같은 산식으로 잰다.
+# 50/50 볼에는 오히려 더 잘 맞는다 — 앞 항 '상대 기준 EPV' 가 "우리가 안 이겼으면
+# 상대가 가졌을 위협" 이라는 반사실인데, 경합이 정확히 그 상황이다.
+#
+# 측정 지점은 **after 프레임의 행위자 좌표**다. dual 은 before/after 두 경기장에 점을
+# 찍고(page.tsx submitDotsForCode 가 [before 행위자, after 행위자] 를 보낸다), 경합은
+# two-dot 액션이 아니라 서버가 `dots[-1]` 을 쓴다 — 그게 after 점이다. 경합이 끝난
+# 자리에서 소유권이 넘어간 것이므로 after 가 맞다.
+DUEL_CODES = {"bb", "b"}
 # Block(qw)=슛블락 — 상대 '슛' 궤적을 before 프레임에 화살표로(start=슈터, end=블록 지점).
 # 점수 = 막은 슛의 xG를 블로커에게 승계(상대 공격방향으로 슈터 위치 뒤집어 estimate_xg) × BLOCK_CREDIT. xG 컬럼 사용.
 SHOT_BLOCK_CODES = {"qw"}
@@ -789,6 +807,10 @@ DEFENSE_RETENTION = {
     "Tackle": 0.90,
     "Cutout": 0.55,
     "Clear": 0.20,
+    # 경합(DUEL_CODES) — 이긴 경합만 채점 대상이다(진 경합은 fineplay_fpa._FAILABLE_ACTIONS
+    # 로 점수에서 빠진다). 이겼다는 건 공을 갖고 나왔다는 뜻이라 태클과 같은 자리에서
+    # 시작하되, 50/50 은 이기고도 볼이 흘러 재경합이 되는 비율이 태클보다 높아 조금 낮춘다.
+    "Duel": 0.85,
 }
 # 모르는 수비 액션 — 잔여 범주와 같게 본다(DEFENSE_ARROW_CODES 는 위 넷이 전부라 방어용).
 DEFENSE_RETENTION_DEFAULT = 0.55
@@ -2023,8 +2045,14 @@ def generate_log_entry(
     else:
         # 첫 글자 's' 로 two-dot 판정 시 Save(sv)·Sprint(st)가 Pass(s)에 걸려 좌표 2개를 잘못 요구 → 제외 (2026-07-21)
         requires_two_dots = (base_action_code in TWO_DOT_ACTION_CODES or action_code_raw in TWO_DOT_ACTION_CODES or player_to) and action_code_raw not in ("sv", "st")
-        # 수비 액션: 상대 볼/슛 경로 화살표(start,end) 2점이 오면 two-dot로 처리 (EPV-prevented 또는 xG-prevented).
-        if not requires_two_dots and action_code_raw in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES) and len(dots) >= 2:
+        # 볼 경로 화살표(start,end) 2점이 오면 two-dot로 처리한다.
+        #   수비 = 상대 볼/슛 경로 (EPV-prevented 또는 xG-prevented)
+        #   경합 = 볼이 온 경로 — 끝점이 경합 지점이고 그게 곧 채점 좌표다
+        # 필수가 아니라 **선택**이다(TWO_DOT_ACTION_CODES 가 아니다) — 점 1개로 찍던
+        # 기존 방식이 그대로 살아 있어야 옛 데이터와 간단 태깅이 안 깨진다.
+        if not requires_two_dots and action_code_raw in (
+            DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES
+        ) and len(dots) >= 2:
             requires_two_dots = True
     if not is_dribble and requires_two_dots:
         if len(dots) < 2:
@@ -2035,7 +2063,7 @@ def generate_log_entry(
         start_x_adj = FIELD_W - start_x if direction == "left" else start_x
         end_x_adj = FIELD_W - end_x if direction == "left" else end_x
         # Progressive는 전진 '전달' 액션(패스/크로스/드리블 등)에만 — 수비(상대 공/슛 경로)엔 부적절하므로 제외
-        if action_name != "Throw-in" and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
+        if action_name != "Throw-in" and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
         if action_name == "Throw-in":
             throw_distance = float(np.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2))
@@ -2110,6 +2138,11 @@ def generate_log_entry(
             # (_defense_turnover_value). 화살표(start=상대 볼 출발, end=끊은 지점)의 end 가
             # 그 지점이고, 화살표가 없으면 찍은 점 자체가 곧 끊은 지점이라 점 1개로 찍어도
             # 채점된다. 액션 이름이 회수 성공도를 가른다(태클/인터셉트/컷아웃/클리어).
+            epv_value = _defense_turnover_value(metric_end_x_adj, metric_end_y, action_name)
+        elif action_code_raw in DUEL_CODES:
+            # 경합: 이긴 자리의 소유권 전환가치. 볼 도착점을 안 찍으므로 시작=끝이고
+            # (ΔEPV 가 정의상 0), 여기서 쓰는 좌표는 **after 프레임의 행위자 점**이다.
+            # DUEL_CODES 주석 참조.
             epv_value = _defense_turnover_value(metric_end_x_adj, metric_end_y, action_name)
         else:
             epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
