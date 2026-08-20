@@ -1936,7 +1936,7 @@ def _broadcast_assets_manifest(match_obj: Match) -> dict:
 
 
 def _broadcast_is_running(match_obj: Match, db: Session) -> bool:
-    """Use the FLA match clock as the broadcast asset lifecycle authority.
+    """Return the current FLA clock playback state for the showroom status.
 
     Live Coder has its own presentation clock for scorebug controls. It must
     never start or stop the showroom renderer; the renderer follows the state
@@ -1944,6 +1944,18 @@ def _broadcast_is_running(match_obj: Match, db: Session) -> bool:
     """
     latest_state = _latest_state(match_obj.id, db)
     return bool(latest_state and latest_state.running)
+
+
+def _broadcast_has_started(match_obj: Match, db: Session) -> bool:
+    """Render after the FLA clock starts, including while the match is paused.
+
+    A paused FLA workspace still has a valid latest state and should publish
+    the most recent PNG layer at the normal refresh interval.  The running
+    flag remains a UI/status signal only; a nonzero FLA clock is the asset
+    lifecycle signal.
+    """
+    latest_state = _latest_state(match_obj.id, db)
+    return bool(latest_state and latest_state.clock_ms > 0)
 
 
 def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
@@ -1960,7 +1972,7 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     """
     if _normalize_sport(getattr(match_obj, "sport", None)) != "FOOTBALL":
         return None
-    if not force and (match_obj.archived or not _broadcast_is_running(match_obj, db)):
+    if not force and (match_obj.archived or not _broadcast_has_started(match_obj, db)):
         return None
 
     snapshot = _build_broadcast_snapshot(match_obj, db)
@@ -5878,7 +5890,7 @@ def refresh_broadcast_assets(
     row = _require_football_match_for_partner(match_id, db)
     manifest = _refresh_broadcast_assets(row, db, force=finalize)
     if manifest is None:
-        raise HTTPException(status_code=409, detail="Match is not running; use finalize=true only after the final data write")
+        raise HTTPException(status_code=409, detail="Match has not started; use finalize=true only after the final data write")
     return {"ok": True, "match_id": str(match_id), "assets": manifest}
 
 
