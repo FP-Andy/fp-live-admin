@@ -1629,7 +1629,8 @@ def _normalize_competition_class(value: str | None) -> str:
     return normalized or "K3"
 
 
-MATCH_NAME_PATTERN = re.compile(r"^\[(?P<class>[A-Z0-9-]+) \| (?P<round>\d+)R\] (?P<home>.+) vs (?P<away>.+)$")
+COMPETITION_CODE_PATTERN = re.compile(r"[A-Z0-9가-힣-]+")
+MATCH_NAME_PATTERN = re.compile(r"^\[(?P<class>[A-Z0-9가-힣-]+) \| (?P<round>\d+)R\] (?P<home>.+) vs (?P<away>.+)$")
 
 
 def _is_in_penalty_area(x: float, y: float) -> bool:
@@ -5276,8 +5277,10 @@ def put_basketball_state(
 def create_competition_class(body: CompetitionClassCreateRequest, db: Session = Depends(get_db)):
     code = _normalize_competition_class(body.code)
     name = body.name.strip()
-    if not re.fullmatch(r"[A-Z0-9-]+", code):
-        raise HTTPException(status_code=400, detail="Competition class code can use A-Z, 0-9, and '-' only")
+    if not COMPETITION_CODE_PATTERN.fullmatch(code):
+        raise HTTPException(status_code=400, detail="Competition class code can use Korean, A-Z, 0-9, and '-' only")
+    if not name:
+        raise HTTPException(status_code=422, detail="Competition class name is required")
 
     existing = db.get(CompetitionClass, code)
     if existing:
@@ -5305,7 +5308,10 @@ def update_competition_class(code: str, body: CompetitionClassUpdateRequest, db:
     if not row:
         raise HTTPException(status_code=404, detail="Competition class not found")
 
-    row.name = body.name.strip()
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Competition class name is required")
+    row.name = name
     row.first_half_minutes = body.first_half_minutes
     row.second_half_minutes = body.second_half_minutes
     row.extra_first_half_minutes = body.extra_first_half_minutes

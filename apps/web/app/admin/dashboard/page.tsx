@@ -412,8 +412,8 @@ export default function Dashboard() {
       setClassModalError('대회 코드를 입력하세요.');
       return;
     }
-    if (!/^[A-Z0-9-]+$/.test(code)) {
-      setClassModalError("대회 코드는 영문 대문자, 숫자, '-'만 사용할 수 있습니다.");
+    if (!/^[A-Z0-9가-힣-]+$/.test(code)) {
+      setClassModalError("대회 코드는 한글, 영문 대문자, 숫자, '-'만 사용할 수 있습니다. 괄호는 표시 이름에서 사용하세요.");
       return;
     }
     setClassModalError('');
@@ -1325,16 +1325,20 @@ export default function Dashboard() {
                       <input
                         value={newClassCode}
                         onChange={(e) => setNewClassCode(e.target.value.toUpperCase())}
-                        placeholder="예: SUFA-C"
+                        maxLength={20}
+                        placeholder="예: K3-4 또는 대학리그"
                       />
+                      <small>한글·영문·숫자·하이픈(-)만 사용할 수 있습니다.</small>
                     </div>
                     <div className="field-stack">
                       <div className="field-label">표시 이름</div>
                       <input
                         value={newClassName}
                         onChange={(e) => setNewClassName(e.target.value)}
-                        placeholder="예: SUFA-C"
+                        maxLength={60}
+                        placeholder="예: K3리그 (챌린저)"
                       />
+                      <small>한글과 괄호를 포함해 자유롭게 입력할 수 있습니다.</small>
                     </div>
                     <div className="field-stack">
                       <div className="field-label">전반 시간(분)</div>
@@ -1458,7 +1462,9 @@ export default function Dashboard() {
                           <input
                             value={editingClassName}
                             onChange={(e) => setEditingClassName(e.target.value)}
+                            maxLength={60}
                           />
+                          <small>한글과 괄호를 포함해 자유롭게 입력할 수 있습니다.</small>
                         </div>
                         <div className="field-stack">
                           <div className="field-label">전반 시간(분)</div>
