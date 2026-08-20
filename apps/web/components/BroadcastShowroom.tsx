@@ -243,7 +243,7 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
 
       <section className="broadcast-section">
         <div className="broadcast-section-heading"><h2>실시간 그래픽</h2><p>배경 PNG는 고정하고, 데이터 에셋 PNG만 새로 받아 방송 장비에서 3초 진입 모션을 적용합니다.</p></div>
-        <div className="broadcast-assets-grid">
+        <div className="broadcast-assets-grid broadcast-live-assets-grid">
           {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetCard key={type} title={label} asset={match.assets.live?.[type]} />)}
         </div>
       </section>
