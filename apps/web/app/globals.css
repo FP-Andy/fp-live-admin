@@ -7,6 +7,14 @@
   font-display: swap;
 }
 
+/* Broadcast capture uses the designer's Paperlogy family. The files are local
+   so the server-side Playwright capture never falls back to a system font. */
+@font-face { font-family: 'Paperlogy'; src: url('/fonts/paperlogy/Paperlogy-4Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: 'Paperlogy'; src: url('/fonts/paperlogy/Paperlogy-5Medium.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: block; }
+@font-face { font-family: 'Paperlogy'; src: url('/fonts/paperlogy/Paperlogy-7Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: 'Paperlogy'; src: url('/fonts/paperlogy/Paperlogy-8ExtraBold.woff2') format('woff2'); font-weight: 800; font-style: normal; font-display: block; }
+@font-face { font-family: 'Paperlogy'; src: url('/fonts/paperlogy/Paperlogy-9Black.woff2') format('woff2'); font-weight: 900; font-style: normal; font-display: block; }
+
 :root {
   --bg: #282828;
   --bg-soft: #2d2d2d;
@@ -6563,3 +6571,64 @@ html.fpa-embed .topbar {
 .bc-xg-row { position: absolute; left: 519px; display: grid; width: 882px; grid-template-columns: 85px 1fr 85px; align-items: center; gap: 14px; font-size: 42px; font-weight: 900; line-height: 1; }.bc-xg-row.expected { top: 535px; }.bc-xg-row.score { top: 645px; }.bc-xg-row b:first-child { color: var(--home-color); }.bc-xg-row b:last-child { color: var(--away-color); text-align: right; }.bc-xg-row div { display: flex; height: 32px; overflow: hidden; border-radius: 18px; background: rgba(0,0,0,.1); }.bc-xg-row i { display: block; height: 100%; }.bc-xg-row .home { width: var(--home-xg); background: var(--home-color); }.bc-xg-row .away { width: var(--away-xg); background: var(--away-color); }.bc-xg-row.score div { height: 12px; }.bc-xg-row.score .home { width: var(--home-score); }.bc-xg-row.score .away { width: var(--away-score); }
 
 .bc-dominance { --home-color: #f36b21; --away-color: #1687d4; }.bc-dominance-template { inset: 0; width: 1920px; height: 1080px; }.bc-dominance-team { position: absolute; top: 86px; display: flex; width: 440px; align-items: center; gap: 17px; font-size: 28px; font-weight: 900; }.bc-dominance-team.home { left: 115px; }.bc-dominance-team.away { right: 115px; justify-content: flex-end; text-align: right; }.bc-dominance-team img, .bc-dominance-team .bc-logo-fallback { width: 62px; height: 62px; border-radius: 50%; object-fit: contain; }.bc-dominance-plot { position: absolute; inset: 0; width: 1920px; height: 1080px; }.bc-dominance-plot line { stroke: rgba(255,255,255,.5); stroke-width: 2; }.bc-dominance-plot polyline { fill: none; stroke: url(#bc-dominance-team-gradient); stroke-linecap: round; stroke-linejoin: round; stroke-width: 8; }
+
+/* The original designer SVGs establish every static surface.  Dynamic values
+   sit on their native artboards below so their proportions remain identical
+   at the 1920×1080 capture size. */
+.bc-frame { font-family: 'Paperlogy', 'Noto Sans KR', sans-serif; font-variant-numeric: tabular-nums; }
+.bc-design-artboard { position: absolute; transform-origin: top left; }
+.bc-logo-fallback { border-radius: 50%; font-family: 'Paperlogy', sans-serif; }
+
+.bc-attack-template { left: 82px; top: 58px; width: 570px; height: 996px; }
+.bc-attack-artboard { left: 82px; top: 58px; width: 238px; height: 415px; transform: scale(2.4); }
+.bc-attack-team-name { position: absolute; top: 20px; left: 12px; right: 12px; overflow: hidden; color: #fff; font-size: 25px; font-weight: 800; letter-spacing: -1.65px; line-height: 1.16; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.bc-attack-copy { top: 70px; left: 25px; width: 188px; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: -.68px; }
+.bc-attack-copy b { color: rgba(255,255,255,.9); font-weight: 700; }
+.bc-attack-arrows { top: 0; left: 0; width: 238px; height: 415px; }
+.bc-attack-arrow { stroke: none; }
+.bc-attack-values { top: 354px; left: 15px; width: 208px; }
+.bc-attack-values strong, .bc-attack-values span { color: #fff; font-size: 20px; font-weight: 800; letter-spacing: -1.1px; }
+.bc-attack-values span { margin-top: 5px; color: rgba(255,255,255,.83); font-size: 14px; font-weight: 500; letter-spacing: -.7px; }
+
+.bc-possession-template { position: absolute; left: 570px; top: 700px; width: 780px; height: 230px; overflow: hidden; border: 1px solid rgba(129,159,189,.38); border-radius: 20px; background: linear-gradient(118deg, #1f3349 0%, #142437 52%, #0c1725 100%); box-shadow: 0 22px 50px rgba(0,0,0,.26); }
+.bc-possession-template::before { position: absolute; top: 61px; right: 0; left: 0; height: 1px; background: linear-gradient(90deg, var(--home-color), rgba(255,255,255,.28), var(--away-color)); content: ''; }
+.bc-possession-artboard { left: 570px; top: 700px; width: 780px; height: 230px; }
+.bc-possession-title { position: absolute; top: 20px; left: 32px; color: #fff; font-size: 21px; font-weight: 800; letter-spacing: -.8px; }
+.bc-possession-head { position: absolute; top: 84px; display: flex; width: 310px; align-items: center; gap: 12px; }
+.bc-possession-head.home { left: 32px; }.bc-possession-head.away { right: 32px; justify-content: flex-end; text-align: right; }
+.bc-possession-head img, .bc-possession-head .bc-logo-fallback { width: 38px; height: 38px; flex: 0 0 auto; object-fit: contain; }
+.bc-possession-head b { max-width: 158px; overflow: hidden; color: #fff; font-size: 17px; font-weight: 700; letter-spacing: -.8px; text-overflow: ellipsis; white-space: nowrap; }
+.bc-possession-head strong { color: #fff; font-size: 32px; font-weight: 900; letter-spacing: -1.6px; }.bc-possession-head.home strong { color: var(--home-color); }.bc-possession-head.away strong { color: var(--away-color); }
+.bc-possession-track { top: 155px; left: 32px; width: 716px; height: 28px; border: 1px solid rgba(255,255,255,.27); border-radius: 14px; background: rgba(255,255,255,.09); }.bc-possession-track i { height: 28px; }.bc-possession-track .home { border-radius: 14px 0 0 14px; background: var(--home-color); }.bc-possession-track .away { border-radius: 0 14px 14px 0; background: var(--away-color); }
+
+.bc-shots-template { top: 306px; left: 380px; width: 1160px; height: 570px; }
+.bc-shots-artboard { left: 380px; top: 306px; width: 474px; height: 233px; transform: scale(2.44726); }
+.bc-shots-logo { position: absolute; top: 102px; width: 48px; height: 65px; object-fit: contain; }.bc-shots-logo.home { left: 44px; }.bc-shots-logo.away { right: 44px; }
+.bc-shots-grid { position: absolute; top: 74px; left: 127px; display: grid; grid-template-columns: 70px 82px 70px; grid-template-rows: 60px 60px; column-gap: 11px; row-gap: 21px; align-items: center; text-align: center; }
+.bc-shots-value { display: grid; width: 70px; height: 60px; place-items: center; border-radius: 3px; color: #fff; font-size: 45px; font-weight: 900; line-height: 1; }.bc-shots-value.home { background: var(--home-color); }.bc-shots-value.away { background: var(--away-color); }
+.bc-shots-grid > span, .bc-shots-grid > b { color: #fff; font-size: 22px; font-weight: 800; letter-spacing: -1.05px; line-height: 1.04; }.bc-shots-grid > b { font-size: 19px; line-height: 1.05; }
+
+.bc-shot-xg-template { top: 120px; left: 80px; width: 680px; height: 840px; }
+.bc-shot-xg-static-copy-mask { top: 776px; left: 99px; width: 644px; height: 143px; border-radius: 0 0 18px 18px; background: linear-gradient(180deg, #1b2b3f 0%, #0b111d 100%); }
+.bc-shot-xg-artboard { left: 80px; top: 120px; width: 362px; height: 447px; transform: scale(1.87845); }
+.bc-shot-xg-route { top: 0; left: 0; width: 362px; height: 447px; }.bc-shot-xg-line { stroke: url(#bc-shot-xg-gradient); stroke-width: 4; }.bc-shot-xg-dot { fill: var(--team-color); stroke: #fff; stroke-width: 1.8; }.bc-shot-xg-star { fill: var(--team-color); stroke: #fff; stroke-width: 1.2; }
+.bc-shot-xg-logo { position: absolute; top: 359px; left: 43px; width: 42px; height: 49px; object-fit: contain; }
+.bc-shot-xg-player { top: 356px; left: 110px; display: grid; width: 122px; gap: 2px; color: #fff; font-size: 15px; font-weight: 700; letter-spacing: -.75px; line-height: 1.08; }.bc-shot-xg-player b { color: #fff; }.bc-shot-xg-player strong { overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.bc-shot-xg-value { top: 356px; left: 249px; width: 72px; text-align: right; }.bc-shot-xg-value span { color: #fff; font-size: 14px; font-weight: 700; letter-spacing: -.7px; }.bc-shot-xg-value strong { color: #fff; font-size: 21px; font-weight: 800; letter-spacing: -1px; }
+
+.bc-xg-comparison-template { top: 340px; left: 270px; width: 1380px; height: 418px; }
+.bc-xg-comparison-artboard { left: 270px; top: 340px; width: 601px; height: 182px; transform: scale(2.29617); }
+.bc-xg-logo { position: absolute; top: 88px; width: 42px; height: 48px; object-fit: contain; }.bc-xg-logo.home { left: 22px; }.bc-xg-logo.away { right: 22px; }
+.bc-xg-number { position: absolute; top: 88px; color: #fff; font-size: 24px; font-weight: 800; letter-spacing: -1.2px; line-height: 1; }.bc-xg-number.home { left: 89px; }.bc-xg-number.away { right: 89px; }
+.bc-xg-bar { position: absolute; top: 93px; left: 238px; display: flex; width: 64px; height: 11px; overflow: hidden; background: #fff; }.bc-xg-bar i { display: block; height: 100%; }
+.bc-xg-score { position: absolute; top: 146px; color: #fff; font-size: 23px; font-weight: 800; letter-spacing: -1.1px; line-height: 1; }.bc-xg-score.home { left: 103px; }.bc-xg-score.away { right: 103px; }
+.bc-xg-bar.compact { top: 147px; left: 148px; width: 302px; height: 11px; }
+
+.bc-dominance-template { inset: 0; width: 1920px; height: 1080px; }
+.bc-dominance-header-mask { position: absolute; top: 0; right: 0; left: 0; height: 175px; background: linear-gradient(106deg, #13263a 0%, #06101b 80%); }
+.bc-dominance-round, .bc-dominance-match-title, .bc-dominance-period { position: absolute; top: 52px; overflow: hidden; color: #fff; font-weight: 800; letter-spacing: -2.3px; line-height: 1; white-space: nowrap; }
+.bc-dominance-round { left: 100px; width: 390px; font-size: 56px; }.bc-dominance-match-title { left: 555px; width: 610px; font-size: 47px; text-align: center; text-overflow: ellipsis; }.bc-dominance-period { right: 98px; width: 620px; font-size: 48px; text-align: right; }
+.bc-dominance-logo { position: absolute; left: 143px; width: 164px; height: 199px; object-fit: contain; }.bc-dominance-logo.home { top: 237px; }.bc-dominance-logo.away { top: 756px; }
+.bc-dominance-total { position: absolute; left: 271px; width: 120px; color: #fff; font-size: 43px; font-weight: 800; letter-spacing: -1.9px; white-space: nowrap; }.bc-dominance-total.home { top: 466px; }.bc-dominance-total.away { top: 987px; }
+.bc-dominance-score { position: absolute; top: 588px; left: 122px; display: flex; width: 244px; align-items: center; justify-content: space-between; color: #fff; font-size: 96px; font-weight: 900; letter-spacing: -3px; line-height: 1; }
+.bc-dominance-plot { inset: 0; width: 1920px; height: 1080px; }.bc-dominance-area.home { fill: url(#bc-dominance-home-fill); }.bc-dominance-area.away { fill: url(#bc-dominance-away-fill); }.bc-dominance-line { fill: none; stroke: #fff; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }.bc-dominance-midline { stroke: rgba(255,255,255,.94) !important; stroke-width: 3 !important; }

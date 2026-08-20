@@ -60,6 +60,17 @@ export async function POST(request: NextRequest) {
       // data mounts, so wait for the actual capture root rather than failing
       // after the previous fixed 20-second window.
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { state: 'attached', timeout: 30_000 });
+      // Broadcast templates use Paperlogy.  Wait for the local font faces so a
+      // cold render never freezes an Arial fallback into a published PNG.
+      await page.evaluate(async () => {
+        await document.fonts?.ready;
+      });
+      // Templates are separate SVG files.  The capture root can mount before
+      // an uncached SVG has painted, which would otherwise publish a blank
+      // background layer.  Wait only for design templates (not remote team
+      // logos) so an unavailable logo cannot hold up an entire render.
+      await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>('img[data-broadcast-template="true"]'))
+        .every((image) => image.complete && image.naturalWidth > 0), { timeout: 30_000 });
       const capture = async (layer: 'background' | 'asset') => {
         await page.evaluate((nextLayer) => {
           document.querySelector('main.lc-overlay-root')?.setAttribute('data-broadcast-capture-layer', nextLayer);
