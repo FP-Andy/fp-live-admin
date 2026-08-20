@@ -1,9 +1,8 @@
-"""Broadcast image rendering and public-object storage.
+"""HD broadcast layer rendering and public-object storage.
 
-The renderer deliberately produces two representations from the same live
-snapshot: a lossless PNG for conservative broadcast integrations and a short
-animated WebP for browser/OBS overlays and the public showroom.  No browser
-or screenshot process is required on the production worker.
+Every graphic is supplied as two lossless PNGs: a static background and a
+transparent data layer.  The broadcast client composes them and owns the
+one-time entrance animation for the data layer.
 """
 
 from __future__ import annotations
@@ -21,9 +20,15 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 
-CANVAS = (1280, 720)
-LIVE_ASSET_TYPES = ("attack-direction-home", "attack-direction-away", "possession", "xg-shot-map")
-DOMINANCE_ASSET_TYPES = ("match-dominance-halftime", "match-dominance-fulltime")
+CANVAS = (1920, 1080)
+LIVE_ASSET_TYPES = (
+    "attack-direction-home",
+    "attack-direction-away",
+    "possession",
+    "shots-comparison",
+    "xg-comparison",
+)
+GOAL_ASSET_TYPE = "shot-xg"
 
 _FONT_CACHE: dict[tuple[int, bool], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
 
@@ -75,10 +80,9 @@ def _new_canvas() -> tuple[Image.Image, ImageDraw.ImageDraw]:
 
 
 def _card(draw: ImageDraw.ImageDraw, title: str, subtitle: str) -> None:
-    draw.rounded_rectangle((42, 38, 1238, 682), radius=32, fill=(10, 21, 43, 247), outline=(80, 116, 178, 180), width=2)
+    draw.rounded_rectangle((62, 54, 1858, 1026), radius=40, fill=(10, 21, 43, 247), outline=(80, 116, 178, 180), width=2)
     draw.text((82, 78), title, font=_font(46, True), fill=(241, 247, 255, 255))
     draw.text((84, 137), subtitle, font=_font(23), fill=(152, 179, 217, 255))
-    draw.text((1090, 84), "FINEPLAY", font=_font(22, True), fill=(104, 222, 194, 255))
 
 
 def _team(snapshot: dict, side: str) -> tuple[str, tuple[int, int, int]]:
@@ -228,52 +232,27 @@ def _encode_png(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
-def _encode_animated_webp(renderer, *args, **kwargs) -> bytes:
-    phases = (0.18, 0.36, 0.56, 0.78, 1.0, 1.0)
-    frames = [renderer(*args, phase=phase, **kwargs).convert("RGBA") for phase in phases]
-    buffer = BytesIO()
-    frames[0].save(buffer, format="WEBP", save_all=True, append_images=frames[1:], duration=(300, 300, 300, 300, 400, 1400), loop=1, lossless=False, quality=88, method=6)
-    return buffer.getvalue()
-
-
 def render_asset_pair(asset_type: str, snapshot: dict) -> tuple[bytes, bytes]:
+    """Development fallback when the Live Coder screenshot renderer is absent.
+
+    Production uses the same SVG/DOM layouts as Live Coder.  This fallback
+    intentionally still respects the two-PNG contract, with a transparent
+    background layer and a rendered data layer.
+    """
     renderers = {
         "attack-direction": render_attack_direction,
         "possession": render_possession,
-        "xg-shot-map": render_xg_shot_map,
+        "shot-xg": render_xg_shot_map,
+        "shots-comparison": render_xg_shot_map,
+        "xg-comparison": render_xg_shot_map,
         "match-dominance-halftime": lambda data, phase=1.0: render_match_dominance(data, phase=phase, label="HALF TIME"),
         "match-dominance-fulltime": lambda data, phase=1.0: render_match_dominance(data, phase=phase, label="FULL TIME"),
     }
-    renderer = renderers.get(asset_type)
+    renderer = renderers.get("attack-direction" if asset_type.startswith("attack-direction") else asset_type)
     if not renderer:
         raise ValueError(f"Unsupported broadcast asset type: {asset_type}")
-    return _encode_png(renderer(snapshot)), _encode_animated_webp(renderer, snapshot)
-
-
-def _encode_captured_webp(png_frames: list[bytes]) -> bytes:
-    """Encode the Live Coder's own entrance animation as animated WebP."""
-    if not png_frames:
-        raise ValueError("Live Coder capture did not return frames")
-    images = [Image.open(BytesIO(frame)).convert("RGBA") for frame in png_frames]
-    buffer = BytesIO()
-    images[0].save(
-        buffer,
-        format="WEBP",
-        save_all=True,
-        append_images=images[1:],
-        # Divide the exact three-second loop across the captured 15fps frames.
-        # Integer millisecond rounding is distributed, so the total is always
-        # exactly 3,000ms even when the frame count changes.
-        duration=tuple(
-            round((index + 1) * 3_000 / len(images)) - round(index * 3_000 / len(images))
-            for index in range(len(images))
-        ),
-        loop=1,
-        lossless=False,
-        quality=92,
-        method=6,
-    )
-    return buffer.getvalue()
+    background, _ = _new_canvas()
+    return _encode_png(background), _encode_png(renderer(snapshot))
 
 
 def render_live_coder_asset_pairs(
@@ -282,7 +261,7 @@ def render_live_coder_asset_pairs(
     *,
     xg_event_id: str | None = None,
 ) -> dict[str, tuple[bytes, bytes]]:
-    """Capture the actual Live Coder overlay instead of redrawing it in Python."""
+    """Capture the actual Live Coder SVG layout as background and data PNGs."""
     render_url = os.getenv("BROADCAST_LIVE_CODER_RENDER_URL", "").strip()
     if not render_url:
         return {asset_type: render_asset_pair(asset_type, snapshot) for asset_type in asset_types}
@@ -290,21 +269,16 @@ def render_live_coder_asset_pairs(
     match_id = str(match.get("id") or "").strip()
     if not match_id:
         raise ValueError("Live Coder capture requires a match id")
-    # Each HD overlay has a multi-frame motion timeline. Allow enough time for
-    # a complete capture under transient load instead of discarding the batch.
-    timeout = float(os.getenv("BROADCAST_LIVE_CODER_RENDER_TIMEOUT_SECONDS", "90"))
+    timeout = float(os.getenv("BROADCAST_LIVE_CODER_RENDER_TIMEOUT_SECONDS", "45"))
     result: dict[str, tuple[bytes, bytes]] = {}
     for asset_type in asset_types:
-        # Sending all four 45-frame overlays in one JSON response can exceed
-        # the API worker's memory budget. Capture one asset at a time instead:
-        # peak memory stays bounded while the final output contract is identical.
         try:
             response = httpx.post(
                 render_url,
                 json={
                     "match_id": match_id,
                     "asset_types": [asset_type],
-                    **({"xg_event_id": xg_event_id} if asset_type == "xg-shot-map" and xg_event_id else {}),
+                    **({"xg_event_id": xg_event_id} if asset_type == GOAL_ASSET_TYPE and xg_event_id else {}),
                 },
                 headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
                 timeout=timeout,
@@ -317,34 +291,35 @@ def render_live_coder_asset_pairs(
         if not isinstance(raw_assets, dict):
             raise RuntimeError(f"Live Coder capture response omitted assets for {asset_type}")
         raw = raw_assets.get(asset_type)
-        if isinstance(raw, dict) and isinstance(raw.get("png"), str) and isinstance(raw.get("webp"), str):
+        if isinstance(raw, dict) and isinstance(raw.get("background_png"), str) and isinstance(raw.get("asset_png"), str):
             try:
                 result[asset_type] = (
-                    base64.b64decode(raw["png"], validate=True),
-                    base64.b64decode(raw["webp"], validate=True),
+                    base64.b64decode(raw["background_png"], validate=True),
+                    base64.b64decode(raw["asset_png"], validate=True),
                 )
                 continue
             except (ValueError, TypeError) as exc:
                 raise RuntimeError(f"Live Coder capture returned invalid encoded {asset_type}") from exc
-        frames_raw = raw.get("frames") if isinstance(raw, dict) else None
-        if not isinstance(frames_raw, list) or not frames_raw:
-            raise RuntimeError(f"Live Coder capture omitted {asset_type}")
-        try:
-            frames = [base64.b64decode(str(frame), validate=True) for frame in frames_raw]
-        except (ValueError, TypeError) as exc:
-            raise RuntimeError(f"Live Coder capture returned invalid {asset_type} frame data") from exc
-        result[asset_type] = (frames[-1], _encode_captured_webp(frames))
+        raise RuntimeError(f"Live Coder capture omitted {asset_type}")
     return result
 
 
 @dataclass(frozen=True)
 class StoredAsset:
-    png_url: str
-    webp_url: str
+    background_url: str
+    asset_url: str
     generated_at: str
+    width: int = CANVAS[0]
+    height: int = CANVAS[1]
 
-    def as_dict(self) -> dict[str, str]:
-        return {"png_url": self.png_url, "webp_url": self.webp_url, "generated_at": self.generated_at}
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "background_url": self.background_url,
+            "asset_url": self.asset_url,
+            "generated_at": self.generated_at,
+            "width": self.width,
+            "height": self.height,
+        }
 
 
 class BroadcastAssetStore:
@@ -426,9 +401,25 @@ def store_asset_pair(
     immutable: bool = False,
     rendered: tuple[bytes, bytes] | None = None,
 ) -> StoredAsset:
-    png, webp = rendered or render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
+    background_png, asset_png = rendered or render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
     generated_at = datetime.utcnow().isoformat()
-    cache_control = "public, max-age=31536000, immutable" if immutable else "public, max-age=55, must-revalidate"
-    png_url = store.put(f"{relative_base}.png", png, "image/png", cache_control, generated_at)
-    webp_url = store.put(f"{relative_base}.webp", webp, "image/webp", cache_control, generated_at)
-    return StoredAsset(png_url=png_url, webp_url=webp_url, generated_at=generated_at)
+    background_url = store.put(
+        # Bump this filename only when the static template design changes;
+        # immutable CDN caching then remains safe for every broadcast client.
+        f"{relative_base}/background-v2.png",
+        background_png,
+        "image/png",
+        "public, max-age=31536000, immutable",
+        generated_at,
+    )
+    asset_url = store.put(
+        f"{relative_base}/asset.png",
+        asset_png,
+        "image/png",
+        "public, max-age=31536000, immutable" if immutable else "public, max-age=55, must-revalidate",
+        generated_at,
+    )
+    # A version query ensures integrations reload a new data image even when a
+    # proxy has retained the previous minute's response longer than instructed.
+    versioned_asset_url = f"{asset_url}?v={quote(generated_at, safe='')}"
+    return StoredAsset(background_url=background_url, asset_url=versioned_asset_url, generated_at=generated_at)

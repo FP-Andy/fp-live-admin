@@ -89,7 +89,7 @@ from .highlight_storage import output_prefix as highlight_output_prefix
 from .scene_motion import attach_scene_motions
 from .broadcast_assets import (
     BroadcastAssetStore,
-    DOMINANCE_ASSET_TYPES,
+    GOAL_ASSET_TYPE,
     LIVE_ASSET_TYPES,
     render_live_coder_asset_pairs,
     store_asset_pair,
@@ -1925,7 +1925,7 @@ def _broadcast_assets_manifest(match_obj: Match) -> dict:
     metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
     raw = metadata.get("broadcast_assets") if isinstance(metadata.get("broadcast_assets"), dict) else {}
     return {
-        "version": 1,
+        "version": 2,
         "live": dict(raw.get("live") or {}),
         "archive": dict(raw.get("archive") or {}),
         "xg_goals": dict(raw.get("xg_goals") or {}),
@@ -1953,9 +1953,9 @@ def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
 def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
     """Render current live assets and capture their required archive points.
 
-    Direction and possession graphics are fixed at six FLA time-clock points.
-    xG shot maps are instead fixed once for every goal event, so three goals
-    produce exactly three immutable shot-map artifacts.
+    The five live comparison graphics are fixed at six FLA time-clock points.
+    Shot xG is instead fixed once for every goal event, so three goals produce
+    exactly three immutable goal-shot artifacts.
     """
     if _normalize_sport(getattr(match_obj, "sport", None)) != "FOOTBALL":
         return None
@@ -1973,12 +1973,12 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     pending_archive_minutes = [
         minute
         for minute in (15, 30, 45, 60, 75, 90)
-        if clock_ms >= minute * 60_000 and str(minute) not in archive
+        if clock_ms >= minute * 60_000
+        and any(asset_type not in (archive.get(str(minute)) or {}) for asset_type in LIVE_ASSET_TYPES)
     ]
     for asset_type in LIVE_ASSET_TYPES:
-        # A multi-frame capture is intentionally produced and stored one asset
-        # at a time. Keeping all four 45-frame sequences in RAM at once can
-        # exhaust the worker during the regular one-minute refresh.
+        # Capture one HD layer pair at a time to keep the regular one-minute
+        # refresh bounded in memory.
         rendered = render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
         live[asset_type] = store_asset_pair(
             store,
@@ -1987,28 +1987,28 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
             snapshot,
             rendered=rendered,
         ).as_dict()
-        if asset_type != "xg-shot-map":
-            for minute in pending_archive_minutes:
-                archive.setdefault(str(minute), {})[asset_type] = store_asset_pair(
-                    store,
-                    f"{match_key}/archive/{minute}/{asset_type}",
-                    asset_type,
-                    snapshot,
-                    immutable=True,
-                    rendered=rendered,
-                ).as_dict()
+        for minute in pending_archive_minutes:
+            archive.setdefault(str(minute), {})[asset_type] = store_asset_pair(
+                store,
+                f"{match_key}/archive/{minute}/{asset_type}",
+                asset_type,
+                snapshot,
+                immutable=True,
+                rendered=rendered,
+            ).as_dict()
     manifest["live"] = live
     manifest["archive"] = archive
 
-    # Store one immutable xG shot map for each actual goal, independently of
-    # the 15-minute archive schedule. Rendering with the goal's event id keeps
-    # the trajectory animation focused on that specific scoring shot.
+    # Store one immutable Shot xG card for every actual goal, independently of
+    # the 15-minute archive schedule. Rendering with the goal event id keeps
+    # the trajectory focused on that specific scoring shot.
     xg_rows = snapshot.get("analysis", {}).get("xg") or []
     for goal in xg_rows:
         if not isinstance(goal, dict) or not goal.get("is_goal"):
             continue
         event_id = str(goal.get("event_id") or "").strip()
-        if not event_id or event_id in xg_goals:
+        existing_goal = xg_goals.get(event_id)
+        if not event_id or (isinstance(existing_goal, dict) and existing_goal.get("asset_url")):
             continue
         goal_snapshot = {
             **snapshot,
@@ -2019,14 +2019,14 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
         }
         rendered_goal = render_live_coder_asset_pairs(
             goal_snapshot,
-            ["xg-shot-map"],
+            [GOAL_ASSET_TYPE],
             xg_event_id=event_id,
-        )["xg-shot-map"]
+        )[GOAL_ASSET_TYPE]
         xg_goals[event_id] = {
             **store_asset_pair(
                 store,
-                f"{match_key}/goals/{event_id}/xg-shot-map",
-                "xg-shot-map",
+                f"{match_key}/goals/{event_id}/{GOAL_ASSET_TYPE}",
+                GOAL_ASSET_TYPE,
                 goal_snapshot,
                 immutable=True,
                 rendered=rendered_goal,
@@ -2040,7 +2040,7 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
 
     dominance = dict(manifest.get("dominance") or {})
     for minute, asset_type, slot in ((45, "match-dominance-halftime", "halftime"), (90, "match-dominance-fulltime", "fulltime")):
-        if clock_ms >= minute * 60_000 and slot not in dominance:
+        if clock_ms >= minute * 60_000 and not (isinstance(dominance.get(slot), dict) and dominance[slot].get("asset_url")):
             dominance_rendered = render_live_coder_asset_pairs(snapshot, [asset_type])
             dominance[slot] = store_asset_pair(
                 store,

@@ -1,61 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type AssetType = 'attack-direction-home' | 'attack-direction-away' | 'possession' | 'xg-shot-map' | 'match-dominance-halftime' | 'match-dominance-fulltime';
+type AssetType =
+  | 'attack-direction-home'
+  | 'attack-direction-away'
+  | 'possession'
+  | 'shots-comparison'
+  | 'shot-xg'
+  | 'xg-comparison'
+  | 'match-dominance-halftime'
+  | 'match-dominance-fulltime';
 
-const WEBP_LOOP_MS = 3_000;
-const WEBP_FRAME_COUNT = 45;
-const WEBP_FRAME_MS = WEBP_LOOP_MS / WEBP_FRAME_COUNT;
-
-function createWebpEncoder(frameRate: number) {
-  const encoder = spawn('ffmpeg', [
-    '-hide_banner', '-loglevel', 'error',
-    '-f', 'image2pipe', '-framerate', String(frameRate), '-vcodec', 'png', '-i', 'pipe:0',
-  // A broadcast entrance should play through once and hold on the final
-  // frame. WebP loop=0 is infinite in ffmpeg, while loop=1 plays once.
-  '-loop', '1', '-c:v', 'libwebp', '-lossless', '0', '-q:v', '92', '-preset', 'picture', '-an',
-    '-f', 'webp', 'pipe:1',
-  ]);
-  const chunks: Buffer[] = [];
-  let stderr = '';
-  encoder.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-  encoder.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-  const complete = new Promise<void>((resolve, reject) => {
-    encoder.once('error', reject);
-    encoder.once('close', (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg exited with ${code}: ${stderr}`)));
-  });
-  return {
-    async write(frame: Buffer) {
-      if (encoder.stdin.write(frame)) return;
-      await new Promise<void>((resolve, reject) => {
-        encoder.stdin.once('drain', resolve);
-        encoder.stdin.once('error', reject);
-      });
-    },
-    async finish() {
-      encoder.stdin.end();
-      await complete;
-      const webp = Buffer.concat(chunks);
-      // WebP's RIFF header needs the total payload size. ffmpeg cannot seek
-      // back to fill it when muxing to stdout, so write it after concatenation.
-      if (webp.subarray(0, 4).toString() !== 'RIFF' || webp.subarray(8, 12).toString() !== 'WEBP') {
-        throw new Error('ffmpeg did not return a valid WebP container');
-      }
-      webp.writeUInt32LE(webp.length - 8, 4);
-      return webp;
-    },
-  };
-}
-
-const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string; motionSelector?: string }> = {
-  'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME', motionSelector: '.lc-attack-lane' },
-  'attack-direction-away': { path: 'analysis', graphic: 'ATTACK_DIRECTION_AWAY', motionSelector: '.lc-attack-lane' },
-  possession: { path: 'possession', graphic: 'POSSESSION', motionSelector: '.lc-possession-bar span' },
-  'xg-shot-map': { path: 'analysis', graphic: 'XG', motionSelector: '.lc-xg-shot-dot, .lc-xg-shot-line, .lc-xg-goal-star' },
+const RENDER_CONFIG: Record<AssetType, { path: 'analysis' | 'possession' | 'fullscreen'; graphic: string }> = {
+  'attack-direction-home': { path: 'analysis', graphic: 'ATTACK_DIRECTION_HOME' },
+  'attack-direction-away': { path: 'analysis', graphic: 'ATTACK_DIRECTION_AWAY' },
+  possession: { path: 'possession', graphic: 'POSSESSION' },
+  'shots-comparison': { path: 'analysis', graphic: 'SHOTS_COMPARISON' },
+  'shot-xg': { path: 'analysis', graphic: 'SHOT_XG' },
+  'xg-comparison': { path: 'analysis', graphic: 'XG_COMPARISON' },
   'match-dominance-halftime': { path: 'fullscreen', graphic: 'MATCH_DOMINANCE' },
   'match-dominance-fulltime': { path: 'fullscreen', graphic: 'MATCH_DOMINANCE' },
 };
@@ -84,54 +49,28 @@ export async function POST(request: NextRequest) {
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   });
   try {
-    const result: Record<string, { png: string; webp: string }> = {};
+    const result: Record<string, { background_png: string; asset_png: string }> = {};
     for (const assetType of [...new Set(assetTypes)]) {
       const config = RENDER_CONFIG[assetType];
-      const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
-      // The overlay polls its snapshot endpoint continuously, so `networkidle`
-      // is not a stable readiness signal: a poll can keep the page "busy" until
-      // the navigation timeout expires. Wait for the document and then for the
-      // explicit capture marker rendered by OverlayView instead.
-      const xgEventQuery = assetType === 'xg-shot-map' && xgEventId ? `&xg_event_id=${encodeURIComponent(xgEventId)}` : '';
+      const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+      const xgEventQuery = assetType === 'shot-xg' && xgEventId ? `&xg_event_id=${encodeURIComponent(xgEventId)}` : '';
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}${xgEventQuery}`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { timeout: 20_000 });
-      if (config.motionSelector) {
-        // Freeze the CSS motion at each intended timeline point. Screenshot
-        // encoding is slower than 100ms on the production renderer, so merely
-        // waiting between captures would skip frames and make the WebP jerky.
-        await page.evaluate((selector) => {
-          const elements = [...document.querySelectorAll<HTMLElement>(selector)];
-          for (const element of elements) {
-            // Attack lanes receive their stagger value as a React inline style.
-            // Prefer that source; computed shorthand values may lose it when a
-            // just-finished animation is paused for capture.
-            element.dataset.broadcastMotionDelay = element.style.animationDelay || getComputedStyle(element).animationDelay || '0ms';
-            element.style.animationPlayState = 'paused';
-          }
-          void document.body.offsetHeight;
-        }, config.motionSelector);
-      }
-      const frameCount = config.motionSelector ? WEBP_FRAME_COUNT : 1;
-      const encoder = createWebpEncoder(config.motionSelector ? WEBP_FRAME_COUNT / 3 : 1);
-      let settledPng = Buffer.alloc(0);
-      // Frames are streamed into ffmpeg immediately. This avoids retaining a
-      // complete 45-frame PNG sequence in the API worker's memory.
-      // It keeps the WebP light enough for overlays while making the three-second
-      // Live Coder entrance motion continuous rather than step-like.
-      for (let index = 0; index < frameCount; index += 1) {
-        if (config.motionSelector) {
-          await page.evaluate(({ selector, elapsed }) => {
-            for (const element of document.querySelectorAll<HTMLElement>(selector)) {
-              const baseDelay = element.dataset.broadcastMotionDelay || '0ms';
-              element.style.animationDelay = `calc(${baseDelay} - ${elapsed}ms)`;
-            }
-            void document.body.offsetHeight;
-          }, { selector: config.motionSelector, elapsed: index === frameCount - 1 ? WEBP_LOOP_MS : index * WEBP_FRAME_MS });
-        }
-        settledPng = await page.screenshot({ type: 'png', omitBackground: true });
-        await encoder.write(settledPng);
-      }
-      result[assetType] = { png: settledPng.toString('base64'), webp: (await encoder.finish()).toString('base64') };
+      const capture = async (layer: 'background' | 'asset') => {
+        await page.evaluate((nextLayer) => {
+          document.querySelector('main.lc-overlay-root')?.setAttribute('data-broadcast-capture-layer', nextLayer);
+        }, layer);
+        await page.evaluate(() => void document.body.offsetHeight);
+        return page.screenshot({ type: 'png', omitBackground: true });
+      };
+      // The two captures share one page and toggle its layer visibility, so
+      // they must run in order rather than racing attribute updates.
+      const backgroundPng = await capture('background');
+      const assetPng = await capture('asset');
+      result[assetType] = {
+        background_png: backgroundPng.toString('base64'),
+        asset_png: assetPng.toString('base64'),
+      };
       await page.close();
     }
     return NextResponse.json({ assets: result });
