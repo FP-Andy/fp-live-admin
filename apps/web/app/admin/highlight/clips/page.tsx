@@ -620,8 +620,51 @@ export default function ClipResultsPage() {
             <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
               {fmt(detail.start_sec)}~{fmt(detail.end_sec)} · {Math.round(detail.duration_seconds || 0)}초
             </span>
+            {/* 클립 사이 이동 — 목록으로 나갔다 다시 들어오지 않고 검수를 이어서 한다.
+                순서는 목록과 같다(order_index). 목록 클릭과 같은 동작이라 액션·모션을
+                함께 다시 불러온다 — 모션은 detail 변경만으로는 안 갱신된다. */}
+            {(() => {
+              const index = clips.findIndex((c) => c.id === detail.id);
+              const prev = index > 0 ? clips[index - 1] : null;
+              const next = index >= 0 && index < clips.length - 1 ? clips[index + 1] : null;
+              const go = (target: ClipRow | null) => {
+                if (!target) return;
+                void openClip(target.id);
+                void loadMotions(target.id);
+              };
+              const navBtn = (enabled: boolean): React.CSSProperties => ({
+                ...smallBtn,
+                opacity: enabled ? 1 : 0.4,
+                cursor: enabled ? 'pointer' : 'not-allowed',
+              });
+              return (
+                <>
+                  {index >= 0 ? (
+                    <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted, #999)' }}>
+                      {index + 1} / {clips.length}
+                    </span>
+                  ) : null}
+                  <button
+                    style={{ ...navBtn(!!prev), ...(index >= 0 ? null : { marginLeft: 'auto' }) }}
+                    disabled={!prev}
+                    onClick={() => go(prev)}
+                    title={prev ? `이전 클립 (${prev.title || prev.id})` : '첫 클립입니다'}
+                  >
+                    ← 이전 클립
+                  </button>
+                  <button
+                    style={navBtn(!!next)}
+                    disabled={!next}
+                    onClick={() => go(next)}
+                    title={next ? `다음 클립 (${next.title || next.id})` : '마지막 클립입니다'}
+                  >
+                    다음 클립 →
+                  </button>
+                </>
+              );
+            })()}
             <button
-              style={{ ...primaryBtn, marginLeft: 'auto' }}
+              style={primaryBtn}
               onClick={() => {
                 // OS 별도 창(dual 도구만) — 영상 옆·다른 모니터에 자유롭게 배치해 보면서 찍는다.
                 window.open(
