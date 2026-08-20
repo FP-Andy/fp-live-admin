@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { BroadcastSnapshot } from './types';
 
 export type BroadcastCaptureGraphic =
@@ -10,7 +10,7 @@ export type BroadcastCaptureGraphic =
   | 'XG_COMPARISON'
   | 'MATCH_DOMINANCE';
 
-const fallbackColors = { HOME: '#f36b21', AWAY: '#1687d4' } as const;
+const fallbackColors = { HOME: '#ff7900', AWAY: '#1e27ff' } as const;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -43,11 +43,21 @@ function TeamLogo({ url, name, className = '' }: { url?: string; name: string; c
 }
 
 function Template({ src, className }: { src: string; className: string }) {
-  return <img className={`bc-template ${className}`} src={src} alt="" aria-hidden="true" />;
+  return <img data-broadcast-template="true" className={`bc-template ${className}`} src={src} alt="" aria-hidden="true" />;
 }
 
-function Layer({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+function Layer({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <div className={`bc-asset-layer ${className}`}>{children}</div>;
+}
+
+function DesignArtboard({ className, children }: { className: string; children: ReactNode }) {
+  return <div className={`bc-design-artboard ${className}`}>{children}</div>;
+}
+
+function roundLabel(snapshot: BroadcastSnapshot) {
+  const header = snapshot.match.name.match(/\[([^\]]+)\]/)?.[1] || '';
+  const round = header.match(/(\d+)\s*R/i)?.[1];
+  return round ? `${round} ROUND` : 'ROUND';
 }
 
 function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side: 'HOME' | 'AWAY' }) {
@@ -55,37 +65,46 @@ function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side
   const row = snapshot.analysis.attack_direction?.find((item) => item.team === side);
   const ratio = row?.direction_ratio || {};
   const lanes = [
-    { key: 'left', label: 'LEFT', value: Number(ratio.left_pct || 0), count: Number(ratio.left_count || 0), x: 130 },
-    { key: 'center', label: 'CENTER', value: Number(ratio.center_pct || 0), count: Number(ratio.center_count || 0), x: 286 },
-    { key: 'right', label: 'RIGHT', value: Number(ratio.right_pct || 0), count: Number(ratio.right_count || 0), x: 442 },
+    { key: 'left', value: Number(ratio.left_pct || 0), count: Number(ratio.left_count || 0), x: 51 },
+    { key: 'center', value: Number(ratio.center_pct || 0), count: Number(ratio.center_count || 0), x: 119 },
+    { key: 'right', value: Number(ratio.right_pct || 0), count: Number(ratio.right_count || 0), x: 187 },
   ];
-  const order = new Map([...lanes].sort((a, b) => b.value - a.value).map((item, index) => [item.key, index]));
+  const ranked = new Map([...lanes].sort((a, b) => b.value - a.value).map((lane, index) => [lane.key, index]));
   const style = { '--team-color': currentTeam.color } as CSSProperties;
   return (
     <section className="bc-frame bc-attack" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/attack-direction/background.svg" className="bc-attack-template" /></div>
       <Layer>
-        <div className="bc-card-team bc-attack-team">
-          <TeamLogo url={currentTeam.logoUrl} name={currentTeam.name} />
-          <strong>{currentTeam.name}</strong>
-        </div>
-        <div className="bc-attack-copy"><span>공격 방향 · 비율</span><b>전개 횟수</b></div>
-        <svg className="bc-attack-arrows" viewBox="0 0 572 996" aria-label="공격 방향">
-          {lanes.map((lane) => {
-            const height = 150 + clamp(lane.value, 0, 100) * 4.4;
-            const top = 807 - height;
-            const width = 17 + clamp(lane.value, 0, 100) * 0.38;
-            return (
-              <g className="bc-attack-arrow" key={lane.key} style={{ animationDelay: `${Number(order.get(lane.key) || 0)}s` }}>
-                <line x1={lane.x} x2={lane.x} y1="807" y2={top + width} strokeWidth={width} />
-                <path d={`M ${lane.x - width * 1.1} ${top + width * 2.2} L ${lane.x} ${top} L ${lane.x + width * 1.1} ${top + width * 2.2}`} strokeWidth={Math.max(10, width * 0.52)} />
-              </g>
-            );
-          })}
-        </svg>
-        <div className="bc-attack-values">
-          {lanes.map((lane) => <div key={lane.key}><strong>{pct(lane.value)}</strong><span>{lane.count}회</span></div>)}
-        </div>
+        <DesignArtboard className="bc-attack-artboard">
+          <strong className="bc-attack-team-name">{currentTeam.name}</strong>
+          <div className="bc-attack-copy"><span>공격 방향 · 비율</span><b>전개 횟수</b></div>
+          <svg className="bc-attack-arrows" viewBox="0 0 238 415" aria-label="공격 방향">
+            <defs>
+              {lanes.map((lane) => <linearGradient id={`bc-attack-gradient-${lane.key}`} key={lane.key} x1="0" y1="1" x2="0" y2="0">
+                <stop offset="0" stopColor="var(--team-color)" stopOpacity="0" />
+                <stop offset=".42" stopColor="var(--team-color)" stopOpacity={0.36 + Number(ranked.get(lane.key) || 0) * 0.08} />
+                <stop offset="1" stopColor="var(--team-color)" stopOpacity={1 - Number(ranked.get(lane.key) || 0) * 0.14} />
+              </linearGradient>)}
+            </defs>
+            {lanes.map((lane) => {
+              const laneRank = Number(ranked.get(lane.key) || 0);
+              const height = 40 + clamp(lane.value, 0, 100) * 2.48;
+              const top = 342 - height;
+              const shaft = 5.5 + clamp(lane.value, 0, 100) * 0.075;
+              const headWidth = shaft * 2.7;
+              const headHeight = shaft * 2.25;
+              return (
+                <g className="bc-attack-arrow" key={lane.key} opacity={1 - laneRank * 0.13}>
+                  <rect x={lane.x - shaft / 2} y={top + headHeight * .7} width={shaft} height={342 - top} fill={`url(#bc-attack-gradient-${lane.key})`} />
+                  <path d={`M ${lane.x} ${top} L ${lane.x - headWidth} ${top + headHeight} L ${lane.x - shaft / 2} ${top + headHeight} L ${lane.x - shaft / 2} ${top + headHeight * 1.42} L ${lane.x + shaft / 2} ${top + headHeight * 1.42} L ${lane.x + shaft / 2} ${top + headHeight} L ${lane.x + headWidth} ${top + headHeight} Z`} fill="var(--team-color)" />
+                </g>
+              );
+            })}
+          </svg>
+          <div className="bc-attack-values">
+            {lanes.map((lane) => <div key={lane.key}><strong>{pct(lane.value)}</strong><span>{lane.count}회</span></div>)}
+          </div>
+        </DesignArtboard>
       </Layer>
     </section>
   );
@@ -102,11 +121,14 @@ function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const style = { '--home-color': home.color, '--away-color': away.color, '--home-pct': `${homePct}%`, '--away-pct': `${awayPct}%` } as CSSProperties;
   return (
     <section className="bc-frame bc-possession-frame" style={style}>
-      <div className="bc-background-layer bc-possession-background"><div /><span>볼 점유율</span></div>
+      <div className="bc-background-layer"><div className="bc-possession-template" /></div>
       <Layer>
-        <div className="bc-possession-team home"><TeamLogo url={home.logoUrl} name={home.name} /><strong>{home.name}</strong><b>{pct(homePct)}</b></div>
-        <div className="bc-possession-team away"><b>{pct(awayPct)}</b><strong>{away.name}</strong><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <div className="bc-possession-track"><i className="home" /><i className="away" /></div>
+        <DesignArtboard className="bc-possession-artboard">
+          <strong className="bc-possession-title">볼 점유율</strong>
+          <div className="bc-possession-head home"><TeamLogo url={home.logoUrl} name={home.name} /><b>{home.name}</b><strong>{pct(homePct)}</strong></div>
+          <div className="bc-possession-head away"><strong>{pct(awayPct)}</strong><b>{away.name}</b><TeamLogo url={away.logoUrl} name={away.name} /></div>
+          <div className="bc-possession-track"><i className="home" /><i className="away" /></div>
+        </DesignArtboard>
       </Layer>
     </section>
   );
@@ -117,8 +139,8 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const away = team(snapshot, 'AWAY');
   const shots = snapshot.analysis.xg || [];
   const stats = (side: 'HOME' | 'AWAY') => {
-    const items = shots.filter((item) => item.team === side);
-    return { shots: items.length, onTarget: items.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length };
+    const rows = shots.filter((item) => item.team === side);
+    return { shots: rows.length, onTarget: rows.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length };
   };
   const homeStats = stats('HOME');
   const awayStats = stats('AWAY');
@@ -127,11 +149,14 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
     <section className="bc-frame bc-shots" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/shots/background.svg" className="bc-shots-template" /></div>
       <Layer>
-        <div className="bc-shots-team home"><TeamLogo url={home.logoUrl} name={home.name} /><b>{home.name}</b></div>
-        <div className="bc-shots-team away"><b>{away.name}</b><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <div className="bc-shots-numbers home"><strong>{homeStats.shots}</strong><b>{homeStats.onTarget}</b></div>
-        <div className="bc-shots-numbers away"><strong>{awayStats.shots}</strong><b>{awayStats.onTarget}</b></div>
-        <div className="bc-shots-labels"><span>슈팅</span><b>유효 슈팅</b></div>
+        <DesignArtboard className="bc-shots-artboard">
+          <TeamLogo url={home.logoUrl} name={home.name} className="bc-shots-logo home" />
+          <TeamLogo url={away.logoUrl} name={away.name} className="bc-shots-logo away" />
+          <div className="bc-shots-grid">
+            <div className="bc-shots-value home">{homeStats.shots}</div><span>슈팅</span><div className="bc-shots-value away">{awayStats.shots}</div>
+            <div className="bc-shots-value home">{homeStats.onTarget}</div><b>유효<br />슈팅</b><div className="bc-shots-value away">{awayStats.onTarget}</div>
+          </div>
+        </DesignArtboard>
       </Layer>
     </section>
   );
@@ -143,6 +168,14 @@ function selectedShot(snapshot: BroadcastSnapshot) {
   return rows.find((item) => item.event_id === selected) || rows[rows.length - 1] || null;
 }
 
+function starPoints(cx: number, cy: number, outer = 11, inner = 5) {
+  return Array.from({ length: 10 }, (_, index) => {
+    const angle = -Math.PI / 2 + index * Math.PI / 5;
+    const radius = index % 2 ? inner : outer;
+    return `${cx + Math.cos(angle) * radius},${cy + Math.sin(angle) * radius}`;
+  }).join(' ');
+}
+
 function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const row = selectedShot(snapshot);
   const shotTeam = row?.team === 'AWAY' ? team(snapshot, 'AWAY') : team(snapshot, 'HOME');
@@ -150,29 +183,33 @@ function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shotY = clamp(Number(row?.shot_y ?? 34), 0, 68);
   const goalmouthX = clamp(Number(row?.goalmouth_x ?? .5), 0, 1);
   const goalmouthY = clamp(Number(row?.goalmouth_y ?? .5), 0, 1);
-  const source = { x: 155 + (shotY / 68) * 370, y: 657 - ((shotX - 70) / 35) * 300 };
-  const target = { x: 205 + goalmouthX * 300, y: 170 + (1 - goalmouthY) * 100 };
-  const star = Array.from({ length: 10 }, (_, index) => {
-    const angle = -Math.PI / 2 + index * Math.PI / 5;
-    const radius = index % 2 ? 13 : 28;
-    return `${target.x + Math.cos(angle) * radius},${target.y + Math.sin(angle) * radius}`;
-  }).join(' ');
+  const source = { x: 31 + (shotY / 68) * 300, y: 336 - ((shotX - 70) / 35) * 167 };
+  const target = { x: 31 + goalmouthX * 300, y: 32 + (1 - goalmouthY) * 100 };
   const minute = Math.max(0, Math.round(Number(row?.event_clock_ms || 0) / 60_000));
   const style = { '--team-color': shotTeam.color } as CSSProperties;
   return (
     <section className="bc-frame bc-shot-xg" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/shot-xg/background.svg" className="bc-shot-xg-template" /><i className="bc-shot-xg-static-copy-mask" /></div>
       <Layer>
-        <svg className="bc-shot-xg-route" viewBox="0 0 680 840">
-          <circle className="bc-shot-xg-dot" cx={source.x} cy={source.y} r="24" />
-          <line className="bc-shot-xg-line" x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
-          <polygon className="bc-shot-xg-star" points={star} />
-        </svg>
-        <div className="bc-shot-xg-player"><TeamLogo url={shotTeam.logoUrl} name={shotTeam.name} /><span>{row?.player_name || shotTeam.name}</span><b>{minute}'</b></div>
-        <div className="bc-shot-xg-value"><span>xG</span><strong>{Number(row?.xg || 0).toFixed(2)}</strong></div>
+        <DesignArtboard className="bc-shot-xg-artboard">
+          <svg className="bc-shot-xg-route" viewBox="0 0 362 447" aria-label="슈팅 궤적">
+            <defs><linearGradient id="bc-shot-xg-gradient" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stopColor="var(--team-color)" stopOpacity=".25" /><stop offset="1" stopColor="var(--team-color)" /></linearGradient></defs>
+            <circle className="bc-shot-xg-dot" cx={source.x} cy={source.y} r="8" />
+            <line className="bc-shot-xg-line" x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
+            <polygon className="bc-shot-xg-star" points={starPoints(target.x, target.y)} />
+          </svg>
+          <TeamLogo url={shotTeam.logoUrl} name={shotTeam.name} className="bc-shot-xg-logo" />
+          <div className="bc-shot-xg-player"><b>득점 {minute}'</b><strong>{row?.player_name || shotTeam.name}</strong></div>
+          <div className="bc-shot-xg-value"><span>골 기대값</span><strong>{Number(row?.xg || 0).toFixed(2)}</strong></div>
+        </DesignArtboard>
       </Layer>
     </section>
   );
+}
+
+function ComparisonBar({ homeWidth, homeColor, awayColor, compact = false }: { homeWidth: number; homeColor: string; awayColor: string; compact?: boolean }) {
+  const safeHome = clamp(homeWidth, 0, 100);
+  return <div className={`bc-xg-bar ${compact ? 'compact' : ''}`}><i style={{ width: `${safeHome}%`, background: homeColor }} /><i style={{ width: `${100 - safeHome}%`, background: awayColor }} /></div>;
 }
 
 function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
@@ -181,54 +218,76 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shots = snapshot.analysis.xg || [];
   const homeXg = shots.filter((item) => item.team === 'HOME').reduce((sum, item) => sum + Number(item.xg || 0), 0);
   const awayXg = shots.filter((item) => item.team === 'AWAY').reduce((sum, item) => sum + Number(item.xg || 0), 0);
-  const total = Math.max(homeXg + awayXg, 0.01);
-  const scoreTotal = Math.max(home.score + away.score, 1);
-  const style = {
-    '--home-color': home.color,
-    '--away-color': away.color,
-    '--home-xg': `${(homeXg / total) * 100}%`,
-    '--away-xg': `${(awayXg / total) * 100}%`,
-    '--home-score': `${(home.score / scoreTotal) * 100}%`,
-    '--away-score': `${(away.score / scoreTotal) * 100}%`,
-  } as CSSProperties;
+  const totalXg = Math.max(homeXg + awayXg, .01);
+  const totalScore = Math.max(home.score + away.score, 1);
   return (
-    <section className="bc-frame bc-xg-comparison" style={style}>
+    <section className="bc-frame bc-xg-comparison" style={{ '--home-color': home.color, '--away-color': away.color } as CSSProperties}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/xg-comparison/background.svg" className="bc-xg-comparison-template" /></div>
       <Layer>
-        <div className="bc-xg-team home"><TeamLogo url={home.logoUrl} name={home.name} /><strong>{home.name}</strong></div>
-        <div className="bc-xg-team away"><strong>{away.name}</strong><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <div className="bc-xg-row expected"><b>{homeXg.toFixed(2)}</b><div><i className="home" /><i className="away" /></div><b>{awayXg.toFixed(2)}</b></div>
-        <div className="bc-xg-row score"><b>{home.score}</b><div><i className="home" /><i className="away" /></div><b>{away.score}</b></div>
+        <DesignArtboard className="bc-xg-comparison-artboard">
+          <TeamLogo url={home.logoUrl} name={home.name} className="bc-xg-logo home" />
+          <TeamLogo url={away.logoUrl} name={away.name} className="bc-xg-logo away" />
+          <strong className="bc-xg-number home">{homeXg.toFixed(2)}</strong><strong className="bc-xg-number away">{awayXg.toFixed(2)}</strong>
+          <ComparisonBar homeWidth={(homeXg / totalXg) * 100} homeColor={home.color} awayColor={away.color} />
+          <strong className="bc-xg-score home">{home.score}</strong><strong className="bc-xg-score away">{away.score}</strong>
+          <ComparisonBar compact homeWidth={(home.score / totalScore) * 100} homeColor={home.color} awayColor={away.color} />
+        </DesignArtboard>
       </Layer>
     </section>
   );
+}
+
+type DominanceItem = NonNullable<NonNullable<BroadcastSnapshot['analysis']['match_dominance']>['items']>[number];
+
+function dominancePath(items: DominanceItem[], startX = 505, width = 1362, midY = 633, amplitude = 222) {
+  const points = items.map((item, index) => ({
+    x: items.length <= 1 ? startX : startX + (index / (items.length - 1)) * width,
+    y: midY - clamp(Number(item.dominance || 0), -1, 1) * amplitude,
+  }));
+  if (!points.length) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  return points.reduce((path, point, index) => {
+    if (!index) return `M ${point.x} ${point.y}`;
+    const previous = points[index - 1];
+    const controlX = (previous.x + point.x) / 2;
+    return `${path} C ${controlX} ${previous.y}, ${controlX} ${point.y}, ${point.x} ${point.y}`;
+  }, '');
 }
 
 function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = team(snapshot, 'HOME');
   const away = team(snapshot, 'AWAY');
   const items = snapshot.analysis.match_dominance?.items || [];
-  const points = items.map((item, index) => {
-    const x = items.length <= 1 ? 960 : 240 + (index / (items.length - 1)) * 1440;
-    const y = 545 - clamp(Number(item.dominance || 0), -1, 1) * 275;
-    return `${x},${y}`;
-  }).join(' ');
+  const path = dominancePath(items);
+  const area = path ? `${path} L 1867 633 L 505 633 Z` : '';
+  const homeXg = (snapshot.analysis.xg || []).filter((row) => row.team === 'HOME').reduce((sum, row) => sum + Number(row.xg || 0), 0);
+  const awayXg = (snapshot.analysis.xg || []).filter((row) => row.team === 'AWAY').reduce((sum, row) => sum + Number(row.xg || 0), 0);
+  const firstHalf = Number(snapshot.match.clock_ms || 0) <= 45 * 60_000;
+  const matchTitle = `${home.name} vs ${away.name}`;
   const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
   return (
     <section className="bc-frame bc-dominance" style={style}>
-      <div className="bc-background-layer"><Template src="/broadcast/templates/match-dominance/background.svg" className="bc-dominance-template" /></div>
+      <div className="bc-background-layer"><Template src="/broadcast/templates/match-dominance/background.svg" className="bc-dominance-template" /><i className="bc-dominance-header-mask" /></div>
       <Layer>
-        <div className="bc-dominance-team home"><TeamLogo url={home.logoUrl} name={home.name} /><strong>{home.name}</strong></div>
-        <div className="bc-dominance-team away"><strong>{away.name}</strong><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <svg className="bc-dominance-plot" viewBox="0 0 1920 1080">
+        <div className="bc-dominance-round">{roundLabel(snapshot)}</div>
+        <div className="bc-dominance-match-title">{matchTitle}</div>
+        <div className="bc-dominance-period">{firstHalf ? '전반전' : '후반전'} 매치 도미넌스</div>
+        <TeamLogo url={home.logoUrl} name={home.name} className="bc-dominance-logo home" />
+        <TeamLogo url={away.logoUrl} name={away.name} className="bc-dominance-logo away" />
+        <div className="bc-dominance-total home">{homeXg.toFixed(2)}</div>
+        <div className="bc-dominance-total away">{awayXg.toFixed(2)}</div>
+        <div className="bc-dominance-score"><strong>{home.score}</strong><strong>{away.score}</strong></div>
+        <svg className="bc-dominance-plot" viewBox="0 0 1920 1080" aria-label="매치 도미넌스 그래프">
           <defs>
-            <linearGradient id="bc-dominance-team-gradient" x1="240" x2="1680" y1="0" y2="0" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stopColor={home.color} />
-              <stop offset="1" stopColor={away.color} />
-            </linearGradient>
+            <clipPath id="bc-dominance-top"><rect x="505" y="182" width="1362" height="451" /></clipPath>
+            <clipPath id="bc-dominance-bottom"><rect x="505" y="633" width="1362" height="251" /></clipPath>
+            <linearGradient id="bc-dominance-home-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={home.color} stopOpacity=".64" /><stop offset="1" stopColor={home.color} stopOpacity=".06" /></linearGradient>
+            <linearGradient id="bc-dominance-away-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={away.color} stopOpacity=".06" /><stop offset="1" stopColor={away.color} stopOpacity=".64" /></linearGradient>
           </defs>
-          <line x1="240" x2="1680" y1="545" y2="545" />
-          {points ? <polyline points={points} stroke="url(#bc-dominance-team-gradient)" /> : null}
+          {area ? <path d={area} className="bc-dominance-area home" clipPath="url(#bc-dominance-top)" /> : null}
+          {area ? <path d={area} className="bc-dominance-area away" clipPath="url(#bc-dominance-bottom)" /> : null}
+          {path ? <path d={path} className="bc-dominance-line" /> : null}
+          <line className="bc-dominance-midline" x1="505" x2="1867" y1="633" y2="633" />
         </svg>
       </Layer>
     </section>
