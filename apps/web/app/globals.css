@@ -6647,8 +6647,9 @@ html.fpa-embed .topbar {
 .bc-possession-value { position: absolute; top: 108px; z-index: 1; font-size: 31px; font-weight: 900; letter-spacing: -1.55px; line-height: 1; }.bc-possession-value.home { left: 214px; color: #050505; }.bc-possession-value.away { right: 214px; color: #fff; }
 
 .bc-shots-template { top: 306px; left: 380px; width: 1160px; height: 570px; }
-.bc-shots-logo { top: 111px; width: 50px; height: 65px; object-fit: contain; }.bc-shots-logo.home { left: 25px; }.bc-shots-logo.away { right: 25px; }
+.bc-shots-logo { top: 111px; width: 50px; height: 65px; object-fit: contain; transform: translateX(-12px); }.bc-shots-logo.home { left: 25px; }.bc-shots-logo.away { right: 25px; }
 .bc-shots-team-name { position: absolute; top: 183px; width: 108px; overflow: hidden; color: rgba(255,255,255,.9); font-size: 11px; font-weight: 700; letter-spacing: -.65px; line-height: 1.05; text-align: center; overflow-wrap: anywhere; }.bc-shots-team-name.home { left: 0; }.bc-shots-team-name.away { right: 0; }
+.bc-shots-grid { transform: translateX(-12px); }
 
 .bc-xg-team-name { position: absolute; top: 59px; width: 118px; overflow: hidden; color: rgba(255,255,255,.92); font-size: 12px; font-weight: 700; letter-spacing: -.65px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }.bc-xg-team-name.home { left: 12px; text-align: left; }.bc-xg-team-name.away { right: 12px; text-align: right; }
 .bc-xg-logo { top: 99px; }.bc-xg-logo.home { left: 22px; }.bc-xg-logo.away { right: 22px; }
