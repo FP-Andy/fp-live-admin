@@ -6632,3 +6632,25 @@ html.fpa-embed .topbar {
 .bc-dominance-total { position: absolute; left: 271px; width: 120px; color: #fff; font-size: 43px; font-weight: 800; letter-spacing: -1.9px; white-space: nowrap; }.bc-dominance-total.home { top: 466px; }.bc-dominance-total.away { top: 987px; }
 .bc-dominance-score { position: absolute; top: 588px; left: 122px; display: flex; width: 244px; align-items: center; justify-content: space-between; color: #fff; font-size: 96px; font-weight: 900; letter-spacing: -3px; line-height: 1; }
 .bc-dominance-plot { inset: 0; width: 1920px; height: 1080px; }.bc-dominance-area.home { fill: url(#bc-dominance-home-fill); }.bc-dominance-area.away { fill: url(#bc-dominance-away-fill); }.bc-dominance-line { fill: none; stroke: #fff; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }.bc-dominance-midline { stroke: rgba(255,255,255,.94) !important; stroke-width: 3 !important; }
+
+/* Broadcast graphic refinements: designer possession card and real team branding. */
+.bc-attack-arrow rect { shape-rendering: geometricPrecision; }
+
+.bc-possession-template { top: 720px; left: 312px; width: 1295px; height: 182px; overflow: visible; border: 0; border-radius: 0; background: none; box-shadow: none; }
+.bc-possession-template::before { display: none; }
+.bc-possession-artboard { top: 720px; left: 312px; width: 1295px; height: 182px; }
+.bc-possession-title { top: 27px; left: 0; width: 100%; color: #fff; font-size: 31px; font-weight: 900; letter-spacing: -1.55px; line-height: 1; text-align: center; }
+.bc-possession-title small { font-size: 16px; letter-spacing: -.7px; }
+.bc-possession-logo { position: absolute; top: 29px; width: 92px; height: 116px; object-fit: contain; }.bc-possession-logo.home { left: 62px; }.bc-possession-logo.away { right: 62px; }
+.bc-possession-team-name { position: absolute; top: 55px; width: 175px; overflow: hidden; color: #fff; font-size: 16px; font-weight: 800; letter-spacing: -.8px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }.bc-possession-team-name.home { left: 163px; text-align: left; }.bc-possession-team-name.away { right: 163px; text-align: right; }
+.bc-possession-track { top: 96px; left: 188px; width: 919px; height: 50px; overflow: hidden; border: 0; border-radius: 10px; background: rgba(255,255,255,.96); }.bc-possession-track i { height: 50px; }.bc-possession-track .home { border-radius: 10px 0 0 10px; background: var(--home-color); }.bc-possession-track .away { border-radius: 0 10px 10px 0; background: var(--away-color); }
+.bc-possession-value { position: absolute; top: 108px; z-index: 1; font-size: 31px; font-weight: 900; letter-spacing: -1.55px; line-height: 1; }.bc-possession-value.home { left: 214px; color: #050505; }.bc-possession-value.away { right: 214px; color: #fff; }
+
+.bc-shots-template { top: 306px; left: 380px; width: 1160px; height: 570px; }
+.bc-shots-logo { top: 111px; width: 50px; height: 65px; object-fit: contain; }.bc-shots-logo.home { left: 25px; }.bc-shots-logo.away { right: 25px; }
+.bc-shots-team-name { position: absolute; top: 183px; width: 108px; overflow: hidden; color: rgba(255,255,255,.9); font-size: 11px; font-weight: 700; letter-spacing: -.65px; line-height: 1.05; text-align: center; overflow-wrap: anywhere; }.bc-shots-team-name.home { left: 0; }.bc-shots-team-name.away { right: 0; }
+
+.bc-xg-team-name { position: absolute; top: 59px; width: 118px; overflow: hidden; color: rgba(255,255,255,.92); font-size: 12px; font-weight: 700; letter-spacing: -.65px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }.bc-xg-team-name.home { left: 12px; text-align: left; }.bc-xg-team-name.away { right: 12px; text-align: right; }
+.bc-xg-logo { top: 99px; }.bc-xg-logo.home { left: 22px; }.bc-xg-logo.away { right: 22px; }
+.bc-xg-bars { position: absolute; left: 148px; width: 302px; height: 11px; }.bc-xg-bars.expected { top: 93px; }.bc-xg-bars.score { top: 147px; }
+.bc-xg-bars i { position: absolute; top: 0; display: block; height: 11px; }.bc-xg-bars .home { right: 50%; background: var(--home-color); }.bc-xg-bars .away { left: 50%; background: var(--away-color); }

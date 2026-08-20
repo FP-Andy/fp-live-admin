@@ -27,7 +27,9 @@ function team(snapshot: BroadcastSnapshot, side: 'HOME' | 'AWAY') {
   const logoUrl = side === 'HOME' ? state.home_logo_url : state.away_logo_url;
   const label = side === 'HOME' ? state.home_label : state.away_label;
   return {
-    name: label || matchTeam.name || side,
+    // The graphics are delivered to broadcasters, so a generic Home/Away
+    // placeholder must never replace the actual team name.
+    name: matchTeam.name || label || side,
     color: color || fallbackColors[side],
     logoUrl: logoUrl || '',
     score: Number(matchTeam.score || 0),
@@ -39,7 +41,7 @@ function initials(name: string) {
 }
 
 function TeamLogo({ url, name, className = '' }: { url?: string; name: string; className?: string }) {
-  return url ? <img className={className} src={url} alt={`${name} 로고`} /> : <span className={`${className} bc-logo-fallback`}>{initials(name)}</span>;
+  return url ? <img data-broadcast-logo="true" className={className} src={url} alt={`${name} 로고`} /> : <span className={`${className} bc-logo-fallback`}>{initials(name)}</span>;
 }
 
 function Template({ src, className }: { src: string; className: string }) {
@@ -90,7 +92,7 @@ function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side
               const laneRank = Number(ranked.get(lane.key) || 0);
               const height = 40 + clamp(lane.value, 0, 100) * 2.48;
               const top = 342 - height;
-              const shaft = 5.5 + clamp(lane.value, 0, 100) * 0.075;
+              const shaft = (5.5 + clamp(lane.value, 0, 100) * 0.075) * 2;
               const headWidth = shaft * 2.7;
               const headHeight = shaft * 2.25;
               return (
@@ -121,12 +123,16 @@ function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const style = { '--home-color': home.color, '--away-color': away.color, '--home-pct': `${homePct}%`, '--away-pct': `${awayPct}%` } as CSSProperties;
   return (
     <section className="bc-frame bc-possession-frame" style={style}>
-      <div className="bc-background-layer"><div className="bc-possession-template" /></div>
+      <div className="bc-background-layer"><Template src="/broadcast/templates/possession/background.svg" className="bc-possession-template" /></div>
       <Layer>
         <DesignArtboard className="bc-possession-artboard">
-          <strong className="bc-possession-title">볼 점유율</strong>
-          <div className="bc-possession-head home"><TeamLogo url={home.logoUrl} name={home.name} /><b>{home.name}</b><strong>{pct(homePct)}</strong></div>
-          <div className="bc-possession-head away"><strong>{pct(awayPct)}</strong><b>{away.name}</b><TeamLogo url={away.logoUrl} name={away.name} /></div>
+          <strong className="bc-possession-title">볼 점유율 <small>(%)</small></strong>
+          <TeamLogo url={home.logoUrl} name={home.name} className="bc-possession-logo home" />
+          <TeamLogo url={away.logoUrl} name={away.name} className="bc-possession-logo away" />
+          <strong className="bc-possession-team-name home">{home.name}</strong>
+          <strong className="bc-possession-team-name away">{away.name}</strong>
+          <div className="bc-possession-value home">{pct(homePct)}</div>
+          <div className="bc-possession-value away">{pct(awayPct)}</div>
           <div className="bc-possession-track"><i className="home" /><i className="away" /></div>
         </DesignArtboard>
       </Layer>
@@ -147,11 +153,13 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
   return (
     <section className="bc-frame bc-shots" style={style}>
-      <div className="bc-background-layer"><Template src="/broadcast/templates/shots/background.svg" className="bc-shots-template" /></div>
+      <div className="bc-background-layer"><Template src="/broadcast/templates/shots/background-v2.svg" className="bc-shots-template" /></div>
       <Layer>
         <DesignArtboard className="bc-shots-artboard">
           <TeamLogo url={home.logoUrl} name={home.name} className="bc-shots-logo home" />
           <TeamLogo url={away.logoUrl} name={away.name} className="bc-shots-logo away" />
+          <strong className="bc-shots-team-name home">{home.name}</strong>
+          <strong className="bc-shots-team-name away">{away.name}</strong>
           <div className="bc-shots-grid">
             <div className="bc-shots-value home">{homeStats.shots}</div><span>슈팅</span><div className="bc-shots-value away">{awayStats.shots}</div>
             <div className="bc-shots-value home">{homeStats.onTarget}</div><b>유효<br />슈팅</b><div className="bc-shots-value away">{awayStats.onTarget}</div>
@@ -207,9 +215,13 @@ function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
   );
 }
 
-function ComparisonBar({ homeWidth, homeColor, awayColor, compact = false }: { homeWidth: number; homeColor: string; awayColor: string; compact?: boolean }) {
-  const safeHome = clamp(homeWidth, 0, 100);
-  return <div className={`bc-xg-bar ${compact ? 'compact' : ''}`}><i style={{ width: `${safeHome}%`, background: homeColor }} /><i style={{ width: `${100 - safeHome}%`, background: awayColor }} /></div>;
+function ComparisonBars({ homeRatio, awayRatio, className }: { homeRatio: number; awayRatio: number; className: string }) {
+  return (
+    <div className={`bc-xg-bars ${className}`}>
+      <i className="home" style={{ width: `${clamp(homeRatio, 0, 1) * 50}%` }} />
+      <i className="away" style={{ width: `${clamp(awayRatio, 0, 1) * 50}%` }} />
+    </div>
+  );
 }
 
 function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
@@ -218,8 +230,8 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shots = snapshot.analysis.xg || [];
   const homeXg = shots.filter((item) => item.team === 'HOME').reduce((sum, item) => sum + Number(item.xg || 0), 0);
   const awayXg = shots.filter((item) => item.team === 'AWAY').reduce((sum, item) => sum + Number(item.xg || 0), 0);
-  const totalXg = Math.max(homeXg + awayXg, .01);
-  const totalScore = Math.max(home.score + away.score, 1);
+  const xgRatio = (xg: number, score: number) => score > 0 ? xg / score : (xg > 0 ? 1 : 0);
+  const maxScore = Math.max(home.score, away.score, 1);
   return (
     <section className="bc-frame bc-xg-comparison" style={{ '--home-color': home.color, '--away-color': away.color } as CSSProperties}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/xg-comparison/background.svg" className="bc-xg-comparison-template" /></div>
@@ -227,10 +239,12 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
         <DesignArtboard className="bc-xg-comparison-artboard">
           <TeamLogo url={home.logoUrl} name={home.name} className="bc-xg-logo home" />
           <TeamLogo url={away.logoUrl} name={away.name} className="bc-xg-logo away" />
+          <strong className="bc-xg-team-name home">{home.name}</strong>
+          <strong className="bc-xg-team-name away">{away.name}</strong>
           <strong className="bc-xg-number home">{homeXg.toFixed(2)}</strong><strong className="bc-xg-number away">{awayXg.toFixed(2)}</strong>
-          <ComparisonBar homeWidth={(homeXg / totalXg) * 100} homeColor={home.color} awayColor={away.color} />
+          <ComparisonBars className="expected" homeRatio={xgRatio(homeXg, home.score)} awayRatio={xgRatio(awayXg, away.score)} />
           <strong className="bc-xg-score home">{home.score}</strong><strong className="bc-xg-score away">{away.score}</strong>
-          <ComparisonBar compact homeWidth={(home.score / totalScore) * 100} homeColor={home.color} awayColor={away.color} />
+          <ComparisonBars className="score" homeRatio={home.score / maxScore} awayRatio={away.score / maxScore} />
         </DesignArtboard>
       </Layer>
     </section>
