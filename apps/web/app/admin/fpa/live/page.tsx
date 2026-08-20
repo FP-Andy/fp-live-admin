@@ -1916,7 +1916,7 @@ export default function FpaLivePage() {
       timeline: string;
       primary: number | null;
     },
-  ): Promise<{ rows: LogPreview[]; logs: string[] }> => {
+  ): Promise<{ rows: LogPreview[]; logs: string[]; skipped: number }> => {
     const dualPayload = {
       actor_team: ctx.actorTeam,
       primary_row_index: ctx.primary,
@@ -1926,14 +1926,18 @@ export default function FpaLivePage() {
     };
     const nextRows = [...sceneRows];
     const nextLogs = [...sceneLogs];
+    // 재채점하지 못하고 옛 값을 그대로 둔 행 수. 호출부가 이걸 보여줘야 한다 —
+    // 안 보여주면 "안 바뀐 행" 과 "못 바꾼 행" 이 구분되지 않아 다 됐다고 착각하게 된다.
+    let skipped = 0;
     for (let i = 0; i < sceneRows.length; i += 1) {
       const code = sceneRows[i].StatInput;
-      if (!code) continue;
+      // 원본 스탯 코드가 없으면 재채점 자체가 불가 (엑셀로 불러온 행·옛 행이 그렇다).
+      if (!code) { skipped += 1; continue; }
       const arrow = ctx.arrows.find((item) => item.rowIndex === i);
       const dotsForRow = arrow
         ? [screenToMeterDot(arrow.x1, arrow.y1), screenToMeterDot(arrow.x2, arrow.y2)]
         : submitDotsForCode(code, ctx.before, ctx.after);
-      if (!dotsForRow.length) continue;
+      if (!dotsForRow.length) { skipped += 1; continue; }
       try {
         const response = await apiFetch('/fpa/logs/generate', {
           method: 'POST',
@@ -1947,7 +1951,7 @@ export default function FpaLivePage() {
             timeline: ctx.timeline,
           }),
         });
-        if (!response.ok) continue;
+        if (!response.ok) { skipped += 1; continue; }
         const data = await response.json() as { log_text: string; log_data: LogPreview };
         data.log_data.StatInput = code;
         // xGOT·GoalMouth는 백엔드 채점이 만들지 않음(골문클릭 플로우에서 나중에 채워짐) → 재채점이 덮어쓰지 않게 기존값 보존
@@ -1960,9 +1964,10 @@ export default function FpaLivePage() {
         nextLogs[i] = mergedLog;
       } catch {
         // 개별 행 재채점 실패는 임시값 유지 (전체 저장은 계속)
+        skipped += 1;
       }
     }
-    return { rows: nextRows, logs: nextLogs };
+    return { rows: nextRows, logs: nextLogs, skipped };
   };
 
   // 옛 기록에서 되살린 태깅은 공격방향을 못 되짚었다(백필이 추측하지 않는다).
@@ -2023,17 +2028,19 @@ export default function FpaLivePage() {
     setBusy(true);
     const next: SavedScene[] = [];
     let changed = 0;
+    let skipped = 0;
     for (let i = 0; i < savedScenes.length; i += 1) {
       const scene = savedScenes[i];
       setStatus(`현재 로직으로 재채점 중… (${i + 1}/${savedScenes.length})`);
       const ctx = sceneScoringContext(scene);
-      const { rows: scoredRows, logs: scoredLogs } = await rescoreSceneRows(scene.rows, scene.logs, {
+      const { rows: scoredRows, logs: scoredLogs, skipped: sceneSkipped } = await rescoreSceneRows(scene.rows, scene.logs, {
         before: scene.beforeDots,
         after: scene.afterDots,
         arrows: scene.passArrows,
         ...ctx,
         primary: scene.primary,
       });
+      skipped += sceneSkipped;
       scoredRows.forEach((row, j) => {
         const before = scene.rows[j];
         if (before.EPV !== row.EPV || before.PC !== row.PC || before.xG !== row.xG) changed += 1;
@@ -2043,10 +2050,15 @@ export default function FpaLivePage() {
     setSavedScenes(next);
     setBusy(false);
     const total = next.reduce((sum, scene) => sum + scene.rows.length, 0);
+    // 스킵을 반드시 함께 알린다 — 이걸 안 보여주면 "안 바뀐 행" 과 "재채점조차 못 한 행" 이
+    // 한 덩어리로 보여서, 옛 값이 그대로 남았는데도 다 반영됐다고 착각하게 된다.
+    // 스킵된 행은 원본 스탯 코드가 없는 것이라 화면에서는 못 고친다 —
+    // scripts/rescore_fpa_metrics.py 가 로그에서 코드를 역산해 처리한다.
+    const skipNote = skipped ? ` · ${skipped}건은 원본 코드가 없어 재채점하지 못했습니다(옛 값 유지)` : '';
     setStatus(
       changed
-        ? `재채점 완료 — ${total}건 중 ${changed}건의 지표가 바뀌었습니다. "클립에 저장" 을 눌러야 반영됩니다`
-        : `재채점 완료 — ${total}건 모두 현재 로직과 같은 값입니다(저장 불필요)`,
+        ? `재채점 완료 — ${total}건 중 ${changed}건의 지표가 바뀌었습니다${skipNote}. "클립에 저장" 을 눌러야 반영됩니다`
+        : `재채점 완료 — ${total}건 중 바뀐 값 없음${skipNote}${skipped ? '' : '(저장 불필요)'}`,
     );
   };
 

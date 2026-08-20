@@ -9421,6 +9421,12 @@ def clip_result_put_actions(
                 "userId": a.get("userId"),
                 "xg": a.get("xg"),
                 "xgot": a.get("xgot"),
+                # 이 둘을 빠뜨리면 구간(오프셋)만 고쳐 저장해도 NULL 로 날아간다 —
+                # 아래에서 액션을 전부 지우고 이 dict 로 다시 넣기 때문이다.
+                # reception_xg 는 어시스트·키패스 채점 근거(xfp_score._raw_effect),
+                # packing 은 패스 가산(PASS_PACKING_BONUS)이라 점수가 실제로 바뀐다.
+                "receptionXg": a.get("receptionXg"),
+                "packing": a.get("packing"),
                 "epv": a.get("epv"),
                 "pc": a.get("pc"),
                 "startOffset": a.get("startOffset"),
