@@ -1,5 +1,6 @@
 import asyncio
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -193,8 +194,9 @@ FPA_MODEL_ROOM_DIR = Path(os.getenv("FPA_MODEL_ROOM_DIR", "/app/runtime/fpa_mode
 BROADCAST_RUNTIME_DIR = Path(os.getenv("BROADCAST_RUNTIME_DIR", "/app/runtime/broadcast")).resolve()
 BROADCAST_LOGO_DIR = BROADCAST_RUNTIME_DIR / "logos"
 BROADCAST_ASSET_REFRESH_SECONDS = max(10, int(os.getenv("BROADCAST_ASSET_REFRESH_SECONDS", "60")))
+BROADCAST_ASSET_RENDER_CONCURRENCY = max(1, min(8, int(os.getenv("BROADCAST_ASSET_RENDER_CONCURRENCY", "1"))))
 BROADCAST_INGEST_KEY = os.getenv("BROADCAST_INGEST_KEY", "").strip()
-_broadcast_asset_render_lock = threading.Lock()
+_broadcast_asset_render_lock = threading.BoundedSemaphore(BROADCAST_ASSET_RENDER_CONCURRENCY)
 _broadcast_branding_refresh_lock = threading.Lock()
 _broadcast_branding_refresh_timers: dict[str, threading.Timer] = {}
 
@@ -1555,20 +1557,40 @@ def _verify_session_value(raw_value: str | None) -> str | None:
     return user_id
 
 
-def _set_session_cookie(response: Response, user_id: str) -> None:
+def _shared_session_cookie_options(request: Request | None = None) -> dict:
+    """Share an authenticated FPC session with the broadcast subdomain.
+
+    Local development keeps a host-only, non-secure cookie.  On the production
+    FineLudens domain the shared secure cookie lets an operator who signed in
+    to FPC configure logos and colours directly inside Broadcast.
+    """
+    host = ""
+    if request:
+        host = (request.headers.get("x-forwarded-host") or request.url.hostname or "").split(":", 1)[0].lower()
+    if host == "fineludens.kr" or host.endswith(".fineludens.kr"):
+        return {"domain": ".fineludens.kr", "secure": True}
+    return {"secure": False}
+
+
+def _set_session_cookie(response: Response, user_id: str, request: Request | None = None) -> None:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=_sign_session_value(user_id),
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=False,
+        **_shared_session_cookie_options(request),
         path="/",
     )
 
 
-def _clear_session_cookie(response: Response) -> None:
+def _clear_session_cookie(response: Response, request: Request | None = None) -> None:
+    # Clear both the old host-only cookie and the shared production cookie so
+    # sessions created before the showroom editor was added cannot linger.
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+    options = _shared_session_cookie_options(request)
+    if options.get("domain"):
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", domain=str(options["domain"]))
 
 
 def _get_session_user(
@@ -1854,28 +1876,34 @@ def _team_names_from_match(match_obj: Match) -> dict:
     }
 
 
-def _football_score_from_events(match_id: UUID, db: Session) -> dict:
+def _football_score_from_events(match_id: UUID, db: Session, *, as_of_clock_ms: int | None = None) -> dict:
     rows = (
         db.query(Event)
         .filter(Event.match_id == match_id, Event.type == "XG", Event.is_goal.is_(True))
         .all()
     )
+    if as_of_clock_ms is not None:
+        clock_context = _clock_normalization_context(match_id, db)
+        rows = [
+            row for row in rows
+            if _normalize_match_clock_ms(row.clock_ms, clock_context) <= max(0, int(as_of_clock_ms))
+        ]
     return {
         "HOME": sum(1 for row in rows if row.team == "HOME"),
         "AWAY": sum(1 for row in rows if row.team == "AWAY"),
     }
 
 
-def _build_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
+def _build_broadcast_snapshot(match_obj: Match, db: Session, *, as_of_clock_ms: int | None = None) -> dict:
     state = _broadcast_state(match_obj)
     teams = _team_names_from_match(match_obj)
     latest_state = _latest_state(match_obj.id, db)
-    score = _football_score_from_events(match_obj.id, db)
+    score = _football_score_from_events(match_obj.id, db, as_of_clock_ms=as_of_clock_ms)
     home_score = score["HOME"] if state.get("home_score") is None else int(state.get("home_score") or 0)
     away_score = score["AWAY"] if state.get("away_score") is None else int(state.get("away_score") or 0)
     result = _build_partner_match_result(match_obj.id, db) if state["sport"] == "FOOTBALL" else {}
     coder_clock_ms = _broadcast_clock_ms(state)
-    return {
+    snapshot = {
         "match": {
             "id": str(match_obj.id),
             "name": match_obj.name,
@@ -1897,6 +1925,107 @@ def _build_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
         },
         "updated_at": datetime.utcnow().isoformat(),
     }
+    if as_of_clock_ms is not None and state["sport"] == "FOOTBALL":
+        _trim_broadcast_snapshot_to_clock(snapshot, match_obj, db, max(0, int(as_of_clock_ms)))
+    return snapshot
+
+
+def _trim_broadcast_snapshot_to_clock(snapshot: dict, match_obj: Match, db: Session, clock_ms: int) -> None:
+    """Rebuild the time-sensitive parts of a stored broadcast frame.
+
+    Archive assets are immutable from an editorial-data perspective.  When a
+    crest or team colour changes afterwards we must not redraw the 15-minute
+    card with the final 90-minute statistics.  This helper keeps the snapshot
+    at the original match-clock point while allowing its presentation branding
+    to be freshly rendered.
+    """
+    cutoff = max(0, int(clock_ms))
+    clock_context = _clock_normalization_context(match_obj.id, db)
+    raw_latest_clock = _latest_state(match_obj.id, db)
+    current_raw_clock = raw_latest_clock.clock_ms if raw_latest_clock else cutoff
+    analysis = snapshot.get("analysis") if isinstance(snapshot.get("analysis"), dict) else {}
+
+    poss_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_obj.id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc())
+        .all()
+    )
+    home_ms = 0
+    away_ms = 0
+    for segment in poss_rows:
+        start_ms = _normalize_match_clock_ms(segment.start_ms, clock_context)
+        raw_end_ms = segment.end_ms if segment.end_ms is not None else current_raw_clock
+        end_ms = _normalize_match_clock_ms(raw_end_ms, clock_context)
+        duration_ms = max(0, min(end_ms, cutoff) - min(start_ms, cutoff))
+        if segment.team == "HOME":
+            home_ms += duration_ms
+        elif segment.team == "AWAY":
+            away_ms += duration_ms
+    possession_total = home_ms + away_ms
+    analysis["possession"] = {
+        "match_name": match_obj.name,
+        "match_id": str(match_obj.id),
+        "aggregate_clock_ms": cutoff,
+        "aggregate_clock": _fmt_clock_ms(cutoff),
+        "raw_aggregate_clock_ms": cutoff,
+        "raw_aggregate_clock": _fmt_clock_ms(cutoff),
+        "home_pct": (home_ms / possession_total * 100.0) if possession_total else 0.0,
+        "away_pct": (away_ms / possession_total * 100.0) if possession_total else 0.0,
+    }
+
+    lane_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_obj.id, Event.type == "ATTACK_LANE")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+    lane_rows = [row for row in lane_rows if _normalize_match_clock_ms(row.clock_ms, clock_context) <= cutoff]
+    attack_rows: list[dict] = []
+    for side in ("HOME", "AWAY"):
+        team_rows = [row for row in lane_rows if row.team == side]
+        counts = {lane: sum(1 for row in team_rows if row.lane == lane) for lane in ("LEFT", "CENTER", "RIGHT")}
+        total = sum(counts.values())
+        attack_rows.append({
+            "match_name": match_obj.name,
+            "match_id": str(match_obj.id),
+            "aggregate_clock_ms": cutoff,
+            "aggregate_clock": _fmt_clock_ms(cutoff),
+            "raw_aggregate_clock_ms": cutoff,
+            "raw_aggregate_clock": _fmt_clock_ms(cutoff),
+            "team": side,
+            "direction": team_rows[-1].lane if team_rows else None,
+            "direction_ratio": {
+                "left_pct": (counts["LEFT"] / total * 100.0) if total else 0.0,
+                "center_pct": (counts["CENTER"] / total * 100.0) if total else 0.0,
+                "right_pct": (counts["RIGHT"] / total * 100.0) if total else 0.0,
+                "left_count": counts["LEFT"],
+                "center_count": counts["CENTER"],
+                "right_count": counts["RIGHT"],
+                "total_count": total,
+            },
+        })
+    analysis["attack_direction"] = attack_rows
+
+    analysis["xg"] = [
+        item for item in (analysis.get("xg") or [])
+        if isinstance(item, dict) and int(item.get("event_clock_ms") or 0) <= cutoff
+    ]
+    dominance = dict(analysis.get("match_dominance") or {})
+    dominance["aggregate_clock_ms"] = cutoff
+    dominance["aggregate_clock"] = _fmt_clock_ms(cutoff)
+    dominance["raw_aggregate_clock_ms"] = cutoff
+    dominance["raw_aggregate_clock"] = _fmt_clock_ms(cutoff)
+    dominance["items"] = [
+        item for item in (dominance.get("items") or [])
+        if isinstance(item, dict) and int(item.get("base_time_ms") or 0) < cutoff
+    ]
+    analysis["match_dominance"] = dominance
+    snapshot["analysis"] = analysis
+    snapshot["match"]["fla_clock_ms"] = cutoff
+    snapshot["match"]["fla_clock"] = _fmt_clock_ms(cutoff)
+    snapshot["match"]["home"]["score"] = sum(1 for item in analysis["xg"] if item.get("is_goal") and item.get("team") == "HOME")
+    snapshot["match"]["away"]["score"] = sum(1 for item in analysis["xg"] if item.get("is_goal") and item.get("team") == "AWAY")
 
 
 def _build_scoreboard_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
@@ -1993,10 +2122,11 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
         if clock_ms >= minute * 60_000
         and any(asset_type not in (archive.get(str(minute)) or {}) for asset_type in LIVE_ASSET_TYPES)
     ]
+    rendered_live = render_live_coder_asset_pairs(snapshot, LIVE_ASSET_TYPES)
     for asset_type in LIVE_ASSET_TYPES:
-        # Capture one HD layer pair at a time to keep the regular one-minute
-        # refresh bounded in memory.
-        rendered = render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
+        # All five cards share one Chromium launch, while each pair is still
+        # written independently so the stable public URLs stay unchanged.
+        rendered = rendered_live[asset_type]
         live[asset_type] = store_asset_pair(
             store,
             f"{match_key}/live/{asset_type}/latest",
@@ -2081,6 +2211,117 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     """Serialize browser captures so concurrent updates cannot compete for Chromium."""
     with _broadcast_asset_render_lock:
         return _refresh_broadcast_assets_unlocked(match_obj, db, force=force)
+
+
+def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
+    """Refresh branding on every existing public card without changing its data.
+
+    A logo/colour edit can happen after 15-minute snapshots already exist.  In
+    that case each archive is rebuilt from the original clock point; active
+    and archived matches therefore retain the same stats, goals and xT while
+    showing the new team identity consistently.
+    """
+    with _broadcast_asset_render_lock:
+        manifest = _broadcast_assets_manifest(match_obj)
+        store = BroadcastAssetStore()
+        match_key = str(match_obj.id)
+
+        latest_snapshot = _build_broadcast_snapshot(match_obj, db)
+        latest_clock_ms = _broadcast_clock_from_snapshot(latest_snapshot)
+        live = dict(manifest.get("live") or {})
+        existing_live_types = [asset_type for asset_type in LIVE_ASSET_TYPES if asset_type in live]
+        if existing_live_types:
+            rendered_live = render_live_coder_asset_pairs(latest_snapshot, existing_live_types)
+            for asset_type in existing_live_types:
+                live[asset_type] = store_asset_pair(
+                    store,
+                    f"{match_key}/live/{asset_type}/latest",
+                    asset_type,
+                    latest_snapshot,
+                    rendered=rendered_live[asset_type],
+                ).as_dict()
+        manifest["live"] = live
+
+        archive = dict(manifest.get("archive") or {})
+        for minute_key, stored_assets in archive.items():
+            try:
+                archive_clock_ms = max(0, int(minute_key)) * 60_000
+            except (TypeError, ValueError):
+                continue
+            asset_types = [asset_type for asset_type in LIVE_ASSET_TYPES if asset_type in (stored_assets or {})]
+            if not asset_types:
+                continue
+            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=archive_clock_ms)
+            rendered = render_live_coder_asset_pairs(historical_snapshot, asset_types)
+            next_assets = dict(stored_assets or {})
+            for asset_type in asset_types:
+                next_assets[asset_type] = store_asset_pair(
+                    store,
+                    f"{match_key}/archive/{minute_key}/{asset_type}",
+                    asset_type,
+                    historical_snapshot,
+                    immutable=True,
+                    rendered=rendered[asset_type],
+                ).as_dict()
+            archive[minute_key] = next_assets
+        manifest["archive"] = archive
+
+        xg_goals = dict(manifest.get("xg_goals") or {})
+        for event_id, stored_goal in xg_goals.items():
+            if not isinstance(stored_goal, dict):
+                continue
+            event_clock_ms = max(0, int(stored_goal.get("event_clock_ms") or latest_clock_ms))
+            goal_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=event_clock_ms)
+            goal_snapshot["broadcast_state"] = {
+                **(goal_snapshot.get("broadcast_state") or {}),
+                "selected_xg_event_id": event_id,
+            }
+            rendered_goal = render_live_coder_asset_pairs(
+                goal_snapshot,
+                [GOAL_ASSET_TYPE],
+                xg_event_id=event_id,
+            )[GOAL_ASSET_TYPE]
+            xg_goals[event_id] = {
+                **store_asset_pair(
+                    store,
+                    f"{match_key}/goals/{event_id}/{GOAL_ASSET_TYPE}",
+                    GOAL_ASSET_TYPE,
+                    goal_snapshot,
+                    immutable=True,
+                    rendered=rendered_goal,
+                ).as_dict(),
+                "event_id": event_id,
+                "event_clock_ms": event_clock_ms,
+                "event_clock": str(stored_goal.get("event_clock") or _fmt_clock_ms(event_clock_ms)),
+                "team": str(stored_goal.get("team") or ""),
+            }
+        manifest["xg_goals"] = xg_goals
+
+        dominance = dict(manifest.get("dominance") or {})
+        for slot, minute, asset_type in (
+            ("halftime", 45, "match-dominance-halftime"),
+            ("fulltime", 90, "match-dominance-fulltime"),
+        ):
+            if not isinstance(dominance.get(slot), dict):
+                continue
+            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+            rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])[asset_type]
+            dominance[slot] = store_asset_pair(
+                store,
+                f"{match_key}/archive/{minute}/{asset_type}",
+                asset_type,
+                historical_snapshot,
+                immutable=True,
+                rendered=rendered,
+            ).as_dict()
+        manifest["dominance"] = dominance
+        manifest["last_generated_at"] = datetime.utcnow().isoformat()
+
+        metadata = dict(match_obj.metadata_json or {})
+        metadata["broadcast_assets"] = manifest
+        match_obj.metadata_json = metadata
+        db.commit()
+        return manifest
 
 
 _BROADCAST_COMPLETED_DEMO_KEY = "completed-90m-v2"
@@ -2306,7 +2547,7 @@ def seed_completed_broadcast_demo() -> str:
 
 
 def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
-    """Publish branding changes to the public PNG URLs without waiting a minute."""
+    """Publish branding changes to every saved public PNG without waiting a minute."""
     match_key = str(match_id)
 
     def render_latest() -> None:
@@ -2314,7 +2555,7 @@ def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
         try:
             match_obj = db.get(Match, match_id)
             if match_obj:
-                _refresh_broadcast_assets(match_obj, db)
+                _rebuild_broadcast_branding_assets(match_obj, db)
         except Exception as exc:
             db.rollback()
             print(f"broadcast branding refresh failed for {match_key}: {exc}\n{traceback.format_exc()}")
@@ -2327,7 +2568,10 @@ def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
         previous = _broadcast_branding_refresh_timers.get(match_key)
         if previous and previous.is_alive():
             previous.cancel()
-        timer = threading.Timer(0.35, render_latest)
+        # A showroom form may submit colours and the two crest files in quick
+        # succession.  Coalesce them into one historical rebuild rather than
+        # repeatedly launching Chromium for the same match.
+        timer = threading.Timer(2.0, render_latest)
         timer.daemon = True
         _broadcast_branding_refresh_timers[match_key] = timer
         timer.start()
@@ -2347,7 +2591,7 @@ def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
         "away_team": teams["AWAY"],
         "competition_class": _normalize_competition_class(match_obj.competition_class),
         "round_number": int(match_obj.round_number or 1),
-        "status": "LIVE" if running else "OPEN",
+        "status": "ARCHIVED" if match_obj.archived else "LIVE" if running else "OPEN",
         "clock_ms": int(latest_state.clock_ms) if latest_state else 0,
         "archived": bool(match_obj.archived),
         "assets": manifest,
@@ -2373,27 +2617,50 @@ def _refresh_all_broadcast_assets() -> None:
     """Run the blocking browser capture work outside the API event loop."""
     db = SessionLocal()
     try:
-        matches = (
+        match_ids = [
+            row.id for row in (
             db.query(Match)
             .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
             .order_by(Match.created_at.desc())
             .all()
-        )
-        for match_obj in matches:
+            )
+            if not _is_completed_broadcast_demo(row)
+        ]
+    finally:
+        db.close()
+
+    def refresh_one(match_id: UUID) -> None:
+        session = SessionLocal()
+        try:
+            match_obj = session.get(Match, match_id)
+            if not match_obj:
+                return
             if _is_completed_broadcast_demo(match_obj):
                 # This fixture is captured at exact staged times by the
                 # operational seed command; the regular one-minute worker
                 # must not replace those immutable demonstration snapshots.
-                continue
+                return
             try:
-                _refresh_broadcast_assets(match_obj, db)
+                _refresh_broadcast_assets(match_obj, session)
             except Exception as exc:
                 # One malformed match or temporary S3 failure must not stop
                 # refreshes for every other concurrent live match.
                 print(f"broadcast asset refresh failed for {match_obj.id}: {exc}\n{traceback.format_exc()}")
-                db.rollback()
-    finally:
-        db.close()
+                session.rollback()
+        finally:
+            session.close()
+
+    # The current small server keeps this at one.  After the planned server
+    # upgrade, setting BROADCAST_ASSET_RENDER_CONCURRENCY to 2–4 allows the
+    # worker to keep ten active fixtures inside the one-minute refresh window.
+    if BROADCAST_ASSET_RENDER_CONCURRENCY == 1 or len(match_ids) <= 1:
+        for match_id in match_ids:
+            refresh_one(match_id)
+        return
+    with ThreadPoolExecutor(max_workers=BROADCAST_ASSET_RENDER_CONCURRENCY, thread_name_prefix="broadcast-render") as executor:
+        futures = [executor.submit(refresh_one, match_id) for match_id in match_ids]
+        for future in as_completed(futures):
+            future.result()
 
 
 async def broadcast_asset_worker(stop_event: asyncio.Event) -> None:
@@ -4136,7 +4403,7 @@ def health() -> dict:
 
 
 @app.post("/api/session/login", response_model=SessionUserResponse)
-def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(body: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     user_name = body.name.strip()
     user_id = _slugify_user_id(user_name)
     role = _resolve_login_role(body.access_key)
@@ -4152,15 +4419,15 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
 
     db.commit()
     db.refresh(user)
-    _set_session_cookie(response, user.id)
+    _set_session_cookie(response, user.id, request)
     _audit(db, "SESSION_LOGIN", "session", actor=user, target_id=user.id, severity="INFO")
     db.commit()
     return {"id": user.id, "name": user.name, "role": user.role}
 
 
 @app.post("/api/session/logout")
-def logout(response: Response):
-    _clear_session_cookie(response)
+def logout(response: Response, request: Request):
+    _clear_session_cookie(response, request)
     return {"ok": True}
 
 
@@ -5919,7 +6186,12 @@ def get_broadcast_state(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.post("/api/broadcast/matches/{match_id}/state")
-def put_broadcast_state(match_id: UUID, body: dict = Body(default_factory=dict), db: Session = Depends(get_db)):
+def put_broadcast_state(
+    match_id: UUID,
+    body: dict = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -5986,7 +6258,7 @@ def put_broadcast_state(match_id: UUID, body: dict = Body(default_factory=dict),
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
-    if any(key in body for key in {"home_label", "away_label", "home_color", "away_color", "home_score", "away_score"}):
+    if any(key in body for key in {"home_label", "away_label", "home_color", "away_color"}):
         _queue_broadcast_branding_refresh(match_id)
     return next_state
 
@@ -5997,6 +6269,7 @@ async def upload_broadcast_logo(
     team: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
 ):
     match_obj = db.get(Match, match_id)
     if not match_obj:
@@ -6121,16 +6394,32 @@ def list_broadcast_live_matches(
     page_size: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    """Public showroom index with FPC-style competition filtering and paging."""
+    """Public showroom index with FPC-style competition filtering and paging.
+
+    Current matches remain at the top, while a match that was genuinely used
+    for broadcast stays visible after FPC archives it.  Old non-broadcast
+    archive records are deliberately excluded so the showroom does not become
+    a general match database.
+    """
     rows = (
         db.query(Match)
-        .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
+        .filter(Match.sport == "FOOTBALL")
         .order_by(Match.created_at.desc())
         .all()
     )
     # The completed 90-minute fixture is linked from the demo room and should
     # not look like an operator-created live fixture in the normal index.
-    rows = [row for row in rows if not _is_completed_broadcast_demo(row)]
+    rows = [
+        row for row in rows
+        if not _is_completed_broadcast_demo(row)
+        and (not row.archived or any(_broadcast_assets_manifest(row).get(key) for key in ("live", "archive", "xg_goals", "dominance")))
+    ]
+    rows.sort(
+        key=lambda row: (
+            bool(row.archived),
+            -(row.archived_at or row.created_at).timestamp(),
+        )
+    )
     competition_classes = sorted({_normalize_competition_class(row.competition_class) for row in rows})
     selected_class = _normalize_competition_class(competition_class) if competition_class else None
     if selected_class:

@@ -71,6 +71,9 @@ services:
       BROADCAST_CDN_BASE_URL: ${BROADCAST_CDN_BASE_URL:-}
       BROADCAST_INGEST_KEY: ${BROADCAST_INGEST_KEY:-}
       BROADCAST_ASSET_REFRESH_SECONDS: ${BROADCAST_ASSET_REFRESH_SECONDS:-60}
+      # Keep the current 2-vCPU server serial.  After scaling, set 2–4 so
+      # several matches can refresh inside the same one-minute cycle.
+      BROADCAST_ASSET_RENDER_CONCURRENCY: ${BROADCAST_ASSET_RENDER_CONCURRENCY:-1}
       # Captures the existing Live Coder overlay, preserving the operator's
       # production visual rather than redrawing the graphic in the API.
       BROADCAST_LIVE_CODER_RENDER_URL: ${BROADCAST_LIVE_CODER_RENDER_URL:-http://web:3000/api/internal/broadcast-render}
