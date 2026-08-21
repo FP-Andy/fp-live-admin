@@ -428,7 +428,9 @@ def store_asset_pair(
         "public, max-age=31536000, immutable" if immutable else "public, max-age=55, must-revalidate",
         generated_at,
     )
-    # A version query ensures integrations reload a new data image even when a
-    # proxy has retained the previous minute's response longer than instructed.
+    # Both layers keep immutable cache headers.  Version both URLs so a
+    # template refresh (for example a new dominance background) cannot leave
+    # viewers combining a fresh data asset with a stale background PNG.
+    versioned_background_url = f"{background_url}?v={quote(generated_at, safe='')}"
     versioned_asset_url = f"{asset_url}?v={quote(generated_at, safe='')}"
-    return StoredAsset(background_url=background_url, asset_url=versioned_asset_url, generated_at=generated_at)
+    return StoredAsset(background_url=versioned_background_url, asset_url=versioned_asset_url, generated_at=generated_at)
