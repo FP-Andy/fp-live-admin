@@ -6665,6 +6665,7 @@ html.fpa-embed .topbar {
 .bc-dominance-total { position: absolute; left: 271px; width: 120px; color: #fff; font-size: 43px; font-weight: 800; letter-spacing: .08em; white-space: nowrap; }.bc-dominance-total.home { top: 457px; }.bc-dominance-total.away { top: 978px; }
 .bc-dominance-score { position: absolute; top: 588px; left: 103px; display: flex; width: 244px; align-items: center; justify-content: space-between; color: #fff; font-size: 96px; font-weight: 900; letter-spacing: -3px; line-height: 1; }
 .bc-dominance-plot { inset: 0; width: 1920px; height: 1080px; }.bc-dominance-area.home { fill: url(#bc-dominance-home-fill); }.bc-dominance-area.away { fill: url(#bc-dominance-away-fill); }.bc-dominance-line { fill: none; stroke: #fff; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }.bc-dominance-midline { stroke: rgba(255,255,255,.94) !important; stroke-width: 3 !important; }.bc-dominance-plot .bc-dominance-halftime-divider { stroke: #02fbac !important; stroke-width: 3 !important; stroke-dasharray: 11 13; opacity: .9; }
+.bc-dominance-timeline-axis { stroke: rgba(255,255,255,.38) !important; stroke-width: 2 !important; }.bc-dominance-timeline-tick { stroke: rgba(255,255,255,.9) !important; stroke-width: 3 !important; }.bc-dominance-timeline-label { fill: #fff; font-family: Paperlogy, sans-serif; font-size: 26px; font-weight: 700; letter-spacing: .04em; }
 
 /* Broadcast graphic refinements: designer possession card and real team branding. */
 .bc-attack-arrow rect { shape-rendering: geometricPrecision; }

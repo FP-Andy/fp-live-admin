@@ -281,6 +281,10 @@ def render_live_coder_asset_pairs(
                 "match_id": match_id,
                 "asset_types": requested_types,
                 **({"xg_event_id": xg_event_id} if xg_event_id else {}),
+                # Archive and branding re-renders must retain the exact FLA
+                # clock point, instead of letting the browser fetch current
+                # full-time data for an older card.
+                "snapshot": snapshot,
             },
             headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
             timeout=timeout * max(1, len(requested_types)),

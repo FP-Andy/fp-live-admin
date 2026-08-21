@@ -314,6 +314,8 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const xT = dominanceXt(items);
   const currentClockMs = Number(snapshot.match.fla_clock_ms || snapshot.match.clock_ms || 0);
   const firstHalf = currentClockMs <= 45 * 60_000;
+  const timelineMinutes = firstHalf ? [0, 15, 30, 45] : [0, 15, 30, 45, 60, 75, 90];
+  const timelineDuration = firstHalf ? 45 : 90;
   const matchTitle = `${home.name} vs ${away.name}`;
   const goalMarkers = (snapshot.analysis.xg || [])
     .filter((item) => item.is_goal && Number(item.event_clock_ms || 0) <= currentClockMs)
@@ -347,6 +349,18 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
           {!firstHalf ? <line className="bc-dominance-halftime-divider" x1="1186" x2="1186" y1="182" y2="884" /> : null}
           {path ? <path d={path} className="bc-dominance-line" /> : null}
           <line className="bc-dominance-midline" x1="505" x2="1867" y1="633" y2="633" />
+          <g className="bc-dominance-timeline" aria-label={`${firstHalf ? '전반전' : '전체 경기'} 시간축`}>
+            <line className="bc-dominance-timeline-axis" x1="505" x2="1867" y1="922" y2="922" />
+            {timelineMinutes.map((minute) => {
+              const x = 505 + (minute / timelineDuration) * 1362;
+              return (
+                <g key={minute} transform={`translate(${x} 922)`}>
+                  <line className="bc-dominance-timeline-tick" x1="0" x2="0" y1="0" y2="15" />
+                  <text className="bc-dominance-timeline-label" x="0" y="50" textAnchor="middle">{minute}&apos;</text>
+                </g>
+              );
+            })}
+          </g>
           {goalMarkers.map(({ side, point }, index) => {
             const markerHeight = 315;
             const markerY = side === 'HOME'

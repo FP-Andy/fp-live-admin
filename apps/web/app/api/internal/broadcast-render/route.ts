@@ -34,10 +34,18 @@ export async function POST(request: NextRequest) {
   if (expectedToken && request.headers.get('x-broadcast-render-token') !== expectedToken) {
     return NextResponse.json({ detail: 'Unauthorized renderer request' }, { status: 401 });
   }
-  const body = await request.json().catch(() => null) as { match_id?: unknown; asset_types?: unknown; xg_event_id?: unknown } | null;
+  const body = await request.json().catch(() => null) as {
+    match_id?: unknown;
+    asset_types?: unknown;
+    xg_event_id?: unknown;
+    snapshot?: unknown;
+  } | null;
   const matchId = typeof body?.match_id === 'string' ? body.match_id : '';
   const assetTypes = Array.isArray(body?.asset_types) ? body.asset_types.filter(isAssetType) : [];
   const xgEventId = typeof body?.xg_event_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.xg_event_id) ? body.xg_event_id : '';
+  const snapshot = body?.snapshot && typeof body.snapshot === 'object' && !Array.isArray(body.snapshot)
+    ? body.snapshot
+    : null;
   if (!/^[0-9a-f-]{36}$/i.test(matchId) || !assetTypes.length) {
     return NextResponse.json({ detail: 'match_id and asset_types are required' }, { status: 400 });
   }
@@ -53,6 +61,15 @@ export async function POST(request: NextRequest) {
     for (const assetType of [...new Set(assetTypes)]) {
       const config = RENDER_CONFIG[assetType];
       const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+      // Normal overlays poll the current FLA snapshot.  Archive capture uses
+      // a supplied immutable snapshot instead, so a half-time graphic cannot
+      // be redrawn with full-time data after the match progresses.
+      if (snapshot) {
+        await page.route(`**/broadcast/matches/${matchId}/snapshot**`, (route) => route.fulfill({
+          contentType: 'application/json; charset=utf-8',
+          body: JSON.stringify(snapshot),
+        }));
+      }
       const xgEventQuery = assetType === 'shot-xg' && xgEventId ? `&xg_event_id=${encodeURIComponent(xgEventId)}` : '';
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}${xgEventQuery}`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       // The overlay loads its FLA snapshot on the client.  A freshly deployed
