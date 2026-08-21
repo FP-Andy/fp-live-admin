@@ -9805,6 +9805,99 @@ def clip_result_scene_motions(
     return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
 
 
+def _clip_team_metadata(job: HighlightJob, clip: HighlightClip, team: str | None) -> dict | None:
+    """잡 메타데이터에 클립 팀을 반영한 새 dict. 대상 항목을 못 찾으면 None.
+
+    클립 행의 team_side 만 고치면 클립을 다시 만들 때 메타데이터 값으로 되돌아간다
+    (_persist_clip_records 가 job_metadata.clips[*].team 을 그대로 옮겨 적는다).
+    항목은 clipId 로 찾고, 없으면 구간(start/end)으로 찾는다 — 옛 잡은 clipId 가 비어 있다.
+    """
+    source = (job.job_metadata or {}).get("clips")
+    if not isinstance(source, list):
+        return None
+    entries = [dict(entry) if isinstance(entry, dict) else entry for entry in source]
+
+    def same_span(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        try:
+            return (abs(float(entry.get("start")) - float(clip.start_sec)) < 0.05
+                    and abs(float(entry.get("end")) - float(clip.end_sec)) < 0.05)
+        except (TypeError, ValueError):
+            return False
+
+    target = next(
+        (e for e in entries if isinstance(e, dict) and str(e.get("clipId") or "") == clip.id),
+        None,
+    )
+    if target is None:
+        spans = [e for e in entries if same_span(e)]
+        # 구간이 겹치는 항목이 둘 이상이면 어느 것인지 확정할 수 없다 — 건드리지 않는다.
+        if len(spans) != 1:
+            return None
+        target = spans[0]
+
+    target["team"] = team
+    metadata = dict(job.job_metadata or {})
+    metadata["clips"] = entries
+    return metadata
+
+
+@app.patch("/api/highlight/clip-results/clips/{clip_id}/team")
+def clip_result_set_team(
+    clip_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립의 홈/어웨이 귀속을 고친다 (관리자 전용).
+
+    태깅 시점에 잘못 고른 팀을 나중에 바로잡기 위한 것이다. 이 값이 전송 대상 팀을
+    가르므로(사전 작업은 사이드별로 나눠 보낸다) 틀리면 클립이 반대 팀에게 간다.
+
+    클립 행과 잡 메타데이터 양쪽을 함께 고친다 — 메타데이터를 두면 클립을 다시 만들 때
+    옛 값으로 되돌아간다.
+
+    이미 찍어둔 FPA 액션의 팀(highlight_clip_actions.team_side)은 건드리지 않는다.
+    수비 액션처럼 클립 팀과 다른 것이 정상인 행이 있어, 일괄로 뒤집으면 오히려 깨진다.
+    """
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+
+    raw = str(body.get("team_side") or "").strip().lower()
+    if raw in ("", "none", "null"):
+        team: str | None = None
+    elif raw in ("home", "away"):
+        team = raw
+    else:
+        raise HTTPException(status_code=400, detail="team_side 는 home / away / 빈 값 중 하나여야 합니다.")
+
+    before = clip.team_side
+    if before == team:
+        return {"clip_id": clip_id, "team_side": team, "changed": False, "metadata_synced": False}
+
+    clip.team_side = team
+    job = db.get(HighlightJob, clip.job_id)
+    metadata = _clip_team_metadata(job, clip, team) if job else None
+    _audit(
+        db, "CLIP_TEAM_SET", "highlight_clip",
+        actor=user, target_id=clip_id,
+        match_id=clip.match_id,
+        details={"before": before, "after": team, "metadata_synced": metadata is not None},
+    )
+    if metadata is not None:
+        update_job(db, clip.job_id, job_metadata=metadata)   # 클립 행·감사 로그까지 함께 커밋된다
+    else:
+        db.commit()
+    return {
+        "clip_id": clip_id,
+        "team_side": team,
+        "changed": True,
+        "metadata_synced": metadata is not None,
+    }
+
+
 @app.put("/api/highlight/clip-results/clips/{clip_id}/actions")
 def clip_result_put_actions(
     clip_id: str,

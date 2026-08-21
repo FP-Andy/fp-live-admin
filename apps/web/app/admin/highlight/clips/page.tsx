@@ -183,6 +183,10 @@ export default function ClipResultsPage() {
   const [motionMsg, setMotionMsg] = useState('');
   // 기본은 앱과 같은 네이티브 렌더. mp4 는 폴백으로 계속 나가는 산출물이라 토글로 남긴다.
   const [motionAsMp4, setMotionAsMp4] = useState(false);
+  // 클립 팀(홈/어웨이) 수정 — 관리자 전용. 되돌리기 어려운 값이라 팝업으로 한 번 확인받는다.
+  const [teamEdit, setTeamEdit] = useState<{ clip: ClipRow | ClipDetail; next: string | null } | null>(null);
+  const [teamSaving, setTeamSaving] = useState(false);
+
   // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
@@ -381,6 +385,32 @@ export default function ClipResultsPage() {
       setMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // 클립 귀속 팀 변경. 이 값이 전송 대상 팀을 가르므로(사전 작업은 사이드별로 나눠 보낸다)
+  // 태깅 때 잘못 고른 것을 여기서 바로잡는다. 서버가 잡 메타데이터까지 함께 고쳐
+  // 클립을 다시 만들어도 되돌아가지 않는다.
+  const saveTeam = async () => {
+    if (!teamEdit || teamSaving) return;
+    setTeamSaving(true);
+    try {
+      const res = await apiJson<{ clip_id: string; team_side: string | null; metadata_synced: boolean }>(
+        `/highlight/clip-results/clips/${teamEdit.clip.id}/team`,
+        { method: 'PATCH', body: JSON.stringify({ team_side: teamEdit.next }) },
+      );
+      setClips((prev) => prev.map((c) => (c.id === res.clip_id ? { ...c, team_side: res.team_side } : c)));
+      setDetail((prev) => (prev && prev.id === res.clip_id ? { ...prev, team_side: res.team_side } : prev));
+      setTeamEdit(null);
+      setMsg(
+        `클립 팀 변경 — ${res.team_side === 'home' ? '홈' : res.team_side === 'away' ? '어웨이' : '팀 미지정'}`
+        + (res.metadata_synced ? '' : ' (⚠ 작업 메타데이터에서 이 클립을 못 찾아, 클립을 다시 만들면 되돌아갑니다)')
+        + ' · 앱에 반영하려면 전송하세요.',
+      );
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTeamSaving(false);
     }
   };
 
@@ -596,6 +626,17 @@ export default function ClipResultsPage() {
                   <img src={c.thumbnail_url} alt="" style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4 }} />
                 ) : null}
                 <TeamBadge side={c.team_side} labels={{ home: selectedMatch.home_team, away: selectedMatch.away_team }} />
+                {/* 목록에서 잘못된 태그가 눈에 띄면 열지 않고 바로 고친다 (관리자 전용). */}
+                {role === 'SUPERADMIN' ? (
+                  <button
+                    style={{ ...smallBtn, padding: '1px 6px', fontSize: 10 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTeamEdit({ clip: c, next: c.team_side === 'home' ? 'away' : 'home' });
+                    }}
+                    title="이 클립의 홈/어웨이 귀속을 고칩니다"
+                  >수정</button>
+                ) : null}
                 {renderTitle(c)}
                 <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
                   {fmt(c.start_sec)}~{fmt(c.end_sec)}
@@ -617,6 +658,14 @@ export default function ClipResultsPage() {
             {renderTitle(detail)}
             <span style={{ fontSize: 11, color: 'var(--muted, #666)' }}>{detail.id}</span>
             <TeamBadge side={detail.team_side} labels={detail.team_labels} />
+            {/* 태깅 때 홈/어웨이를 잘못 고른 클립을 여기서 바로잡는다 (관리자 전용). */}
+            {role === 'SUPERADMIN' ? (
+              <button
+                style={{ ...smallBtn, padding: '2px 8px', fontSize: 11 }}
+                onClick={() => setTeamEdit({ clip: detail, next: detail.team_side === 'home' ? 'away' : 'home' })}
+                title="이 클립의 홈/어웨이 귀속을 고칩니다 — 전송 대상 팀이 바뀝니다"
+              >팀 수정</button>
+            ) : null}
             <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
               {fmt(detail.start_sec)}~{fmt(detail.end_sec)} · {Math.round(detail.duration_seconds || 0)}초
             </span>
@@ -828,6 +877,79 @@ export default function ClipResultsPage() {
           </div>
         </div>
       ) : null}
+
+      {/* 클립 팀 변경 확인 — 전송 대상 팀이 바뀌는 값이라 한 번 물어본다. */}
+      {teamEdit ? ((() => {
+        // 상세에서 열면 클립 응답의 라벨을, 목록에서 열면 매치의 팀명을 쓴다.
+        const teamEditLabels = detail?.team_labels
+          || (selectedMatch ? { home: selectedMatch.home_team, away: selectedMatch.away_team } : undefined);
+        return (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 60, display: 'grid', placeItems: 'center',
+            background: 'rgba(8, 8, 10, 0.66)', padding: 20,
+          }}
+          onClick={() => { if (!teamSaving) setTeamEdit(null); }}
+        >
+          <div
+            style={{
+              width: 'min(440px, 96vw)', borderRadius: 12, padding: 16,
+              background: 'var(--surface-card, #303030)', border: '1px solid var(--border-ghost, #444)',
+              boxShadow: '0 20px 60px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', gap: 12,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 15, fontWeight: 700 }}>클립 팀 변경</div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+              <span style={{ color: 'var(--muted, #999)', width: 40 }}>클립</span>
+              <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{teamEdit.clip.id}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+              <span style={{ color: 'var(--muted, #999)', width: 40 }}>지금</span>
+              <TeamBadge side={teamEdit.clip.team_side} labels={teamEditLabels} />
+              <span style={{ color: 'var(--muted, #999)' }}>→</span>
+              <TeamBadge side={teamEdit.next} labels={teamEditLabels} />
+            </div>
+
+            <div style={{ display: 'flex', gap: 6 }}>
+              {([['home', '홈'], ['away', '어웨이'], [null, '팀 미지정']] as const).map(([value, label]) => (
+                <button
+                  key={String(value)}
+                  style={{
+                    ...smallBtn, flex: 1,
+                    borderColor: teamEdit.next === value ? 'var(--accent, #ff7a00)' : undefined,
+                    color: teamEdit.next === value ? 'var(--accent, #ff7a00)' : undefined,
+                    fontWeight: teamEdit.next === value ? 700 : 400,
+                  }}
+                  onClick={() => setTeamEdit((prev) => (prev ? { ...prev, next: value } : prev))}
+                  disabled={teamSaving}
+                >{label}</button>
+              ))}
+            </div>
+
+            <div style={{
+              fontSize: 11, lineHeight: 1.7, color: 'var(--muted, #999)',
+              background: 'rgba(255,177,74,.08)', border: '1px solid rgba(255,177,74,.25)',
+              borderRadius: 8, padding: '8px 10px',
+            }}>
+              · 이 값이 <b>전송 대상 팀</b>을 가릅니다 — 틀리면 반대 팀에게 클립이 갑니다.<br />
+              · 이미 찍어둔 <b>액션의 팀은 바뀌지 않습니다</b> (수비 액션처럼 클립 팀과 달라야 정상인 행이 있습니다).<br />
+              · 저장만 됩니다 — 앱에 반영하려면 <b>다시 전송</b>하세요.
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button style={smallBtn} onClick={() => setTeamEdit(null)} disabled={teamSaving}>취소</button>
+              <button
+                style={{ ...smallBtn, borderColor: 'var(--accent, #ff7a00)', color: 'var(--accent, #ff7a00)', fontWeight: 700 }}
+                onClick={() => void saveTeam()}
+                disabled={teamSaving || teamEdit.next === teamEdit.clip.team_side}
+              >{teamSaving ? '저장 중…' : '변경'}</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()) : null}
 
     </div>
   );
