@@ -836,8 +836,17 @@ export default function FineplayJobsPage() {
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
       if (e.code === 'ArrowLeft') { e.preventDefault(); seekTo(videoRef.current.currentTime - 5); return; }
       if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(videoRef.current.currentTime + 5); return; }
-      if (e.key === 'a' || e.key === 'A') { e.preventDefault(); addTag('home'); return; }
-      if (e.key === 'd' || e.key === 'D') { e.preventDefault(); addTag('away'); }
+      // 한글 자판이면 e.key 가 'ㅁ'·'ㅇ' 으로 오고, IME 상태에 따라 'Process' 로 오기도 한다.
+      // e.code 는 자판 배열과 무관하게 물리 키 위치를 주므로 그걸 먼저 본다.
+      if (e.code === 'KeyA' || e.key === 'a' || e.key === 'A' || e.key === 'ㅁ') {
+        e.preventDefault();
+        addTag('home');
+        return;
+      }
+      if (e.code === 'KeyD' || e.key === 'd' || e.key === 'D' || e.key === 'ㅇ') {
+        e.preventDefault();
+        addTag('away');
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -1491,13 +1500,13 @@ export default function FineplayJobsPage() {
                   </select>
                 </label>
                 <button style={primaryBtn} onClick={() => addTag('home')}>
-                  ＋ 홈 {fpaTeams.home !== 'Home' ? fpaTeams.home : ''} 태깅 (A)
+                  ＋ 홈 {fpaTeams.home !== 'Home' ? fpaTeams.home : ''} 태깅 (A / ㅁ)
                 </button>
                 <button
                   style={{ ...btn, background: '#7c3aed', borderColor: 'transparent' }}
                   onClick={() => addTag('away')}
                 >
-                  ＋ 어웨이 {fpaTeams.away !== 'Away' ? fpaTeams.away : ''} 태깅 (D)
+                  ＋ 어웨이 {fpaTeams.away !== 'Away' ? fpaTeams.away : ''} 태깅 (D / ㅇ)
                 </button>
                 <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
                   {fmt(current)} / {fmt(duration)}
