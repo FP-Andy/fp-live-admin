@@ -242,8 +242,9 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shots = snapshot.analysis.xg || [];
   const homeXg = shots.filter((item) => item.team === 'HOME').reduce((sum, item) => sum + Number(item.xg || 0), 0);
   const awayXg = shots.filter((item) => item.team === 'AWAY').reduce((sum, item) => sum + Number(item.xg || 0), 0);
-  const xgRatio = (xg: number, score: number) => score > 0 ? xg / score : (xg > 0 ? 1 : 0);
-  const maxScore = Math.max(home.score, away.score, 1);
+  // Both rows use one shared scale. Comparing xG to a team's own goals made
+  // a smaller xG value look full-width whenever it exceeded that score.
+  const maxMetric = Math.max(homeXg, awayXg, home.score, away.score, 1);
   return (
     <section className="bc-frame bc-xg-comparison" style={{ '--home-color': home.color, '--away-color': away.color } as CSSProperties}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/xg-comparison/background.svg" className="bc-xg-comparison-template" /></div>
@@ -254,9 +255,9 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
           <strong className="bc-xg-team-name home">{home.name}</strong>
           <strong className="bc-xg-team-name away">{away.name}</strong>
           <strong className="bc-xg-number home">{homeXg.toFixed(2)}</strong><strong className="bc-xg-number away">{awayXg.toFixed(2)}</strong>
-          <ComparisonBars className="expected" homeRatio={xgRatio(homeXg, home.score)} awayRatio={xgRatio(awayXg, away.score)} />
+          <ComparisonBars className="expected" homeRatio={homeXg / maxMetric} awayRatio={awayXg / maxMetric} />
           <strong className="bc-xg-score home">{home.score}</strong><strong className="bc-xg-score away">{away.score}</strong>
-          <ComparisonBars className="score" homeRatio={home.score / maxScore} awayRatio={away.score / maxScore} />
+          <ComparisonBars className="score" homeRatio={home.score / maxMetric} awayRatio={away.score / maxMetric} />
         </DesignArtboard>
       </Layer>
     </section>
@@ -289,6 +290,18 @@ function dominancePath(items: DominanceItem[], startX = 505, width = 1362, midY 
   }, '');
 }
 
+function dominanceGoalPoint(items: DominanceItem[], clockMs: number, startX = 505, width = 1362, midY = 633, amplitude = 222) {
+  if (!items.length) return null;
+  const binMs = 3 * 60_000;
+  const endMs = Math.max(binMs, Number(items[items.length - 1].base_time_ms || 0) + binMs);
+  const index = clamp(Math.floor(Math.max(0, clockMs) / binMs), 0, items.length - 1);
+  const value = clamp(Number(items[index].dominance || 0), -1, 1);
+  return {
+    x: startX + clamp(clockMs / endMs, 0, 1) * width,
+    y: midY - value * amplitude,
+  };
+}
+
 function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = team(snapshot, 'HOME');
   const away = team(snapshot, 'AWAY');
@@ -299,8 +312,16 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   // belong to HOME and negative bins to AWAY, so their split directly shows
   // which team controlled more of the three-minute match-flow intervals.
   const xT = dominanceXt(items);
-  const firstHalf = Number(snapshot.match.clock_ms || 0) <= 45 * 60_000;
+  const currentClockMs = Number(snapshot.match.fla_clock_ms || snapshot.match.clock_ms || 0);
+  const firstHalf = currentClockMs <= 45 * 60_000;
   const matchTitle = `${home.name} vs ${away.name}`;
+  const goalMarkers = (snapshot.analysis.xg || [])
+    .filter((item) => item.is_goal && Number(item.event_clock_ms || 0) <= currentClockMs)
+    .map((item) => ({
+      side: item.team === 'AWAY' ? 'AWAY' as const : 'HOME' as const,
+      point: dominanceGoalPoint(items, Number(item.event_clock_ms || 0)),
+    }))
+    .filter((item): item is { side: 'HOME' | 'AWAY'; point: NonNullable<ReturnType<typeof dominanceGoalPoint>> } => Boolean(item.point));
   const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
   return (
     <section className="bc-frame bc-dominance" style={style}>
@@ -308,7 +329,7 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
       <Layer>
         <div className="bc-dominance-round">{roundLabel(snapshot)}</div>
         <div className="bc-dominance-match-title">{matchTitle}</div>
-        <div className="bc-dominance-period">{firstHalf ? '전반전' : '후반전'} 매치 도미넌스</div>
+        <div className="bc-dominance-period">{firstHalf ? '전반전' : '경기'} 매치 도미넌스</div>
         <TeamLogo url={home.logoUrl} name={home.name} className="bc-dominance-logo home" />
         <TeamLogo url={away.logoUrl} name={away.name} className="bc-dominance-logo away" />
         <div className="bc-dominance-total home">{xT.home.toFixed(1)}</div>
@@ -325,6 +346,24 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
           {area ? <path d={area} className="bc-dominance-area away" clipPath="url(#bc-dominance-bottom)" /> : null}
           {path ? <path d={path} className="bc-dominance-line" /> : null}
           <line className="bc-dominance-midline" x1="505" x2="1867" y1="633" y2="633" />
+          {goalMarkers.map(({ side, point }, index) => {
+            const markerHeight = 315;
+            const markerY = side === 'HOME'
+              ? clamp(point.y - 22, 184, 633 - markerHeight)
+              : clamp(point.y - markerHeight + 22, 633, 1080 - markerHeight);
+            return (
+              <image
+                className={`bc-dominance-goal-marker ${side.toLowerCase()}`}
+                href="/broadcast/templates/match-dominance/goal-marker.png"
+                x={point.x - 20}
+                y={markerY}
+                width="40"
+                height="315"
+                transform={side === 'AWAY' ? `rotate(180 ${point.x} ${markerY + markerHeight / 2})` : undefined}
+                key={`${side}-${point.x}-${index}`}
+              />
+            );
+          })}
         </svg>
       </Layer>
     </section>
