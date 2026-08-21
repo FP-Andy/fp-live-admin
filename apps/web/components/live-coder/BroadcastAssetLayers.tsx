@@ -344,6 +344,7 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
           </defs>
           {area ? <path d={area} className="bc-dominance-area home" clipPath="url(#bc-dominance-top)" /> : null}
           {area ? <path d={area} className="bc-dominance-area away" clipPath="url(#bc-dominance-bottom)" /> : null}
+          {!firstHalf ? <line className="bc-dominance-halftime-divider" x1="1186" x2="1186" y1="182" y2="884" /> : null}
           {path ? <path d={path} className="bc-dominance-line" /> : null}
           <line className="bc-dominance-midline" x1="505" x2="1867" y1="633" y2="633" />
           {goalMarkers.map(({ side, point }, index) => {
