@@ -9,16 +9,136 @@ type TeamSide = 'home' | 'away';
 
 // 팀 레이어는 화면 표시용 home/away와 xFP scoring용 ally/opponent를 분리한다.
 // ally/opponent는 현재 Stat Input의 Team 값 기준으로 payload 생성 시 확정된다.
-type DualLayer = { key: string; label: string; hotkey: string; teamSide: TeamSide; role: 'field' | 'gk'; color: string };
+// color = 점 몸통 색, edge = 테두리 색. GK 는 몸통이 초록(키퍼 키트)이라
+// 팀은 테두리가 알려준다 — 홈/어웨이 GK 를 색으로도 가르기 위한 것이다.
+type DualLayer = { key: string; label: string; hotkey: string; teamSide: TeamSide; role: 'field' | 'gk'; color: string; edge?: string };
 const DUAL_LAYERS: DualLayer[] = [
-  { key: 'home_field', label: '홈', hotkey: 'q', teamSide: 'home', role: 'field', color: '#2f6df6' },
-  { key: 'away_field', label: '어웨이', hotkey: 'w', teamSide: 'away', role: 'field', color: '#e0524f' },
-  { key: 'home_gk', label: '홈 GK', hotkey: 'e', teamSide: 'home', role: 'gk', color: '#16357a' },
-  { key: 'away_gk', label: '어웨이 GK', hotkey: 'r', teamSide: 'away', role: 'gk', color: '#7a1f1d' },
+  // 보드 팔레트 — 홈=주황(육각형) / 어웨이=파랑(원). 점 도형과 같은 색이라 범례가 어긋나지 않는다.
+  { key: 'home_field', label: '홈', hotkey: 'q', teamSide: 'home', role: 'field', color: '#FF8A01' },
+  { key: 'away_field', label: '어웨이', hotkey: 'w', teamSide: 'away', role: 'field', color: '#4377EB' },
+  // GK 는 양 팀 모두 몸통이 초록(키퍼 키트)이고, 팀은 테두리 색이 가른다.
+  { key: 'home_gk', label: '홈 GK', hotkey: 'e', teamSide: 'home', role: 'gk', color: '#1E8A4C', edge: '#FF8A01' },
+  { key: 'away_gk', label: '어웨이 GK', hotkey: 'r', teamSide: 'away', role: 'gk', color: '#12703F', edge: '#4377EB' },
 ];
 
 function relationForTeamSide(teamSide: TeamSide | undefined, actorTeam: TeamSide): DualDotTeam {
   return teamSide === actorTeam ? 'ally' : 'opponent';
+}
+
+// 점에 씌울 도형(홈 육각형 / 어웨이 원). teamSide 가 비어 있는 옛 데이터는
+// ally/opponent 와 지금 행위 팀으로 되돌려 판정한다.
+function dotShapeSide(dot: { teamSide?: TeamSide; team?: DualDotTeam }, actorTeam: TeamSide): TeamSide {
+  if (dot.teamSide) return dot.teamSide;
+  const opposite: TeamSide = actorTeam === 'home' ? 'away' : 'home';
+  return dot.team === 'opponent' ? opposite : actorTeam;
+}
+
+function sideLabel(side: TeamSide): string {
+  return side === 'home' ? '홈' : '어웨이';
+}
+
+/* ── 보드 피치 / 선수 토큰 ────────────────────────────────────────────────
+   앱 씬모션(SceneMotionView)·xFP Lineup Board 와 같은 자산을 쓴다.
+
+   좌표는 손대지 않는다. .fpa-pitch 요소가 곧 경기장(0~1050 x 0~680)이고, 이미지는
+   흰 터치라인이 요소 가장자리에 오도록 CSS 로 키워 밀어 넣는다(globals.css 참고).
+   실측: scene/pitch.png 1281x829, 터치라인 중심 L34.5 R1246.5 T23.5 B805.5.
+   → 마킹 위치가 기존 fpa-field.png 와 경기장 폭 대비 0.15%(약 0.16m) 차이라 무시 가능. */
+const PITCH_SRC = '/scene/pitch.png';
+
+// 그라디언트는 문서에 한 번만 두고 토큰들이 id 로 참조한다(점마다 defs 를 복제하지 않도록).
+function DualTokenDefs() {
+  return (
+    <svg aria-hidden="true" style={{ position: 'absolute', width: 0, height: 0 }}>
+      <defs>
+        <radialGradient
+          id="fpaTokHome"
+          cx="0"
+          cy="0"
+          r="1"
+          gradientUnits="userSpaceOnUse"
+          gradientTransform="translate(12.035 12.035) rotate(90) scale(9.16618)"
+        >
+          <stop stopColor="#FF7E40" stopOpacity="0.8" />
+          <stop offset="1" stopColor="#FFB56D" />
+        </radialGradient>
+        <radialGradient
+          id="fpaTokAway"
+          cx="0"
+          cy="0"
+          r="1"
+          gradientUnits="userSpaceOnUse"
+          gradientTransform="translate(10 10) rotate(90) scale(10)"
+        >
+          <stop stopColor="#4377EB" />
+          <stop offset="1" stopColor="#3438C1" />
+        </radialGradient>
+        {/* 골키퍼는 초록 키트 — 실제 경기에서 키퍼만 다른 색을 입는 것과 같다.
+            팀은 도형(육각형/원)이 계속 알려주므로 색 하나만 바꿔도 헷갈리지 않는다.
+            userSpaceOnUse 라 도형의 viewBox 마다 좌표가 달라 둘로 나눈다. */}
+        <radialGradient
+          id="fpaTokGkHome"
+          cx="0"
+          cy="0"
+          r="1"
+          gradientUnits="userSpaceOnUse"
+          gradientTransform="translate(12.035 12.035) rotate(90) scale(9.16618)"
+        >
+          <stop stopColor="#5BE59A" stopOpacity="0.85" />
+          <stop offset="1" stopColor="#1E8A4C" />
+        </radialGradient>
+        <radialGradient
+          id="fpaTokGkAway"
+          cx="0"
+          cy="0"
+          r="1"
+          gradientUnits="userSpaceOnUse"
+          gradientTransform="translate(10 10) rotate(90) scale(10)"
+        >
+          <stop stopColor="#3DDC6B" />
+          <stop offset="1" stopColor="#12703F" />
+        </radialGradient>
+      </defs>
+    </svg>
+  );
+}
+
+// 홈=육각형 / 어웨이=원. 색만이 아니라 **모양**으로도 갈라서 강조색(주황)과
+// 헷갈리지 않게 한다 — 앱이 쓰는 것과 같은 도형이다.
+// 골키퍼는 초록 키트로 칠한다. 도형은 그대로라 팀은 계속 읽히고, 필드 플레이어와는
+// 한눈에 갈린다(실제 경기에서 키퍼만 다른 색을 입는 것과 같은 규칙).
+function DualToken({ side, role }: { side: TeamSide; role?: string }) {
+  const gk = role === 'gk';
+  if (side === 'away') {
+    return (
+      <svg className="fpa-dot-shape" viewBox="0 0 20 20" aria-hidden="true">
+        <circle
+          opacity="0.85"
+          cx="10"
+          cy="10"
+          r="9.2"
+          fill={gk ? 'url(#fpaTokGkAway)' : 'url(#fpaTokAway)'}
+          stroke="white"
+          strokeWidth="1"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg className="fpa-dot-shape" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 0L22.3923 6V18L12 24L1.6077 18V6L12 0Z" fill={gk ? '#12703F' : '#FF7400'} />
+      <path
+        d="M21.3835 6.58179V17.4167L11.9998 22.8347L2.61694 17.4177V6.58081L11.9998 1.16479L21.3835 6.58179Z"
+        fill={gk ? '#1E8A4C' : '#FF8A01'}
+        stroke="#21213F"
+        strokeWidth="0.2"
+      />
+      <path
+        d="M12.035 2.8688L19.9731 7.4519V16.6181L12.035 21.2012L4.09684 16.6181V7.4519L12.035 2.8688Z"
+        fill={gk ? 'url(#fpaTokGkHome)' : 'url(#fpaTokHome)'}
+      />
+    </svg>
+  );
 }
 
 function newDotId() {
@@ -396,6 +516,57 @@ function buildFormationSlots(formationKey: string, lines: number[]): FormationSl
   return slots;
 }
 
+// 경기기록지(사전작업) 라인업의 포지션 라벨 → 격자.
+// 앱은 positionSlot 이 'player_{라인}_{순번}' 이라 포메이션을 알아야 자리가 나오지만,
+// 기록지는 좌우가 라벨에 들어 있어(LCB/RCB/LDM/RAM …) 라벨만으로 자리가 확정된다.
+// 실제 기록지 12팀(4-2-3-1·4-3-3·4-4-2·5-4-1·4-5-1)에서 나온 21종을 모두 덮고,
+// 같은 팀 안에서 두 선수가 같은 칸에 겹치지 않는 것을 확인했다.
+const RECORD_SHEET_POSITION_GRID: Record<string, { gridX: number; gridY: number }> = {
+  GK: { gridX: 2, gridY: 20 },
+  LB: { gridX: 0, gridY: 5 },
+  LCB: { gridX: 1, gridY: 5 },
+  CB: { gridX: 2, gridY: 5 },
+  RCB: { gridX: 3, gridY: 5 },
+  RB: { gridX: 4, gridY: 5 },
+  LWB: { gridX: 0, gridY: 7 },
+  RWB: { gridX: 4, gridY: 7 },
+  LDM: { gridX: 1, gridY: 8 },
+  DM: { gridX: 2, gridY: 8 },
+  RDM: { gridX: 3, gridY: 8 },
+  LM: { gridX: 0, gridY: 10 },
+  LCM: { gridX: 1, gridY: 10 },
+  CM: { gridX: 2, gridY: 10 },
+  RCM: { gridX: 3, gridY: 10 },
+  RM: { gridX: 4, gridY: 10 },
+  LAM: { gridX: 0, gridY: 12 },
+  CAM: { gridX: 2, gridY: 12 },
+  RAM: { gridX: 4, gridY: 12 },
+  LW: { gridX: 0, gridY: 15 },
+  LS: { gridX: 1, gridY: 15 },
+  ST: { gridX: 2, gridY: 15 },
+  RS: { gridX: 3, gridY: 15 },
+  RW: { gridX: 4, gridY: 15 },
+};
+
+/** 슬롯 값이 기록지 포지션 라벨인가 — 앱 슬롯('player_…'·'c0_1')과 구분한다. */
+function isRecordSheetPosition(slot: string) {
+  return Object.prototype.hasOwnProperty.call(RECORD_SHEET_POSITION_GRID, slot.toUpperCase());
+}
+
+/** 기록지 라벨 목록 → 슬롯. 라벨이 곧 id 라 그대로 쓴다. */
+function buildRecordSheetSlots(labels: string[]): FormationSlotGrid[] {
+  const seen = new Set<string>();
+  const slots: FormationSlotGrid[] = [];
+  labels.forEach((raw) => {
+    const label = raw.toUpperCase();
+    const grid = RECORD_SHEET_POSITION_GRID[label];
+    if (!grid || seen.has(label)) return;
+    seen.add(label);
+    slots.push({ id: label, gridX: grid.gridX, gridY: grid.gridY, position: label });
+  });
+  return slots;
+}
+
 // 커스텀 5×5 자유 배치 슬롯 — 앱 buildCustomGridSlots 와 같은 규칙(0행이 최하단=GK 줄).
 // 쓰인 자리만 모으면 0행이 비었을 때 행 지도가 앞뒤로 뒤집히므로 25칸을 전부 만든다.
 const CUSTOM_GK_GRID_Y = 100;
@@ -481,9 +652,9 @@ function toPayloadDot(dot: PitchDot, actorTeam?: TeamSide) {
 function colorForDualDot(teamSide?: TeamSide, role?: string, team?: DualDotTeam) {
   const layer = DUAL_LAYERS.find((candidate) => candidate.teamSide === teamSide && candidate.role === role);
   if (layer) return layer.color;
-  if (teamSide === 'home') return role === 'gk' ? '#16357a' : '#2f6df6';
-  if (teamSide === 'away') return role === 'gk' ? '#7a1f1d' : '#e0524f';
-  return team === 'opponent' ? '#e0524f' : '#2f6df6';
+  if (teamSide === 'home') return role === 'gk' ? '#1E8A4C' : '#FF8A01';
+  if (teamSide === 'away') return role === 'gk' ? '#12703F' : '#4377EB';
+  return team === 'opponent' ? '#4377EB' : '#FF8A01';
 }
 
 function normalizePitchDot(raw: Partial<PitchDot> & { team_side?: TeamSide }, actorTeam?: TeamSide): PitchDot | null {
@@ -1670,26 +1841,6 @@ export default function FpaLivePage() {
   const startNewScene = () => {
     clearCurrentScene();
     setStatus('현재 액션 비움 (미저장)');
-    requestAnimationFrame(() => statInputRef.current?.focus());
-  };
-
-  // 다음/이전 클립: 이후 "액션 저장"이 들어갈 클립 번호를 이동. 미저장 버퍼는 그대로 유지(다음 저장부터 적용).
-  const startNextClip = () => {
-    setCurrentClipIndex((prev) => {
-      const next = prev + 1;
-      setStatus(`클립 ${next} 시작 — 이후 액션 저장은 클립 ${next}에 쌓입니다`);
-      return next;
-    });
-    requestAnimationFrame(() => statInputRef.current?.focus());
-  };
-
-  const startPrevClip = () => {
-    setCurrentClipIndex((prev) => {
-      if (prev <= 1) return prev;
-      const next = prev - 1;
-      setStatus(`클립 ${next}(으)로 이동 — 이후 액션 저장은 클립 ${next}에 쌓입니다`);
-      return next;
-    });
     requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
@@ -2974,16 +3125,30 @@ export default function FpaLivePage() {
   // 영상만 보고 등번호를 찾는 수고를 없애는 게 목적이라, 정확한 위치가 아니라
   // '누가 어느 자리에 있는지' 를 먼저 세워두고 태거가 끌어 옮기게 한다.
   // 교체 선수(positionSlot='SUB')는 좌표가 없으므로 선발만 놓는다.
-  const placeLineupOnBefore = () => {
+  const placeLineupOnBefore = (targetSides: readonly TeamSide[] = ['home', 'away']) => {
     // 신청 원본이 아니라 '교체 반영된' 명단을 쓴다 — 명단 탭에서 바꾼 결과가 그대로 나간다.
     const sidesWithLineup = (['home', 'away'] as const)
+      .filter((side) => targetSides.includes(side))
       .filter((side) => (effectiveRoster[side]?.length ?? 0) > 0);
     if (!sidesWithLineup.length) {
-      setStatus('신청 라인업이 없습니다 — 이 경기에 연결된 FinePlay 신청을 먼저 확인하세요');
+      setStatus(targetSides.length === 1
+        ? `${sideLabel(targetSides[0])} 라인업이 없습니다 — 명단 탭에서 확인하세요`
+        : '신청 라인업이 없습니다 — 이 경기에 연결된 FinePlay 신청을 먼저 확인하세요');
       return;
     }
-    if (beforeDots.length && !window.confirm(
-      `before 에 찍힌 점 ${beforeDots.length}개를 지우고 라인업으로 새로 배치할까요?`,
+
+    // 한 팀만 다시 깔 때는 상대 팀 점을 남긴다 — 이미 실제 위치로 끌어다 놓은 것을
+    // 22명 배치 한 번에 날려버리지 않으려는 것이다. 양 팀을 함께 깔 때만 전부 지운다.
+    const replacingBoth = sidesWithLineup.length === 2;
+    const keptDots = replacingBoth
+      ? []
+      : beforeDots.filter((dot) => dot.teamSide !== sidesWithLineup[0]);
+    const removing = beforeDots.length - keptDots.length;
+    if (removing && !window.confirm(
+      replacingBoth
+        ? `before 에 찍힌 점 ${removing}개를 지우고 라인업으로 새로 배치할까요?`
+        : `before 의 ${sideLabel(sidesWithLineup[0])} 점 ${removing}개를 지우고 라인업으로 새로 배치할까요?`
+          + ' (상대 팀 점은 그대로 둡니다)',
     )) return;
 
     // direction 은 '지금 선택된 팀(team)' 의 공격 방향이다. 홈 기준으로 환산해 둔다.
@@ -2999,20 +3164,24 @@ export default function FpaLivePage() {
 
       const slotIds = starters.map((p) => p.positionSlot);
       const isCustom = slotIds.some((id) => /^c\d+_\d+$/.test(id));
+      // 기록지 라인업은 슬롯이 포지션 라벨이다 — 포메이션 없이 라벨만으로 자리가 나온다.
+      const isRecordSheet = !isCustom && slotIds.some(isRecordSheetPosition);
       const slots = isCustom
         ? buildCustomGridSlots()
-        // 포메이션 키는 교체와 무관하므로 신청 원본에서 읽는다.
-        : buildFormationSlots(lineupSides[side]?.formation ?? '', linesFromSlotIds(slotIds));
+        : isRecordSheet
+          ? buildRecordSheetSlots(slotIds)
+          // 포메이션 키는 교체와 무관하므로 신청 원본에서 읽는다.
+          : buildFormationSlots(lineupSides[side]?.formation ?? '', linesFromSlotIds(slotIds));
       if (!slots.length) return;
 
-      const gridById = new Map(slots.map((s) => [s.id, s]));
+      const gridById = new Map(slots.map((s) => [s.id.toUpperCase(), s]));
       const rowMap = rowMapFromSlots(slots);
       const rowCount = Math.max(...Array.from(rowMap.values())) + 1;
       const attacksRight = side === 'home' ? homeAttacksRight : !homeAttacksRight;
 
       let sidePlaced = 0;
       starters.forEach((player) => {
-        const grid = gridById.get(player.positionSlot);
+        const grid = gridById.get(player.positionSlot.toUpperCase());
         if (!grid) { skipped += 1; return; }
         sidePlaced += 1;
         // 커스텀 격자는 0행(gridY=100)이 곧 GK 줄이다 — 앱의 buildCustomGridSlots 규칙.
@@ -3042,16 +3211,24 @@ export default function FpaLivePage() {
 
     pushDualUndo();
     // 옛 점을 참조하던 화살표는 함께 지운다 (clearDualDots 와 같은 규칙).
-    const clearedIds = new Set(beforeDots.map((dot) => dot.id).filter(Boolean));
+    // 한 팀만 다시 깔 때는 남기는 팀의 화살표까지 지우면 안 된다.
+    const keptIds = new Set(keptDots.map((dot) => dot.id).filter(Boolean));
+    const clearedIds = new Set(
+      beforeDots.map((dot) => dot.id).filter(Boolean).filter((id) => !keptIds.has(id)),
+    );
     setPassArrows((prev) => prev.filter((arrow) => {
-      if (arrow.side === 'before') return false;
+      if (arrow.side === 'before') {
+        if (replacingBoth) return false;
+        return !(arrow.startId && clearedIds.has(arrow.startId));
+      }
       if (arrow.startId && clearedIds.has(arrow.startId)) return false;
       return true;
     }));
-    setBeforeDots(nextDots);
+    setBeforeDots([...keptDots, ...nextDots]);
     setSelectedDualDot(null);
     setStatus(
       `라인업 배치 완료 — ${placed.join(' · ')}`
+      + (keptDots.length ? ` · 상대 팀 점 ${keptDots.length}개는 그대로 둠` : '')
       + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : '')
       + ' · 실제 위치로 끌어 옮기세요',
     );
@@ -3526,7 +3703,7 @@ export default function FpaLivePage() {
           role="button"
           tabIndex={0}
         >
-          <img alt={`${title} football field`} className="fpa-pitch-image" draggable={false} src="/fpa-field.png" />
+          <img alt={`${title} football field`} className="fpa-pitch-image" draggable={false} src={PITCH_SRC} />
           {armedHere && liveArrowArm ? (
             <div className="fpa-arrow-arm-badge" onClick={(event) => event.stopPropagation()}>
               <b>{liveArrowArm.code}</b>
@@ -3547,7 +3724,7 @@ export default function FpaLivePage() {
             const selected = selectedDualDot?.side === side && selectedDualDot.index === index;
             return (
               <div
-                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''}`}
+                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''} ${dot.role === 'gk' ? 'is-gk' : ''} side-${dotShapeSide(dot, team)}`}
                 key={`${side}-${index}-${dot.left}-${dot.top}`}
                 onClick={(event) => {
                   // 화살표 그리는 중엔 점을 선택하지 않고 피치로 흘려보냄 (끊은 지점이 수비수 점 위인 경우가 흔함)
@@ -3569,15 +3746,12 @@ export default function FpaLivePage() {
                   selectLiveDualDot({ side, index });
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
-                style={{
-                  left: dot.left,
-                  top: dot.top,
-                  ...(dot.color ? { background: dot.color } : {}),
-                  ...(dot.role === 'gk' ? { boxShadow: '0 0 0 2px #fff' } : {}),
-                }}
+                style={{ left: dot.left, top: dot.top }}
                 tabIndex={0}
               >
-                {dot.label}
+                <DualToken side={dotShapeSide(dot, team)} role={dot.role} />
+                <span className="fpa-dot-num">{dot.label}</span>
+                {dot.role === 'gk' ? <span className="fpa-dot-gk">GK</span> : null}
                 {dot.needsCheck ? <span className="fpa-dot-check">?</span> : null}
               </div>
             );
@@ -3627,7 +3801,7 @@ export default function FpaLivePage() {
           role="button"
           tabIndex={0}
         >
-          <img alt={`${title} football field (수정용)`} className="fpa-pitch-image" draggable={false} src="/fpa-field.png" />
+          <img alt={`${title} football field (수정용)`} className="fpa-pitch-image" draggable={false} src={PITCH_SRC} />
           {armedHere && editArrowArm ? (
             <div className="fpa-arrow-arm-badge" onClick={(event) => event.stopPropagation()}>
               <b>{editArrowArm.code}</b>
@@ -3648,7 +3822,7 @@ export default function FpaLivePage() {
             const selected = editSelectedDot?.side === side && editSelectedDot.index === index;
             return (
               <div
-                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${dot.isPrimaryAlly ? 'primary-ally' : ''} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''}`}
+                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''} ${dot.role === 'gk' ? 'is-gk' : ''} side-${dotShapeSide(dot, editTeam)}`}
                 key={`edit-${side}-${index}-${dot.left}-${dot.top}`}
                 onClick={(event) => {
                   if (armedHere) return;
@@ -3669,15 +3843,12 @@ export default function FpaLivePage() {
                   selectEditDot({ side, index });
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
-                style={{
-                  left: dot.left,
-                  top: dot.top,
-                  ...(dot.color ? { background: dot.color } : {}),
-                  ...(dot.role === 'gk' ? { boxShadow: '0 0 0 2px #fff' } : {}),
-                }}
+                style={{ left: dot.left, top: dot.top }}
                 tabIndex={0}
               >
-                {dot.label}
+                <DualToken side={dotShapeSide(dot, editTeam)} role={dot.role} />
+                <span className="fpa-dot-num">{dot.label}</span>
+                {dot.role === 'gk' ? <span className="fpa-dot-gk">GK</span> : null}
                 {dot.needsCheck ? <span className="fpa-dot-check">?</span> : null}
               </div>
             );
@@ -4057,7 +4228,7 @@ export default function FpaLivePage() {
         role="button"
         tabIndex={0}
       >
-        <img alt="Football field" className="fpa-pitch-image" draggable={false} src="/fpa-field.png" />
+        <img alt="Football field" className="fpa-pitch-image" draggable={false} src={PITCH_SRC} />
         {pitchDots.map((dot) => (
           <div className="fpa-pitch-dot" key={`${dot.label}-${dot.left}-${dot.top}`} style={{ left: dot.left, top: dot.top }}>
             {dot.label}
@@ -4107,8 +4278,8 @@ export default function FpaLivePage() {
             className={activeLayer === layer.key ? 'active' : ''}
             onClick={() => setActiveLayer(layer.key)}
             style={activeLayer === layer.key
-              ? { background: layer.color, borderColor: layer.color, color: '#fff' }
-              : { borderLeft: `4px solid ${layer.color}` }}
+              ? { background: layer.color, borderColor: layer.edge || layer.color, color: '#fff' }
+              : { borderLeft: `4px solid ${layer.edge || layer.color}` }}
             type="button"
           >
             {layer.label} ({layer.hotkey.toUpperCase()})
@@ -4133,17 +4304,34 @@ export default function FpaLivePage() {
     .filter((side) => (lineupSides[side]?.players?.length ?? 0) > 0);
 
   const renderLineupPrefillControl = () => (
-    <div className="fpa-live-control-group">
+    <div className="fpa-live-control-group fpa-lineup-controls">
       <span>라인업</span>
+      {/* 사전 작업은 양 팀 명단이 다 있어 한 번에 깔면 22명이 쏟아진다. 지금 클립의
+          팀부터 깔 수 있게 나누고, 그 팀 버튼을 눌러둔 것처럼 표시한다. */}
+      {(['home', 'away'] as const).map((side) => (
+        <button
+          key={side}
+          type="button"
+          className={team === side ? 'active' : ''}
+          onClick={() => placeLineupOnBefore([side])}
+          disabled={busy || !(lineupSides[side]?.players?.length ?? 0)}
+          title={(lineupSides[side]?.players?.length ?? 0)
+            ? `${sideLabel(side)} 선발만 before 에 배치합니다`
+              + `${team === side ? ' (지금 클립의 팀)' : ''} · 상대 팀 점은 그대로 둡니다`
+            : `${sideLabel(side)} 라인업이 없습니다`}
+        >
+          {sideLabel(side)} 배치
+        </button>
+      ))}
       <button
         type="button"
-        onClick={placeLineupOnBefore}
+        onClick={() => placeLineupOnBefore()}
         disabled={busy || !lineupSidesWithPlayers.length}
         title={lineupSidesWithPlayers.length
-          ? 'before 프레임에 신청 라인업을 포메이션대로 배치합니다 (선발만)'
+          ? 'before 프레임에 양 팀 선발을 포메이션대로 배치합니다 (기존 점은 모두 지웁니다)'
           : '이 경기에 연결된 FinePlay 신청 라인업이 없습니다'}
       >
-        before 에 배치
+        양팀
       </button>
       <button
         type="button"
@@ -4157,12 +4345,20 @@ export default function FpaLivePage() {
   );
 
   // 레이아웃 A: Input State 를 피치 위 가로 바로 (clip UX)
+  // 2열 구성 — 왼쪽 열은 위(방향·전후반·팀)/아래(레이어)로 나누고, 오른쪽 열은
+  // 라인업이 두 줄에 걸쳐 통째로 쓴다. 카드에 빈 구석이 남지 않게 하려는 것이다.
   const renderDualInputBar = () => (
     <section className="fpa-dual-input-bar">
-      {renderPointTypeControl()}
-      {renderDirectionControl()}
-      {renderHalfControl()}
-      {renderTeamControl()}
+      <div className="fpa-dual-bar-row fpa-dual-bar-meta">
+        {renderDirectionControl()}
+        {renderHalfControl()}
+        {renderTeamControl()}
+      </div>
+      <div className="fpa-dual-bar-row fpa-dual-bar-main">
+        {renderPointTypeControl()}
+      </div>
+      {/* 라인업은 두 줄에 걸쳐 오른쪽 한 칸을 통째로 쓴다 — 위 줄 오른쪽이 비어
+          있던 자리를 메우고, 버튼이 세로로 늘어나 눌리는 면적이 커진다. */}
       {renderLineupPrefillControl()}
     </section>
   );
@@ -4189,10 +4385,13 @@ export default function FpaLivePage() {
     // 슬롯 id → 포지션 라벨. 자리를 아는 선발에만 붙는다.
     const slotIds = starters.map((p) => p.positionSlot).filter(Boolean);
     const isCustom = slotIds.some((id) => /^c\d+_\d+$/.test(id));
+    const isRecordSheet = !isCustom && slotIds.some(isRecordSheetPosition);
     const slots = isCustom
       ? buildCustomGridSlots()
-      : buildFormationSlots(info?.formation ?? '', linesFromSlotIds(slotIds));
-    const positionById = new Map(slots.map((slot) => [slot.id, slot.position]));
+      : isRecordSheet
+        ? buildRecordSheetSlots(slotIds)
+        : buildFormationSlots(info?.formation ?? '', linesFromSlotIds(slotIds));
+    const positionById = new Map(slots.map((slot) => [slot.id.toUpperCase(), slot.position]));
 
     const row = (player: RosterPlayer) => (
       <div
@@ -4213,7 +4412,7 @@ export default function FpaLivePage() {
         title={`끌어서 ${player.isSubstitute ? '선발' : '교체'} 선수와 맞바꾸기`}
       >
         <span className="no">{player.jersey}</span>
-        <span className="pos">{positionById.get(player.positionSlot) || (player.isSubstitute ? 'SUB' : '–')}</span>
+        <span className="pos">{positionById.get(player.positionSlot.toUpperCase()) || (player.isSubstitute ? 'SUB' : '–')}</span>
         <span className="nm">{player.name || '이름 없음'}</span>
       </div>
     );
@@ -4333,9 +4532,6 @@ export default function FpaLivePage() {
             onClick={() => { if (selectedRowIndex != null) removeLogAt(selectedRowIndex); }}
             type="button"
           >선택 액션 삭제</button>
-          <span style={{ flex: 1 }} />
-          <button className="fpa-scene-new" disabled={currentClipIndex <= 1} onClick={startPrevClip} type="button">← 이전 클립</button>
-          <button className="fpa-scene-new" onClick={startNextClip} type="button">다음 클립 →</button>
         </div>
         </>
         )}
@@ -4496,6 +4692,7 @@ export default function FpaLivePage() {
       ) : null}
 
       <section className="fpa-live-shell">
+        <DualTokenDefs />
         <div className="fpa-live-brand">
           <span className="fpa-live-brandmark">F</span>
           <span>Fine Play Analytics</span>
@@ -4550,9 +4747,11 @@ export default function FpaLivePage() {
 
         {inputMode === 'dual' ? (
           <>
-            {renderDualInputBar()}
             <div className="fpa-dual-layout">
-              {renderDualPitchPanel()}
+              <div className="fpa-dual-main-col">
+                {renderDualInputBar()}
+                {renderDualPitchPanel()}
+              </div>
               {renderSceneSummary()}
             </div>
             {renderDualEntryBar()}

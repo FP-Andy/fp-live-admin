@@ -4730,6 +4730,14 @@ a:focus-visible {
   align-items: stretch;
 }
 
+/* 왼쪽 열 — 입력 바와 피치를 한 열로 묶는다. 오른쪽 액션 요약이 그만큼 위로 올라온다. */
+.fpa-dual-main-col {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+}
+
 .fpa-dual-side-box,
 .fpa-dual-entry-bar {
   display: grid;
@@ -4783,6 +4791,71 @@ a:focus-visible {
   font-size: 10px;
   white-space: nowrap;
 }
+/* 입력 바는 2열이다.
+   왼쪽 열 : 위 = 방향·전후반·팀(클립마다 한 번), 아래 = 레이어(계속 누름)
+   오른쪽 열: 라인업이 두 줄에 걸쳐 통째로 — 위 줄 오른쪽이 비어 있던 낭비를 없앤다. */
+.fpa-dual-input-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.4fr);
+  grid-template-rows: auto auto;
+  align-items: stretch;
+  gap: 10px 12px;
+}
+.fpa-dual-bar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
+.fpa-dual-bar-row > * {
+  margin: 0;
+  min-width: 0;
+}
+/* 위 줄 — 왼쪽 열 폭을 셋이 3등분한다. 아래 레이어와 왼쪽·오른쪽 끝이 맞는다. */
+.fpa-dual-bar-meta {
+  grid-column: 1;
+  grid-row: 1;
+  gap: 8px;
+}
+.fpa-dual-bar-meta > * {
+  flex: 1 1 0;
+}
+.fpa-dual-bar-meta .fpa-segmented {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+/* 아래 줄 — 레이어가 왼쪽 열을 다 쓴다 */
+.fpa-dual-bar-main {
+  grid-column: 1;
+  grid-row: 2;
+}
+.fpa-dual-bar-main > * {
+  flex: 1 1 0;
+}
+.fpa-dual-bar-main .fpa-dual-layers {
+  align-self: end;
+}
+/* 라인업 — 오른쪽 열 전체. 버튼 2x2 가 남는 높이를 나눠 갖는다(빈 공간 없음). */
+.fpa-dual-input-bar .fpa-lineup-controls {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+.fpa-dual-input-bar .fpa-lineup-controls > span {
+  grid-column: 1 / -1;
+}
+.fpa-dual-input-bar .fpa-lineup-controls button {
+  min-width: 0;
+  min-height: 28px;
+  height: 100%;
+  padding: 4px 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 /* 인라인 점 코드 입력 (xFP/fpa clip: 찍은 점에 번호/코드 부여) */
 .fpa-dual-input-bar .fpa-dual-code {
   flex: 2 1 0;
@@ -5754,10 +5827,6 @@ a:focus-visible {
   box-shadow: 0 6px 18px rgba(47, 109, 246, 0.34);
 }
 
-.fpa-dual-dot.primary-ally {
-  box-shadow: 0 0 0 2px rgba(255, 75, 75, 0.96), 0 6px 18px rgba(255, 122, 0, 0.35);
-}
-
 .fpa-dual-dot:active {
   cursor: grabbing;
 }
@@ -6317,6 +6386,16 @@ a:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  /* 좁은 화면에선 2열 구성을 풀고 위에서 아래로 쌓는다. */
+  .fpa-dual-input-bar {
+    grid-template-columns: 1fr;
+  }
+  .fpa-dual-input-bar .fpa-lineup-controls {
+    grid-column: 1;
+    grid-row: auto;
+    grid-template-rows: auto auto auto;
+  }
+
   .fpa-scene-editor-pitches {
     grid-template-columns: 1fr;
   }
@@ -6765,3 +6844,438 @@ html.fpa-embed .topbar {
 .bc-xg-row { position: absolute; left: 519px; display: grid; width: 882px; grid-template-columns: 85px 1fr 85px; align-items: center; gap: 14px; font-size: 42px; font-weight: 900; line-height: 1; }.bc-xg-row.expected { top: 535px; }.bc-xg-row.score { top: 645px; }.bc-xg-row b:first-child { color: var(--home-color); }.bc-xg-row b:last-child { color: var(--away-color); text-align: right; }.bc-xg-row div { display: flex; height: 32px; overflow: hidden; border-radius: 18px; background: rgba(0,0,0,.1); }.bc-xg-row i { display: block; height: 100%; }.bc-xg-row .home { width: var(--home-xg); background: var(--home-color); }.bc-xg-row .away { width: var(--away-xg); background: var(--away-color); }.bc-xg-row.score div { height: 12px; }.bc-xg-row.score .home { width: var(--home-score); }.bc-xg-row.score .away { width: var(--away-score); }
 
 .bc-dominance { --home-color: #f36b21; --away-color: #1687d4; }.bc-dominance-template { inset: 0; width: 1920px; height: 1080px; }.bc-dominance-team { position: absolute; top: 86px; display: flex; width: 440px; align-items: center; gap: 17px; font-size: 28px; font-weight: 900; }.bc-dominance-team.home { left: 115px; }.bc-dominance-team.away { right: 115px; justify-content: flex-end; text-align: right; }.bc-dominance-team img, .bc-dominance-team .bc-logo-fallback { width: 62px; height: 62px; border-radius: 50%; object-fit: contain; }.bc-dominance-plot { position: absolute; inset: 0; width: 1920px; height: 1080px; }.bc-dominance-plot line { stroke: rgba(255,255,255,.5); stroke-width: 2; }.bc-dominance-plot polyline { fill: none; stroke: url(#bc-dominance-team-gradient); stroke-linecap: round; stroke-linejoin: round; stroke-width: 8; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FPA 라이브 — xFP Lineup Board 스킨 (~/index.html 기준)
+   기능·구조는 그대로 두고 겉모습만 맞춘다. 토큰을 셸 안에서만 다시 정의하므로
+   콘솔의 다른 화면은 영향을 받지 않는다.
+   ══════════════════════════════════════════════════════════════════════════ */
+.fpa-live-shell {
+  /* 팔레트 — 따뜻한 갈색 지면 + 주황 강조 */
+  --bg: #141110;
+  --bg-soft: #1b1714;
+  --panel: #1b1714;
+  --panel-strong: #221d18;
+  --surface-rail: #1b1714;
+  --surface-workspace: #1b1714;
+  --surface-card: #221d18;
+  --surface-card-strong: #2a231c;
+  --surface-floating: #2a231c;
+  --line: #3a2f26;
+  --line-strong: #4d3d2e;
+  --border-soft: #3a2f26;
+  --border-ghost: #4d3d2e;
+  --border-emphasis: #e8873a;
+  --text: #efe7df;
+  --text-secondary: #cbbfb4;
+  --muted: #9b8f85;
+  --text-tertiary: #6f645c;
+  --accent: #ff7400;
+  --accent-strong: #ffb56d;
+  --accent-soft: #8a4a12;
+  --accent-glow: rgba(255, 116, 0, 0.18);
+  --success: #3ddc6b;
+  --warning: #ffc53d;
+  --danger: #ff4c3b;
+  --radius-card: 8px;
+  --radius-panel: 8px;
+  --radius-control: 6px;
+  --shadow: none;
+  --shadow-card: none;
+  --shadow-floating: 0 20px 60px rgba(0, 0, 0, 0.6);
+
+  /* 보드 자체 — 여백·모서리·글자를 촘촘하게 */
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+/* ── 패널 면 ─────────────────────────────────────────────────────────── */
+.fpa-live-shell .fpa-live-meta,
+.fpa-live-shell .fpa-dual-input-bar,
+.fpa-live-shell .fpa-dual-side-box,
+.fpa-live-shell .fpa-dual-entry-bar,
+.fpa-live-shell .fpa-dual-xgot-card,
+.fpa-live-shell .fpa-dual-state-panel,
+.fpa-live-shell .fpa-log-panel,
+.fpa-live-shell .fpa-scene-editor,
+.fpa-live-shell .fpa-live-controls,
+.fpa-live-shell .fpa-xgot-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+/* ── 브랜드 / 패널 제목 — 주황 소문자 라벨 ───────────────────────────── */
+.fpa-live-shell .fpa-live-brand {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  padding: 2px 2px 4px;
+}
+.fpa-live-shell .fpa-live-brandmark {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #1a1207;
+  font-size: 10px;
+  font-weight: 900;
+}
+.fpa-live-shell .fpa-panel-title,
+.fpa-live-shell .fpa-live-controls-title {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+.fpa-live-shell .fpa-scene-clip-label {
+  color: var(--dim, #6f645c);
+  font-size: 10px;
+  letter-spacing: 0.2px;
+}
+
+/* ── 라벨 / 입력 ─────────────────────────────────────────────────────── */
+.fpa-live-shell .fpa-live-meta-field > span,
+.fpa-live-shell .fpa-live-control-group > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+}
+.fpa-live-shell input,
+.fpa-live-shell select,
+.fpa-live-shell textarea {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+}
+.fpa-live-shell .fpa-live-meta-field input,
+.fpa-live-shell .fpa-live-control-group input {
+  min-height: 32px;
+  padding: 8px 10px;
+  text-align: center;
+}
+.fpa-live-shell input:focus,
+.fpa-live-shell select:focus,
+.fpa-live-shell textarea:focus {
+  border-color: var(--border-emphasis);
+  outline: none;
+}
+
+/* ── 버튼 — 기본형(.btn) / 강조형(.btn.pri) ──────────────────────────── */
+.fpa-live-shell button {
+  border-radius: 5px;
+  font-size: 10.5px;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.fpa-live-shell button:hover {
+  border-color: var(--border-emphasis);
+  transform: none;
+  box-shadow: none;
+}
+.fpa-live-shell .fpa-panel-actions button,
+.fpa-live-shell .fpa-log-actions button,
+.fpa-live-shell .fpa-match-id-row button,
+.fpa-live-shell .fpa-lineup-controls button,
+.fpa-live-shell .fpa-time-control button,
+.fpa-live-shell .fpa-scene-new {
+  background: var(--surface-card-strong);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  font-weight: 400;
+  box-shadow: none;
+}
+.fpa-live-shell .fpa-log-actions button.primary,
+.fpa-live-shell .fpa-scene-save {
+  background: var(--accent-soft);
+  border: 1px solid #a35b1a;
+  color: #ffe2c4;
+  font-weight: 700;
+}
+.fpa-live-shell .fpa-scene-del-btn {
+  background: rgba(255, 76, 59, 0.14);
+  border: 1px solid rgba(255, 76, 59, 0.5);
+  color: #ff8b7f;
+}
+
+/* ── 세그먼트 — 눌린 칸은 주황 채움 ──────────────────────────────────── */
+.fpa-live-shell .fpa-segmented {
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+}
+.fpa-live-shell .fpa-segmented button {
+  min-height: 26px;
+  padding: 6px 4px;
+  border-radius: 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.fpa-live-shell .fpa-segmented button.active {
+  background: var(--accent-soft);
+  color: #ffdcb8;
+  font-weight: 700;
+}
+.fpa-live-shell .fpa-segmented button.active.opponent {
+  background: #1e3a7a;
+  color: #cfe0ff;
+}
+
+/* ── 탭 (액션 / 명단) ────────────────────────────────────────────────── */
+.fpa-live-shell .fpa-side-tabs button {
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 12px;
+}
+.fpa-live-shell .fpa-side-tabs button.active {
+  background: var(--accent-soft);
+  border-color: #a35b1a;
+  color: #ffdcb8;
+}
+
+/* ── 명단 ────────────────────────────────────────────────────────────── */
+.fpa-live-shell .fpa-roster-tabs button {
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--muted);
+}
+.fpa-live-shell .fpa-roster-sec {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.4px;
+  background: var(--panel);
+}
+.fpa-live-shell .fpa-roster-row:hover {
+  background: var(--panel-strong);
+}
+.fpa-live-shell .fpa-roster-row .pos {
+  border-color: var(--line);
+  color: var(--muted);
+}
+.fpa-live-shell .fpa-roster-row.sub {
+  border-color: #5a4326;
+  background: #221a10;
+}
+.fpa-live-shell .fpa-roster-row.sub .nm,
+.fpa-live-shell .fpa-roster-row.sub .pos {
+  color: var(--muted);
+}
+.fpa-live-shell .fpa-roster-row.sub .no {
+  background: #2a2622;
+  color: var(--text-tertiary);
+}
+.fpa-live-shell .fpa-roster-empty,
+.fpa-live-shell .fpa-roster-empty-line,
+.fpa-live-shell .fpa-roster-hint {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+}
+.fpa-live-shell .fpa-roster-hint {
+  border-top: 1px solid var(--line);
+}
+.fpa-live-shell .fpa-roster-meta {
+  font-size: 10px;
+  color: var(--muted);
+}
+.fpa-live-shell .fpa-roster-meta b {
+  color: var(--text);
+}
+
+/* ── 상태 바 ─────────────────────────────────────────────────────────── */
+.fpa-live-shell .fpa-live-status {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 10.5px;
+  padding: 8px 12px;
+}
+
+/* ── 스크롤바 ────────────────────────────────────────────────────────── */
+.fpa-live-shell ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.fpa-live-shell ::-webkit-scrollbar-thumb {
+  background: #3a2f26;
+  border-radius: 5px;
+}
+.fpa-live-shell ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── 보드 피치 ────────────────────────────────────────────────────────────
+   .fpa-pitch 요소 = 경기장 그 자체(0~1050 x 0~680). 좌표 계산은 예전 그대로 두고,
+   이미지만 키워 밀어 넣어 **흰 터치라인이 요소 가장자리에 오도록** 맞춘다.
+   실측(scene/pitch.png 1281x829): 터치라인 중심 L34.5 R1246.5 T23.5 B805.5
+     → 경기장이 이미지의 가로 94.61% / 세로 94.33%
+     → width 105.6931% · left -2.8465% · height 106.0102% · top -3.0051%
+   기존 fpa-field.png 와 마킹 위치 차이는 경기장 폭 대비 0.15%(약 0.16m)라 무시 가능. */
+.fpa-live-shell .fpa-pitch,
+.fpa-live-shell .fpa-pitch-cream {
+  border-radius: 5px;
+  border: 1px solid #2b2b46;
+  background: #21213f;
+}
+
+.fpa-live-shell .fpa-pitch-image {
+  inset: auto;
+  left: -2.8465%;
+  top: -3.0051%;
+  width: 105.6931%;
+  height: 106.0102%;
+  object-fit: fill;
+}
+
+/* ── 선수 토큰 ────────────────────────────────────────────────────────────
+   색만이 아니라 **도형**이 팀을 가른다(홈 육각형 / 어웨이 원) — 앱 씬모션과 같다.
+   배경 그라디언트는 끄고 색은 SVG 가 갖는다. GK(흰 링)·선택(::after)·
+   확인필요(::before) 표시는 그대로 살린다. */
+.fpa-live-shell .fpa-dual-dot,
+.fpa-live-shell .fpa-dual-dot.ally,
+.fpa-live-shell .fpa-dual-dot.opponent {
+  width: 25px;
+  height: 25px;
+  background: none;
+  border-radius: 999px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55));
+}
+
+.fpa-live-shell .fpa-dual-dot.opponent {
+  box-shadow: none;
+}
+
+
+.fpa-live-shell .fpa-dot-shape {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 어웨이 원은 육각형보다 커 보여 살짝 줄인다(레퍼런스와 동일) */
+.fpa-live-shell .fpa-dual-dot.side-away .fpa-dot-shape {
+  transform: scale(0.88);
+}
+
+.fpa-live-shell .fpa-dot-num {
+  position: relative;
+  z-index: 1;
+  font-size: 10.5px;
+  font-weight: 900;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* 홈 토큰은 밝은 주황이라 글자를 어둡게, 어웨이는 짙은 파랑이라 흰 글자 */
+.fpa-live-shell .fpa-dual-dot.side-home .fpa-dot-num {
+  color: #231204;
+}
+
+.fpa-live-shell .fpa-dual-dot.side-away .fpa-dot-num {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* 명단 등번호 뱃지도 같은 팔레트로 (피치 점과 색이 어긋나지 않게) */
+.fpa-live-shell .fpa-roster-row[data-team="home"] .no {
+  background: #3a2a16;
+  color: #ffb56d;
+}
+
+.fpa-live-shell .fpa-roster-row[data-team="away"] .no {
+  background: #1b2440;
+  color: #7aa0f2;
+}
+
+/* 선택된 토큰 — 레퍼런스(.tok.sel)와 동일하게 주황 링 + 주황 글로우.
+   확대나 깜빡임은 쓰지 않는다(원본이 그렇다). */
+.fpa-live-shell .fpa-dual-dot.selected {
+  z-index: 9;
+  transform: translate(-50%, -50%);
+}
+
+.fpa-live-shell .fpa-dual-dot.selected::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid #ff7400;
+  box-shadow: 0 0 10px #ff7400;
+  animation: none;
+  pointer-events: none;
+}
+
+/* 골키퍼 — 초록 키트라 번호는 흰 글자가 읽기 좋다(홈 육각형도 마찬가지). */
+.fpa-live-shell .fpa-dual-dot.is-gk .fpa-dot-num,
+.fpa-live-shell .fpa-dual-dot.side-home.is-gk .fpa-dot-num {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+/* 토큰 아래 작은 GK 표식 — 색이 안 보이는 상황(작게 축소·색약)에서도 갈리게 한다. */
+.fpa-live-shell .fpa-dot-gk {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translate(-50%, 1px);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  color: #a9f5c8;
+  text-shadow: 0 1px 3px #000, 0 0 6px #000;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* GK 는 몸통이 초록이라 홈/어웨이가 색으로 안 갈린다. 팀 색 링을 둘러 가른다.
+   (도형으로도 갈리지만 25px 에서는 육각형과 원이 얼핏 비슷해 보인다.)
+   ::after 는 선택 링, ::before 는 확인필요 링이 이미 쓰고 있어 box-shadow 로 그린다. */
+.fpa-live-shell .fpa-dual-dot.is-gk.side-home {
+  box-shadow: 0 0 0 2px #ff8a01;
+}
+
+.fpa-live-shell .fpa-dual-dot.is-gk.side-away {
+  box-shadow: 0 0 0 2px #4377eb;
+}
+
+/* GK 표식 글자도 팀 색으로 — 링과 같은 신호를 두 번 준다. */
+.fpa-live-shell .fpa-dual-dot.is-gk.side-home .fpa-dot-gk {
+  color: #ffb56d;
+}
+
+.fpa-live-shell .fpa-dual-dot.is-gk.side-away .fpa-dot-gk {
+  color: #9dbcff;
+}
+
+/* 피치 카드(제목줄 + 경기장)는 묶어주기만 한다. 테두리를 주면 바깥 패널과
+   경기장 자체 테두리까지 선이 세 겹으로 겹친다. */
+.fpa-live-shell .fpa-dual-pitch-card {
+  background: none;
+  border: 0;
+  padding: 0;
+}
