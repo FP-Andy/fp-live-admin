@@ -2083,6 +2083,228 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
         return _refresh_broadcast_assets_unlocked(match_obj, db, force=force)
 
 
+_BROADCAST_COMPLETED_DEMO_KEY = "completed-90m-v2"
+_BROADCAST_COMPLETED_DEMO_HOME = "데모 홈"
+_BROADCAST_COMPLETED_DEMO_AWAY = "데모 어웨이"
+_BROADCAST_COMPLETED_DEMO_POINTS = (15, 23, 30, 38, 45, 60, 71, 75, 90)
+
+# Each value is a 3-minute sample in the [-1, 1] dominance range.  Possession,
+# xG, and attacks below are all entered through the same services used by FLA,
+# so the resulting xT is calculated from actual stored dominance bins rather
+# than being a number drawn just for the showroom.
+_BROADCAST_COMPLETED_DEMO_DOMINANCE = (
+    .58, .71, .64, .77, .52, .48, .62, .68, .54, .41,
+    .59, .37, .44, .33, -.25, .21, .16, -.08, -.18, -.32,
+    -.45, -.59, -.71, -.64, -.48, -.39, -.28, -.18, -.12, -.09,
+)
+
+_BROADCAST_COMPLETED_DEMO_ATTACKS = (
+    (2, "HOME", "LEFT"), (5, "HOME", "CENTER"), (8, "AWAY", "RIGHT"),
+    (11, "HOME", "CENTER"), (14, "HOME", "RIGHT"), (17, "AWAY", "LEFT"),
+    (20, "HOME", "CENTER"), (23, "HOME", "LEFT"), (26, "AWAY", "RIGHT"),
+    (29, "HOME", "CENTER"), (32, "HOME", "RIGHT"), (35, "AWAY", "CENTER"),
+    (38, "AWAY", "LEFT"), (41, "HOME", "CENTER"), (44, "AWAY", "RIGHT"),
+    (48, "HOME", "LEFT"), (51, "AWAY", "CENTER"), (54, "HOME", "CENTER"),
+    (57, "AWAY", "RIGHT"), (60, "AWAY", "LEFT"), (63, "AWAY", "CENTER"),
+    (66, "HOME", "RIGHT"), (69, "AWAY", "RIGHT"), (72, "AWAY", "CENTER"),
+    (75, "HOME", "LEFT"), (78, "AWAY", "RIGHT"), (81, "HOME", "CENTER"),
+    (84, "AWAY", "LEFT"), (87, "HOME", "RIGHT"), (89, "AWAY", "CENTER"),
+)
+
+_BROADCAST_COMPLETED_DEMO_SHOTS = (
+    # minute, team, xG, xGOT, player, goal, on-target, shot x/y, goalmouth x/y
+    (12, "HOME", .13, .18, "김도윤", False, True, 86, 16, .28, .62),
+    (18, "AWAY", .08, .00, "이현우", False, False, 80, 53, .72, .44),
+    (23, "HOME", .41, .79, "박준서", True, True, 90, 27, .62, .76),
+    (31, "HOME", .18, .26, "김도윤", False, True, 84, 43, .44, .31),
+    (38, "AWAY", .57, .92, "최민재", True, True, 94, 46, .36, .72),
+    (49, "HOME", .07, .00, "정우진", False, False, 77, 21, .56, .25),
+    (63, "AWAY", .19, .32, "이현우", False, True, 88, 55, .75, .57),
+    (71, "AWAY", .26, .83, "한지훈", True, True, 91, 38, .49, .69),
+    (82, "HOME", .53, .58, "박준서", False, True, 95, 29, .58, .39),
+    (88, "AWAY", .15, .00, "최민재", False, False, 83, 14, .19, .33),
+)
+
+
+def _is_completed_broadcast_demo(match_obj: Match) -> bool:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    demo = metadata.get("broadcast_demo") if isinstance(metadata.get("broadcast_demo"), dict) else {}
+    return demo.get("key") == _BROADCAST_COMPLETED_DEMO_KEY
+
+
+def _completed_broadcast_demo_match(db: Session) -> Match | None:
+    rows = (
+        db.query(Match)
+        .filter(Match.sport == "FOOTBALL")
+        .order_by(Match.created_at.desc())
+        .all()
+    )
+    return next((row for row in rows if _is_completed_broadcast_demo(row)), None)
+
+
+def _reset_completed_broadcast_demo_data(match_obj: Match, db: Session) -> None:
+    """Reset only the dedicated fixture row before rendering it again."""
+    for model in (MatchMarker, DominanceBin, Event, LaneSegment, PossessionSegment, State):
+        db.query(model).filter(model.match_id == match_obj.id).delete(synchronize_session=False)
+    db.flush()
+
+
+def _completed_broadcast_demo_metadata(match_obj: Match, clock_ms: int, sequence: int) -> dict:
+    broadcast = _default_broadcast_state(match_obj)
+    broadcast.update({
+        "home_label": _BROADCAST_COMPLETED_DEMO_HOME,
+        "away_label": _BROADCAST_COMPLETED_DEMO_AWAY,
+        "clock_ms": clock_ms,
+        "clock_running": False,
+        "sequence": sequence,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    return {
+        "home_team": _BROADCAST_COMPLETED_DEMO_HOME,
+        "away_team": _BROADCAST_COMPLETED_DEMO_AWAY,
+        "broadcast_demo": {
+            "key": _BROADCAST_COMPLETED_DEMO_KEY,
+            "completed": True,
+            "generated_at": datetime.utcnow().isoformat(),
+        },
+        "broadcast": broadcast,
+        "broadcast_assets": {
+            "version": 2,
+            "live": {},
+            "archive": {},
+            "xg_goals": {},
+            "dominance": {},
+            "last_generated_at": None,
+        },
+    }
+
+
+def _advance_completed_broadcast_demo_clock(match_obj: Match, clock_ms: int, sequence: int) -> None:
+    """Move the fixture clock without discarding prior immutable captures."""
+    metadata = dict(match_obj.metadata_json or {})
+    broadcast = _broadcast_state(match_obj)
+    broadcast.update({
+        "home_label": _BROADCAST_COMPLETED_DEMO_HOME,
+        "away_label": _BROADCAST_COMPLETED_DEMO_AWAY,
+        "clock_ms": clock_ms,
+        "clock_running": False,
+        "sequence": sequence,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    demo = dict(metadata.get("broadcast_demo") or {})
+    demo.update({
+        "key": _BROADCAST_COMPLETED_DEMO_KEY,
+        "completed": True,
+        "generated_at": datetime.utcnow().isoformat(),
+    })
+    metadata["broadcast"] = broadcast
+    metadata["broadcast_demo"] = demo
+    match_obj.metadata_json = metadata
+
+
+def seed_completed_broadcast_demo() -> str:
+    """Create a real, fully rendered 90-minute fixture for the public demo.
+
+    This is intentionally an operational command, not a browser mock.  It
+    enters staged FLA states/events and invokes the same renderer and storage
+    path that regular matches use.  The fixed match row makes re-runs replace
+    the existing asset URLs cleanly after a design change.
+    """
+    db = SessionLocal()
+    try:
+        match_obj = _completed_broadcast_demo_match(db)
+        if not match_obj:
+            match_obj = Match(
+                name="[DEMO | 90M] 데모 홈 vs 데모 어웨이",
+                sport="FOOTBALL",
+                competition_class="DEMO",
+                round_number=1,
+                archived=False,
+            )
+            db.add(match_obj)
+            db.flush()
+        else:
+            _reset_completed_broadcast_demo_data(match_obj, db)
+
+        match_obj.name = "[DEMO | 90M] 데모 홈 vs 데모 어웨이"
+        match_obj.sport = "FOOTBALL"
+        match_obj.competition_class = "DEMO"
+        match_obj.round_number = 1
+        match_obj.archived = False
+        match_obj.archived_at = None
+        match_obj.metadata_json = _completed_broadcast_demo_metadata(match_obj, 0, 0)
+        db.commit()
+
+        possession_rows: list[tuple[int, str, int, int]] = []
+        for index, balance in enumerate(_BROADCAST_COMPLETED_DEMO_DOMINANCE):
+            start_ms = index * 180_000
+            # Keep the possession profile varied but valid for every three-minute bin.
+            home_ms = max(18_000, min(162_000, int(90_000 + balance * 60_000)))
+            possession_rows.extend(((index, "HOME", start_ms, start_ms + home_ms), (index, "AWAY", start_ms + home_ms, start_ms + 180_000)))
+
+        added_possession: set[tuple[str, int, int]] = set()
+        added_attacks: set[tuple[int, str, str]] = set()
+        added_shots: set[tuple[int, str, str]] = set()
+        halftime_added = False
+        started_at = datetime.utcnow()
+
+        for sequence, minute in enumerate(_BROADCAST_COMPLETED_DEMO_POINTS, start=1):
+            clock_ms = minute * 60_000
+            for _bin, team, start_ms, end_ms in possession_rows:
+                key = (team, start_ms, end_ms)
+                if end_ms <= clock_ms and key not in added_possession:
+                    db.add(PossessionSegment(match_id=match_obj.id, team=team, start_ms=start_ms, end_ms=end_ms))
+                    apply_possession_segment(db, match_obj.id, team, start_ms, end_ms)
+                    added_possession.add(key)
+
+            for event_minute, team, lane in _BROADCAST_COMPLETED_DEMO_ATTACKS:
+                key = (event_minute, team, lane)
+                if event_minute * 60_000 <= clock_ms and key not in added_attacks:
+                    db.add(Event(
+                        id=uuid.uuid4(), match_id=match_obj.id, type="ATTACK_LANE",
+                        clock_ms=event_minute * 60_000, team=team, lane=lane,
+                        created_at=started_at + timedelta(seconds=event_minute),
+                    ))
+                    apply_attack_event(db, match_obj.id, team, event_minute * 60_000)
+                    added_attacks.add(key)
+
+            for shot in _BROADCAST_COMPLETED_DEMO_SHOTS:
+                event_minute, team, xg, xgot, player_name, is_goal, is_on_target, shot_x, shot_y, goalmouth_x, goalmouth_y = shot
+                key = (event_minute, team, player_name)
+                if event_minute * 60_000 <= clock_ms and key not in added_shots:
+                    db.add(Event(
+                        id=uuid.uuid4(), match_id=match_obj.id, type="XG",
+                        clock_ms=event_minute * 60_000, team=team, xg=xg, xgot=xgot,
+                        player_name=player_name, is_goal=is_goal, is_on_target=is_on_target,
+                        shot_x=shot_x, shot_y=shot_y, goalmouth_x=goalmouth_x, goalmouth_y=goalmouth_y,
+                        shot_pace_band="HIGH" if is_goal else "MID",
+                        created_at=started_at + timedelta(seconds=event_minute),
+                    ))
+                    apply_xg_event(db, match_obj.id, team, event_minute * 60_000, xg)
+                    added_shots.add(key)
+
+            if minute >= 45 and not halftime_added:
+                db.add(MatchMarker(match_id=match_obj.id, marker_type="HALFTIME_START", clock_ms=45 * 60_000))
+                halftime_added = True
+
+            db.add(State(
+                id=uuid.uuid4(), match_id=match_obj.id, clock_ms=clock_ms, running=False,
+                possession_team="NONE", selected_team="HOME", attack_lr="L2R",
+                created_at=started_at + timedelta(seconds=sequence),
+            ))
+            _advance_completed_broadcast_demo_clock(match_obj, clock_ms, sequence)
+            db.commit()
+            _broadcast_snapshot_cache.pop(str(match_obj.id), None)
+            _refresh_broadcast_assets(match_obj, db, force=True)
+
+        return str(match_obj.id)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
     """Publish branding changes to the public PNG URLs without waiting a minute."""
     match_key = str(match_id)
@@ -2158,6 +2380,11 @@ def _refresh_all_broadcast_assets() -> None:
             .all()
         )
         for match_obj in matches:
+            if _is_completed_broadcast_demo(match_obj):
+                # This fixture is captured at exact staged times by the
+                # operational seed command; the regular one-minute worker
+                # must not replace those immutable demonstration snapshots.
+                continue
             try:
                 _refresh_broadcast_assets(match_obj, db)
             except Exception as exc:
@@ -5895,23 +6122,24 @@ def list_broadcast_live_matches(
     db: Session = Depends(get_db),
 ):
     """Public showroom index with FPC-style competition filtering and paging."""
-    base_query = db.query(Match).filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
-    competition_rows = base_query.with_entities(Match.competition_class).distinct().all()
-    competition_classes = sorted({_normalize_competition_class(row[0]) for row in competition_rows})
-    selected_class = _normalize_competition_class(competition_class) if competition_class else None
-    if selected_class:
-        base_query = base_query.filter(Match.competition_class == selected_class)
-    total = base_query.count()
     rows = (
-        base_query
+        db.query(Match)
+        .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
         .order_by(Match.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
         .all()
     )
+    # The completed 90-minute fixture is linked from the demo room and should
+    # not look like an operator-created live fixture in the normal index.
+    rows = [row for row in rows if not _is_completed_broadcast_demo(row)]
+    competition_classes = sorted({_normalize_competition_class(row.competition_class) for row in rows})
+    selected_class = _normalize_competition_class(competition_class) if competition_class else None
+    if selected_class:
+        rows = [row for row in rows if _normalize_competition_class(row.competition_class) == selected_class]
+    total = len(rows)
+    page_rows = rows[(page - 1) * page_size:page * page_size]
     return {
         "generated_at": datetime.utcnow().isoformat(),
-        "matches": [_broadcast_public_match(row, db) for row in rows],
+        "matches": [_broadcast_public_match(row, db) for row in page_rows],
         "competition_classes": competition_classes,
         "pagination": {
             "page": page,
@@ -5920,6 +6148,15 @@ def list_broadcast_live_matches(
             "total_pages": max(1, math.ceil(total / page_size)),
         },
     }
+
+
+@app.get("/api/broadcast/v1/demo-90m")
+def get_completed_broadcast_demo(db: Session = Depends(get_db)):
+    """Return the persisted fixture used by the public completed-match room."""
+    row = _completed_broadcast_demo_match(db)
+    if not row:
+        raise HTTPException(status_code=404, detail="Completed broadcast demo has not been rendered yet")
+    return _broadcast_public_match(row, db)
 
 
 @app.get("/api/broadcast/v1/matches/{match_id}")
