@@ -164,6 +164,7 @@ export function BroadcastShowroomIndex() {
         <span>FINEPLAY BROADCAST</span>
         <h1>라이브 그래픽 쇼룸</h1>
         <p>HD PNG 배경과 투명 에셋을 겹쳐 중계 오버레이 또는 웹에서 바로 사용합니다.</p>
+        <Link className="broadcast-demo-link" href="/demo-90m">90분 완료 데모 룸 보기 →</Link>
         <small>마지막 목록 갱신: {formatTime(data?.generated_at)}</small>
       </section>
       {error ? <p className="broadcast-error">목록을 불러오지 못했습니다: {error}</p> : null}
