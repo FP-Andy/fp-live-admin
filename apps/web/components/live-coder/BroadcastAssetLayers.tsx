@@ -265,6 +265,15 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
 
 type DominanceItem = NonNullable<NonNullable<BroadcastSnapshot['analysis']['match_dominance']>['items']>[number];
 
+function dominanceXt(items: DominanceItem[]) {
+  return items.reduce((total, item) => {
+    const value = clamp(Number(item.dominance || 0), -1, 1);
+    if (value >= 0) total.home += value;
+    else total.away += Math.abs(value);
+    return total;
+  }, { home: 0, away: 0 });
+}
+
 function dominancePath(items: DominanceItem[], startX = 505, width = 1362, midY = 633, amplitude = 222) {
   const points = items.map((item, index) => ({
     x: items.length <= 1 ? startX : startX + (index / (items.length - 1)) * width,
@@ -286,8 +295,10 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const items = snapshot.analysis.match_dominance?.items || [];
   const path = dominancePath(items);
   const area = path ? `${path} L 1867 633 L 505 633 Z` : '';
-  const homeXg = (snapshot.analysis.xg || []).filter((row) => row.team === 'HOME').reduce((sum, row) => sum + Number(row.xg || 0), 0);
-  const awayXg = (snapshot.analysis.xg || []).filter((row) => row.team === 'AWAY').reduce((sum, row) => sum + Number(row.xg || 0), 0);
+  // xT is the accumulated absolute dominance contribution.  Positive bins
+  // belong to HOME and negative bins to AWAY, so their split directly shows
+  // which team controlled more of the three-minute match-flow intervals.
+  const xT = dominanceXt(items);
   const firstHalf = Number(snapshot.match.clock_ms || 0) <= 45 * 60_000;
   const matchTitle = `${home.name} vs ${away.name}`;
   const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
@@ -300,8 +311,8 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
         <div className="bc-dominance-period">{firstHalf ? '전반전' : '후반전'} 매치 도미넌스</div>
         <TeamLogo url={home.logoUrl} name={home.name} className="bc-dominance-logo home" />
         <TeamLogo url={away.logoUrl} name={away.name} className="bc-dominance-logo away" />
-        <div className="bc-dominance-total home">{homeXg.toFixed(2)}</div>
-        <div className="bc-dominance-total away">{awayXg.toFixed(2)}</div>
+        <div className="bc-dominance-total home">{xT.home.toFixed(1)}</div>
+        <div className="bc-dominance-total away">{xT.away.toFixed(1)}</div>
         <div className="bc-dominance-score"><strong>{home.score}</strong><strong>{away.score}</strong></div>
         <svg className="bc-dominance-plot" viewBox="0 0 1920 1080" aria-label="매치 도미넌스 그래프">
           <defs>
