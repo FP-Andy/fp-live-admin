@@ -2116,12 +2116,6 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
     live: dict[str, dict] = {}
     archive = dict(manifest.get("archive") or {})
     xg_goals = dict(manifest.get("xg_goals") or {})
-    pending_archive_minutes = [
-        minute
-        for minute in (15, 30, 45, 60, 75, 90)
-        if clock_ms >= minute * 60_000
-        and any(asset_type not in (archive.get(str(minute)) or {}) for asset_type in LIVE_ASSET_TYPES)
-    ]
     rendered_live = render_live_coder_asset_pairs(snapshot, LIVE_ASSET_TYPES)
     for asset_type in LIVE_ASSET_TYPES:
         # All five cards share one Chromium launch, while each pair is still
@@ -2134,14 +2128,26 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
             snapshot,
             rendered=rendered,
         ).as_dict()
-        for minute in pending_archive_minutes:
-            archive.setdefault(str(minute), {})[asset_type] = store_asset_pair(
+    # A delayed refresh can cross several 15-minute points.  Capture each
+    # missing archive with its own historical FLA snapshot, never the latest
+    # state that happened to trigger this worker run.
+    for minute in (15, 30, 45, 60, 75, 90):
+        if clock_ms < minute * 60_000:
+            continue
+        stored_assets = archive.setdefault(str(minute), {})
+        missing_asset_types = [asset_type for asset_type in LIVE_ASSET_TYPES if asset_type not in stored_assets]
+        if not missing_asset_types:
+            continue
+        historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+        rendered_archive = render_live_coder_asset_pairs(historical_snapshot, missing_asset_types)
+        for asset_type in missing_asset_types:
+            stored_assets[asset_type] = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
-                snapshot,
+                historical_snapshot,
                 immutable=True,
-                rendered=rendered,
+                rendered=rendered_archive[asset_type],
             ).as_dict()
     manifest["live"] = live
     manifest["archive"] = archive
@@ -2188,12 +2194,13 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
     dominance = dict(manifest.get("dominance") or {})
     for minute, asset_type, slot in ((45, "match-dominance-halftime", "halftime"), (90, "match-dominance-fulltime", "fulltime")):
         if clock_ms >= minute * 60_000 and not (isinstance(dominance.get(slot), dict) and dominance[slot].get("asset_url")):
-            dominance_rendered = render_live_coder_asset_pairs(snapshot, [asset_type])
+            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+            dominance_rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])
             dominance[slot] = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
-                snapshot,
+                historical_snapshot,
                 immutable=True,
                 rendered=dominance_rendered[asset_type],
             ).as_dict()
