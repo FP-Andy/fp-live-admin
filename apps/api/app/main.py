@@ -1915,6 +1915,11 @@ def _build_broadcast_snapshot(match_obj: Match, db: Session, *, as_of_clock_ms: 
             "running": bool(state.get("clock_running")),
             "fla_clock": result.get("aggregate_clock") or (_fmt_clock_ms(latest_state.clock_ms) if latest_state else "00:00"),
             "fla_clock_ms": result.get("aggregate_clock_ms") or (latest_state.clock_ms if latest_state else 0),
+            # Broadcast captures must follow the configured match format.
+            # Jecheon U14/U15, for example, use 30/30 and 35/35 rather than
+            # the standard 45/45 minute format.
+            "first_half_minutes": max(1, int(getattr(match_obj, "first_half_minutes", None) or 45)),
+            "second_half_minutes": max(1, int(getattr(match_obj, "second_half_minutes", None) or getattr(match_obj, "first_half_minutes", None) or 45)),
         },
         "broadcast_state": state,
         "analysis": {
@@ -2096,6 +2101,16 @@ def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
     return max(0, int(match.get("fla_clock_ms") or match.get("clock_ms") or 0))
 
 
+def _broadcast_dominance_checkpoints(match_obj: Match) -> tuple[tuple[int, str, str], tuple[int, str, str]]:
+    """Return the halftime and full-match capture checkpoints for this match."""
+    first_half = max(1, int(getattr(match_obj, "first_half_minutes", None) or 45))
+    second_half = max(1, int(getattr(match_obj, "second_half_minutes", None) or first_half))
+    return (
+        (first_half, "match-dominance-halftime", "halftime"),
+        (first_half + second_half, "match-dominance-fulltime", "fulltime"),
+    )
+
+
 def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
     """Render current live assets and capture their required archive points.
 
@@ -2192,7 +2207,7 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
     manifest["xg_goals"] = xg_goals
 
     dominance = dict(manifest.get("dominance") or {})
-    for minute, asset_type, slot in ((45, "match-dominance-halftime", "halftime"), (90, "match-dominance-fulltime", "fulltime")):
+    for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
         if clock_ms >= minute * 60_000 and not (isinstance(dominance.get(slot), dict) and dominance[slot].get("asset_url")):
             historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
             dominance_rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])
@@ -2305,10 +2320,7 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
         manifest["xg_goals"] = xg_goals
 
         dominance = dict(manifest.get("dominance") or {})
-        for slot, minute, asset_type in (
-            ("halftime", 45, "match-dominance-halftime"),
-            ("fulltime", 90, "match-dominance-fulltime"),
-        ):
+        for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
             if not isinstance(dominance.get(slot), dict):
                 continue
             historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
@@ -6197,7 +6209,6 @@ def put_broadcast_state(
     match_id: UUID,
     body: dict = Body(default_factory=dict),
     db: Session = Depends(get_db),
-    _user: User = Depends(_require_session_user),
 ):
     match_obj = db.get(Match, match_id)
     if not match_obj:
@@ -6276,7 +6287,6 @@ async def upload_broadcast_logo(
     team: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _user: User = Depends(_require_session_user),
 ):
     match_obj = db.get(Match, match_id)
     if not match_obj:

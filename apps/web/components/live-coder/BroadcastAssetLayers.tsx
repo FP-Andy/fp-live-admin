@@ -11,6 +11,7 @@ export type BroadcastCaptureGraphic =
   | 'MATCH_DOMINANCE';
 
 const fallbackColors = { HOME: '#ff7900', AWAY: '#1e27ff' } as const;
+const contrastFallbackColor = '#101318';
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -18,6 +19,18 @@ function clamp(value: number, minimum: number, maximum: number) {
 
 function pct(value: number | undefined) {
   return `${Math.round(Number(value || 0))}%`;
+}
+
+function comparisonColor(color: string) {
+  const value = color.trim().replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(value)) return color;
+  const channels = [0, 2, 4].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255);
+  const linear = channels.map((channel) => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4);
+  const luminance = .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
+  // White/near-white team colours disappear on the comparison cards' white
+  // surface. Use the same automatic dark fallback for every foreground bar
+  // and metric, while keeping the stored team colour unchanged elsewhere.
+  return luminance >= .76 ? contrastFallbackColor : color;
 }
 
 function team(snapshot: BroadcastSnapshot, side: 'HOME' | 'AWAY') {
@@ -146,6 +159,8 @@ function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
 function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = team(snapshot, 'HOME');
   const away = team(snapshot, 'AWAY');
+  const homeComparisonColor = comparisonColor(home.color);
+  const awayComparisonColor = comparisonColor(away.color);
   const shots = snapshot.analysis.xg || [];
   const stats = (side: 'HOME' | 'AWAY') => {
     const rows = shots.filter((item) => item.team === side);
@@ -153,7 +168,7 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   };
   const homeStats = stats('HOME');
   const awayStats = stats('AWAY');
-  const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
+  const style = { '--home-color': homeComparisonColor, '--away-color': awayComparisonColor } as CSSProperties;
   return (
     <section className="bc-frame bc-shots" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/shots/background-v2.svg" className="bc-shots-template" /></div>
@@ -239,6 +254,8 @@ function ComparisonBars({ homeRatio, awayRatio, className }: { homeRatio: number
 function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = team(snapshot, 'HOME');
   const away = team(snapshot, 'AWAY');
+  const homeComparisonColor = comparisonColor(home.color);
+  const awayComparisonColor = comparisonColor(away.color);
   const shots = snapshot.analysis.xg || [];
   const homeXg = shots.filter((item) => item.team === 'HOME').reduce((sum, item) => sum + Number(item.xg || 0), 0);
   const awayXg = shots.filter((item) => item.team === 'AWAY').reduce((sum, item) => sum + Number(item.xg || 0), 0);
@@ -246,7 +263,7 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   // a smaller xG value look full-width whenever it exceeded that score.
   const maxMetric = Math.max(homeXg, awayXg, home.score, away.score, 1);
   return (
-    <section className="bc-frame bc-xg-comparison" style={{ '--home-color': home.color, '--away-color': away.color } as CSSProperties}>
+    <section className="bc-frame bc-xg-comparison" style={{ '--home-color': homeComparisonColor, '--away-color': awayComparisonColor } as CSSProperties}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/xg-comparison/background.svg" className="bc-xg-comparison-template" /></div>
       <Layer>
         <DesignArtboard className="bc-xg-comparison-artboard">
@@ -313,9 +330,17 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   // which team controlled more of the three-minute match-flow intervals.
   const xT = dominanceXt(items);
   const currentClockMs = Number(snapshot.match.fla_clock_ms || snapshot.match.clock_ms || 0);
-  const firstHalf = currentClockMs <= 45 * 60_000;
-  const timelineMinutes = firstHalf ? [0, 15, 30, 45] : [0, 15, 30, 45, 60, 75, 90];
-  const timelineDuration = firstHalf ? 45 : 90;
+  const firstHalfMinutes = Math.max(1, Number(snapshot.match.first_half_minutes || 45));
+  const secondHalfMinutes = Math.max(1, Number(snapshot.match.second_half_minutes || firstHalfMinutes));
+  const fullMatchMinutes = firstHalfMinutes + secondHalfMinutes;
+  const firstHalf = currentClockMs <= firstHalfMinutes * 60_000;
+  const timelineDuration = firstHalf ? firstHalfMinutes : fullMatchMinutes;
+  const timelineMinutes = Array.from(new Set([
+    0,
+    ...Array.from({ length: Math.floor(timelineDuration / 15) + 1 }, (_, index) => index * 15).filter((minute) => minute < timelineDuration),
+    timelineDuration,
+  ]));
+  const halftimeDividerX = 505 + (firstHalfMinutes / fullMatchMinutes) * 1362;
   const matchTitle = `${home.name} vs ${away.name}`;
   const goalMarkers = (snapshot.analysis.xg || [])
     .filter((item) => item.is_goal && Number(item.event_clock_ms || 0) <= currentClockMs)
@@ -346,7 +371,7 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
           </defs>
           {area ? <path d={area} className="bc-dominance-area home" clipPath="url(#bc-dominance-top)" /> : null}
           {area ? <path d={area} className="bc-dominance-area away" clipPath="url(#bc-dominance-bottom)" /> : null}
-          {!firstHalf ? <line className="bc-dominance-halftime-divider" x1="1186" x2="1186" y1="182" y2="884" /> : null}
+          {!firstHalf ? <line className="bc-dominance-halftime-divider" x1={halftimeDividerX} x2={halftimeDividerX} y1="182" y2="884" /> : null}
           {path ? <path d={path} className="bc-dominance-line" /> : null}
           <line className="bc-dominance-midline" x1="505" x2="1867" y1="633" y2="633" />
           <g className="bc-dominance-timeline" aria-label={`${firstHalf ? '전반전' : '전체 경기'} 시간축`}>

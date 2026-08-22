@@ -41,6 +41,8 @@ export type BroadcastSnapshot = {
     running: boolean;
     fla_clock?: string;
     fla_clock_ms?: number;
+    first_half_minutes?: number;
+    second_half_minutes?: number;
   };
   broadcast_state: BroadcastState;
   analysis: {

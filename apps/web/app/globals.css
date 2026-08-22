@@ -6652,9 +6652,9 @@ html.fpa-embed .topbar {
 .bc-xg-comparison-template { top: 340px; left: 270px; width: 1380px; height: 418px; }
 .bc-xg-comparison-artboard { left: 270px; top: 340px; width: 601px; height: 182px; transform: scale(2.29617); }
 .bc-xg-logo { position: absolute; top: 88px; width: 42px; height: 48px; object-fit: contain; }.bc-xg-logo.home { left: 22px; }.bc-xg-logo.away { right: 22px; }
-.bc-xg-number { position: absolute; top: 88px; color: #fff; font-size: 24px; font-weight: 800; letter-spacing: -1.2px; line-height: 1; }.bc-xg-number.home { left: 89px; }.bc-xg-number.away { right: 89px; }
+.bc-xg-number { position: absolute; top: 88px; color: #fff; font-size: 24px; font-weight: 800; letter-spacing: -1.2px; line-height: 1; }.bc-xg-number.home { left: 89px; color: var(--home-color); }.bc-xg-number.away { right: 89px; color: var(--away-color); }
 .bc-xg-bar { position: absolute; top: 93px; left: 238px; display: flex; width: 64px; height: 11px; overflow: hidden; background: #fff; }.bc-xg-bar i { display: block; height: 100%; }
-.bc-xg-score { position: absolute; top: 146px; color: #fff; font-size: 23px; font-weight: 800; letter-spacing: -1.1px; line-height: 1; }.bc-xg-score.home { left: 103px; }.bc-xg-score.away { right: 103px; }
+.bc-xg-score { position: absolute; top: 146px; color: #fff; font-size: 23px; font-weight: 800; letter-spacing: -1.1px; line-height: 1; }.bc-xg-score.home { left: 103px; color: var(--home-color); }.bc-xg-score.away { right: 103px; color: var(--away-color); }
 .bc-xg-bar.compact { top: 147px; left: 148px; width: 302px; height: 11px; }
 
 .bc-dominance-template { inset: 0; width: 1920px; height: 1080px; }
