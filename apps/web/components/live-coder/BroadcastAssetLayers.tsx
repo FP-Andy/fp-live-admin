@@ -11,7 +11,6 @@ export type BroadcastCaptureGraphic =
   | 'MATCH_DOMINANCE';
 
 const fallbackColors = { HOME: '#ff7900', AWAY: '#1e27ff' } as const;
-const contrastFallbackColor = '#101318';
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -21,16 +20,13 @@ function pct(value: number | undefined) {
   return `${Math.round(Number(value || 0))}%`;
 }
 
-function comparisonColor(color: string) {
+function isBrightComparisonColor(color: string) {
   const value = color.trim().replace('#', '');
-  if (!/^[0-9a-f]{6}$/i.test(value)) return color;
+  if (!/^[0-9a-f]{6}$/i.test(value)) return false;
   const channels = [0, 2, 4].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255);
   const linear = channels.map((channel) => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4);
   const luminance = .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
-  // White/near-white team colours disappear on the comparison cards' white
-  // surface. Use the same automatic dark fallback for every foreground bar
-  // and metric, while keeping the stored team colour unchanged elsewhere.
-  return luminance >= .76 ? contrastFallbackColor : color;
+  return luminance >= .76;
 }
 
 function team(snapshot: BroadcastSnapshot, side: 'HOME' | 'AWAY') {
@@ -159,8 +155,6 @@ function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
 function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = team(snapshot, 'HOME');
   const away = team(snapshot, 'AWAY');
-  const homeComparisonColor = comparisonColor(home.color);
-  const awayComparisonColor = comparisonColor(away.color);
   const shots = snapshot.analysis.xg || [];
   const stats = (side: 'HOME' | 'AWAY') => {
     const rows = shots.filter((item) => item.team === side);
@@ -168,7 +162,15 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   };
   const homeStats = stats('HOME');
   const awayStats = stats('AWAY');
-  const style = { '--home-color': homeComparisonColor, '--away-color': awayComparisonColor } as CSSProperties;
+  // The coloured value boxes are team identity and must always keep their
+  // original colour. Only their numerals switch to dark ink when the box is
+  // close to white/yellow.
+  const style = {
+    '--home-color': home.color,
+    '--away-color': away.color,
+    '--home-value-color': isBrightComparisonColor(home.color) ? '#101318' : '#fff',
+    '--away-value-color': isBrightComparisonColor(away.color) ? '#101318' : '#fff',
+  } as CSSProperties;
   return (
     <section className="bc-frame bc-shots" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/shots/background-v2.svg" className="bc-shots-template" /></div>
@@ -254,8 +256,6 @@ function ComparisonBars({ homeRatio, awayRatio, className }: { homeRatio: number
 function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = team(snapshot, 'HOME');
   const away = team(snapshot, 'AWAY');
-  const homeComparisonColor = comparisonColor(home.color);
-  const awayComparisonColor = comparisonColor(away.color);
   const shots = snapshot.analysis.xg || [];
   const homeXg = shots.filter((item) => item.team === 'HOME').reduce((sum, item) => sum + Number(item.xg || 0), 0);
   const awayXg = shots.filter((item) => item.team === 'AWAY').reduce((sum, item) => sum + Number(item.xg || 0), 0);
@@ -263,7 +263,13 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   // a smaller xG value look full-width whenever it exceeded that score.
   const maxMetric = Math.max(homeXg, awayXg, home.score, away.score, 1);
   return (
-    <section className="bc-frame bc-xg-comparison" style={{ '--home-color': homeComparisonColor, '--away-color': awayComparisonColor } as CSSProperties}>
+    <section className="bc-frame bc-xg-comparison" style={{
+      '--home-color': home.color,
+      '--away-color': away.color,
+      // Keep light team colours on the bar itself; only its otherwise-white
+      // track receives a neutral gray backing for legibility.
+      '--comparison-track-color': isBrightComparisonColor(home.color) || isBrightComparisonColor(away.color) ? '#9aa2ad' : 'transparent',
+    } as CSSProperties}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/xg-comparison/background.svg" className="bc-xg-comparison-template" /></div>
       <Layer>
         <DesignArtboard className="bc-xg-comparison-artboard">
@@ -290,6 +296,13 @@ function dominanceXt(items: DominanceItem[]) {
     else total.away += Math.abs(value);
     return total;
   }, { home: 0, away: 0 });
+}
+
+function displayXt(value: number) {
+  // A real but tiny three-minute dominance contribution should not read as
+  // zero after rounding. Keep true zero at 0.0, and show any positive xT as
+  // at least 0.1.
+  return value > 0 ? Math.max(.1, value) : 0;
 }
 
 function dominancePath(items: DominanceItem[], startX = 505, width = 1362, midY = 633, amplitude = 222) {
@@ -359,8 +372,8 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
         <div className="bc-dominance-period">{firstHalf ? '전반전' : '경기'} 매치 도미넌스</div>
         <TeamLogo url={home.logoUrl} name={home.name} className="bc-dominance-logo home" />
         <TeamLogo url={away.logoUrl} name={away.name} className="bc-dominance-logo away" />
-        <div className="bc-dominance-total home">{xT.home.toFixed(1)}</div>
-        <div className="bc-dominance-total away">{xT.away.toFixed(1)}</div>
+        <div className="bc-dominance-total home">{displayXt(xT.home).toFixed(1)}</div>
+        <div className="bc-dominance-total away">{displayXt(xT.away).toFixed(1)}</div>
         <div className="bc-dominance-score"><strong>{home.score}</strong><strong>{away.score}</strong></div>
         <svg className="bc-dominance-plot" viewBox="0 0 1920 1080" aria-label="매치 도미넌스 그래프">
           <defs>
