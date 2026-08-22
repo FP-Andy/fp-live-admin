@@ -134,7 +134,6 @@ function TeamBrandingEditor({ match, onUpdated }: { match: BroadcastMatch; onUpd
     try {
       const stateResponse = await fetch(`/api/broadcast/matches/${match.match_id}/state`, {
         method: 'POST',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ home_color: homeColor, away_color: awayColor }),
       });
@@ -145,7 +144,7 @@ function TeamBrandingEditor({ match, onUpdated }: { match: BroadcastMatch; onUpd
         form.set('team', team);
         form.set('file', file);
         const logoResponse = await fetch(`/api/broadcast/matches/${match.match_id}/logo`, {
-          method: 'POST', credentials: 'include', body: form,
+          method: 'POST', body: form,
         });
         if (!logoResponse.ok) throw new Error(await logoResponse.text() || `${team} 로고를 저장하지 못했습니다.`);
       }
@@ -278,7 +277,6 @@ export function BroadcastShowroomIndex() {
 
 export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
   const { data: match, error, reload } = useBroadcastResource<BroadcastMatch>(`/api/broadcast/v1/matches/${matchId}`);
-  const { data: session } = useBroadcastResource<{ id: string; role: 'OPERATOR' | 'SUPERADMIN' }>(`/api/session/me`);
   const archiveMinutes = useMemo(() => Object.keys(match?.assets.archive || {}).sort((a, b) => Number(a) - Number(b)), [match]);
   const goalXgAssets = useMemo(() => Object.values(match?.assets.xg_goals || {}).sort((a, b) => Number(a.event_clock_ms || 0) - Number(b.event_clock_ms || 0)), [match]);
   if (error) return <main className="broadcast-showroom"><p className="broadcast-error">경기를 불러오지 못했습니다: {error}</p></main>;
@@ -300,7 +298,7 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
             <span><small>AWAY</small><strong>{match.away_team}</strong><em style={{ backgroundColor: match.branding?.away_color || '#3d22f3' }} /></span>
           </div>
         </div>
-        {session ? <TeamBrandingEditor match={match} onUpdated={reload} /> : <p className="broadcast-branding-login">팀 로고·대표 색상은 <Link href={`/login?next=${encodeURIComponent(`/broadcast/matches/${match.match_id}`)}`}>로그인</Link> 후 이 쇼룸에서 바로 설정할 수 있습니다.</p>}
+        <TeamBrandingEditor match={match} onUpdated={reload} />
         <div className="broadcast-live-url-list" aria-label="실시간 에셋 URL">
           {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetUrlLinks key={type} title={label} asset={match.assets.live?.[type]} />)}
         </div>
