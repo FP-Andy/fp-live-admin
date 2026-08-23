@@ -2228,6 +2228,12 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
     manifest["dominance"] = dominance
     manifest["last_generated_at"] = datetime.utcnow().isoformat()
 
+    # Rendering takes long enough for an operator to update the branding while
+    # this worker is running.  The ORM object was loaded before the render, so
+    # refresh its JSON column immediately before writing the asset manifest.
+    # Otherwise this final commit can put the old (often empty) broadcast
+    # state back and make a manually uploaded logo disappear.
+    db.refresh(match_obj, attribute_names=["metadata_json"])
     metadata = dict(match_obj.metadata_json or {})
     metadata["broadcast_assets"] = manifest
     match_obj.metadata_json = metadata
@@ -2342,6 +2348,9 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
         manifest["dominance"] = dominance
         manifest["last_generated_at"] = datetime.utcnow().isoformat()
 
+        # Do not let a long branding rebuild overwrite a newer logo upload
+        # with the broadcast state that was present when the rebuild began.
+        db.refresh(match_obj, attribute_names=["metadata_json"])
         metadata = dict(match_obj.metadata_json or {})
         metadata["broadcast_assets"] = manifest
         match_obj.metadata_json = metadata
@@ -6406,8 +6415,19 @@ def put_broadcast_state(
         "away_label": str(body.get("away_label", previous.get("away_label") or "Away")).strip()[:20] or "Away",
         "home_color": str(body.get("home_color", previous.get("home_color") or "#ff7900")).strip(),
         "away_color": str(body.get("away_color", previous.get("away_color") or "#3d22f3")).strip(),
-        "home_logo_url": str(body.get("home_logo_url", previous.get("home_logo_url") or "")).strip()[:500],
-        "away_logo_url": str(body.get("away_logo_url", previous.get("away_logo_url") or "")).strip()[:500],
+        # Logo files are managed by the dedicated upload endpoint below.  A
+        # state-control request must never clear an existing logo merely
+        # because a stale client submits an empty field.
+        "home_logo_url": (
+            str(body.get("home_logo_url")).strip()[:500]
+            if str(body.get("home_logo_url") or "").strip()
+            else previous.get("home_logo_url") or ""
+        ),
+        "away_logo_url": (
+            str(body.get("away_logo_url")).strip()[:500]
+            if str(body.get("away_logo_url") or "").strip()
+            else previous.get("away_logo_url") or ""
+        ),
         "home_score": body.get("home_score", previous.get("home_score")),
         "away_score": body.get("away_score", previous.get("away_score")),
         "event_payload": body.get("event_payload", previous.get("event_payload")),
