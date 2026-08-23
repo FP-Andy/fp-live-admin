@@ -38,12 +38,13 @@ PAPERLOGY_REGULAR = FONT_DIR / "Paperlogy-4Regular.ttf"
 PAPERLOGY_BOLD = FONT_DIR / "Paperlogy-7Bold.ttf"
 PAPERLOGY_EXTRABOLD = FONT_DIR / "Paperlogy-8ExtraBold.ttf"
 
-# Keep the goalkeeper map safely above the lower statistics divider.  The
-# source goal asset has a transparent 48px outer margin, so moving its canvas
-# up by 45px also gives its visible base clear separation from the divider.
+# Keep the goalkeeper map safely above the lower statistics divider. The goal
+# SVG's actual net is x=102.469..766.420 and y=102.465..408.714 inside its
+# 870×509 canvas. Markers use an inset of that exact region, keeping the full
+# 45px marker inside the net rather than on its posts or outside the goal.
 GOALKEEPER_GOAL_POSITION = (255, 177)
-GOALKEEPER_MARKER_ORIGIN = (311, 236)
-GOALKEEPER_MARKER_SIZE = (656, 292)
+GOALKEEPER_MARKER_ORIGIN = (384, 306)
+GOALKEEPER_MARKER_SIZE = (610, 252)
 
 
 @dataclass(frozen=True)
