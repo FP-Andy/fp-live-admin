@@ -38,6 +38,13 @@ PAPERLOGY_REGULAR = FONT_DIR / "Paperlogy-4Regular.ttf"
 PAPERLOGY_BOLD = FONT_DIR / "Paperlogy-7Bold.ttf"
 PAPERLOGY_EXTRABOLD = FONT_DIR / "Paperlogy-8ExtraBold.ttf"
 
+# Keep the goalkeeper map safely above the lower statistics divider.  The
+# source goal asset has a transparent 48px outer margin, so moving its canvas
+# up by 45px also gives its visible base clear separation from the divider.
+GOALKEEPER_GOAL_POSITION = (255, 177)
+GOALKEEPER_MARKER_ORIGIN = (311, 236)
+GOALKEEPER_MARKER_SIZE = (656, 292)
+
 
 @dataclass(frozen=True)
 class FcmCardLayout:
@@ -415,15 +422,40 @@ def _fit_logo_to_box(image: Image.Image, box_size: tuple[int, int]) -> Image.Ima
     return canvas
 
 
-def _goalkeeper_event_markers(workbook_bytes: bytes, player_id: str) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+def _goalkeeper_event_markers(
+    workbook_bytes: bytes,
+    player_id: str,
+    fla_shot_events: list[dict[str, object]] | None = None,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
     """Return save/conceded marker coordinates mapped into a 0..1 goal mouth.
 
-    FPA currently stores pitch coordinates rather than a dedicated goal-mouth
-    coordinate. The lateral Y value is therefore used as the reliable horizontal
-    position; the distance to the goal becomes a gentle vertical offset. This
-    keeps the save map informative now and is forward compatible with a future
-    goal-mouth x/y field.
+    FLA goal-mouth coordinates are preferred whenever XG events exist. FPA
+    pitch coordinates remain the backward-compatible fallback for legacy
+    matches that have no FLA XG event data.
     """
+    # FLA holds the source-of-truth on-target decision and goal-mouth point.
+    # When it exists, draw exactly the same set of shots used for the keeper's
+    # displayed save count. A penalty save is therefore represented once FLA
+    # has been logged as an on-target, non-goal XG event.
+    if fla_shot_events is not None:
+        saves: list[tuple[float, float]] = []
+        conceded: list[tuple[float, float]] = []
+        for event in fla_shot_events:
+            if not isinstance(event, dict):
+                continue
+            is_goal = bool(event.get("is_goal"))
+            is_on_target = bool(event.get("is_on_target"))
+            if not is_goal and not is_on_target:
+                continue
+            raw_x = pd.to_numeric(event.get("goalmouth_x"), errors="coerce")
+            raw_y = pd.to_numeric(event.get("goalmouth_y"), errors="coerce")
+            horizontal = 0.50 if pd.isna(raw_x) else float(np.clip(raw_x, 0.06, 0.94))
+            # FLA goalmouth_y increases upward; PIL's Y coordinate increases
+            # downward, so flip it for the save-map coordinate system.
+            vertical = 0.50 if pd.isna(raw_y) else float(np.clip(1.0 - raw_y, 0.08, 0.92))
+            (conceded if is_goal else saves).append((horizontal, vertical))
+        return saves, conceded
+
     df = pd.read_excel(io.BytesIO(workbook_bytes), sheet_name="Data")
     if df.empty or "Player" not in df.columns or "Action" not in df.columns:
         return [], []
@@ -511,6 +543,7 @@ def build_goalkeeper_card_image(
     background_path: Path | None = None,
     replace_template_logo: bool = True,
     penalty_shootout: list[str] | None = None,
+    fla_shot_events: list[dict[str, object]] | None = None,
 ) -> bytes:
     """Build the 1920×1080 Paperlogy goalkeeper card from the supplied design."""
     template_path = background_path if background_path and background_path.exists() else GOALKEEPER_TEMPLATE_PATH
@@ -520,11 +553,6 @@ def build_goalkeeper_card_image(
     if composite.size != (1920, 1080):
         composite = composite.resize((1920, 1080), Image.Resampling.LANCZOS)
 
-    # The bundled design reference contains a sample crest. For the automatic
-    # fallback, remove only that area and overlay the actual match logo.
-    if replace_template_logo:
-        logo_mask = Image.new("RGBA", (400, 280), "#14192d")
-        composite.alpha_composite(logo_mask, (1450, 50))
     if team_logo_path and team_logo_path.exists():
         try:
             logo = _fit_logo_to_box(Image.open(team_logo_path), (220, 220))
@@ -536,22 +564,22 @@ def build_goalkeeper_card_image(
     save_path = GOALKEEPER_ASSET_DIR / "save.png"
     conceded_path = GOALKEEPER_ASSET_DIR / "conceded.png"
     if goal_path.exists():
-        composite.alpha_composite(Image.open(goal_path).convert("RGBA"), (255, 222))
+        composite.alpha_composite(Image.open(goal_path).convert("RGBA"), GOALKEEPER_GOAL_POSITION)
 
-    if workbook_bytes:
+    if workbook_bytes or fla_shot_events is not None:
         try:
-            save_points, conceded_points = _goalkeeper_event_markers(workbook_bytes, player_id)
+            save_points, conceded_points = _goalkeeper_event_markers(workbook_bytes or b"", player_id, fla_shot_events)
             if save_path.exists():
                 marker = Image.open(save_path).convert("RGBA")
                 for horizontal, vertical in save_points:
-                    x = int(311 + (656 * horizontal) - marker.width / 2)
-                    y = int(281 + (292 * vertical) - marker.height / 2)
+                    x = int(GOALKEEPER_MARKER_ORIGIN[0] + (GOALKEEPER_MARKER_SIZE[0] * horizontal) - marker.width / 2)
+                    y = int(GOALKEEPER_MARKER_ORIGIN[1] + (GOALKEEPER_MARKER_SIZE[1] * vertical) - marker.height / 2)
                     composite.alpha_composite(marker, (x, y))
             if conceded_path.exists():
                 marker = Image.open(conceded_path).convert("RGBA")
                 for horizontal, vertical in conceded_points:
-                    x = int(311 + (656 * horizontal) - marker.width / 2)
-                    y = int(281 + (292 * vertical) - marker.height / 2)
+                    x = int(GOALKEEPER_MARKER_ORIGIN[0] + (GOALKEEPER_MARKER_SIZE[0] * horizontal) - marker.width / 2)
+                    y = int(GOALKEEPER_MARKER_ORIGIN[1] + (GOALKEEPER_MARKER_SIZE[1] * vertical) - marker.height / 2)
                     composite.alpha_composite(marker, (x, y))
         except Exception:
             # A map failure must not prevent an otherwise usable card export.
@@ -612,6 +640,7 @@ def build_card_image(
     penalty_shootout: list[str] | None = None,
     team_logo_path: Path | None = None,
     replace_template_logo: bool = False,
+    fla_shot_events: list[dict[str, object]] | None = None,
 ) -> bytes:
     if card_type.upper() == "GOALKEEPER":
         return build_goalkeeper_card_image(
@@ -623,6 +652,7 @@ def build_card_image(
             background_path=background_path,
             replace_template_logo=replace_template_logo,
             penalty_shootout=penalty_shootout,
+            fla_shot_events=fla_shot_events,
         )
     card_layout = layout or FcmCardLayout()
     player_font, stat_font = _load_fonts(card_layout)

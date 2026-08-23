@@ -2855,8 +2855,6 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         conceded_goals = int(conceded_mask.sum())
         opponent_xg = pd.to_numeric(opponent_events.get("xG", pd.Series(0, index=opponent_events.index)), errors="coerce").fillna(0)
         conceded_xg = float(opponent_xg.loc[shot_mask].sum())
-        penalty_saves = float(penalty_save_mask.sum())
-
         candidate_map = {
             "Goal": f"Goal : {int(goals)}골",
             "Assist": f"Assist : {int(assists)}도움",
@@ -2882,10 +2880,9 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
             "실점": f"실점 : {conceded_goals}골",
             "기대 실점(xG)": f"기대 실점(xG) : {_format_decimal(conceded_xg)} ({conceded_goals}골)",
             "선방": f"선방 : {_format_count(saves)}",
+            "패스 성공률(%)": f"패스 성공률(%) : {_format_percent(pass_success_rate)} ({int(success_pass)}회)",
             "캐칭": f"캐칭 : {_format_count(catches)}",
             "펀칭": f"펀칭 : {_format_count(punches)}",
-            "수비 행동": f"클리어 : {_format_count(clear)} | 차단 : {_format_count(cutout)}",
-            "승부차기 선방": f"승부차기 선방 : {_format_count(penalty_saves)}",
         }
 
         weighted_pool = {
@@ -2912,7 +2909,7 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         ranked_keys = sorted(stat_priority, key=lambda key: weighted_pool.get(key, 0), reverse=True)
         candidates = [candidate_map[key] for key in ranked_keys if key in candidate_map]
         if is_goalkeeper:
-            goalkeeper_priority = ["실점", "기대 실점(xG)", "선방", "수비 행동", "캐칭", "펀칭", "승부차기 선방"]
+            goalkeeper_priority = ["실점", "기대 실점(xG)", "선방", "패스 성공률(%)", "캐칭", "펀칭"]
             candidates = [goalkeeper_candidate_map[key] for key in goalkeeper_priority]
 
         ranking_score = (
