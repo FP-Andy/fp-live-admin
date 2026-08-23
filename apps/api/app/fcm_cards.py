@@ -19,7 +19,11 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+# Source runs from ``<repo>/apps/api/app`` locally, but the production image
+# copies the package directly to ``/app/app``.  Do not assume the local source
+# tree's four-level path exists when resolving fallback assets.
+_MODULE_PATH = Path(__file__).resolve()
+REPOSITORY_ROOT = _MODULE_PATH.parents[3] if len(_MODULE_PATH.parents) > 3 else _MODULE_PATH.parents[1]
 TEMPLATE_DIR = Path("/app/templetes") if Path("/app/templetes").exists() else REPOSITORY_ROOT / "templetes"
 FONT_DIR = Path("/app/assets/fonts") if Path("/app/assets/fonts").exists() else REPOSITORY_ROOT / "assets/fonts"
 FONT_BOLD = FONT_DIR / "KFAGothicBold.otf"
