@@ -71,6 +71,29 @@ function roundLabel(snapshot: BroadcastSnapshot) {
   return round ? `${round} ROUND` : 'ROUND';
 }
 
+function dominanceTitleUnits(value: string) {
+  return Array.from(value.trim()).reduce((total, character) => {
+    if (/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(character)) return total + 1;
+    if (/[A-Za-z0-9]/.test(character)) return total + .62;
+    if (/\s/.test(character)) return total + .3;
+    return total + .48;
+  }, 0);
+}
+
+function dominanceTitleStyle(homeName: string, awayName: string): CSSProperties {
+  // Reserve a proportional column for each name, then reduce the text size
+  // before falling back to an ellipsis. This keeps both teams identifiable
+  // even when one name is materially longer than the other.
+  const homeUnits = Math.max(3.5, dominanceTitleUnits(homeName));
+  const awayUnits = Math.max(3.5, dominanceTitleUnits(awayName));
+  const separatorUnits = 1.55;
+  const fontSize = clamp(Math.floor(650 / (homeUnits + awayUnits + separatorUnits)), 30, 47);
+  return {
+    fontSize,
+    gridTemplateColumns: `minmax(0, ${homeUnits}fr) auto minmax(0, ${awayUnits}fr)`,
+  };
+}
+
 function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side: 'HOME' | 'AWAY' }) {
   const currentTeam = team(snapshot, side);
   const row = snapshot.analysis.attack_direction?.find((item) => item.team === side);
@@ -369,7 +392,7 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
     timelineDuration,
   ]));
   const halftimeDividerX = 505 + (firstHalfMinutes / fullMatchMinutes) * 1362;
-  const matchTitle = `${home.name} vs ${away.name}`;
+  const matchTitleStyle = dominanceTitleStyle(home.name, away.name);
   const goalMarkers = (snapshot.analysis.xg || [])
     .filter((item) => item.is_goal && Number(item.event_clock_ms || 0) <= currentClockMs)
     .map((item) => ({
@@ -383,7 +406,11 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
       <div className="bc-background-layer"><Template src="/broadcast/templates/match-dominance/background.svg" className="bc-dominance-template" /><i className="bc-dominance-header-mask" /></div>
       <Layer>
         <div className="bc-dominance-round">{roundLabel(snapshot)}</div>
-        <div className="bc-dominance-match-title">{matchTitle}</div>
+        <div className="bc-dominance-match-title" style={matchTitleStyle} aria-label={`${home.name} vs ${away.name}`}>
+          <span className="home">{home.name}</span>
+          <b>vs</b>
+          <span className="away">{away.name}</span>
+        </div>
         <div className="bc-dominance-period">{firstHalf ? '전반전' : '경기'} 매치 도미넌스</div>
         <TeamLogo url={home.logoUrl} name={home.name} className="bc-dominance-logo home" />
         <TeamLogo url={away.logoUrl} name={away.name} className="bc-dominance-logo away" />
