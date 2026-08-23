@@ -2762,8 +2762,8 @@ def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
     return build_analysis_workbook(df, scene_rows=list(row.rows or []))
 
 
-def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> list[dict[str, object]] | None:
-    """Return opponent XG events for a goalkeeper, or None for FPA-only matches."""
+def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> list[dict[str, object]]:
+    """Return opponent XG events used as the sole source for goalkeeper saves."""
     opponent_side = "AWAY" if team_side == "HOME" else "HOME"
     events = (
         db.query(Event)
@@ -2771,8 +2771,6 @@ def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> 
         .order_by(Event.clock_ms.asc(), Event.created_at.asc())
         .all()
     )
-    if not events:
-        return None
     return [
         {
             "is_goal": bool(event.is_goal),
@@ -2789,10 +2787,8 @@ def _goalkeeper_fla_save_count(events: list[dict[str, object]]) -> int:
     return sum(1 for event in events if bool(event.get("is_on_target")) and not bool(event.get("is_goal")))
 
 
-def _sync_goalkeeper_save_stat(selected_stats: list[str], events: list[dict[str, object]] | None) -> list[str]:
+def _sync_goalkeeper_save_stat(selected_stats: list[str], events: list[dict[str, object]]) -> list[str]:
     """Keep stored goalkeeper-card text aligned with the FLA save map at export time."""
-    if events is None:
-        return selected_stats
     save_count = _goalkeeper_fla_save_count(events)
     synced: list[str] = []
     for raw_stat in selected_stats:
@@ -2839,8 +2835,6 @@ def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match |
         # FLA is authoritative only for the on-target decision that defines a
         # save. The remaining goalkeeper metrics continue to come from FPA.
         opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
-        if opponent_xg_events is None:
-            continue
         saves = _goalkeeper_fla_save_count(opponent_xg_events)
         stats = list(player.get("candidates") or [])
         replaced_save = False
