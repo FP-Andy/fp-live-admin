@@ -82,6 +82,12 @@ function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side
   ];
   const ranked = new Map([...lanes].sort((a, b) => b.value - a.value).map((lane, index) => [lane.key, index]));
   const style = { '--team-color': currentTeam.color } as CSSProperties;
+  // The football field starts at y=139 on the 238×415 artboard.  Cap the
+  // longest arrow there so an 80–100% lane never crosses the title/copy area.
+  const arrowBaseline = 342;
+  const arrowPitchTop = 139;
+  const arrowMinimumHeight = 40;
+  const arrowMaximumHeight = arrowBaseline - arrowPitchTop;
   return (
     <section className="bc-frame bc-attack" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/attack-direction/background.svg" className="bc-attack-template" /></div>
@@ -99,8 +105,8 @@ function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side
             </defs>
             {lanes.map((lane) => {
               const laneRank = Number(ranked.get(lane.key) || 0);
-              const height = 40 + clamp(lane.value, 0, 100) * 2.48;
-              const top = 342 - height;
+              const height = arrowMinimumHeight + (arrowMaximumHeight - arrowMinimumHeight) * (clamp(lane.value, 0, 100) / 100);
+              const top = arrowBaseline - height;
               // Keep the designer's arrowhead proportions.  Only the stem
               // is widened so the direction cue stays sharp at HD scale.
               const headShaft = 5.5 + clamp(lane.value, 0, 100) * 0.075;
@@ -132,7 +138,16 @@ function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const total = rawHome + rawAway;
   const homePct = total > 0 ? (rawHome / total) * 100 : 50;
   const awayPct = total > 0 ? (rawAway / total) * 100 : 50;
-  const style = { '--home-color': home.color, '--away-color': away.color, '--home-pct': `${homePct}%`, '--away-pct': `${awayPct}%` } as CSSProperties;
+  const style = {
+    '--home-color': home.color,
+    '--away-color': away.color,
+    '--home-pct': `${homePct}%`,
+    '--away-pct': `${awayPct}%`,
+    // Keep the percentage readable against each team's own bar colour, using
+    // exactly the same contrast rule as the shots comparison graphic.
+    '--home-value-color': isBrightComparisonColor(home.color) ? '#101318' : '#fff',
+    '--away-value-color': isBrightComparisonColor(away.color) ? '#101318' : '#fff',
+  } as CSSProperties;
   return (
     <section className="bc-frame bc-possession-frame" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/possession/background.svg" className="bc-possession-template" /></div>
@@ -268,7 +283,7 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
       '--away-color': away.color,
       // Keep light team colours on the bar itself; only its otherwise-white
       // track receives a neutral gray backing for legibility.
-      '--comparison-track-color': isBrightComparisonColor(home.color) || isBrightComparisonColor(away.color) ? '#9aa2ad' : 'transparent',
+      '--comparison-track-color': isBrightComparisonColor(home.color) || isBrightComparisonColor(away.color) ? '#d9dde3' : 'transparent',
     } as CSSProperties}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/xg-comparison/background.svg" className="bc-xg-comparison-template" /></div>
       <Layer>
