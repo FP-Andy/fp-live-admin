@@ -122,6 +122,8 @@ class FcmSubmissionUpsertRequest(BaseModel):
     player_name: str = Field(min_length=1, max_length=80)
     team_name: str = Field(default="", max_length=80)
     selected_stats: list[str] = Field(min_length=1, max_length=5)
+    card_type: Literal["PLAYER", "GOALKEEPER"] = "PLAYER"
+    penalty_shootout: list[Literal["O", "X"]] = Field(default_factory=list, max_length=10)
 
 
 class FcmSubmissionResponse(BaseModel):
@@ -134,6 +136,8 @@ class FcmSubmissionResponse(BaseModel):
     player_id: str
     player_name: str = ""
     selected_stats: list[str]
+    card_type: Literal["PLAYER", "GOALKEEPER"] = "PLAYER"
+    penalty_shootout: list[Literal["O", "X"]] = Field(default_factory=list)
     submitted_by: str | None = None
     created_at: str
     updated_at: str
@@ -145,6 +149,7 @@ class FcmTemplateResponse(BaseModel):
     competition_class: str | None = None
     match_regex: str
     image_url: str
+    card_type: Literal["PLAYER", "GOALKEEPER"] = "PLAYER"
     priority: int
     active: bool
     created_at: str
@@ -155,6 +160,7 @@ class FcmTemplateUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     competition_class: str = Field(min_length=1, max_length=20)
     match_regex: str = Field(min_length=1, max_length=240)
+    card_type: Literal["PLAYER", "GOALKEEPER"] = "PLAYER"
     priority: int = Field(default=100, ge=1, le=9999)
     active: bool = True
 

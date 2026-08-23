@@ -85,9 +85,11 @@ class FpaSavedLogsResponse(BaseModel):
 
 class FcmAnalyzedPlayer(BaseModel):
     player_id: str
+    player_name: str = ""
     team: str = ""
     ranking_score: float = 0
     candidates: list[str] = Field(default_factory=list)
+    is_goalkeeper: bool = False
 
 
 class FcmAnalyzeWorkbookResponse(BaseModel):

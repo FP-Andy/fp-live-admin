@@ -24,9 +24,11 @@ type UploadState = {
 
 type AnalyzedPlayer = {
   player_id: string;
+  player_name?: string;
   team: string;
   ranking_score: number;
   candidates: string[];
+  is_goalkeeper?: boolean;
 };
 
 type AnalyzeResponse = {
@@ -44,12 +46,15 @@ type FcmSubmission = {
   player_id: string;
   player_name: string;
   selected_stats: string[];
+  card_type: 'PLAYER' | 'GOALKEEPER';
+  penalty_shootout: ('O' | 'X')[];
   submitted_by?: string | null;
   created_at: string;
   updated_at: string;
 };
 
 type TeamSide = 'HOME' | 'AWAY';
+type CardType = 'PLAYER' | 'GOALKEEPER';
 
 export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
   const [match, setMatch] = useState<Match | null>(null);
@@ -59,6 +64,8 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
   const [selectedPlayerId, setSelectedPlayerId] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [selectedStats, setSelectedStats] = useState<string[]>([]);
+  const [cardType, setCardType] = useState<CardType>('PLAYER');
+  const [penaltyShootout, setPenaltyShootout] = useState<('O' | 'X' | '')[]>([]);
   const [customStat, setCustomStat] = useState('');
   const [teamSide, setTeamSide] = useState<TeamSide>('HOME');
   const [savedSubmissions, setSavedSubmissions] = useState<FcmSubmission[]>([]);
@@ -93,6 +100,8 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
           setSelectedPlayerId(initialSubmission.player_id);
           setPlayerName(initialSubmission.player_name || '');
           setSelectedStats(initialSubmission.selected_stats || []);
+          setCardType(initialSubmission.card_type || 'PLAYER');
+          setPenaltyShootout(initialSubmission.penalty_shootout || []);
           setStatus('기존 제출 데이터를 불러왔습니다.');
         }
       } else {
@@ -116,12 +125,23 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
   const currentTeamName = teamSide === 'HOME' ? (match?.metadata?.home_team || '홈팀') : (match?.metadata?.away_team || '어웨이팀');
 
   const statCandidates = selectedPlayer?.candidates || [];
+  const isGoalkeeper = cardType === 'GOALKEEPER';
 
   const canSubmit = Boolean(selectedPlayerId) && Boolean(playerName.trim()) && selectedStats.length > 0 && selectedStats.length <= 5;
   const submittedSlots = useMemo(
     () => Array.from({ length: 5 }, (_, index) => selectedStats[index] || '선택 대기'),
     [selectedStats],
   );
+
+  const updatePenaltyResult = (index: number, result: 'O' | 'X' | '') => {
+    setPenaltyShootout((previous) => {
+      const next = [...previous];
+      while (next.length <= index) next.push('');
+      next[index] = result;
+      while (next.length && !next[next.length - 1]) next.pop();
+      return next;
+    });
+  };
 
   const toggleStat = (candidate: string) => {
     setSelectedStats((prev) => {
@@ -167,12 +187,14 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
 
       setAnalyzedPlayers(candidatePool);
       setSelectedPlayerId(recommendedPlayerId);
-      setPlayerName(savedSubmission?.player_name || '');
+      setPlayerName(savedSubmission?.player_name || recommendedPlayer?.player_name || '');
       setSelectedStats(
         savedSubmission?.selected_stats?.length
           ? savedSubmission.selected_stats.slice(0, 5)
           : (recommendedPlayer?.candidates || []).slice(0, 5),
       );
+      setCardType(savedSubmission?.card_type || (recommendedPlayer?.is_goalkeeper ? 'GOALKEEPER' : 'PLAYER'));
+      setPenaltyShootout(savedSubmission?.penalty_shootout || []);
       setStatus(players.length ? `${statusPrefix}: 선수 ${players.length}명 분석 완료` : '분석 결과가 없습니다.');
   };
 
@@ -243,6 +265,8 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
           player_name: playerName.trim(),
           team_name: currentTeamName,
           selected_stats: selectedStats,
+          card_type: cardType,
+          penalty_shootout: penaltyShootout.filter((value): value is 'O' | 'X' => value === 'O' || value === 'X'),
         }),
       });
       setSavedSubmissions((prev) => {
@@ -267,7 +291,7 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
             <div className="sidebar-eyebrow">제출 완료</div>
             <h3 style={{ margin: '6px 0 0' }}>{currentTeamName} 주요스탯이 저장되었습니다.</h3>
             <p className="field-help" style={{ margin: 0 }}>
-              선택한 5개 스탯이 정상적으로 저장되었습니다.
+              {isGoalkeeper ? '골키퍼 카드 설정과 주요스탯이 정상적으로 저장되었습니다.' : '선택한 5개 스탯이 정상적으로 저장되었습니다.'}
             </p>
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button className="btn-primary" onClick={() => setShowSubmitSuccess(false)} type="button">
@@ -284,10 +308,10 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">제출 슬롯</div>
-            <h3 style={{ margin: '6px 0 0' }}>{currentTeamName} 주요스탯 5개</h3>
+            <h3 style={{ margin: '6px 0 0' }}>{currentTeamName} {isGoalkeeper ? '골키퍼' : '주요선수'} 스탯 5개</h3>
           </div>
           <button className="btn-primary" disabled={!canSubmit || busy} onClick={submitSelection} type="button">
-            5개 스탯 제출
+            {isGoalkeeper ? '골키퍼 카드 제출' : '5개 스탯 제출'}
           </button>
         </div>
 
@@ -347,6 +371,8 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
                   setSelectedPlayerId(next?.player_id || '');
                   setPlayerName(next?.player_name || '');
                   setSelectedStats(next?.selected_stats || []);
+                  setCardType(next?.card_type || 'PLAYER');
+                  setPenaltyShootout(next?.penalty_shootout || []);
                   setCustomStat('');
                   setStatus('');
                 }}
@@ -362,6 +388,8 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
                   setSelectedPlayerId(next?.player_id || '');
                   setPlayerName(next?.player_name || '');
                   setSelectedStats(next?.selected_stats || []);
+                  setCardType(next?.card_type || 'PLAYER');
+                  setPenaltyShootout(next?.penalty_shootout || []);
                   setCustomStat('');
                   setStatus('');
                 }}
@@ -420,7 +448,10 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
                   const nextPlayerId = event.target.value;
                   const nextPlayer = analyzedPlayers.find((player) => player.player_id === nextPlayerId);
                   setSelectedPlayerId(nextPlayerId);
+                  setPlayerName(nextPlayer?.player_name || '');
                   setSelectedStats((nextPlayer?.candidates || []).slice(0, 5));
+                  setCardType(nextPlayer?.is_goalkeeper ? 'GOALKEEPER' : 'PLAYER');
+                  setPenaltyShootout([]);
                   setCustomStat('');
                 }}
               >
@@ -431,6 +462,15 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
                   </option>
                 ))}
               </select>
+            </label>
+
+            <label className="field-stack">
+              <span className="field-label">카드 유형</span>
+              <select value={cardType} onChange={(event) => setCardType(event.target.value as CardType)}>
+                <option value="PLAYER">주요선수 카드</option>
+                <option value="GOALKEEPER">골키퍼 카드</option>
+              </select>
+              {selectedPlayer?.is_goalkeeper ? <span className="field-help">FPA 골키퍼 액션(선방/캐칭/펀칭)을 감지했습니다.</span> : null}
             </label>
 
             <label className="field-stack">
@@ -460,6 +500,31 @@ export default function FcmMatchSetupPage({ matchId }: { matchId: string }) {
               })}
             </div>
             {statCandidates.length === 0 ? <p className="field-help">매치 분석 후 후보가 표시됩니다.</p> : null}
+
+            {isGoalkeeper ? (
+              <section className="fcm-penalty-panel">
+                <div className="section-heading">
+                  <div>
+                    <div className="sidebar-eyebrow">Penalty shootout</div>
+                    <h4 style={{ margin: '6px 0 0' }}>승부차기 결과</h4>
+                  </div>
+                  <span className="status-pill tech">최대 10회</span>
+                </div>
+                <p className="field-help" style={{ marginTop: 0 }}>각 키커의 결과를 O(선방) 또는 X(실점)로 입력하세요. 빈 칸은 카드에 노출되지 않습니다.</p>
+                <div className="fcm-penalty-grid">
+                  {Array.from({ length: 10 }, (_, index) => (
+                    <div className="fcm-penalty-slot" key={`penalty-${index}`}>
+                      <span>PK {index + 1}</span>
+                      <div>
+                        <button className={penaltyShootout[index] === 'O' ? 'fcm-penalty-choice success active' : 'fcm-penalty-choice success'} onClick={() => updatePenaltyResult(index, 'O')} type="button">O</button>
+                        <button className={penaltyShootout[index] === 'X' ? 'fcm-penalty-choice danger active' : 'fcm-penalty-choice danger'} onClick={() => updatePenaltyResult(index, 'X')} type="button">X</button>
+                        <button className="fcm-penalty-clear" onClick={() => updatePenaltyResult(index, '')} type="button">–</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
             <div className="fcm-custom-stat">
               <label className="field-stack">

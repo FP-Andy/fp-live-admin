@@ -27,6 +27,7 @@ services:
     volumes:
       - ../../templetes:/app/templetes:ro
       - ../../assets/fonts:/app/assets/fonts:ro
+      - ../../assets/fcm/goalkeeper:/app/assets/fcm/goalkeeper:ro
       - ../../runtime:/app/runtime
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/live_admin
