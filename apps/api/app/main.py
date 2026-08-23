@@ -31,7 +31,7 @@ from PIL import Image
 from pypdf import PdfReader
 
 from .db import Base, SessionLocal, engine, get_db
-from .fcm_cards import TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
+from .fcm_cards import GOALKEEPER_TEMPLATE_PATH, TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
 from .fpa import (
     analyze_card_workbook,
     build_analysis_workbook,
@@ -377,8 +377,14 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN team_side VARCHAR NOT NULL DEFAULT 'HOME'")
     if "fcm_submissions" in table_names and "player_name" not in fcm_submission_columns:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN player_name VARCHAR NOT NULL DEFAULT ''")
+    if "fcm_submissions" in table_names and "card_type" not in fcm_submission_columns:
+        statements.append("ALTER TABLE fcm_submissions ADD COLUMN card_type VARCHAR NOT NULL DEFAULT 'PLAYER'")
+    if "fcm_submissions" in table_names and "penalty_shootout" not in fcm_submission_columns:
+        statements.append("ALTER TABLE fcm_submissions ADD COLUMN penalty_shootout JSONB NOT NULL DEFAULT '[]'::jsonb")
     if "fcm_templates" in table_names and "competition_class" not in fcm_template_columns:
         statements.append("ALTER TABLE fcm_templates ADD COLUMN competition_class VARCHAR")
+    if "fcm_templates" in table_names and "card_type" not in fcm_template_columns:
+        statements.append("ALTER TABLE fcm_templates ADD COLUMN card_type VARCHAR NOT NULL DEFAULT 'PLAYER'")
     if "is_goal" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
     if "is_own_goal" not in event_columns:
@@ -2720,6 +2726,8 @@ def _serialize_fcm_submission(row: FcmSubmission) -> dict:
         "player_id": row.player_id,
         "player_name": row.player_name or "",
         "selected_stats": list(row.selected_stats or []),
+        "card_type": "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER",
+        "penalty_shootout": [value for value in list(row.penalty_shootout or []) if str(value).upper() in {"O", "X"}][:10],
         "submitted_by": row.submitted_by,
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
@@ -2752,6 +2760,57 @@ def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
         raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
     df = parse_logs_to_dataframe(logs, str(row.match_id), row.teamid_h or "", row.teamid_a or "")
     return build_analysis_workbook(df, scene_rows=list(row.rows or []))
+
+
+def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match | None, db: Session) -> dict[str, Any]:
+    """Attach official lineup and FLA goalkeeper context to an FCM analysis."""
+    if not match_obj:
+        return payload
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    lineup_teams = ((metadata.get("lineups") or {}).get("teams") or {}) if isinstance(metadata, dict) else {}
+    lookup: dict[tuple[str, str], dict[str, str]] = {}
+    for side in ("HOME", "AWAY"):
+        for entry in lineup_teams.get(side, []) or []:
+            if not isinstance(entry, dict):
+                continue
+            number = str(entry.get("number") or "").strip()
+            if number:
+                lookup[(side, number)] = {
+                    "name": str(entry.get("name") or "").strip(),
+                    "position": str(entry.get("position") or "").upper(),
+                }
+
+    for player in payload.get("players", []):
+        if not isinstance(player, dict):
+            continue
+        team_marker = str(player.get("team") or "").strip().upper()
+        side = team_marker if team_marker in {"HOME", "AWAY"} else ""
+        lineup = lookup.get((side, str(player.get("player_id") or "").strip())) if side else None
+        if lineup:
+            player["player_name"] = lineup["name"]
+            player["is_goalkeeper"] = bool(player.get("is_goalkeeper")) or lineup["position"] == "GK"
+        if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
+            continue
+
+        # Older FPA saved logs can contain goalkeeper saves but omit opponent
+        # shot rows. FLA's persisted XG events are the authoritative fallback
+        # for conceded goals / expected conceded goals in that situation.
+        opponent_side = "AWAY" if side == "HOME" else "HOME"
+        opponent_xg_events = (
+            db.query(Event)
+            .filter(Event.match_id == match_obj.id, Event.team == opponent_side, Event.type == "XG")
+            .all()
+        )
+        if not opponent_xg_events:
+            continue
+        conceded_goals = sum(1 for event in opponent_xg_events if bool(event.is_goal))
+        conceded_xg = sum(float(event.xg or 0) for event in opponent_xg_events)
+        stats = list(player.get("candidates") or [])
+        stats = [stat for stat in stats if not str(stat).startswith(("실점 :", "기대 실점(xG) :"))]
+        stats.insert(0, f"기대 실점(xG) : {conceded_xg:.3f} ({conceded_goals}골)")
+        stats.insert(0, f"실점 : {conceded_goals}골")
+        player["candidates"] = stats
+    return payload
 
 
 def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSavedLogsRequest, user: User | None) -> Match:
@@ -2795,6 +2854,7 @@ def _serialize_fcm_template(row: FcmTemplate) -> dict:
         "competition_class": _normalize_competition_class(row.competition_class) if row.competition_class else None,
         "match_regex": row.match_regex,
         "image_url": f"/api/fcm/templates/{row.id}/image",
+        "card_type": "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER",
         "priority": int(row.priority or 100),
         "active": bool(row.active),
         "created_at": row.created_at.isoformat(),
@@ -2835,12 +2895,14 @@ def _find_matching_template_path(rows: list[FcmTemplate], team_name: str) -> Pat
     return None
 
 
-def _find_registered_template_path(db: Session, competition_class: str | None, team_name: str) -> Path | None:
+def _find_registered_template_path(db: Session, competition_class: str | None, team_name: str, card_type: str = "PLAYER") -> Path | None:
     normalized_class = _normalize_competition_class(competition_class)
+    normalized_card_type = "GOALKEEPER" if str(card_type or "").upper() == "GOALKEEPER" else "PLAYER"
     class_rows = (
         db.query(FcmTemplate)
         .filter(FcmTemplate.active == True)  # noqa: E712
         .filter(FcmTemplate.competition_class == normalized_class)
+        .filter(FcmTemplate.card_type == normalized_card_type)
         .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
         .all()
     )
@@ -2852,14 +2914,34 @@ def _find_registered_template_path(db: Session, competition_class: str | None, t
         db.query(FcmTemplate)
         .filter(FcmTemplate.active == True)  # noqa: E712
         .filter(FcmTemplate.competition_class.is_(None))
+        .filter(FcmTemplate.card_type == normalized_card_type)
         .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
         .all()
     )
     return _find_matching_template_path(legacy_rows, team_name)
 
 
+def _fcm_team_logo_path(match_obj: Match, team_side: str) -> Path | None:
+    state = _broadcast_state(match_obj)
+    key = "home_logo_url" if team_side == "HOME" else "away_logo_url"
+    raw_url = str(state.get(key) or "")
+    filename = Path(urlsplit(raw_url).path).name
+    if not filename:
+        return None
+    try:
+        path = _broadcast_logo_path(filename)
+    except HTTPException:
+        return None
+    return path if path.exists() and path.is_file() else None
+
+
 def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_number: int) -> tuple[str, bytes]:
-    template_path = _find_registered_template_path(db, row.competition_class, row.team_name or "") or find_template_path(row.team_name or "")
+    card_type = "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER"
+    registered_template_path = _find_registered_template_path(db, row.competition_class, row.team_name or "", card_type=card_type)
+    if card_type == "GOALKEEPER":
+        template_path = registered_template_path or GOALKEEPER_TEMPLATE_PATH
+    else:
+        template_path = registered_template_path or find_template_path(row.team_name or "")
     if not template_path:
         raise ValueError(f"{row.team_name}: 배경 템플릿 없음")
 
@@ -2872,12 +2954,18 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
     else:
         workbook_bytes = None
 
+    match_obj = db.get(Match, row.match_id)
+    team_logo_path = _fcm_team_logo_path(match_obj, row.team_side) if match_obj and card_type == "GOALKEEPER" else None
     card_bytes = build_card_image(
         background_path=template_path,
         player_id=row.player_id,
         player_name=row.player_name or row.player_id,
         selected_stats=list(row.selected_stats or []),
         workbook_bytes=workbook_bytes,
+        card_type=card_type,
+        penalty_shootout=list(row.penalty_shootout or []),
+        team_logo_path=team_logo_path,
+        replace_template_logo=card_type == "GOALKEEPER" and registered_template_path is None,
     )
     filename = f"{league}-{round_number}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
     return filename, card_bytes
@@ -5238,6 +5326,7 @@ async def analyze_fcm_workbook(
     file: UploadFile = File(...),
     match_id: UUID | None = Form(default=None),
     team_side: str | None = Form(default=None),
+    db: Session = Depends(get_db),
 ):
     try:
         file_bytes = await file.read()
@@ -5246,7 +5335,8 @@ async def analyze_fcm_workbook(
             if team_side:
                 workbook_path = _fcm_workbook_path(match_id, _normalize_fcm_team_side(team_side))
                 workbook_path.write_bytes(file_bytes)
-        return analyze_card_workbook(file_bytes)
+        match_obj = db.get(Match, match_id) if match_id else None
+        return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(file_bytes), match_obj, db)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
     except Exception as ex:
@@ -5261,7 +5351,7 @@ def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db
     try:
         workbook = _build_fpa_workbook_from_saved_log(row)
         _fcm_shared_workbook_path(match_id).write_bytes(workbook)
-        return analyze_card_workbook(workbook)
+        return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(workbook), db.get(Match, match_id), db)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
     except HTTPException:
@@ -5288,6 +5378,7 @@ async def create_fcm_template(
     name: str = Form(...),
     competition_class: str = Form(...),
     match_regex: str = Form(...),
+    card_type: str = Form(default="PLAYER"),
     priority: int = Form(default=100),
     active: bool = Form(default=True),
     file: UploadFile = File(...),
@@ -5299,6 +5390,7 @@ async def create_fcm_template(
         raise HTTPException(status_code=400, detail="Template name is required")
     clean_class = _validate_fcm_template_competition_class(db, competition_class)
     clean_regex = _validate_fcm_template_regex(match_regex)
+    normalized_card_type = "GOALKEEPER" if card_type.strip().upper() == "GOALKEEPER" else "PLAYER"
 
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg"}:
@@ -5320,6 +5412,7 @@ async def create_fcm_template(
         competition_class=clean_class,
         match_regex=clean_regex,
         image_path=str(image_path),
+        card_type=normalized_card_type,
         priority=max(1, priority),
         active=active,
     )
@@ -5347,6 +5440,7 @@ def update_fcm_template(
     row.name = clean_name
     row.competition_class = _validate_fcm_template_competition_class(db, body.competition_class)
     row.match_regex = _validate_fcm_template_regex(body.match_regex)
+    row.card_type = "GOALKEEPER" if body.card_type == "GOALKEEPER" else "PLAYER"
     row.priority = max(1, int(body.priority or 1))
     row.active = bool(body.active)
     row.updated_at = datetime.utcnow()
@@ -5490,6 +5584,9 @@ def upsert_fcm_submission(
     if len(selected_stats) > 5:
         raise HTTPException(status_code=400, detail="You can submit at most 5 stats")
 
+    card_type = "GOALKEEPER" if body.card_type == "GOALKEEPER" else "PLAYER"
+    penalty_shootout = [value for value in body.penalty_shootout if value in {"O", "X"}][:10]
+
     normalized_side = _normalize_fcm_team_side(body.team_side)
 
     row = (
@@ -5514,6 +5611,8 @@ def upsert_fcm_submission(
     row.player_id = body.player_id.strip()
     row.player_name = body.player_name.strip()
     row.selected_stats = selected_stats
+    row.card_type = card_type
+    row.penalty_shootout = penalty_shootout if card_type == "GOALKEEPER" else []
     row.submitted_by = user.id
     row.updated_at = datetime.utcnow()
 
@@ -5535,6 +5634,8 @@ def upsert_fcm_submission(
             "player_id": row.player_id,
             "player_name": row.player_name,
             "selected_stats": selected_stats,
+            "card_type": card_type,
+            "penalty_shootout": row.penalty_shootout,
             "home_team": metadata.get("home_team"),
             "away_team": metadata.get("away_team"),
         },

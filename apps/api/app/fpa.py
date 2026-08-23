@@ -2781,6 +2781,7 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
 
     for raw_player in analyzed["Player"].dropna().unique():
         player = _clean_player_label(raw_player)
+        player_events = analyzed.loc[analyzed["Player"] == raw_player].copy()
         shooter_row = shooter_summary.loc[raw_player] if raw_player in shooter_summary.index else None
         pass_row = pass_summary.loc[raw_player] if raw_player in pass_summary.index else None
         cross_row = cross_summary.loc[raw_player] if raw_player in cross_summary.index else None
@@ -2818,6 +2819,44 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         duel_success_pct = (duel_win / duel_total * 100) if duel_total > 0 else 0.0
         header_count = headed_goals + header_sot + header_clear
 
+        # FPA의 골키퍼 기록은 Save / Catching / Punching 액션으로 남는다.
+        # 이 액션이 하나라도 있으면 포지션 정보를 별도로 올리지 않은 원본
+        # 엑셀에서도 카드 메이커가 골키퍼 카드 후보로 분류할 수 있다.
+        player_action_labels = player_events["Action"].fillna("").astype(str).str.strip().str.lower()
+        is_goalkeeper = player_action_labels.isin({"save", "catching", "punching"}).any()
+        player_tags = player_events.get("Tags", pd.Series("", index=player_events.index)).fillna("").astype(str)
+        penalty_save_mask = (player_action_labels == "save") & player_tags.str.contains("penalty", case=False, regex=False)
+        saves = float(((player_action_labels == "save") & ~penalty_save_mask).sum())
+        catches = float((player_action_labels == "catching").sum())
+        punches = float((player_action_labels == "punching").sum())
+        player_team = _clean_player_label(player_teams.get(raw_player, ""))
+
+        # 실점과 기대 실점은 해당 골키퍼의 팀을 상대로 한 모든 슈팅에서 계산한다.
+        # Data 시트마다 Result 컬럼이 없는 경우도 있어 Action / Tags 양쪽을 함께
+        # 검사한다. 값이 없으면 0으로 안전하게 표시한다.
+        opponent_events = analyzed.copy()
+        if player_team:
+            opponent_events = opponent_events.loc[
+                opponent_events["Team"].map(_clean_player_label) != player_team
+            ]
+        opponent_action_labels = opponent_events["Action"].fillna("").astype(str).str.strip().str.lower()
+        opponent_tags = opponent_events.get("Tags", pd.Series("", index=opponent_events.index)).fillna("").astype(str).str.lower()
+        opponent_results = opponent_events.get("Result", pd.Series("", index=opponent_events.index)).fillna("").astype(str).str.lower()
+        conceded_mask = (
+            opponent_action_labels.isin({"goal", "scored"})
+            | opponent_tags.str.contains(r"(?:^|[,|;/\\s])goal(?:$|[,|;/\\s])", regex=True)
+            | opponent_results.str.contains("goal", regex=False)
+        )
+        shot_mask = (
+            opponent_action_labels.isin({"shot", "shoot", "shooting", "goal", "scored"})
+            | opponent_tags.str.contains("shot|goal", case=False, regex=True)
+            | opponent_results.str.contains("goal", regex=False)
+        )
+        conceded_goals = int(conceded_mask.sum())
+        opponent_xg = pd.to_numeric(opponent_events.get("xG", pd.Series(0, index=opponent_events.index)), errors="coerce").fillna(0)
+        conceded_xg = float(opponent_xg.loc[shot_mask].sum())
+        penalty_saves = float(penalty_save_mask.sum())
+
         candidate_map = {
             "Goal": f"Goal : {int(goals)}골",
             "Assist": f"Assist : {int(assists)}도움",
@@ -2837,6 +2876,16 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
             "차단": f"차단 : {_format_count(cutout)}",
             "경합 성공률(%)": f"경합 성공률(%) : {_format_percent(duel_success_pct)} ({int(duel_win)}회)",
             "볼 터치": f"볼 터치 : {_format_count(touches)}",
+        }
+
+        goalkeeper_candidate_map = {
+            "실점": f"실점 : {conceded_goals}골",
+            "기대 실점(xG)": f"기대 실점(xG) : {_format_decimal(conceded_xg)} ({conceded_goals}골)",
+            "선방": f"선방 : {_format_count(saves)}",
+            "캐칭": f"캐칭 : {_format_count(catches)}",
+            "펀칭": f"펀칭 : {_format_count(punches)}",
+            "수비 행동": f"클리어 : {_format_count(clear)} | 차단 : {_format_count(cutout)}",
+            "승부차기 선방": f"승부차기 선방 : {_format_count(penalty_saves)}",
         }
 
         weighted_pool = {
@@ -2862,6 +2911,9 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
 
         ranked_keys = sorted(stat_priority, key=lambda key: weighted_pool.get(key, 0), reverse=True)
         candidates = [candidate_map[key] for key in ranked_keys if key in candidate_map]
+        if is_goalkeeper:
+            goalkeeper_priority = ["실점", "기대 실점(xG)", "선방", "수비 행동", "캐칭", "펀칭", "승부차기 선방"]
+            candidates = [goalkeeper_candidate_map[key] for key in goalkeeper_priority]
 
         ranking_score = (
             goals * 100
@@ -2882,9 +2934,11 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         players_payload.append(
             {
                 "player_id": player,
+                "player_name": "",
                 "team": _clean_player_label(player_teams.get(raw_player, "")),
                 "ranking_score": round(ranking_score, 2),
                 "candidates": candidates,
+                "is_goalkeeper": bool(is_goalkeeper),
             }
         )
 

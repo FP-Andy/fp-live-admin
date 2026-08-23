@@ -3093,6 +3093,69 @@ a:focus-visible {
   min-width: 0;
 }
 
+.fcm-penalty-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid rgba(2, 251, 172, 0.22);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(2, 251, 172, 0.08), rgba(255, 255, 255, 0.025));
+}
+
+.fcm-penalty-panel .section-heading {
+  margin-bottom: 0;
+}
+
+.fcm-penalty-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fcm-penalty-slot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(9, 16, 33, 0.42);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.fcm-penalty-slot > div {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.fcm-penalty-choice,
+.fcm-penalty-clear {
+  min-width: 27px;
+  height: 27px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.fcm-penalty-choice.success.active {
+  border-color: rgba(2, 251, 172, 0.9);
+  background: rgba(2, 251, 172, 0.16);
+  color: #02fbac;
+}
+
+.fcm-penalty-choice.danger.active {
+  border-color: rgba(255, 82, 82, 0.9);
+  background: rgba(255, 82, 82, 0.16);
+  color: #ff6262;
+}
+
 .fcm-selection-grid {
   display: grid;
   gap: 12px;

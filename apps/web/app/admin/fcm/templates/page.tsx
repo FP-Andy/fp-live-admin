@@ -20,6 +20,7 @@ type FcmTemplate = {
   competition_class?: string | null;
   match_regex: string;
   image_url: string;
+  card_type: 'PLAYER' | 'GOALKEEPER';
   priority: number;
   active: boolean;
   created_at: string;
@@ -30,6 +31,7 @@ type TemplateEditDraft = {
   name: string;
   competition_class: string;
   match_regex: string;
+  card_type: 'PLAYER' | 'GOALKEEPER';
   priority: number;
   active: boolean;
 };
@@ -67,11 +69,13 @@ export default function FcmTemplatesPage() {
   const [name, setName] = useState('');
   const [competitionClass, setCompetitionClass] = useState(DEFAULT_COMPETITION_CLASS);
   const [matchRegex, setMatchRegex] = useState('');
+  const [cardType, setCardType] = useState<'PLAYER' | 'GOALKEEPER'>('PLAYER');
   const [priority, setPriority] = useState(100);
   const [active, setActive] = useState(true);
   const [file, setFile] = useState<File | null>(null);
   const [testTeamName, setTestTeamName] = useState('');
   const [testCompetitionClass, setTestCompetitionClass] = useState(DEFAULT_COMPETITION_CLASS);
+  const [testCardType, setTestCardType] = useState<'PLAYER' | 'GOALKEEPER'>('PLAYER');
   const [templatePage, setTemplatePage] = useState(1);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<TemplateEditDraft | null>(null);
@@ -137,15 +141,17 @@ export default function FcmTemplatesPage() {
     const classSpecific = templates.find((template) => {
       if (!template.active) return false;
       if (normalizeClass(template.competition_class) !== selectedClass) return false;
+      if ((template.card_type || 'PLAYER') !== testCardType) return false;
       return regexMatches(template, target);
     });
     if (classSpecific) return classSpecific;
 
     return templates.find((template) => {
       if (!template.active || normalizeClass(template.competition_class)) return false;
+      if ((template.card_type || 'PLAYER') !== testCardType) return false;
       return regexMatches(template, target);
     }) || null;
-  }, [templates, testCompetitionClass, testTeamName]);
+  }, [templates, testCardType, testCompetitionClass, testTeamName]);
 
   const totalTemplatePages = Math.max(1, Math.ceil(templates.length / TEMPLATES_PER_PAGE));
   const pagedTemplates = useMemo(() => {
@@ -177,6 +183,7 @@ export default function FcmTemplatesPage() {
     form.append('name', name.trim());
     form.append('competition_class', competitionClass);
     form.append('match_regex', matchRegex.trim());
+    form.append('card_type', cardType);
     form.append('priority', String(priority));
     form.append('active', String(active));
     form.append('file', file);
@@ -192,6 +199,7 @@ export default function FcmTemplatesPage() {
       }
       setName('');
       setMatchRegex('');
+      setCardType('PLAYER');
       setPriority(100);
       setActive(true);
       setFile(null);
@@ -210,6 +218,7 @@ export default function FcmTemplatesPage() {
       name: template.name,
       competition_class: normalizeClass(template.competition_class) || classOptions[0],
       match_regex: template.match_regex,
+      card_type: template.card_type || 'PLAYER',
       priority: template.priority,
       active: template.active,
     });
@@ -240,6 +249,7 @@ export default function FcmTemplatesPage() {
           name: editDraft.name.trim(),
           competition_class: editDraft.competition_class,
           match_regex: editDraft.match_regex.trim(),
+          card_type: editDraft.card_type,
           priority: editDraft.priority,
           active: editDraft.active,
         }),
@@ -294,6 +304,14 @@ export default function FcmTemplatesPage() {
           <label className="field-stack">
             <span className="field-label">호출 Regex</span>
             <input value={matchRegex} onChange={(event) => setMatchRegex(event.target.value)} placeholder="예: 경주한수원|한수원" />
+          </label>
+
+          <label className="field-stack">
+            <span className="field-label">카드 유형</span>
+            <select value={cardType} onChange={(event) => setCardType(event.target.value as 'PLAYER' | 'GOALKEEPER')}>
+              <option value="PLAYER">주요선수 카드</option>
+              <option value="GOALKEEPER">골키퍼 카드</option>
+            </select>
           </label>
 
           <div className="fcm-template-form-row">
@@ -364,6 +382,13 @@ export default function FcmTemplatesPage() {
                 <span className="field-label">팀명 테스트</span>
                 <input value={testTeamName} onChange={(event) => setTestTeamName(event.target.value)} placeholder="예: 경주한수원" />
               </label>
+              <label className="field-stack">
+                <span className="field-label">카드 유형</span>
+                <select value={testCardType} onChange={(event) => setTestCardType(event.target.value as 'PLAYER' | 'GOALKEEPER')}>
+                  <option value="PLAYER">주요선수</option>
+                  <option value="GOALKEEPER">골키퍼</option>
+                </select>
+              </label>
             </div>
             <div className="field-help" style={{ marginTop: 14 }}>
               {testTeamName.trim()
@@ -429,6 +454,16 @@ export default function FcmTemplatesPage() {
                               />
                             </label>
                             <label className="field-stack">
+                              <span className="field-label">카드 유형</span>
+                              <select
+                                value={editDraft.card_type}
+                                onChange={(event) => setEditDraft((prev) => prev ? { ...prev, card_type: event.target.value as 'PLAYER' | 'GOALKEEPER' } : prev)}
+                              >
+                                <option value="PLAYER">주요선수</option>
+                                <option value="GOALKEEPER">골키퍼</option>
+                              </select>
+                            </label>
+                            <label className="field-stack">
                               <span className="field-label">우선순위</span>
                               <input
                                 min={1}
@@ -475,6 +510,7 @@ export default function FcmTemplatesPage() {
                           </div>
                           <div className="fcm-chip-list" style={{ margin: 0 }}>
                             <span className="fcm-chip">{templateClassLabel(template)}</span>
+                            <span className="fcm-chip">{template.card_type === 'GOALKEEPER' ? '골키퍼' : '주요선수'}</span>
                             {!template.competition_class ? <span className="fcm-chip">fallback</span> : null}
                           </div>
                           <code>{template.match_regex}</code>
