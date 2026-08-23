@@ -2836,23 +2836,27 @@ def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match |
         if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
             continue
 
-        # FLA is the source of truth for the on-target decision, goal-mouth
-        # position, goals conceded, and resulting save-map count.
+        # FLA is authoritative only for the on-target decision that defines a
+        # save. The remaining goalkeeper metrics continue to come from FPA.
         opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
         if opponent_xg_events is None:
             continue
-        conceded_goals = sum(1 for event in opponent_xg_events if bool(event.get("is_goal")))
-        conceded_xg = sum(float(event.get("xg") or 0) for event in opponent_xg_events)
         saves = _goalkeeper_fla_save_count(opponent_xg_events)
         stats = list(player.get("candidates") or [])
-        stats = [
-            stat
-            for stat in stats
-            if not str(stat).startswith(("실점 :", "기대 실점(xG) :", "선방 :", "세이브 :"))
-        ]
-        stats.insert(0, f"선방 : {saves}회")
-        stats.insert(0, f"기대 실점(xG) : {conceded_xg:.3f} ({conceded_goals}골)")
-        stats.insert(0, f"실점 : {conceded_goals}골")
+        replaced_save = False
+        for index, stat in enumerate(stats):
+            normalized = re.sub(r"\s+", "", str(stat or ""))
+            if normalized.startswith("선방") or normalized.startswith("세이브"):
+                label = "세이브" if normalized.startswith("세이브") else "선방"
+                stats[index] = f"{label} : {saves}회"
+                replaced_save = True
+                break
+        if not replaced_save:
+            expected_index = next(
+                (index for index, stat in enumerate(stats) if str(stat).startswith("기대 실점(xG) :")),
+                len(stats) - 1,
+            )
+            stats.insert(max(0, expected_index + 1), f"선방 : {saves}회")
         player["candidates"] = stats
     return payload
 
