@@ -2787,18 +2787,46 @@ def _goalkeeper_fla_save_count(events: list[dict[str, object]]) -> int:
     return sum(1 for event in events if bool(event.get("is_on_target")) and not bool(event.get("is_goal")))
 
 
-def _sync_goalkeeper_save_stat(selected_stats: list[str], events: list[dict[str, object]]) -> list[str]:
-    """Keep stored goalkeeper-card text aligned with the FLA save map at export time."""
+def _goalkeeper_fla_conceded_values(events: list[dict[str, object]]) -> tuple[int, float]:
+    return (
+        sum(1 for event in events if bool(event.get("is_goal"))),
+        sum(float(event.get("xg") or 0) for event in events),
+    )
+
+
+def _stat_value_after_colon(stat: str) -> float | None:
+    match = re.search(r":\s*(-?\d+(?:\.\d+)?)", stat)
+    return float(match.group(1)) if match else None
+
+
+def _sync_goalkeeper_card_stats(selected_stats: list[str], events: list[dict[str, object]]) -> list[str]:
+    """Align save text with FLA and fill FPA-missing conceded values from FLA."""
     save_count = _goalkeeper_fla_save_count(events)
+    fla_goals, fla_xg = _goalkeeper_fla_conceded_values(events)
     synced: list[str] = []
+    replaced_save = False
     for raw_stat in selected_stats:
         stat = str(raw_stat or "").strip()
         normalized = re.sub(r"\s+", "", stat)
         if normalized.startswith("선방") or normalized.startswith("세이브"):
             label = "세이브" if normalized.startswith("세이브") else "선방"
             synced.append(f"{label} : {save_count}회")
+            replaced_save = True
+        elif normalized.startswith("실점") and fla_goals > 0 and (_stat_value_after_colon(stat) or 0) == 0:
+            # FPA match logs sometimes contain only keeper actions and omit
+            # every opponent shot. In that case, avoid a false zero by using
+            # the persisted FLA XG goal record.
+            synced.append(f"실점 : {fla_goals}골")
+        elif normalized.startswith("기대실점") and fla_xg > 0 and (_stat_value_after_colon(stat) or 0) == 0:
+            synced.append(f"기대 실점(xG) : {fla_xg:.3f} ({fla_goals}골)")
         else:
             synced.append(stat)
+    if not replaced_save:
+        expected_index = next(
+            (index for index, stat in enumerate(synced) if re.sub(r"\s+", "", stat).startswith("기대실점")),
+            len(synced) - 1,
+        )
+        synced.insert(max(0, expected_index + 1), f"선방 : {save_count}회")
     return synced
 
 
@@ -2832,26 +2860,11 @@ def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match |
         if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
             continue
 
-        # FLA is authoritative only for the on-target decision that defines a
-        # save. The remaining goalkeeper metrics continue to come from FPA.
+        # FLA defines saves. FPA retains the other metrics; if FPA has no
+        # opponent shots at all, its zero conceded values are safely filled
+        # from FLA's persisted goal/XG records.
         opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
-        saves = _goalkeeper_fla_save_count(opponent_xg_events)
-        stats = list(player.get("candidates") or [])
-        replaced_save = False
-        for index, stat in enumerate(stats):
-            normalized = re.sub(r"\s+", "", str(stat or ""))
-            if normalized.startswith("선방") or normalized.startswith("세이브"):
-                label = "세이브" if normalized.startswith("세이브") else "선방"
-                stats[index] = f"{label} : {saves}회"
-                replaced_save = True
-                break
-        if not replaced_save:
-            expected_index = next(
-                (index for index, stat in enumerate(stats) if str(stat).startswith("기대 실점(xG) :")),
-                len(stats) - 1,
-            )
-            stats.insert(max(0, expected_index + 1), f"선방 : {saves}회")
-        player["candidates"] = stats
+        player["candidates"] = _sync_goalkeeper_card_stats(list(player.get("candidates") or []), opponent_xg_events)
     return payload
 
 
@@ -3007,7 +3020,7 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
         background_path=template_path,
         player_id=row.player_id,
         player_name=row.player_name or row.player_id,
-        selected_stats=_sync_goalkeeper_save_stat(list(row.selected_stats or []), goalkeeper_fla_shots),
+        selected_stats=_sync_goalkeeper_card_stats(list(row.selected_stats or []), goalkeeper_fla_shots),
         workbook_bytes=workbook_bytes,
         card_type=card_type,
         penalty_shootout=list(row.penalty_shootout or []),
