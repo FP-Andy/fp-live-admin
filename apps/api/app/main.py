@@ -2799,8 +2799,11 @@ def _stat_value_after_colon(stat: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
-def _sync_goalkeeper_card_stats(selected_stats: list[str], events: list[dict[str, object]]) -> list[str]:
-    """Align save text with FLA and fill FPA-missing conceded values from FLA."""
+def _sync_goalkeeper_card_stats(
+    selected_stats: list[str], events: list[dict[str, object]] | None
+) -> list[str]:
+    """Align goalkeeper save text with FLA without discarding submitted detail."""
+    events = events or []
     save_count = _goalkeeper_fla_save_count(events)
     fla_goals, fla_xg = _goalkeeper_fla_conceded_values(events)
     synced: list[str] = []
@@ -2810,7 +2813,12 @@ def _sync_goalkeeper_card_stats(selected_stats: list[str], events: list[dict[str
         normalized = re.sub(r"\s+", "", stat)
         if normalized.startswith("선방") or normalized.startswith("세이브"):
             label = "세이브" if normalized.startswith("세이브") else "선방"
-            synced.append(f"{label} : {save_count}회")
+            # The submitted stat can include keeper-specific context such as
+            # ``(승부차기 : 1회)``. FLA is the source of the main save count,
+            # but that user-entered context must remain one of the five stats.
+            suffix_match = re.search(r"(\([^)]*\))\s*$", stat)
+            suffix = f" {suffix_match.group(1)}" if suffix_match else ""
+            synced.append(f"{label} {save_count}회{suffix}")
             replaced_save = True
         elif normalized.startswith("실점") and fla_goals > 0 and (_stat_value_after_colon(stat) or 0) == 0:
             # FPA match logs sometimes contain only keeper actions and omit
@@ -3016,11 +3024,15 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
         if card_type == "GOALKEEPER"
         else None
     )
+    selected_stats = list(row.selected_stats or [])
+    if card_type == "GOALKEEPER":
+        selected_stats = _sync_goalkeeper_card_stats(selected_stats, goalkeeper_fla_shots)
+
     card_bytes = build_card_image(
         background_path=template_path,
         player_id=row.player_id,
         player_name=row.player_name or row.player_id,
-        selected_stats=_sync_goalkeeper_card_stats(list(row.selected_stats or []), goalkeeper_fla_shots),
+        selected_stats=selected_stats,
         workbook_bytes=workbook_bytes,
         card_type=card_type,
         penalty_shootout=list(row.penalty_shootout or []),

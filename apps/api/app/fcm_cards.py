@@ -533,6 +533,12 @@ def _draw_goalkeeper_penalties(
         draw.text((cursor, y), normalized, font=font, fill=color)
         cursor += draw.textlength(normalized, font=font) + 5
 
+    # X represents an opponent miss in the submitted shoot-out sequence.
+    # Keep this secondary explanatory line in the position shown by the design.
+    miss_count = sum(1 for value in penalties[:10] if str(value).upper() == "X")
+    small_font = _load_paperlogy_font(PAPERLOGY_REGULAR, 30)
+    draw.text((x, y + 53), f"상대 실축 {miss_count}회", font=small_font, fill="#C7CDDD")
+
 
 def build_goalkeeper_card_image(
     *,
