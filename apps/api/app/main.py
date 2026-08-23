@@ -2762,6 +2762,50 @@ def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
     return build_analysis_workbook(df, scene_rows=list(row.rows or []))
 
 
+def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> list[dict[str, object]] | None:
+    """Return opponent XG events for a goalkeeper, or None for FPA-only matches."""
+    opponent_side = "AWAY" if team_side == "HOME" else "HOME"
+    events = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.team == opponent_side, Event.type == "XG")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+    if not events:
+        return None
+    return [
+        {
+            "is_goal": bool(event.is_goal),
+            "is_on_target": bool(event.is_on_target),
+            "xg": event.xg,
+            "goalmouth_x": event.goalmouth_x,
+            "goalmouth_y": event.goalmouth_y,
+        }
+        for event in events
+    ]
+
+
+def _goalkeeper_fla_save_count(events: list[dict[str, object]]) -> int:
+    return sum(1 for event in events if bool(event.get("is_on_target")) and not bool(event.get("is_goal")))
+
+
+def _sync_goalkeeper_save_stat(selected_stats: list[str], events: list[dict[str, object]] | None) -> list[str]:
+    """Keep stored goalkeeper-card text aligned with the FLA save map at export time."""
+    if events is None:
+        return selected_stats
+    save_count = _goalkeeper_fla_save_count(events)
+    synced: list[str] = []
+    for raw_stat in selected_stats:
+        stat = str(raw_stat or "").strip()
+        normalized = re.sub(r"\s+", "", stat)
+        if normalized.startswith("선방") or normalized.startswith("세이브"):
+            label = "세이브" if normalized.startswith("세이브") else "선방"
+            synced.append(f"{label} : {save_count}회")
+        else:
+            synced.append(stat)
+    return synced
+
+
 def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match | None, db: Session) -> dict[str, Any]:
     """Attach official lineup and FLA goalkeeper context to an FCM analysis."""
     if not match_obj:
@@ -2792,21 +2836,21 @@ def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match |
         if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
             continue
 
-        # Older FPA saved logs can contain goalkeeper saves but omit opponent
-        # shot rows. FLA's persisted XG events are the authoritative fallback
-        # for conceded goals / expected conceded goals in that situation.
-        opponent_side = "AWAY" if side == "HOME" else "HOME"
-        opponent_xg_events = (
-            db.query(Event)
-            .filter(Event.match_id == match_obj.id, Event.team == opponent_side, Event.type == "XG")
-            .all()
-        )
-        if not opponent_xg_events:
+        # FLA is the source of truth for the on-target decision, goal-mouth
+        # position, goals conceded, and resulting save-map count.
+        opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
+        if opponent_xg_events is None:
             continue
-        conceded_goals = sum(1 for event in opponent_xg_events if bool(event.is_goal))
-        conceded_xg = sum(float(event.xg or 0) for event in opponent_xg_events)
+        conceded_goals = sum(1 for event in opponent_xg_events if bool(event.get("is_goal")))
+        conceded_xg = sum(float(event.get("xg") or 0) for event in opponent_xg_events)
+        saves = _goalkeeper_fla_save_count(opponent_xg_events)
         stats = list(player.get("candidates") or [])
-        stats = [stat for stat in stats if not str(stat).startswith(("실점 :", "기대 실점(xG) :"))]
+        stats = [
+            stat
+            for stat in stats
+            if not str(stat).startswith(("실점 :", "기대 실점(xG) :", "선방 :", "세이브 :"))
+        ]
+        stats.insert(0, f"선방 : {saves}회")
         stats.insert(0, f"기대 실점(xG) : {conceded_xg:.3f} ({conceded_goals}골)")
         stats.insert(0, f"실점 : {conceded_goals}골")
         player["candidates"] = stats
@@ -2956,16 +3000,22 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
 
     match_obj = db.get(Match, row.match_id)
     team_logo_path = _fcm_team_logo_path(match_obj, row.team_side) if match_obj and card_type == "GOALKEEPER" else None
+    goalkeeper_fla_shots = (
+        _goalkeeper_fla_shot_events(db, row.match_id, row.team_side)
+        if card_type == "GOALKEEPER"
+        else None
+    )
     card_bytes = build_card_image(
         background_path=template_path,
         player_id=row.player_id,
         player_name=row.player_name or row.player_id,
-        selected_stats=list(row.selected_stats or []),
+        selected_stats=_sync_goalkeeper_save_stat(list(row.selected_stats or []), goalkeeper_fla_shots),
         workbook_bytes=workbook_bytes,
         card_type=card_type,
         penalty_shootout=list(row.penalty_shootout or []),
         team_logo_path=team_logo_path,
         replace_template_logo=card_type == "GOALKEEPER" and registered_template_path is None,
+        fla_shot_events=goalkeeper_fla_shots,
     )
     filename = f"{league}-{round_number}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
     return filename, card_bytes
