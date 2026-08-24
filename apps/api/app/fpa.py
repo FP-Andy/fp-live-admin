@@ -362,6 +362,9 @@ def _compact_dual_pitch_state(dual_pitch: dict[str, Any] | None) -> dict[str, An
                     value = str(point.get(source_key) or "").strip()
                     if value:
                         compact_point[target_key] = value
+                # 등번호 식별 불확실 표시 — 로그(DualState)에 남아야 재채점·복원에서 살아남는다.
+                if point.get("needs_check") or point.get("needsCheck"):
+                    compact_point["needs_check"] = True
                 points.append(compact_point)
             except (KeyError, TypeError, ValueError):
                 continue
@@ -551,7 +554,8 @@ def _dual_opponent_dots(
     side = str(actor_team or "").strip().lower()
     out: list[dict[str, Any]] = []
     for point in points:
-        if not isinstance(point, dict):
+        # 잔상(ghost) = dual 태깅이 깔아둔 '아직 활성화 안 한' 라인업 자리. 프레임이 아니다.
+        if not isinstance(point, dict) or point.get("ghost") is True:
             continue
         x_value = _finite_float(point.get("meter_x", point.get("x")))
         y_value = _finite_float(point.get("meter_y", point.get("y")))
@@ -612,7 +616,8 @@ def press_movement_shares(
         side = str(actor_team or "").strip().lower()
         out: dict[str, tuple[float, float]] = {}
         for point in points:
-            if not isinstance(point, dict):
+            # 잔상은 이동 거리(before→after) 계산에서도 뺀다 — 움직인 적이 없는 자리다.
+            if not isinstance(point, dict) or point.get("ghost") is True:
                 continue
             number = str(point.get("number") or "").strip()
             if not number:
@@ -875,7 +880,8 @@ def _dual_points_by_side(points: Any, actor_team: str | None = None) -> tuple[li
     if not isinstance(points, list):
         return home, away
     for point in points:
-        if not isinstance(point, dict):
+        # 잔상(ghost) = dual 태깅이 깔아둔 '아직 활성화 안 한' 라인업 자리. 프레임이 아니다.
+        if not isinstance(point, dict) or point.get("ghost") is True:
             continue
         x_value = _finite_float(point.get("meter_x", point.get("x")))
         y_value = _finite_float(point.get("meter_y", point.get("y")))
@@ -2541,7 +2547,15 @@ def _scene_points(state: dict[str, Any], key: str) -> list[dict[str, Any]]:
         candidates = state.get("before")
     if key == "afterDots" and not isinstance(candidates, list):
         candidates = state.get("after")
-    return [item for item in candidates if isinstance(item, dict)] if isinstance(candidates, list) else []
+    if not isinstance(candidates, list):
+        return []
+    # 잔상(ghost) — dual 태깅 화면이 라인업을 미리 깔아둔 '아직 활성화 안 한' 자리다.
+    # 콘솔이 저장 전에 걷어내지만 여기서도 막는다: 실제로 그 자리에 없던 선수가
+    # 프레임에 섞이면 압박·PC·수비콘이 조용히 틀린 값이 된다.
+    return [
+        item for item in candidates
+        if isinstance(item, dict) and item.get("ghost") is not True
+    ]
 
 
 def _scene_pass_arrows(state: dict[str, Any]) -> list[dict[str, Any]]:
