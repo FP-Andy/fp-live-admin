@@ -2703,7 +2703,13 @@ async def broadcast_asset_worker(stop_event: asyncio.Event) -> None:
         # The capture renderer loads the overlay, which calls this API for its
         # snapshot.  _refresh_broadcast_assets uses synchronous HTTP/browser
         # calls, so keeping it on the event loop would deadlock that request.
-        await asyncio.to_thread(_refresh_all_broadcast_assets)
+        # A short database-pool spike must not terminate this long-running
+        # worker.  It will retry on the next interval after request pressure
+        # has eased, while the last successful public PNGs remain available.
+        try:
+            await asyncio.to_thread(_refresh_all_broadcast_assets)
+        except Exception as exc:
+            print(f"broadcast asset worker iteration failed: {exc}\n{traceback.format_exc()}")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=BROADCAST_ASSET_REFRESH_SECONDS)
         except asyncio.TimeoutError:

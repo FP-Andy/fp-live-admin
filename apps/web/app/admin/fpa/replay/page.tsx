@@ -34,6 +34,32 @@ type SavedLogsResponse = {
   updated_at?: string | null;
 };
 
+const REPLAY_LOG_LOAD_CONCURRENCY = 4;
+
+async function settledMapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = { status: 'fulfilled', value: await mapper(items[index]) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 type PitchDot = {
   id?: string;
   meter_x: number;
@@ -486,12 +512,14 @@ export default function FpaReplayPage() {
       try {
         const data = await apiJson<Match[]>('/matches?sport=FOOTBALL');
         const sourceMatches = Array.isArray(data) ? data : [];
-        const results = await Promise.allSettled(
-          sourceMatches.map(async (match) => {
+        const results = await settledMapWithConcurrency(
+          sourceMatches,
+          REPLAY_LOG_LOAD_CONCURRENCY,
+          async (match) => {
             const saved = await apiJson<SavedLogsResponse>(`/fpa/matches/${encodeURIComponent(match.id)}/logs`);
             const sceneCount = buildReplayScenes(saved.rows || [], saved.logs || []).length;
             return sceneCount > 0 ? { ...match, savedLogs: saved, sceneCount } : null;
-          }),
+          },
         );
         if (!active) return;
         const filtered = results
