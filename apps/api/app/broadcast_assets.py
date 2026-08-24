@@ -270,26 +270,35 @@ def render_live_coder_asset_pairs(
     if not match_id:
         raise ValueError("Live Coder capture requires a match id")
     timeout = float(os.getenv("BROADCAST_LIVE_CODER_RENDER_TIMEOUT_SECONDS", "45"))
+    # One Chromium launch can capture every comparison card for the same FLA
+    # snapshot.  Sending a five-card batch avoids five browser startups per
+    # match, which is essential when multiple matches refresh together.
+    requested_types = list(dict.fromkeys(asset_types))
+    try:
+        response = httpx.post(
+            render_url,
+            json={
+                "match_id": match_id,
+                "asset_types": requested_types,
+                **({"xg_event_id": xg_event_id} if xg_event_id else {}),
+                # Archive and branding re-renders must retain the exact FLA
+                # clock point, instead of letting the browser fetch current
+                # full-time data for an older card.
+                "snapshot": snapshot,
+            },
+            headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
+            timeout=timeout * max(1, len(requested_types)),
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Live Coder capture request failed for {', '.join(requested_types)}: {exc}") from exc
+
+    payload = response.json()
+    raw_assets = payload.get("assets") if isinstance(payload, dict) else None
+    if not isinstance(raw_assets, dict):
+        raise RuntimeError("Live Coder capture response omitted assets")
     result: dict[str, tuple[bytes, bytes]] = {}
-    for asset_type in asset_types:
-        try:
-            response = httpx.post(
-                render_url,
-                json={
-                    "match_id": match_id,
-                    "asset_types": [asset_type],
-                    **({"xg_event_id": xg_event_id} if asset_type == GOAL_ASSET_TYPE and xg_event_id else {}),
-                },
-                headers={"X-Broadcast-Render-Token": os.getenv("BROADCAST_RENDER_TOKEN", "")},
-                timeout=timeout,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"Live Coder capture request failed for {asset_type}: {exc}") from exc
-        payload = response.json()
-        raw_assets = payload.get("assets") if isinstance(payload, dict) else None
-        if not isinstance(raw_assets, dict):
-            raise RuntimeError(f"Live Coder capture response omitted assets for {asset_type}")
+    for asset_type in requested_types:
         raw = raw_assets.get(asset_type)
         if isinstance(raw, dict) and isinstance(raw.get("background_png"), str) and isinstance(raw.get("asset_png"), str):
             try:
@@ -406,7 +415,7 @@ def store_asset_pair(
     background_url = store.put(
         # Bump this filename only when the static template design changes;
         # immutable CDN caching then remains safe for every broadcast client.
-        f"{relative_base}/background-v2.png",
+        f"{relative_base}/background-v3.png",
         background_png,
         "image/png",
         "public, max-age=31536000, immutable",
@@ -419,7 +428,9 @@ def store_asset_pair(
         "public, max-age=31536000, immutable" if immutable else "public, max-age=55, must-revalidate",
         generated_at,
     )
-    # A version query ensures integrations reload a new data image even when a
-    # proxy has retained the previous minute's response longer than instructed.
+    # Both layers keep immutable cache headers.  Version both URLs so a
+    # template refresh (for example a new dominance background) cannot leave
+    # viewers combining a fresh data asset with a stale background PNG.
+    versioned_background_url = f"{background_url}?v={quote(generated_at, safe='')}"
     versioned_asset_url = f"{asset_url}?v={quote(generated_at, safe='')}"
-    return StoredAsset(background_url=background_url, asset_url=versioned_asset_url, generated_at=generated_at)
+    return StoredAsset(background_url=versioned_background_url, asset_url=versioned_asset_url, generated_at=generated_at)

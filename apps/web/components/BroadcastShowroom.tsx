@@ -19,7 +19,7 @@ type BroadcastMatch = {
   away_team: string;
   competition_class: string;
   round_number: number;
-  status: 'LIVE' | 'OPEN';
+  status: 'LIVE' | 'OPEN' | 'ARCHIVED';
   clock_ms: number;
   assets: AssetManifest;
   generated_at?: string | null;
@@ -115,9 +115,71 @@ function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
   );
 }
 
+function TeamBrandingEditor({ match, onUpdated }: { match: BroadcastMatch; onUpdated: () => void }) {
+  const [homeColor, setHomeColor] = useState(match.branding?.home_color || '#ff7900');
+  const [awayColor, setAwayColor] = useState(match.branding?.away_color || '#3d22f3');
+  const [homeLogo, setHomeLogo] = useState<File | null>(null);
+  const [awayLogo, setAwayLogo] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHomeColor(match.branding?.home_color || '#ff7900');
+    setAwayColor(match.branding?.away_color || '#3d22f3');
+  }, [match.match_id, match.branding?.home_color, match.branding?.away_color]);
+
+  const save = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const stateResponse = await fetch(`/api/broadcast/matches/${match.match_id}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ home_color: homeColor, away_color: awayColor }),
+      });
+      if (!stateResponse.ok) throw new Error(await stateResponse.text() || '대표 색상을 저장하지 못했습니다.');
+      for (const [team, file] of [['HOME', homeLogo], ['AWAY', awayLogo]] as const) {
+        if (!file) continue;
+        const form = new FormData();
+        form.set('team', team);
+        form.set('file', file);
+        const logoResponse = await fetch(`/api/broadcast/matches/${match.match_id}/logo`, {
+          method: 'POST', body: form,
+        });
+        if (!logoResponse.ok) throw new Error(await logoResponse.text() || `${team} 로고를 저장하지 못했습니다.`);
+      }
+      setHomeLogo(null);
+      setAwayLogo(null);
+      setMessage('저장했습니다. 모든 라이브·아카이브·도미넌스 이미지에 새 브랜딩을 다시 적용 중입니다.');
+      onUpdated();
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : '브랜딩을 저장하지 못했습니다.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="broadcast-branding-editor" aria-label="팀 브랜딩 설정">
+      <div><h2>팀 브랜딩 설정</h2><p>로고와 대표 색상은 이 쇼룸에서 바로 설정할 수 있습니다.</p></div>
+      <div className="broadcast-branding-editor-grid">
+        <label><span>HOME 대표 색상</span><i style={{ backgroundColor: homeColor }} /><input type="color" value={homeColor} onChange={(event) => setHomeColor(event.target.value)} /><input value={homeColor} maxLength={7} onChange={(event) => setHomeColor(event.target.value)} aria-label="HOME 색상 코드" /></label>
+        <label><span>AWAY 대표 색상</span><i style={{ backgroundColor: awayColor }} /><input type="color" value={awayColor} onChange={(event) => setAwayColor(event.target.value)} /><input value={awayColor} maxLength={7} onChange={(event) => setAwayColor(event.target.value)} aria-label="AWAY 색상 코드" /></label>
+        <label><span>HOME 로고</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setHomeLogo(event.target.files?.[0] || null)} /><small>{homeLogo?.name || '현재 로고 유지'}</small></label>
+        <label><span>AWAY 로고</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setAwayLogo(event.target.files?.[0] || null)} /><small>{awayLogo?.name || '현재 로고 유지'}</small></label>
+      </div>
+      <div className="broadcast-branding-editor-actions">
+        <button type="button" onClick={save} disabled={saving}>{saving ? '저장 중…' : '로고·색상 적용'}</button>
+        {message ? <p role="status">{message}</p> : null}
+      </div>
+    </section>
+  );
+}
+
 function useBroadcastResource<T>(url: string) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -140,9 +202,9 @@ function useBroadcastResource<T>(url: string) {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [url]);
+  }, [url, refreshKey]);
 
-  return { data, error };
+  return { data, error, reload: () => setRefreshKey((value) => value + 1) };
 }
 
 export function BroadcastShowroomIndex() {
@@ -164,12 +226,13 @@ export function BroadcastShowroomIndex() {
         <span>FINEPLAY BROADCAST</span>
         <h1>라이브 그래픽 쇼룸</h1>
         <p>HD PNG 배경과 투명 에셋을 겹쳐 중계 오버레이 또는 웹에서 바로 사용합니다.</p>
+        <Link className="broadcast-demo-link" href="/demo-90m">90분 완료 데모 룸 보기 →</Link>
         <small>마지막 목록 갱신: {formatTime(data?.generated_at)}</small>
       </section>
       {error ? <p className="broadcast-error">목록을 불러오지 못했습니다: {error}</p> : null}
       <section className="broadcast-match-list-section">
         <div className="broadcast-list-toolbar">
-          <div><h2>경기 선택</h2><p>대회별로 최근 생성된 미아카이브 경기를 확인합니다.</p></div>
+          <div><h2>경기 선택</h2><p>진행 중인 경기와 방송 그래픽을 보관한 종료 경기를 함께 확인합니다.</p></div>
           <label>
             <span>대회 필터</span>
             <select
@@ -213,7 +276,7 @@ export function BroadcastShowroomIndex() {
 }
 
 export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
-  const { data: match, error } = useBroadcastResource<BroadcastMatch>(`/api/broadcast/v1/matches/${matchId}`);
+  const { data: match, error, reload } = useBroadcastResource<BroadcastMatch>(`/api/broadcast/v1/matches/${matchId}`);
   const archiveMinutes = useMemo(() => Object.keys(match?.assets.archive || {}).sort((a, b) => Number(a) - Number(b)), [match]);
   const goalXgAssets = useMemo(() => Object.values(match?.assets.xg_goals || {}).sort((a, b) => Number(a.event_clock_ms || 0) - Number(b.event_clock_ms || 0)), [match]);
   if (error) return <main className="broadcast-showroom"><p className="broadcast-error">경기를 불러오지 못했습니다: {error}</p></main>;
@@ -222,7 +285,7 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
     <main className="broadcast-showroom">
       <Link href="/" className="broadcast-back">← 경기 목록</Link>
       <section className="broadcast-hero broadcast-match-hero">
-        <span>{match.status} · {match.competition_class} R{match.round_number}</span>
+        <span>{match.status === 'ARCHIVED' ? 'ARCHIVED · 보관됨' : match.status} · {match.competition_class} R{match.round_number}</span>
         <h1>{match.home_team} <i>vs</i> {match.away_team}</h1>
         <p>{match.name} · 마지막 생성 {formatTime(match.generated_at)}</p>
         <div className="broadcast-team-branding" aria-label="팀 브랜딩">
@@ -234,8 +297,8 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
             <TeamMark name={match.away_team} logoUrl={match.branding?.away_logo_url} color={match.branding?.away_color} />
             <span><small>AWAY</small><strong>{match.away_team}</strong><em style={{ backgroundColor: match.branding?.away_color || '#3d22f3' }} /></span>
           </div>
-          <a href={`https://console.fineludens.kr/admin/live-coder/match/${match.match_id}`} target="_blank" rel="noreferrer">팀 로고·대표 색상 설정 →</a>
         </div>
+        <TeamBrandingEditor match={match} onUpdated={reload} />
         <div className="broadcast-live-url-list" aria-label="실시간 에셋 URL">
           {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetUrlLinks key={type} title={label} asset={match.assets.live?.[type]} />)}
         </div>
@@ -243,7 +306,7 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
 
       <section className="broadcast-section">
         <div className="broadcast-section-heading"><h2>실시간 그래픽</h2><p>배경 PNG는 고정하고, 데이터 에셋 PNG만 새로 받아 방송 장비에서 3초 진입 모션을 적용합니다.</p></div>
-        <div className="broadcast-assets-grid">
+        <div className="broadcast-assets-grid broadcast-live-assets-grid">
           {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetCard key={type} title={label} asset={match.assets.live?.[type]} />)}
         </div>
       </section>
@@ -270,10 +333,14 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
       </section>
 
       <section className="broadcast-section">
-        <div className="broadcast-section-heading"><h2>매치 도미넌스</h2><p>전반 종료와 경기 종료 시점, 총 2장을 보관합니다.</p></div>
+        <div className="broadcast-section-heading"><h2>매치 도미넌스</h2><p>전반 종료와 경기 종료 시점, 총 2장을 보관하고 각각의 방송용 PNG URL을 제공합니다.</p></div>
         <div className="broadcast-assets-grid">
-          <AssetCard title="전반 종료" asset={match.assets.dominance?.halftime} />
-          <AssetCard title="경기 종료" asset={match.assets.dominance?.fulltime} />
+          <AssetCard title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} />
+          <AssetCard title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} />
+        </div>
+        <div className="broadcast-live-url-list" aria-label="매치 도미넌스 에셋 URL">
+          <AssetUrlLinks title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} />
+          <AssetUrlLinks title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} />
         </div>
       </section>
     </main>

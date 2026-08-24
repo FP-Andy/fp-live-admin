@@ -1,5 +1,6 @@
 import asyncio
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -8,6 +9,7 @@ import json
 import math
 import re
 import shutil
+import threading
 import time
 import traceback
 import uuid
@@ -29,7 +31,7 @@ from PIL import Image
 from pypdf import PdfReader
 
 from .db import Base, SessionLocal, engine, get_db
-from .fcm_cards import TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
+from .fcm_cards import GOALKEEPER_TEMPLATE_PATH, TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
 from .fpa import (
     analyze_card_workbook,
     build_analysis_workbook,
@@ -192,7 +194,11 @@ FPA_MODEL_ROOM_DIR = Path(os.getenv("FPA_MODEL_ROOM_DIR", "/app/runtime/fpa_mode
 BROADCAST_RUNTIME_DIR = Path(os.getenv("BROADCAST_RUNTIME_DIR", "/app/runtime/broadcast")).resolve()
 BROADCAST_LOGO_DIR = BROADCAST_RUNTIME_DIR / "logos"
 BROADCAST_ASSET_REFRESH_SECONDS = max(10, int(os.getenv("BROADCAST_ASSET_REFRESH_SECONDS", "60")))
+BROADCAST_ASSET_RENDER_CONCURRENCY = max(1, min(8, int(os.getenv("BROADCAST_ASSET_RENDER_CONCURRENCY", "1"))))
 BROADCAST_INGEST_KEY = os.getenv("BROADCAST_INGEST_KEY", "").strip()
+_broadcast_asset_render_lock = threading.BoundedSemaphore(BROADCAST_ASSET_RENDER_CONCURRENCY)
+_broadcast_branding_refresh_lock = threading.Lock()
+_broadcast_branding_refresh_timers: dict[str, threading.Timer] = {}
 
 FPA_MODEL_ROOM_SLOTS: dict[str, dict[str, str]] = {
     "xg": {
@@ -371,8 +377,14 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN team_side VARCHAR NOT NULL DEFAULT 'HOME'")
     if "fcm_submissions" in table_names and "player_name" not in fcm_submission_columns:
         statements.append("ALTER TABLE fcm_submissions ADD COLUMN player_name VARCHAR NOT NULL DEFAULT ''")
+    if "fcm_submissions" in table_names and "card_type" not in fcm_submission_columns:
+        statements.append("ALTER TABLE fcm_submissions ADD COLUMN card_type VARCHAR NOT NULL DEFAULT 'PLAYER'")
+    if "fcm_submissions" in table_names and "penalty_shootout" not in fcm_submission_columns:
+        statements.append("ALTER TABLE fcm_submissions ADD COLUMN penalty_shootout JSONB NOT NULL DEFAULT '[]'::jsonb")
     if "fcm_templates" in table_names and "competition_class" not in fcm_template_columns:
         statements.append("ALTER TABLE fcm_templates ADD COLUMN competition_class VARCHAR")
+    if "fcm_templates" in table_names and "card_type" not in fcm_template_columns:
+        statements.append("ALTER TABLE fcm_templates ADD COLUMN card_type VARCHAR NOT NULL DEFAULT 'PLAYER'")
     if "is_goal" not in event_columns:
         statements.append("ALTER TABLE events ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
     if "is_own_goal" not in event_columns:
@@ -1551,20 +1563,40 @@ def _verify_session_value(raw_value: str | None) -> str | None:
     return user_id
 
 
-def _set_session_cookie(response: Response, user_id: str) -> None:
+def _shared_session_cookie_options(request: Request | None = None) -> dict:
+    """Share an authenticated FPC session with the broadcast subdomain.
+
+    Local development keeps a host-only, non-secure cookie.  On the production
+    FineLudens domain the shared secure cookie lets an operator who signed in
+    to FPC configure logos and colours directly inside Broadcast.
+    """
+    host = ""
+    if request:
+        host = (request.headers.get("x-forwarded-host") or request.url.hostname or "").split(":", 1)[0].lower()
+    if host == "fineludens.kr" or host.endswith(".fineludens.kr"):
+        return {"domain": ".fineludens.kr", "secure": True}
+    return {"secure": False}
+
+
+def _set_session_cookie(response: Response, user_id: str, request: Request | None = None) -> None:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=_sign_session_value(user_id),
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=False,
+        **_shared_session_cookie_options(request),
         path="/",
     )
 
 
-def _clear_session_cookie(response: Response) -> None:
+def _clear_session_cookie(response: Response, request: Request | None = None) -> None:
+    # Clear both the old host-only cookie and the shared production cookie so
+    # sessions created before the showroom editor was added cannot linger.
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+    options = _shared_session_cookie_options(request)
+    if options.get("domain"):
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", domain=str(options["domain"]))
 
 
 def _get_session_user(
@@ -1850,28 +1882,34 @@ def _team_names_from_match(match_obj: Match) -> dict:
     }
 
 
-def _football_score_from_events(match_id: UUID, db: Session) -> dict:
+def _football_score_from_events(match_id: UUID, db: Session, *, as_of_clock_ms: int | None = None) -> dict:
     rows = (
         db.query(Event)
         .filter(Event.match_id == match_id, Event.type == "XG", Event.is_goal.is_(True))
         .all()
     )
+    if as_of_clock_ms is not None:
+        clock_context = _clock_normalization_context(match_id, db)
+        rows = [
+            row for row in rows
+            if _normalize_match_clock_ms(row.clock_ms, clock_context) <= max(0, int(as_of_clock_ms))
+        ]
     return {
         "HOME": sum(1 for row in rows if row.team == "HOME"),
         "AWAY": sum(1 for row in rows if row.team == "AWAY"),
     }
 
 
-def _build_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
+def _build_broadcast_snapshot(match_obj: Match, db: Session, *, as_of_clock_ms: int | None = None) -> dict:
     state = _broadcast_state(match_obj)
     teams = _team_names_from_match(match_obj)
     latest_state = _latest_state(match_obj.id, db)
-    score = _football_score_from_events(match_obj.id, db)
+    score = _football_score_from_events(match_obj.id, db, as_of_clock_ms=as_of_clock_ms)
     home_score = score["HOME"] if state.get("home_score") is None else int(state.get("home_score") or 0)
     away_score = score["AWAY"] if state.get("away_score") is None else int(state.get("away_score") or 0)
     result = _build_partner_match_result(match_obj.id, db) if state["sport"] == "FOOTBALL" else {}
     coder_clock_ms = _broadcast_clock_ms(state)
-    return {
+    snapshot = {
         "match": {
             "id": str(match_obj.id),
             "name": match_obj.name,
@@ -1883,6 +1921,11 @@ def _build_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
             "running": bool(state.get("clock_running")),
             "fla_clock": result.get("aggregate_clock") or (_fmt_clock_ms(latest_state.clock_ms) if latest_state else "00:00"),
             "fla_clock_ms": result.get("aggregate_clock_ms") or (latest_state.clock_ms if latest_state else 0),
+            # Broadcast captures must follow the configured match format.
+            # Jecheon U14/U15, for example, use 30/30 and 35/35 rather than
+            # the standard 45/45 minute format.
+            "first_half_minutes": max(1, int(getattr(match_obj, "first_half_minutes", None) or 45)),
+            "second_half_minutes": max(1, int(getattr(match_obj, "second_half_minutes", None) or getattr(match_obj, "first_half_minutes", None) or 45)),
         },
         "broadcast_state": state,
         "analysis": {
@@ -1893,6 +1936,107 @@ def _build_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
         },
         "updated_at": datetime.utcnow().isoformat(),
     }
+    if as_of_clock_ms is not None and state["sport"] == "FOOTBALL":
+        _trim_broadcast_snapshot_to_clock(snapshot, match_obj, db, max(0, int(as_of_clock_ms)))
+    return snapshot
+
+
+def _trim_broadcast_snapshot_to_clock(snapshot: dict, match_obj: Match, db: Session, clock_ms: int) -> None:
+    """Rebuild the time-sensitive parts of a stored broadcast frame.
+
+    Archive assets are immutable from an editorial-data perspective.  When a
+    crest or team colour changes afterwards we must not redraw the 15-minute
+    card with the final 90-minute statistics.  This helper keeps the snapshot
+    at the original match-clock point while allowing its presentation branding
+    to be freshly rendered.
+    """
+    cutoff = max(0, int(clock_ms))
+    clock_context = _clock_normalization_context(match_obj.id, db)
+    raw_latest_clock = _latest_state(match_obj.id, db)
+    current_raw_clock = raw_latest_clock.clock_ms if raw_latest_clock else cutoff
+    analysis = snapshot.get("analysis") if isinstance(snapshot.get("analysis"), dict) else {}
+
+    poss_rows = (
+        db.query(PossessionSegment)
+        .filter(PossessionSegment.match_id == match_obj.id)
+        .order_by(PossessionSegment.start_ms.asc(), PossessionSegment.created_at.asc())
+        .all()
+    )
+    home_ms = 0
+    away_ms = 0
+    for segment in poss_rows:
+        start_ms = _normalize_match_clock_ms(segment.start_ms, clock_context)
+        raw_end_ms = segment.end_ms if segment.end_ms is not None else current_raw_clock
+        end_ms = _normalize_match_clock_ms(raw_end_ms, clock_context)
+        duration_ms = max(0, min(end_ms, cutoff) - min(start_ms, cutoff))
+        if segment.team == "HOME":
+            home_ms += duration_ms
+        elif segment.team == "AWAY":
+            away_ms += duration_ms
+    possession_total = home_ms + away_ms
+    analysis["possession"] = {
+        "match_name": match_obj.name,
+        "match_id": str(match_obj.id),
+        "aggregate_clock_ms": cutoff,
+        "aggregate_clock": _fmt_clock_ms(cutoff),
+        "raw_aggregate_clock_ms": cutoff,
+        "raw_aggregate_clock": _fmt_clock_ms(cutoff),
+        "home_pct": (home_ms / possession_total * 100.0) if possession_total else 0.0,
+        "away_pct": (away_ms / possession_total * 100.0) if possession_total else 0.0,
+    }
+
+    lane_rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_obj.id, Event.type == "ATTACK_LANE")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+    lane_rows = [row for row in lane_rows if _normalize_match_clock_ms(row.clock_ms, clock_context) <= cutoff]
+    attack_rows: list[dict] = []
+    for side in ("HOME", "AWAY"):
+        team_rows = [row for row in lane_rows if row.team == side]
+        counts = {lane: sum(1 for row in team_rows if row.lane == lane) for lane in ("LEFT", "CENTER", "RIGHT")}
+        total = sum(counts.values())
+        attack_rows.append({
+            "match_name": match_obj.name,
+            "match_id": str(match_obj.id),
+            "aggregate_clock_ms": cutoff,
+            "aggregate_clock": _fmt_clock_ms(cutoff),
+            "raw_aggregate_clock_ms": cutoff,
+            "raw_aggregate_clock": _fmt_clock_ms(cutoff),
+            "team": side,
+            "direction": team_rows[-1].lane if team_rows else None,
+            "direction_ratio": {
+                "left_pct": (counts["LEFT"] / total * 100.0) if total else 0.0,
+                "center_pct": (counts["CENTER"] / total * 100.0) if total else 0.0,
+                "right_pct": (counts["RIGHT"] / total * 100.0) if total else 0.0,
+                "left_count": counts["LEFT"],
+                "center_count": counts["CENTER"],
+                "right_count": counts["RIGHT"],
+                "total_count": total,
+            },
+        })
+    analysis["attack_direction"] = attack_rows
+
+    analysis["xg"] = [
+        item for item in (analysis.get("xg") or [])
+        if isinstance(item, dict) and int(item.get("event_clock_ms") or 0) <= cutoff
+    ]
+    dominance = dict(analysis.get("match_dominance") or {})
+    dominance["aggregate_clock_ms"] = cutoff
+    dominance["aggregate_clock"] = _fmt_clock_ms(cutoff)
+    dominance["raw_aggregate_clock_ms"] = cutoff
+    dominance["raw_aggregate_clock"] = _fmt_clock_ms(cutoff)
+    dominance["items"] = [
+        item for item in (dominance.get("items") or [])
+        if isinstance(item, dict) and int(item.get("base_time_ms") or 0) < cutoff
+    ]
+    analysis["match_dominance"] = dominance
+    snapshot["analysis"] = analysis
+    snapshot["match"]["fla_clock_ms"] = cutoff
+    snapshot["match"]["fla_clock"] = _fmt_clock_ms(cutoff)
+    snapshot["match"]["home"]["score"] = sum(1 for item in analysis["xg"] if item.get("is_goal") and item.get("team") == "HOME")
+    snapshot["match"]["away"]["score"] = sum(1 for item in analysis["xg"] if item.get("is_goal") and item.get("team") == "AWAY")
 
 
 def _build_scoreboard_broadcast_snapshot(match_obj: Match, db: Session) -> dict:
@@ -1963,7 +2107,17 @@ def _broadcast_clock_from_snapshot(snapshot: dict) -> int:
     return max(0, int(match.get("fla_clock_ms") or match.get("clock_ms") or 0))
 
 
-def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
+def _broadcast_dominance_checkpoints(match_obj: Match) -> tuple[tuple[int, str, str], tuple[int, str, str]]:
+    """Return the halftime and full-match capture checkpoints for this match."""
+    first_half = max(1, int(getattr(match_obj, "first_half_minutes", None) or 45))
+    second_half = max(1, int(getattr(match_obj, "second_half_minutes", None) or first_half))
+    return (
+        (first_half, "match-dominance-halftime", "halftime"),
+        (first_half + second_half, "match-dominance-fulltime", "fulltime"),
+    )
+
+
+def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
     """Render current live assets and capture their required archive points.
 
     The five live comparison graphics are fixed at six FLA time-clock points.
@@ -1983,16 +2137,11 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     live: dict[str, dict] = {}
     archive = dict(manifest.get("archive") or {})
     xg_goals = dict(manifest.get("xg_goals") or {})
-    pending_archive_minutes = [
-        minute
-        for minute in (15, 30, 45, 60, 75, 90)
-        if clock_ms >= minute * 60_000
-        and any(asset_type not in (archive.get(str(minute)) or {}) for asset_type in LIVE_ASSET_TYPES)
-    ]
+    rendered_live = render_live_coder_asset_pairs(snapshot, LIVE_ASSET_TYPES)
     for asset_type in LIVE_ASSET_TYPES:
-        # Capture one HD layer pair at a time to keep the regular one-minute
-        # refresh bounded in memory.
-        rendered = render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
+        # All five cards share one Chromium launch, while each pair is still
+        # written independently so the stable public URLs stay unchanged.
+        rendered = rendered_live[asset_type]
         live[asset_type] = store_asset_pair(
             store,
             f"{match_key}/live/{asset_type}/latest",
@@ -2000,14 +2149,26 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
             snapshot,
             rendered=rendered,
         ).as_dict()
-        for minute in pending_archive_minutes:
-            archive.setdefault(str(minute), {})[asset_type] = store_asset_pair(
+    # A delayed refresh can cross several 15-minute points.  Capture each
+    # missing archive with its own historical FLA snapshot, never the latest
+    # state that happened to trigger this worker run.
+    for minute in (15, 30, 45, 60, 75, 90):
+        if clock_ms < minute * 60_000:
+            continue
+        stored_assets = archive.setdefault(str(minute), {})
+        missing_asset_types = [asset_type for asset_type in LIVE_ASSET_TYPES if asset_type not in stored_assets]
+        if not missing_asset_types:
+            continue
+        historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+        rendered_archive = render_live_coder_asset_pairs(historical_snapshot, missing_asset_types)
+        for asset_type in missing_asset_types:
+            stored_assets[asset_type] = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
-                snapshot,
+                historical_snapshot,
                 immutable=True,
-                rendered=rendered,
+                rendered=rendered_archive[asset_type],
             ).as_dict()
     manifest["live"] = live
     manifest["archive"] = archive
@@ -2052,25 +2213,402 @@ def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = Fa
     manifest["xg_goals"] = xg_goals
 
     dominance = dict(manifest.get("dominance") or {})
-    for minute, asset_type, slot in ((45, "match-dominance-halftime", "halftime"), (90, "match-dominance-fulltime", "fulltime")):
+    for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
         if clock_ms >= minute * 60_000 and not (isinstance(dominance.get(slot), dict) and dominance[slot].get("asset_url")):
-            dominance_rendered = render_live_coder_asset_pairs(snapshot, [asset_type])
+            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+            dominance_rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])
             dominance[slot] = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
-                snapshot,
+                historical_snapshot,
                 immutable=True,
                 rendered=dominance_rendered[asset_type],
             ).as_dict()
     manifest["dominance"] = dominance
     manifest["last_generated_at"] = datetime.utcnow().isoformat()
 
+    # Rendering takes long enough for an operator to update the branding while
+    # this worker is running.  The ORM object was loaded before the render, so
+    # refresh its JSON column immediately before writing the asset manifest.
+    # Otherwise this final commit can put the old (often empty) broadcast
+    # state back and make a manually uploaded logo disappear.
+    db.refresh(match_obj, attribute_names=["metadata_json"])
     metadata = dict(match_obj.metadata_json or {})
     metadata["broadcast_assets"] = manifest
     match_obj.metadata_json = metadata
     db.commit()
     return manifest
+
+
+def _refresh_broadcast_assets(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
+    """Serialize browser captures so concurrent updates cannot compete for Chromium."""
+    with _broadcast_asset_render_lock:
+        return _refresh_broadcast_assets_unlocked(match_obj, db, force=force)
+
+
+def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
+    """Refresh branding on every existing public card without changing its data.
+
+    A logo/colour edit can happen after 15-minute snapshots already exist.  In
+    that case each archive is rebuilt from the original clock point; active
+    and archived matches therefore retain the same stats, goals and xT while
+    showing the new team identity consistently.
+    """
+    with _broadcast_asset_render_lock:
+        manifest = _broadcast_assets_manifest(match_obj)
+        store = BroadcastAssetStore()
+        match_key = str(match_obj.id)
+
+        latest_snapshot = _build_broadcast_snapshot(match_obj, db)
+        latest_clock_ms = _broadcast_clock_from_snapshot(latest_snapshot)
+        live = dict(manifest.get("live") or {})
+        existing_live_types = [asset_type for asset_type in LIVE_ASSET_TYPES if asset_type in live]
+        if existing_live_types:
+            rendered_live = render_live_coder_asset_pairs(latest_snapshot, existing_live_types)
+            for asset_type in existing_live_types:
+                live[asset_type] = store_asset_pair(
+                    store,
+                    f"{match_key}/live/{asset_type}/latest",
+                    asset_type,
+                    latest_snapshot,
+                    rendered=rendered_live[asset_type],
+                ).as_dict()
+        manifest["live"] = live
+
+        archive = dict(manifest.get("archive") or {})
+        for minute_key, stored_assets in archive.items():
+            try:
+                archive_clock_ms = max(0, int(minute_key)) * 60_000
+            except (TypeError, ValueError):
+                continue
+            asset_types = [asset_type for asset_type in LIVE_ASSET_TYPES if asset_type in (stored_assets or {})]
+            if not asset_types:
+                continue
+            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=archive_clock_ms)
+            rendered = render_live_coder_asset_pairs(historical_snapshot, asset_types)
+            next_assets = dict(stored_assets or {})
+            for asset_type in asset_types:
+                next_assets[asset_type] = store_asset_pair(
+                    store,
+                    f"{match_key}/archive/{minute_key}/{asset_type}",
+                    asset_type,
+                    historical_snapshot,
+                    immutable=True,
+                    rendered=rendered[asset_type],
+                ).as_dict()
+            archive[minute_key] = next_assets
+        manifest["archive"] = archive
+
+        xg_goals = dict(manifest.get("xg_goals") or {})
+        for event_id, stored_goal in xg_goals.items():
+            if not isinstance(stored_goal, dict):
+                continue
+            event_clock_ms = max(0, int(stored_goal.get("event_clock_ms") or latest_clock_ms))
+            goal_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=event_clock_ms)
+            goal_snapshot["broadcast_state"] = {
+                **(goal_snapshot.get("broadcast_state") or {}),
+                "selected_xg_event_id": event_id,
+            }
+            rendered_goal = render_live_coder_asset_pairs(
+                goal_snapshot,
+                [GOAL_ASSET_TYPE],
+                xg_event_id=event_id,
+            )[GOAL_ASSET_TYPE]
+            xg_goals[event_id] = {
+                **store_asset_pair(
+                    store,
+                    f"{match_key}/goals/{event_id}/{GOAL_ASSET_TYPE}",
+                    GOAL_ASSET_TYPE,
+                    goal_snapshot,
+                    immutable=True,
+                    rendered=rendered_goal,
+                ).as_dict(),
+                "event_id": event_id,
+                "event_clock_ms": event_clock_ms,
+                "event_clock": str(stored_goal.get("event_clock") or _fmt_clock_ms(event_clock_ms)),
+                "team": str(stored_goal.get("team") or ""),
+            }
+        manifest["xg_goals"] = xg_goals
+
+        dominance = dict(manifest.get("dominance") or {})
+        for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
+            if not isinstance(dominance.get(slot), dict):
+                continue
+            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+            rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])[asset_type]
+            dominance[slot] = store_asset_pair(
+                store,
+                f"{match_key}/archive/{minute}/{asset_type}",
+                asset_type,
+                historical_snapshot,
+                immutable=True,
+                rendered=rendered,
+            ).as_dict()
+        manifest["dominance"] = dominance
+        manifest["last_generated_at"] = datetime.utcnow().isoformat()
+
+        # Do not let a long branding rebuild overwrite a newer logo upload
+        # with the broadcast state that was present when the rebuild began.
+        db.refresh(match_obj, attribute_names=["metadata_json"])
+        metadata = dict(match_obj.metadata_json or {})
+        metadata["broadcast_assets"] = manifest
+        match_obj.metadata_json = metadata
+        db.commit()
+        return manifest
+
+
+_BROADCAST_COMPLETED_DEMO_KEY = "completed-90m-v2"
+_BROADCAST_COMPLETED_DEMO_HOME = "데모 홈"
+_BROADCAST_COMPLETED_DEMO_AWAY = "데모 어웨이"
+_BROADCAST_COMPLETED_DEMO_POINTS = (15, 23, 30, 38, 45, 60, 71, 75, 90)
+
+# Each value is a 3-minute sample in the [-1, 1] dominance range.  Possession,
+# xG, and attacks below are all entered through the same services used by FLA,
+# so the resulting xT is calculated from actual stored dominance bins rather
+# than being a number drawn just for the showroom.
+_BROADCAST_COMPLETED_DEMO_DOMINANCE = (
+    .58, .71, .64, .77, .52, .48, .62, .68, .54, .41,
+    .59, .37, .44, .33, -.25, .21, .16, -.08, -.18, -.32,
+    -.45, -.59, -.71, -.64, -.48, -.39, -.28, -.18, -.12, -.09,
+)
+
+_BROADCAST_COMPLETED_DEMO_ATTACKS = (
+    (2, "HOME", "LEFT"), (5, "HOME", "CENTER"), (8, "AWAY", "RIGHT"),
+    (11, "HOME", "CENTER"), (14, "HOME", "RIGHT"), (17, "AWAY", "LEFT"),
+    (20, "HOME", "CENTER"), (23, "HOME", "LEFT"), (26, "AWAY", "RIGHT"),
+    (29, "HOME", "CENTER"), (32, "HOME", "RIGHT"), (35, "AWAY", "CENTER"),
+    (38, "AWAY", "LEFT"), (41, "HOME", "CENTER"), (44, "AWAY", "RIGHT"),
+    (48, "HOME", "LEFT"), (51, "AWAY", "CENTER"), (54, "HOME", "CENTER"),
+    (57, "AWAY", "RIGHT"), (60, "AWAY", "LEFT"), (63, "AWAY", "CENTER"),
+    (66, "HOME", "RIGHT"), (69, "AWAY", "RIGHT"), (72, "AWAY", "CENTER"),
+    (75, "HOME", "LEFT"), (78, "AWAY", "RIGHT"), (81, "HOME", "CENTER"),
+    (84, "AWAY", "LEFT"), (87, "HOME", "RIGHT"), (89, "AWAY", "CENTER"),
+)
+
+_BROADCAST_COMPLETED_DEMO_SHOTS = (
+    # minute, team, xG, xGOT, player, goal, on-target, shot x/y, goalmouth x/y
+    (12, "HOME", .13, .18, "김도윤", False, True, 86, 16, .28, .62),
+    (18, "AWAY", .08, .00, "이현우", False, False, 80, 53, .72, .44),
+    (23, "HOME", .41, .79, "박준서", True, True, 90, 27, .62, .76),
+    (31, "HOME", .18, .26, "김도윤", False, True, 84, 43, .44, .31),
+    (38, "AWAY", .57, .92, "최민재", True, True, 94, 46, .36, .72),
+    (49, "HOME", .07, .00, "정우진", False, False, 77, 21, .56, .25),
+    (63, "AWAY", .19, .32, "이현우", False, True, 88, 55, .75, .57),
+    (71, "AWAY", .26, .83, "한지훈", True, True, 91, 38, .49, .69),
+    (82, "HOME", .53, .58, "박준서", False, True, 95, 29, .58, .39),
+    (88, "AWAY", .15, .00, "최민재", False, False, 83, 14, .19, .33),
+)
+
+
+def _is_completed_broadcast_demo(match_obj: Match) -> bool:
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    demo = metadata.get("broadcast_demo") if isinstance(metadata.get("broadcast_demo"), dict) else {}
+    return demo.get("key") == _BROADCAST_COMPLETED_DEMO_KEY
+
+
+def _completed_broadcast_demo_match(db: Session) -> Match | None:
+    rows = (
+        db.query(Match)
+        .filter(Match.sport == "FOOTBALL")
+        .order_by(Match.created_at.desc())
+        .all()
+    )
+    return next((row for row in rows if _is_completed_broadcast_demo(row)), None)
+
+
+def _reset_completed_broadcast_demo_data(match_obj: Match, db: Session) -> None:
+    """Reset only the dedicated fixture row before rendering it again."""
+    for model in (MatchMarker, DominanceBin, Event, LaneSegment, PossessionSegment, State):
+        db.query(model).filter(model.match_id == match_obj.id).delete(synchronize_session=False)
+    db.flush()
+
+
+def _completed_broadcast_demo_metadata(match_obj: Match, clock_ms: int, sequence: int) -> dict:
+    broadcast = _default_broadcast_state(match_obj)
+    broadcast.update({
+        "home_label": _BROADCAST_COMPLETED_DEMO_HOME,
+        "away_label": _BROADCAST_COMPLETED_DEMO_AWAY,
+        "clock_ms": clock_ms,
+        "clock_running": False,
+        "sequence": sequence,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    return {
+        "home_team": _BROADCAST_COMPLETED_DEMO_HOME,
+        "away_team": _BROADCAST_COMPLETED_DEMO_AWAY,
+        "broadcast_demo": {
+            "key": _BROADCAST_COMPLETED_DEMO_KEY,
+            "completed": True,
+            "generated_at": datetime.utcnow().isoformat(),
+        },
+        "broadcast": broadcast,
+        "broadcast_assets": {
+            "version": 2,
+            "live": {},
+            "archive": {},
+            "xg_goals": {},
+            "dominance": {},
+            "last_generated_at": None,
+        },
+    }
+
+
+def _advance_completed_broadcast_demo_clock(match_obj: Match, clock_ms: int, sequence: int) -> None:
+    """Move the fixture clock without discarding prior immutable captures."""
+    metadata = dict(match_obj.metadata_json or {})
+    broadcast = _broadcast_state(match_obj)
+    broadcast.update({
+        "home_label": _BROADCAST_COMPLETED_DEMO_HOME,
+        "away_label": _BROADCAST_COMPLETED_DEMO_AWAY,
+        "clock_ms": clock_ms,
+        "clock_running": False,
+        "sequence": sequence,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    demo = dict(metadata.get("broadcast_demo") or {})
+    demo.update({
+        "key": _BROADCAST_COMPLETED_DEMO_KEY,
+        "completed": True,
+        "generated_at": datetime.utcnow().isoformat(),
+    })
+    metadata["broadcast"] = broadcast
+    metadata["broadcast_demo"] = demo
+    match_obj.metadata_json = metadata
+
+
+def seed_completed_broadcast_demo() -> str:
+    """Create a real, fully rendered 90-minute fixture for the public demo.
+
+    This is intentionally an operational command, not a browser mock.  It
+    enters staged FLA states/events and invokes the same renderer and storage
+    path that regular matches use.  The fixed match row makes re-runs replace
+    the existing asset URLs cleanly after a design change.
+    """
+    db = SessionLocal()
+    try:
+        match_obj = _completed_broadcast_demo_match(db)
+        if not match_obj:
+            match_obj = Match(
+                name="[DEMO | 90M] 데모 홈 vs 데모 어웨이",
+                sport="FOOTBALL",
+                competition_class="DEMO",
+                round_number=1,
+                archived=False,
+            )
+            db.add(match_obj)
+            db.flush()
+        else:
+            _reset_completed_broadcast_demo_data(match_obj, db)
+
+        match_obj.name = "[DEMO | 90M] 데모 홈 vs 데모 어웨이"
+        match_obj.sport = "FOOTBALL"
+        match_obj.competition_class = "DEMO"
+        match_obj.round_number = 1
+        match_obj.archived = False
+        match_obj.archived_at = None
+        match_obj.metadata_json = _completed_broadcast_demo_metadata(match_obj, 0, 0)
+        db.commit()
+
+        possession_rows: list[tuple[int, str, int, int]] = []
+        for index, balance in enumerate(_BROADCAST_COMPLETED_DEMO_DOMINANCE):
+            start_ms = index * 180_000
+            # Keep the possession profile varied but valid for every three-minute bin.
+            home_ms = max(18_000, min(162_000, int(90_000 + balance * 60_000)))
+            possession_rows.extend(((index, "HOME", start_ms, start_ms + home_ms), (index, "AWAY", start_ms + home_ms, start_ms + 180_000)))
+
+        added_possession: set[tuple[str, int, int]] = set()
+        added_attacks: set[tuple[int, str, str]] = set()
+        added_shots: set[tuple[int, str, str]] = set()
+        halftime_added = False
+        started_at = datetime.utcnow()
+
+        for sequence, minute in enumerate(_BROADCAST_COMPLETED_DEMO_POINTS, start=1):
+            clock_ms = minute * 60_000
+            for _bin, team, start_ms, end_ms in possession_rows:
+                key = (team, start_ms, end_ms)
+                if end_ms <= clock_ms and key not in added_possession:
+                    db.add(PossessionSegment(match_id=match_obj.id, team=team, start_ms=start_ms, end_ms=end_ms))
+                    apply_possession_segment(db, match_obj.id, team, start_ms, end_ms)
+                    added_possession.add(key)
+
+            for event_minute, team, lane in _BROADCAST_COMPLETED_DEMO_ATTACKS:
+                key = (event_minute, team, lane)
+                if event_minute * 60_000 <= clock_ms and key not in added_attacks:
+                    db.add(Event(
+                        id=uuid.uuid4(), match_id=match_obj.id, type="ATTACK_LANE",
+                        clock_ms=event_minute * 60_000, team=team, lane=lane,
+                        created_at=started_at + timedelta(seconds=event_minute),
+                    ))
+                    apply_attack_event(db, match_obj.id, team, event_minute * 60_000)
+                    added_attacks.add(key)
+
+            for shot in _BROADCAST_COMPLETED_DEMO_SHOTS:
+                event_minute, team, xg, xgot, player_name, is_goal, is_on_target, shot_x, shot_y, goalmouth_x, goalmouth_y = shot
+                key = (event_minute, team, player_name)
+                if event_minute * 60_000 <= clock_ms and key not in added_shots:
+                    db.add(Event(
+                        id=uuid.uuid4(), match_id=match_obj.id, type="XG",
+                        clock_ms=event_minute * 60_000, team=team, xg=xg, xgot=xgot,
+                        player_name=player_name, is_goal=is_goal, is_on_target=is_on_target,
+                        shot_x=shot_x, shot_y=shot_y, goalmouth_x=goalmouth_x, goalmouth_y=goalmouth_y,
+                        shot_pace_band="HIGH" if is_goal else "MID",
+                        created_at=started_at + timedelta(seconds=event_minute),
+                    ))
+                    apply_xg_event(db, match_obj.id, team, event_minute * 60_000, xg)
+                    added_shots.add(key)
+
+            if minute >= 45 and not halftime_added:
+                db.add(MatchMarker(match_id=match_obj.id, marker_type="HALFTIME_START", clock_ms=45 * 60_000))
+                halftime_added = True
+
+            db.add(State(
+                id=uuid.uuid4(), match_id=match_obj.id, clock_ms=clock_ms, running=False,
+                possession_team="NONE", selected_team="HOME", attack_lr="L2R",
+                created_at=started_at + timedelta(seconds=sequence),
+            ))
+            _advance_completed_broadcast_demo_clock(match_obj, clock_ms, sequence)
+            db.commit()
+            _broadcast_snapshot_cache.pop(str(match_obj.id), None)
+            _refresh_broadcast_assets(match_obj, db, force=True)
+
+        return str(match_obj.id)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
+    """Publish branding changes to every saved public PNG without waiting a minute."""
+    match_key = str(match_id)
+
+    def render_latest() -> None:
+        db = SessionLocal()
+        try:
+            match_obj = db.get(Match, match_id)
+            if match_obj:
+                _rebuild_broadcast_branding_assets(match_obj, db)
+        except Exception as exc:
+            db.rollback()
+            print(f"broadcast branding refresh failed for {match_key}: {exc}\n{traceback.format_exc()}")
+        finally:
+            db.close()
+            with _broadcast_branding_refresh_lock:
+                _broadcast_branding_refresh_timers.pop(match_key, None)
+
+    with _broadcast_branding_refresh_lock:
+        previous = _broadcast_branding_refresh_timers.get(match_key)
+        if previous and previous.is_alive():
+            previous.cancel()
+        # A showroom form may submit colours and the two crest files in quick
+        # succession.  Coalesce them into one historical rebuild rather than
+        # repeatedly launching Chromium for the same match.
+        timer = threading.Timer(2.0, render_latest)
+        timer.daemon = True
+        _broadcast_branding_refresh_timers[match_key] = timer
+        timer.start()
 
 
 def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
@@ -2087,7 +2625,7 @@ def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
         "away_team": teams["AWAY"],
         "competition_class": _normalize_competition_class(match_obj.competition_class),
         "round_number": int(match_obj.round_number or 1),
-        "status": "LIVE" if running else "OPEN",
+        "status": "ARCHIVED" if match_obj.archived else "LIVE" if running else "OPEN",
         "clock_ms": int(latest_state.clock_ms) if latest_state else 0,
         "archived": bool(match_obj.archived),
         "assets": manifest,
@@ -2109,27 +2647,63 @@ def _require_broadcast_ingest_key(x_broadcast_key: str | None = Header(default=N
         raise HTTPException(status_code=401, detail="Invalid broadcast ingest key")
 
 
-async def broadcast_asset_worker(stop_event: asyncio.Event) -> None:
-    """Keeps the public latest assets fresh without any broadcaster request work."""
-    while not stop_event.is_set():
-        db = SessionLocal()
-        try:
-            matches = (
-                db.query(Match)
-                .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
-                .order_by(Match.created_at.desc())
-                .all()
+def _refresh_all_broadcast_assets() -> None:
+    """Run the blocking browser capture work outside the API event loop."""
+    db = SessionLocal()
+    try:
+        match_ids = [
+            row.id for row in (
+            db.query(Match)
+            .filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
+            .order_by(Match.created_at.desc())
+            .all()
             )
-            for match_obj in matches:
-                try:
-                    _refresh_broadcast_assets(match_obj, db)
-                except Exception as exc:
-                    # One malformed match or temporary S3 failure must not stop
-                    # refreshes for every other concurrent live match.
-                    print(f"broadcast asset refresh failed for {match_obj.id}: {exc}\n{traceback.format_exc()}")
-                    db.rollback()
+            if not _is_completed_broadcast_demo(row)
+        ]
+    finally:
+        db.close()
+
+    def refresh_one(match_id: UUID) -> None:
+        session = SessionLocal()
+        try:
+            match_obj = session.get(Match, match_id)
+            if not match_obj:
+                return
+            if _is_completed_broadcast_demo(match_obj):
+                # This fixture is captured at exact staged times by the
+                # operational seed command; the regular one-minute worker
+                # must not replace those immutable demonstration snapshots.
+                return
+            try:
+                _refresh_broadcast_assets(match_obj, session)
+            except Exception as exc:
+                # One malformed match or temporary S3 failure must not stop
+                # refreshes for every other concurrent live match.
+                print(f"broadcast asset refresh failed for {match_obj.id}: {exc}\n{traceback.format_exc()}")
+                session.rollback()
         finally:
-            db.close()
+            session.close()
+
+    # The current small server keeps this at one.  After the planned server
+    # upgrade, setting BROADCAST_ASSET_RENDER_CONCURRENCY to 2–4 allows the
+    # worker to keep ten active fixtures inside the one-minute refresh window.
+    if BROADCAST_ASSET_RENDER_CONCURRENCY == 1 or len(match_ids) <= 1:
+        for match_id in match_ids:
+            refresh_one(match_id)
+        return
+    with ThreadPoolExecutor(max_workers=BROADCAST_ASSET_RENDER_CONCURRENCY, thread_name_prefix="broadcast-render") as executor:
+        futures = [executor.submit(refresh_one, match_id) for match_id in match_ids]
+        for future in as_completed(futures):
+            future.result()
+
+
+async def broadcast_asset_worker(stop_event: asyncio.Event) -> None:
+    """Keeps the public latest assets fresh without blocking overlay API reads."""
+    while not stop_event.is_set():
+        # The capture renderer loads the overlay, which calls this API for its
+        # snapshot.  _refresh_broadcast_assets uses synchronous HTTP/browser
+        # calls, so keeping it on the event loop would deadlock that request.
+        await asyncio.to_thread(_refresh_all_broadcast_assets)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=BROADCAST_ASSET_REFRESH_SECONDS)
         except asyncio.TimeoutError:
@@ -2161,6 +2735,8 @@ def _serialize_fcm_submission(row: FcmSubmission) -> dict:
         "player_id": row.player_id,
         "player_name": row.player_name or "",
         "selected_stats": list(row.selected_stats or []),
+        "card_type": "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER",
+        "penalty_shootout": [value for value in list(row.penalty_shootout or []) if str(value).upper() in {"O", "X"}][:10],
         "submitted_by": row.submitted_by,
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
@@ -2193,6 +2769,120 @@ def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
         raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
     df = parse_logs_to_dataframe(logs, str(row.match_id), row.teamid_h or "", row.teamid_a or "")
     return build_analysis_workbook(df, scene_rows=list(row.rows or []))
+
+
+def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> list[dict[str, object]]:
+    """Return opponent XG events used as the sole source for goalkeeper saves."""
+    opponent_side = "AWAY" if team_side == "HOME" else "HOME"
+    events = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.team == opponent_side, Event.type == "XG")
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+    return [
+        {
+            "is_goal": bool(event.is_goal),
+            "is_on_target": bool(event.is_on_target),
+            "xg": event.xg,
+            "goalmouth_x": event.goalmouth_x,
+            "goalmouth_y": event.goalmouth_y,
+        }
+        for event in events
+    ]
+
+
+def _goalkeeper_fla_save_count(events: list[dict[str, object]]) -> int:
+    return sum(1 for event in events if bool(event.get("is_on_target")) and not bool(event.get("is_goal")))
+
+
+def _goalkeeper_fla_conceded_values(events: list[dict[str, object]]) -> tuple[int, float]:
+    return (
+        sum(1 for event in events if bool(event.get("is_goal"))),
+        sum(float(event.get("xg") or 0) for event in events),
+    )
+
+
+def _stat_value_after_colon(stat: str) -> float | None:
+    match = re.search(r":\s*(-?\d+(?:\.\d+)?)", stat)
+    return float(match.group(1)) if match else None
+
+
+def _sync_goalkeeper_card_stats(
+    selected_stats: list[str], events: list[dict[str, object]] | None
+) -> list[str]:
+    """Align goalkeeper save text with FLA without discarding submitted detail."""
+    events = events or []
+    save_count = _goalkeeper_fla_save_count(events)
+    fla_goals, fla_xg = _goalkeeper_fla_conceded_values(events)
+    synced: list[str] = []
+    replaced_save = False
+    for raw_stat in selected_stats:
+        stat = str(raw_stat or "").strip()
+        normalized = re.sub(r"\s+", "", stat)
+        if normalized.startswith("선방") or normalized.startswith("세이브"):
+            label = "세이브" if normalized.startswith("세이브") else "선방"
+            # The submitted stat can include keeper-specific context such as
+            # ``(승부차기 : 1회)``. FLA is the source of the main save count,
+            # but that user-entered context must remain one of the five stats.
+            suffix_match = re.search(r"(\([^)]*\))\s*$", stat)
+            suffix = f" {suffix_match.group(1)}" if suffix_match else ""
+            synced.append(f"{label} {save_count}회{suffix}")
+            replaced_save = True
+        elif normalized.startswith("실점") and fla_goals > 0 and (_stat_value_after_colon(stat) or 0) == 0:
+            # FPA match logs sometimes contain only keeper actions and omit
+            # every opponent shot. In that case, avoid a false zero by using
+            # the persisted FLA XG goal record.
+            synced.append(f"실점 : {fla_goals}골")
+        elif normalized.startswith("기대실점") and fla_xg > 0 and (_stat_value_after_colon(stat) or 0) == 0:
+            synced.append(f"기대 실점(xG) : {fla_xg:.3f} ({fla_goals}골)")
+        else:
+            synced.append(stat)
+    if not replaced_save:
+        expected_index = next(
+            (index for index, stat in enumerate(synced) if re.sub(r"\s+", "", stat).startswith("기대실점")),
+            len(synced) - 1,
+        )
+        synced.insert(max(0, expected_index + 1), f"선방 : {save_count}회")
+    return synced
+
+
+def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match | None, db: Session) -> dict[str, Any]:
+    """Attach official lineup and FLA goalkeeper context to an FCM analysis."""
+    if not match_obj:
+        return payload
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    lineup_teams = ((metadata.get("lineups") or {}).get("teams") or {}) if isinstance(metadata, dict) else {}
+    lookup: dict[tuple[str, str], dict[str, str]] = {}
+    for side in ("HOME", "AWAY"):
+        for entry in lineup_teams.get(side, []) or []:
+            if not isinstance(entry, dict):
+                continue
+            number = str(entry.get("number") or "").strip()
+            if number:
+                lookup[(side, number)] = {
+                    "name": str(entry.get("name") or "").strip(),
+                    "position": str(entry.get("position") or "").upper(),
+                }
+
+    for player in payload.get("players", []):
+        if not isinstance(player, dict):
+            continue
+        team_marker = str(player.get("team") or "").strip().upper()
+        side = team_marker if team_marker in {"HOME", "AWAY"} else ""
+        lineup = lookup.get((side, str(player.get("player_id") or "").strip())) if side else None
+        if lineup:
+            player["player_name"] = lineup["name"]
+            player["is_goalkeeper"] = bool(player.get("is_goalkeeper")) or lineup["position"] == "GK"
+        if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
+            continue
+
+        # FLA defines saves. FPA retains the other metrics; if FPA has no
+        # opponent shots at all, its zero conceded values are safely filled
+        # from FLA's persisted goal/XG records.
+        opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
+        player["candidates"] = _sync_goalkeeper_card_stats(list(player.get("candidates") or []), opponent_xg_events)
+    return payload
 
 
 def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSavedLogsRequest, user: User | None) -> Match:
@@ -2236,6 +2926,7 @@ def _serialize_fcm_template(row: FcmTemplate) -> dict:
         "competition_class": _normalize_competition_class(row.competition_class) if row.competition_class else None,
         "match_regex": row.match_regex,
         "image_url": f"/api/fcm/templates/{row.id}/image",
+        "card_type": "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER",
         "priority": int(row.priority or 100),
         "active": bool(row.active),
         "created_at": row.created_at.isoformat(),
@@ -2276,12 +2967,14 @@ def _find_matching_template_path(rows: list[FcmTemplate], team_name: str) -> Pat
     return None
 
 
-def _find_registered_template_path(db: Session, competition_class: str | None, team_name: str) -> Path | None:
+def _find_registered_template_path(db: Session, competition_class: str | None, team_name: str, card_type: str = "PLAYER") -> Path | None:
     normalized_class = _normalize_competition_class(competition_class)
+    normalized_card_type = "GOALKEEPER" if str(card_type or "").upper() == "GOALKEEPER" else "PLAYER"
     class_rows = (
         db.query(FcmTemplate)
         .filter(FcmTemplate.active == True)  # noqa: E712
         .filter(FcmTemplate.competition_class == normalized_class)
+        .filter(FcmTemplate.card_type == normalized_card_type)
         .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
         .all()
     )
@@ -2293,14 +2986,34 @@ def _find_registered_template_path(db: Session, competition_class: str | None, t
         db.query(FcmTemplate)
         .filter(FcmTemplate.active == True)  # noqa: E712
         .filter(FcmTemplate.competition_class.is_(None))
+        .filter(FcmTemplate.card_type == normalized_card_type)
         .order_by(FcmTemplate.priority.asc(), FcmTemplate.created_at.asc())
         .all()
     )
     return _find_matching_template_path(legacy_rows, team_name)
 
 
+def _fcm_team_logo_path(match_obj: Match, team_side: str) -> Path | None:
+    state = _broadcast_state(match_obj)
+    key = "home_logo_url" if team_side == "HOME" else "away_logo_url"
+    raw_url = str(state.get(key) or "")
+    filename = Path(urlsplit(raw_url).path).name
+    if not filename:
+        return None
+    try:
+        path = _broadcast_logo_path(filename)
+    except HTTPException:
+        return None
+    return path if path.exists() and path.is_file() else None
+
+
 def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_number: int) -> tuple[str, bytes]:
-    template_path = _find_registered_template_path(db, row.competition_class, row.team_name or "") or find_template_path(row.team_name or "")
+    card_type = "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER"
+    registered_template_path = _find_registered_template_path(db, row.competition_class, row.team_name or "", card_type=card_type)
+    if card_type == "GOALKEEPER":
+        template_path = registered_template_path or GOALKEEPER_TEMPLATE_PATH
+    else:
+        template_path = registered_template_path or find_template_path(row.team_name or "")
     if not template_path:
         raise ValueError(f"{row.team_name}: 배경 템플릿 없음")
 
@@ -2313,12 +3026,28 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
     else:
         workbook_bytes = None
 
+    match_obj = db.get(Match, row.match_id)
+    team_logo_path = _fcm_team_logo_path(match_obj, row.team_side) if match_obj and card_type == "GOALKEEPER" else None
+    goalkeeper_fla_shots = (
+        _goalkeeper_fla_shot_events(db, row.match_id, row.team_side)
+        if card_type == "GOALKEEPER"
+        else None
+    )
+    selected_stats = list(row.selected_stats or [])
+    if card_type == "GOALKEEPER":
+        selected_stats = _sync_goalkeeper_card_stats(selected_stats, goalkeeper_fla_shots)
+
     card_bytes = build_card_image(
         background_path=template_path,
         player_id=row.player_id,
         player_name=row.player_name or row.player_id,
-        selected_stats=list(row.selected_stats or []),
+        selected_stats=selected_stats,
         workbook_bytes=workbook_bytes,
+        card_type=card_type,
+        penalty_shootout=list(row.penalty_shootout or []),
+        team_logo_path=team_logo_path,
+        replace_template_logo=card_type == "GOALKEEPER" and registered_template_path is None,
+        fla_shot_events=goalkeeper_fla_shots,
     )
     filename = f"{league}-{round_number}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
     return filename, card_bytes
@@ -3863,7 +4592,7 @@ def health() -> dict:
 
 
 @app.post("/api/session/login", response_model=SessionUserResponse)
-def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(body: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     user_name = body.name.strip()
     user_id = _slugify_user_id(user_name)
     role = _resolve_login_role(body.access_key)
@@ -3879,15 +4608,15 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
 
     db.commit()
     db.refresh(user)
-    _set_session_cookie(response, user.id)
+    _set_session_cookie(response, user.id, request)
     _audit(db, "SESSION_LOGIN", "session", actor=user, target_id=user.id, severity="INFO")
     db.commit()
     return {"id": user.id, "name": user.name, "role": user.role}
 
 
 @app.post("/api/session/logout")
-def logout(response: Response):
-    _clear_session_cookie(response)
+def logout(response: Response, request: Request):
+    _clear_session_cookie(response, request)
     return {"ok": True}
 
 
@@ -4679,6 +5408,7 @@ async def analyze_fcm_workbook(
     file: UploadFile = File(...),
     match_id: UUID | None = Form(default=None),
     team_side: str | None = Form(default=None),
+    db: Session = Depends(get_db),
 ):
     try:
         file_bytes = await file.read()
@@ -4687,7 +5417,8 @@ async def analyze_fcm_workbook(
             if team_side:
                 workbook_path = _fcm_workbook_path(match_id, _normalize_fcm_team_side(team_side))
                 workbook_path.write_bytes(file_bytes)
-        return analyze_card_workbook(file_bytes)
+        match_obj = db.get(Match, match_id) if match_id else None
+        return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(file_bytes), match_obj, db)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
     except Exception as ex:
@@ -4702,7 +5433,7 @@ def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db
     try:
         workbook = _build_fpa_workbook_from_saved_log(row)
         _fcm_shared_workbook_path(match_id).write_bytes(workbook)
-        return analyze_card_workbook(workbook)
+        return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(workbook), db.get(Match, match_id), db)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
     except HTTPException:
@@ -4729,6 +5460,7 @@ async def create_fcm_template(
     name: str = Form(...),
     competition_class: str = Form(...),
     match_regex: str = Form(...),
+    card_type: str = Form(default="PLAYER"),
     priority: int = Form(default=100),
     active: bool = Form(default=True),
     file: UploadFile = File(...),
@@ -4740,6 +5472,7 @@ async def create_fcm_template(
         raise HTTPException(status_code=400, detail="Template name is required")
     clean_class = _validate_fcm_template_competition_class(db, competition_class)
     clean_regex = _validate_fcm_template_regex(match_regex)
+    normalized_card_type = "GOALKEEPER" if card_type.strip().upper() == "GOALKEEPER" else "PLAYER"
 
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg"}:
@@ -4761,6 +5494,7 @@ async def create_fcm_template(
         competition_class=clean_class,
         match_regex=clean_regex,
         image_path=str(image_path),
+        card_type=normalized_card_type,
         priority=max(1, priority),
         active=active,
     )
@@ -4788,6 +5522,7 @@ def update_fcm_template(
     row.name = clean_name
     row.competition_class = _validate_fcm_template_competition_class(db, body.competition_class)
     row.match_regex = _validate_fcm_template_regex(body.match_regex)
+    row.card_type = "GOALKEEPER" if body.card_type == "GOALKEEPER" else "PLAYER"
     row.priority = max(1, int(body.priority or 1))
     row.active = bool(body.active)
     row.updated_at = datetime.utcnow()
@@ -4931,6 +5666,9 @@ def upsert_fcm_submission(
     if len(selected_stats) > 5:
         raise HTTPException(status_code=400, detail="You can submit at most 5 stats")
 
+    card_type = "GOALKEEPER" if body.card_type == "GOALKEEPER" else "PLAYER"
+    penalty_shootout = [value for value in body.penalty_shootout if value in {"O", "X"}][:10]
+
     normalized_side = _normalize_fcm_team_side(body.team_side)
 
     row = (
@@ -4955,6 +5693,8 @@ def upsert_fcm_submission(
     row.player_id = body.player_id.strip()
     row.player_name = body.player_name.strip()
     row.selected_stats = selected_stats
+    row.card_type = card_type
+    row.penalty_shootout = penalty_shootout if card_type == "GOALKEEPER" else []
     row.submitted_by = user.id
     row.updated_at = datetime.utcnow()
 
@@ -4976,6 +5716,8 @@ def upsert_fcm_submission(
             "player_id": row.player_id,
             "player_name": row.player_name,
             "selected_stats": selected_stats,
+            "card_type": card_type,
+            "penalty_shootout": row.penalty_shootout,
             "home_team": metadata.get("home_team"),
             "away_team": metadata.get("away_team"),
         },
@@ -5646,7 +6388,11 @@ def get_broadcast_state(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.post("/api/broadcast/matches/{match_id}/state")
-def put_broadcast_state(match_id: UUID, body: dict = Body(default_factory=dict), db: Session = Depends(get_db)):
+def put_broadcast_state(
+    match_id: UUID,
+    body: dict = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -5669,8 +6415,19 @@ def put_broadcast_state(match_id: UUID, body: dict = Body(default_factory=dict),
         "away_label": str(body.get("away_label", previous.get("away_label") or "Away")).strip()[:20] or "Away",
         "home_color": str(body.get("home_color", previous.get("home_color") or "#ff7900")).strip(),
         "away_color": str(body.get("away_color", previous.get("away_color") or "#3d22f3")).strip(),
-        "home_logo_url": str(body.get("home_logo_url", previous.get("home_logo_url") or "")).strip()[:500],
-        "away_logo_url": str(body.get("away_logo_url", previous.get("away_logo_url") or "")).strip()[:500],
+        # Logo files are managed by the dedicated upload endpoint below.  A
+        # state-control request must never clear an existing logo merely
+        # because a stale client submits an empty field.
+        "home_logo_url": (
+            str(body.get("home_logo_url")).strip()[:500]
+            if str(body.get("home_logo_url") or "").strip()
+            else previous.get("home_logo_url") or ""
+        ),
+        "away_logo_url": (
+            str(body.get("away_logo_url")).strip()[:500]
+            if str(body.get("away_logo_url") or "").strip()
+            else previous.get("away_logo_url") or ""
+        ),
         "home_score": body.get("home_score", previous.get("home_score")),
         "away_score": body.get("away_score", previous.get("away_score")),
         "event_payload": body.get("event_payload", previous.get("event_payload")),
@@ -5713,6 +6470,8 @@ def put_broadcast_state(match_id: UUID, body: dict = Body(default_factory=dict),
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
+    if any(key in body for key in {"home_label", "away_label", "home_color", "away_color"}):
+        _queue_broadcast_branding_refresh(match_id)
     return next_state
 
 
@@ -5759,6 +6518,7 @@ async def upload_broadcast_logo(
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
+    _queue_broadcast_branding_refresh(match_id)
     return next_state
 
 
@@ -5845,24 +6605,41 @@ def list_broadcast_live_matches(
     page_size: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    """Public showroom index with FPC-style competition filtering and paging."""
-    base_query = db.query(Match).filter(Match.archived.is_(False), Match.sport == "FOOTBALL")
-    competition_rows = base_query.with_entities(Match.competition_class).distinct().all()
-    competition_classes = sorted({_normalize_competition_class(row[0]) for row in competition_rows})
-    selected_class = _normalize_competition_class(competition_class) if competition_class else None
-    if selected_class:
-        base_query = base_query.filter(Match.competition_class == selected_class)
-    total = base_query.count()
+    """Public showroom index with FPC-style competition filtering and paging.
+
+    Current matches remain at the top, while a match that was genuinely used
+    for broadcast stays visible after FPC archives it.  Old non-broadcast
+    archive records are deliberately excluded so the showroom does not become
+    a general match database.
+    """
     rows = (
-        base_query
+        db.query(Match)
+        .filter(Match.sport == "FOOTBALL")
         .order_by(Match.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
         .all()
     )
+    # The completed 90-minute fixture is linked from the demo room and should
+    # not look like an operator-created live fixture in the normal index.
+    rows = [
+        row for row in rows
+        if not _is_completed_broadcast_demo(row)
+        and (not row.archived or any(_broadcast_assets_manifest(row).get(key) for key in ("live", "archive", "xg_goals", "dominance")))
+    ]
+    rows.sort(
+        key=lambda row: (
+            bool(row.archived),
+            -(row.archived_at or row.created_at).timestamp(),
+        )
+    )
+    competition_classes = sorted({_normalize_competition_class(row.competition_class) for row in rows})
+    selected_class = _normalize_competition_class(competition_class) if competition_class else None
+    if selected_class:
+        rows = [row for row in rows if _normalize_competition_class(row.competition_class) == selected_class]
+    total = len(rows)
+    page_rows = rows[(page - 1) * page_size:page * page_size]
     return {
         "generated_at": datetime.utcnow().isoformat(),
-        "matches": [_broadcast_public_match(row, db) for row in rows],
+        "matches": [_broadcast_public_match(row, db) for row in page_rows],
         "competition_classes": competition_classes,
         "pagination": {
             "page": page,
@@ -5871,6 +6648,15 @@ def list_broadcast_live_matches(
             "total_pages": max(1, math.ceil(total / page_size)),
         },
     }
+
+
+@app.get("/api/broadcast/v1/demo-90m")
+def get_completed_broadcast_demo(db: Session = Depends(get_db)):
+    """Return the persisted fixture used by the public completed-match room."""
+    row = _completed_broadcast_demo_match(db)
+    if not row:
+        raise HTTPException(status_code=404, detail="Completed broadcast demo has not been rendered yet")
+    return _broadcast_public_match(row, db)
 
 
 @app.get("/api/broadcast/v1/matches/{match_id}")

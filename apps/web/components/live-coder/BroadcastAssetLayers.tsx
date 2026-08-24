@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { BroadcastSnapshot } from './types';
 
 export type BroadcastCaptureGraphic =
@@ -10,7 +10,7 @@ export type BroadcastCaptureGraphic =
   | 'XG_COMPARISON'
   | 'MATCH_DOMINANCE';
 
-const fallbackColors = { HOME: '#f36b21', AWAY: '#1687d4' } as const;
+const fallbackColors = { HOME: '#ff7900', AWAY: '#1e27ff' } as const;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -20,6 +20,15 @@ function pct(value: number | undefined) {
   return `${Math.round(Number(value || 0))}%`;
 }
 
+function isBrightComparisonColor(color: string) {
+  const value = color.trim().replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(value)) return false;
+  const channels = [0, 2, 4].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255);
+  const linear = channels.map((channel) => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4);
+  const luminance = .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
+  return luminance >= .76;
+}
+
 function team(snapshot: BroadcastSnapshot, side: 'HOME' | 'AWAY') {
   const state = snapshot.broadcast_state;
   const matchTeam = side === 'HOME' ? snapshot.match.home : snapshot.match.away;
@@ -27,7 +36,9 @@ function team(snapshot: BroadcastSnapshot, side: 'HOME' | 'AWAY') {
   const logoUrl = side === 'HOME' ? state.home_logo_url : state.away_logo_url;
   const label = side === 'HOME' ? state.home_label : state.away_label;
   return {
-    name: label || matchTeam.name || side,
+    // The graphics are delivered to broadcasters, so a generic Home/Away
+    // placeholder must never replace the actual team name.
+    name: matchTeam.name || label || side,
     color: color || fallbackColors[side],
     logoUrl: logoUrl || '',
     score: Number(matchTeam.score || 0),
@@ -39,15 +50,48 @@ function initials(name: string) {
 }
 
 function TeamLogo({ url, name, className = '' }: { url?: string; name: string; className?: string }) {
-  return url ? <img className={className} src={url} alt={`${name} 로고`} /> : <span className={`${className} bc-logo-fallback`}>{initials(name)}</span>;
+  return url ? <img data-broadcast-logo="true" className={className} src={url} alt={`${name} 로고`} /> : <span className={`${className} bc-logo-fallback`}>{initials(name)}</span>;
 }
 
 function Template({ src, className }: { src: string; className: string }) {
-  return <img className={`bc-template ${className}`} src={src} alt="" aria-hidden="true" />;
+  return <img data-broadcast-template="true" className={`bc-template ${className}`} src={src} alt="" aria-hidden="true" />;
 }
 
-function Layer({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+function Layer({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <div className={`bc-asset-layer ${className}`}>{children}</div>;
+}
+
+function DesignArtboard({ className, children }: { className: string; children: ReactNode }) {
+  return <div className={`bc-design-artboard ${className}`}>{children}</div>;
+}
+
+function roundLabel(snapshot: BroadcastSnapshot) {
+  const header = snapshot.match.name.match(/\[([^\]]+)\]/)?.[1] || '';
+  const round = header.match(/(\d+)\s*R/i)?.[1];
+  return round ? `${round} ROUND` : 'ROUND';
+}
+
+function dominanceTitleUnits(value: string) {
+  return Array.from(value.trim()).reduce((total, character) => {
+    if (/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(character)) return total + 1;
+    if (/[A-Za-z0-9]/.test(character)) return total + .62;
+    if (/\s/.test(character)) return total + .3;
+    return total + .48;
+  }, 0);
+}
+
+function dominanceTitleStyle(homeName: string, awayName: string): CSSProperties {
+  // Reserve a proportional column for each name, then reduce the text size
+  // before falling back to an ellipsis. This keeps both teams identifiable
+  // even when one name is materially longer than the other.
+  const homeUnits = Math.max(3.5, dominanceTitleUnits(homeName));
+  const awayUnits = Math.max(3.5, dominanceTitleUnits(awayName));
+  const separatorUnits = 1.55;
+  const fontSize = clamp(Math.floor(650 / (homeUnits + awayUnits + separatorUnits)), 30, 47);
+  return {
+    fontSize,
+    gridTemplateColumns: `minmax(0, ${homeUnits}fr) auto minmax(0, ${awayUnits}fr)`,
+  };
 }
 
 function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side: 'HOME' | 'AWAY' }) {
@@ -55,37 +99,55 @@ function AttackDirection({ snapshot, side }: { snapshot: BroadcastSnapshot; side
   const row = snapshot.analysis.attack_direction?.find((item) => item.team === side);
   const ratio = row?.direction_ratio || {};
   const lanes = [
-    { key: 'left', label: 'LEFT', value: Number(ratio.left_pct || 0), count: Number(ratio.left_count || 0), x: 130 },
-    { key: 'center', label: 'CENTER', value: Number(ratio.center_pct || 0), count: Number(ratio.center_count || 0), x: 286 },
-    { key: 'right', label: 'RIGHT', value: Number(ratio.right_pct || 0), count: Number(ratio.right_count || 0), x: 442 },
+    { key: 'left', value: Number(ratio.left_pct || 0), count: Number(ratio.left_count || 0), x: 51 },
+    { key: 'center', value: Number(ratio.center_pct || 0), count: Number(ratio.center_count || 0), x: 119 },
+    { key: 'right', value: Number(ratio.right_pct || 0), count: Number(ratio.right_count || 0), x: 187 },
   ];
-  const order = new Map([...lanes].sort((a, b) => b.value - a.value).map((item, index) => [item.key, index]));
+  const ranked = new Map([...lanes].sort((a, b) => b.value - a.value).map((lane, index) => [lane.key, index]));
   const style = { '--team-color': currentTeam.color } as CSSProperties;
+  // The football field starts at y=139 on the 238×415 artboard.  Cap the
+  // longest arrow there so an 80–100% lane never crosses the title/copy area.
+  const arrowBaseline = 342;
+  const arrowPitchTop = 139;
+  const arrowMinimumHeight = 40;
+  const arrowMaximumHeight = arrowBaseline - arrowPitchTop;
   return (
     <section className="bc-frame bc-attack" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/attack-direction/background.svg" className="bc-attack-template" /></div>
       <Layer>
-        <div className="bc-card-team bc-attack-team">
-          <TeamLogo url={currentTeam.logoUrl} name={currentTeam.name} />
-          <strong>{currentTeam.name}</strong>
-        </div>
-        <div className="bc-attack-copy"><span>공격 방향 · 비율</span><b>전개 횟수</b></div>
-        <svg className="bc-attack-arrows" viewBox="0 0 572 996" aria-label="공격 방향">
-          {lanes.map((lane) => {
-            const height = 150 + clamp(lane.value, 0, 100) * 4.4;
-            const top = 807 - height;
-            const width = 17 + clamp(lane.value, 0, 100) * 0.38;
-            return (
-              <g className="bc-attack-arrow" key={lane.key} style={{ animationDelay: `${Number(order.get(lane.key) || 0)}s` }}>
-                <line x1={lane.x} x2={lane.x} y1="807" y2={top + width} strokeWidth={width} />
-                <path d={`M ${lane.x - width * 1.1} ${top + width * 2.2} L ${lane.x} ${top} L ${lane.x + width * 1.1} ${top + width * 2.2}`} strokeWidth={Math.max(10, width * 0.52)} />
-              </g>
-            );
-          })}
-        </svg>
-        <div className="bc-attack-values">
-          {lanes.map((lane) => <div key={lane.key}><strong>{pct(lane.value)}</strong><span>{lane.count}회</span></div>)}
-        </div>
+        <DesignArtboard className="bc-attack-artboard">
+          <strong className="bc-attack-team-name">{currentTeam.name}</strong>
+          <div className="bc-attack-copy">공격 방향 · 비율 · 전개 횟수</div>
+          <svg className="bc-attack-arrows" viewBox="0 0 238 415" aria-label="공격 방향">
+            <defs>
+              {lanes.map((lane) => <linearGradient id={`bc-attack-gradient-${lane.key}`} key={lane.key} x1="0" y1="1" x2="0" y2="0">
+                <stop offset="0" stopColor="var(--team-color)" stopOpacity="0" />
+                <stop offset=".42" stopColor="var(--team-color)" stopOpacity={0.36 + Number(ranked.get(lane.key) || 0) * 0.08} />
+                <stop offset="1" stopColor="var(--team-color)" stopOpacity="1" />
+              </linearGradient>)}
+            </defs>
+            {lanes.map((lane) => {
+              const laneRank = Number(ranked.get(lane.key) || 0);
+              const height = arrowMinimumHeight + (arrowMaximumHeight - arrowMinimumHeight) * (clamp(lane.value, 0, 100) / 100);
+              const top = arrowBaseline - height;
+              // Keep the designer's arrowhead proportions.  Only the stem
+              // is widened so the direction cue stays sharp at HD scale.
+              const headShaft = 5.5 + clamp(lane.value, 0, 100) * 0.075;
+              const shaft = headShaft * 2;
+              const headWidth = headShaft * 2.7;
+              const headHeight = headShaft * 2.25;
+              return (
+                <g className="bc-attack-arrow" key={lane.key} opacity={1 - laneRank * 0.13}>
+                  <rect x={lane.x - shaft / 2} y={top + headHeight * .7} width={shaft} height={342 - top} fill={`url(#bc-attack-gradient-${lane.key})`} />
+                  <path d={`M ${lane.x} ${top} L ${lane.x - headWidth} ${top + headHeight} L ${lane.x - headShaft / 2} ${top + headHeight} L ${lane.x - headShaft / 2} ${top + headHeight * 1.42} L ${lane.x + headShaft / 2} ${top + headHeight * 1.42} L ${lane.x + headShaft / 2} ${top + headHeight} L ${lane.x + headWidth} ${top + headHeight} Z`} fill="var(--team-color)" />
+                </g>
+              );
+            })}
+          </svg>
+          <div className="bc-attack-values">
+            {lanes.map((lane) => <div key={lane.key}><strong>{pct(lane.value)}</strong><span>{lane.count}회</span></div>)}
+          </div>
+        </DesignArtboard>
       </Layer>
     </section>
   );
@@ -99,14 +161,30 @@ function Possession({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const total = rawHome + rawAway;
   const homePct = total > 0 ? (rawHome / total) * 100 : 50;
   const awayPct = total > 0 ? (rawAway / total) * 100 : 50;
-  const style = { '--home-color': home.color, '--away-color': away.color, '--home-pct': `${homePct}%`, '--away-pct': `${awayPct}%` } as CSSProperties;
+  const style = {
+    '--home-color': home.color,
+    '--away-color': away.color,
+    '--home-pct': `${homePct}%`,
+    '--away-pct': `${awayPct}%`,
+    // Keep the percentage readable against each team's own bar colour, using
+    // exactly the same contrast rule as the shots comparison graphic.
+    '--home-value-color': isBrightComparisonColor(home.color) ? '#101318' : '#fff',
+    '--away-value-color': isBrightComparisonColor(away.color) ? '#101318' : '#fff',
+  } as CSSProperties;
   return (
     <section className="bc-frame bc-possession-frame" style={style}>
-      <div className="bc-background-layer bc-possession-background"><div /><span>볼 점유율</span></div>
+      <div className="bc-background-layer"><Template src="/broadcast/templates/possession/background.svg" className="bc-possession-template" /></div>
       <Layer>
-        <div className="bc-possession-team home"><TeamLogo url={home.logoUrl} name={home.name} /><strong>{home.name}</strong><b>{pct(homePct)}</b></div>
-        <div className="bc-possession-team away"><b>{pct(awayPct)}</b><strong>{away.name}</strong><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <div className="bc-possession-track"><i className="home" /><i className="away" /></div>
+        <DesignArtboard className="bc-possession-artboard">
+          <strong className="bc-possession-title">볼 점유율 <small>(%)</small></strong>
+          <TeamLogo url={home.logoUrl} name={home.name} className="bc-possession-logo home" />
+          <TeamLogo url={away.logoUrl} name={away.name} className="bc-possession-logo away" />
+          <strong className="bc-possession-team-name home">{home.name}</strong>
+          <strong className="bc-possession-team-name away">{away.name}</strong>
+          <div className="bc-possession-value home">{pct(homePct)}</div>
+          <div className="bc-possession-value away">{pct(awayPct)}</div>
+          <div className="bc-possession-track"><i className="home" /><i className="away" /></div>
+        </DesignArtboard>
       </Layer>
     </section>
   );
@@ -117,21 +195,34 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const away = team(snapshot, 'AWAY');
   const shots = snapshot.analysis.xg || [];
   const stats = (side: 'HOME' | 'AWAY') => {
-    const items = shots.filter((item) => item.team === side);
-    return { shots: items.length, onTarget: items.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length };
+    const rows = shots.filter((item) => item.team === side);
+    return { shots: rows.length, onTarget: rows.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length };
   };
   const homeStats = stats('HOME');
   const awayStats = stats('AWAY');
-  const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
+  // The coloured value boxes are team identity and must always keep their
+  // original colour. Only their numerals switch to dark ink when the box is
+  // close to white/yellow.
+  const style = {
+    '--home-color': home.color,
+    '--away-color': away.color,
+    '--home-value-color': isBrightComparisonColor(home.color) ? '#101318' : '#fff',
+    '--away-value-color': isBrightComparisonColor(away.color) ? '#101318' : '#fff',
+  } as CSSProperties;
   return (
     <section className="bc-frame bc-shots" style={style}>
-      <div className="bc-background-layer"><Template src="/broadcast/templates/shots/background.svg" className="bc-shots-template" /></div>
+      <div className="bc-background-layer"><Template src="/broadcast/templates/shots/background-v2.svg" className="bc-shots-template" /></div>
       <Layer>
-        <div className="bc-shots-team home"><TeamLogo url={home.logoUrl} name={home.name} /><b>{home.name}</b></div>
-        <div className="bc-shots-team away"><b>{away.name}</b><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <div className="bc-shots-numbers home"><strong>{homeStats.shots}</strong><b>{homeStats.onTarget}</b></div>
-        <div className="bc-shots-numbers away"><strong>{awayStats.shots}</strong><b>{awayStats.onTarget}</b></div>
-        <div className="bc-shots-labels"><span>슈팅</span><b>유효 슈팅</b></div>
+        <DesignArtboard className="bc-shots-artboard">
+          <TeamLogo url={home.logoUrl} name={home.name} className="bc-shots-logo home" />
+          <TeamLogo url={away.logoUrl} name={away.name} className="bc-shots-logo away" />
+          <strong className="bc-shots-team-name home">{home.name}</strong>
+          <strong className="bc-shots-team-name away">{away.name}</strong>
+          <div className="bc-shots-grid">
+            <div className="bc-shots-value home">{homeStats.shots}</div><span>슈팅</span><div className="bc-shots-value away">{awayStats.shots}</div>
+            <div className="bc-shots-value home">{homeStats.onTarget}</div><b>유효<br />슈팅</b><div className="bc-shots-value away">{awayStats.onTarget}</div>
+          </div>
+        </DesignArtboard>
       </Layer>
     </section>
   );
@@ -143,6 +234,24 @@ function selectedShot(snapshot: BroadcastSnapshot) {
   return rows.find((item) => item.event_id === selected) || rows[rows.length - 1] || null;
 }
 
+function shotRouteTransform(source: { x: number; y: number }, target: { x: number; y: number }) {
+  // The supplied Shot xG SVG runs from its white ball (113.7, 184.7) to its
+  // mint goal ball (12.7, 12.7). Map that authored route onto live event
+  // coordinates so the original ball, arrow and trail stay together.
+  const assetStart = { x: 113.737, y: 184.739 };
+  const assetEnd = { x: 12.737, y: 12.739 };
+  const dx = assetEnd.x - assetStart.x;
+  const dy = assetEnd.y - assetStart.y;
+  const vx = target.x - source.x;
+  const vy = target.y - source.y;
+  const lengthSq = dx * dx + dy * dy;
+  const a = (vx * dx + vy * dy) / lengthSq;
+  const b = (vy * dx - vx * dy) / lengthSq;
+  const tx = source.x - (a * assetStart.x - b * assetStart.y);
+  const ty = source.y - (b * assetStart.x + a * assetStart.y);
+  return `matrix(${a} ${b} ${-b} ${a} ${tx} ${ty})`;
+}
+
 function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const row = selectedShot(snapshot);
   const shotTeam = row?.team === 'AWAY' ? team(snapshot, 'AWAY') : team(snapshot, 'HOME');
@@ -150,28 +259,35 @@ function ShotXg({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shotY = clamp(Number(row?.shot_y ?? 34), 0, 68);
   const goalmouthX = clamp(Number(row?.goalmouth_x ?? .5), 0, 1);
   const goalmouthY = clamp(Number(row?.goalmouth_y ?? .5), 0, 1);
-  const source = { x: 155 + (shotY / 68) * 370, y: 657 - ((shotX - 70) / 35) * 300 };
-  const target = { x: 205 + goalmouthX * 300, y: 170 + (1 - goalmouthY) * 100 };
-  const star = Array.from({ length: 10 }, (_, index) => {
-    const angle = -Math.PI / 2 + index * Math.PI / 5;
-    const radius = index % 2 ? 13 : 28;
-    return `${target.x + Math.cos(angle) * radius},${target.y + Math.sin(angle) * radius}`;
-  }).join(' ');
+  const source = { x: 31 + (shotY / 68) * 300, y: 336 - ((shotX - 70) / 35) * 167 };
+  const target = { x: 31 + goalmouthX * 300, y: 32 + (1 - goalmouthY) * 100 };
   const minute = Math.max(0, Math.round(Number(row?.event_clock_ms || 0) / 60_000));
+  const routeTransform = shotRouteTransform(source, target);
   const style = { '--team-color': shotTeam.color } as CSSProperties;
   return (
     <section className="bc-frame bc-shot-xg" style={style}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/shot-xg/background.svg" className="bc-shot-xg-template" /><i className="bc-shot-xg-static-copy-mask" /></div>
       <Layer>
-        <svg className="bc-shot-xg-route" viewBox="0 0 680 840">
-          <circle className="bc-shot-xg-dot" cx={source.x} cy={source.y} r="24" />
-          <line className="bc-shot-xg-line" x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
-          <polygon className="bc-shot-xg-star" points={star} />
-        </svg>
-        <div className="bc-shot-xg-player"><TeamLogo url={shotTeam.logoUrl} name={shotTeam.name} /><span>{row?.player_name || shotTeam.name}</span><b>{minute}'</b></div>
-        <div className="bc-shot-xg-value"><span>xG</span><strong>{Number(row?.xg || 0).toFixed(2)}</strong></div>
+        <DesignArtboard className="bc-shot-xg-artboard">
+          <svg className="bc-shot-xg-route" viewBox="0 0 362 447" aria-label="슈팅 궤적">
+            <image href="/broadcast/templates/shot-xg/asset.svg" width="127" height="198" transform={routeTransform} />
+          </svg>
+          <TeamLogo url={shotTeam.logoUrl} name={shotTeam.name} className="bc-shot-xg-logo" />
+          <div className="bc-shot-xg-player"><b><span>득점 {minute}'</span><em>{shotTeam.name}</em></b><strong>{row?.player_name || shotTeam.name}</strong></div>
+          <i className="bc-shot-xg-divider" aria-hidden="true" />
+          <div className="bc-shot-xg-value"><strong>{Number(row?.xg || 0).toFixed(2)}</strong><span>골 기대값</span></div>
+        </DesignArtboard>
       </Layer>
     </section>
+  );
+}
+
+function ComparisonBars({ homeRatio, awayRatio, className }: { homeRatio: number; awayRatio: number; className: string }) {
+  return (
+    <div className={`bc-xg-bars ${className}`}>
+      <i className="home" style={{ width: `${clamp(homeRatio, 0, 1) * 50}%` }} />
+      <i className="away" style={{ width: `${clamp(awayRatio, 0, 1) * 50}%` }} />
+    </div>
   );
 }
 
@@ -181,54 +297,168 @@ function XgComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shots = snapshot.analysis.xg || [];
   const homeXg = shots.filter((item) => item.team === 'HOME').reduce((sum, item) => sum + Number(item.xg || 0), 0);
   const awayXg = shots.filter((item) => item.team === 'AWAY').reduce((sum, item) => sum + Number(item.xg || 0), 0);
-  const total = Math.max(homeXg + awayXg, 0.01);
-  const scoreTotal = Math.max(home.score + away.score, 1);
-  const style = {
-    '--home-color': home.color,
-    '--away-color': away.color,
-    '--home-xg': `${(homeXg / total) * 100}%`,
-    '--away-xg': `${(awayXg / total) * 100}%`,
-    '--home-score': `${(home.score / scoreTotal) * 100}%`,
-    '--away-score': `${(away.score / scoreTotal) * 100}%`,
-  } as CSSProperties;
+  // Both rows use one shared scale. Comparing xG to a team's own goals made
+  // a smaller xG value look full-width whenever it exceeded that score.
+  const maxMetric = Math.max(homeXg, awayXg, home.score, away.score, 1);
   return (
-    <section className="bc-frame bc-xg-comparison" style={style}>
+    <section className="bc-frame bc-xg-comparison" style={{
+      '--home-color': home.color,
+      '--away-color': away.color,
+      // Keep light team colours on the bar itself; only its otherwise-white
+      // track receives a neutral gray backing for legibility.
+      '--comparison-track-color': isBrightComparisonColor(home.color) || isBrightComparisonColor(away.color) ? '#d9dde3' : 'transparent',
+    } as CSSProperties}>
       <div className="bc-background-layer"><Template src="/broadcast/templates/xg-comparison/background.svg" className="bc-xg-comparison-template" /></div>
       <Layer>
-        <div className="bc-xg-team home"><TeamLogo url={home.logoUrl} name={home.name} /><strong>{home.name}</strong></div>
-        <div className="bc-xg-team away"><strong>{away.name}</strong><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <div className="bc-xg-row expected"><b>{homeXg.toFixed(2)}</b><div><i className="home" /><i className="away" /></div><b>{awayXg.toFixed(2)}</b></div>
-        <div className="bc-xg-row score"><b>{home.score}</b><div><i className="home" /><i className="away" /></div><b>{away.score}</b></div>
+        <DesignArtboard className="bc-xg-comparison-artboard">
+          <TeamLogo url={home.logoUrl} name={home.name} className="bc-xg-logo home" />
+          <TeamLogo url={away.logoUrl} name={away.name} className="bc-xg-logo away" />
+          <strong className="bc-xg-team-name home">{home.name}</strong>
+          <strong className="bc-xg-team-name away">{away.name}</strong>
+          <strong className="bc-xg-number home">{homeXg.toFixed(2)}</strong><strong className="bc-xg-number away">{awayXg.toFixed(2)}</strong>
+          <ComparisonBars className="expected" homeRatio={homeXg / maxMetric} awayRatio={awayXg / maxMetric} />
+          <strong className="bc-xg-score home">{home.score}</strong><strong className="bc-xg-score away">{away.score}</strong>
+          <ComparisonBars className="score" homeRatio={home.score / maxMetric} awayRatio={away.score / maxMetric} />
+        </DesignArtboard>
       </Layer>
     </section>
   );
+}
+
+type DominanceItem = NonNullable<NonNullable<BroadcastSnapshot['analysis']['match_dominance']>['items']>[number];
+
+function dominanceXt(items: DominanceItem[]) {
+  return items.reduce((total, item) => {
+    const value = clamp(Number(item.dominance || 0), -1, 1);
+    if (value >= 0) total.home += value;
+    else total.away += Math.abs(value);
+    return total;
+  }, { home: 0, away: 0 });
+}
+
+function displayXt(value: number) {
+  // A real but tiny three-minute dominance contribution should not read as
+  // zero after rounding. Keep true zero at 0.0, and show any positive xT as
+  // at least 0.1.
+  return value > 0 ? Math.max(.1, value) : 0;
+}
+
+function dominancePath(items: DominanceItem[], startX = 505, width = 1362, midY = 633, amplitude = 222) {
+  const points = items.map((item, index) => ({
+    x: items.length <= 1 ? startX : startX + (index / (items.length - 1)) * width,
+    y: midY - clamp(Number(item.dominance || 0), -1, 1) * amplitude,
+  }));
+  if (!points.length) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  return points.reduce((path, point, index) => {
+    if (!index) return `M ${point.x} ${point.y}`;
+    const previous = points[index - 1];
+    const controlX = (previous.x + point.x) / 2;
+    return `${path} C ${controlX} ${previous.y}, ${controlX} ${point.y}, ${point.x} ${point.y}`;
+  }, '');
+}
+
+function dominanceGoalPoint(items: DominanceItem[], clockMs: number, startX = 505, width = 1362, midY = 633, amplitude = 222) {
+  if (!items.length) return null;
+  const binMs = 3 * 60_000;
+  const endMs = Math.max(binMs, Number(items[items.length - 1].base_time_ms || 0) + binMs);
+  const index = clamp(Math.floor(Math.max(0, clockMs) / binMs), 0, items.length - 1);
+  const value = clamp(Number(items[index].dominance || 0), -1, 1);
+  return {
+    x: startX + clamp(clockMs / endMs, 0, 1) * width,
+    y: midY - value * amplitude,
+  };
 }
 
 function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const home = team(snapshot, 'HOME');
   const away = team(snapshot, 'AWAY');
   const items = snapshot.analysis.match_dominance?.items || [];
-  const points = items.map((item, index) => {
-    const x = items.length <= 1 ? 960 : 240 + (index / (items.length - 1)) * 1440;
-    const y = 545 - clamp(Number(item.dominance || 0), -1, 1) * 275;
-    return `${x},${y}`;
-  }).join(' ');
+  const path = dominancePath(items);
+  const area = path ? `${path} L 1867 633 L 505 633 Z` : '';
+  // xT is the accumulated absolute dominance contribution.  Positive bins
+  // belong to HOME and negative bins to AWAY, so their split directly shows
+  // which team controlled more of the three-minute match-flow intervals.
+  const xT = dominanceXt(items);
+  const currentClockMs = Number(snapshot.match.fla_clock_ms || snapshot.match.clock_ms || 0);
+  const firstHalfMinutes = Math.max(1, Number(snapshot.match.first_half_minutes || 45));
+  const secondHalfMinutes = Math.max(1, Number(snapshot.match.second_half_minutes || firstHalfMinutes));
+  const fullMatchMinutes = firstHalfMinutes + secondHalfMinutes;
+  const firstHalf = currentClockMs <= firstHalfMinutes * 60_000;
+  const timelineDuration = firstHalf ? firstHalfMinutes : fullMatchMinutes;
+  const timelineMinutes = Array.from(new Set([
+    0,
+    ...Array.from({ length: Math.floor(timelineDuration / 15) + 1 }, (_, index) => index * 15).filter((minute) => minute < timelineDuration),
+    timelineDuration,
+  ]));
+  const halftimeDividerX = 505 + (firstHalfMinutes / fullMatchMinutes) * 1362;
+  const matchTitleStyle = dominanceTitleStyle(home.name, away.name);
+  const goalMarkers = (snapshot.analysis.xg || [])
+    .filter((item) => item.is_goal && Number(item.event_clock_ms || 0) <= currentClockMs)
+    .map((item) => ({
+      side: item.team === 'AWAY' ? 'AWAY' as const : 'HOME' as const,
+      point: dominanceGoalPoint(items, Number(item.event_clock_ms || 0)),
+    }))
+    .filter((item): item is { side: 'HOME' | 'AWAY'; point: NonNullable<ReturnType<typeof dominanceGoalPoint>> } => Boolean(item.point));
   const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
   return (
     <section className="bc-frame bc-dominance" style={style}>
-      <div className="bc-background-layer"><Template src="/broadcast/templates/match-dominance/background.svg" className="bc-dominance-template" /></div>
+      <div className="bc-background-layer"><Template src="/broadcast/templates/match-dominance/background.svg" className="bc-dominance-template" /><i className="bc-dominance-header-mask" /></div>
       <Layer>
-        <div className="bc-dominance-team home"><TeamLogo url={home.logoUrl} name={home.name} /><strong>{home.name}</strong></div>
-        <div className="bc-dominance-team away"><strong>{away.name}</strong><TeamLogo url={away.logoUrl} name={away.name} /></div>
-        <svg className="bc-dominance-plot" viewBox="0 0 1920 1080">
+        <div className="bc-dominance-round">{roundLabel(snapshot)}</div>
+        <div className="bc-dominance-match-title" style={matchTitleStyle} aria-label={`${home.name} vs ${away.name}`}>
+          <span className="home">{home.name}</span>
+          <b>vs</b>
+          <span className="away">{away.name}</span>
+        </div>
+        <div className="bc-dominance-period">{firstHalf ? '전반전' : '경기'} 매치 도미넌스</div>
+        <TeamLogo url={home.logoUrl} name={home.name} className="bc-dominance-logo home" />
+        <TeamLogo url={away.logoUrl} name={away.name} className="bc-dominance-logo away" />
+        <div className="bc-dominance-total home">{displayXt(xT.home).toFixed(1)}</div>
+        <div className="bc-dominance-total away">{displayXt(xT.away).toFixed(1)}</div>
+        <div className="bc-dominance-score"><strong>{home.score}</strong><strong>{away.score}</strong></div>
+        <svg className="bc-dominance-plot" viewBox="0 0 1920 1080" aria-label="매치 도미넌스 그래프">
           <defs>
-            <linearGradient id="bc-dominance-team-gradient" x1="240" x2="1680" y1="0" y2="0" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stopColor={home.color} />
-              <stop offset="1" stopColor={away.color} />
-            </linearGradient>
+            <clipPath id="bc-dominance-top"><rect x="505" y="182" width="1362" height="451" /></clipPath>
+            <clipPath id="bc-dominance-bottom"><rect x="505" y="633" width="1362" height="251" /></clipPath>
+            <linearGradient id="bc-dominance-home-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={home.color} stopOpacity=".64" /><stop offset="1" stopColor={home.color} stopOpacity=".06" /></linearGradient>
+            <linearGradient id="bc-dominance-away-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={away.color} stopOpacity=".06" /><stop offset="1" stopColor={away.color} stopOpacity=".64" /></linearGradient>
           </defs>
-          <line x1="240" x2="1680" y1="545" y2="545" />
-          {points ? <polyline points={points} stroke="url(#bc-dominance-team-gradient)" /> : null}
+          {area ? <path d={area} className="bc-dominance-area home" clipPath="url(#bc-dominance-top)" /> : null}
+          {area ? <path d={area} className="bc-dominance-area away" clipPath="url(#bc-dominance-bottom)" /> : null}
+          {!firstHalf ? <line className="bc-dominance-halftime-divider" x1={halftimeDividerX} x2={halftimeDividerX} y1="182" y2="884" /> : null}
+          {path ? <path d={path} className="bc-dominance-line" /> : null}
+          <line className="bc-dominance-midline" x1="505" x2="1867" y1="633" y2="633" />
+          <g className="bc-dominance-timeline" aria-label={`${firstHalf ? '전반전' : '전체 경기'} 시간축`}>
+            <line className="bc-dominance-timeline-axis" x1="505" x2="1867" y1="922" y2="922" />
+            {timelineMinutes.map((minute) => {
+              const x = 505 + (minute / timelineDuration) * 1362;
+              return (
+                <g key={minute} transform={`translate(${x} 922)`}>
+                  <line className="bc-dominance-timeline-tick" x1="0" x2="0" y1="0" y2="15" />
+                  <text className="bc-dominance-timeline-label" x="0" y="50" textAnchor="middle">{minute}&apos;</text>
+                </g>
+              );
+            })}
+          </g>
+          {goalMarkers.map(({ side, point }, index) => {
+            const markerHeight = 315;
+            const markerY = side === 'HOME'
+              ? clamp(point.y - 22, 184, 633 - markerHeight)
+              : clamp(point.y - markerHeight + 22, 633, 1080 - markerHeight);
+            return (
+              <image
+                className={`bc-dominance-goal-marker ${side.toLowerCase()}`}
+                href="/broadcast/templates/match-dominance/goal-marker.png"
+                x={point.x - 20}
+                y={markerY}
+                width="40"
+                height="315"
+                transform={side === 'AWAY' ? `rotate(180 ${point.x} ${markerY + markerHeight / 2})` : undefined}
+                key={`${side}-${point.x}-${index}`}
+              />
+            );
+          })}
         </svg>
       </Layer>
     </section>

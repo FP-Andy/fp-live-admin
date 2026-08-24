@@ -233,8 +233,8 @@ function Scoreboard({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const clock = useDisplayClock(snapshot);
   const homeColor = state.home_color || '#ff7900';
   const awayColor = state.away_color || '#3d22f3';
-  const homeLabel = state.home_label || 'Home';
-  const awayLabel = state.away_label || 'Away';
+  const homeLabel = snapshot.match.home.name || state.home_label || 'Home';
+  const awayLabel = snapshot.match.away.name || state.away_label || 'Away';
   const homeColorStyle = { '--team-color': homeColor } as CSSProperties;
   const awayColorStyle = { '--team-color': awayColor } as CSSProperties;
   if (!state.scoreboard_visible) return null;
@@ -261,7 +261,7 @@ function AttackDirection({ snapshot, team }: { snapshot: BroadcastSnapshot; team
   const row = snapshot.analysis.attack_direction?.find((item) => item.team === team);
   const ratio = row?.direction_ratio || {};
   const state = snapshot.broadcast_state;
-  const teamName = team === 'HOME' ? state.home_label || snapshot.match.home.name : state.away_label || snapshot.match.away.name;
+  const teamName = team === 'HOME' ? snapshot.match.home.name || state.home_label : snapshot.match.away.name || state.away_label;
   const logoUrl = team === 'HOME' ? state.home_logo_url : state.away_logo_url;
   const lanes = [
     { label: 'L', value: Number(ratio.left_pct || 0), count: Number(ratio.left_count || 0), x: 235 },
@@ -414,8 +414,8 @@ function Dominance({ snapshot, fullscreen = false }: { snapshot: BroadcastSnapsh
     };
   }), [items, snapshot.analysis.xg]);
   const bgUrl = snapshot.broadcast_state.fullscreen_image_urls?.MATCH_DOMINANCE;
-  const homeLabel = snapshot.broadcast_state.home_label || snapshot.match.home.name;
-  const awayLabel = snapshot.broadcast_state.away_label || snapshot.match.away.name;
+  const homeLabel = snapshot.match.home.name || snapshot.broadcast_state.home_label;
+  const awayLabel = snapshot.match.away.name || snapshot.broadcast_state.away_label;
   const style = {
     '--home-color': snapshot.broadcast_state.home_color || '#ff7900',
     '--away-color': snapshot.broadcast_state.away_color || '#3d22f3',

@@ -34,10 +34,18 @@ export async function POST(request: NextRequest) {
   if (expectedToken && request.headers.get('x-broadcast-render-token') !== expectedToken) {
     return NextResponse.json({ detail: 'Unauthorized renderer request' }, { status: 401 });
   }
-  const body = await request.json().catch(() => null) as { match_id?: unknown; asset_types?: unknown; xg_event_id?: unknown } | null;
+  const body = await request.json().catch(() => null) as {
+    match_id?: unknown;
+    asset_types?: unknown;
+    xg_event_id?: unknown;
+    snapshot?: unknown;
+  } | null;
   const matchId = typeof body?.match_id === 'string' ? body.match_id : '';
   const assetTypes = Array.isArray(body?.asset_types) ? body.asset_types.filter(isAssetType) : [];
   const xgEventId = typeof body?.xg_event_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.xg_event_id) ? body.xg_event_id : '';
+  const snapshot = body?.snapshot && typeof body.snapshot === 'object' && !Array.isArray(body.snapshot)
+    ? body.snapshot
+    : null;
   if (!/^[0-9a-f-]{36}$/i.test(matchId) || !assetTypes.length) {
     return NextResponse.json({ detail: 'match_id and asset_types are required' }, { status: 400 });
   }
@@ -53,6 +61,15 @@ export async function POST(request: NextRequest) {
     for (const assetType of [...new Set(assetTypes)]) {
       const config = RENDER_CONFIG[assetType];
       const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+      // Normal overlays poll the current FLA snapshot.  Archive capture uses
+      // a supplied immutable snapshot instead, so a half-time graphic cannot
+      // be redrawn with full-time data after the match progresses.
+      if (snapshot) {
+        await page.route(`**/broadcast/matches/${matchId}/snapshot**`, (route) => route.fulfill({
+          contentType: 'application/json; charset=utf-8',
+          body: JSON.stringify(snapshot),
+        }));
+      }
       const xgEventQuery = assetType === 'shot-xg' && xgEventId ? `&xg_event_id=${encodeURIComponent(xgEventId)}` : '';
       await page.goto(`${origin}/overlay/football/${matchId}/${config.path}?render=${config.graphic}${xgEventQuery}`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       // The overlay loads its FLA snapshot on the client.  A freshly deployed
@@ -60,6 +77,23 @@ export async function POST(request: NextRequest) {
       // data mounts, so wait for the actual capture root rather than failing
       // after the previous fixed 20-second window.
       await page.waitForSelector('[data-live-coder-capture-ready="true"]', { state: 'attached', timeout: 30_000 });
+      // Broadcast templates use Paperlogy.  Wait for the local font faces so a
+      // cold render never freezes an Arial fallback into a published PNG.
+      await page.evaluate(async () => {
+        await document.fonts?.ready;
+      });
+      // Templates are separate SVG files.  The capture root can mount before
+      // an uncached SVG has painted, which would otherwise publish a blank
+      // background layer.  Wait only for design templates (not remote team
+      // logos) so an unavailable logo cannot hold up an entire render.
+      await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>('img[data-broadcast-template="true"]'))
+        .every((image) => image.complete && image.naturalWidth > 0), { timeout: 30_000 });
+      // Uploaded team logos are served from the same app and normally arrive
+      // immediately.  Give them a short, separate wait so a new crest is not
+      // omitted from the first PNG after upload, without treating an optional
+      // external logo URL as a hard failure for the whole graphic.
+      await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>('img[data-broadcast-logo="true"]'))
+        .every((image) => image.complete && image.naturalWidth > 0), { timeout: 4_000 }).catch(() => undefined);
       const capture = async (layer: 'background' | 'asset') => {
         await page.evaluate((nextLayer) => {
           document.querySelector('main.lc-overlay-root')?.setAttribute('data-broadcast-capture-layer', nextLayer);

@@ -19,10 +19,32 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-TEMPLATE_DIR = Path("/app/templetes")
-FONT_DIR = Path("/app/assets/fonts")
+# Source runs from ``<repo>/apps/api/app`` locally, but the production image
+# copies the package directly to ``/app/app``.  Do not assume the local source
+# tree's four-level path exists when resolving fallback assets.
+_MODULE_PATH = Path(__file__).resolve()
+REPOSITORY_ROOT = _MODULE_PATH.parents[3] if len(_MODULE_PATH.parents) > 3 else _MODULE_PATH.parents[1]
+TEMPLATE_DIR = Path("/app/templetes") if Path("/app/templetes").exists() else REPOSITORY_ROOT / "templetes"
+FONT_DIR = Path("/app/assets/fonts") if Path("/app/assets/fonts").exists() else REPOSITORY_ROOT / "assets/fonts"
 FONT_BOLD = FONT_DIR / "KFAGothicBold.otf"
 FONT_REGULAR = FONT_DIR / "KFAGothicRegular.otf"
+GOALKEEPER_ASSET_DIR = (
+    Path("/app/assets/fcm/goalkeeper")
+    if Path("/app/assets/fcm/goalkeeper").exists()
+    else REPOSITORY_ROOT / "assets/fcm/goalkeeper"
+)
+GOALKEEPER_TEMPLATE_PATH = GOALKEEPER_ASSET_DIR / "template.png"
+PAPERLOGY_REGULAR = FONT_DIR / "Paperlogy-4Regular.ttf"
+PAPERLOGY_BOLD = FONT_DIR / "Paperlogy-7Bold.ttf"
+PAPERLOGY_EXTRABOLD = FONT_DIR / "Paperlogy-8ExtraBold.ttf"
+
+# Keep the goalkeeper map safely above the lower statistics divider. The goal
+# SVG's actual net is x=102.469..766.420 and y=102.465..408.714 inside its
+# 870×509 canvas. Markers use an inset of that exact region, keeping the full
+# 45px marker inside the net rather than on its posts or outside the goal.
+GOALKEEPER_GOAL_POSITION = (255, 177)
+GOALKEEPER_MARKER_ORIGIN = (384, 306)
+GOALKEEPER_MARKER_SIZE = (610, 252)
 
 
 @dataclass(frozen=True)
@@ -384,6 +406,228 @@ def _draw_shadowed_text(
     draw.text(position, text, font=font, fill=fill)
 
 
+def _load_paperlogy_font(path: Path, size: int) -> ImageFont.FreeTypeFont:
+    """Use the supplied Paperlogy family with a safe local fallback."""
+    try:
+        return ImageFont.truetype(str(path), size)
+    except OSError:
+        return ImageFont.truetype(str(FONT_BOLD if path != PAPERLOGY_REGULAR else FONT_REGULAR), size)
+
+
+def _fit_logo_to_box(image: Image.Image, box_size: tuple[int, int]) -> Image.Image:
+    max_w, max_h = box_size
+    logo = image.convert("RGBA")
+    logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", box_size, (0, 0, 0, 0))
+    canvas.alpha_composite(logo, ((max_w - logo.width) // 2, (max_h - logo.height) // 2))
+    return canvas
+
+
+def _goalkeeper_event_markers(
+    workbook_bytes: bytes,
+    player_id: str,
+    fla_shot_events: list[dict[str, object]] | None = None,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Return save/conceded marker coordinates mapped into a 0..1 goal mouth.
+
+    FLA goal-mouth coordinates are preferred whenever XG events exist. FPA
+    pitch coordinates remain the backward-compatible fallback for legacy
+    matches that have no FLA XG event data.
+    """
+    # FLA holds the source-of-truth on-target decision and goal-mouth point.
+    # When it exists, draw exactly the same set of shots used for the keeper's
+    # displayed save count. A penalty save is therefore represented once FLA
+    # has been logged as an on-target, non-goal XG event.
+    if fla_shot_events is not None:
+        saves: list[tuple[float, float]] = []
+        conceded: list[tuple[float, float]] = []
+        for event in fla_shot_events:
+            if not isinstance(event, dict):
+                continue
+            is_goal = bool(event.get("is_goal"))
+            is_on_target = bool(event.get("is_on_target"))
+            if not is_goal and not is_on_target:
+                continue
+            raw_x = pd.to_numeric(event.get("goalmouth_x"), errors="coerce")
+            raw_y = pd.to_numeric(event.get("goalmouth_y"), errors="coerce")
+            horizontal = 0.50 if pd.isna(raw_x) else float(np.clip(raw_x, 0.06, 0.94))
+            # FLA goalmouth_y increases upward; PIL's Y coordinate increases
+            # downward, so flip it for the save-map coordinate system.
+            vertical = 0.50 if pd.isna(raw_y) else float(np.clip(1.0 - raw_y, 0.08, 0.92))
+            (conceded if is_goal else saves).append((horizontal, vertical))
+        return saves, conceded
+
+    df = pd.read_excel(io.BytesIO(workbook_bytes), sheet_name="Data")
+    if df.empty or "Player" not in df.columns or "Action" not in df.columns:
+        return [], []
+    df["Player"] = df["Player"].map(_normalize_player_value)
+    player_df = df.loc[df["Player"] == _normalize_player_value(player_id)].copy()
+    if player_df.empty:
+        return [], []
+
+    team_values = player_df.get("Team", pd.Series("", index=player_df.index)).dropna().astype(str)
+    player_team = team_values.mode().iloc[0] if not team_values.empty else ""
+    action_labels = player_df["Action"].fillna("").astype(str).str.strip().str.lower()
+    player_tags = player_df.get("Tags", pd.Series("", index=player_df.index)).fillna("").astype(str)
+    save_rows = player_df.loc[(action_labels == "save") & ~player_tags.str.contains("penalty", case=False, regex=False)]
+
+    opponent_df = df.copy()
+    if player_team and "Team" in opponent_df.columns:
+        opponent_df = opponent_df.loc[opponent_df["Team"].fillna("").astype(str) != player_team]
+    opponent_action = opponent_df.get("Action", pd.Series("", index=opponent_df.index)).fillna("").astype(str).str.lower()
+    opponent_tags = opponent_df.get("Tags", pd.Series("", index=opponent_df.index)).fillna("").astype(str).str.lower()
+    opponent_result = opponent_df.get("Result", pd.Series("", index=opponent_df.index)).fillna("").astype(str).str.lower()
+    goal_rows = opponent_df.loc[
+        opponent_action.isin({"goal", "scored"})
+        | opponent_tags.str.contains(r"(?:^|[,|;/\s])goal(?:$|[,|;/\s])", regex=True)
+        | opponent_result.str.contains("goal", regex=False)
+    ]
+
+    def to_goal_coords(rows: pd.DataFrame) -> list[tuple[float, float]]:
+        if rows.empty:
+            return []
+        y_col = "StartY_adj" if "StartY_adj" in rows.columns else "StartY"
+        x_col = "StartX_adj" if "StartX_adj" in rows.columns else "StartX"
+        points: list[tuple[float, float]] = []
+        for index, row in rows.iterrows():
+            raw_y = pd.to_numeric(row.get(y_col), errors="coerce")
+            raw_x = pd.to_numeric(row.get(x_col), errors="coerce")
+            if pd.isna(raw_y):
+                raw_y = 34.0
+            if raw_y <= 1.2:
+                raw_y *= 68.0
+            elif raw_y > 68.5 and raw_y <= 100.5:
+                raw_y *= 0.68
+            horizontal = float(np.clip(raw_y / 68.0, 0.06, 0.94))
+            if pd.isna(raw_x):
+                vertical = 0.50
+            else:
+                if raw_x <= 1.2:
+                    raw_x *= 105.0
+                elif raw_x > 105.5 and raw_x <= 1000:
+                    raw_x = raw_x / 100.0 * 105.0
+                distance_to_goal = min(float(raw_x), max(0.0, 105.0 - float(raw_x)))
+                vertical = float(np.clip(0.30 + distance_to_goal / 32.0, 0.20, 0.76))
+            points.append((horizontal, vertical))
+        return points
+
+    return to_goal_coords(save_rows), to_goal_coords(goal_rows)
+
+
+def _draw_goalkeeper_penalties(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[int, int],
+    penalties: list[str],
+    font: ImageFont.FreeTypeFont,
+) -> None:
+    if not penalties:
+        return
+    x, y = position
+    label = "승부차기 :"
+    draw.text((x, y), label, font=font, fill="white")
+    label_box = draw.textbbox((x, y), label, font=font)
+    cursor = label_box[2] + 18
+    for value in penalties[:10]:
+        normalized = str(value).upper()
+        color = "#00C653" if normalized == "O" else "#FF1616"
+        draw.text((cursor, y), normalized, font=font, fill=color)
+        cursor += draw.textlength(normalized, font=font) + 5
+
+    # X represents an opponent miss in the submitted shoot-out sequence.
+    # Keep this secondary explanatory line in the position shown by the design.
+    miss_count = sum(1 for value in penalties[:10] if str(value).upper() == "X")
+    small_font = _load_paperlogy_font(PAPERLOGY_REGULAR, 30)
+    draw.text((x, y + 53), f"상대 실축 {miss_count}회", font=small_font, fill="#C7CDDD")
+
+
+def build_goalkeeper_card_image(
+    *,
+    player_id: str,
+    player_name: str,
+    selected_stats: list[str],
+    workbook_bytes: bytes | None,
+    team_logo_path: Path | None = None,
+    background_path: Path | None = None,
+    replace_template_logo: bool = True,
+    penalty_shootout: list[str] | None = None,
+    fla_shot_events: list[dict[str, object]] | None = None,
+) -> bytes:
+    """Build the 1920×1080 Paperlogy goalkeeper card from the supplied design."""
+    template_path = background_path if background_path and background_path.exists() else GOALKEEPER_TEMPLATE_PATH
+    if not template_path.exists():
+        raise ValueError("골키퍼 카드 기본 템플릿을 찾을 수 없습니다")
+    composite = Image.open(template_path).convert("RGBA")
+    if composite.size != (1920, 1080):
+        composite = composite.resize((1920, 1080), Image.Resampling.LANCZOS)
+
+    if team_logo_path and team_logo_path.exists():
+        try:
+            logo = _fit_logo_to_box(Image.open(team_logo_path), (220, 220))
+            composite.alpha_composite(logo, (1520, 84))
+        except Exception:
+            pass
+
+    goal_path = GOALKEEPER_ASSET_DIR / "goal.png"
+    save_path = GOALKEEPER_ASSET_DIR / "save.png"
+    conceded_path = GOALKEEPER_ASSET_DIR / "conceded.png"
+    if goal_path.exists():
+        composite.alpha_composite(Image.open(goal_path).convert("RGBA"), GOALKEEPER_GOAL_POSITION)
+
+    if workbook_bytes or fla_shot_events is not None:
+        try:
+            save_points, conceded_points = _goalkeeper_event_markers(workbook_bytes or b"", player_id, fla_shot_events)
+            if save_path.exists():
+                marker = Image.open(save_path).convert("RGBA")
+                for horizontal, vertical in save_points:
+                    x = int(GOALKEEPER_MARKER_ORIGIN[0] + (GOALKEEPER_MARKER_SIZE[0] * horizontal) - marker.width / 2)
+                    y = int(GOALKEEPER_MARKER_ORIGIN[1] + (GOALKEEPER_MARKER_SIZE[1] * vertical) - marker.height / 2)
+                    composite.alpha_composite(marker, (x, y))
+            if conceded_path.exists():
+                marker = Image.open(conceded_path).convert("RGBA")
+                for horizontal, vertical in conceded_points:
+                    x = int(GOALKEEPER_MARKER_ORIGIN[0] + (GOALKEEPER_MARKER_SIZE[0] * horizontal) - marker.width / 2)
+                    y = int(GOALKEEPER_MARKER_ORIGIN[1] + (GOALKEEPER_MARKER_SIZE[1] * vertical) - marker.height / 2)
+                    composite.alpha_composite(marker, (x, y))
+        except Exception:
+            # A map failure must not prevent an otherwise usable card export.
+            pass
+
+    draw = ImageDraw.Draw(composite)
+    name_font = _load_paperlogy_font(PAPERLOGY_EXTRABOLD, 92)
+    stat_font = _load_paperlogy_font(PAPERLOGY_BOLD, 46)
+    stat_small_font = _load_paperlogy_font(PAPERLOGY_BOLD, 37)
+    number_name = f"NO.{player_id} {player_name}".strip()
+    max_name_width = 760
+    while draw.textlength(number_name, font=name_font) > max_name_width and name_font.size > 58:
+        name_font = _load_paperlogy_font(PAPERLOGY_EXTRABOLD, name_font.size - 2)
+    name_width = draw.textlength(number_name, font=name_font)
+    draw.text((1450 - name_width / 2, 428), number_name, font=name_font, fill="white")
+
+    visible_stats = [stat.strip() for stat in selected_stats if stat and stat.strip()][:5]
+    rows = [visible_stats[0:2], visible_stats[2:4], visible_stats[4:5]]
+    row_y = (756, 842, 929)
+    columns = (260, 960)
+    for row_index, stats in enumerate(rows):
+        for column_index, stat in enumerate(stats):
+            font = stat_font if len(stat) <= 28 else stat_small_font
+            x = columns[column_index]
+            if row_index == 0 and column_index == 0 and stat.startswith("실점") and conceded_path.exists():
+                icon = Image.open(conceded_path).convert("RGBA")
+                composite.alpha_composite(icon, (x, row_y[row_index] + 7))
+                x += 62
+            draw.text((x, row_y[row_index]), stat, font=font, fill="white")
+
+    _draw_goalkeeper_penalties(
+        draw,
+        (960, row_y[2]),
+        penalty_shootout or [],
+        stat_font,
+    )
+    output = io.BytesIO()
+    composite.save(output, format="PNG")
+    return output.getvalue()
+
+
 def _load_fonts(layout: FcmCardLayout) -> tuple[ImageFont.FreeTypeFont, ImageFont.FreeTypeFont]:
     return (
         ImageFont.truetype(str(FONT_BOLD), layout.player_font_size),
@@ -399,7 +643,24 @@ def build_card_image(
     selected_stats: list[str],
     workbook_bytes: bytes | None = None,
     layout: FcmCardLayout | None = None,
+    card_type: str = "PLAYER",
+    penalty_shootout: list[str] | None = None,
+    team_logo_path: Path | None = None,
+    replace_template_logo: bool = False,
+    fla_shot_events: list[dict[str, object]] | None = None,
 ) -> bytes:
+    if card_type.upper() == "GOALKEEPER":
+        return build_goalkeeper_card_image(
+            player_id=player_id,
+            player_name=player_name,
+            selected_stats=selected_stats,
+            workbook_bytes=workbook_bytes,
+            team_logo_path=team_logo_path,
+            background_path=background_path,
+            replace_template_logo=replace_template_logo,
+            penalty_shootout=penalty_shootout,
+            fla_shot_events=fla_shot_events,
+        )
     card_layout = layout or FcmCardLayout()
     player_font, stat_font = _load_fonts(card_layout)
 
