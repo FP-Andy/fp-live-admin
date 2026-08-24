@@ -139,6 +139,15 @@ def _parse_scene_state(value: Any) -> dict[str, Any] | None:
         for key in ("beforeDots", "afterDots", "passArrows", "primary")
         if parsed.get(key) is not None
     }
+    # 잔상(ghost) — dual 태깅 화면이 라인업을 미리 깔아둔 '아직 활성화 안 한' 자리.
+    # 앱으로 나가는 입구에서 걷어낸다: 그 자리에 실제로 없던 선수가 씬모션에 나오면 안 된다.
+    for key in ("beforeDots", "afterDots"):
+        dots = state.get(key)
+        if isinstance(dots, list):
+            state[key] = [
+                dot for dot in dots
+                if not (isinstance(dot, dict) and dot.get("ghost") is True)
+            ]
     return state or None
 
 

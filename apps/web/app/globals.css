@@ -7272,6 +7272,47 @@ html.fpa-embed .topbar {
   color: #9dbcff;
 }
 
+/* ── 잔상(ghost) ─────────────────────────────────────────────────────────
+   라인업 배치가 깔아둔 '아직 안 쓴' 선수 자리. 실제 점과 한눈에 갈려야 하고,
+   동시에 등번호는 읽혀야 한다(누구를 클릭할지 고르는 게 목적이라서).
+   → 채도를 죽이고 흐리게 두되, 점선 링으로 '자리 표시' 라는 걸 알린다. */
+.fpa-live-shell .fpa-dual-dot.ghost {
+  opacity: 0.34;
+  filter: grayscale(0.55) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+  cursor: pointer;
+  transition: opacity 0.12s ease, filter 0.12s ease;
+  /* 점선 링 — 실제 점에는 없는 표시라 '아직 아니다' 를 즉시 알린다.
+     ::after 는 선택 링, ::before 는 확인필요 링이 쓰고 있어 outline 으로 그린다. */
+  outline: 1px dashed rgba(255, 255, 255, 0.75);
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+
+/* 커서를 얹으면 거의 실물처럼 보여준다 — 활성화하면 어떤 모습인지 미리 보이게. */
+.fpa-live-shell .fpa-dual-dot.ghost:hover {
+  opacity: 0.92;
+  filter: grayscale(0) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+  outline-color: #ff7400;
+  z-index: 8;
+}
+
+/* GK 잔상의 팀 색 링도 같이 죽인다 — 안 그러면 잔상만 유독 선명해 보인다. */
+.fpa-live-shell .fpa-dual-dot.ghost.is-gk.side-home,
+.fpa-live-shell .fpa-dual-dot.ghost.is-gk.side-away {
+  box-shadow: none;
+}
+
+/* 잔상은 선택 대상이 아니다(누르는 순간 활성화되므로) — 링이 겹쳐 보이지 않게 끈다. */
+.fpa-live-shell .fpa-dual-dot.ghost.selected::after {
+  display: none;
+}
+
+/* 피치 헤더의 잔상 개수 뱃지 — A/O 개수와 다른 성격이라 색으로 갈라둔다. */
+.fpa-live-shell .fpa-dual-pitch-count.ghost {
+  border-style: dashed;
+  color: var(--text-tertiary, #8b8ba7);
+}
+
 /* 피치 카드(제목줄 + 경기장)는 묶어주기만 한다. 테두리를 주면 바깥 패널과
    경기장 자체 테두리까지 선이 세 겹으로 겹친다. */
 .fpa-live-shell .fpa-dual-pitch-card {

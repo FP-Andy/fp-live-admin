@@ -58,6 +58,11 @@ def _parse_dots(value: Any) -> list[dict[str, Any]]:
     for item in value:
         if not isinstance(item, dict):
             continue
+        # 잔상(ghost) — dual 태깅 화면이 라인업을 미리 깔아둔 '아직 활성화 안 한' 자리.
+        # 콘솔이 저장 전에 걷어내지만, 옛 초안이나 다른 클라이언트가 실어 보낼 수 있어
+        # 여기서도 막는다. 실제로 그 자리에 없던 선수가 씬모션에 나오면 안 된다.
+        if item.get("ghost") is True:
+            continue
         try:
             x = float(item.get("meter_x", item.get("x")))
             y = float(item.get("meter_y", item.get("y")))

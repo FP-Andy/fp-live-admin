@@ -160,6 +160,9 @@ type PitchDot = {
   // 등번호 식별이 불확실함 — 영상으로 번호를 확정하지 못해 추측으로 찍었다는 표시.
   // 저장·전송에 함께 실려 앱이 "이 액션의 등번호는 확실하지 않다" 를 알 수 있게 한다.
   needsCheck?: boolean;
+  // 잔상 — 라인업 배치가 깔아둔 '아직 쓰지 않은' 자리. 화면에만 있고 채점·저장·전송
+  // 어디에도 들어가지 않는다. 태거가 클릭하면 그 자리에서 실제 점이 된다(좌표 불변).
+  ghost?: boolean;
 };
 
 type PitchSide = 'before' | 'after';
@@ -814,6 +817,8 @@ function nearestDotIndex(dots: PitchDot[], clientX: number, clientY: number, rec
   let best = -1;
   let bestDist = DOT_HIT_RADIUS_PX;
   dots.forEach((dot, index) => {
+    // 잔상은 빈 곳 우클릭(가까운 점 삭제)의 표적이 되지 않는다 — 잔상은 그 점 위에서 직접 우클릭해 없앤다.
+    if (dot.ghost) return;
     const dx = (dot.screen_x / 1050) * rect.width - px;
     const dy = (dot.screen_y / 680) * rect.height - py;
     const dist = Math.hypot(dx, dy);
@@ -827,6 +832,17 @@ function nearestDotIndex(dots: PitchDot[], clientX: number, clientY: number, rec
 
 function isAllyDot(dot: PitchDot) {
   return (dot.team || 'ally') === 'ally';
+}
+
+/** 잔상을 걷어낸 '실제' 점만. 채점·payload·장면 스냅샷은 전부 이걸 통과해야 한다.
+    잔상은 포메이션 자리에 서 있을 뿐 실제 위치가 아니라, 섞여 들어가면 좌표가 거짓이 된다. */
+function realDots(list: PitchDot[]): PitchDot[] {
+  return list.filter((dot) => !dot.ghost);
+}
+
+/** 같은 팀의 같은 등번호를 가리키는 키 — 잔상을 다시 깔 때 이미 활성화된 선수를 건너뛰는 데 쓴다. */
+function dotRosterKey(dot: PitchDot): string | null {
+  return dot.number ? `${dot.teamSide ?? '?'}:${dot.number}` : null;
 }
 
 function clonePitchDotsForNextScene(dotsToClone: PitchDot[]) {
@@ -864,9 +880,11 @@ function findAllyDotByNumber(
   after: PitchDot[],
 ): { side: PitchSide; index: number; dot: PitchDot } | null {
   if (!number) return null;
-  const beforeIndex = before.findIndex((dot) => isAllyDot(dot) && dot.number === number);
+  // 잔상은 실제 위치가 아니라 행위자가 될 수 없다 — 집히면 포메이션 자리가 그대로 채점 좌표가 된다.
+  const match = (dot: PitchDot) => !dot.ghost && isAllyDot(dot) && dot.number === number;
+  const beforeIndex = before.findIndex(match);
   if (beforeIndex >= 0) return { side: 'before', index: beforeIndex, dot: before[beforeIndex] };
-  const afterIndex = after.findIndex((dot) => isAllyDot(dot) && dot.number === number);
+  const afterIndex = after.findIndex(match);
   if (afterIndex >= 0) return { side: 'after', index: afterIndex, dot: after[afterIndex] };
   return null;
 }
@@ -991,14 +1009,15 @@ function buildRenderPitchDots(sourceDots: PitchDot[]): RenderPitchDot[] {
   return sourceDots.map((sourceDot) => {
     const dot = normalizePitchDot(sourceDot) || sourceDot;
     const dotTeam = dot.team || 'ally';
-    const teamIndex = dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
+    // 잔상은 A1·O2 같은 순번을 먹지 않는다 — 활성화 여부에 따라 실제 점의 라벨이 흔들리면 안 된다.
+    const teamIndex = dot.ghost ? 0 : dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
     return {
       ...dot,
       team: dotTeam,
       left: `${(dot.screen_x / 1050) * 100}%`,
       top: `${(dot.screen_y / 680) * 100}%`,
-      label: dot.number || `${dotTeam === 'ally' ? 'A' : 'O'}${teamIndex}`,
-      isPrimaryAlly: dotTeam === 'ally' && teamIndex <= 2,
+      label: dot.number || (dot.ghost ? '' : `${dotTeam === 'ally' ? 'A' : 'O'}${teamIndex}`),
+      isPrimaryAlly: !dot.ghost && dotTeam === 'ally' && teamIndex <= 2,
     };
   });
 }
@@ -1257,8 +1276,10 @@ export default function FpaLivePage() {
       ? [{
         rows,
         logs,
-        beforeDots,
-        afterDots,
+        // 아직 "장면 저장" 을 안 거친 버퍼라 잔상이 남아 있을 수 있다 — 여기서 걷어낸다.
+        // (savedScenes 는 saveScene 이 이미 걷어낸 상태다)
+        beforeDots: realDots(beforeDots),
+        afterDots: realDots(afterDots),
         passArrows,
         primary: primaryRowIndex,
         clipIndex: currentClipIndex,
@@ -1485,15 +1506,21 @@ export default function FpaLivePage() {
   );
 
   const dualPointSummary = useMemo(() => {
-    const beforeAllyCount = beforeDots.filter(isAllyDot).length;
-    const afterAllyCount = afterDots.filter(isAllyDot).length;
+    // 잔상은 아직 찍은 점이 아니다 — 개수에 넣으면 '몇 명 찍었나' 가 거짓이 된다.
+    const beforeReal = realDots(beforeDots);
+    const afterReal = realDots(afterDots);
+    const beforeAllyCount = beforeReal.filter(isAllyDot).length;
+    const afterAllyCount = afterReal.filter(isAllyDot).length;
     return {
       beforeAllyCount,
-      beforeOpponentCount: beforeDots.length - beforeAllyCount,
+      beforeOpponentCount: beforeReal.length - beforeAllyCount,
       afterAllyCount,
-      afterOpponentCount: afterDots.length - afterAllyCount,
+      afterOpponentCount: afterReal.length - afterAllyCount,
     };
   }, [afterDots, beforeDots]);
+
+  // 남은 잔상 수 — 라인업 컨트롤 라벨과 '잔상 지우기' 버튼 활성화에 쓴다.
+  const beforeGhostCount = useMemo(() => beforeDots.filter((dot) => dot.ghost).length, [beforeDots]);
 
   const updateDualDot = (side: PitchSide, index: number, nextDot: PitchDot) => {
     const update = (prev: PitchDot[]) => prev.map((dot, dotIndex) => (dotIndex === index ? nextDot : dot));
@@ -1593,6 +1620,11 @@ export default function FpaLivePage() {
       pushDualUndo();
       const arrow = { side, startId: pendingPass.startId, x1: pendingPass.sx, y1: pendingPass.sy, x2: c.screen_x, y2: c.screen_y, code: pendingPass.code, rowIndex: rows.length };
       setPassArrows((prev) => [...prev, arrow]);
+      // 패스(리시버 번호가 있는 코드)면 이 클릭이 곧 리시버가 받은 자리다.
+      // 잔상으로 남아 있으면 여기서 활성화해 그 좌표에 앉힌다 — 안 그러면 리시버가
+      // 프레임에서 통째로 빠져 압박·PC 가 실제와 달라진다.
+      const receiverNum = statInputReceiverNumber(pendingPass.code);
+      if (receiverNum) settleReceiverGhost(side, receiverNum, c);
       const start: PitchDot = { meter_x: pendingPass.mx, meter_y: pendingPass.my, screen_x: pendingPass.sx, screen_y: pendingPass.sy };
       const end: PitchDot = { meter_x: c.meter_x, meter_y: c.meter_y, screen_x: c.screen_x, screen_y: c.screen_y };
       const code = pendingPass.code;
@@ -1705,12 +1737,18 @@ export default function FpaLivePage() {
   const removeLastDualDot = (side: PitchSide) => {
     const dotsArr = side === 'before' ? beforeDots : afterDots;
     if (!dotsArr.length) return;
+    // 잔상은 '마지막 점' 이 아니다 — 라인업을 깔아두면 배열 끝이 전부 잔상이라
+    // Undo 성격의 이 삭제가 실제로 찍은 점을 못 지우게 된다. 마지막 실제 점을 지운다.
+    let lastIndex = dotsArr.length - 1;
+    while (lastIndex >= 0 && dotsArr[lastIndex].ghost) lastIndex -= 1;
+    if (lastIndex < 0) return;
     pushDualUndo();
-    const removedId = dotsArr[dotsArr.length - 1]?.id;
+    const removedId = dotsArr[lastIndex]?.id;
+    const drop = (prev: PitchDot[]) => prev.filter((_, index) => index !== lastIndex);
     if (side === 'before') {
-      setBeforeDots((prev) => prev.slice(0, -1));
+      setBeforeDots(drop);
     } else {
-      setAfterDots((prev) => prev.slice(0, -1));
+      setAfterDots(drop);
     }
     if (removedId) setPassArrows((prev) => prev.filter((arrow) => !arrowBelongsToRemovedDot(arrow, side, removedId)));
     draggingDualDotRef.current = null;
@@ -1769,8 +1807,14 @@ export default function FpaLivePage() {
   };
 
   const copyBeforeToAfter = () => {
+    // 잔상은 넘기지 않는다 — After 는 '액션이 끝난 시점의 실제 위치' 프레임이다.
+    const beforeReal = realDots(beforeDots);
+    if (!beforeReal.length) {
+      setStatus('Before 에 활성화된 점이 없습니다 — 잔상을 클릭해 활성화하세요');
+      return;
+    }
     pushDualUndo();
-    const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeDots);
+    const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeReal);
     // 패스·수비(상대 공 경로) 화살표 모두 after 에 동일하게 복사 (2026-07-20: 수비 제외하던 규칙 폐기)
     const nextAfterArrows = mirroredBeforeArrowsForAfter(passArrows, idMap);
     setAfterDots(nextAfterDots);
@@ -1805,9 +1849,11 @@ export default function FpaLivePage() {
     }
     setBusy(true);
     setStatus('액션 저장 · 최종 좌표로 재채점 중…');
+    const beforeReal = realDots(beforeDots);
+    const afterReal = realDots(afterDots);
     const { rows: scoredRows, logs: scoredLogs } = await rescoreSceneRows(rows, logs, {
-      before: beforeDots,
-      after: afterDots,
+      before: beforeReal,
+      after: afterReal,
       arrows: passArrows,
       actorTeam: team,
       half,
@@ -1815,8 +1861,28 @@ export default function FpaLivePage() {
       timeline,
       primary: primaryRowIndex,
     });
-    const snapshot: SavedScene = { rows: scoredRows, logs: scoredLogs, beforeDots, afterDots, passArrows, primary: primaryRowIndex, clipIndex: currentClipIndex };
-    const nextBeforeDots = clonePitchDotsForNextScene(afterDots);
+    const snapshot: SavedScene = { rows: scoredRows, logs: scoredLogs, beforeDots: beforeReal, afterDots: afterReal, passArrows, primary: primaryRowIndex, clipIndex: currentClipIndex };
+    // 다음 장면의 Before = 이 장면의 After(실제 점) + 나머지 선수의 '자리 기억'(잔상).
+    //
+    // 잔상뿐 아니라 **이번에 활성화했던 선수도 잔상으로 되돌려** 넘긴다. 안 그러면
+    // After 로 복사하지 않은 채 저장했을 때 그 선수가 통째로 사라져, 다음 액션에서
+    // 라인업을 다시 깔아야 한다. 잔상으로 넘기면 마지막에 놓아둔 위치는 그대로 남고,
+    // 새 액션에 실제로 나오는지는 태거가 클릭으로 다시 확인하게 된다.
+    //
+    // 라인업 잔상을 쓰는 중일 때만 넘긴다 — 잔상 없이 수기로 찍는 기존 흐름은 그대로.
+    const nextRealDots = clonePitchDotsForNextScene(afterReal);
+    const carriedKeys = new Set(nextRealDots.map(dotRosterKey).filter(Boolean) as string[]);
+    const usingLineupGhosts = beforeDots.some((dot) => dot.ghost);
+    const nextGhostDots = usingLineupGhosts
+      ? clonePitchDotsForNextScene(
+        // 등번호가 붙은 점만 — 번호 없는 수기 마커까지 잔상으로 남기면 피치가 지저분해진다.
+        beforeDots.filter((dot) => {
+          const key = dotRosterKey(dot);
+          return Boolean(key) && !carriedKeys.has(key as string);
+        }),
+      ).map((dot) => ({ ...dot, ghost: true }))
+      : [];
+    const nextBeforeDots = [...nextRealDots, ...nextGhostDots];
     // 저장으로 행이 확정되면 남은 xGOT 대기는 갱신할 행이 없다 — 해제 안 하면 다음 장면 입력이 잠김
     if (pendingXgot?.canvas === 'live') resetXgotState();
     resetDualUndo();
@@ -2197,7 +2263,43 @@ export default function FpaLivePage() {
 
   const buildDualSubmitDots = () => {
     if (inputMode !== 'dual') return dots;
-    return submitDotsForCode(statInput, beforeDots, afterDots);
+    return submitDotsForCode(statInput, realDots(beforeDots), realDots(afterDots));
+  };
+
+  /** 코드의 **행위자** 등번호가 아직 잔상이면 그 번호를 돌려준다(아니면 null).
+
+      행위자 좌표는 곧 채점 시작점이라, 포메이션 자리 그대로 받으면 조용히 틀린 데이터가 된다.
+      리시버는 막지 않는다 — 도착점 클릭이 그 자리를 정하고, 잔상이면 그 클릭으로 함께
+      활성화된다(settleReceiverGhost).
+
+      코드의 번호는 언제나 행위 팀 선수다. 상대 팀에 같은 번호의 잔상이 있다고 막으면 안 되고,
+      같은 번호의 실제 점이 이미 있으면 남은 잔상은 사본일 뿐이라 막지 않는다. */
+  const pendingGhostActor = (code: string): string | null => {
+    const base = code.trim().split('.', 1)[0] || '';
+    const actorNum = base.match(/^(\d+)/)?.[1];
+    if (!actorNum) return null;
+    const mine = [...beforeDots, ...afterDots].filter((dot) => dot.teamSide === team);
+    if (mine.some((dot) => !dot.ghost && dot.number === actorNum)) return null;
+    return mine.some((dot) => dot.ghost && dot.number === actorNum) ? actorNum : null;
+  };
+
+  /** 패스 도착점 클릭 = 리시버가 공을 받은 자리. 리시버가 아직 잔상이면 여기서 활성화하고
+      그 좌표로 옮긴다 — 태거가 같은 지점을 두 번 찍게 만들지 않으려는 것이다. */
+  const settleReceiverGhost = (
+    side: PitchSide,
+    receiverNum: string,
+    coords: { meter_x: number; meter_y: number; screen_x: number; screen_y: number },
+  ) => {
+    const place = (prev: PitchDot[]) => {
+      const index = prev.findIndex(
+        (dot) => dot.ghost && dot.teamSide === team && dot.number === receiverNum,
+      );
+      if (index < 0) return prev;
+      return prev.map((dot, dotIndex) =>
+        (dotIndex === index ? { ...dot, ...coords, ghost: false } : dot));
+    };
+    if (side === 'before') setBeforeDots(place);
+    else setAfterDots(place);
   };
 
   // 패스/크로스 채점: 시작 점 + 도착점(클릭) 2점 → codex /fpa/logs/generate
@@ -2439,15 +2541,19 @@ export default function FpaLivePage() {
 
   const buildDualPitchPayload = () => {
     if (inputMode !== 'dual') return undefined;
+    // 잔상은 프레임에 넣지 않는다 — 압박·PC 는 프레임 전체 좌표로 계산하므로
+    // 실제로 거기 없는 선수가 섞이면 지표가 통째로 흔들린다.
+    const beforeReal = realDots(beforeDots);
+    const afterReal = realDots(afterDots);
     return {
       actor_team: team,
       primary_row_index: primaryRowIndex,
-      input_tier: beforeDots.length + afterDots.length >= 6 ? 'recommended' : 'minimal',
+      input_tier: beforeReal.length + afterReal.length >= 6 ? 'recommended' : 'minimal',
       before: {
-        dots: beforeDots.map((dot) => toPayloadDot(dot, team)),
+        dots: beforeReal.map((dot) => toPayloadDot(dot, team)),
       },
       after: {
-        dots: afterDots.map((dot) => toPayloadDot(dot, team)),
+        dots: afterReal.map((dot) => toPayloadDot(dot, team)),
       },
     };
   };
@@ -2724,7 +2830,10 @@ export default function FpaLivePage() {
       }
       const coords = dotFromClientPoint(event.clientX, event.clientY, rect);
       // 위치만 갱신 — team/role/color/number/id 보존 (안 하면 레이어 색 사라져 홈/어웨이 뒤바뀐 듯 보임)
-      (isEdit ? updateEditDot : updateDualDot)(dragging.side, dragging.index, { ...existing, ...coords });
+      // ghost 는 반드시 떼고 쓴다: 잔상을 눌러 바로 끌면 활성화(setState)가 반영되기 전에
+      // 이 핸들러가 옛 스냅샷(ghost=true)을 새 좌표로 다시 써서 활성화가 취소돼 버린다.
+      // 끌어다 놓는 행위 자체가 '이 선수를 여기에 둔다' 는 뜻이라 떼는 게 맞기도 하다.
+      (isEdit ? updateEditDot : updateDualDot)(dragging.side, dragging.index, { ...existing, ...coords, ghost: false });
       // 그 점에서 출발하는 패스 화살표 시작점도 따라 이동
       if (existing.id) {
         (isEdit ? setEditPassArrows : setPassArrows)((prev) => prev.map((arrow) =>
@@ -2763,6 +2872,17 @@ export default function FpaLivePage() {
       assignNumberToLiveSelectedDot(statInput.trim());
       return;
     }
+    // 행위자가 아직 잔상이면 채점을 막는다 — 행위자 좌표가 곧 채점 시작점이라,
+    // 포메이션 자리를 그대로 받으면 조용히 틀린 데이터가 굳는다.
+    if (inputMode === 'dual') {
+      const ghostActor = pendingGhostActor(statInput);
+      if (ghostActor) {
+        setStatus(
+          `${ghostActor}번이 아직 잔상입니다 — 피치에서 클릭해 활성화하고 실제 위치로 옮기세요`,
+        );
+        return;
+      }
+    }
     // 볼 경로를 Before 에 화살표로 그리는 액션. 코드 입력 후 2번 클릭.
     //   수비(태클/인터셉트/차단/블록) = 상대 공 경로 (출발점 → 끊은 지점)
     //   경합(b/bb)              = 볼이 온 경로 (볼이 온 곳 → 경합 지점)
@@ -2797,13 +2917,13 @@ export default function FpaLivePage() {
         side != null && startIndex != null ? (side === 'before' ? beforeDots : afterDots)[startIndex] : undefined;
       // 선택이 없으면(예: 장면 저장 후 after→before 복사 직후) 코드의 행위자 번호로 시작 점 탐색 → 그 점에서 화살표 시작
       if (!startDot && actorNum) {
-        const bIdx = beforeDots.findIndex((dot) => isAllyDot(dot) && dot.number === actorNum);
+        const bIdx = beforeDots.findIndex((dot) => !dot.ghost && isAllyDot(dot) && dot.number === actorNum);
         if (bIdx >= 0) {
           side = 'before';
           startIndex = bIdx;
           startDot = beforeDots[bIdx];
         } else {
-          const aIdx = afterDots.findIndex((dot) => isAllyDot(dot) && dot.number === actorNum);
+          const aIdx = afterDots.findIndex((dot) => !dot.ghost && isAllyDot(dot) && dot.number === actorNum);
           if (aIdx >= 0) {
             side = 'after';
             startIndex = aIdx;
@@ -3121,9 +3241,14 @@ export default function FpaLivePage() {
   }, [matchId]);
 
 
-  // 신청 라인업을 before 프레임에 포메이션대로 깔아준다.
+  // 신청 라인업을 before 프레임에 포메이션대로 '잔상' 으로 깔아준다.
   // 영상만 보고 등번호를 찾는 수고를 없애는 게 목적이라, 정확한 위치가 아니라
   // '누가 어느 자리에 있는지' 를 먼저 세워두고 태거가 끌어 옮기게 한다.
+  //
+  // 잔상인 이유: 한 액션에 실제로 등장하는 선수는 서너 명인데 22명을 전부 실제 점으로
+  // 깔면 나머지가 포메이션 자리 그대로 프레임에 실려 압박·PC 지표를 흔든다.
+  // 태거가 클릭한 선수만 실제 점이 되고, 안 건드린 잔상은 채점·저장·전송 어디에도 안 간다.
+  //
   // 교체 선수(positionSlot='SUB')는 좌표가 없으므로 선발만 놓는다.
   const placeLineupOnBefore = (targetSides: readonly TeamSide[] = ['home', 'away']) => {
     // 신청 원본이 아니라 '교체 반영된' 명단을 쓴다 — 명단 탭에서 바꾼 결과가 그대로 나간다.
@@ -3137,19 +3262,17 @@ export default function FpaLivePage() {
       return;
     }
 
-    // 한 팀만 다시 깔 때는 상대 팀 점을 남긴다 — 이미 실제 위치로 끌어다 놓은 것을
-    // 22명 배치 한 번에 날려버리지 않으려는 것이다. 양 팀을 함께 깔 때만 전부 지운다.
-    const replacingBoth = sidesWithLineup.length === 2;
-    const keptDots = replacingBoth
-      ? []
-      : beforeDots.filter((dot) => dot.teamSide !== sidesWithLineup[0]);
-    const removing = beforeDots.length - keptDots.length;
-    if (removing && !window.confirm(
-      replacingBoth
-        ? `before 에 찍힌 점 ${removing}개를 지우고 라인업으로 새로 배치할까요?`
-        : `before 의 ${sideLabel(sidesWithLineup[0])} 점 ${removing}개를 지우고 라인업으로 새로 배치할까요?`
-          + ' (상대 팀 점은 그대로 둡니다)',
-    )) return;
+    // 다시 깔아도 지우는 건 '그 팀의 잔상' 뿐이다. 이미 클릭해 활성화하고 실제 위치로
+    // 옮겨 둔 점은 그대로 남는다 — 배치 한 번에 작업을 날려버리지 않으려는 것이다.
+    // 지우는 게 잔상뿐이라 확인 팝업도 필요 없다.
+    const keptDots = beforeDots.filter(
+      (dot) => !dot.ghost || !sidesWithLineup.includes(dot.teamSide as TeamSide),
+    );
+    const clearedGhosts = beforeDots.length - keptDots.length;
+    // 같은 팀·같은 등번호의 실제 점이 이미 있으면 그 선수의 잔상은 다시 깔지 않는다.
+    const activeKeys = new Set(
+      keptDots.filter((dot) => !dot.ghost).map(dotRosterKey).filter(Boolean) as string[],
+    );
 
     // direction 은 '지금 선택된 팀(team)' 의 공격 방향이다. 홈 기준으로 환산해 둔다.
     const homeAttacksRight = team === 'home' ? direction === 'right' : direction === 'left';
@@ -3157,6 +3280,7 @@ export default function FpaLivePage() {
     const nextDots: PitchDot[] = [];
     const placed: string[] = [];
     let skipped = 0;
+    let alreadyActive = 0;
 
     sidesWithLineup.forEach((side) => {
       const starters = (effectiveRoster[side] ?? []).filter((p) => !p.isSubstitute && p.positionSlot);
@@ -3181,6 +3305,8 @@ export default function FpaLivePage() {
 
       let sidePlaced = 0;
       starters.forEach((player) => {
+        // 이미 활성화된 선수는 건드리지 않는다 — 옮겨 둔 위치가 잔상으로 되돌아가면 안 된다.
+        if (activeKeys.has(`${side}:${player.jersey}`)) { alreadyActive += 1; return; }
         const grid = gridById.get(player.positionSlot.toUpperCase());
         if (!grid) { skipped += 1; return; }
         sidePlaced += 1;
@@ -3199,39 +3325,58 @@ export default function FpaLivePage() {
           role: layer.role,
           color: layer.color,
           number: player.jersey,
+          ghost: true,
         });
       });
       if (sidePlaced) placed.push(`${side === 'home' ? '홈' : '어웨이'} ${sidePlaced}명`);
     });
 
     if (!nextDots.length) {
-      setStatus('배치할 선발 선수가 없습니다 — 라인업에 포지션 정보가 없을 수 있습니다');
+      setStatus(
+        alreadyActive
+          ? `이미 ${alreadyActive}명이 활성화되어 있습니다 — 새로 깔 잔상이 없습니다`
+          : '배치할 선발 선수가 없습니다 — 라인업에 포지션 정보가 없을 수 있습니다',
+      );
       return;
     }
 
     pushDualUndo();
-    // 옛 점을 참조하던 화살표는 함께 지운다 (clearDualDots 와 같은 규칙).
-    // 한 팀만 다시 깔 때는 남기는 팀의 화살표까지 지우면 안 된다.
-    const keptIds = new Set(keptDots.map((dot) => dot.id).filter(Boolean));
-    const clearedIds = new Set(
-      beforeDots.map((dot) => dot.id).filter(Boolean).filter((id) => !keptIds.has(id)),
-    );
-    setPassArrows((prev) => prev.filter((arrow) => {
-      if (arrow.side === 'before') {
-        if (replacingBoth) return false;
-        return !(arrow.startId && clearedIds.has(arrow.startId));
-      }
-      if (arrow.startId && clearedIds.has(arrow.startId)) return false;
-      return true;
-    }));
+    // 걷어낸 건 잔상뿐이다. 잔상은 클릭해야 실제 점이 되므로 화살표가 걸려 있을 수 없어
+    // 화살표는 손대지 않는다(실제 점을 지우던 예전 배치와 다른 점).
     setBeforeDots([...keptDots, ...nextDots]);
     setSelectedDualDot(null);
     setStatus(
-      `라인업 배치 완료 — ${placed.join(' · ')}`
-      + (keptDots.length ? ` · 상대 팀 점 ${keptDots.length}개는 그대로 둠` : '')
-      + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : '')
-      + ' · 실제 위치로 끌어 옮기세요',
+      `라인업 잔상 배치 — ${placed.join(' · ')} · 필요한 선수를 클릭하면 활성화됩니다`
+      + (alreadyActive ? ` · 이미 활성화된 ${alreadyActive}명은 그대로 둠` : '')
+      + (clearedGhosts ? ` · 옛 잔상 ${clearedGhosts}개 교체` : '')
+      + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : ''),
     );
+  };
+
+  /** 잔상 클릭 = 활성화. 좌표는 그대로 두고 ghost 표시만 뗀다.
+      반환값은 '이 클릭이 활성화였는가' — 이어지는 드래그가 undo 스냅샷을 또 찍지 않게 쓴다. */
+  const activateGhostDot = (side: PitchSide, index: number): boolean => {
+    const list = side === 'before' ? beforeDots : afterDots;
+    const target = list[index];
+    if (!target?.ghost) return false;
+    pushDualUndo();
+    const activate = (prev: PitchDot[]) =>
+      prev.map((dot, dotIndex) => (dotIndex === index ? { ...dot, ghost: false } : dot));
+    if (side === 'before') setBeforeDots(activate);
+    else setAfterDots(activate);
+    setStatus(
+      `${target.number ? `${target.number}번` : '선수'} 활성화 — 실제 위치로 끌어다 놓으세요`,
+    );
+    return true;
+  };
+
+  /** 남은 잔상을 전부 걷어낸다 — 액션에 안 쓰는 선수 자리를 치워 피치를 비운다. */
+  const clearGhostDots = () => {
+    if (!beforeGhostCount) return;
+    pushDualUndo();
+    setBeforeDots((prev) => prev.filter((dot) => !dot.ghost));
+    setSelectedDualDot(null);
+    setStatus(`잔상 ${beforeGhostCount}개를 지웠습니다`);
   };
 
   useEffect(() => {
@@ -3670,8 +3815,11 @@ export default function FpaLivePage() {
     const renderDots = side === 'before' ? beforePitchDots : afterPitchDots;
     const panelRef = side === 'before' ? beforePitchRef : afterPitchRef;
     const title = side === 'before' ? 'Before' : 'After';
-    const allyCount = renderDots.filter((dot) => dot.team === 'ally').length;
-    const opponentCount = renderDots.length - allyCount;
+    // 잔상은 아직 찍은 점이 아니라 A/O 개수에서 빼고 따로 센다.
+    const activeDots = renderDots.filter((dot) => !dot.ghost);
+    const allyCount = activeDots.filter((dot) => dot.team === 'ally').length;
+    const opponentCount = activeDots.length - allyCount;
+    const ghostCount = renderDots.length - activeDots.length;
     const armedHere = liveArrowArm?.side === side;
     return (
       <div className="fpa-dual-pitch-card">
@@ -3679,6 +3827,11 @@ export default function FpaLivePage() {
           <span>{title}</span>
           <div>
             <span className="fpa-dual-pitch-count">A{allyCount} O{opponentCount}</span>
+            {ghostCount ? (
+              <span className="fpa-dual-pitch-count ghost" title="라인업 잔상 — 클릭해야 실제 점이 됩니다">
+                잔상 {ghostCount}
+              </span>
+            ) : null}
             <button onClick={undoDual} title="마지막 조작 되돌리기 (⌘Z)" type="button">Undo</button>
             <button onClick={() => clearDualDots(side)} type="button">Clear</button>
           </div>
@@ -3724,8 +3877,9 @@ export default function FpaLivePage() {
             const selected = selectedDualDot?.side === side && selectedDualDot.index === index;
             return (
               <div
-                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''} ${dot.role === 'gk' ? 'is-gk' : ''} side-${dotShapeSide(dot, team)}`}
+                className={`fpa-pitch-dot fpa-dual-dot ${dot.team === 'opponent' ? 'opponent' : 'ally'} ${selected ? 'selected' : ''} ${dot.needsCheck ? 'needs-check' : ''} ${dot.role === 'gk' ? 'is-gk' : ''} ${dot.ghost ? 'ghost' : ''} side-${dotShapeSide(dot, team)}`}
                 key={`${side}-${index}-${dot.left}-${dot.top}`}
+                title={dot.ghost ? '라인업 잔상 — 클릭하면 활성화됩니다 (우클릭: 지우기)' : undefined}
                 onClick={(event) => {
                   // 화살표 그리는 중엔 점을 선택하지 않고 피치로 흘려보냄 (끊은 지점이 수비수 점 위인 경우가 흔함)
                   if (armedHere) return;
@@ -3742,7 +3896,10 @@ export default function FpaLivePage() {
                   // 우클릭(삭제)에서 드래그가 arming 되면, 삭제로 인덱스가 당겨진 뒤 커서 이동에 다른 점이 끌려온다
                   if (event.button !== 0) return;
                   event.stopPropagation();
-                  draggingDualDotRef.current = { side, index, canvas: 'live' };
+                  // 잔상이면 이 누름이 곧 활성화다. 활성화가 undo 스냅샷을 이미 찍었으므로
+                  // 이어지는 드래그가 같은 제스처로 또 찍지 않게 historyPushed 로 넘긴다.
+                  const activated = activateGhostDot(side, index);
+                  draggingDualDotRef.current = { side, index, canvas: 'live', historyPushed: activated };
                   selectLiveDualDot({ side, index });
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
@@ -4246,7 +4403,11 @@ export default function FpaLivePage() {
       <div className="fpa-dual-pitch-grid">
         {renderDualPitch('before')}
         <div className="fpa-dual-copy">
-          <button disabled={Boolean(pendingXgot) || !beforeDots.length} onClick={copyBeforeToAfter} type="button">
+          <button
+            disabled={Boolean(pendingXgot) || beforeDots.length - beforeGhostCount === 0}
+            onClick={copyBeforeToAfter}
+            type="button"
+          >
             →
           </button>
         </div>
@@ -4316,8 +4477,8 @@ export default function FpaLivePage() {
           onClick={() => placeLineupOnBefore([side])}
           disabled={busy || !(lineupSides[side]?.players?.length ?? 0)}
           title={(lineupSides[side]?.players?.length ?? 0)
-            ? `${sideLabel(side)} 선발만 before 에 배치합니다`
-              + `${team === side ? ' (지금 클립의 팀)' : ''} · 상대 팀 점은 그대로 둡니다`
+            ? `${sideLabel(side)} 선발을 before 에 잔상으로 깝니다`
+              + `${team === side ? ' (지금 클립의 팀)' : ''} · 클릭한 선수만 실제 점이 됩니다`
             : `${sideLabel(side)} 라인업이 없습니다`}
         >
           {sideLabel(side)} 배치
@@ -4328,10 +4489,18 @@ export default function FpaLivePage() {
         onClick={() => placeLineupOnBefore()}
         disabled={busy || !lineupSidesWithPlayers.length}
         title={lineupSidesWithPlayers.length
-          ? 'before 프레임에 양 팀 선발을 포메이션대로 배치합니다 (기존 점은 모두 지웁니다)'
+          ? 'before 프레임에 양 팀 선발을 포메이션대로 잔상으로 깝니다 (활성화된 점은 그대로 둡니다)'
           : '이 경기에 연결된 FinePlay 신청 라인업이 없습니다'}
       >
         양팀
+      </button>
+      <button
+        type="button"
+        onClick={clearGhostDots}
+        disabled={busy || !beforeGhostCount}
+        title="아직 활성화하지 않은 잔상을 전부 지웁니다"
+      >
+        잔상 지우기{beforeGhostCount ? ` (${beforeGhostCount})` : ''}
       </button>
       <button
         type="button"
