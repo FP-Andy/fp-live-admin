@@ -9258,6 +9258,7 @@ def link_standalone_request(
     team_id = str(body.get("teamId") or "").strip() or None
     team_name = str(body.get("teamName") or "").strip() or None
     lineup = list(body.get("lineup") or [])
+    formation = str(body.get("formation") or "").strip()
     options = body.get("options") if isinstance(body.get("options"), list) else None
     client = fineplay_default_client()
     if client.configured and not body.get("manual"):
@@ -9272,6 +9273,7 @@ def link_standalone_request(
         team_id = str(team.get("teamId") or "").strip() or team_id
         team_name = str(team.get("teamName") or "").strip() or team_name
         lineup = list(manifest.get("lineup") or []) or lineup
+        formation = str(manifest.get("formation") or "").strip() or formation
         if isinstance(manifest.get("options"), list):
             options = manifest["options"]
 
@@ -9280,6 +9282,9 @@ def link_standalone_request(
         "team_id": team_id,
         "team_name": team_name,
         "lineup": lineup,
+        # 라인업 사전 배치용 — 슬롯 id(player_{라인}_{순번})만으로는 변형(윙백형·다이아몬드 등)을
+        # 못 살리므로 포메이션 키를 함께 남긴다. 매니페스트에 없으면 빈 문자열.
+        "formation": formation,
         # 이 사이드의 산출 지시 — 없으면 basic 폴백(resolve_plan).
         "options": options if options is not None else [],
         "plan": fineplay_plan_from_manifest({"options": options or []}, source="link"),
@@ -9457,6 +9462,399 @@ async def lineup_from_record_sheet(
     db.commit()
     return {"applied": True, "sheet": target["sheet"], "sides": applied,
             "sheets": [_summary(s) for s in sheets]}
+
+
+# 기록지 라인업의 포지션 라벨은 좌우가 이름에 들어 있다(LCB/RCB/LDM/RAM …).
+# 앱이 주는 positionSlot(player_{라인}_{순번})은 포메이션을 알아야 자리가 나오는데
+# 기록지 라벨은 그것만으로 자리가 확정되므로, 라벨을 그대로 positionSlot 에 넣는다.
+# 화면은 'player_'/'c'로 시작하지 않는 값을 라벨로 보고 자기 표에서 격자를 찾는다.
+RECORD_SHEET_POSITIONS = frozenset({
+    "GK",
+    "LB", "LCB", "CB", "RCB", "RB", "LWB", "RWB",
+    "LDM", "DM", "RDM",
+    "LM", "LCM", "CM", "RCM", "RM",
+    "LAM", "CAM", "RAM",
+    "LW", "LS", "ST", "RS", "RW",
+})
+
+
+def _record_sheet_lineup(parsed: dict) -> list[dict]:
+    """기록지 한 팀 -> 라인업. 선발은 포지션 라벨을 자리로 싣고, 교체는 교체명단으로 붙인다.
+
+    기록지의 교체 표기("37'(4민병채)")는 선발 행에 달려 있다. 그걸 풀어 교체 선수를
+    명단에 넣고, 누구 대신 몇 분에 들어왔는지도 남긴다 — 화면에서 교체를 반영할 때
+    태거가 일일이 찾지 않아도 되게 하려는 것이다.
+    """
+    lineup: list[dict] = []
+    seen: set[str] = set()
+    for player in parsed.get("players") or []:
+        jersey = str(player.get("jerseyNumber") or "").strip()
+        name = str(player.get("name") or "").strip()
+        if not jersey or not name or jersey in seen:
+            continue
+        seen.add(jersey)
+        position = str(player.get("position") or "").strip().upper()
+        entry = {"jerseyNumber": jersey, "name": name, "position": position}
+        # 표에 없는 표기는 자리를 못 잡으므로 슬롯을 비운다(등록은 되고 배치만 빠진다).
+        if position in RECORD_SHEET_POSITIONS:
+            entry["positionSlot"] = position
+        lineup.append(entry)
+
+    for player in parsed.get("players") or []:
+        out_jersey = str(player.get("jerseyNumber") or "").strip()
+        for sub in player.get("subs") or []:
+            jersey = str(sub.get("inNumber") or "").strip()
+            name = str(sub.get("inName") or "").strip()
+            if not jersey or jersey in seen:
+                continue
+            seen.add(jersey)
+            entry = {
+                "jerseyNumber": jersey,
+                "name": name,
+                "isSubstitute": True,
+                "positionSlot": "SUB",
+                "replacesJersey": out_jersey,
+            }
+            minute = sub.get("minute")
+            if isinstance(minute, int):
+                entry["minute"] = minute + int(sub.get("added") or 0)
+            lineup.append(entry)
+    return lineup
+
+
+# 제목에서 팀명을 뽑을 때 쓰는 꼬리표 — 유니폼 색 등 팀명이 아닌 괄호 주석.
+_TEAM_ANNOTATION = re.compile(r"\((?:[^()]{1,6})\)")
+
+
+def _norm_team(name: Any) -> str:
+    """팀명 비교용 정규화.
+
+    같은 팀이 기록지와 작업 제목에서 다르게 적힌다:
+        기록지  "서울시립대학교 아마축구부"
+        제목    "아마축구부(검)"        ← 학교명 없음 + 유니폼 색
+    그래서 짧은 괄호 주석(색 표기)을 떼고, 구분 기호를 모두 지운 뒤 비교한다.
+    """
+    text = _TEAM_ANNOTATION.sub("", str(name or ""))
+    return re.sub(r"[\s()\u00b7\-_/,.]+", "", text).lower()
+
+
+def _team_matches(a: Any, b: Any) -> bool:
+    """두 팀명이 같은 팀인가. 한쪽이 다른 쪽에 들어 있으면 같다고 본다.
+
+    "아마축구부" ⊂ "서울시립대학교아마축구부" 같은 경우를 잡으려는 것이다.
+
+    짧은 쪽이 너무 짧으면 우연히 겹치므로 길이로 막는데, 기준을 글자 종류로 나눈다 —
+    한글 두 글자는 팀명으로 충분히 특정적이지만("태풍"), 로마자 두 글자는 아니다("FC"
+    는 FC연세·FC콕·FC Dream 에 전부 걸린다). 홈·어웨이 두 쪽이 동시에 맞아야 매칭으로
+    치므로 남는 위험은 더 낮아진다.
+    """
+    na, nb = _norm_team(a), _norm_team(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    short = na if len(na) <= len(nb) else nb
+    if len(short) < 2 or (short.isascii() and len(short) < 3):
+        return False
+    return na in nb or nb in na
+
+
+# 리그 구분 + 라운드. 시트명 "S-1R-1" 과 제목 "…SUFA_S_1R_…" 을 같은 키로 만든다.
+# 제목은 사람이 손으로 적어 두 순서가 다 나온다 — "S_1R" 도 "1R_S" 도 같은 키가 되게 한다.
+_ROUND_KEY_DIVISION_FIRST = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z])[\s_-]*(\d{1,2})\s*R(?![A-Za-z])", re.IGNORECASE)
+_ROUND_KEY_ROUND_FIRST = re.compile(
+    r"(?<![A-Za-z0-9])(\d{1,2})\s*R[\s_-]*([A-Za-z])(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _round_key(text: Any) -> str:
+    """리그 구분과 라운드를 뽑아 "S1R" 처럼 만든다. 못 찾으면 "".
+
+    리그전이라 같은 팀 조합이 라운드마다 되풀이된다 — 팀 두 개만으로는 어느 경기인지
+    정할 수 없어서 라운드까지 맞아야 매칭으로 친다.
+        시트명  "S-1R-1"                          → "S1R"
+        제목    "(03.22)SUFA_S_1R_A(검)vsB(흰)_.." → "S1R"
+        제목    "(03.22)SUFA_1R_S_A(검)vsB(흰)_.." → "S1R"   ← 순서가 반대여도
+    """
+    body = str(text or "")
+    match = _ROUND_KEY_DIVISION_FIRST.search(body)
+    if match:
+        return f"{match.group(1).upper()}{int(match.group(2))}R"
+    match = _ROUND_KEY_ROUND_FIRST.search(body)
+    if match:
+        return f"{match.group(2).upper()}{int(match.group(1))}R"
+    return ""
+
+
+def _teams_from_title(title: Any) -> tuple[str, str]:
+    """작업 제목에서 홈/어웨이를 뽑는다. 못 뽑으면 ("", "").
+
+    실제 제목: "(03.22)SUFA_S_1R_아마축구부(검)vs청우회(흰)_오준식"
+    'vs' 를 기준으로 좌우를 자르고, 바깥쪽 '_' 로 둘러싸인 토막만 남긴다.
+    """
+    text = str(title or "")
+    match = re.search(r"(?i)\bvs\b|vs", text)
+    if not match:
+        return "", ""
+    left, right = text[: match.start()], text[match.end():]
+    # 왼쪽은 마지막 구분자 뒤, 오른쪽은 첫 구분자 앞이 팀명이다.
+    home = re.split(r"[_|]", left)[-1].strip()
+    away = re.split(r"[_|]", right)[0].strip()
+    return home, away
+
+
+def _standalone_jobs_for_match(db: Session) -> list[dict]:
+    """사전 작업 잡 목록 + 매칭에 쓸 홈/어웨이 팀명."""
+    out: list[dict] = []
+    for job in db.query(HighlightJob).filter(HighlightJob.mode == "fineplay").all():
+        metadata = job.job_metadata or {}
+        if not metadata.get("standalone"):
+            continue
+        manifest = metadata.get("manifest") or {}
+        home = str((manifest.get("team") or {}).get("teamName") or "")
+        away = str((manifest.get("opponent") or {}).get("name") or "")
+        match_name = ""
+        match_id = metadata.get("match_id")
+        if match_id:
+            try:
+                match_obj = db.get(Match, uuid.UUID(str(match_id)))
+            except (ValueError, TypeError):
+                match_obj = None
+            if match_obj is not None:
+                match_name = match_obj.name or ""
+                meta_json = match_obj.metadata_json or {}
+                home = str(meta_json.get("home_team") or home)
+                away = str(meta_json.get("away_team") or away)
+        display = match_name or str(metadata.get("display_name") or "") or job.id
+        # 팀명 칸이 비었거나 "홈/어웨이" 같은 자리표시자면 제목에서 뽑아 쓴다.
+        # 실제 운영 제목이 "..._아마축구부(검)vs청우회(흰)_오준식" 형태라 여기서 나온다.
+        title_home, title_away = _teams_from_title(display)
+        original = job.original_filename or ""
+        if not title_home or not title_away:
+            title_home, title_away = _teams_from_title(original)
+        # 라운드는 제목에서만 온다 — 사전 작업의 Match.round_number 는 1 로 고정 생성된다.
+        round_key = _round_key(display) or _round_key(original)
+        # 홈/어웨이는 반드시 **짝으로** 싣는다. 등록된 팀명이 먼저, 제목이 그다음.
+        # 두 출처를 한 바구니에 섞으면(예전 방식) 제목의 홈이 등록된 어웨이와 짝지어져
+        # 한 잡이 정방향·역방향에 동시에 걸린다. 그러면 정방향이 먼저 뽑혀 swap 이 꺼지고
+        # 홈/어웨이가 조용히 뒤집힌 채 라인업이 들어간다.
+        orientations = [(h, a) for h, a in ((home, away), (title_home, title_away)) if h and a]
+        # 제목의 순서가 등록된 홈/어웨이와 반대인가 — 매칭은 등록 기준을 따르되 사유로 알린다.
+        title_flipped = bool(
+            home and away and title_home and title_away
+            and _team_matches(title_home, away) and _team_matches(title_away, home)
+            and not (_team_matches(title_home, home) and _team_matches(title_away, away))
+        )
+        out.append({
+            "job_id": job.id,
+            "name": display,
+            "round_key": round_key,
+            "home_team": home,
+            "away_team": away,
+            "orientations": orientations,
+            "title_flipped": title_flipped,
+            "linked": {side: bool((metadata.get("links") or {}).get(side)) for side in ("home", "away")},
+        })
+    return out
+
+
+def _match_sheet_to_job(sheet: dict, jobs: list[dict]) -> tuple[str | None, bool, str]:
+    """시트 -> 잡. (job_id, swap, 사유). 팀명 두 개가 같은 짝을 찾는다.
+
+    제목 문자열은 운영자가 자유롭게 바꿀 수 있어 못 믿는다. 홈/어웨이가 뒤집혀 있으면
+    swap=True 로 알려준다(영상 기준과 기록지 기준이 다른 경우가 실제로 있다).
+    """
+    sheet_home = str(sheet.get("home", {}).get("team") or "")
+    sheet_away = str(sheet.get("away", {}).get("team") or "")
+    if not sheet_home.strip() or not sheet_away.strip():
+        return None, False, "기록지에 팀명이 없습니다"
+
+    def orient(job: dict) -> tuple[bool, bool]:
+        """이 잡이 이 시트와 같은 경기인가 -> (맞음, 홈/어웨이가 뒤집혔음).
+
+        한 출처(등록된 팀명 / 제목) 안에서 정방향·역방향을 함께 본다. 출처를 섞지
+        않아야 한쪽 출처의 홈과 다른 출처의 어웨이가 짝지어지는 일이 없다.
+        """
+        for job_home, job_away in job.get("orientations") or []:
+            if _team_matches(job_home, sheet_home) and _team_matches(job_away, sheet_away):
+                return True, False
+            if _team_matches(job_home, sheet_away) and _team_matches(job_away, sheet_home):
+                return True, True
+        return False, False
+
+    # 리그전은 같은 팀 조합이 라운드마다 되풀이되므로 라운드가 맞아야 같은 경기다.
+    # 양쪽 다 라운드를 알 때만 거른다 — 제목 형식이 다르면 라운드를 못 읽는데,
+    # 그때까지 막아버리면 멀쩡한 작업이 통째로 미매칭이 된다(사유로 알린다).
+    sheet_round = _round_key(sheet.get("sheet")) or _round_key(sheet.get("matchNo"))
+    pool = jobs
+    round_note = ""
+    if sheet_round:
+        same_round = [j for j in jobs if j.get("round_key") == sheet_round]
+        unknown_round = [j for j in jobs if not j.get("round_key")]
+        pool = same_round + unknown_round
+        if not same_round and unknown_round:
+            round_note = " (제목에서 라운드를 못 읽어 팀명만 대조)"
+
+    hits: list[tuple[dict, bool]] = []
+    for job in pool:
+        matched, swap = orient(job)
+        if matched:
+            hits.append((job, swap))
+
+    # 라운드를 아는 후보가 있으면 그쪽을 쓴다 — 라운드까지 맞은 것이 더 확실하다.
+    if sheet_round and len(hits) > 1:
+        narrowed = [(j, s) for j, s in hits if j.get("round_key") == sheet_round]
+        if len(narrowed) == 1:
+            hits, round_note = narrowed, ""
+
+    if len(hits) > 1:
+        return None, False, f"이 팀 조합의 작업이 {len(hits)}건이라 고를 수 없습니다 (라운드로도 못 갈랐습니다)"
+    if not hits:
+        if sheet_round and any(j.get("round_key") for j in jobs):
+            return None, False, f"{sheet_round} 의 이 팀 조합을 찾지 못했습니다"
+        return None, False, "이 팀 조합의 사전 작업을 찾지 못했습니다"
+
+    job, swap = hits[0]
+    matched_round = bool(sheet_round) and job.get("round_key") == sheet_round
+    reason = f"{sheet_round} · 팀명 일치" if matched_round else f"팀명 일치{round_note}"
+    if swap:
+        reason += " (홈/어웨이 뒤바뀜 -> swap)"
+    if job.get("title_flipped"):
+        reason += " ※ 제목의 홈/어웨이 순서가 등록된 것과 반대입니다"
+    return job["job_id"], swap, reason
+
+
+@app.post("/api/highlight/record-sheet/lineup/bulk")
+async def lineup_from_record_sheet_bulk(
+    file: UploadFile = File(...),
+    apply: bool = Form(default=False),
+    assignments: str = Form(default=""),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """경기기록지(xlsx) 한 파일의 **모든 시트**를 사전 작업 잡들에 한 번에 넣는다.
+
+    한 라운드가 한 파일이라(시트 = 경기) 6경기를 한 번에 등록하려는 것이다. 시트마다
+    홈/어웨이 팀명으로 사전 작업을 찾아 짝짓고, 못 찾은 시트는 화면에서 직접 고른다.
+
+    apply=false 면 아무것도 저장하지 않고 매칭 결과만 돌려준다 — 어디에 들어갈지 보고
+    확인한 뒤에 넣게 하려는 것이다.
+    assignments 는 {"시트명": "job_id"} JSON — 자동 매칭을 덮어쓴다(수동 지정/오매칭 교정).
+    """
+    name = (file.filename or "").lower()
+    if not name.endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="기록지는 xlsx 파일이어야 합니다.")
+    try:
+        overrides = json.loads(assignments) if assignments.strip() else {}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="assignments 가 올바른 JSON 이 아닙니다.")
+    if not isinstance(overrides, dict):
+        raise HTTPException(status_code=400, detail="assignments 는 {시트명: job_id} 형식이어야 합니다.")
+
+    try:
+        sheets = await run_in_threadpool(record_sheet.parse_workbook, await file.read())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    jobs = _standalone_jobs_for_match(db)
+    jobs_by_id = {j["job_id"]: j for j in jobs}
+    results: list[dict] = []
+    # 한 작업 = 경기 하나. 시트 두 장이 같은 작업에 걸리면 뒤엣것이 앞엣것을 덮어써
+    # "다른 경기 라인업이 들어와 있다"가 된다 — 조용히 덮지 말고 막고 알린다.
+    used_jobs: dict[str, str] = {}
+
+    for sheet in sheets:
+        entry: dict[str, Any] = {"sheet": sheet.get("sheet", ""), "matchNo": sheet.get("matchNo", "")}
+        if "error" in sheet:
+            results.append({**entry, "status": "error", "reason": sheet["error"][:200]})
+            continue
+        entry["home"] = {"team": sheet["home"]["team"], "formation": sheet["home"]["formation"],
+                         "count": len(sheet["home"]["players"])}
+        entry["away"] = {"team": sheet["away"]["team"], "formation": sheet["away"]["formation"],
+                         "count": len(sheet["away"]["players"])}
+        if not sheet.get("usable"):
+            results.append({**entry, "status": "skipped", "reason": "선수명단이 비어 있습니다"})
+            continue
+
+        override_id = str(overrides.get(sheet["sheet"]) or "").strip()
+        if override_id:
+            if override_id not in jobs_by_id:
+                results.append({**entry, "status": "unmatched", "reason": f"지정한 작업을 찾을 수 없습니다: {override_id}"})
+                continue
+            job_id, swap, reason = override_id, False, "수동 지정"
+        else:
+            job_id, swap, reason = _match_sheet_to_job(sheet, jobs)
+        if not job_id:
+            results.append({**entry, "status": "unmatched", "reason": reason})
+            continue
+        if job_id in used_jobs:
+            results.append({**entry, "status": "unmatched",
+                            "reason": f"{used_jobs[job_id]} 시트가 이미 이 작업에 들어갑니다 — 한 작업에 경기 두 개는 넣을 수 없습니다"})
+            continue
+        used_jobs[job_id] = sheet["sheet"]
+
+        entry.update({"job_id": job_id, "job_name": jobs_by_id[job_id]["name"], "swap": swap, "reason": reason})
+        if not apply:
+            results.append({**entry, "status": "matched"})
+            continue
+
+        job, metadata = _require_standalone_job(db, job_id)
+        links = dict(metadata.get("links") or {})
+        applied: dict[str, dict] = {}
+        for side in ("home", "away"):
+            src_side = ("away" if side == "home" else "home") if swap else side
+            parsed = sheet[src_side]
+            lineup = _record_sheet_lineup(parsed)
+            if not lineup:
+                continue
+            link = dict(links.get(side) or {})   # 이미 연결된 신청 정보는 보존한다
+            link["lineup"] = lineup
+            if parsed["team"]:
+                link["team_name"] = parsed["team"]
+            if parsed.get("formation"):
+                link["formation"] = parsed["formation"]
+            link["lineup_source"] = f"record_sheet:{sheet['sheet']}"
+            link["lineup_updated_at"] = datetime.utcnow().isoformat()
+            links[side] = link
+            applied[side] = {
+                "team": parsed["team"],
+                "formation": parsed.get("formation", ""),
+                "starters": sum(1 for p in lineup if not p.get("isSubstitute")),
+                "subs": sum(1 for p in lineup if p.get("isSubstitute")),
+            }
+        if not applied:
+            results.append({**entry, "status": "skipped", "reason": "넣을 라인업이 없습니다"})
+            continue
+
+        metadata["links"] = links
+        metadata["record_sheet"] = {
+            "filename": file.filename or "",
+            "sheet": sheet["sheet"],
+            "match_no": sheet.get("matchNo", ""),
+            "swap": bool(swap),
+            "uploaded_at": datetime.utcnow().isoformat(),
+        }
+        update_job(db, job_id, job_metadata=metadata)
+        _audit(
+            db, "STANDALONE_LINEUP_FROM_SHEET_BULK", "highlight_job",
+            actor=user, target_id=job_id,
+            details={"sheet": sheet["sheet"], "swap": bool(swap), "applied": applied},
+        )
+        results.append({**entry, "status": "applied", "sides": applied})
+
+    if apply:
+        db.commit()
+    matched = sum(1 for r in results if r["status"] in ("matched", "applied"))
+    return {
+        "applied": bool(apply),
+        "filename": file.filename or "",
+        "total": len(results),
+        "matched": matched,
+        "unmatched": sum(1 for r in results if r["status"] == "unmatched"),
+        "results": results,
+        # 수동 지정용 — 화면이 드롭다운으로 고를 수 있게 사전 작업 목록을 함께 준다.
+        "jobs": jobs,
+    }
 
 
 @app.delete("/api/highlight/fineplay-jobs/{job_id}/links/{side}")
@@ -9828,6 +10226,8 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
         # 슛 기회 창출량 — 어시스트 채점 근거. 재전송 경로에서도 살아야 한다.
         "receptionXg": row.reception_xg,
         "packing": row.packing,
+        # 등번호 식별 불확실 표시 — extra 에 저장돼 있으므로 재전송 때도 최상위로 되살린다.
+        **({"needsCheck": True} if (row.extra or {}).get("needsCheck") else {}),
         "epv": row.epv,
         "pc": row.pc,
         "startOffset": row.start_offset,
@@ -9857,6 +10257,10 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
                 "jersey": jersey,
                 "name": str(entry.get("name") or "").strip(),
                 "isSubstitute": bool(entry.get("isSubstitute")),
+                # 앱 FormationSlot.id — 'gk' | 'player_{라인}_{순번}' | 'c{행}_{열}'(커스텀) | 'SUB'.
+                # 화면이 이걸로 before 프레임에 라인업을 포메이션대로 미리 배치한다
+                # (영상만 보고 등번호를 찾는 게 dual 태깅에서 제일 오래 걸리는 일이라서).
+                "positionSlot": str(entry.get("positionSlot") or "").strip(),
             })
         return players
 
@@ -9866,6 +10270,9 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
     if manifest_players:
         sides[our_side] = {
             "team_name": str((manifest.get("team") or {}).get("teamName") or ""),
+            # 포메이션 키('4-3-3', '5-3-2 윙백형' …). 매니페스트에 없으면 빈 문자열이고,
+            # 화면이 슬롯 id 집합에서 라인 구성을 역산한다(변형 접미사만 못 살린다).
+            "formation": str(manifest.get("formation") or "").strip(),
             "players": manifest_players,
         }
     for side, link in (metadata.get("links") or {}).items():
@@ -9873,7 +10280,11 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
             continue
         players = _players(link.get("lineup"))
         if players:
-            sides[side] = {"team_name": str(link.get("team_name") or ""), "players": players}
+            sides[side] = {
+                "team_name": str(link.get("team_name") or ""),
+                "formation": str(link.get("formation") or "").strip(),
+                "players": players,
+            }
     return sides
 
 
@@ -10184,6 +10595,99 @@ def clip_result_scene_motions(
         if a.get("sceneMotionKey") or a.get("sceneData")
     ]
     return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
+
+
+def _clip_team_metadata(job: HighlightJob, clip: HighlightClip, team: str | None) -> dict | None:
+    """잡 메타데이터에 클립 팀을 반영한 새 dict. 대상 항목을 못 찾으면 None.
+
+    클립 행의 team_side 만 고치면 클립을 다시 만들 때 메타데이터 값으로 되돌아간다
+    (_persist_clip_records 가 job_metadata.clips[*].team 을 그대로 옮겨 적는다).
+    항목은 clipId 로 찾고, 없으면 구간(start/end)으로 찾는다 — 옛 잡은 clipId 가 비어 있다.
+    """
+    source = (job.job_metadata or {}).get("clips")
+    if not isinstance(source, list):
+        return None
+    entries = [dict(entry) if isinstance(entry, dict) else entry for entry in source]
+
+    def same_span(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        try:
+            return (abs(float(entry.get("start")) - float(clip.start_sec)) < 0.05
+                    and abs(float(entry.get("end")) - float(clip.end_sec)) < 0.05)
+        except (TypeError, ValueError):
+            return False
+
+    target = next(
+        (e for e in entries if isinstance(e, dict) and str(e.get("clipId") or "") == clip.id),
+        None,
+    )
+    if target is None:
+        spans = [e for e in entries if same_span(e)]
+        # 구간이 겹치는 항목이 둘 이상이면 어느 것인지 확정할 수 없다 — 건드리지 않는다.
+        if len(spans) != 1:
+            return None
+        target = spans[0]
+
+    target["team"] = team
+    metadata = dict(job.job_metadata or {})
+    metadata["clips"] = entries
+    return metadata
+
+
+@app.patch("/api/highlight/clip-results/clips/{clip_id}/team")
+def clip_result_set_team(
+    clip_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립의 홈/어웨이 귀속을 고친다 (관리자 전용).
+
+    태깅 시점에 잘못 고른 팀을 나중에 바로잡기 위한 것이다. 이 값이 전송 대상 팀을
+    가르므로(사전 작업은 사이드별로 나눠 보낸다) 틀리면 클립이 반대 팀에게 간다.
+
+    클립 행과 잡 메타데이터 양쪽을 함께 고친다 — 메타데이터를 두면 클립을 다시 만들 때
+    옛 값으로 되돌아간다.
+
+    이미 찍어둔 FPA 액션의 팀(highlight_clip_actions.team_side)은 건드리지 않는다.
+    수비 액션처럼 클립 팀과 다른 것이 정상인 행이 있어, 일괄로 뒤집으면 오히려 깨진다.
+    """
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+
+    raw = str(body.get("team_side") or "").strip().lower()
+    if raw in ("", "none", "null"):
+        team: str | None = None
+    elif raw in ("home", "away"):
+        team = raw
+    else:
+        raise HTTPException(status_code=400, detail="team_side 는 home / away / 빈 값 중 하나여야 합니다.")
+
+    before = clip.team_side
+    if before == team:
+        return {"clip_id": clip_id, "team_side": team, "changed": False, "metadata_synced": False}
+
+    clip.team_side = team
+    job = db.get(HighlightJob, clip.job_id)
+    metadata = _clip_team_metadata(job, clip, team) if job else None
+    _audit(
+        db, "CLIP_TEAM_SET", "highlight_clip",
+        actor=user, target_id=clip_id,
+        match_id=clip.match_id,
+        details={"before": before, "after": team, "metadata_synced": metadata is not None},
+    )
+    if metadata is not None:
+        update_job(db, clip.job_id, job_metadata=metadata)   # 클립 행·감사 로그까지 함께 커밋된다
+    else:
+        db.commit()
+    return {
+        "clip_id": clip_id,
+        "team_side": team,
+        "changed": True,
+        "metadata_synced": metadata is not None,
+    }
 
 
 @app.put("/api/highlight/clip-results/clips/{clip_id}/actions")

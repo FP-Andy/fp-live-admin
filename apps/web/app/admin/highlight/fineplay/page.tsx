@@ -250,6 +250,31 @@ function readVideoDuration(file: File): Promise<number> {
   });
 }
 
+// 기록지 한 파일(= 한 라운드) 을 사전 작업 여러 건에 한 번에 넣을 때의 시트별 결과.
+type BulkSheetSide = { team: string; formation: string; count: number };
+type BulkSheetResult = {
+  sheet: string;
+  matchNo?: string;
+  status: 'matched' | 'applied' | 'unmatched' | 'skipped' | 'error';
+  reason?: string;
+  home?: BulkSheetSide;
+  away?: BulkSheetSide;
+  job_id?: string;
+  job_name?: string;
+  swap?: boolean;
+  sides?: Record<string, { team: string; formation: string; starters: number; subs: number }>;
+};
+type BulkJobOption = { job_id: string; name: string; home_team: string; away_team: string };
+type BulkResponse = {
+  applied: boolean;
+  filename: string;
+  total: number;
+  matched: number;
+  unmatched: number;
+  results: BulkSheetResult[];
+  jobs: BulkJobOption[];
+};
+
 export default function FineplayJobsPage() {
   const [jobs, setJobs] = useState<FpJob[]>([]);
   // 산출 지시 필터 — 하이라이트만·xFP·사전 작업은 작업 내용이 서로 다르다. 룸을
@@ -811,8 +836,17 @@ export default function FineplayJobsPage() {
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
       if (e.code === 'ArrowLeft') { e.preventDefault(); seekTo(videoRef.current.currentTime - 5); return; }
       if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(videoRef.current.currentTime + 5); return; }
-      if (e.key === 'a' || e.key === 'A') { e.preventDefault(); addTag('home'); return; }
-      if (e.key === 'd' || e.key === 'D') { e.preventDefault(); addTag('away'); }
+      // 한글 자판이면 e.key 가 'ㅁ'·'ㅇ' 으로 오고, IME 상태에 따라 'Process' 로 오기도 한다.
+      // e.code 는 자판 배열과 무관하게 물리 키 위치를 주므로 그걸 먼저 본다.
+      if (e.code === 'KeyA' || e.key === 'a' || e.key === 'A' || e.key === 'ㅁ') {
+        e.preventDefault();
+        addTag('home');
+        return;
+      }
+      if (e.code === 'KeyD' || e.key === 'd' || e.key === 'D' || e.key === 'ㅇ') {
+        e.preventDefault();
+        addTag('away');
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -866,6 +900,46 @@ export default function FineplayJobsPage() {
     }
   };
 
+  // ── 기록지 일괄 등록 (사전 작업 전용) ──────────────────────────────────────
+  // 한 라운드가 한 파일이고 시트 하나가 경기 하나라, 6경기를 한 번에 넣는다.
+  // 먼저 미리보기(저장 없음)로 어느 시트가 어느 작업에 붙는지 확인한 뒤 적용한다.
+  const [bulkFile, setBulkFile] = useState<File | null>(null);
+  const [bulkResult, setBulkResult] = useState<BulkResponse | null>(null);
+  const [bulkPicks, setBulkPicks] = useState<Record<string, string>>({});
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMsg, setBulkMsg] = useState('');
+
+  const runBulkSheet = async (file: File, apply: boolean) => {
+    setBulkBusy(true);
+    setBulkMsg(apply ? '기록지 적용 중…' : '기록지 읽는 중…');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('apply', apply ? 'true' : 'false');
+      // 자동 매칭이 실패했거나 잘못 붙은 시트만 수동 지정으로 덮어쓴다.
+      const picks = Object.fromEntries(Object.entries(bulkPicks).filter(([, v]) => v));
+      if (Object.keys(picks).length) form.append('assignments', JSON.stringify(picks));
+      const res = await fetch(`${API_BASE}/highlight/record-sheet/lineup/bulk`, {
+        method: 'POST', credentials: 'include', body: form,
+      });
+      if (!res.ok) {
+        setBulkMsg((await res.text()) || '기록지 처리 실패');
+        return;
+      }
+      const data = await res.json() as BulkResponse;
+      setBulkResult(data);
+      const applied = data.results.filter((r) => r.status === 'applied').length;
+      setBulkMsg(apply
+        ? `적용 완료 — 시트 ${data.total}장 중 ${applied}건 등록${data.unmatched ? ` · 미매칭 ${data.unmatched}건` : ''}`
+        : `미리보기 — 시트 ${data.total}장 중 ${data.matched}건 자동 매칭${data.unmatched ? ` · ${data.unmatched}건은 작업을 직접 고르세요` : ''}`);
+      if (apply) void loadJobs();
+    } catch (err) {
+      setBulkMsg(err instanceof Error ? err.message : '기록지 처리 실패');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   return (
     <div style={{ width: '100%' }}>
       <HighlightSubTabs />
@@ -881,6 +955,85 @@ export default function FineplayJobsPage() {
           </button>
           <button style={btn} onClick={() => void loadJobs()}>새로고침</button>
         </div>
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: '1px dashed var(--border-ghost, #2c2c32)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 600 }}>📋 기록지 일괄 등록</span>
+            <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>한 파일의 모든 시트를 사전 작업에 한 번에 — 시트 1장 = 경기 1건</span>
+            <input
+              type="file"
+              accept=".xlsx,.xlsm"
+              disabled={bulkBusy}
+              style={{ fontSize: 12, marginLeft: 'auto' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setBulkFile(f);
+                setBulkResult(null);
+                setBulkPicks({});
+                setBulkMsg('');
+                if (f) void runBulkSheet(f, false);
+              }}
+            />
+          </div>
+
+          {bulkResult ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {bulkResult.results.map((r) => {
+                const tone = r.status === 'applied' ? '#4ade80'
+                  : r.status === 'matched' ? 'var(--muted, #999)'
+                    : r.status === 'unmatched' ? '#fbbf24' : '#f87171';
+                return (
+                  <div key={r.sheet} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' }}>
+                    <span style={{ width: 74, color: 'var(--muted, #999)' }}>{r.sheet}</span>
+                    <span style={{ minWidth: 260, flex: 1 }}>
+                      {r.home ? `${r.home.team} (${r.home.formation || '-'}) vs ${r.away?.team} (${r.away?.formation || '-'})` : r.reason}
+                    </span>
+                    {r.status === 'unmatched' ? (
+                      <select
+                        value={bulkPicks[r.sheet] || ''}
+                        disabled={bulkBusy}
+                        style={{ fontSize: 12, maxWidth: 260 }}
+                        onChange={(e) => setBulkPicks((prev) => ({ ...prev, [r.sheet]: e.target.value }))}
+                      >
+                        <option value="">작업 직접 고르기…</option>
+                        {bulkResult.jobs.map((j) => (
+                          <option key={j.job_id} value={j.job_id}>{j.name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span style={{ color: tone }}>
+                        {r.status === 'applied' ? '✓ 등록됨' : r.status === 'matched' ? '→ ' : ''}
+                        {r.job_name || ''}{r.swap ? ' (홈/어웨이 뒤집어 적용)' : ''}
+                      </span>
+                    )}
+                    {r.status === 'unmatched' ? (
+                      <span style={{ color: tone }} title={r.reason}>⚠ {r.reason}</span>
+                    ) : null}
+                  </div>
+                );
+              })}
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <button
+                  style={smallBtn}
+                  disabled={bulkBusy || !bulkFile}
+                  onClick={() => bulkFile && void runBulkSheet(bulkFile, false)}
+                >다시 미리보기</button>
+                <button
+                  style={smallBtn}
+                  disabled={bulkBusy || !bulkFile || !bulkResult.results.some((r) => r.status === 'matched')}
+                  onClick={() => bulkFile && void runBulkSheet(bulkFile, true)}
+                  title="매칭된 시트의 라인업을 각 사전 작업에 저장합니다"
+                >매칭된 것 모두 등록</button>
+              </div>
+            </div>
+          ) : null}
+
+          {bulkMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{bulkMsg}</p> : null}
+          <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
+            홈/어웨이 팀명 두 개로 사전 작업을 찾습니다. 제목은 바뀔 수 있어 쓰지 않습니다.
+            기록지의 포지션(LCB·RDM 등)이 그대로 저장돼 dual 태깅의 “before 에 배치”가 그 자리에 깝니다.
+          </p>
+        </div>
+
         <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
           FinePlay 사용자가 신청한 분석 영상을 가져와(claim) 태깅하고, 서버가 클립을 만들어
           돌려보냅니다. 원본은 S3 스트리밍으로 재생되며 내려받지 않습니다.
@@ -1347,13 +1500,13 @@ export default function FineplayJobsPage() {
                   </select>
                 </label>
                 <button style={primaryBtn} onClick={() => addTag('home')}>
-                  ＋ 홈 {fpaTeams.home !== 'Home' ? fpaTeams.home : ''} 태깅 (A)
+                  ＋ 홈 {fpaTeams.home !== 'Home' ? fpaTeams.home : ''} 태깅 (A / ㅁ)
                 </button>
                 <button
                   style={{ ...btn, background: '#7c3aed', borderColor: 'transparent' }}
                   onClick={() => addTag('away')}
                 >
-                  ＋ 어웨이 {fpaTeams.away !== 'Away' ? fpaTeams.away : ''} 태깅 (D)
+                  ＋ 어웨이 {fpaTeams.away !== 'Away' ? fpaTeams.away : ''} 태깅 (D / ㅇ)
                 </button>
                 <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
                   {fmt(current)} / {fmt(duration)}
