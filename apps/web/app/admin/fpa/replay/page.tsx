@@ -508,10 +508,14 @@ export default function FpaReplayPage() {
     let active = true;
     const loadReplayMatches = async () => {
       setBusy(true);
-      setStatus('듀얼모드 FPA 데이터가 있는 경기만 찾는 중');
+        setStatus('듀얼모드 FPA 데이터가 있는 경기만 찾는 중');
       try {
         const data = await apiJson<Match[]>('/matches?sport=FOOTBALL');
-        const sourceMatches = Array.isArray(data) ? data : [];
+        // Archived fixtures remain available as records elsewhere, but they
+        // are never part of the live replay work queue.  Skipping them before
+        // the per-match log requests keeps historical volume away from the
+        // API/DB pool used by active operations and broadcast rendering.
+        const sourceMatches = Array.isArray(data) ? data.filter((match) => !match.archived) : [];
         const results = await settledMapWithConcurrency(
           sourceMatches,
           REPLAY_LOG_LOAD_CONCURRENCY,
