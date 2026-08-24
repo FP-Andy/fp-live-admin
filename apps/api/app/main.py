@@ -1882,6 +1882,29 @@ def _team_names_from_match(match_obj: Match) -> dict:
     }
 
 
+def _broadcast_shots_comparison_baseline(match_obj: Match) -> dict:
+    """Return safe, manual shot-count carry-ins for the broadcast comparison.
+
+    A live operator can discover a missed batch of shots after a match is
+    already under way.  Keeping that correction separate from XG events means
+    the comparison can start from the verified score without fabricating shot
+    locations, player data, or expected-goal values.  New FLA XG events are
+    still counted normally by the renderer on top of these values.
+    """
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    raw = metadata.get("broadcast_shots_comparison_baseline")
+    raw = raw if isinstance(raw, dict) else {}
+
+    baseline: dict[str, dict[str, int]] = {}
+    for side in ("HOME", "AWAY"):
+        values = raw.get(side)
+        values = values if isinstance(values, dict) else {}
+        shots = max(0, int(values.get("shots") or 0))
+        on_target = min(shots, max(0, int(values.get("on_target") or 0)))
+        baseline[side] = {"shots": shots, "on_target": on_target}
+    return baseline
+
+
 def _football_score_from_events(match_id: UUID, db: Session, *, as_of_clock_ms: int | None = None) -> dict:
     rows = (
         db.query(Event)
@@ -1932,6 +1955,7 @@ def _build_broadcast_snapshot(match_obj: Match, db: Session, *, as_of_clock_ms: 
             "possession": result.get("possession"),
             "attack_direction": result.get("attack_direction") or [],
             "xg": result.get("xg") or [],
+            "shots_comparison_baseline": _broadcast_shots_comparison_baseline(match_obj),
             "match_dominance": result.get("match_dominance"),
         },
         "updated_at": datetime.utcnow().isoformat(),

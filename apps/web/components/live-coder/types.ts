@@ -74,6 +74,10 @@ export type BroadcastSnapshot = {
       goalmouth_x?: number | null;
       goalmouth_y?: number | null;
     }>;
+    shots_comparison_baseline?: Partial<Record<'HOME' | 'AWAY', {
+      shots?: number;
+      on_target?: number;
+    }>>;
     match_dominance?: {
       items?: Array<{
         base_time?: string;

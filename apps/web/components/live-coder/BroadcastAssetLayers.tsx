@@ -196,7 +196,12 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shots = snapshot.analysis.xg || [];
   const stats = (side: 'HOME' | 'AWAY') => {
     const rows = shots.filter((item) => item.team === side);
-    return { shots: rows.length, onTarget: rows.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length };
+    const baseline = snapshot.analysis.shots_comparison_baseline?.[side];
+    return {
+      shots: rows.length + Math.max(0, Number(baseline?.shots || 0)),
+      onTarget: rows.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length
+        + Math.max(0, Number(baseline?.on_target || 0)),
+    };
   };
   const homeStats = stats('HOME');
   const awayStats = stats('AWAY');
