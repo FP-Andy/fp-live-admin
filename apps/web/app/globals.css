@@ -4729,6 +4729,44 @@ a:focus-visible {
   color: rgba(255, 255, 255, 0.6);
 }
 
+/* ── 기록지에서 온 '확인거리' 표시 ────────────────────────────────────────
+   조끼를 입고 뛴 선수는 영상 번호(조끼)와 기록지 원 등번호가 다르다. 원 번호를 같이
+   보여주지 않으면 태거 눈에는 '명단에 없는 번호' 로 보인다.
+   자리를 유추한 선수(포지션 칸이 비어 있던 경우)는 포지션 뒤에 * 를 단다 — 기록지에
+   적힌 자리와 우리가 짐작한 자리를 구별해야 확인할 데를 안다. */
+.fpa-roster-row .alt {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 184, 108, 0.35);
+  background: rgba(255, 184, 108, 0.12);
+  color: #ffc48a;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fpa-roster-row .warn {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(224, 82, 79, 0.9);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+/* 유추한 자리 — 점선 테두리로 '적힌 게 아니라 짐작한 것' 을 알린다. */
+.fpa-roster-row .pos.guess {
+  border-style: dashed;
+  border-color: rgba(255, 184, 108, 0.45);
+  color: #ffc48a;
+}
+
 .fpa-roster-empty,
 .fpa-roster-empty-line {
   font-size: 11px;

@@ -9464,8 +9464,11 @@ async def lineup_from_record_sheet(
 # 화면은 'player_'/'c'로 시작하지 않는 값을 라벨로 보고 자기 표에서 격자를 찾는다.
 RECORD_SHEET_POSITIONS = frozenset({
     "GK",
+    # SW(스위퍼) — 백5 가운데. 2026 SUFA 5-3-2 기록지에 실제로 나온다.
+    "SW",
     "LB", "LCB", "CB", "RCB", "RB", "LWB", "RWB",
-    "LDM", "DM", "RDM",
+    # CDM — 4-1-4-1 의 홀딩. 기록지가 DM 대신 이렇게 적는다.
+    "LDM", "DM", "CDM", "RDM",
     "LM", "LCM", "CM", "RCM", "RM",
     "LAM", "CAM", "RAM",
     "LW", "LS", "ST", "RS", "RW",
@@ -9492,6 +9495,19 @@ def _record_sheet_lineup(parsed: dict) -> list[dict]:
         # 표에 없는 표기는 자리를 못 잡으므로 슬롯을 비운다(등록은 되고 배치만 빠진다).
         if position in RECORD_SHEET_POSITIONS:
             entry["positionSlot"] = position
+        # 조끼(bib) — 배번은 조끼 번호이고 원 등번호는 대조용이다. 태거가 명단에서
+        # "7 (원 99)" 처럼 확인할 수 있게 같이 싣는다.
+        # 조끼 번호가 원 등번호와 같은 시트도 있어("1/GK 1"), rosterNumber 유무가 아니라
+        # 파서가 알려준 bib 플래그로 판단한다.
+        if player.get("bib"):
+            entry["bib"] = True
+            if player.get("rosterNumber"):
+                entry["rosterNumber"] = str(player["rosterNumber"])
+        if player.get("bibAmbiguous"):
+            entry["bibAmbiguous"] = True
+        # 기록지에 포지션이 없어 포메이션·행 순서로 채운 자리 — 눈으로 확인하라는 표시.
+        if player.get("positionInferred"):
+            entry["positionInferred"] = True
         lineup.append(entry)
 
     for player in parsed.get("players") or []:
@@ -9816,6 +9832,26 @@ async def lineup_from_record_sheet_bulk(
                 "starters": sum(1 for p in lineup if not p.get("isSubstitute")),
                 "subs": sum(1 for p in lineup if p.get("isSubstitute")),
             }
+            # 눈으로 확인해야 하는 것들 — 조끼 번호를 쓴 선수와 자리를 유추한 선수.
+            # 화면에 안 띄우면 "왜 등번호가 다르지?" 를 아무도 모른 채 지나간다.
+            bib_count = sum(1 for p in lineup if p.get("bib"))
+            inferred_count = sum(1 for p in lineup if p.get("positionInferred"))
+            ambiguous_count = sum(1 for p in lineup if p.get("bibAmbiguous"))
+            if bib_count:
+                applied[side]["bib"] = bib_count
+            if inferred_count:
+                applied[side]["position_inferred"] = inferred_count
+                applied[side]["position_inferred_by"] = parsed.get("positionsInferred", "")
+            if ambiguous_count:
+                applied[side]["bib_ambiguous"] = ambiguous_count
+            # 같은 번호가 두 번 나오면 뒤에 온 선수는 명단에서 빠진다(태거가 번호를
+            # 치면 누구인지 정해져야 하므로 중복은 둘 수 없다). 조끼 번호는 원 등번호와
+            # 겹칠 수 있어 이 일이 더 잦다 — 조용히 사라지면 아무도 모른다.
+            dropped = len(parsed.get("players") or []) - sum(
+                1 for p in lineup if not p.get("isSubstitute")
+            )
+            if dropped > 0:
+                applied[side]["duplicate_dropped"] = dropped
         if not applied:
             results.append({**entry, "status": "skipped", "reason": "넣을 라인업이 없습니다"})
             continue
@@ -10247,7 +10283,7 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
             jersey = str(entry.get("jerseyNumber") or "").strip()
             if not jersey:
                 continue
-            players.append({
+            player = {
                 "jersey": jersey,
                 "name": str(entry.get("name") or "").strip(),
                 "isSubstitute": bool(entry.get("isSubstitute")),
@@ -10255,7 +10291,18 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
                 # 화면이 이걸로 before 프레임에 라인업을 포메이션대로 미리 배치한다
                 # (영상만 보고 등번호를 찾는 게 dual 태깅에서 제일 오래 걸리는 일이라서).
                 "positionSlot": str(entry.get("positionSlot") or "").strip(),
-            })
+            }
+            # 기록지에서 온 확인거리 — 조끼 번호를 쓴 선수(원 등번호 동봉)와
+            # 포지션 칸이 비어 자리를 유추한 선수. 명단 탭이 표시해 태거가 대조한다.
+            if entry.get("bib"):
+                player["bib"] = True
+                if entry.get("rosterNumber"):
+                    player["rosterNumber"] = str(entry["rosterNumber"]).strip()
+            if entry.get("bibAmbiguous"):
+                player["bibAmbiguous"] = True
+            if entry.get("positionInferred"):
+                player["positionInferred"] = True
+            players.append(player)
         return players
 
     manifest = metadata.get("manifest") or {}

@@ -222,13 +222,24 @@ type LineupSidePlayers = {
   // 그때는 슬롯 id 에서 라인 구성을 역산한다(linesFromSlotIds).
   formation?: string;
   // positionSlot = 앱 FormationSlot.id. 사전 배치가 이걸로 자리를 잡는다.
-  players: { jersey: string; name?: string; isSubstitute?: boolean; positionSlot?: string }[];
+  players: {
+    jersey: string; name?: string; isSubstitute?: boolean; positionSlot?: string;
+    // 기록지에서 온 확인거리 —
+    //   bib/rosterNumber: 조끼를 입고 뛴 선수. jersey 는 조끼 번호(영상에 보이는 것)이고
+    //     rosterNumber 가 원 등번호다.
+    //   bibAmbiguous: 빨간 숫자가 여럿이라 어느 쪽이 조끼인지 못 가렸다.
+    //   positionInferred: 포지션 칸이 비어 포메이션·행 순서로 자리를 유추했다.
+    bib?: boolean; rosterNumber?: string; bibAmbiguous?: boolean; positionInferred?: boolean;
+  }[];
 };
 type LineupSides = Partial<Record<TeamSide, LineupSidePlayers>>;
 
 // 화면에서 교체를 반영한 뒤의 명단 한 명. positionSlot 이 자리를 들고 다니므로,
 // 교체 선수가 나간 선수의 positionSlot 을 넘겨받으면 그 자리에 그대로 배치된다.
-type RosterPlayer = { jersey: string; name?: string; positionSlot: string; isSubstitute: boolean };
+type RosterPlayer = {
+  jersey: string; name?: string; positionSlot: string; isSubstitute: boolean;
+  bib?: boolean; rosterNumber?: string; bibAmbiguous?: boolean; positionInferred?: boolean;
+};
 
 type PersistedLogRow = LogPreview & {
   SceneIndex?: string;
@@ -526,6 +537,9 @@ function buildFormationSlots(formationKey: string, lines: number[]): FormationSl
 // 같은 팀 안에서 두 선수가 같은 칸에 겹치지 않는 것을 확인했다.
 const RECORD_SHEET_POSITION_GRID: Record<string, { gridX: number; gridY: number }> = {
   GK: { gridX: 2, gridY: 20 },
+  // SW(스위퍼) — 백5 가운데를 조금 더 내려 세운다. 백4와 같은 줄에 두면 CB 와 자리가
+  // 겹치고, 실제로도 스위퍼는 한 발 뒤에 선다. (2026 SUFA 5-3-2 기록지에 나온다)
+  SW: { gridX: 2, gridY: 4 },
   LB: { gridX: 0, gridY: 5 },
   LCB: { gridX: 1, gridY: 5 },
   CB: { gridX: 2, gridY: 5 },
@@ -535,6 +549,8 @@ const RECORD_SHEET_POSITION_GRID: Record<string, { gridX: number; gridY: number 
   RWB: { gridX: 4, gridY: 7 },
   LDM: { gridX: 1, gridY: 8 },
   DM: { gridX: 2, gridY: 8 },
+  // CDM — 기록지가 4-1-4-1 홀딩을 이렇게 적는다. 자리는 DM 과 같다.
+  CDM: { gridX: 2, gridY: 8 },
   RDM: { gridX: 3, gridY: 8 },
   LM: { gridX: 0, gridY: 10 },
   LCM: { gridX: 1, gridY: 10 },
@@ -3193,6 +3209,11 @@ export default function FpaLivePage() {
         positionSlot: p.positionSlot ?? '',
         // 앱은 교체를 isSubstitute 또는 positionSlot='SUB' 둘 중 하나로 표시한다.
         isSubstitute: Boolean(p.isSubstitute) || (p.positionSlot ?? '').toUpperCase() === 'SUB',
+        // 기록지 확인거리는 그대로 들고 다닌다 — 교체를 반영해도 사라지면 안 된다.
+        bib: p.bib,
+        rosterNumber: p.rosterNumber,
+        bibAmbiguous: p.bibAmbiguous,
+        positionInferred: p.positionInferred,
       }));
     });
     return out;
@@ -4578,10 +4599,24 @@ export default function FpaLivePage() {
           const [dragSide, dragJersey] = (event.dataTransfer.getData('text/plain') || '').split(':');
           if (dragSide === side && dragJersey) swapRosterPlayers(side, dragJersey, player.jersey);
         }}
-        title={`끌어서 ${player.isSubstitute ? '선발' : '교체'} 선수와 맞바꾸기`}
+        title={[
+          `끌어서 ${player.isSubstitute ? '선발' : '교체'} 선수와 맞바꾸기`,
+          player.bib ? `조끼 ${player.jersey}번 — 기록지 원 등번호는 ${player.rosterNumber}번입니다` : '',
+          player.bibAmbiguous ? '기록지에 빨간 숫자가 여럿이라 조끼 번호를 가리지 못했습니다 — 영상으로 확인하세요' : '',
+          player.positionInferred ? '기록지에 포지션이 없어 포메이션과 행 순서로 자리를 유추했습니다' : '',
+        ].filter(Boolean).join('\n')}
       >
         <span className="no">{player.jersey}</span>
-        <span className="pos">{positionById.get(player.positionSlot.toUpperCase()) || (player.isSubstitute ? 'SUB' : '–')}</span>
+        {/* 조끼를 입은 선수는 영상 번호(조끼)와 기록지 번호가 다르다. 원 번호를 같이
+            보여주지 않으면 "명단에 없는 번호" 로 보여 태거가 헤맨다. */}
+        {player.bib && player.rosterNumber ? (
+          <span className="alt" title={`원 등번호 ${player.rosterNumber}`}>조끼·원{player.rosterNumber}</span>
+        ) : null}
+        {player.bibAmbiguous ? <span className="warn" title="조끼 번호 판정 불가">?</span> : null}
+        <span className={`pos ${player.positionInferred ? 'guess' : ''}`}>
+          {positionById.get(player.positionSlot.toUpperCase()) || (player.isSubstitute ? 'SUB' : '–')}
+          {player.positionInferred ? '*' : ''}
+        </span>
         <span className="nm">{player.name || '이름 없음'}</span>
       </div>
     );

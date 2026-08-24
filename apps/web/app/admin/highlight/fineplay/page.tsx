@@ -262,7 +262,14 @@ type BulkSheetResult = {
   job_id?: string;
   job_name?: string;
   swap?: boolean;
-  sides?: Record<string, { team: string; formation: string; starters: number; subs: number }>;
+  sides?: Record<string, {
+    team: string; formation: string; starters: number; subs: number;
+    // 눈으로 확인해야 하는 것들 — 조끼 번호를 쓴 선수 수, 자리를 유추한 선수 수.
+    bib?: number; bib_ambiguous?: number;
+    position_inferred?: number; position_inferred_by?: string;
+    // 같은 번호가 겹쳐 명단에서 빠진 선수 수 — 조끼 번호가 원 등번호와 겹치면 생긴다.
+    duplicate_dropped?: number;
+  }>;
 };
 type BulkJobOption = { job_id: string; name: string; home_team: string; away_team: string };
 type BulkResponse = {
@@ -1008,6 +1015,29 @@ export default function FineplayJobsPage() {
                     {r.status === 'unmatched' ? (
                       <span style={{ color: tone }} title={r.reason}>⚠ {r.reason}</span>
                     ) : null}
+                    {/* 조끼 번호·유추 자리는 기록지를 그대로 믿으면 안 되는 부분이라
+                        등록됐다고만 하고 넘어가면 아무도 확인하지 않는다. */}
+                    {(() => {
+                      const notes: string[] = [];
+                      Object.entries(r.sides || {}).forEach(([side, info]) => {
+                        const label = side === 'home' ? '홈' : '어웨이';
+                        if (info.bib) notes.push(`${label} 조끼번호 ${info.bib}명`);
+                        if (info.bib_ambiguous) notes.push(`${label} 조끼 판정 불가 ${info.bib_ambiguous}명`);
+                        if (info.position_inferred) {
+                          const how = info.position_inferred_by === 'count' ? '인원수' : '포메이션';
+                          notes.push(`${label} 자리 유추 ${info.position_inferred}명(${how})`);
+                        }
+                        if (info.duplicate_dropped) notes.push(`${label} 번호 중복 ${info.duplicate_dropped}명 제외`);
+                      });
+                      return notes.length ? (
+                        <span
+                          style={{ color: '#fbbf24' }}
+                          title="기록지에 조끼 번호가 빨간 글자로 적혔거나 포지션 칸이 비어 있어 자리를 유추했습니다 — 명단 탭에서 확인하세요"
+                        >
+                          ⚠ {notes.join(' · ')}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                 );
               })}
