@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { toPng } from 'html-to-image';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ZONES, type ZoneId } from './BasketballMatchControl';
 import { apiJson } from '../../lib/api';
@@ -120,85 +121,18 @@ function getScore(events: GameEvent[]) {
   );
 }
 
-function exportStyleText() {
-  const origin = window.location.origin;
-  return Array.from(document.styleSheets).map((sheet) => {
-    try {
-      return Array.from(sheet.cssRules).map((rule) => rule.cssText).join('\n');
-    } catch {
-      return '';
-    }
-  }).join('\n').replace(/url\(\//g, `url(${origin}/`);
-}
-
-async function imageToDataUrl(source: string) {
-  const response = await fetch(source);
-  if (!response.ok) throw new Error('이미지 파일을 불러오지 못했습니다.');
-  const blob = await response.blob();
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('이미지 변환에 실패했습니다.'));
-    reader.onerror = () => reject(new Error('이미지 변환에 실패했습니다.'));
-    reader.readAsDataURL(blob);
-  });
-}
-
 async function downloadElementAsPng(element: HTMLElement, filename: string) {
-  const bounds = element.getBoundingClientRect();
-  const width = Math.max(1, Math.ceil(bounds.width));
-  const height = Math.max(1, Math.ceil(bounds.height));
-  const clone = element.cloneNode(true) as HTMLElement;
-  clone.style.width = `${width}px`;
-  clone.style.maxWidth = 'none';
-  clone.style.margin = '0';
-
-  const imageNodes = Array.from(clone.querySelectorAll<HTMLElement>('[src], image[href]'));
-  await Promise.all(imageNodes.map(async (node) => {
-    const attribute = node.tagName.toLowerCase() === 'image' ? 'href' : 'src';
-    const value = node.getAttribute(attribute);
-    if (!value) return;
-    const source = new URL(value, window.location.href).href;
-    try {
-      node.setAttribute(attribute, await imageToDataUrl(source));
-    } catch {
-      node.setAttribute(attribute, source);
-    }
-  }));
-
-  const content = new XMLSerializer().serializeToString(clone);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml"><style>${exportStyleText()}</style>${content}</div></foreignObject></svg>`;
-  const source = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-
-  try {
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const next = new Image();
-      next.onload = () => resolve(next);
-      next.onerror = () => reject(new Error('PNG 이미지 변환에 실패했습니다.'));
-      next.src = source;
-    });
-    const scale = 2;
-    const canvas = document.createElement('canvas');
-    canvas.width = width * scale;
-    canvas.height = height * scale;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('이미지 캔버스를 준비하지 못했습니다.');
-    context.fillStyle = '#151719';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const png = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG 파일을 만들지 못했습니다.')), 'image/png');
-    });
-    const downloadUrl = URL.createObjectURL(png);
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(downloadUrl);
-  } finally {
-    URL.revokeObjectURL(source);
-  }
+  const source = await toPng(element, {
+    backgroundColor: '#151719',
+    cacheBust: true,
+    pixelRatio: 2,
+  });
+  const link = document.createElement('a');
+  link.href = source;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function getZoneStats(events: GameEvent[], team: Team) {
