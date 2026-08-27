@@ -2404,6 +2404,489 @@ a:focus-visible {
   stroke: none;
 }
 
+/* Basketball FLA visualization — broadcast-style dark canvas. */
+.basketball-viz-page {
+  gap: 18px;
+}
+
+.basketball-viz-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--border-ghost);
+  border-radius: 12px;
+  background: var(--surface-card);
+}
+
+.basketball-viz-toolbar > div {
+  margin-right: auto;
+}
+
+.basketball-viz-toolbar h3 {
+  margin: 4px 0 0;
+}
+
+.basketball-viz-toolbar label {
+  display: grid;
+  gap: 6px;
+  min-width: min(420px, 42vw);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.basketball-viz-toolbar select {
+  height: 40px;
+  padding: 0 34px 0 12px;
+  color: var(--text);
+  font: inherit;
+  font-weight: 800;
+}
+
+.basketball-viz-error {
+  margin: 0;
+  color: #ffb6b6;
+  font-weight: 700;
+}
+
+.basketball-viz-frame {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 16px;
+  background: #151719;
+  color: #fff;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.24);
+  font-family: 'Paperlogy', 'Noto Sans KR', sans-serif;
+}
+
+.basketball-viz-brandbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 82px;
+  padding: 16px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.13);
+  background: linear-gradient(90deg, #17191c 0%, #24282c 100%);
+}
+
+.basketball-viz-brandbar > img {
+  width: 136px;
+  height: auto;
+  object-fit: contain;
+}
+
+.basketball-viz-brand-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.basketball-viz-brand-copy span,
+.basketball-viz-panel-heading span,
+.basketball-viz-section-title > div > span,
+.basketball-viz-map-heading span,
+.basketball-viz-rebound-title span {
+  color: #ff7900;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+}
+
+.basketball-viz-brand-copy strong {
+  overflow: hidden;
+  max-width: 520px;
+  color: #fff;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.basketball-viz-scoreline {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  min-width: 0;
+  gap: 10px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.basketball-viz-scoreline span {
+  overflow: hidden;
+  max-width: 170px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.basketball-viz-scoreline b {
+  min-width: 30px;
+  color: #fff;
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 1;
+  text-align: center;
+}
+
+.basketball-viz-scoreline i {
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 25px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.basketball-viz-shotmaps,
+.basketball-viz-margin-panel,
+.basketball-viz-rebounds-panel {
+  padding: 28px;
+}
+
+.basketball-viz-shotmaps,
+.basketball-viz-margin-panel {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.basketball-viz-section-title,
+.basketball-viz-panel-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.basketball-viz-section-title strong,
+.basketball-viz-panel-heading strong {
+  display: block;
+  margin-top: 4px;
+  color: #fff;
+  font-size: 23px;
+  font-weight: 900;
+}
+
+.basketball-viz-section-title p,
+.basketball-viz-panel-heading p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.basketball-viz-zone-legend {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.basketball-viz-zone-legend i,
+.basketball-viz-panel-heading i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.basketball-viz-zone-legend .zero { background: #94272b; }
+.basketball-viz-zone-legend .low { background: #9d7d09; }
+.basketball-viz-zone-legend .high { background: #177c40; }
+.basketball-viz-panel-heading i.home { background: #ff7900; }
+.basketball-viz-panel-heading i.away { background: #1e63dc; }
+
+.basketball-viz-map-grid,
+.basketball-viz-rebound-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.basketball-viz-shot-map,
+.basketball-viz-rebound-card {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  background: #27292c;
+}
+
+.basketball-viz-shot-map.home,
+.basketball-viz-rebound-card.home {
+  box-shadow: inset 3px 0 0 #ff7900;
+}
+
+.basketball-viz-shot-map.away,
+.basketball-viz-rebound-card.away {
+  box-shadow: inset 3px 0 0 #1e63dc;
+}
+
+.basketball-viz-map-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 76px;
+  padding: 15px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.basketball-viz-map-heading strong {
+  display: block;
+  margin-top: 3px;
+  color: #fff;
+  font-size: 17px;
+}
+
+.basketball-viz-map-total {
+  display: grid;
+  gap: 1px;
+  min-width: 80px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.basketball-viz-map-total b {
+  color: #fff;
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.basketball-viz-map-total span,
+.basketball-viz-map-note {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.basketball-viz-court {
+  display: block;
+  width: 100%;
+  background: #323232;
+}
+
+.basketball-viz-zone {
+  stroke: rgba(255, 255, 255, 0.76);
+  stroke-width: 1.5;
+  transition: fill 0.18s ease;
+}
+
+.basketball-viz-court-lines {
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+.basketball-viz-zone-points,
+.basketball-viz-zone-detail {
+  fill: #fff;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.6);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.basketball-viz-zone-points {
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.basketball-viz-zone-detail {
+  fill: rgba(255, 255, 255, 0.83);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.basketball-viz-map-note {
+  padding: 10px 16px 12px;
+  text-align: right;
+}
+
+.basketball-viz-margin-panel {
+  padding-top: 34px;
+  padding-bottom: 40px;
+  background: #1f2124;
+}
+
+.basketball-viz-margin-chart {
+  display: block;
+  width: 100%;
+  height: clamp(360px, 27vw, 470px);
+  min-height: 360px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  background: #0d0f11;
+}
+
+.basketball-viz-margin-grid line {
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-dasharray: 4 6;
+  vector-effect: non-scaling-stroke;
+}
+
+.basketball-viz-margin-grid text,
+.basketball-viz-time-axis text {
+  fill: rgba(255, 255, 255, 0.56);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.basketball-viz-margin-home-fill { fill: rgba(255, 121, 0, 0.46); }
+.basketball-viz-margin-away-fill { fill: rgba(30, 99, 220, 0.45); }
+
+.basketball-viz-zero-line {
+  stroke: rgba(255, 255, 255, 0.94);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.basketball-viz-quarter line {
+  stroke: rgba(255, 255, 255, 0.42);
+  stroke-dasharray: 7 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.basketball-viz-quarter text {
+  fill: #fff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.basketball-viz-margin-line {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  vector-effect: non-scaling-stroke;
+}
+
+.basketball-viz-margin-dot-outline {
+  fill: #151719;
+  stroke: #fff;
+  stroke-width: 1.8;
+}
+
+.basketball-viz-rebounds-panel {
+  padding-top: 34px;
+  padding-bottom: 40px;
+  background: linear-gradient(120deg, #17191c 0%, #21252a 100%);
+}
+
+.basketball-viz-rebound-card {
+  display: flex;
+  min-height: 320px;
+  flex-direction: column;
+  padding: 18px;
+}
+
+.basketball-viz-rebound-title {
+  display: grid;
+  gap: 4px;
+  min-height: 46px;
+}
+
+.basketball-viz-rebound-title strong {
+  overflow: hidden;
+  color: #fff;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.basketball-viz-donut-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  flex: 1;
+  margin-top: 18px;
+}
+
+.basketball-viz-donut {
+  width: min(54%, 238px);
+  min-width: 190px;
+}
+
+.basketball-viz-donut-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 26;
+}
+
+.basketball-viz-donut-segment {
+  stroke-linecap: butt;
+}
+
+.basketball-viz-donut-total {
+  fill: #fff;
+  font-size: 38px;
+  font-weight: 900;
+}
+
+.basketball-viz-donut-caption {
+  fill: rgba(255, 255, 255, 0.55);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.basketball-viz-donut-legend {
+  display: grid;
+  flex: 1;
+  min-width: 170px;
+  gap: 8px;
+}
+
+.basketball-viz-donut-legend > div {
+  display: grid;
+  grid-template-columns: 8px minmax(44px, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.basketball-viz-donut-legend span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.basketball-viz-donut-legend b { color: #fff; }
+.basketball-viz-donut-legend em { color: #fff; font-size: 18px; font-style: normal; font-weight: 900; }
+.basketball-viz-donut-legend small { min-width: 41px; color: rgba(255, 255, 255, 0.56); text-align: right; }
+
+@media (max-width: 1080px) {
+  .basketball-viz-toolbar { align-items: stretch; flex-wrap: wrap; }
+  .basketball-viz-toolbar > div { width: 100%; }
+  .basketball-viz-toolbar label { flex: 1; min-width: 260px; }
+  .basketball-viz-map-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .basketball-viz-brandbar,
+  .basketball-viz-section-title,
+  .basketball-viz-panel-heading { align-items: flex-start; flex-direction: column; }
+  .basketball-viz-brandbar > img { width: 112px; }
+  .basketball-viz-brand-copy strong { max-width: 100%; white-space: normal; }
+  .basketball-viz-scoreline { width: 100%; justify-content: flex-start; margin-left: 0; }
+  .basketball-viz-scoreline span { max-width: 105px; }
+  .basketball-viz-shotmaps,
+  .basketball-viz-margin-panel,
+  .basketball-viz-rebounds-panel { padding: 18px; }
+  .basketball-viz-rebound-grid { grid-template-columns: 1fr; }
+  .basketball-viz-donut-wrap { justify-content: flex-start; }
+  .basketball-viz-margin-chart { height: 280px; min-height: 280px; }
+  .basketball-viz-rebound-card { min-height: 270px; }
+}
+
 .margin-fill-away {
   fill: rgba(37, 99, 235, 0.22);
   stroke: none;
