@@ -388,7 +388,7 @@ function buildMarginInsight(events: GameEvent[], periodMinutes: number, periodCo
     items: [
       `경기 최대 격차는 ${teamLabel(labels, largestTeam)}의 ${Math.abs(largest.marginAfter)}점 리드입니다 (${largest.period}Q ${largest.clock}, ${largest.homeScoreAfter}-${largest.awayScoreAfter}).`,
       `리드 체인지는 ${leadChanges}회${leadChanges >= 3 ? '로 팽팽한 공방이 이어졌습니다' : '로 비교적 이른 시점에 우세 흐름이 형성됐습니다'}.`,
-      `${separation.period}Q ${separation.clock}, ${teamLabel(labels, separationTeam)}${separationPlayer}의 ${describeShot(separation)}가 ${separation.homeScoreAfter}-${separation.awayScoreAfter}를 만들며 ${separationThreshold}점 차 이상의 격차가 본격적으로 벌어진 구간이 됐습니다.`,
+      `${separation.period}Q ${separation.clock}, ${teamLabel(labels, separationTeam)}${separationPlayer}의 ${describeShot(separation)}으로 ${separation.homeScoreAfter}-${separation.awayScoreAfter}를 만들며 ${separationThreshold}점 차 이상의 격차가 본격적으로 벌어진 구간이 됐습니다.`,
       ...(rallySentence ? [rallySentence] : []),
     ],
     tone: finalLeader === 'HOME' ? 'home' : finalLeader === 'AWAY' ? 'away' : 'neutral',
