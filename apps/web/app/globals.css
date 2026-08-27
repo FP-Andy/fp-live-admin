@@ -2419,7 +2419,7 @@ a:focus-visible {
   background: var(--surface-card);
 }
 
-.basketball-viz-toolbar > div {
+.basketball-viz-toolbar > div:first-child {
   margin-right: auto;
 }
 
@@ -2442,6 +2442,44 @@ a:focus-visible {
   color: var(--text);
   font: inherit;
   font-weight: 800;
+}
+
+.basketball-viz-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+}
+
+.basketball-viz-export-actions > span {
+  margin-right: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.basketball-viz-export-actions button {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 121, 0, 0.54);
+  border-radius: 7px;
+  background: rgba(255, 121, 0, 0.08);
+  color: #ff9d4d;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.basketball-viz-export-actions button:hover:not(:disabled) {
+  border-color: #ff7900;
+  background: rgba(255, 121, 0, 0.18);
+}
+
+.basketball-viz-export-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .basketball-viz-error {
@@ -2951,12 +2989,13 @@ a:focus-visible {
 
 @media (max-width: 1080px) {
   .basketball-viz-toolbar { align-items: stretch; flex-wrap: wrap; }
-  .basketball-viz-toolbar > div { width: 100%; }
+  .basketball-viz-toolbar > div:first-child { width: 100%; }
   .basketball-viz-toolbar label { flex: 1; min-width: 260px; }
   .basketball-viz-map-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {
+  .basketball-viz-export-actions { flex-wrap: wrap; }
   .basketball-viz-brandbar,
   .basketball-viz-section-title,
   .basketball-viz-panel-heading { align-items: flex-start; flex-direction: column; }

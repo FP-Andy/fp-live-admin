@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ZONES, type ZoneId } from './BasketballMatchControl';
 import { apiJson } from '../../lib/api';
 
@@ -96,6 +96,18 @@ function teamLabel(labels: Record<Team, string>, team: Team) {
   return labels[team];
 }
 
+function subjectParticle(value: string) {
+  const last = Array.from(value.trim()).at(-1);
+  if (!last) return '이';
+  const code = last.charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) return (code - 0xac00) % 28 === 0 ? '가' : '이';
+  return '이';
+}
+
+function withSubject(value: string) {
+  return `${value}${subjectParticle(value)}`;
+}
+
 function teamName(match: BasketballMatch | null, team: Team) {
   const fallback = team === 'HOME' ? 'HOME' : 'AWAY';
   return team === 'HOME' ? match?.metadata?.home_team || fallback : match?.metadata?.away_team || fallback;
@@ -106,6 +118,87 @@ function getScore(events: GameEvent[]) {
     (score, event) => ({ home: event.homeScoreAfter ?? score.home, away: event.awayScoreAfter ?? score.away }),
     { home: 0, away: 0 }
   );
+}
+
+function exportStyleText() {
+  const origin = window.location.origin;
+  return Array.from(document.styleSheets).map((sheet) => {
+    try {
+      return Array.from(sheet.cssRules).map((rule) => rule.cssText).join('\n');
+    } catch {
+      return '';
+    }
+  }).join('\n').replace(/url\(\//g, `url(${origin}/`);
+}
+
+async function imageToDataUrl(source: string) {
+  const response = await fetch(source);
+  if (!response.ok) throw new Error('이미지 파일을 불러오지 못했습니다.');
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('이미지 변환에 실패했습니다.'));
+    reader.onerror = () => reject(new Error('이미지 변환에 실패했습니다.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function downloadElementAsPng(element: HTMLElement, filename: string) {
+  const bounds = element.getBoundingClientRect();
+  const width = Math.max(1, Math.ceil(bounds.width));
+  const height = Math.max(1, Math.ceil(bounds.height));
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.style.width = `${width}px`;
+  clone.style.maxWidth = 'none';
+  clone.style.margin = '0';
+
+  const imageNodes = Array.from(clone.querySelectorAll<HTMLElement>('[src], image[href]'));
+  await Promise.all(imageNodes.map(async (node) => {
+    const attribute = node.tagName.toLowerCase() === 'image' ? 'href' : 'src';
+    const value = node.getAttribute(attribute);
+    if (!value) return;
+    const source = new URL(value, window.location.href).href;
+    try {
+      node.setAttribute(attribute, await imageToDataUrl(source));
+    } catch {
+      node.setAttribute(attribute, source);
+    }
+  }));
+
+  const content = new XMLSerializer().serializeToString(clone);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml"><style>${exportStyleText()}</style>${content}</div></foreignObject></svg>`;
+  const source = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const next = new Image();
+      next.onload = () => resolve(next);
+      next.onerror = () => reject(new Error('PNG 이미지 변환에 실패했습니다.'));
+      next.src = source;
+    });
+    const scale = 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('이미지 캔버스를 준비하지 못했습니다.');
+    context.fillStyle = '#151719';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const png = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG 파일을 만들지 못했습니다.')), 'image/png');
+    });
+    const downloadUrl = URL.createObjectURL(png);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(downloadUrl);
+  } finally {
+    URL.revokeObjectURL(source);
+  }
 }
 
 function getZoneStats(events: GameEvent[], team: Team) {
@@ -175,8 +268,8 @@ function buildShotInsight(events: GameEvent[], labels: Record<Team, string>): In
   const away = getShotAggregate(events, 'AWAY');
   if (home.attempts + away.attempts === 0) {
     return {
-      lead: '샷 이벤트가 누적되면 구역별 성공률과 득점 효율을 비교합니다.',
-      items: ['전체 성공률', '5점 이상 초록 구간', '3점 구간과 페인트존 효율을 순서대로 분석합니다.'],
+      lead: '기록된 샷 이벤트가 없어 구역별 성공률과 득점 효율을 비교할 수 없습니다.',
+      items: ['전체 성공률, 5점 이상 초록 구간, 3점 구간과 페인트존 효율을 기준으로 분석합니다.'],
       tone: 'neutral',
     };
   }
@@ -201,17 +294,17 @@ function buildShotInsight(events: GameEvent[], labels: Record<Team, string>): In
   const overallLeader = homeEdges === awayEdges ? rateLeader : homeEdges > awayEdges ? 'HOME' : 'AWAY';
   const rateGap = Math.abs(homeRate - awayRate) * 100;
   const overallSentence = rateLeader
-    ? `${teamLabel(labels, rateLeader)}이 전체 성공률 ${formatRate(rateLeader === 'HOME' ? home : away)}로 ${rateGap.toFixed(1)}%p 앞섭니다.`
+    ? `${withSubject(teamLabel(labels, rateLeader))} 전체 성공률 ${formatRate(rateLeader === 'HOME' ? home : away)}로 ${rateGap.toFixed(1)}%p 앞섰습니다.`
     : `전체 성공률은 ${teamLabel(labels, 'HOME')} ${formatRate(home)}, ${teamLabel(labels, 'AWAY')} ${formatRate(away)}로 비슷합니다.`;
 
   return {
     lead: overallLeader
-      ? `${teamLabel(labels, overallLeader)}이 구역 분포와 성공률을 종합했을 때 더 효율적인 샷 셀렉션을 보이고 있습니다.`
-      : '두 팀의 샷 효율이 비슷해 특정 구역의 추가 득점이 흐름을 바꿀 수 있습니다.',
+      ? `${withSubject(teamLabel(labels, overallLeader))} 구역 분포와 성공률을 종합했을 때 더 효율적인 샷 셀렉션을 보였습니다.`
+      : '두 팀의 샷 효율이 비슷했던 경기였습니다.',
     items: [
       overallSentence,
-      `초록 구간은 ${teamLabel(labels, 'HOME')} ${greenHome.zones}곳·${greenHome.points}점, ${teamLabel(labels, 'AWAY')} ${greenAway.zones}곳·${greenAway.points}점${greenLeader ? `으로 ${teamLabel(labels, greenLeader)}이 우세` : '으로 비슷'}합니다. 노랑 구간은 ${teamLabel(labels, 'HOME')} ${yellowHome.zones}곳·${yellowHome.points}점, ${teamLabel(labels, 'AWAY')} ${yellowAway.zones}곳·${yellowAway.points}점${yellowLeader ? `입니다 (${teamLabel(labels, yellowLeader)} 우세)` : '으로 균형입니다'}.`,
-      `3점 구간은 ${teamLabel(labels, 'HOME')} ${homeThree.made}/${homeThree.attempts} (${formatRate(homeThree)}), ${teamLabel(labels, 'AWAY')} ${awayThree.made}/${awayThree.attempts} (${formatRate(awayThree)})${threeLeader ? `로 ${teamLabel(labels, threeLeader)}이 앞서고` : '로 팽팽하고'}, 페인트존은 ${teamLabel(labels, 'HOME')} ${homePaint.made}/${homePaint.attempts} (${formatRate(homePaint)}), ${teamLabel(labels, 'AWAY')} ${awayPaint.made}/${awayPaint.attempts} (${formatRate(awayPaint)})${paintLeader ? `로 ${teamLabel(labels, paintLeader)}이 앞섭니다` : '로 비슷합니다'}.`,
+      `초록 구간은 ${teamLabel(labels, 'HOME')} ${greenHome.zones}곳·${greenHome.points}점, ${teamLabel(labels, 'AWAY')} ${greenAway.zones}곳·${greenAway.points}점${greenLeader ? `으로 ${withSubject(teamLabel(labels, greenLeader))} 우세했습니다` : '으로 비슷했습니다'}. 노랑 구간은 ${teamLabel(labels, 'HOME')} ${yellowHome.zones}곳·${yellowHome.points}점, ${teamLabel(labels, 'AWAY')} ${yellowAway.zones}곳·${yellowAway.points}점${yellowLeader ? `으로 ${withSubject(teamLabel(labels, yellowLeader))} 우세했습니다` : '으로 균형이었습니다'}.`,
+      `3점 구간은 ${teamLabel(labels, 'HOME')} ${homeThree.made}/${homeThree.attempts} (${formatRate(homeThree)}), ${teamLabel(labels, 'AWAY')} ${awayThree.made}/${awayThree.attempts} (${formatRate(awayThree)})${threeLeader ? `로 ${withSubject(teamLabel(labels, threeLeader))} 앞섰고` : '로 팽팽했고'}, 페인트존은 ${teamLabel(labels, 'HOME')} ${homePaint.made}/${homePaint.attempts} (${formatRate(homePaint)}), ${teamLabel(labels, 'AWAY')} ${awayPaint.made}/${awayPaint.attempts} (${formatRate(awayPaint)})${paintLeader ? `로 ${withSubject(teamLabel(labels, paintLeader))} 앞섰습니다` : '로 비슷했습니다'}.`,
     ],
     tone: overallLeader === 'HOME' ? 'home' : overallLeader === 'AWAY' ? 'away' : 'neutral',
   };
@@ -235,13 +328,14 @@ function buildMarginInsight(events: GameEvent[], periodMinutes: number, periodCo
   const scoringEvents = getScoringEvents(events, periodMinutes, periodCount);
   if (scoringEvents.length === 0) {
     return {
-      lead: '득점 이벤트가 누적되면 최대 격차와 리드 체인지, 결정적 득점 시점을 분석합니다.',
-      items: ['쿼터별 득점 변화와 리드 흐름을 실시간으로 반영합니다.'],
+      lead: '기록된 득점 이벤트가 없어 마진 흐름을 분석할 수 없습니다.',
+      items: ['최대 점수 차, 리드 체인지, 격차가 크게 벌어진 구간을 기준으로 분석합니다.'],
       tone: 'neutral',
     };
   }
 
   const largest = scoringEvents.reduce((current, event) => Math.abs(event.marginAfter) > Math.abs(current.marginAfter) ? event : current);
+  const largestIndex = scoringEvents.findIndex((event) => event.id === largest.id);
   const largestTeam: Team = largest.marginAfter >= 0 ? 'HOME' : 'AWAY';
   let previousLeader = 0;
   let leadChanges = 0;
@@ -252,26 +346,50 @@ function buildMarginInsight(events: GameEvent[], periodMinutes: number, periodCo
   });
   const finalMargin = scoringEvents.at(-1)?.marginAfter || 0;
   const finalSign = Math.sign(finalMargin);
-  const decisiveIndex = finalSign
-    ? scoringEvents.findIndex((event, index) => (
-      Math.sign(event.marginAfter) === finalSign
-      && Math.abs(event.marginAfter) >= 2
-      && scoringEvents.slice(index).every((next) => Math.sign(next.marginAfter) !== -finalSign)
-    ))
-    : -1;
-  const decisive = decisiveIndex >= 0 ? scoringEvents[decisiveIndex] : largest;
-  const decisiveTeam: Team = decisive.marginAfter >= 0 ? 'HOME' : 'AWAY';
-  const player = decisive.playerNumber ? ` #${decisive.playerNumber}` : '';
   const finalLeader = finalSign > 0 ? 'HOME' : finalSign < 0 ? 'AWAY' : null;
+
+  // "승부가 갈린 지점"은 리드를 처음 잡은 시점이 아니라, 실제 점수 차가 경기 최대 격차에
+  // 가까워지며 충분히 벌어진 첫 구간으로 정의한다.
+  const largestGap = Math.abs(largest.marginAfter);
+  const separationThreshold = largestGap >= 12 ? Math.ceil(largestGap * 0.65) : largestGap >= 8 ? 6 : Math.max(3, Math.ceil(largestGap * 0.6));
+  const separation = scoringEvents.find((event) => (
+    Math.sign(event.marginAfter) === Math.sign(largest.marginAfter)
+    && Math.abs(event.marginAfter) >= separationThreshold
+  )) || largest;
+  const separationTeam: Team = separation.marginAfter >= 0 ? 'HOME' : 'AWAY';
+  const separationPlayer = separation.playerNumber ? ` #${separation.playerNumber}` : '';
+
+  // 최대 격차 뒤 상대가 다시 차이를 좁힌 구간이 충분히 있으면, 추격 흐름도 함께 설명한다.
+  const rallyTeam: Team = largestTeam === 'HOME' ? 'AWAY' : 'HOME';
+  const relativeMargin = (event: GameEvent, team: Team) => team === 'HOME' ? event.marginAfter : -event.marginAfter;
+  const rallyStartRelative = relativeMargin(largest, rallyTeam);
+  const rallyTarget = scoringEvents.slice(largestIndex + 1).reduce<GameEvent | null>((best, event) => {
+    if (!best || relativeMargin(event, rallyTeam) > relativeMargin(best, rallyTeam)) return event;
+    return best;
+  }, null);
+  const rallyImprovement = rallyTarget ? relativeMargin(rallyTarget, rallyTeam) - rallyStartRelative : 0;
+  const rallyThreshold = Math.min(4, Math.max(3, Math.floor(largestGap / 2)));
+  const rallySentence = rallyTarget && rallyImprovement >= rallyThreshold
+    ? (() => {
+      const endMargin = relativeMargin(rallyTarget, rallyTeam);
+      const result = endMargin > 0
+        ? `${endMargin}점 리드로 역전`
+        : endMargin === 0
+          ? '동점까지 추격'
+          : `${Math.abs(endMargin)}점 차까지 추격`;
+      return `${withSubject(teamLabel(labels, rallyTeam))} ${largest.period}Q ${largest.clock} 이후 ${largestGap}점 차를 ${result}하며 분발한 구간도 있었습니다 (${rallyTarget.period}Q ${rallyTarget.clock}).`;
+    })()
+    : null;
 
   return {
     lead: finalLeader
-      ? `${teamLabel(labels, finalLeader)}이 ${Math.abs(finalMargin)}점 리드로 마무리하고 있으며, ${leadChanges >= 3 ? '여러 차례 흐름이 뒤집힌 경기입니다.' : '리드를 관리하고 있습니다.'}`
-      : `현재 동점 흐름이며, 리드 체인지가 ${leadChanges}회 발생했습니다.`,
+      ? `${withSubject(teamLabel(labels, finalLeader))} ${Math.abs(finalMargin)}점 차로 경기를 마쳤습니다. ${leadChanges >= 3 ? '여러 차례 흐름이 뒤집힌 접전이었습니다.' : '우세 흐름을 끝까지 지켰습니다.'}`
+      : `경기는 동점으로 종료됐으며, 리드 체인지가 ${leadChanges}회 발생했습니다.`,
     items: [
       `경기 최대 격차는 ${teamLabel(labels, largestTeam)}의 ${Math.abs(largest.marginAfter)}점 리드입니다 (${largest.period}Q ${largest.clock}, ${largest.homeScoreAfter}-${largest.awayScoreAfter}).`,
-      `리드 체인지는 ${leadChanges}회${leadChanges >= 3 ? '로 팽팽한 공방이 이어졌습니다' : '로 비교적 일찍 우세 흐름이 형성됐습니다'}.`,
-      `${decisive.period}Q ${decisive.clock}, ${teamLabel(labels, decisiveTeam)}${player}의 ${describeShot(decisive)}가 ${decisive.homeScoreAfter}-${decisive.awayScoreAfter}를 만들며 ${decisiveIndex >= 0 ? '승부가 기우는 분기점이 됐습니다' : '가장 큰 격차를 만든 장면입니다'}.`,
+      `리드 체인지는 ${leadChanges}회${leadChanges >= 3 ? '로 팽팽한 공방이 이어졌습니다' : '로 비교적 이른 시점에 우세 흐름이 형성됐습니다'}.`,
+      `${separation.period}Q ${separation.clock}, ${teamLabel(labels, separationTeam)}${separationPlayer}의 ${describeShot(separation)}가 ${separation.homeScoreAfter}-${separation.awayScoreAfter}를 만들며 ${separationThreshold}점 차 이상의 격차가 본격적으로 벌어진 구간이 됐습니다.`,
+      ...(rallySentence ? [rallySentence] : []),
     ],
     tone: finalLeader === 'HOME' ? 'home' : finalLeader === 'AWAY' ? 'away' : 'neutral',
   };
@@ -284,7 +402,7 @@ function buildReboundInsight(stats: ReboundStats, labels: Record<Team, string>):
   const awayTotal = away.ar + away.dr;
   if (homeTotal + awayTotal === 0 && home.ra + away.ra === 0) {
     return {
-      lead: '리바운드 이벤트가 누적되면 공격·수비 리바운드와 허용 리바운드를 비교합니다.',
+      lead: '기록된 리바운드 이벤트가 없어 리바운드 분포를 비교할 수 없습니다.',
       items: ['상대에게 허용한 공격 리바운드는 적을수록 긍정적으로 평가합니다.'],
       tone: 'neutral',
     };
@@ -300,12 +418,12 @@ function buildReboundInsight(stats: ReboundStats, labels: Record<Team, string>):
 
   return {
     lead: overallLeader
-      ? `${teamLabel(labels, overallLeader)}이 리바운드 싸움에서 더 많은 우세 지표를 확보했습니다.`
-      : '리바운드 지표가 균형을 이루고 있어 다음 소유권 경쟁이 중요합니다.',
+      ? `${withSubject(teamLabel(labels, overallLeader))} 리바운드 싸움에서 더 많은 우세 지표를 확보했습니다.`
+      : '리바운드 지표가 균형을 이뤘던 경기였습니다.',
     items: [
-      `전체 리바운드는 ${teamLabel(labels, 'HOME')} ${homeTotal}개, ${teamLabel(labels, 'AWAY')} ${awayTotal}개${totalLeader ? `로 ${teamLabel(labels, totalLeader)}이 앞섭니다` : '로 같습니다'}.`,
-      `공격 리바운드는 ${teamLabel(labels, 'HOME')} ${home.ar}개, ${teamLabel(labels, 'AWAY')} ${away.ar}개${offenseLeader ? `로 ${teamLabel(labels, offenseLeader)}이 세컨드 찬스를 더 만들고` : '로 균형이고'}, 수비 리바운드는 ${teamLabel(labels, 'HOME')} ${home.dr}개, ${teamLabel(labels, 'AWAY')} ${away.dr}개${defenseLeader ? `로 ${teamLabel(labels, defenseLeader)}이 우세합니다` : '로 같습니다'}.`,
-      `리바운드 허용은 ${teamLabel(labels, 'HOME')} ${home.ra}개, ${teamLabel(labels, 'AWAY')} ${away.ra}개로 ${allowedLeader ? `${teamLabel(labels, allowedLeader)}이 상대 세컨드 찬스를 더 잘 차단했습니다` : '두 팀이 같은 수준으로 관리하고 있습니다'}.`,
+      `전체 리바운드는 ${teamLabel(labels, 'HOME')} ${homeTotal}개, ${teamLabel(labels, 'AWAY')} ${awayTotal}개${totalLeader ? `로 ${withSubject(teamLabel(labels, totalLeader))} 앞섰습니다` : '로 같았습니다'}.`,
+      `공격 리바운드는 ${teamLabel(labels, 'HOME')} ${home.ar}개, ${teamLabel(labels, 'AWAY')} ${away.ar}개${offenseLeader ? `로 ${withSubject(teamLabel(labels, offenseLeader))} 세컨드 찬스를 더 만들었고` : '로 균형이었고'}, 수비 리바운드는 ${teamLabel(labels, 'HOME')} ${home.dr}개, ${teamLabel(labels, 'AWAY')} ${away.dr}개${defenseLeader ? `로 ${withSubject(teamLabel(labels, defenseLeader))} 우세했습니다` : '로 같았습니다'}.`,
+      `리바운드 허용은 ${teamLabel(labels, 'HOME')} ${home.ra}개, ${teamLabel(labels, 'AWAY')} ${away.ra}개로 ${allowedLeader ? `${withSubject(teamLabel(labels, allowedLeader))} 상대 세컨드 찬스를 더 잘 차단했습니다` : '두 팀이 같은 수준으로 관리했습니다'}.`,
     ],
     tone: overallLeader === 'HOME' ? 'home' : overallLeader === 'AWAY' ? 'away' : 'neutral',
   };
@@ -520,16 +638,22 @@ export default function BasketballVisualization() {
   const [state, setState] = useState<BasketballState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState<'shot-map' | 'margin-flow' | 'rebounds' | null>(null);
+  const [exportError, setExportError] = useState('');
+  const shotExportRef = useRef<HTMLElement | null>(null);
+  const marginExportRef = useRef<HTMLDivElement | null>(null);
+  const reboundExportRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     let mounted = true;
     apiJson<BasketballMatch[]>('/matches?sport=BASKETBALL')
       .then((rows) => {
         if (!mounted) return;
-        setMatches(rows);
-        setSelectedId((current) => current && rows.some((row) => row.id === current) ? current : rows[0]?.id || '');
+        const archivedRows = rows.filter((row) => row.archived);
+        setMatches(archivedRows);
+        setSelectedId((current) => current && archivedRows.some((row) => row.id === current) ? current : archivedRows[0]?.id || '');
       })
-      .catch(() => mounted && setError('농구 경기 목록을 불러오지 못했습니다.'))
+      .catch(() => mounted && setError('완료된 농구 경기 목록을 불러오지 못했습니다.'))
       .finally(() => mounted && setLoading(false));
     return () => { mounted = false; };
   }, []);
@@ -544,10 +668,8 @@ export default function BasketballVisualization() {
       .then((next) => mounted && setState(next))
       .catch(() => mounted && setError('경기 시각화 데이터를 불러오지 못했습니다.'));
     loadState();
-    const timer = window.setInterval(loadState, 4000);
     return () => {
       mounted = false;
-      window.clearInterval(timer);
     };
   }, [selectedId]);
 
@@ -563,6 +685,23 @@ export default function BasketballVisualization() {
   };
   const shotInsight = useMemo(() => buildShotInsight(events, labels), [events, labels]);
   const reboundInsight = useMemo(() => buildReboundInsight(rebounds, labels), [labels, rebounds]);
+  const downloadVisualization = async (kind: 'shot-map' | 'margin-flow' | 'rebounds') => {
+    const element = kind === 'shot-map'
+      ? shotExportRef.current
+      : kind === 'margin-flow'
+        ? marginExportRef.current
+        : reboundExportRef.current;
+    if (!element || !selectedMatch) return;
+    setExportError('');
+    setExporting(kind);
+    try {
+      await downloadElementAsPng(element, `fineplay-basketball-${selectedMatch.id}-${kind}.png`);
+    } catch {
+      setExportError('PNG 다운로드를 준비하지 못했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setExporting(null);
+    }
+  };
 
   if (loading) {
     return <main className="page-stack"><section className="card card-panel"><p className="muted">농구 시각화를 준비하고 있습니다.</p></section></main>;
@@ -576,23 +715,30 @@ export default function BasketballVisualization() {
           <h3>Visualization</h3>
         </div>
         <label>
-          <span>경기 선택</span>
+          <span>완료 경기 선택</span>
           <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} disabled={matches.length === 0}>
-            {matches.length === 0 ? <option>등록된 농구 경기가 없습니다</option> : null}
-            {matches.map((match) => <option key={match.id} value={match.id}>{match.name}{match.archived ? ' · ARCHIVED' : ''}</option>)}
+            {matches.length === 0 ? <option>완료·아카이브된 농구 경기가 없습니다</option> : null}
+            {matches.map((match) => <option key={match.id} value={match.id}>{match.name} · ARCHIVED</option>)}
           </select>
         </label>
+        <div className="basketball-viz-export-actions" aria-label="시각화 PNG 다운로드">
+          <span>PNG 다운로드</span>
+          <button type="button" onClick={() => void downloadVisualization('shot-map')} disabled={!selectedMatch || exporting !== null}>{exporting === 'shot-map' ? '생성 중…' : '샷맵'}</button>
+          <button type="button" onClick={() => void downloadVisualization('margin-flow')} disabled={!selectedMatch || exporting !== null}>{exporting === 'margin-flow' ? '생성 중…' : '마진 플로우'}</button>
+          <button type="button" onClick={() => void downloadVisualization('rebounds')} disabled={!selectedMatch || exporting !== null}>{exporting === 'rebounds' ? '생성 중…' : '리바운드'}</button>
+        </div>
         {selectedMatch ? <Link className="button-link button-compact btn-secondary" href={`/admin/basketball/match/${selectedMatch.id}`}>FLA 기록 열기</Link> : null}
       </section>
 
       {error ? <p className="basketball-viz-error">{error}</p> : null}
-      {!selectedMatch ? <section className="card card-panel"><p className="muted">시각화할 농구 경기를 먼저 생성해주세요.</p></section> : null}
+      {exportError ? <p className="basketball-viz-error">{exportError}</p> : null}
+      {!selectedMatch ? <section className="card card-panel"><p className="muted">완료·아카이브된 농구 경기가 없습니다.</p></section> : null}
       {selectedMatch ? (
         <section className="basketball-viz-frame">
           <header className="basketball-viz-brandbar">
             <img src="/live-coder/fineplay-logo.png" alt="FinePlay" />
             <div className="basketball-viz-brand-copy">
-              <span>LIVE ANALYTICS</span>
+              <span>POST GAME ANALYTICS</span>
               <strong>{selectedMatch.name}</strong>
             </div>
             <div className="basketball-viz-scoreline">
@@ -604,7 +750,7 @@ export default function BasketballVisualization() {
             </div>
           </header>
 
-          <section className="basketball-viz-shotmaps">
+          <section ref={shotExportRef} className="basketball-viz-shotmaps">
             <div className="basketball-viz-section-title">
               <div><span>SHOT ZONE VISUALIZATION</span><strong>홈/어웨이 샷맵</strong></div>
               <div className="basketball-viz-zone-legend"><i className="zero" /> 0점 <i className="low" /> 1–4점 <i className="high" /> 5점 이상</div>
@@ -616,9 +762,11 @@ export default function BasketballVisualization() {
             <InsightCard title="샷맵" insight={shotInsight} />
           </section>
 
-          <MarginFlow events={events} periodMinutes={periodMinutes} periodCount={periodCount} labels={labels} />
+          <div ref={marginExportRef}>
+            <MarginFlow events={events} periodMinutes={periodMinutes} periodCount={periodCount} labels={labels} />
+          </div>
 
-          <section className="basketball-viz-rebounds-panel">
+          <section ref={reboundExportRef} className="basketball-viz-rebounds-panel">
             <div className="basketball-viz-section-title"><div><span>REBOUND DISTRIBUTION</span><strong>리바운드 구성</strong></div><p>공격 리바운드 · 수비 리바운드 · 리바운드 허용</p></div>
             <div className="basketball-viz-rebound-grid">
               <ReboundDonut team="HOME" name={teamName(selectedMatch, 'HOME')} data={rebounds.HOME} />
