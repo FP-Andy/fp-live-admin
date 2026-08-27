@@ -2711,6 +2711,88 @@ a:focus-visible {
   text-align: right;
 }
 
+.basketball-viz-insight {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  margin-top: 22px;
+  padding: 19px 22px 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(9, 11, 13, 0.54);
+}
+
+.basketball-viz-insight::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+  content: '';
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.basketball-viz-insight.home::before { background: #ff7900; }
+.basketball-viz-insight.away::before { background: #1e63dc; }
+
+.basketball-viz-insight-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.basketball-viz-insight-heading span {
+  color: #ff7900;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+}
+
+.basketball-viz-insight-heading strong {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.basketball-viz-insight-lead {
+  margin: 0;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.55;
+}
+
+.basketball-viz-insight ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.basketball-viz-insight li {
+  position: relative;
+  padding-left: 13px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.basketball-viz-insight li::before {
+  position: absolute;
+  top: 0.64em;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  content: '';
+  background: #ff7900;
+}
+
+.basketball-viz-insight.away li::before { background: #1e63dc; }
+
 .basketball-viz-margin-panel {
   padding-top: 34px;
   padding-bottom: 40px;

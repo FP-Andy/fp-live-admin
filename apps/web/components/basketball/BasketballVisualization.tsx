@@ -11,6 +11,7 @@ type GameEvent = {
   id: string;
   type: 'SHOT' | 'REBOUND';
   team: Team;
+  playerNumber?: string;
   period: number;
   clock: string;
   timestamp: number;
@@ -49,11 +50,14 @@ type BasketballState = {
 
 type ZoneSummary = { attempts: number; made: number; points: number };
 type ReboundStats = Record<Team, { ar: number; dr: number; ra: number }>;
+type Insight = { lead: string; items: string[]; tone: 'home' | 'away' | 'neutral' };
 
 const COURT_WIDTH = 722;
 const COURT_HEIGHT = 678;
 const HOME_COLOR = '#ff7900';
 const AWAY_COLOR = '#1e63dc';
+const PAINT_ZONE_IDS = new Set<ZoneId>(['RESTRICTED_AREA', 'PAINT', 'LEFT_PAINT', 'RIGHT_PAINT']);
+const THREE_POINT_ZONE_IDS = new Set<ZoneId>(ZONES.filter((zone) => zone.points === 3).map((zone) => zone.id));
 
 
 function parseClockSeconds(clock: string | undefined) {
@@ -73,6 +77,23 @@ function zoneFill(points: number) {
 function percentage(value: number, total: number) {
   if (!total) return '0.0%';
   return `${((value / total) * 100).toFixed(1)}%`;
+}
+
+function rate(value: { made: number; attempts: number }) {
+  return value.attempts ? value.made / value.attempts : 0;
+}
+
+function formatRate(value: { made: number; attempts: number }) {
+  return percentage(value.made, value.attempts);
+}
+
+function winnerFromDifference(home: number, away: number, threshold = 0): Team | null {
+  if (Math.abs(home - away) <= threshold) return null;
+  return home > away ? 'HOME' : 'AWAY';
+}
+
+function teamLabel(labels: Record<Team, string>, team: Team) {
+  return labels[team];
 }
 
 function teamName(match: BasketballMatch | null, team: Team) {
@@ -115,6 +136,189 @@ function getRebounds(events: GameEvent[]): ReboundStats {
     if (event.reboundAllowedTeam === 'HOME' || event.reboundAllowedTeam === 'AWAY') stats[event.reboundAllowedTeam].ra += 1;
   });
   return stats;
+}
+
+function getShotAggregate(
+  events: GameEvent[],
+  team: Team,
+  predicate: (event: GameEvent) => boolean = () => true
+) {
+  return events.reduce(
+    (result, event) => {
+      if (event.type !== 'SHOT' || event.team !== team || !predicate(event)) return result;
+      result.attempts += 1;
+      if (event.shotResult === 'MADE') {
+        result.made += 1;
+        result.points += Number(event.points || 0);
+      }
+      return result;
+    },
+    { attempts: 0, made: 0, points: 0 }
+  );
+}
+
+function getZoneBandSummary(events: GameEvent[], team: Team, minimum: number, maximum: number) {
+  const stats = getZoneStats(events, team);
+  return Array.from(stats.values()).reduce(
+    (result, zone) => {
+      if (zone.points < minimum || zone.points > maximum) return result;
+      result.zones += 1;
+      result.points += zone.points;
+      return result;
+    },
+    { zones: 0, points: 0 }
+  );
+}
+
+function buildShotInsight(events: GameEvent[], labels: Record<Team, string>): Insight {
+  const home = getShotAggregate(events, 'HOME');
+  const away = getShotAggregate(events, 'AWAY');
+  if (home.attempts + away.attempts === 0) {
+    return {
+      lead: '샷 이벤트가 누적되면 구역별 성공률과 득점 효율을 비교합니다.',
+      items: ['전체 성공률', '5점 이상 초록 구간', '3점 구간과 페인트존 효율을 순서대로 분석합니다.'],
+      tone: 'neutral',
+    };
+  }
+
+  const homeRate = rate(home);
+  const awayRate = rate(away);
+  const rateLeader = winnerFromDifference(homeRate, awayRate, 0.04);
+  const greenHome = getZoneBandSummary(events, 'HOME', 5, Number.POSITIVE_INFINITY);
+  const greenAway = getZoneBandSummary(events, 'AWAY', 5, Number.POSITIVE_INFINITY);
+  const yellowHome = getZoneBandSummary(events, 'HOME', 1, 4);
+  const yellowAway = getZoneBandSummary(events, 'AWAY', 1, 4);
+  const homeThree = getShotAggregate(events, 'HOME', (event) => Boolean(event.zoneId && THREE_POINT_ZONE_IDS.has(event.zoneId)));
+  const awayThree = getShotAggregate(events, 'AWAY', (event) => Boolean(event.zoneId && THREE_POINT_ZONE_IDS.has(event.zoneId)));
+  const homePaint = getShotAggregate(events, 'HOME', (event) => Boolean(event.zoneId && PAINT_ZONE_IDS.has(event.zoneId)));
+  const awayPaint = getShotAggregate(events, 'AWAY', (event) => Boolean(event.zoneId && PAINT_ZONE_IDS.has(event.zoneId)));
+  const greenLeader = winnerFromDifference(greenHome.points, greenAway.points);
+  const yellowLeader = winnerFromDifference(yellowHome.points, yellowAway.points);
+  const threeLeader = winnerFromDifference(rate(homeThree), rate(awayThree), 0.04);
+  const paintLeader = winnerFromDifference(rate(homePaint), rate(awayPaint), 0.04);
+  const homeEdges = [rateLeader, greenLeader, yellowLeader, threeLeader, paintLeader].filter((team) => team === 'HOME').length;
+  const awayEdges = [rateLeader, greenLeader, yellowLeader, threeLeader, paintLeader].filter((team) => team === 'AWAY').length;
+  const overallLeader = homeEdges === awayEdges ? rateLeader : homeEdges > awayEdges ? 'HOME' : 'AWAY';
+  const rateGap = Math.abs(homeRate - awayRate) * 100;
+  const overallSentence = rateLeader
+    ? `${teamLabel(labels, rateLeader)}이 전체 성공률 ${formatRate(rateLeader === 'HOME' ? home : away)}로 ${rateGap.toFixed(1)}%p 앞섭니다.`
+    : `전체 성공률은 ${teamLabel(labels, 'HOME')} ${formatRate(home)}, ${teamLabel(labels, 'AWAY')} ${formatRate(away)}로 비슷합니다.`;
+
+  return {
+    lead: overallLeader
+      ? `${teamLabel(labels, overallLeader)}이 구역 분포와 성공률을 종합했을 때 더 효율적인 샷 셀렉션을 보이고 있습니다.`
+      : '두 팀의 샷 효율이 비슷해 특정 구역의 추가 득점이 흐름을 바꿀 수 있습니다.',
+    items: [
+      overallSentence,
+      `초록 구간은 ${teamLabel(labels, 'HOME')} ${greenHome.zones}곳·${greenHome.points}점, ${teamLabel(labels, 'AWAY')} ${greenAway.zones}곳·${greenAway.points}점${greenLeader ? `으로 ${teamLabel(labels, greenLeader)}이 우세` : '으로 비슷'}합니다. 노랑 구간은 ${teamLabel(labels, 'HOME')} ${yellowHome.zones}곳·${yellowHome.points}점, ${teamLabel(labels, 'AWAY')} ${yellowAway.zones}곳·${yellowAway.points}점${yellowLeader ? `입니다 (${teamLabel(labels, yellowLeader)} 우세)` : '으로 균형입니다'}.`,
+      `3점 구간은 ${teamLabel(labels, 'HOME')} ${homeThree.made}/${homeThree.attempts} (${formatRate(homeThree)}), ${teamLabel(labels, 'AWAY')} ${awayThree.made}/${awayThree.attempts} (${formatRate(awayThree)})${threeLeader ? `로 ${teamLabel(labels, threeLeader)}이 앞서고` : '로 팽팽하고'}, 페인트존은 ${teamLabel(labels, 'HOME')} ${homePaint.made}/${homePaint.attempts} (${formatRate(homePaint)}), ${teamLabel(labels, 'AWAY')} ${awayPaint.made}/${awayPaint.attempts} (${formatRate(awayPaint)})${paintLeader ? `로 ${teamLabel(labels, paintLeader)}이 앞섭니다` : '로 비슷합니다'}.`,
+    ],
+    tone: overallLeader === 'HOME' ? 'home' : overallLeader === 'AWAY' ? 'away' : 'neutral',
+  };
+}
+
+function getScoringEvents(events: GameEvent[], periodMinutes: number, periodCount: number) {
+  return events
+    .filter((event) => event.type === 'SHOT' && event.shotResult === 'MADE')
+    .slice()
+    .sort((left, right) => elapsedSeconds(left, periodMinutes, periodCount) - elapsedSeconds(right, periodMinutes, periodCount) || left.timestamp - right.timestamp);
+}
+
+function describeShot(event: GameEvent) {
+  if (event.zoneId === 'FREE_THROW_ZONE') return '자유투 성공';
+  const zone = ZONES.find((item) => item.id === event.zoneId);
+  const prefix = zone ? `${zone.label} 구역 ` : '';
+  return `${prefix}${Number(event.points || 0)}점슛 성공`;
+}
+
+function buildMarginInsight(events: GameEvent[], periodMinutes: number, periodCount: number, labels: Record<Team, string>): Insight {
+  const scoringEvents = getScoringEvents(events, periodMinutes, periodCount);
+  if (scoringEvents.length === 0) {
+    return {
+      lead: '득점 이벤트가 누적되면 최대 격차와 리드 체인지, 결정적 득점 시점을 분석합니다.',
+      items: ['쿼터별 득점 변화와 리드 흐름을 실시간으로 반영합니다.'],
+      tone: 'neutral',
+    };
+  }
+
+  const largest = scoringEvents.reduce((current, event) => Math.abs(event.marginAfter) > Math.abs(current.marginAfter) ? event : current);
+  const largestTeam: Team = largest.marginAfter >= 0 ? 'HOME' : 'AWAY';
+  let previousLeader = 0;
+  let leadChanges = 0;
+  scoringEvents.forEach((event) => {
+    const currentLeader = Math.sign(event.marginAfter);
+    if (currentLeader && previousLeader && currentLeader !== previousLeader) leadChanges += 1;
+    if (currentLeader) previousLeader = currentLeader;
+  });
+  const finalMargin = scoringEvents.at(-1)?.marginAfter || 0;
+  const finalSign = Math.sign(finalMargin);
+  const decisiveIndex = finalSign
+    ? scoringEvents.findIndex((event, index) => (
+      Math.sign(event.marginAfter) === finalSign
+      && Math.abs(event.marginAfter) >= 2
+      && scoringEvents.slice(index).every((next) => Math.sign(next.marginAfter) !== -finalSign)
+    ))
+    : -1;
+  const decisive = decisiveIndex >= 0 ? scoringEvents[decisiveIndex] : largest;
+  const decisiveTeam: Team = decisive.marginAfter >= 0 ? 'HOME' : 'AWAY';
+  const player = decisive.playerNumber ? ` #${decisive.playerNumber}` : '';
+  const finalLeader = finalSign > 0 ? 'HOME' : finalSign < 0 ? 'AWAY' : null;
+
+  return {
+    lead: finalLeader
+      ? `${teamLabel(labels, finalLeader)}이 ${Math.abs(finalMargin)}점 리드로 마무리하고 있으며, ${leadChanges >= 3 ? '여러 차례 흐름이 뒤집힌 경기입니다.' : '리드를 관리하고 있습니다.'}`
+      : `현재 동점 흐름이며, 리드 체인지가 ${leadChanges}회 발생했습니다.`,
+    items: [
+      `경기 최대 격차는 ${teamLabel(labels, largestTeam)}의 ${Math.abs(largest.marginAfter)}점 리드입니다 (${largest.period}Q ${largest.clock}, ${largest.homeScoreAfter}-${largest.awayScoreAfter}).`,
+      `리드 체인지는 ${leadChanges}회${leadChanges >= 3 ? '로 팽팽한 공방이 이어졌습니다' : '로 비교적 일찍 우세 흐름이 형성됐습니다'}.`,
+      `${decisive.period}Q ${decisive.clock}, ${teamLabel(labels, decisiveTeam)}${player}의 ${describeShot(decisive)}가 ${decisive.homeScoreAfter}-${decisive.awayScoreAfter}를 만들며 ${decisiveIndex >= 0 ? '승부가 기우는 분기점이 됐습니다' : '가장 큰 격차를 만든 장면입니다'}.`,
+    ],
+    tone: finalLeader === 'HOME' ? 'home' : finalLeader === 'AWAY' ? 'away' : 'neutral',
+  };
+}
+
+function buildReboundInsight(stats: ReboundStats, labels: Record<Team, string>): Insight {
+  const home = stats.HOME;
+  const away = stats.AWAY;
+  const homeTotal = home.ar + home.dr;
+  const awayTotal = away.ar + away.dr;
+  if (homeTotal + awayTotal === 0 && home.ra + away.ra === 0) {
+    return {
+      lead: '리바운드 이벤트가 누적되면 공격·수비 리바운드와 허용 리바운드를 비교합니다.',
+      items: ['상대에게 허용한 공격 리바운드는 적을수록 긍정적으로 평가합니다.'],
+      tone: 'neutral',
+    };
+  }
+
+  const totalLeader = winnerFromDifference(homeTotal, awayTotal);
+  const offenseLeader = winnerFromDifference(home.ar, away.ar);
+  const defenseLeader = winnerFromDifference(home.dr, away.dr);
+  const allowedLeader = winnerFromDifference(away.ra, home.ra);
+  const homeEdges = [offenseLeader, defenseLeader, allowedLeader].filter((team) => team === 'HOME').length;
+  const awayEdges = [offenseLeader, defenseLeader, allowedLeader].filter((team) => team === 'AWAY').length;
+  const overallLeader = homeEdges === awayEdges ? totalLeader : homeEdges > awayEdges ? 'HOME' : 'AWAY';
+
+  return {
+    lead: overallLeader
+      ? `${teamLabel(labels, overallLeader)}이 리바운드 싸움에서 더 많은 우세 지표를 확보했습니다.`
+      : '리바운드 지표가 균형을 이루고 있어 다음 소유권 경쟁이 중요합니다.',
+    items: [
+      `전체 리바운드는 ${teamLabel(labels, 'HOME')} ${homeTotal}개, ${teamLabel(labels, 'AWAY')} ${awayTotal}개${totalLeader ? `로 ${teamLabel(labels, totalLeader)}이 앞섭니다` : '로 같습니다'}.`,
+      `공격 리바운드는 ${teamLabel(labels, 'HOME')} ${home.ar}개, ${teamLabel(labels, 'AWAY')} ${away.ar}개${offenseLeader ? `로 ${teamLabel(labels, offenseLeader)}이 세컨드 찬스를 더 만들고` : '로 균형이고'}, 수비 리바운드는 ${teamLabel(labels, 'HOME')} ${home.dr}개, ${teamLabel(labels, 'AWAY')} ${away.dr}개${defenseLeader ? `로 ${teamLabel(labels, defenseLeader)}이 우세합니다` : '로 같습니다'}.`,
+      `리바운드 허용은 ${teamLabel(labels, 'HOME')} ${home.ra}개, ${teamLabel(labels, 'AWAY')} ${away.ra}개로 ${allowedLeader ? `${teamLabel(labels, allowedLeader)}이 상대 세컨드 찬스를 더 잘 차단했습니다` : '두 팀이 같은 수준으로 관리하고 있습니다'}.`,
+    ],
+    tone: overallLeader === 'HOME' ? 'home' : overallLeader === 'AWAY' ? 'away' : 'neutral',
+  };
+}
+
+function InsightCard({ title, insight }: { title: string; insight: Insight }) {
+  return (
+    <section className={`basketball-viz-insight ${insight.tone}`} aria-label={`${title} 분석 코멘트`}>
+      <div className="basketball-viz-insight-heading"><span>FINEPLAY INSIGHT</span><strong>{title} 해설</strong></div>
+      <p className="basketball-viz-insight-lead">{insight.lead}</p>
+      <ul>{insight.items.map((item) => <li key={item}>{item}</li>)}</ul>
+    </section>
+  );
 }
 
 function elapsedSeconds(event: GameEvent, periodMinutes: number, periodCount: number) {
@@ -170,11 +374,9 @@ function ShotMap({ team, events }: { team: Team; events: GameEvent[] }) {
   );
 }
 
-function MarginFlow({ events, periodMinutes, periodCount }: { events: GameEvent[]; periodMinutes: number; periodCount: number }) {
-  const scoringEvents = useMemo(() => events
-    .filter((event) => event.type === 'SHOT' && event.shotResult === 'MADE')
-    .slice()
-    .sort((left, right) => elapsedSeconds(left, periodMinutes, periodCount) - elapsedSeconds(right, periodMinutes, periodCount) || left.timestamp - right.timestamp), [events, periodMinutes, periodCount]);
+function MarginFlow({ events, periodMinutes, periodCount, labels }: { events: GameEvent[]; periodMinutes: number; periodCount: number; labels: Record<Team, string> }) {
+  const scoringEvents = useMemo(() => getScoringEvents(events, periodMinutes, periodCount), [events, periodMinutes, periodCount]);
+  const insight = useMemo(() => buildMarginInsight(events, periodMinutes, periodCount, labels), [events, labels, periodMinutes, periodCount]);
   const totalSeconds = Math.max(1, periodMinutes * 60 * periodCount);
   const maxMargin = Math.max(8, ...scoringEvents.map((event) => Math.abs(event.marginAfter || 0)));
   const scale = Math.ceil(maxMargin / 4) * 4;
@@ -250,6 +452,7 @@ function MarginFlow({ events, periodMinutes, periodCount }: { events: GameEvent[
           })}
         </g>
       </svg>
+      <InsightCard title="득점 마진 플로우" insight={insight} />
     </article>
   );
 }
@@ -354,6 +557,12 @@ export default function BasketballVisualization() {
   const rebounds = useMemo(() => getRebounds(events), [events]);
   const periodMinutes = selectedMatch?.metadata?.period_minutes || 10;
   const periodCount = selectedMatch?.metadata?.period_count || 4;
+  const labels: Record<Team, string> = {
+    HOME: teamName(selectedMatch, 'HOME'),
+    AWAY: teamName(selectedMatch, 'AWAY'),
+  };
+  const shotInsight = useMemo(() => buildShotInsight(events, labels), [events, labels]);
+  const reboundInsight = useMemo(() => buildReboundInsight(rebounds, labels), [labels, rebounds]);
 
   if (loading) {
     return <main className="page-stack"><section className="card card-panel"><p className="muted">농구 시각화를 준비하고 있습니다.</p></section></main>;
@@ -404,9 +613,10 @@ export default function BasketballVisualization() {
               <ShotMap team="HOME" events={events} />
               <ShotMap team="AWAY" events={events} />
             </div>
+            <InsightCard title="샷맵" insight={shotInsight} />
           </section>
 
-          <MarginFlow events={events} periodMinutes={periodMinutes} periodCount={periodCount} />
+          <MarginFlow events={events} periodMinutes={periodMinutes} periodCount={periodCount} labels={labels} />
 
           <section className="basketball-viz-rebounds-panel">
             <div className="basketball-viz-section-title"><div><span>REBOUND DISTRIBUTION</span><strong>리바운드 구성</strong></div><p>공격 리바운드 · 수비 리바운드 · 리바운드 허용</p></div>
@@ -414,6 +624,7 @@ export default function BasketballVisualization() {
               <ReboundDonut team="HOME" name={teamName(selectedMatch, 'HOME')} data={rebounds.HOME} />
               <ReboundDonut team="AWAY" name={teamName(selectedMatch, 'AWAY')} data={rebounds.AWAY} />
             </div>
+            <InsightCard title="리바운드" insight={reboundInsight} />
           </section>
         </section>
       ) : null}
