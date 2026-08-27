@@ -65,7 +65,7 @@ function parseClockSeconds(clock: string | undefined) {
 }
 
 function zoneFill(points: number) {
-  if (points >= 10) return '#177c40';
+  if (points >= 5) return '#177c40';
   if (points > 0) return '#9d7d09';
   return '#94272b';
 }
@@ -151,12 +151,19 @@ function ShotMap({ team, events }: { team: Team; events: GameEvent[] }) {
           return (
             <g key={zone.id}>
               <path d={zone.d} fill={zoneFill(summary.points)} className="basketball-viz-zone" />
+            </g>
+          );
+        })}
+        <image href="/basketball-shot-zones.png" x="0" y="0" width={COURT_WIDTH} height={COURT_HEIGHT} preserveAspectRatio="none" className="basketball-viz-court-lines" />
+        {ZONES.map((zone) => {
+          const summary = stats.get(zone.id) || { attempts: 0, made: 0, points: 0 };
+          return (
+            <g key={`${zone.id}-label`} className="basketball-viz-zone-label">
               <text x={zone.textX} y={zone.textY - 5} className="basketball-viz-zone-points" textAnchor="middle">{summary.points}</text>
               <text x={zone.textX} y={zone.textY + 14} className="basketball-viz-zone-detail" textAnchor="middle">{summary.made}/{summary.attempts}</text>
             </g>
           );
         })}
-        <image href="/basketball-shot-zones.png" x="0" y="0" width={COURT_WIDTH} height={COURT_HEIGHT} preserveAspectRatio="none" className="basketball-viz-court-lines" />
       </svg>
       <div className="basketball-viz-map-note">숫자: 득점 · 하단: 성공/시도</div>
     </article>
@@ -231,8 +238,8 @@ function MarginFlow({ events, periodMinutes, periodCount }: { events: GameEvent[
           return (
             <g key={event.id}>
               <title>{`${event.period}Q ${event.clock} · ${event.homeScoreAfter}-${event.awayScoreAfter}`}</title>
-              <circle cx={eventX} cy={eventY} r="7" className="basketball-viz-margin-dot-outline" />
-              <circle cx={eventX} cy={eventY} r="4.5" fill={event.team === 'HOME' ? HOME_COLOR : AWAY_COLOR} />
+              <circle cx={eventX} cy={eventY} r="4" className="basketball-viz-margin-dot-outline" />
+              <circle cx={eventX} cy={eventY} r="2.35" fill={event.team === 'HOME' ? HOME_COLOR : AWAY_COLOR} />
             </g>
           );
         })}
@@ -249,9 +256,9 @@ function MarginFlow({ events, periodMinutes, periodCount }: { events: GameEvent[
 
 function ReboundDonut({ team, name, data }: { team: Team; name: string; data: { ar: number; dr: number; ra: number } }) {
   const values = [
-    { label: '공격 리바운드', short: '공리', value: data.ar, color: '#ff6d00' },
-    { label: '수비 리바운드', short: '수리', value: data.dr, color: '#1e63dc' },
-    { label: '리바운드 허용', short: '허용', value: data.ra, color: '#e54545' },
+    { label: '공격 리바운드', value: data.ar, color: '#ff6d00' },
+    { label: '수비 리바운드', value: data.dr, color: '#1e63dc' },
+    { label: '리바운드 허용', value: data.ra, color: '#e54545' },
   ];
   const total = values.reduce((sum, item) => sum + item.value, 0);
   const circumference = 2 * Math.PI * 54;
@@ -270,7 +277,7 @@ function ReboundDonut({ team, name, data }: { team: Team; name: string; data: { 
             const dash = total ? Math.max(0, (item.value / total) * circumference - 3) : 0;
             const segment = (
               <circle
-                key={item.short}
+                key={item.label}
                 cx="80"
                 cy="80"
                 r="54"
@@ -286,14 +293,14 @@ function ReboundDonut({ team, name, data }: { team: Team; name: string; data: { 
             offset += total ? (item.value / total) * circumference : 0;
             return segment;
           })}
-          <text x="80" y="75" className="basketball-viz-donut-total" textAnchor="middle">{total}</text>
-          <text x="80" y="96" className="basketball-viz-donut-caption" textAnchor="middle">REBOUNDS</text>
+          <text x="80" y="78" className="basketball-viz-donut-total" textAnchor="middle">{total}</text>
+          <text x="80" y="98" className="basketball-viz-donut-caption" textAnchor="middle">TOTAL</text>
         </svg>
         <div className="basketball-viz-donut-legend">
           {values.map((item) => (
-            <div key={item.short}>
+            <div key={item.label}>
               <span style={{ backgroundColor: item.color }} />
-              <b>{item.short}</b>
+              <b>{item.label}</b>
               <em>{item.value}</em>
               <small>{percentage(item.value, total)}</small>
             </div>
@@ -391,7 +398,7 @@ export default function BasketballVisualization() {
           <section className="basketball-viz-shotmaps">
             <div className="basketball-viz-section-title">
               <div><span>SHOT ZONE VISUALIZATION</span><strong>홈/어웨이 샷맵</strong></div>
-              <div className="basketball-viz-zone-legend"><i className="zero" /> 0점 <i className="low" /> 1–9점 <i className="high" /> 10점 이상</div>
+              <div className="basketball-viz-zone-legend"><i className="zero" /> 0점 <i className="low" /> 1–4점 <i className="high" /> 5점 이상</div>
             </div>
             <div className="basketball-viz-map-grid">
               <ShotMap team="HOME" events={events} />

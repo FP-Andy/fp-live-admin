@@ -2691,6 +2691,10 @@ a:focus-visible {
   pointer-events: none;
 }
 
+.basketball-viz-zone-label {
+  pointer-events: none;
+}
+
 .basketball-viz-zone-points {
   font-size: 22px;
   font-weight: 900;
@@ -2769,7 +2773,7 @@ a:focus-visible {
 .basketball-viz-margin-dot-outline {
   fill: #151719;
   stroke: #fff;
-  stroke-width: 1.8;
+  stroke-width: 1.25;
 }
 
 .basketball-viz-rebounds-panel {
@@ -2825,13 +2829,13 @@ a:focus-visible {
 
 .basketball-viz-donut-total {
   fill: #fff;
-  font-size: 38px;
+  font-size: 30px;
   font-weight: 900;
 }
 
 .basketball-viz-donut-caption {
   fill: rgba(255, 255, 255, 0.55);
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 800;
   letter-spacing: 0.14em;
 }
@@ -2845,7 +2849,7 @@ a:focus-visible {
 
 .basketball-viz-donut-legend > div {
   display: grid;
-  grid-template-columns: 8px minmax(44px, 1fr) auto auto;
+  grid-template-columns: 8px minmax(112px, 1fr) auto auto;
   align-items: center;
   gap: 7px;
   color: rgba(255, 255, 255, 0.78);
