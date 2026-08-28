@@ -59,7 +59,6 @@ const HOME_COLOR = '#ff7900';
 const AWAY_COLOR = '#1e63dc';
 const PAINT_ZONE_IDS = new Set<ZoneId>(['RESTRICTED_AREA', 'PAINT', 'LEFT_PAINT', 'RIGHT_PAINT']);
 const THREE_POINT_ZONE_IDS = new Set<ZoneId>(ZONES.filter((zone) => zone.points === 3).map((zone) => zone.id));
-let transparentCourtLinesDataUrl: Promise<string> | null = null;
 
 
 function parseClockSeconds(clock: string | undefined) {
@@ -122,58 +121,18 @@ function getScore(events: GameEvent[]) {
   );
 }
 
-function getTransparentCourtLinesDataUrl() {
-  if (transparentCourtLinesDataUrl) return transparentCourtLinesDataUrl;
-  transparentCourtLinesDataUrl = new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
-      const context = canvas.getContext('2d');
-      if (!context) {
-        reject(new Error('코트 라인을 준비하지 못했습니다.'));
-        return;
-      }
-      context.drawImage(image, 0, 0);
-      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-      for (let index = 0; index < pixels.data.length; index += 4) {
-        const brightness = Math.min(pixels.data[index], pixels.data[index + 1], pixels.data[index + 2]);
-        if (brightness > 220) pixels.data[index + 3] = Math.round(pixels.data[index + 3] * ((255 - brightness) / 35));
-      }
-      context.putImageData(pixels, 0, 0);
-      resolve(canvas.toDataURL('image/png'));
-    };
-    image.onerror = () => reject(new Error('코트 라인을 불러오지 못했습니다.'));
-    image.src = '/basketball-shot-zones.png';
-  });
-  return transparentCourtLinesDataUrl;
-}
-
 async function downloadElementAsPng(element: HTMLElement, filename: string) {
-  const courtLines = Array.from(element.querySelectorAll<SVGImageElement>('.basketball-viz-court-lines'));
-  const originalSources = courtLines.map((line) => line.getAttribute('href'));
-  try {
-    const transparentSource = courtLines.length ? await getTransparentCourtLinesDataUrl() : null;
-    if (transparentSource) courtLines.forEach((line) => line.setAttribute('href', transparentSource));
-    const source = await toPng(element, {
-      backgroundColor: '#151719',
-      cacheBust: true,
-      pixelRatio: 2,
-    });
-    const link = document.createElement('a');
-    link.href = source;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  } finally {
-    courtLines.forEach((line, index) => {
-      const original = originalSources[index];
-      if (original) line.setAttribute('href', original);
-      else line.removeAttribute('href');
-    });
-  }
+  const source = await toPng(element, {
+    backgroundColor: '#151719',
+    cacheBust: true,
+    pixelRatio: 2,
+  });
+  const link = document.createElement('a');
+  link.href = source;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function getZoneStats(events: GameEvent[], team: Team) {
@@ -451,7 +410,6 @@ function ShotMap({ team, events }: { team: Team; events: GameEvent[] }) {
             </g>
           );
         })}
-        <image href="/basketball-shot-zones.png" x="0" y="0" width={COURT_WIDTH} height={COURT_HEIGHT} preserveAspectRatio="none" className="basketball-viz-court-lines" />
         {ZONES.map((zone) => {
           const summary = stats.get(zone.id) || { attempts: 0, made: 0, points: 0 };
           return (
