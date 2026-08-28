@@ -9212,8 +9212,8 @@ _BROADCAST_OVERLAY_ASSET_TYPES = {
 }
 
 
-def _overlay_project_payload(project: BroadcastOverlayProject) -> dict:
-    return {
+def _overlay_project_payload(project: BroadcastOverlayProject, *, include_output_url: bool = False) -> dict:
+    payload = {
         "id": str(project.id),
         "match_id": str(project.match_id),
         "name": project.name,
@@ -9231,6 +9231,14 @@ def _overlay_project_payload(project: BroadcastOverlayProject) -> dict:
         "created_at": project.created_at.isoformat(),
         "updated_at": project.updated_at.isoformat(),
     }
+    if include_output_url and project.output_s3_key:
+        storage = highlight_default_storage()
+        if storage.configured:
+            try:
+                payload["output_url"] = storage.presigned_get(project.output_s3_key, expires=3600)
+            except Exception:
+                payload["output_url"] = None
+    return payload
 
 
 def _overlay_match_latest_clock_ms(match_id: UUID, db: Session) -> int:
@@ -9519,6 +9527,84 @@ def list_broadcast_overlay_projects(
 ):
     rows = db.query(BroadcastOverlayProject).order_by(desc(BroadcastOverlayProject.updated_at)).limit(100).all()
     return [_overlay_project_payload(row) for row in rows]
+
+
+@app.get("/api/highlight/broadcast-overlay/projects/{project_id}")
+def get_broadcast_overlay_project(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    project = db.get(BroadcastOverlayProject, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="오버레이 작업을 찾을 수 없습니다.")
+    return _overlay_project_payload(project, include_output_url=True)
+
+
+def _broadcast_overlay_source_key(project_id: UUID, filename: str) -> tuple[str, str]:
+    safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", filename.strip()) or "match.mp4"
+    content_type = "video/mp4" if safe_name.lower().endswith(".mp4") else "application/octet-stream"
+    return f"broadcast-overlays/sources/{project_id}/{uuid.uuid4().hex[:8]}/{safe_name}", content_type
+
+
+@app.post("/api/highlight/broadcast-overlay/projects/{project_id}/source-upload-url")
+def create_broadcast_overlay_source_upload_url(
+    project_id: UUID,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    """Give the browser a direct S3 URL; large video never transits the API."""
+    project = db.get(BroadcastOverlayProject, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="오버레이 작업을 찾을 수 없습니다.")
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+    filename = str(body.get("file_name") or project.source_filename or "match.mp4").strip()
+    key, content_type = _broadcast_overlay_source_key(project.id, filename)
+    project.source_s3_key = key
+    project.source_filename = filename[:255]
+    project.status = "draft"
+    project.output_s3_key = None
+    project.error_message = None
+    db.commit()
+    return {
+        "s3_key": key,
+        "content_type": content_type,
+        "upload_url": storage.presigned_put(key, expires=7200, content_type=content_type),
+    }
+
+
+@app.post("/api/highlight/broadcast-overlay/projects/{project_id}/render")
+def queue_broadcast_overlay_render(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    """Queue the heavy FFmpeg work for the separate FHL worker."""
+    project = db.get(BroadcastOverlayProject, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="오버레이 작업을 찾을 수 없습니다.")
+    if not project.source_s3_key:
+        raise HTTPException(status_code=409, detail="원본 영상을 먼저 업로드하세요.")
+    markers = {field: getattr(project, field) for field in _OVERLAY_VIDEO_MARKER_FIELDS}
+    _validate_overlay_video_markers(markers, project.source_duration_seconds)
+    if any(value is None for value in markers.values()):
+        raise HTTPException(status_code=409, detail="전반·후반 시작과 종료 지점을 모두 지정하세요.")
+    items = [row for row in (project.overlay_items or []) if isinstance(row, dict)]
+    if not items:
+        raise HTTPException(status_code=409, detail="삽입된 시각화가 없습니다.")
+    if any(not str(row.get("asset_url") or "").strip() for row in items):
+        raise HTTPException(status_code=409, detail="모든 시각화를 실제 Broadcast PNG로 다시 삽입하세요.")
+    if project.status in {"queued", "rendering"}:
+        return _overlay_project_payload(project, include_output_url=True)
+    project.status = "queued"
+    project.output_s3_key = None
+    project.error_message = None
+    db.commit()
+    db.refresh(project)
+    return _overlay_project_payload(project, include_output_url=True)
 
 
 @app.post("/api/highlight/broadcast-overlay/projects")

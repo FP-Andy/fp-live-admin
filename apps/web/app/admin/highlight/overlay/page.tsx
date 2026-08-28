@@ -67,6 +67,11 @@ type OverlayProject = {
   second_half_video_start_sec: number | null;
   second_half_video_end_sec: number | null;
   overlay_items: OverlayItem[];
+  status: 'draft' | 'queued' | 'rendering' | 'done' | 'error' | string;
+  source_s3_key?: string | null;
+  output_s3_key?: string | null;
+  output_url?: string | null;
+  error_message?: string | null;
 };
 
 const card: React.CSSProperties = {
@@ -148,6 +153,9 @@ export default function BroadcastOverlayPage() {
   const [saveMessage, setSaveMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [renderingGraphic, setRenderingGraphic] = useState(false);
+  const [uploadingSource, setUploadingSource] = useState(false);
+  const [renderStatus, setRenderStatus] = useState<OverlayProject['status'] | ''>('');
+  const [outputUrl, setOutputUrl] = useState('');
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
@@ -249,6 +257,8 @@ export default function BroadcastOverlayPage() {
     setRangeStart(0);
     setRangeEnd(8);
     setProjectId('');
+    setRenderStatus('');
+    setOutputUrl('');
     setSaveMessage('');
   };
 
@@ -256,6 +266,18 @@ export default function BroadcastOverlayPage() {
     const next = clamp(nextTime, 0, duration || Number.MAX_SAFE_INTEGER);
     setCursor(next);
     if (videoRef.current) videoRef.current.currentTime = next;
+  };
+
+  // Native video controls can be scrubbed between React onTimeUpdate ticks.
+  // Read the media element directly for marker and insertion actions so the
+  // FLA clock always maps to the frame the operator is actually seeing.
+  const playbackCursor = () => clamp(videoRef.current?.currentTime ?? cursor, 0, duration || Number.MAX_SAFE_INTEGER);
+
+  const syncRangeToCursor = () => {
+    const next = playbackCursor();
+    setCursor(next);
+    setRangeStart(next);
+    setRangeEnd(Math.min(duration, next + (selectedGraphicMeta?.duration || 8)));
   };
 
   const onTimelineClick = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -406,6 +428,8 @@ export default function BroadcastOverlayPage() {
         : await apiJson<OverlayProject>('/highlight/broadcast-overlay/projects', { method: 'POST', body: JSON.stringify(body) });
       setProjectId(project.id);
       setOverlayItems(project.overlay_items || []);
+      setRenderStatus(project.status || 'draft');
+      setOutputUrl(project.output_url || '');
       setSaveMessage('저장 완료. 이제 이 편집안을 기준으로 영상 렌더링 작업을 등록할 수 있습니다.');
     } catch (err) {
       setSaveMessage(err instanceof Error ? err.message : String(err));
@@ -414,9 +438,78 @@ export default function BroadcastOverlayPage() {
     }
   };
 
+  const refreshRenderProject = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const project = await apiJson<OverlayProject>(`/highlight/broadcast-overlay/projects/${projectId}`);
+      setRenderStatus(project.status || 'draft');
+      setOutputUrl(project.output_url || '');
+      if (project.status === 'error') setSaveMessage(project.error_message || '영상 렌더링에 실패했습니다.');
+      if (project.status === 'done') setSaveMessage('영상 렌더링이 완료되었습니다. 결과 영상을 확인하세요.');
+    } catch (err) {
+      setSaveMessage(err instanceof Error ? err.message : String(err));
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !['queued', 'rendering'].includes(renderStatus)) return;
+    const timer = window.setInterval(() => { void refreshRenderProject(); }, 4000);
+    return () => window.clearInterval(timer);
+  }, [projectId, refreshRenderProject, renderStatus]);
+
+  const uploadSourceForRender = async (): Promise<boolean> => {
+    if (!projectId || !file) {
+      setSaveMessage('먼저 편집안을 저장하고 원본 영상을 선택하세요.');
+      return false;
+    }
+    if (file.size > 4.5 * 1024 * 1024 * 1024) {
+      setSaveMessage('5GB 이상 원본은 다음 단계의 멀티파트 업로드로 올려야 합니다.');
+      return false;
+    }
+    setUploadingSource(true);
+    setSaveMessage('원본 영상을 S3에 직접 업로드하는 중…');
+    try {
+      const destination = await apiJson<{ upload_url: string; s3_key: string; content_type: string }>(
+        `/highlight/broadcast-overlay/projects/${projectId}/source-upload-url`,
+        { method: 'POST', body: JSON.stringify({ file_name: file.name }) },
+      );
+      const response = await fetch(destination.upload_url, {
+        method: 'PUT',
+        headers: { 'Content-Type': destination.content_type },
+        body: file,
+      });
+      if (!response.ok) throw new Error(`원본 업로드 실패 (${response.status})`);
+      setRenderStatus('draft');
+      setSaveMessage('원본 영상 업로드 완료. 이제 최종 영상 렌더를 시작할 수 있습니다.');
+      return true;
+    } catch (err) {
+      setSaveMessage(err instanceof Error ? err.message : String(err));
+      return false;
+    } finally {
+      setUploadingSource(false);
+    }
+  };
+
+  const queueFinalRender = async () => {
+    if (!projectId) {
+      setSaveMessage('편집안을 먼저 저장하세요.');
+      return;
+    }
+    setSaveMessage('FHL 렌더 워커에 최종 영상을 요청하는 중…');
+    try {
+      const project = await apiJson<OverlayProject>(`/highlight/broadcast-overlay/projects/${projectId}/render`, { method: 'POST' });
+      setRenderStatus(project.status);
+      setOutputUrl(project.output_url || '');
+      setSaveMessage('최종 영상 렌더를 대기열에 등록했습니다. 완료되면 이 화면에 결과가 표시됩니다.');
+    } catch (err) {
+      setSaveMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const insertAtCursor = () => {
     const displayDuration = selectedGraphicMeta?.duration || 8;
-    const start = cursor;
+    const start = playbackCursor();
+    setCursor(start);
     const end = duration ? Math.min(duration, start + displayDuration) : start + displayDuration;
     setRangeStart(start);
     setRangeEnd(end);
@@ -435,32 +528,40 @@ export default function BroadcastOverlayPage() {
   };
 
   const markFirstHalfStart = () => {
-    if (firstHalfEnd !== null && cursor >= firstHalfEnd) {
+    const current = playbackCursor();
+    if (firstHalfEnd !== null && current >= firstHalfEnd) {
       setSaveMessage('전반 시작은 전반 종료보다 앞선 영상 시점으로 지정하세요.');
       return;
     }
-    setFirstHalfStart(cursor);
+    setCursor(current);
+    setFirstHalfStart(current);
   };
   const markFirstHalfEnd = () => {
-    if (firstHalfStart === null || cursor <= firstHalfStart) {
+    const current = playbackCursor();
+    if (firstHalfStart === null || current <= firstHalfStart) {
       setSaveMessage('전반 시작 뒤의 영상 시점에서 전반 종료를 지정하세요.');
       return;
     }
-    setFirstHalfEnd(cursor);
+    setCursor(current);
+    setFirstHalfEnd(current);
   };
   const markSecondHalfStart = () => {
-    if (firstHalfEnd === null || cursor < firstHalfEnd) {
+    const current = playbackCursor();
+    if (firstHalfEnd === null || current < firstHalfEnd) {
       setSaveMessage('전반 종료 뒤의 영상 시점에서 후반 시작을 지정하세요.');
       return;
     }
-    setSecondHalfStart(cursor);
+    setCursor(current);
+    setSecondHalfStart(current);
   };
   const markSecondHalfEnd = () => {
-    if (secondHalfStart === null || cursor <= secondHalfStart) {
+    const current = playbackCursor();
+    if (secondHalfStart === null || current <= secondHalfStart) {
       setSaveMessage('후반 시작 뒤의 영상 시점에서 후반 종료를 지정하세요.');
       return;
     }
-    setSecondHalfEnd(cursor);
+    setCursor(current);
+    setSecondHalfEnd(current);
   };
 
   const syncStatus = firstHalfStart !== null && firstHalfEnd !== null && secondHalfStart !== null && secondHalfEnd !== null
@@ -522,6 +623,7 @@ export default function BroadcastOverlayPage() {
                   setRangeEnd(Math.min(8, nextDuration));
                 }}
                 onTimeUpdate={(event) => setCursor(event.currentTarget.currentTime)}
+                onSeeked={syncRangeToCursor}
               />
             ) : <span style={{ color: '#737373', fontSize: 14 }}>원본 영상을 선택하면 여기에서 미리볼 수 있습니다.</span>}
             {activeOverlayItem ? (
@@ -606,7 +708,12 @@ export default function BroadcastOverlayPage() {
             <p style={{ margin: 0, fontSize: 12, fontWeight: 800, letterSpacing: '.06em', color: '#f97316' }}>OVERLAY QUEUE</p>
             <h3 style={{ margin: '4px 0 0', fontSize: 16 }}>삽입된 그래픽 {overlayItems.length}개</h3>
           </div>
-          <button style={{ ...primaryButton, marginLeft: 'auto' }} onClick={() => void saveProject()} disabled={saving || !file || !selectedMatch}>{saving ? '저장 중…' : '편집안 저장'}</button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button style={button} onClick={() => void refreshRenderProject()} disabled={!projectId}>상태 새로고침</button>
+            <button style={button} onClick={() => void uploadSourceForRender()} disabled={!projectId || !file || uploadingSource}>{uploadingSource ? '원본 업로드 중…' : '원본 영상 업로드'}</button>
+            <button style={{ ...primaryButton, background: '#22c55e', borderColor: '#22c55e' }} onClick={() => void queueFinalRender()} disabled={!projectId || uploadingSource || !overlayItems.length || ['queued', 'rendering'].includes(renderStatus)}>{['queued', 'rendering'].includes(renderStatus) ? '렌더 진행 중…' : '최종 영상 렌더'}</button>
+            <button style={primaryButton} onClick={() => void saveProject()} disabled={saving || !file || !selectedMatch}>{saving ? '저장 중…' : '편집안 저장'}</button>
+          </div>
         </div>
         {overlayItems.length ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -621,6 +728,8 @@ export default function BroadcastOverlayPage() {
             ))}
           </div>
         ) : <div style={{ padding: 24, border: '1px dashed #42444b', borderRadius: 8, color: '#8f939b', fontSize: 13, textAlign: 'center' }}>타임라인에서 구간을 정하고 시각화를 삽입하면 이곳에 쌓입니다.</div>}
+        {renderStatus ? <p style={{ fontSize: 12, margin: '12px 0 0', color: renderStatus === 'done' ? '#a7f3d0' : renderStatus === 'error' ? '#fca5a5' : '#fde68a' }}>렌더 상태: {renderStatus === 'queued' ? '대기 중' : renderStatus === 'rendering' ? '렌더링 중' : renderStatus === 'done' ? '완료' : renderStatus === 'error' ? '오류' : '편집안'}</p> : null}
+        {outputUrl ? <a href={outputUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 8, color: '#86efac', fontSize: 13, fontWeight: 800 }}>완성 영상 열기 · 다운로드</a> : null}
         {saveMessage ? <p style={{ fontSize: 12, margin: '12px 0 0', color: saveMessage.includes('완료') ? '#a7f3d0' : '#c4b5fd' }}>{saveMessage}</p> : null}
       </section>
     </div>
@@ -636,33 +745,29 @@ function TimelinePin({ left, color, label }: { left: number; color: string; labe
 }
 
 function BroadcastOverlayPreview({ item }: { item: OverlayItem }) {
-  const hasLayers = Boolean(item.background_url && item.asset_url);
+  const hasAssetLayer = Boolean(item.asset_url);
   return (
     <div
       aria-label="Broadcast 그래픽 미리보기"
       style={{
         position: 'absolute',
-        right: '3.5%',
-        bottom: '5.5%',
+        left: '2.5%',
+        bottom: '4.5%',
         width: '48%',
         minWidth: 250,
         aspectRatio: '16 / 9',
         pointerEvents: 'none',
         overflow: 'hidden',
-        background: '#101215',
-        border: '1px solid rgba(255,255,255,.3)',
-        boxShadow: '0 12px 28px rgba(0,0,0,.52)',
+        background: 'transparent',
       }}
     >
-      {hasLayers ? (
+      {hasAssetLayer ? (
         <>
-          <img src={item.background_url} alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
           <img src={item.asset_url} alt={`${item.label} Broadcast 그래픽`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
-          <span style={{ position: 'absolute', left: 8, top: 8, padding: '3px 6px', borderRadius: 4, background: 'rgba(0,0,0,.62)', color: '#fff', fontSize: 10, fontWeight: 800, letterSpacing: '.05em' }}>BROADCAST PNG</span>
         </>
       ) : (
         <div style={{ height: '100%', display: 'grid', placeItems: 'center', padding: 18, color: '#d4d4d8', fontSize: 12, textAlign: 'center' }}>
-          이전에 저장된 항목입니다. 다시 삽입하면 실제 Broadcast PNG 레이어로 교체됩니다.
+          이전에 저장된 항목입니다. 다시 삽입하면 투명 Broadcast 에셋 레이어로 교체됩니다.
         </div>
       )}
     </div>

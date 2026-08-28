@@ -7,9 +7,10 @@ import time
 from datetime import datetime
 
 from .db import Base, SessionLocal, engine
+from .broadcast_overlay_jobs import run_broadcast_overlay_render
 from .highlight_jobs import ensure_highlight_runtime_dirs, run_analysis_for_job
 from .highlight_pipeline import load_models
-from .models import HighlightJob
+from .models import BroadcastOverlayProject, HighlightJob
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("highlight_worker")
@@ -55,6 +56,33 @@ def _claim_next_job() -> str | None:
         db.close()
 
 
+def _claim_next_broadcast_overlay() -> str | None:
+    """Claim offline recorded-video work before taking another AI analysis."""
+    db = SessionLocal()
+    try:
+        project = (
+            db.query(BroadcastOverlayProject)
+            .filter(BroadcastOverlayProject.status == "queued")
+            .order_by(BroadcastOverlayProject.created_at)
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if not project:
+            return None
+        project.status = "rendering"
+        project.error_message = None
+        project.updated_at = datetime.utcnow()
+        db.commit()
+        logger.info("Claimed Broadcast overlay project %s", project.id)
+        return str(project.id)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to claim Broadcast overlay project")
+        return None
+    finally:
+        db.close()
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
@@ -66,6 +94,10 @@ def main() -> None:
     logger.info("Highlight worker ready")
 
     while not _stop:
+        overlay_project_id = _claim_next_broadcast_overlay()
+        if overlay_project_id:
+            run_broadcast_overlay_render(overlay_project_id)
+            continue
         job_id = _claim_next_job()
         if not job_id:
             time.sleep(POLL_SECONDS)
