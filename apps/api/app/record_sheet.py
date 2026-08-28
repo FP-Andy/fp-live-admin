@@ -53,6 +53,20 @@ def _nfc(value: Any) -> str:
     return unicodedata.normalize("NFC", str(value or "")).strip()
 
 
+def _jersey_number(value: Any) -> str:
+    """엑셀 숫자 셀의 정수형 소수 표기를 등번호로 안전하게 읽는다.
+
+    엑셀이 `7`을 숫자로 저장한 경우 파일에 따라 openpyxl이 7.0으로 돌려줄 수
+    있다. 숫자가 아닌 문자를 전부 지우면 `7.0`이 `70`이 되므로, 정수형
+    소수점만 먼저 7로 정규화한다.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = _nfc(value)
+    match = re.fullmatch(r"(\d+)\.0+", text)
+    return match.group(1) if match else text
+
+
 def _clean_name(raw: Any) -> tuple[str, bool]:
     """이름에서 주장 표기를 떼고 (이름, 주장여부)."""
     s = _nfc(raw)
@@ -107,7 +121,7 @@ def _parse_legacy_side(ws, side: str) -> dict:
             if players:
                 break                      # 명단 끝
             continue
-        raw_no = _nfc(cell_no)
+        raw_no = _jersey_number(cell_no)
         m = re.match(r"^\s*(\d+)\s*/\s*(.+?)\s*$", raw_no)
         number, position = (m.group(1), _nfc(m.group(2))) if m else (raw_no, "")
         name, captain = _clean_name(cell_nm)
@@ -130,7 +144,7 @@ def _parse_column_side(ws, side: str) -> dict:
     players: list[dict] = []
 
     for r in (*COLUMN_STARTER_ROWS, *COLUMN_SUBSTITUTE_ROWS):
-        raw_no = _nfc(ws.cell(r, col_no).value)
+        raw_no = _jersey_number(ws.cell(r, col_no).value)
         raw_position = _nfc(ws.cell(r, col_position).value).upper()
         raw_name = ws.cell(r, col_name).value
         if not raw_no and not raw_position and not _nfc(raw_name):
