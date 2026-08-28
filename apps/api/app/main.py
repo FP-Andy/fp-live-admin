@@ -7319,6 +7319,108 @@ async def upload_match_lineup_pdf(
     }
 
 
+@app.post("/api/matches/{match_id}/lineup/record-sheet")
+async def upload_match_lineup_record_sheet(
+    match_id: UUID,
+    file: UploadFile = File(...),
+    first_team_side: str = Form(default="HOME"),
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    """FLA 경기 상세에서 815 엑셀 명단 한 건을 홈/어웨이에 반영한다.
+
+    경기 생성 후 업로드하는 흐름이므로, 작성 가이드 탭을 제외한 실제 경기 시트는
+    정확히 한 개여야 한다. 파일 안의 첫 번째 팀을 FLA HOME/AWAY 어디에 넣을지만
+    first_team_side 로 선택한다.
+    """
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="Lineup record sheet must be an Excel file (.xlsx or .xlsm)")
+
+    try:
+        sheets = await run_in_threadpool(record_sheet.parse_workbook, await file.read())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    usable = [sheet for sheet in sheets if not sheet.get("error") and sheet.get("usable")]
+    if not usable:
+        raise HTTPException(status_code=400, detail="엑셀에서 홈/어웨이 선수명단을 찾지 못했습니다.")
+    if len(usable) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="FLA 경기 상세 업로드는 경기당 파일 1개입니다. 실제 경기 시트가 하나만 남도록 업로드해 주세요.",
+        )
+
+    first_side = first_team_side.strip().upper()
+    if first_side not in {"HOME", "AWAY"}:
+        first_side = "HOME"
+    second_side = "AWAY" if first_side == "HOME" else "HOME"
+    parsed_sheet = usable[0]
+
+    def _players(parsed_team: dict) -> list[dict]:
+        players: list[dict] = []
+        seen: set[str] = set()
+        for player in parsed_team.get("players") or []:
+            number = re.sub(r"\D", "", str(player.get("jerseyNumber") or ""))
+            name = str(player.get("name") or "").strip()
+            if not number or not name or number in seen:
+                continue
+            seen.add(number)
+            item = _normalize_lineup_player(number, name, str(player.get("position") or ""))
+            if player.get("isSubstitute"):
+                item["isSubstitute"] = True
+            players.append(item)
+        return sorted(players, key=_lineup_sort_key)
+
+    source_by_destination = {
+        first_side: parsed_sheet["home"],
+        second_side: parsed_sheet["away"],
+    }
+    teams = {side: _players(source_by_destination[side]) for side in ("HOME", "AWAY")}
+    if not teams["HOME"] or not teams["AWAY"]:
+        raise HTTPException(status_code=400, detail="홈과 원정팀 명단이 모두 필요합니다.")
+
+    metadata = dict(match_obj.metadata_json or {})
+    metadata["lineups"] = {
+        "source": "match_record_sheet",
+        "first_team_side": first_side,
+        "teams": teams,
+    }
+    metadata["lineup_record_sheet"] = {
+        "filename": filename,
+        "sheet": parsed_sheet.get("sheet", ""),
+        "match_no": parsed_sheet.get("matchNo", ""),
+        "date": parsed_sheet.get("date", ""),
+        "venue": parsed_sheet.get("venue", ""),
+        "uploaded_at": datetime.utcnow().isoformat(),
+    }
+    metadata["lineup_team_info"] = {
+        side: {
+            "name": source_by_destination[side].get("team", ""),
+            "formation": source_by_destination[side].get("formation", ""),
+            "coach": source_by_destination[side].get("coach", ""),
+        }
+        for side in ("HOME", "AWAY")
+    }
+    metadata["lineup_record_sheet_uploaded_at"] = datetime.utcnow().isoformat()
+    match_obj.metadata_json = metadata
+    db.commit()
+    db.refresh(match_obj)
+    _match_response_cache.clear()
+    return {
+        "ok": True,
+        "lineups": metadata["lineups"],
+        "teams": metadata["lineup_team_info"],
+        "match": _serialize_match(match_obj),
+    }
+
+
 @app.post("/api/matches/{match_id}/lineup/manual/player")
 def upsert_match_lineup_manual_player(
     match_id: UUID,
@@ -9962,7 +10064,12 @@ async def lineup_from_record_sheet(
         src_side = ("away" if side == "home" else "home") if swap else side
         parsed = target[src_side]
         lineup = [
-            {"jerseyNumber": p["jerseyNumber"], "name": p["name"], "position": p["position"]}
+            {
+                "jerseyNumber": p["jerseyNumber"],
+                "name": p["name"],
+                "position": p["position"],
+                **({"isSubstitute": True} if p.get("isSubstitute") else {}),
+            }
             for p in parsed["players"]
         ]
         if not lineup:
@@ -9971,6 +10078,8 @@ async def lineup_from_record_sheet(
         link["lineup"] = lineup
         if parsed["team"]:
             link["team_name"] = parsed["team"]
+        if parsed.get("coach"):
+            link["coach_name"] = parsed["coach"]
         link["lineup_source"] = f"record_sheet:{target['sheet']}"
         link["lineup_updated_at"] = datetime.utcnow().isoformat()
         links[side] = link
@@ -10029,8 +10138,13 @@ def _record_sheet_lineup(parsed: dict) -> list[dict]:
         seen.add(jersey)
         position = str(player.get("position") or "").strip().upper()
         entry = {"jerseyNumber": jersey, "name": name, "position": position}
+        # 815 템플릿의 교체 명단은 선발 전 배치에서 빼고, 실제 교체 시점에는
+        # 태거가 끌어다 쓸 수 있게 SUB 슬롯으로 보존한다.
+        if player.get("isSubstitute"):
+            entry["isSubstitute"] = True
+            entry["positionSlot"] = "SUB"
         # 표에 없는 표기는 자리를 못 잡으므로 슬롯을 비운다(등록은 되고 배치만 빠진다).
-        if position in RECORD_SHEET_POSITIONS:
+        elif position in RECORD_SHEET_POSITIONS:
             entry["positionSlot"] = position
         lineup.append(entry)
 
@@ -10347,6 +10461,8 @@ async def lineup_from_record_sheet_bulk(
                 link["team_name"] = parsed["team"]
             if parsed.get("formation"):
                 link["formation"] = parsed["formation"]
+            if parsed.get("coach"):
+                link["coach_name"] = parsed["coach"]
             link["lineup_source"] = f"record_sheet:{sheet['sheet']}"
             link["lineup_updated_at"] = datetime.utcnow().isoformat()
             links[side] = link
