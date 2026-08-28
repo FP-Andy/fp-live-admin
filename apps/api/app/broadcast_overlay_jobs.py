@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
-import urllib.request
 from pathlib import Path
 from uuid import UUID
 
+import requests
+
 from .db import SessionLocal
-from .highlight_storage import default_storage
 from .models import BroadcastOverlayProject
 
 
@@ -25,12 +25,29 @@ OVERLAY_WIDTH = 900  # 1920px output 기준 좌하단 안전 영역
 OVERLAY_MARGIN = 40
 
 
-def _download_public_asset(url: str, target: Path) -> None:
+def _download_url(url: str, target: Path) -> None:
     if not url.startswith(("https://", "http://")):
-        raise ValueError("Broadcast 에셋 URL이 올바르지 않습니다.")
+        raise ValueError("다운로드 URL이 올바르지 않습니다.")
     target.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=90) as response, target.open("wb") as out:
-        out.write(response.read())
+    with requests.get(url, stream=True, timeout=(30, 3600)) as response:
+        response.raise_for_status()
+        with target.open("wb") as out:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    out.write(chunk)
+
+
+def _upload_video(url: str, source: Path) -> None:
+    if not url.startswith(("https://", "http://")):
+        raise ValueError("업로드 URL이 올바르지 않습니다.")
+    with source.open("rb") as body:
+        response = requests.put(
+            url,
+            data=body,
+            headers={"Content-Type": "video/mp4"},
+            timeout=(30, 3600),
+        )
+    response.raise_for_status()
 
 
 def _has_audio(source: Path) -> bool:
@@ -51,16 +68,13 @@ def _render_project(project_id: UUID, work: Path) -> tuple[Path, str]:
         project = db.get(BroadcastOverlayProject, project_id)
         if not project:
             raise ValueError("오버레이 프로젝트를 찾을 수 없습니다.")
-        if not project.source_s3_key:
-            raise ValueError("원본 영상이 업로드되지 않았습니다.")
+        if not project.source_download_url or not project.output_upload_url or not project.output_s3_key:
+            raise ValueError("렌더용 저장소 URL이 없습니다. 렌더를 다시 요청하세요.")
         if project.first_half_video_start_sec is None or project.second_half_video_end_sec is None:
             raise ValueError("전반 시작과 후반 종료 지점을 지정하세요.")
 
         source = work / "source" / (project.source_filename or "source.mp4")
-        storage = default_storage()
-        if not storage.configured:
-            raise ValueError("HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
-        storage.download(project.source_s3_key, source)
+        _download_url(project.source_download_url, source)
 
         extract_start = max(0.0, float(project.first_half_video_start_sec))
         extract_end = max(extract_start + .1, float(project.second_half_video_end_sec) + 5.0)
@@ -79,7 +93,7 @@ def _render_project(project_id: UUID, work: Path) -> tuple[Path, str]:
             if not asset_url:
                 continue
             asset = work / "assets" / f"{index:03d}.png"
-            _download_public_asset(asset_url, asset)
+            _download_url(asset_url, asset)
             assets.append((item, asset))
         if not assets:
             raise ValueError("렌더할 투명 Broadcast 에셋이 없습니다. 시각화를 다시 삽입하세요.")
@@ -132,7 +146,7 @@ def _render_project(project_id: UUID, work: Path) -> tuple[Path, str]:
         result = subprocess.run(args, capture_output=True, text=True)
         if result.returncode:
             raise RuntimeError((result.stderr or result.stdout or "FFmpeg 렌더 실패")[-1200:])
-        return output, f"{OUTPUT_PREFIX}/{project.id}/broadcast-overlay.mp4"
+        return output, str(project.output_s3_key)
     finally:
         db.close()
 
@@ -154,8 +168,14 @@ def run_broadcast_overlay_render(project_id: str) -> None:
     try:
         with tempfile.TemporaryDirectory(prefix="broadcast_overlay_") as raw:
             output, output_key = _render_project(project_uuid, Path(raw))
-            storage = default_storage()
-            storage.upload(output, output_key, content_type="video/mp4")
+            db = SessionLocal()
+            try:
+                project = db.get(BroadcastOverlayProject, project_uuid)
+                if not project or not project.output_upload_url:
+                    raise ValueError("결과 업로드 URL이 없습니다. 렌더를 다시 요청하세요.")
+                _upload_video(project.output_upload_url, output)
+            finally:
+                db.close()
         db = SessionLocal()
         try:
             project = db.get(BroadcastOverlayProject, project_uuid)

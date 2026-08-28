@@ -342,6 +342,10 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN first_half_video_end_sec DOUBLE PRECISION")
     if "broadcast_overlay_projects" in table_names and "second_half_video_end_sec" not in broadcast_overlay_project_columns:
         statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN second_half_video_end_sec DOUBLE PRECISION")
+    if "broadcast_overlay_projects" in table_names and "source_download_url" not in broadcast_overlay_project_columns:
+        statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN source_download_url TEXT")
+    if "broadcast_overlay_projects" in table_names and "output_upload_url" not in broadcast_overlay_project_columns:
+        statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN output_upload_url TEXT")
 
     if "highlight_clip_actions" in table_names and "start_offset" not in clip_action_columns:
         statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN start_offset DOUBLE PRECISION")
@@ -9567,6 +9571,8 @@ def create_broadcast_overlay_source_upload_url(
     project.source_filename = filename[:255]
     project.status = "draft"
     project.output_s3_key = None
+    project.source_download_url = None
+    project.output_upload_url = None
     project.error_message = None
     db.commit()
     return {
@@ -9599,8 +9605,20 @@ def queue_broadcast_overlay_render(
         raise HTTPException(status_code=409, detail="모든 시각화를 실제 Broadcast PNG로 다시 삽입하세요.")
     if project.status in {"queued", "rendering"}:
         return _overlay_project_payload(project, include_output_url=True)
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
+    output_key = f"broadcast-overlays/output/{project.id}/broadcast-overlay.mp4"
+    try:
+        # The worker receives capability URLs instead of AWS credentials.  A
+        # 12-hour lifetime comfortably covers an HD match render but confines
+        # the capability to this exact source/output object.
+        project.source_download_url = storage.presigned_get(project.source_s3_key, expires=43200)
+        project.output_upload_url = storage.presigned_put(output_key, expires=43200, content_type="video/mp4")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"렌더 저장소 URL을 만들 수 없습니다: {exc}")
     project.status = "queued"
-    project.output_s3_key = None
+    project.output_s3_key = output_key
     project.error_message = None
     db.commit()
     db.refresh(project)

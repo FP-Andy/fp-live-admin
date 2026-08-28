@@ -302,6 +302,10 @@ class BroadcastOverlayProject(Base):
     overlay_items: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String, nullable=False, default="draft", index=True)
     output_s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # GPU worker never receives a long-lived S3 credential.  At render queue
+    # time the API issues short-lived URLs for this project only.
+    source_download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_upload_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
