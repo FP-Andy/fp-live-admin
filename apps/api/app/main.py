@@ -9601,8 +9601,8 @@ def queue_broadcast_overlay_render(
     items = [row for row in (project.overlay_items or []) if isinstance(row, dict)]
     if not items:
         raise HTTPException(status_code=409, detail="삽입된 시각화가 없습니다.")
-    if any(not str(row.get("asset_url") or "").strip() for row in items):
-        raise HTTPException(status_code=409, detail="모든 시각화를 실제 Broadcast PNG로 다시 삽입하세요.")
+    if any(not str(row.get("background_url") or "").strip() or not str(row.get("asset_url") or "").strip() for row in items):
+        raise HTTPException(status_code=409, detail="모든 시각화를 프레임·에셋 Broadcast PNG로 다시 삽입하세요.")
     if project.status in {"queued", "rendering"}:
         return _overlay_project_payload(project, include_output_url=True)
     storage = highlight_default_storage()

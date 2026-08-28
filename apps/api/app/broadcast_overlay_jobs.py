@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
@@ -23,6 +24,38 @@ from .models import BroadcastOverlayProject
 OUTPUT_PREFIX = "broadcast-overlays/output"
 OVERLAY_WIDTH = 900  # 1920px output 기준 좌하단 안전 영역
 OVERLAY_MARGIN = 40
+
+
+@dataclass(frozen=True)
+class OverlayPlacement:
+    """Visible frame bounds inside the transparent 1920×1080 capture."""
+
+    crop_width: int = 1920
+    crop_height: int = 1080
+    crop_x: int = 0
+    crop_y: int = 0
+    output_width: int = OVERLAY_WIDTH
+    x: str = str(OVERLAY_MARGIN)
+    y: str = f"H-h-{OVERLAY_MARGIN}"
+
+
+# Possession and xG comparison were designed as wide, lower-third cards.
+# Crop away the transparent canvas around their frame and centre the actual
+# design rather than shrinking a 1920px artboard into the lower-left corner.
+_OVERLAY_PLACEMENTS: dict[str, OverlayPlacement] = {
+    "possession": OverlayPlacement(
+        crop_width=1295, crop_height=182, crop_x=312, crop_y=720,
+        output_width=1295, x="(W-w)/2", y="H-h-74",
+    ),
+    "xg-comparison": OverlayPlacement(
+        crop_width=1380, crop_height=418, crop_x=270, crop_y=340,
+        output_width=1380, x="(W-w)/2", y="H-h-74",
+    ),
+}
+
+
+def _overlay_placement(asset_type: str) -> OverlayPlacement:
+    return _OVERLAY_PLACEMENTS.get(asset_type, OverlayPlacement())
 
 
 def _download_url(url: str, target: Path) -> None:
@@ -84,27 +117,32 @@ def _render_project(project_id: UUID, work: Path) -> tuple[Path, str]:
             key=lambda row: float(row.get("start_sec") or 0),
         )
 
-        assets: list[tuple[dict, Path]] = []
+        assets: list[tuple[dict, Path, Path]] = []
         for index, item in enumerate(items):
-            # Only the transparent asset layer is composed.  The static
-            # background layer belongs to standalone Broadcast delivery, not
-            # recorded-video overlay.
+            # Preserve the designer-authored transparent frame as well as the
+            # changing data asset.  Both PNGs have a transparent 1920×1080
+            # canvas, so the recorded video remains visible outside the frame.
+            background_url = str(item.get("background_url") or "").strip()
             asset_url = str(item.get("asset_url") or "").strip()
-            if not asset_url:
-                continue
-            asset = work / "assets" / f"{index:03d}.png"
+            if not background_url or not asset_url:
+                raise ValueError("프레임과 에셋 PNG가 모두 필요합니다. 시각화를 다시 삽입하세요.")
+            background = work / "assets" / f"{index:03d}-frame.png"
+            asset = work / "assets" / f"{index:03d}-asset.png"
+            _download_url(background_url, background)
             _download_url(asset_url, asset)
-            assets.append((item, asset))
+            assets.append((item, background, asset))
         if not assets:
-            raise ValueError("렌더할 투명 Broadcast 에셋이 없습니다. 시각화를 다시 삽입하세요.")
+            raise ValueError("렌더할 Broadcast 프레임·에셋이 없습니다. 시각화를 다시 삽입하세요.")
 
         args = ["ffmpeg", "-y", "-ss", f"{extract_start:.3f}", "-t", f"{duration:.3f}", "-i", str(source)]
-        for _item, asset in assets:
-            args += ["-loop", "1", "-i", str(asset)]
+        for _item, background, asset in assets:
+            args += ["-loop", "1", "-i", str(background), "-loop", "1", "-i", str(asset)]
         has_audio = _has_audio(source)
         silent_index: int | None = None
         if not has_audio:
-            silent_index = len(assets) + 1
+            # Input 0 is the source, then each overlay contributes a frame
+            # input and a dynamic asset input before the silent-audio source.
+            silent_index = len(assets) * 2 + 1
             args += [
                 "-f", "lavfi", "-t", f"{duration:.3f}",
                 "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
@@ -119,16 +157,24 @@ def _render_project(project_id: UUID, work: Path) -> tuple[Path, str]:
             "pad=1920:1080:(ow-iw)/2:(oh-ih),setsar=1,format=yuv420p[v0]"
         ]
         current = "[v0]"
-        for index, (item, _asset) in enumerate(assets, start=1):
+        for index, (item, _background, _asset) in enumerate(assets, start=1):
             start = max(0.0, float(item.get("start_sec") or 0) - extract_start)
             end = min(duration, float(item.get("end_sec") or 0) - extract_start)
             if end <= start:
                 continue
+            placement = _overlay_placement(str(item.get("asset_type") or ""))
+            background_input = 1 + (index - 1) * 2
+            asset_input = background_input + 1
+            frame = f"[frame{index}]"
+            data = f"[data{index}]"
             overlay = f"[ov{index}]"
             output = f"[v{index}]"
-            chains.append(f"[{index}:v]format=rgba,scale={OVERLAY_WIDTH}:-2{overlay}")
+            crop = f"crop={placement.crop_width}:{placement.crop_height}:{placement.crop_x}:{placement.crop_y}"
+            chains.append(f"[{background_input}:v]format=rgba,{crop},scale={placement.output_width}:-2{frame}")
+            chains.append(f"[{asset_input}:v]format=rgba,{crop},scale={placement.output_width}:-2{data}")
+            chains.append(f"{frame}{data}overlay=0:0:format=auto{overlay}")
             chains.append(
-                f"{current}{overlay}overlay=x={OVERLAY_MARGIN}:y=H-h-{OVERLAY_MARGIN}:"
+                f"{current}{overlay}overlay=x={placement.x}:y={placement.y}:"
                 f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass{output}"
             )
             current = output

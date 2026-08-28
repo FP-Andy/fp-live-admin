@@ -745,29 +745,32 @@ function TimelinePin({ left, color, label }: { left: number; color: string; labe
 }
 
 function BroadcastOverlayPreview({ item }: { item: OverlayItem }) {
-  const hasAssetLayer = Boolean(item.asset_url);
+  const hasFrameAndAsset = Boolean(item.background_url && item.asset_url);
+  const isLowerThird = item.asset_type === 'possession' || item.asset_type === 'xg-comparison';
   return (
     <div
       aria-label="Broadcast 그래픽 미리보기"
       style={{
         position: 'absolute',
-        left: '2.5%',
-        bottom: '4.5%',
-        width: '48%',
-        minWidth: 250,
+        left: isLowerThird ? '50%' : '2.5%',
+        bottom: isLowerThird ? '4.5%' : '4.5%',
+        transform: isLowerThird ? 'translateX(-50%)' : undefined,
+        width: isLowerThird ? '94%' : '48%',
+        minWidth: isLowerThird ? 0 : 250,
         aspectRatio: '16 / 9',
         pointerEvents: 'none',
         overflow: 'hidden',
         background: 'transparent',
       }}
     >
-      {hasAssetLayer ? (
+      {hasFrameAndAsset ? (
         <>
+          <img src={item.background_url} alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
           <img src={item.asset_url} alt={`${item.label} Broadcast 그래픽`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
         </>
       ) : (
         <div style={{ height: '100%', display: 'grid', placeItems: 'center', padding: 18, color: '#d4d4d8', fontSize: 12, textAlign: 'center' }}>
-          이전에 저장된 항목입니다. 다시 삽입하면 투명 Broadcast 에셋 레이어로 교체됩니다.
+          이전에 저장된 항목입니다. 다시 삽입하면 프레임·에셋 Broadcast PNG로 교체됩니다.
         </div>
       )}
     </div>
