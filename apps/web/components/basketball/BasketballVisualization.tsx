@@ -59,6 +59,7 @@ const HOME_COLOR = '#ff7900';
 const AWAY_COLOR = '#1e63dc';
 const PAINT_ZONE_IDS = new Set<ZoneId>(['RESTRICTED_AREA', 'PAINT', 'LEFT_PAINT', 'RIGHT_PAINT']);
 const THREE_POINT_ZONE_IDS = new Set<ZoneId>(ZONES.filter((zone) => zone.points === 3).map((zone) => zone.id));
+let transparentCourtLinesDataUrl: Promise<string> | null = null;
 
 
 function parseClockSeconds(clock: string | undefined) {
@@ -121,21 +122,58 @@ function getScore(events: GameEvent[]) {
   );
 }
 
-async function downloadElementAsPng(element: HTMLElement, filename: string) {
-  const source = await toPng(element, {
-    backgroundColor: '#151719',
-    cacheBust: true,
-    // 흰 바탕 PNG는 브라우저에서 multiply로 처리하지만, PNG 변환기에서는 색상 구역을 덮는다.
-    // 영역 경계는 바로 아래 SVG path로 다시 그려, 다운로드 이미지에서도 원본 좌표를 유지한다.
-    filter: (node) => !(node instanceof Element && node.classList.contains('basketball-viz-court-lines')),
-    pixelRatio: 2,
+function getTransparentCourtLinesDataUrl() {
+  if (transparentCourtLinesDataUrl) return transparentCourtLinesDataUrl;
+  transparentCourtLinesDataUrl = new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        reject(new Error('코트 라인을 준비하지 못했습니다.'));
+        return;
+      }
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+      for (let index = 0; index < pixels.data.length; index += 4) {
+        const brightness = Math.min(pixels.data[index], pixels.data[index + 1], pixels.data[index + 2]);
+        if (brightness > 220) pixels.data[index + 3] = Math.round(pixels.data[index + 3] * ((255 - brightness) / 35));
+      }
+      context.putImageData(pixels, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    image.onerror = () => reject(new Error('코트 라인을 불러오지 못했습니다.'));
+    image.src = '/basketball-shot-zones.png';
   });
-  const link = document.createElement('a');
-  link.href = source;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  return transparentCourtLinesDataUrl;
+}
+
+async function downloadElementAsPng(element: HTMLElement, filename: string) {
+  const courtLines = Array.from(element.querySelectorAll<SVGImageElement>('.basketball-viz-court-lines'));
+  const originalSources = courtLines.map((line) => line.getAttribute('href'));
+  try {
+    const transparentSource = courtLines.length ? await getTransparentCourtLinesDataUrl() : null;
+    if (transparentSource) courtLines.forEach((line) => line.setAttribute('href', transparentSource));
+    const source = await toPng(element, {
+      backgroundColor: '#151719',
+      cacheBust: true,
+      pixelRatio: 2,
+    });
+    const link = document.createElement('a');
+    link.href = source;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    courtLines.forEach((line, index) => {
+      const original = originalSources[index];
+      if (original) line.setAttribute('href', original);
+      else line.removeAttribute('href');
+    });
+  }
 }
 
 function getZoneStats(events: GameEvent[], team: Team) {
