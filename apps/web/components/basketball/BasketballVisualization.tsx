@@ -125,6 +125,9 @@ async function downloadElementAsPng(element: HTMLElement, filename: string) {
   const source = await toPng(element, {
     backgroundColor: '#151719',
     cacheBust: true,
+    // 흰 바탕 PNG는 브라우저에서 multiply로 처리하지만, PNG 변환기에서는 색상 구역을 덮는다.
+    // 영역 경계는 바로 아래 SVG path로 다시 그려, 다운로드 이미지에서도 원본 좌표를 유지한다.
+    filter: (node) => !(node instanceof Element && node.classList.contains('basketball-viz-court-lines')),
     pixelRatio: 2,
   });
   const link = document.createElement('a');
@@ -406,7 +409,7 @@ function ShotMap({ team, events }: { team: Team; events: GameEvent[] }) {
           const summary = stats.get(zone.id) || { attempts: 0, made: 0, points: 0 };
           return (
             <g key={zone.id}>
-              <path d={zone.d} fill={zoneFill(summary.points)} className="basketball-viz-zone" />
+              <path d={zone.d} fill={zoneFill(summary.points)} stroke="rgba(255, 255, 255, 0.76)" strokeWidth="1.5" strokeLinejoin="round" className="basketball-viz-zone" />
             </g>
           );
         })}
@@ -415,8 +418,8 @@ function ShotMap({ team, events }: { team: Team; events: GameEvent[] }) {
           const summary = stats.get(zone.id) || { attempts: 0, made: 0, points: 0 };
           return (
             <g key={`${zone.id}-label`} className="basketball-viz-zone-label">
-              <text x={zone.textX} y={zone.textY - 5} className="basketball-viz-zone-points" textAnchor="middle">{summary.points}</text>
-              <text x={zone.textX} y={zone.textY + 14} className="basketball-viz-zone-detail" textAnchor="middle">{summary.made}/{summary.attempts}</text>
+              <text x={zone.textX} y={zone.textY - 5} fill="#fff" stroke="rgba(0, 0, 0, 0.6)" strokeWidth="2" strokeLinejoin="round" paintOrder="stroke" fontSize="22" fontWeight="900" textAnchor="middle">{summary.points}</text>
+              <text x={zone.textX} y={zone.textY + 14} fill="rgba(255, 255, 255, 0.83)" stroke="rgba(0, 0, 0, 0.6)" strokeWidth="2" strokeLinejoin="round" paintOrder="stroke" fontSize="13" fontWeight="700" textAnchor="middle">{summary.made}/{summary.attempts}</text>
             </g>
           );
         })}
@@ -464,35 +467,35 @@ function MarginFlow({ events, periodMinutes, periodCount, labels }: { events: Ga
         <g className="basketball-viz-margin-grid">
           {[-scale, -scale / 2, 0, scale / 2, scale].map((value) => (
             <g key={value}>
-              <line x1="0" x2="960" y1={y(value)} y2={y(value)} />
-              <text x="-12" y={y(value) + 4} textAnchor="end">{value > 0 ? `+${value}` : value}</text>
+              <line x1="0" x2="960" y1={y(value)} y2={y(value)} stroke="rgba(255, 255, 255, 0.12)" strokeDasharray="4 6" />
+              <text x="-12" y={y(value) + 4} fill="rgba(255, 255, 255, 0.56)" fontSize="12" fontWeight="700" textAnchor="end">{value > 0 ? `+${value}` : value}</text>
             </g>
           ))}
           {Array.from({ length: periodCount + 1 }, (_, index) => index).map((index) => {
             const markerX = (index / periodCount) * 960;
-            return <line key={index} x1={markerX} x2={markerX} y1="14" y2="230" />;
+            return <line key={index} x1={markerX} x2={markerX} y1="14" y2="230" stroke="rgba(255, 255, 255, 0.12)" strokeDasharray="4 6" />;
           })}
         </g>
-        <polygon points={area} className="basketball-viz-margin-home-fill" clipPath="url(#basketball-viz-positive)" />
-        <polygon points={area} className="basketball-viz-margin-away-fill" clipPath="url(#basketball-viz-negative)" />
-        <line x1="0" x2="960" y1={zeroY} y2={zeroY} className="basketball-viz-zero-line" />
+        <polygon points={area} fill="rgba(255, 121, 0, 0.46)" className="basketball-viz-margin-home-fill" clipPath="url(#basketball-viz-positive)" />
+        <polygon points={area} fill="rgba(30, 99, 220, 0.45)" className="basketball-viz-margin-away-fill" clipPath="url(#basketball-viz-negative)" />
+        <line x1="0" x2="960" y1={zeroY} y2={zeroY} stroke="rgba(255, 255, 255, 0.94)" strokeWidth="1.4" className="basketball-viz-zero-line" />
         {Array.from({ length: Math.max(0, periodCount - 1) }, (_, index) => {
           const markerX = ((index + 1) / periodCount) * 960;
           return (
             <g className="basketball-viz-quarter" key={index}>
-              <line x1={markerX} x2={markerX} y1="12" y2="232" />
-              <text x={markerX + 8} y="28">{index + 2}Q</text>
+              <line x1={markerX} x2={markerX} y1="12" y2="232" stroke="rgba(255, 255, 255, 0.42)" strokeDasharray="7 5" />
+              <text x={markerX + 8} y="28" fill="#fff" fontSize="12" fontWeight="900">{index + 2}Q</text>
             </g>
           );
         })}
-        <polyline points={stepLine} className="basketball-viz-margin-line" />
+        <polyline points={stepLine} fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter" className="basketball-viz-margin-line" />
         {scoringEvents.map((event) => {
           const eventX = x(elapsedSeconds(event, periodMinutes, periodCount));
           const eventY = y(event.marginAfter || 0);
           return (
             <g key={event.id}>
               <title>{`${event.period}Q ${event.clock} · ${event.homeScoreAfter}-${event.awayScoreAfter}`}</title>
-              <circle cx={eventX} cy={eventY} r="4" className="basketball-viz-margin-dot-outline" />
+              <circle cx={eventX} cy={eventY} r="4" fill="#151719" stroke="#fff" strokeWidth="1.25" className="basketball-viz-margin-dot-outline" />
               <circle cx={eventX} cy={eventY} r="2.35" fill={event.team === 'HOME' ? HOME_COLOR : AWAY_COLOR} />
             </g>
           );
@@ -500,7 +503,7 @@ function MarginFlow({ events, periodMinutes, periodCount, labels }: { events: Ga
         <g className="basketball-viz-time-axis">
           {Array.from({ length: periodCount + 1 }, (_, index) => {
             const markerX = (index / periodCount) * 960;
-            return <text key={index} x={markerX} y="258" textAnchor={index === 0 ? 'start' : index === periodCount ? 'end' : 'middle'}>{index === 0 ? 'START' : `${index}Q END`}</text>;
+            return <text key={index} x={markerX} y="258" fill="rgba(255, 255, 255, 0.56)" fontSize="12" fontWeight="700" textAnchor={index === 0 ? 'start' : index === periodCount ? 'end' : 'middle'}>{index === 0 ? 'START' : `${index}Q END`}</text>;
           })}
         </g>
       </svg>
@@ -527,7 +530,7 @@ function ReboundDonut({ team, name, data }: { team: Team; name: string; data: { 
       </div>
       <div className="basketball-viz-donut-wrap">
         <svg viewBox="0 0 160 160" className="basketball-viz-donut" role="img" aria-label={`${name} 리바운드 구성`}>
-          <circle cx="80" cy="80" r="54" className="basketball-viz-donut-track" />
+          <circle cx="80" cy="80" r="54" fill="none" stroke="rgba(255, 255, 255, 0.1)" strokeWidth="26" className="basketball-viz-donut-track" />
           {values.map((item) => {
             const dash = total ? Math.max(0, (item.value / total) * circumference - 3) : 0;
             const segment = (
@@ -548,8 +551,8 @@ function ReboundDonut({ team, name, data }: { team: Team; name: string; data: { 
             offset += total ? (item.value / total) * circumference : 0;
             return segment;
           })}
-          <text x="80" y="78" className="basketball-viz-donut-total" textAnchor="middle">{total}</text>
-          <text x="80" y="98" className="basketball-viz-donut-caption" textAnchor="middle">TOTAL</text>
+          <text x="80" y="78" fill="#fff" fontSize="30" fontWeight="900" textAnchor="middle">{total}</text>
+          <text x="80" y="98" fill="rgba(255, 255, 255, 0.55)" fontSize="8" fontWeight="800" letterSpacing="0.14em" textAnchor="middle">TOTAL</text>
         </svg>
         <div className="basketball-viz-donut-legend">
           {values.map((item) => (
