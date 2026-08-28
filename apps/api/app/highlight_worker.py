@@ -5,6 +5,7 @@ import os
 import signal
 import time
 from datetime import datetime
+from pathlib import Path
 
 from .db import Base, SessionLocal, engine
 from .broadcast_overlay_jobs import run_broadcast_overlay_render
@@ -89,15 +90,34 @@ def main() -> None:
 
     Base.metadata.create_all(bind=engine)
     ensure_highlight_runtime_dirs()
-    logger.info("Loading highlight models")
-    yolo_model, xgb_model = load_models(YOLO_MODEL_PATH, XGB_MODEL_PATH)
-    logger.info("Highlight worker ready")
+    # Recorded Broadcast overlays are rendered with FFmpeg only.  Do not make
+    # that workflow unavailable merely because the optional AI highlight model
+    # volume is not mounted on a worker.  The AI models are loaded lazily when
+    # an ordinary highlight-analysis job is actually waiting.
+    yolo_model = None
+    xgb_model = None
+    model_volume_warning_logged = False
+    logger.info("Highlight worker ready (Broadcast overlay renderer available)")
 
     while not _stop:
         overlay_project_id = _claim_next_broadcast_overlay()
         if overlay_project_id:
             run_broadcast_overlay_render(overlay_project_id)
             continue
+
+        if yolo_model is None or xgb_model is None:
+            if not Path(YOLO_MODEL_PATH).is_file() or not Path(XGB_MODEL_PATH).is_file():
+                if not model_volume_warning_logged:
+                    logger.warning(
+                        "AI highlight models are not mounted; continuing to process Broadcast overlays"
+                    )
+                    model_volume_warning_logged = True
+                time.sleep(POLL_SECONDS)
+                continue
+            logger.info("Loading highlight models")
+            yolo_model, xgb_model = load_models(YOLO_MODEL_PATH, XGB_MODEL_PATH)
+            logger.info("AI highlight models ready")
+
         job_id = _claim_next_job()
         if not job_id:
             time.sleep(POLL_SECONDS)
