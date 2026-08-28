@@ -96,7 +96,7 @@ from .broadcast_assets import (
     render_live_coder_asset_pairs,
     store_asset_pair,
 )
-from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
+from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -321,6 +321,7 @@ def _ensure_runtime_schema() -> None:
     fcm_submission_columns = {column["name"] for column in inspector.get_columns("fcm_submissions")} if "fcm_submissions" in table_names else set()
     fcm_template_columns = {column["name"] for column in inspector.get_columns("fcm_templates")} if "fcm_templates" in table_names else set()
     highlight_job_columns = {column["name"] for column in inspector.get_columns("highlight_jobs")} if "highlight_jobs" in table_names else set()
+    broadcast_overlay_project_columns = {column["name"] for column in inspector.get_columns("broadcast_overlay_projects")} if "broadcast_overlay_projects" in table_names else set()
     clip_action_columns = {column["name"] for column in inspector.get_columns("highlight_clip_actions")} if "highlight_clip_actions" in table_names else set()
     clip_columns = {column["name"] for column in inspector.get_columns("highlight_clips")} if "highlight_clips" in table_names else set()
     statements: list[str] = []
@@ -335,6 +336,12 @@ def _ensure_runtime_schema() -> None:
     if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
         statements.append("CREATE INDEX IF NOT EXISTS ix_highlight_jobs_owner_id ON highlight_jobs (owner_id)")
+
+    # 녹화 중계 오버레이 편집: 기존 초안에도 전·후반 종료 기준점을 추가한다.
+    if "broadcast_overlay_projects" in table_names and "first_half_video_end_sec" not in broadcast_overlay_project_columns:
+        statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN first_half_video_end_sec DOUBLE PRECISION")
+    if "broadcast_overlay_projects" in table_names and "second_half_video_end_sec" not in broadcast_overlay_project_columns:
+        statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN second_half_video_end_sec DOUBLE PRECISION")
 
     if "highlight_clip_actions" in table_names and "start_offset" not in clip_action_columns:
         statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN start_offset DOUBLE PRECISION")
@@ -9191,6 +9198,276 @@ def create_standalone_fineplay_job(
     db.commit()
     _match_response_cache.clear()
     return {"job_id": job_id, "match_id": str(match_obj.id), "analysis_request_id": rid}
+
+
+_BROADCAST_OVERLAY_ASSET_TYPES = {
+    "attack-direction-home": "공격 방향 · 홈팀",
+    "attack-direction-away": "공격 방향 · 원정팀",
+    "possession": "볼 점유율",
+    "shots-comparison": "슈팅 비교",
+    "xg-comparison": "xG 비교",
+    "match-dominance-halftime": "매치 도미넌스 · 전반",
+    "match-dominance-fulltime": "매치 도미넌스 · 경기 전체",
+    GOAL_ASSET_TYPE: "득점 xG 샷맵",
+}
+
+
+def _overlay_project_payload(project: BroadcastOverlayProject) -> dict:
+    return {
+        "id": str(project.id),
+        "match_id": str(project.match_id),
+        "name": project.name,
+        "source_s3_key": project.source_s3_key,
+        "source_filename": project.source_filename,
+        "source_duration_seconds": project.source_duration_seconds,
+        "first_half_video_start_sec": project.first_half_video_start_sec,
+        "first_half_video_end_sec": project.first_half_video_end_sec,
+        "second_half_video_start_sec": project.second_half_video_start_sec,
+        "second_half_video_end_sec": project.second_half_video_end_sec,
+        "overlay_items": project.overlay_items or [],
+        "status": project.status,
+        "output_s3_key": project.output_s3_key,
+        "error_message": project.error_message,
+        "created_at": project.created_at.isoformat(),
+        "updated_at": project.updated_at.isoformat(),
+    }
+
+
+def _overlay_match_latest_clock_ms(match_id: UUID, db: Session) -> int:
+    latest = _latest_state(match_id, db)
+    if latest:
+        return max(0, int(latest.clock_ms or 0))
+    event_rows = db.query(Event.clock_ms).filter(Event.match_id == match_id).all()
+    return max((int(row[0] or 0) for row in event_rows), default=0)
+
+
+def _normalize_overlay_item(item: dict, match_id: UUID, db: Session) -> dict:
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=400, detail="오버레이 항목 형식이 올바르지 않습니다.")
+    asset_type = str(item.get("asset_type") or "").strip()
+    if asset_type not in _BROADCAST_OVERLAY_ASSET_TYPES:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 시각화입니다: {asset_type}")
+    try:
+        start_sec = max(0.0, float(item.get("start_sec")))
+        end_sec = max(0.0, float(item.get("end_sec")))
+        fla_clock_ms = max(0, int(item.get("fla_clock_ms")))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="오버레이의 영상·FLA 시간을 확인하세요.")
+    if end_sec <= start_sec:
+        raise HTTPException(status_code=400, detail="오버레이 종료 시간은 시작 시간보다 뒤여야 합니다.")
+
+    normalized = {
+        "id": str(item.get("id") or uuid.uuid4()),
+        "asset_type": asset_type,
+        "label": _BROADCAST_OVERLAY_ASSET_TYPES[asset_type],
+        "start_sec": round(start_sec, 3),
+        "end_sec": round(end_sec, 3),
+        "fla_clock_ms": fla_clock_ms,
+    }
+    if asset_type == GOAL_ASSET_TYPE:
+        goal_event_id = str(item.get("goal_event_id") or "").strip()
+        try:
+            goal_uuid = UUID(goal_event_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="득점 xG 샷맵에는 득점 장면을 선택해야 합니다.")
+        goal = db.get(Event, goal_uuid)
+        if not goal or goal.match_id != match_id or goal.type != "XG" or not goal.is_goal:
+            raise HTTPException(status_code=400, detail="선택한 득점 장면을 찾을 수 없습니다.")
+        normalized["goal_event_id"] = str(goal.id)
+        normalized["fla_clock_ms"] = int(goal.clock_ms or 0)
+        normalized["goal_label"] = f"{_fmt_clock_ms(goal.clock_ms)} · {'홈팀' if goal.team == 'HOME' else '원정팀'} 득점"
+    return normalized
+
+
+_OVERLAY_VIDEO_MARKER_FIELDS = (
+    "first_half_video_start_sec",
+    "first_half_video_end_sec",
+    "second_half_video_start_sec",
+    "second_half_video_end_sec",
+)
+
+
+def _validate_overlay_video_markers(markers: dict[str, float | None], duration: float | None) -> None:
+    """전·후반의 실제 영상 구간이 순서대로 배치됐는지 확인한다."""
+    for field, value in markers.items():
+        if value is not None and value < 0:
+            raise HTTPException(status_code=400, detail=f"{field} 값은 0 이상이어야 합니다.")
+        if duration is not None and value is not None and value > duration:
+            raise HTTPException(status_code=400, detail=f"{field} 값은 영상 길이 안에 있어야 합니다.")
+
+    first_start = markers["first_half_video_start_sec"]
+    first_end = markers["first_half_video_end_sec"]
+    second_start = markers["second_half_video_start_sec"]
+    second_end = markers["second_half_video_end_sec"]
+    if first_start is not None and first_end is not None and first_end <= first_start:
+        raise HTTPException(status_code=400, detail="전반 종료는 전반 시작 뒤에 지정하세요.")
+    if second_start is not None and second_end is not None and second_end <= second_start:
+        raise HTTPException(status_code=400, detail="후반 종료는 후반 시작 뒤에 지정하세요.")
+    if first_end is not None and second_start is not None and second_start < first_end:
+        raise HTTPException(status_code=400, detail="후반 시작은 전반 종료 뒤에 지정하세요.")
+
+
+@app.get("/api/highlight/broadcast-overlay/matches")
+def list_broadcast_overlay_matches(
+    query: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    """오버레이 편집 대상: FLA 기록이 끝난 축구 경기만 가볍게 제공한다."""
+    rows = (
+        db.query(Match)
+        .filter(Match.sport == "FOOTBALL", Match.archived.is_(True))
+        .order_by(desc(Match.created_at))
+        .limit(300)
+        .all()
+    )
+    term = str(query or "").strip().lower()
+    payload = []
+    for row in rows:
+        if term and term not in row.name.lower() and term not in str(row.competition_class or "").lower():
+            continue
+        teams = _team_names_from_match(row)
+        payload.append({
+            **_serialize_match(row),
+            "home_team": teams["HOME"],
+            "away_team": teams["AWAY"],
+            "latest_fla_clock_ms": _overlay_match_latest_clock_ms(row.id, db),
+        })
+    return payload
+
+
+@app.get("/api/highlight/broadcast-overlay/matches/{match_id}/options")
+def get_broadcast_overlay_options(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    """편집기의 드롭다운에 넣을 일반 그래픽과 득점별 xG 샷맵을 반환한다."""
+    match_obj = db.get(Match, match_id)
+    if not match_obj or _normalize_sport(match_obj.sport) != "FOOTBALL":
+        raise HTTPException(status_code=404, detail="축구 경기를 찾을 수 없습니다.")
+    goals = (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG", Event.is_goal.is_(True))
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+    teams = _team_names_from_match(match_obj)
+    return {
+        "match": {
+            **_serialize_match(match_obj),
+            "home_team": teams["HOME"],
+            "away_team": teams["AWAY"],
+            "latest_fla_clock_ms": _overlay_match_latest_clock_ms(match_id, db),
+        },
+        "asset_types": [
+            {"value": key, "label": label, "default_duration_seconds": 10 if key.startswith("match-dominance") else 8}
+            for key, label in _BROADCAST_OVERLAY_ASSET_TYPES.items()
+            if key != GOAL_ASSET_TYPE
+        ],
+        "goal_shot_maps": [
+            {
+                "event_id": str(goal.id),
+                "clock_ms": int(goal.clock_ms or 0),
+                "clock": _fmt_clock_ms(goal.clock_ms),
+                "team": goal.team,
+                "team_name": teams.get(goal.team, goal.team),
+                "player_name": goal.player_name or "득점 장면",
+                "player_number": goal.player_number or "",
+                "xg": goal.xg,
+                "label": f"{_fmt_clock_ms(goal.clock_ms)} · {teams.get(goal.team, goal.team)} · {goal.player_name or '득점'}",
+                "default_duration_seconds": 8,
+            }
+            for goal in goals
+        ],
+    }
+
+
+@app.get("/api/highlight/broadcast-overlay/projects")
+def list_broadcast_overlay_projects(
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    rows = db.query(BroadcastOverlayProject).order_by(desc(BroadcastOverlayProject.updated_at)).limit(100).all()
+    return [_overlay_project_payload(row) for row in rows]
+
+
+@app.post("/api/highlight/broadcast-overlay/projects")
+def create_broadcast_overlay_project(
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    try:
+        match_id = UUID(str(body.get("match_id") or ""))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="FLA 경기를 선택하세요.")
+    match_obj = db.get(Match, match_id)
+    if not match_obj or _normalize_sport(match_obj.sport) != "FOOTBALL":
+        raise HTTPException(status_code=404, detail="축구 경기를 찾을 수 없습니다.")
+    try:
+        duration = float(body.get("source_duration_seconds")) if body.get("source_duration_seconds") is not None else None
+        markers = {
+            field: float(body.get(field)) if body.get(field) is not None else None
+            for field in _OVERLAY_VIDEO_MARKER_FIELDS
+        }
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="영상 기준 시간을 확인하세요.")
+    if duration is not None and duration <= 0:
+        raise HTTPException(status_code=400, detail="영상 길이는 0초보다 커야 합니다.")
+    _validate_overlay_video_markers(markers, duration)
+    items = [_normalize_overlay_item(item, match_id, db) for item in (body.get("overlay_items") or [])]
+    project = BroadcastOverlayProject(
+        match_id=match_id,
+        owner_id=user.id,
+        name=str(body.get("name") or match_obj.name).strip()[:200] or match_obj.name,
+        source_s3_key=str(body.get("source_s3_key") or "").strip() or None,
+        source_filename=str(body.get("source_filename") or "").strip()[:255],
+        source_duration_seconds=duration,
+        **markers,
+        overlay_items=items,
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return _overlay_project_payload(project)
+
+
+@app.put("/api/highlight/broadcast-overlay/projects/{project_id}")
+def update_broadcast_overlay_project(
+    project_id: UUID,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    project = db.get(BroadcastOverlayProject, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="오버레이 작업을 찾을 수 없습니다.")
+    if "name" in body:
+        project.name = str(body.get("name") or "").strip()[:200] or project.name
+    if "source_s3_key" in body:
+        project.source_s3_key = str(body.get("source_s3_key") or "").strip() or None
+    if "source_filename" in body:
+        project.source_filename = str(body.get("source_filename") or "").strip()[:255]
+    for field in ("source_duration_seconds", *_OVERLAY_VIDEO_MARKER_FIELDS):
+        if field in body:
+            value = body.get(field)
+            try:
+                parsed = None if value is None else float(value)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{field} 값을 확인하세요.")
+            if parsed is not None and parsed < 0:
+                raise HTTPException(status_code=400, detail=f"{field} 값은 0 이상이어야 합니다.")
+            setattr(project, field, parsed)
+    _validate_overlay_video_markers(
+        {field: getattr(project, field) for field in _OVERLAY_VIDEO_MARKER_FIELDS},
+        project.source_duration_seconds,
+    )
+    if "overlay_items" in body:
+        project.overlay_items = [_normalize_overlay_item(item, project.match_id, db) for item in (body.get("overlay_items") or [])]
+    db.commit()
+    db.refresh(project)
+    return _overlay_project_payload(project)
 
 
 @app.post("/api/highlight/fineplay-jobs/{job_id}/delete-source")

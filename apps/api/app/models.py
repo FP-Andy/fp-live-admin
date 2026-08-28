@@ -274,6 +274,39 @@ class HighlightJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class BroadcastOverlayProject(Base):
+    """녹화 영상 위에 FLA 방송 그래픽을 편집·합성하기 위한 작업 단위.
+
+    원본 영상은 S3에 직접 올리고, 이 테이블에는 영상과 FLA 시간축을 맞춘 기준점,
+    편집자가 만든 오버레이 큐만 저장한다. 무거운 FFmpeg 렌더는 이 프로젝트를 읽는
+    별도 미디어 워커가 수행하도록 앱 서버의 요청 처리와 분리한다.
+    """
+
+    __tablename__ = "broadcast_overlay_projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("matches.id"), nullable=False, index=True)
+    owner_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_filename: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 원본 영상 안에서 전·후반이 실제로 시작·종료되는 지점(초). 이 네 지점으로
+    # FLA 누적 시간과 영상 시간축을 매칭하고, 최종 추출 구간은 전반 시작부터
+    # 후반 종료 + 5초까지로 계산한다.
+    first_half_video_start_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_half_video_end_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    second_half_video_start_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    second_half_video_end_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # [{id, asset_type, start_sec, end_sec, fla_clock_ms, goal_event_id?, ...}]
+    overlay_items: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="draft", index=True)
+    output_s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class HighlightClip(Base):
     """하이라이트 클립 — match–clip–action 구조의 가운데 계층.
 

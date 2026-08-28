@@ -12,6 +12,7 @@ const SUB_TABS: SubTab[] = [
   { href: '/admin/highlight/player', label: 'Player Clips', roles: ['SUPERADMIN'] },
   // 수동 태깅·수동 결과물은 FinePlay 클립 파이프라인으로 대체 — 탭에서 제거 (페이지는 살아있음).
   { href: '/admin/highlight/fineplay', label: 'FinePlay 작업', roles: ['SUPERADMIN'] },
+  { href: '/admin/highlight/overlay', label: '중계 오버레이', roles: ['SUPERADMIN'] },
   { href: '/admin/highlight/clips', label: '클립 결과' },
   { href: '/admin/highlight/archive', label: '아카이브', roles: ['SUPERADMIN'] },
   { href: '/admin/highlight/editroom', label: '편집룸', roles: ['SUPERADMIN'] },
