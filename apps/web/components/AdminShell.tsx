@@ -113,6 +113,13 @@ const FHL_ITEMS: NavItem[] = [
       pathname.startsWith('/admin/highlight/archive'),
     roles: ['SUPERADMIN'],
   },
+  {
+    href: '/admin/highlight/overlay',
+    label: '중계 오버레이',
+    icon: '▧',
+    match: (pathname) => pathname.startsWith('/admin/highlight/overlay'),
+    roles: ['SUPERADMIN'],
+  },
   // OPERATOR 는 FinePlay 클립 결과(+클립 귀속 FPA)만 접근한다.
   {
     href: '/admin/highlight/clips',
@@ -204,6 +211,9 @@ function getPageMeta(pathname: string) {
     return { product: 'FLA', eyebrow: 'FLA Broadcast Overlay', title: 'Live Coder' };
   }
   if (pathname.startsWith('/admin/highlight')) {
+    if (pathname.startsWith('/admin/highlight/overlay')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '중계 오버레이' };
+    }
     if (pathname.startsWith('/admin/highlight/player')) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Player Clips' };
     }

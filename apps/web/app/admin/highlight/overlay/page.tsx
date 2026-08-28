@@ -1,7 +1,6 @@
 'use client';
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import HighlightSubTabs from '../HighlightSubTabs';
 import { apiJson } from '../../../../lib/api';
 
 type OverlayMatch = {
@@ -470,8 +469,6 @@ export default function BroadcastOverlayPage() {
 
   return (
     <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <HighlightSubTabs />
-
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div>
