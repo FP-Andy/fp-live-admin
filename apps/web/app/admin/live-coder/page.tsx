@@ -13,7 +13,7 @@ export default function LiveCoderPage() {
     let active = true;
     const load = async () => {
       try {
-        const data = await apiJson<MatchListItem[]>('/matches?sport=FOOTBALL');
+        const data = await apiJson<MatchListItem[]>('/matches?sport=FOOTBALL&compact=true');
         if (active) {
           setMatches(Array.isArray(data) ? data : []);
           setError('');

@@ -1780,7 +1780,25 @@ def _normalize_sport(value: str | None) -> str:
     return normalized
 
 
-def _serialize_match(row: Match, include_sport: bool = True) -> dict:
+def _match_list_metadata(metadata: Any) -> dict:
+    """목록 화면의 주기적 조회에 필요한 최소 메타데이터만 보낸다.
+
+    경기 상세용 metadata에는 아카이브·에셋 URL·라인업처럼 큰 데이터가 함께
+    쌓인다. 대시보드와 Live Coder는 3~5초마다 목록을 새로 받아야 하지만 그
+    데이터는 필요 없으므로, 목록 전용 요청에서는 상태 칩에 필요한 값만 남긴다.
+    """
+    source = metadata if isinstance(metadata, dict) else {}
+    compact: dict[str, Any] = {}
+    for key in ("stream_mode", "ingest_protocol"):
+        if key in source:
+            compact[key] = source[key]
+    broadcast = source.get("broadcast")
+    if isinstance(broadcast, dict) and "scoreboard_visible" in broadcast:
+        compact["broadcast"] = {"scoreboard_visible": broadcast["scoreboard_visible"]}
+    return compact
+
+
+def _serialize_match(row: Match, include_sport: bool = True, compact: bool = False) -> dict:
     default_first_half, default_second_half = _default_half_minutes_for_class(row.competition_class)
     payload = {
         "id": row.id,
@@ -1795,7 +1813,7 @@ def _serialize_match(row: Match, include_sport: bool = True) -> dict:
         "archived_at": row.archived_at.isoformat() if row.archived_at else None,
         "created_at": row.created_at.isoformat(),
         "hls_url": _normalize_hls_url(row.hls_url),
-        "metadata": row.metadata_json,
+        "metadata": _match_list_metadata(row.metadata_json) if compact else row.metadata_json,
         "operator_id": row.operator_id,
     }
     if include_sport:
@@ -6405,9 +6423,10 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 def list_matches(
     sport: str | None = Query(default=None),
     include_fpa_manual: bool = Query(default=True),
+    compact: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    cache_key = ("list_matches", _normalize_sport(sport) if sport else "", include_fpa_manual)
+    cache_key = ("list_matches", _normalize_sport(sport) if sport else "", include_fpa_manual, compact)
     cached = _cache_get(_match_response_cache, cache_key)
     if cached is not None:
         return cached
@@ -6417,7 +6436,7 @@ def list_matches(
     if not include_fpa_manual:
         query = query.filter(Match.competition_class != "FPA")
     rows = query.order_by(desc(Match.created_at)).all()
-    return _cache_set(_match_response_cache, cache_key, [_serialize_match(r) for r in rows])
+    return _cache_set(_match_response_cache, cache_key, [_serialize_match(r, compact=compact) for r in rows])
 
 
 @app.get("/api/broadcast/matches/{match_id}/state")
