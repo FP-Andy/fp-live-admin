@@ -9241,6 +9241,80 @@ def _overlay_match_latest_clock_ms(match_id: UUID, db: Session) -> int:
     return max((int(row[0] or 0) for row in event_rows), default=0)
 
 
+def _overlay_item_key(value: object | None) -> str:
+    """Use a UUID-only folder name for the immutable Broadcast PNG pair."""
+    try:
+        return str(UUID(str(value or "")))
+    except (TypeError, ValueError):
+        return str(uuid.uuid4())
+
+
+def _render_broadcast_overlay_asset(
+    match_obj: Match,
+    asset_type: str,
+    fla_clock_ms: int,
+    db: Session,
+    *,
+    item_id: str,
+    goal_event_id: str | None = None,
+) -> dict:
+    """Create the exact two PNG layers used by Broadcast for one edit item.
+
+    FHL must never draw a second, simplified visual language for recorded
+    video.  This path deliberately goes through the same Live Coder capture
+    renderer and Broadcast asset store as the public Broadcast URLs.
+    """
+    max_match_clock = max(
+        _overlay_match_latest_clock_ms(match_obj.id, db),
+        (
+            max(1, int(getattr(match_obj, "first_half_minutes", None) or 45))
+            + max(1, int(getattr(match_obj, "second_half_minutes", None) or getattr(match_obj, "first_half_minutes", None) or 45))
+        ) * 60_000,
+    )
+    clock_ms = min(max(0, int(fla_clock_ms or 0)), max_match_clock)
+    selected_goal_id: str | None = None
+    if asset_type == GOAL_ASSET_TYPE:
+        try:
+            goal_uuid = UUID(str(goal_event_id or ""))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="득점 xG 샷맵에는 득점 장면을 선택해야 합니다.")
+        goal = db.get(Event, goal_uuid)
+        if not goal or goal.match_id != match_obj.id or goal.type != "XG" or not goal.is_goal:
+            raise HTTPException(status_code=400, detail="선택한 득점 장면을 찾을 수 없습니다.")
+        selected_goal_id = str(goal.id)
+        clock_ms = max(0, int(goal.clock_ms or 0))
+
+    snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=clock_ms)
+    if selected_goal_id:
+        snapshot["broadcast_state"] = {
+            **(snapshot.get("broadcast_state") or {}),
+            "selected_xg_event_id": selected_goal_id,
+        }
+
+    # The Live Coder screenshot runtime is shared with the Showroom renderer.
+    # Serialising this capture prevents a preview request from fighting an
+    # active Broadcast asset refresh for Chromium resources.
+    with _broadcast_asset_render_lock:
+        rendered = render_live_coder_asset_pairs(
+            snapshot,
+            [asset_type],
+            **({"xg_event_id": selected_goal_id} if selected_goal_id else {}),
+        )[asset_type]
+        stored = store_asset_pair(
+            BroadcastAssetStore(),
+            f"{match_obj.id}/overlay/{item_id}",
+            asset_type,
+            snapshot,
+            immutable=True,
+            rendered=rendered,
+        )
+    return {
+        **stored.as_dict(),
+        "rendered_fla_clock_ms": clock_ms,
+        "goal_event_id": selected_goal_id,
+    }
+
+
 def _normalize_overlay_item(item: dict, match_id: UUID, db: Session) -> dict:
     if not isinstance(item, dict):
         raise HTTPException(status_code=400, detail="오버레이 항목 형식이 올바르지 않습니다.")
@@ -9256,8 +9330,9 @@ def _normalize_overlay_item(item: dict, match_id: UUID, db: Session) -> dict:
     if end_sec <= start_sec:
         raise HTTPException(status_code=400, detail="오버레이 종료 시간은 시작 시간보다 뒤여야 합니다.")
 
+    item_id = _overlay_item_key(item.get("id"))
     normalized = {
-        "id": str(item.get("id") or uuid.uuid4()),
+        "id": item_id,
         "asset_type": asset_type,
         "label": _BROADCAST_OVERLAY_ASSET_TYPES[asset_type],
         "start_sec": round(start_sec, 3),
@@ -9276,6 +9351,20 @@ def _normalize_overlay_item(item: dict, match_id: UUID, db: Session) -> dict:
         normalized["goal_event_id"] = str(goal.id)
         normalized["fla_clock_ms"] = int(goal.clock_ms or 0)
         normalized["goal_label"] = f"{_fmt_clock_ms(goal.clock_ms)} · {'홈팀' if goal.team == 'HOME' else '원정팀'} 득점"
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="축구 경기를 찾을 수 없습니다.")
+    # Persist the actual Broadcast background + transparent graphic pair with
+    # each edit item.  The final MP4 worker can therefore compose the exact
+    # same pixels that operators preview here, without reimplementing cards.
+    normalized.update(_render_broadcast_overlay_asset(
+        match_obj,
+        asset_type,
+        normalized["fla_clock_ms"],
+        db,
+        item_id=item_id,
+        goal_event_id=normalized.get("goal_event_id"),
+    ))
     return normalized
 
 
@@ -9380,6 +9469,46 @@ def get_broadcast_overlay_options(
             }
             for goal in goals
         ],
+    }
+
+
+@app.post("/api/highlight/broadcast-overlay/matches/{match_id}/rendered-asset")
+def render_broadcast_overlay_asset_preview(
+    match_id: UUID,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_superuser),
+):
+    """Render one FHL placement through the real Broadcast PNG renderer.
+
+    The editor calls this before adding an item so the on-video preview is a
+    true Broadcast graphic, not an editor-only mock card.  The returned URLs
+    are also retained with the eventual overlay item for video composition.
+    """
+    match_obj = db.get(Match, match_id)
+    if not match_obj or _normalize_sport(match_obj.sport) != "FOOTBALL":
+        raise HTTPException(status_code=404, detail="축구 경기를 찾을 수 없습니다.")
+    asset_type = str(body.get("asset_type") or "").strip()
+    if asset_type not in _BROADCAST_OVERLAY_ASSET_TYPES:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 시각화입니다: {asset_type}")
+    try:
+        fla_clock_ms = max(0, int(body.get("fla_clock_ms") or 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="FLA 시간을 확인하세요.")
+    item_id = _overlay_item_key(body.get("item_id"))
+    rendered = _render_broadcast_overlay_asset(
+        match_obj,
+        asset_type,
+        fla_clock_ms,
+        db,
+        item_id=item_id,
+        goal_event_id=str(body.get("goal_event_id") or "").strip() or None,
+    )
+    return {
+        "item_id": item_id,
+        "asset_type": asset_type,
+        "label": _BROADCAST_OVERLAY_ASSET_TYPES[asset_type],
+        **rendered,
     }
 
 

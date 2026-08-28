@@ -40,6 +40,22 @@ type OverlayItem = {
   fla_clock_ms: number;
   goal_event_id?: string;
   goal_label?: string;
+  background_url?: string;
+  asset_url?: string;
+  width?: number;
+  height?: number;
+  rendered_fla_clock_ms?: number;
+};
+type RenderedBroadcastAsset = {
+  item_id: string;
+  asset_type: string;
+  label: string;
+  background_url: string;
+  asset_url: string;
+  width: number;
+  height: number;
+  rendered_fla_clock_ms: number;
+  goal_event_id?: string | null;
 };
 type OverlayProject = {
   id: string;
@@ -132,6 +148,7 @@ export default function BroadcastOverlayPage() {
   const [projectId, setProjectId] = useState('');
   const [saveMessage, setSaveMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const [renderingGraphic, setRenderingGraphic] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
@@ -285,7 +302,7 @@ export default function BroadcastOverlayPage() {
   const extractStart = firstHalfStart;
   const extractEnd = secondHalfEnd === null ? null : Math.min(duration || Number.MAX_SAFE_INTEGER, secondHalfEnd + 5);
 
-  const addOverlayItem = () => {
+  const addOverlayItem = async () => {
     if (!selectedGraphicMeta || !selectedMatch || !duration) {
       setSaveMessage('영상, FLA 경기, 삽입할 시각화를 먼저 선택하세요.');
       return;
@@ -317,10 +334,41 @@ export default function BroadcastOverlayPage() {
         end_sec: end,
         fla_clock_ms: selectedFlaClock,
       };
-    setOverlayItems((rows) => [...rows, item].sort((a, b) => a.start_sec - b.start_sec));
-    // 삽입 직후 해당 영상 시점으로 이동해 오버레이 미리보기를 바로 보여 준다.
-    seek(start);
-    setSaveMessage(`${item.label}을(를) ${fmt(start)}–${fmt(end)} 구간에 넣었습니다.`);
+    setRenderingGraphic(true);
+    setSaveMessage('Broadcast 그래픽을 실제 PNG 레이어로 생성하는 중…');
+    try {
+      const rendered = await apiJson<RenderedBroadcastAsset>(
+        `/highlight/broadcast-overlay/matches/${selectedMatch.id}/rendered-asset`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            item_id: item.id,
+            asset_type: item.asset_type,
+            fla_clock_ms: item.fla_clock_ms,
+            goal_event_id: item.goal_event_id,
+          }),
+        },
+      );
+      const broadcastItem: OverlayItem = {
+        ...item,
+        id: rendered.item_id,
+        label: rendered.label,
+        background_url: rendered.background_url,
+        asset_url: rendered.asset_url,
+        width: rendered.width,
+        height: rendered.height,
+        rendered_fla_clock_ms: rendered.rendered_fla_clock_ms,
+        ...(rendered.goal_event_id ? { goal_event_id: rendered.goal_event_id } : {}),
+      };
+      setOverlayItems((rows) => [...rows, broadcastItem].sort((a, b) => a.start_sec - b.start_sec));
+      // 삽입 직후 해당 영상 시점으로 이동해 실제 Broadcast PNG 레이어를 바로 보여 준다.
+      seek(start);
+      setSaveMessage(`${broadcastItem.label}을(를) Broadcast PNG로 ${fmt(start)}–${fmt(end)} 구간에 넣었습니다.`);
+    } catch (err) {
+      setSaveMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRenderingGraphic(false);
+    }
   };
 
   const removeItem = (id: string) => {
@@ -434,7 +482,7 @@ export default function BroadcastOverlayPage() {
         </div>
         <p style={{ margin: '10px 0 0', color: 'var(--muted, #999)', fontSize: 13, lineHeight: 1.5 }}>
           전·후반 시작점으로 FLA 시간과 녹화 시간을 맞춘 뒤, 타임라인에서 원하는 구간을 선택해 시각화를 삽입하세요.
-          득점 xG 샷맵은 반드시 해당 득점 장면을 드롭다운에서 선택합니다.
+          삽입 시 Live Coder가 생성하는 Broadcast용 배경 PNG와 투명 에셋 PNG를 그대로 사용합니다. 득점 xG 샷맵은 반드시 해당 득점 장면을 드롭다운에서 선택합니다.
         </p>
       </div>
 
@@ -480,21 +528,7 @@ export default function BroadcastOverlayPage() {
               />
             ) : <span style={{ color: '#737373', fontSize: 14 }}>원본 영상을 선택하면 여기에서 미리볼 수 있습니다.</span>}
             {activeOverlayItem ? (
-              <div aria-label="그래픽 미리보기" style={{ position: 'absolute', right: '4%', bottom: '8%', width: '48%', minWidth: 250, aspectRatio: '16 / 9', pointerEvents: 'none', borderRadius: 6, overflow: 'hidden', background: 'linear-gradient(135deg, rgba(19,24,30,.96), rgba(8,12,17,.96))', border: `2px solid ${activeOverlayItem.asset_type === 'shot-xg' ? '#2dd4bf' : '#f97316'}`, boxShadow: '0 12px 28px rgba(0,0,0,.45)', color: '#fff', display: 'flex', flexDirection: 'column', padding: '5.5% 6%' }}>
-                <span style={{ color: activeOverlayItem.asset_type === 'shot-xg' ? '#5eead4' : '#fb923c', fontSize: 'clamp(8px, 1vw, 14px)', letterSpacing: '.08em', fontWeight: 800 }}>FINEPLAY GRAPHIC PREVIEW</span>
-                <strong style={{ fontSize: 'clamp(15px, 2vw, 30px)', lineHeight: 1.15, marginTop: '5%' }}>{activeOverlayItem.label}</strong>
-                {activeOverlayItem.asset_type === 'shot-xg' ? (
-                  <div style={{ display: 'flex', alignItems: 'end', gap: '8%', marginTop: 'auto' }}>
-                    <div style={{ width: '34%', aspectRatio: '1', border: '2px solid #2dd4bf', borderRadius: '50%', display: 'grid', placeItems: 'center', color: '#99f6e4', fontSize: 'clamp(18px, 3.2vw, 52px)' }}>⚽</div>
-                    <div><span style={{ display: 'block', fontSize: 'clamp(10px, 1.1vw, 16px)', color: '#9ca3af' }}>{activeOverlayItem.goal_label || '득점 장면'}</span><b style={{ display: 'block', marginTop: 4, fontSize: 'clamp(18px, 2.5vw, 38px)' }}>xG SHOT MAP</b></div>
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 'auto', display: 'flex', gap: 8 }}>
-                    <span style={{ flex: 1, borderRadius: 4, background: '#f97316', padding: '5% 6%', fontWeight: 800, fontSize: 'clamp(10px, 1.25vw, 18px)' }}>{selectedMatch?.home_team || 'HOME'}</span>
-                    <span style={{ flex: 1, borderRadius: 4, background: '#2563eb', padding: '5% 6%', fontWeight: 800, fontSize: 'clamp(10px, 1.25vw, 18px)', textAlign: 'right' }}>{selectedMatch?.away_team || 'AWAY'}</span>
-                  </div>
-                )}
-              </div>
+              <BroadcastOverlayPreview item={activeOverlayItem} />
             ) : null}
           </div>
 
@@ -559,7 +593,7 @@ export default function BroadcastOverlayPage() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button style={{ ...button, flex: 1 }} onClick={insertAtCursor} disabled={!duration}>커서부터 {selectedGraphicMeta?.duration || 8}초</button>
-            <button style={{ ...primaryButton, flex: 1 }} onClick={addOverlayItem} disabled={!duration || !selectedGraphicMeta}>타임라인에 삽입</button>
+            <button style={{ ...primaryButton, flex: 1 }} onClick={() => void addOverlayItem()} disabled={!duration || !selectedGraphicMeta || renderingGraphic}>{renderingGraphic ? 'Broadcast PNG 생성 중…' : '타임라인에 삽입'}</button>
           </div>
           <button style={{ ...button, borderColor: '#22c55e', color: '#bbf7d0' }} onClick={prepareFulltimeDominance} disabled={!duration || secondHalfEnd === null}>후반 종료부터 경기 전체 도미넌스 5초로 설정</button>
           <div style={{ background: '#111317', border: '1px solid #303239', borderRadius: 8, padding: 10, fontSize: 12, lineHeight: 1.5 }}>
@@ -581,7 +615,7 @@ export default function BroadcastOverlayPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {overlayItems.map((item) => (
               <div key={item.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 92px 92px 100px 56px', gap: 8, alignItems: 'center', background: '#15171b', border: '1px solid #303239', borderRadius: 8, padding: '8px 10px', fontSize: 13 }}>
-                <div><strong>{item.label}</strong><div style={{ color: '#a1a1aa', fontSize: 11, marginTop: 3 }}>FLA {fmtFla(item.fla_clock_ms)}{item.goal_label ? ` · ${item.goal_label}` : ''}</div></div>
+                <div><strong>{item.label}</strong><div style={{ color: '#a1a1aa', fontSize: 11, marginTop: 3 }}>FLA {fmtFla(item.fla_clock_ms)}{item.goal_label ? ` · ${item.goal_label}` : ''}{item.asset_url ? ' · Broadcast PNG 준비됨' : ''}</div></div>
                 <input style={{ ...input, padding: '5px 7px' }} type="number" min="0" step="0.1" value={item.start_sec.toFixed(1)} onChange={(event) => updateItem(item.id, { start_sec: Number(event.target.value) })} />
                 <input style={{ ...input, padding: '5px 7px' }} type="number" min="0" step="0.1" value={item.end_sec.toFixed(1)} onChange={(event) => updateItem(item.id, { end_sec: Number(event.target.value) })} />
                 <span style={{ color: '#a1a1aa', fontSize: 12 }}>{fmt(item.start_sec)}–{fmt(item.end_sec)}</span>
@@ -600,6 +634,40 @@ function TimelinePin({ left, color, label }: { left: number; color: string; labe
   return (
     <div style={{ position: 'absolute', left: `${left}%`, top: 10, bottom: 26, borderLeft: `2px dashed ${color}`, pointerEvents: 'none' }}>
       <span style={{ position: 'absolute', top: -1, left: 5, color, whiteSpace: 'nowrap', fontSize: 11, fontWeight: 700 }}>{label}</span>
+    </div>
+  );
+}
+
+function BroadcastOverlayPreview({ item }: { item: OverlayItem }) {
+  const hasLayers = Boolean(item.background_url && item.asset_url);
+  return (
+    <div
+      aria-label="Broadcast 그래픽 미리보기"
+      style={{
+        position: 'absolute',
+        right: '3.5%',
+        bottom: '5.5%',
+        width: '48%',
+        minWidth: 250,
+        aspectRatio: '16 / 9',
+        pointerEvents: 'none',
+        overflow: 'hidden',
+        background: '#101215',
+        border: '1px solid rgba(255,255,255,.3)',
+        boxShadow: '0 12px 28px rgba(0,0,0,.52)',
+      }}
+    >
+      {hasLayers ? (
+        <>
+          <img src={item.background_url} alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
+          <img src={item.asset_url} alt={`${item.label} Broadcast 그래픽`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
+          <span style={{ position: 'absolute', left: 8, top: 8, padding: '3px 6px', borderRadius: 4, background: 'rgba(0,0,0,.62)', color: '#fff', fontSize: 10, fontWeight: 800, letterSpacing: '.05em' }}>BROADCAST PNG</span>
+        </>
+      ) : (
+        <div style={{ height: '100%', display: 'grid', placeItems: 'center', padding: 18, color: '#d4d4d8', fontSize: 12, textAlign: 'center' }}>
+          이전에 저장된 항목입니다. 다시 삽입하면 실제 Broadcast PNG 레이어로 교체됩니다.
+        </div>
+      )}
     </div>
   );
 }
