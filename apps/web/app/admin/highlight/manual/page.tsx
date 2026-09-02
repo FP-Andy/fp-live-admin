@@ -830,7 +830,14 @@ export default function ManualHighlightPage() {
                       }}
                     >
                       <span style={{ color: 'var(--muted, #999)', width: 28 }}>{i + 1}</span>
-                      <button style={smallBtn} onClick={() => seekAndReveal(tag.t)}>{fmt(tag.t)}</button>
+                      {/* 확인은 클립을 처음부터 봐야 하므로, 태깅 시점이 아니라 클립 시작(앞 패딩 적용)으로 옮긴다. */}
+                      <button
+                        style={smallBtn}
+                        title={`클립 시작(${fmt(Math.max(0, tag.t - before))})으로 이동 — 태깅 시점은 ${fmt(tag.t)}`}
+                        onClick={() => seekAndReveal(Math.max(0, tag.t - before))}
+                      >
+                        {fmt(tag.t)}
+                      </button>
                       {sources.length > 1 ? (
                         // 이어붙인 좌표만 보면 원본 어디인지 알 수 없다. 파일 안 위치도 같이 보여준다.
                         <span style={{ fontSize: 11, color: 'var(--muted, #999)' }}>
