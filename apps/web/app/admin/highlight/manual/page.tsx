@@ -345,7 +345,12 @@ export default function ManualHighlightPage() {
       const now = (offsets[activeIndex] ?? 0) + videoRef.current.currentTime;
       if (e.code === 'ArrowLeft') { e.preventDefault(); seekTo(now - SEEK_STEP); return; }
       if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(now + SEEK_STEP); return; }
-      if (e.key === 's' || e.key === 'S') { e.preventDefault(); addTag(); }
+      // 한글 입력 상태(ㄴ)에서도 찍혀야 한다 — e.key 는 IME 를 타서 'ㄴ'·'Process' 로 오지만
+      // e.code 는 물리 키라 자판 상태와 무관하다. key 비교는 code 가 안 오는 경우의 보루.
+      if (e.code === 'KeyS' || e.key === 's' || e.key === 'S' || e.key === 'ㄴ') {
+        e.preventDefault();
+        addTag();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -746,7 +751,7 @@ export default function ManualHighlightPage() {
 
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
               <button style={btn} onClick={togglePlay}>{playing ? '⏸ 정지' : '▶ 재생'}</button>
-              <button style={primaryBtn} onClick={addTag}>＋ 지금 지점 태깅 (S)</button>
+              <button style={primaryBtn} onClick={addTag}>＋ 지금 지점 태깅 (S / ㄴ)</button>
 
               <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 배속
@@ -766,7 +771,7 @@ export default function ManualHighlightPage() {
             </div>
 
             <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '10px 0 0' }}>
-              단축키 — <strong>Space</strong> 재생·정지 · <strong>←/→</strong> {SEEK_STEP}초 이동 · <strong>S</strong> 태깅
+              단축키 — <strong>Space</strong> 재생·정지 · <strong>←/→</strong> {SEEK_STEP}초 이동 · <strong>S</strong>(한글 <strong>ㄴ</strong>) 태깅
             </p>
           </div>
 
