@@ -10,7 +10,10 @@ type SubTab = { href: string; label: string; roles?: SessionUser['role'][] };
 const SUB_TABS: SubTab[] = [
   { href: '/admin/highlight', label: 'AI Highlight', roles: ['SUPERADMIN'] },
   { href: '/admin/highlight/player', label: 'Player Clips', roles: ['SUPERADMIN'] },
-  // 수동 태깅·수동 결과물은 FinePlay 클립 파이프라인으로 대체 — 탭에서 제거 (페이지는 살아있음).
+  // 수동 태깅·수동 결과물은 FinePlay 클립 파이프라인으로 대체됐지만, 클립을 하나로 합쳐
+  // 로컬에 내려받는 창구는 여기뿐이라 다시 노출한다("수동 결과물"의 합본 다운로드).
+  { href: '/admin/highlight/manual', label: '수동 태깅', roles: ['SUPERADMIN'] },
+  { href: '/admin/highlight/results', label: '수동 결과물', roles: ['SUPERADMIN'] },
   { href: '/admin/highlight/fineplay', label: 'FinePlay 작업', roles: ['SUPERADMIN'] },
   { href: '/admin/highlight/clips', label: '클립 결과' },
   { href: '/admin/highlight/archive', label: '아카이브', roles: ['SUPERADMIN'] },
