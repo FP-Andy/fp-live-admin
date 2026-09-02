@@ -65,6 +65,9 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
   },
 ];
 
+// 퀸컵은 수동 FLA/FPA 기록만 사용한다. 미디어·라이브 코더 메뉴를 노출하지 않는다.
+const FUTSAL_FLA_ITEMS: NavItem[] = [FLA_ITEMS[0]];
+
 const FHL_ITEMS: NavItem[] = [
   // FinePlay 연동 프로세스에서 쓰지 않는 기존 업로드→완료 흐름은 메뉴에서 숨긴다 (페이지는 살아있음).
   // {
@@ -289,6 +292,8 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
     let items = section.items;
     if (sport === 'BASKETBALL') {
       items = section.id === 'FLA' ? BASKETBALL_FLA_ITEMS : [];
+    } else if (sport === 'FUTSAL') {
+      items = section.id === 'FLA' ? FUTSAL_FLA_ITEMS : section.id === 'FPA' ? FPA_ITEMS : [];
     } else if (section.id === 'FLA' && user?.role !== 'SUPERADMIN') {
       items = section.items.filter((item) => item.href === '/admin/dashboard');
     } else if (section.id === 'FHL') {

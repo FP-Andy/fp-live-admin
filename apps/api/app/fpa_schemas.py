@@ -36,6 +36,7 @@ class FpaGenerateLogRequest(BaseModel):
     team: Literal["home", "away"]
     direction: Literal["left", "right"]
     timeline: str = Field(min_length=1, max_length=20)
+    sport: Literal["FOOTBALL", "FUTSAL"] = "FOOTBALL"
 
 
 class FpaGenerateLogResponse(BaseModel):

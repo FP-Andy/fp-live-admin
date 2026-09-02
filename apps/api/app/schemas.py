@@ -3,7 +3,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 Team = Literal["HOME", "AWAY"]
-Sport = Literal["FOOTBALL", "BASKETBALL"]
+Sport = Literal["FOOTBALL", "BASKETBALL", "FUTSAL"]
 PossessionTeam = Literal["HOME", "AWAY", "NONE"]
 Lane = Literal["LEFT", "CENTER", "RIGHT"]
 AttackLR = Literal["L2R", "R2L"]
@@ -27,6 +27,8 @@ class CreateMatchRequest(BaseModel):
     ingest_url: str | None = None
     srt_url: str | None = None
     hls_url: str | None = None
+    first_half_minutes: int | None = Field(default=None, ge=1, le=120)
+    second_half_minutes: int | None = Field(default=None, ge=1, le=120)
     metadata: dict[str, Any] | None = None
 
 

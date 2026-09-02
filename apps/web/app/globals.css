@@ -7983,6 +7983,20 @@ html.fpa-embed .topbar {
   object-fit: fill;
 }
 
+/* 퀸컵 풋살은 40×20m 비율의 별도 라인 마크를 쓴다. 좌표 오버레이는 기존 1050×680
+   캔버스를 공유해 Single/Dual 조작과 화살표 저장 로직을 그대로 재사용한다. */
+.fpa-live-shell .fpa-pitch-futsal .fpa-pitch-image {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.fpa-live-shell .fpa-pitch-futsal .fpa-futsal-pitch-image {
+  display: block;
+  pointer-events: none;
+}
+
 /* ── 선수 토큰 ────────────────────────────────────────────────────────────
    색만이 아니라 **도형**이 팀을 가른다(홈 육각형 / 어웨이 원) — 앱 씬모션과 같다.
    배경 그라디언트는 끄고 색은 SVG 가 갖는다. GK(흰 링)·선택(::after)·

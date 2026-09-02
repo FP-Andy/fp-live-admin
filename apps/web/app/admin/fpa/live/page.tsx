@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
 import { FPA_DRAFT_EVENT, FPA_DRAFT_STORAGE_KEY } from '../../../../components/FpaDraftGuard';
+import { useSportContext } from '../../../../components/SportContext';
 
 type DualDotTeam = 'ally' | 'opponent';
 type TeamSide = 'home' | 'away';
@@ -45,6 +46,32 @@ function sideLabel(side: TeamSide): string {
    실측: scene/pitch.png 1281x829, 터치라인 중심 L34.5 R1246.5 T23.5 B805.5.
    → 마킹 위치가 기존 fpa-field.png 와 경기장 폭 대비 0.15%(약 0.16m) 차이라 무시 가능. */
 const PITCH_SRC = '/scene/pitch.png';
+
+// agusrjs/futsal-pitch의 Futsal().draw(horizontal, color=True) 기하를 React SVG로
+// 이식했다. 원본은 MIT License (Copyright 2025 Agustín Rojas)이며, 40×20m 코트,
+// 3m 센터서클·골, 6m/10m 지점, 페널티아크·교체선·코너 마크를 동일하게 쓴다.
+function FutsalPitch({ alt }: { alt: string }) {
+  return (
+    <svg aria-label={alt} className="fpa-pitch-image fpa-futsal-pitch-image" preserveAspectRatio="none" role="img" viewBox="-2 -2 44 24">
+      <rect fill="#e6302f" height="24" width="44" x="-2" y="-2" />
+      <rect fill="#007ac0" height="20" width="40" x="0" y="0" />
+      <g fill="none" stroke="#FFFFFF" strokeWidth="0.14">
+        <rect height="20" width="40" x="0" y="0" />
+        <path d="M20 0V20M17 10a3 3 0 1 0 6 0a3 3 0 1 0-6 0" />
+        <path d="M0 17.83A6 6 0 0 1 6 11.83V8.17A6 6 0 0 1 0 2.17M40 17.83A6 6 0 0 0 34 11.83V8.17A6 6 0 0 0 40 2.17" />
+        <path d="M0 8.5V11.5M40 8.5V11.5M10 19.7V20.3M15 19.7V20.3M25 19.7V20.3M30 19.7V20.3" />
+        <path d="M0 0a.625.625 0 0 1 .625.625M40 0a.625.625 0 0 0-.625.625M0 20a.625.625 0 0 0 .625-.625M40 20a.625.625 0 0 1-.625-.625" />
+      </g>
+      <g fill="#FFFFFF">
+        <circle cx="20" cy="10" r=".12" />
+        <circle cx="6" cy="10" r=".12" /><circle cx="10" cy="10" r=".12" />
+        <circle cx="10" cy="5" r=".06" /><circle cx="10" cy="15" r=".06" />
+        <circle cx="34" cy="10" r=".12" /><circle cx="30" cy="10" r=".12" />
+        <circle cx="30" cy="5" r=".06" /><circle cx="30" cy="15" r=".06" />
+      </g>
+    </svg>
+  );
+}
 
 // 그라디언트는 문서에 한 번만 두고 토큰들이 id 로 참조한다(점마다 defs 를 복제하지 않도록).
 function DualTokenDefs() {
@@ -207,6 +234,7 @@ type LogPreview = {
   Tags: string;
   DualState?: string;
   xG?: string;
+  ShotThreat?: string;
   xGOT?: string;
   EPV?: string;
   PC?: string;
@@ -280,6 +308,7 @@ type Match = {
   competition_class: string;
   round_number: number;
   archived: boolean;
+  sport?: 'FOOTBALL' | 'BASKETBALL' | 'FUTSAL';
   created_at: string;
   metadata?: {
     home_team?: string;
@@ -1050,6 +1079,7 @@ type DualUndoSnapshot = {
 };
 
 export default function FpaLivePage() {
+  const { sport: selectedSport } = useSportContext();
   const didHydrateRef = useRef(false);
   // 세션 초안에 실제 작업물이 들어 있었나 — 클립 복원이 그걸 덮어쓰지 않게 하는 잠금.
   const draftHadContentRef = useRef(false);
@@ -1069,6 +1099,7 @@ export default function FpaLivePage() {
   const [team, setTeam] = useState<'home' | 'away'>('home');
   const [direction, setDirection] = useState<'left' | 'right'>('right');
   const [timeline, setTimeline] = useState('00:00');
+  const [fpaSport, setFpaSport] = useState<'FOOTBALL' | 'FUTSAL'>(selectedSport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL');
   const [statInput, setStatInput] = useState('');
   const [inputMode, setInputMode] = useState<InputMode>('single');
   const [activeLayer, setActiveLayer] = useState<string>('home_field');
@@ -1267,6 +1298,9 @@ export default function FpaLivePage() {
   const [matchPickerOpen, setMatchPickerOpen] = useState(false);
   const [matchFilterClass, setMatchFilterClass] = useState('ALL');
   const [matchFilterRound, setMatchFilterRound] = useState('ALL');
+  const isFutsal = fpaSport === 'FUTSAL';
+  const activePitchSrc = PITCH_SRC;
+  const activePitchLabel = isFutsal ? 'futsal pitch' : 'football field';
 
   const matchClassOptions = Array.from(new Set(availableMatches.map((m) => m.competition_class)))
     .sort((a, b) => a.localeCompare(b, 'ko'));
@@ -2334,6 +2368,7 @@ export default function FpaLivePage() {
           team,
           direction,
           timeline,
+          sport: fpaSport,
         }),
       });
       if (!response.ok) {
@@ -2385,6 +2420,7 @@ export default function FpaLivePage() {
           team: actorTeam,
           direction: isEdit ? editDirection : direction,
           timeline: isEdit ? editTimeline : timeline,
+          sport: fpaSport,
         }),
       });
       if (!response.ok) {
@@ -2450,6 +2486,7 @@ export default function FpaLivePage() {
             team: ctx.actorTeam,
             direction: ctx.direction,
             timeline: ctx.timeline,
+            sport: fpaSport,
           }),
         });
         if (!response.ok) continue;
@@ -2985,6 +3022,7 @@ export default function FpaLivePage() {
           team,
           direction,
           timeline,
+          sport: fpaSport,
         }),
       });
 
@@ -3563,6 +3601,7 @@ export default function FpaLivePage() {
     setStatus('경기와 저장된 FPA 로그 불러오는 중');
     try {
       const teams = parseMatchTeams(match);
+      setFpaSport(match.sport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL');
       setMatchId(match.id);
       setTeamIdH(teams.home);
       setTeamIdA(teams.away);
@@ -3858,7 +3897,7 @@ export default function FpaLivePage() {
           </div>
         </div>
         <div
-          className={`fpa-pitch fpa-pitch-cream ${armedHere ? 'fpa-pitch-armed' : ''}`}
+          className={`fpa-pitch fpa-pitch-cream ${isFutsal ? 'fpa-pitch-futsal' : ''} ${armedHere ? 'fpa-pitch-armed' : ''}`}
           onClick={(event) => handleDualPitchClick(side, event)}
           onContextMenu={(event) => {
             // 점 위 우클릭은 점 자체 핸들러가 처리(그 점 삭제). 여기(빈 곳)로 오면
@@ -3877,7 +3916,7 @@ export default function FpaLivePage() {
           role="button"
           tabIndex={0}
         >
-          <img alt={`${title} football field`} className="fpa-pitch-image" draggable={false} src={PITCH_SRC} />
+          {isFutsal ? <FutsalPitch alt={`${title} ${activePitchLabel}`} /> : <img alt={`${title} ${activePitchLabel}`} className="fpa-pitch-image" draggable={false} src={activePitchSrc} />}
           {armedHere && liveArrowArm ? (
             <div className="fpa-arrow-arm-badge" onClick={(event) => event.stopPropagation()}>
               <b>{liveArrowArm.code}</b>
@@ -3960,7 +3999,7 @@ export default function FpaLivePage() {
           </div>
         </div>
         <div
-          className={`fpa-pitch fpa-pitch-cream ${armedHere ? 'fpa-pitch-armed' : ''}`}
+          className={`fpa-pitch fpa-pitch-cream ${isFutsal ? 'fpa-pitch-futsal' : ''} ${armedHere ? 'fpa-pitch-armed' : ''}`}
           onClick={(event) => handleEditPitchClick(side, event)}
           onContextMenu={(event) => {
             // 점 위 우클릭은 점 자체 핸들러가 처리(그 점 삭제). 빈 곳으로 오면
@@ -3979,7 +4018,7 @@ export default function FpaLivePage() {
           role="button"
           tabIndex={0}
         >
-          <img alt={`${title} football field (수정용)`} className="fpa-pitch-image" draggable={false} src={PITCH_SRC} />
+          {isFutsal ? <FutsalPitch alt={`${title} ${activePitchLabel} (수정용)`} /> : <img alt={`${title} ${activePitchLabel} (수정용)`} className="fpa-pitch-image" draggable={false} src={activePitchSrc} />}
           {armedHere && editArrowArm ? (
             <div className="fpa-arrow-arm-badge" onClick={(event) => event.stopPropagation()}>
               <b>{editArrowArm.code}</b>
@@ -4394,9 +4433,9 @@ export default function FpaLivePage() {
 
   const renderSinglePitchPanel = () => (
     <section className="fpa-pitch-panel">
-      <div className="fpa-panel-title">축구장</div>
+      <div className="fpa-panel-title">{isFutsal ? '풋살 피치 · 40m × 20m' : '축구장'}</div>
       <div
-        className="fpa-pitch fpa-pitch-cream"
+        className={`fpa-pitch fpa-pitch-cream ${isFutsal ? 'fpa-pitch-futsal' : ''}`}
         onClick={handlePitchClick}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -4406,7 +4445,7 @@ export default function FpaLivePage() {
         role="button"
         tabIndex={0}
       >
-        <img alt="Football field" className="fpa-pitch-image" draggable={false} src={PITCH_SRC} />
+        {isFutsal ? <FutsalPitch alt={activePitchLabel} /> : <img alt={activePitchLabel} className="fpa-pitch-image" draggable={false} src={activePitchSrc} />}
         {pitchDots.map((dot) => (
           <div className="fpa-pitch-dot" key={`${dot.label}-${dot.left}-${dot.top}`} style={{ left: dot.left, top: dot.top }}>
             {dot.label}
@@ -4864,6 +4903,7 @@ export default function FpaLivePage() {
               <table className="fcm-guide-table">
                 <thead>
                   <tr>
+                    <th>종목</th>
                     <th>대회</th>
                     <th>경기</th>
                     <th>상태</th>
@@ -4873,6 +4913,7 @@ export default function FpaLivePage() {
                 <tbody>
                   {filteredAvailableMatches.map((match) => (
                     <tr key={match.id}>
+                      <td>{match.sport === 'FUTSAL' ? 'FUTSAL' : match.sport === 'BASKETBALL' ? 'BASKETBALL' : 'FOOTBALL'}</td>
                       <td>{match.competition_class}</td>
                       <td>{match.name}</td>
                       <td>{match.archived ? 'Archived' : 'Active'}</td>
@@ -4885,7 +4926,7 @@ export default function FpaLivePage() {
                   ))}
                   {!filteredAvailableMatches.length ? (
                     <tr>
-                      <td colSpan={4} className="muted">해당 조건의 경기가 없습니다</td>
+                      <td colSpan={5} className="muted">해당 조건의 경기가 없습니다</td>
                     </tr>
                   ) : null}
                 </tbody>

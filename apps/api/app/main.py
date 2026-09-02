@@ -1775,8 +1775,8 @@ def _estimate_xgot(
 
 def _normalize_sport(value: str | None) -> str:
     normalized = (value or "FOOTBALL").strip().upper()
-    if normalized not in {"FOOTBALL", "BASKETBALL"}:
-        raise HTTPException(status_code=400, detail="sport must be FOOTBALL or BASKETBALL")
+    if normalized not in {"FOOTBALL", "BASKETBALL", "FUTSAL"}:
+        raise HTTPException(status_code=400, detail="sport must be FOOTBALL, BASKETBALL, or FUTSAL")
     return normalized
 
 
@@ -5309,6 +5309,7 @@ def generate_fpa_log(body: FpaGenerateLogRequest):
             direction=body.direction,
             timeline=body.timeline,
             dual_pitch=body.dual_pitch.model_dump() if body.dual_pitch else None,
+            sport=body.sport,
         )
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -6168,17 +6169,17 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
             raise HTTPException(status_code=400, detail="Round number does not match match name format")
         home_team = name_match.group("home").strip()
         away_team = name_match.group("away").strip()
-    elif sport == "BASKETBALL":
+    elif sport in {"BASKETBALL", "FUTSAL"}:
         raw_teams = body.name.strip().split(" vs ")
         if len(raw_teams) != 2 or not raw_teams[0].strip() or not raw_teams[1].strip():
-            raise HTTPException(status_code=400, detail="Basketball match name must include 'HOME vs AWAY'")
+            raise HTTPException(status_code=400, detail=f"{sport.title()} match name must include 'HOME vs AWAY'")
         home_team = raw_teams[0].strip()
         away_team = raw_teams[1].strip()
     else:
         raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
 
-    first_half_minutes = competition.first_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
-    second_half_minutes = competition.second_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
+    first_half_minutes = body.first_half_minutes or (competition.first_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10)))
+    second_half_minutes = body.second_half_minutes or (competition.second_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10)))
     extra_first_half_minutes = int(getattr(competition, "extra_first_half_minutes", None) or 15) if competition else 15
     extra_second_half_minutes = int(getattr(competition, "extra_second_half_minutes", None) or 15) if competition else 15
     metadata = dict(body.metadata or {})

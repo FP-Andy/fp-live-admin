@@ -27,6 +27,8 @@ type Match = {
       push_url?: string;
       pull_url?: string;
     };
+    sport_profile?: string;
+    player_format?: 5 | 6 | 7;
   } | null;
   operator_id?: string | null;
 };
@@ -240,6 +242,9 @@ export default function Dashboard() {
   const [streamMode, setStreamMode] = useState<'STREAM' | 'MANUAL'>('STREAM');
   const [basketballPeriodCount, setBasketballPeriodCount] = useState(4);
   const [basketballPeriodMinutes, setBasketballPeriodMinutes] = useState(10);
+  const [futsalPlayerFormat, setFutsalPlayerFormat] = useState<5 | 6 | 7>(6);
+  const [futsalFirstHalfMinutes, setFutsalFirstHalfMinutes] = useState(15);
+  const [futsalSecondHalfMinutes, setFutsalSecondHalfMinutes] = useState(15);
   const [assignOperator, setAssignOperator] = useState(false);
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('RTMP');
   const [error, setError] = useState('');
@@ -343,6 +348,7 @@ export default function Dashboard() {
     const away = awayTeam.trim();
     if (!home || !away) return '';
     if (sport === 'BASKETBALL') return `[BASKETBALL | ${roundNumber}R] ${home} vs ${away}`;
+    if (sport === 'FUTSAL') return `[FUTSAL-QUEENCUP | ${roundNumber}R] ${home} vs ${away}`;
     return `[${competitionClass} | ${roundNumber}R] ${home} vs ${away}`;
   }, [sport, competitionClass, roundNumber, homeTeam, awayTeam]);
 
@@ -362,17 +368,28 @@ export default function Dashboard() {
       body: JSON.stringify({
         name: generatedMatchName,
         sport,
-        competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : competitionClass,
+        competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : sport === 'FUTSAL' ? 'FUTSAL-QUEENCUP' : competitionClass,
         round_number: roundNumber,
-        stream_mode: sport === 'BASKETBALL' ? 'MANUAL' : streamMode,
+        stream_mode: sport === 'FOOTBALL' ? streamMode : 'MANUAL',
         assign_operator: assignOperator,
         ingest_protocol: sport === 'FOOTBALL' && streamMode === 'STREAM' ? ingestProtocol : null,
+        first_half_minutes: sport === 'FUTSAL' ? futsalFirstHalfMinutes : undefined,
+        second_half_minutes: sport === 'FUTSAL' ? futsalSecondHalfMinutes : undefined,
         metadata: sport === 'BASKETBALL'
           ? {
               period_count: basketballPeriodCount,
               period_minutes: basketballPeriodMinutes,
               shot_clock_seconds: 24,
             }
+          : sport === 'FUTSAL'
+            ? {
+                sport_profile: 'FUTSAL_QUEENCUP',
+                player_format: futsalPlayerFormat,
+                pitch_length_m: 40,
+                pitch_width_m: 20,
+                media_enabled: false,
+                live_coder_enabled: false,
+              }
           : undefined,
       }),
     });
@@ -389,6 +406,9 @@ export default function Dashboard() {
     setStreamMode('STREAM');
     setBasketballPeriodCount(4);
     setBasketballPeriodMinutes(10);
+    setFutsalPlayerFormat(6);
+    setFutsalFirstHalfMinutes(15);
+    setFutsalSecondHalfMinutes(15);
     setAssignOperator(false);
     setIngestProtocol('RTMP');
     await load();
@@ -905,7 +925,7 @@ export default function Dashboard() {
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Overview</div>
-                  <h2>{sport === 'BASKETBALL' ? '농구 운영 대시보드' : '운영 대시보드'}</h2>
+                  <h2>{sport === 'BASKETBALL' ? '농구 운영 대시보드' : sport === 'FUTSAL' ? '퀸컵 풋살 운영 대시보드' : '운영 대시보드'}</h2>
                 </div>
                 <span className="status-pill running">Live {liveCount}</span>
               </div>
@@ -933,7 +953,7 @@ export default function Dashboard() {
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Create Match</div>
-                  <h3>{sport === 'BASKETBALL' ? '농구 경기 등록' : '새 경기 등록'}</h3>
+                  <h3>{sport === 'BASKETBALL' ? '농구 경기 등록' : sport === 'FUTSAL' ? '퀸컵 풋살 경기 등록' : '새 경기 등록'}</h3>
                 </div>
                 {sport === 'FOOTBALL' ? <button className="button-compact btn-secondary" onClick={openCompetitionClassModal}>
                   대회 관리
@@ -1035,6 +1055,27 @@ export default function Dashboard() {
                   </>
                 ) : null}
 
+                {sport === 'FUTSAL' ? (
+                  <>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">경기 포맷</div>
+                      <select value={futsalPlayerFormat} onChange={(e) => setFutsalPlayerFormat(Number(e.target.value) as 5 | 6 | 7)}>
+                        <option value={5}>5 vs 5</option>
+                        <option value={6}>6 vs 6</option>
+                        <option value={7}>7 vs 7</option>
+                      </select>
+                    </div>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">전반 시간</div>
+                      <input min={1} max={60} step={1} type="number" value={futsalFirstHalfMinutes} onChange={(e) => setFutsalFirstHalfMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 15)))} />
+                    </div>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">후반 시간</div>
+                      <input min={1} max={60} step={1} type="number" value={futsalSecondHalfMinutes} onChange={(e) => setFutsalSecondHalfMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 15)))} />
+                    </div>
+                  </>
+                ) : null}
+
                 <div className="field-stack field-stack-operator">
                   <div className="field-label">operator 상속</div>
                   <label className="row operator-toggle-inline">
@@ -1051,13 +1092,17 @@ export default function Dashboard() {
                 <div className="field-stack field-stack-generated">
                   <div className="field-label">생성이름</div>
                   <div className="kbd dashboard-generated-name">
-                    {generatedMatchName || (sport === 'BASKETBALL' ? `[BASKETBALL | ${roundNumber}R] 홈팀 vs 어웨이팀` : `[${competitionClass} | ${roundNumber}R] 홈팀 vs 어웨이팀`)}
+                    {generatedMatchName || (sport === 'BASKETBALL' ? `[BASKETBALL | ${roundNumber}R] 홈팀 vs 어웨이팀` : sport === 'FUTSAL' ? `[FUTSAL-QUEENCUP | ${roundNumber}R] 홈팀 vs 어웨이팀` : `[${competitionClass} | ${roundNumber}R] 홈팀 vs 어웨이팀`)}
                   </div>
                 </div>
               </div>
               {sport === 'FOOTBALL' ? <div className="muted dashboard-class-time">
                 경기 시간: 전반 {selectedCompetition?.first_half_minutes || 45}분 / 후반 {selectedCompetition?.second_half_minutes || 45}분
-              </div> : (
+              </div> : sport === 'FUTSAL' ? (
+                <div className="muted dashboard-class-time">
+                  퀸컵 풋살 · {futsalPlayerFormat} vs {futsalPlayerFormat} · 전반 {futsalFirstHalfMinutes}분 / 후반 {futsalSecondHalfMinutes}분 · 수동 FLA/FPA
+                </div>
+              ) : (
                 <div className="muted dashboard-class-time">
                   경기 시간: {basketballPeriodCount}Q × {basketballPeriodMinutes}분 · 수동 기록 MVP
                 </div>

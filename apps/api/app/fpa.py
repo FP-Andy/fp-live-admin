@@ -24,6 +24,10 @@ from .xg_cone import estimate_xg_with_cone
 
 FIELD_W = 105
 FIELD_H = 68
+FUTSAL_FIELD_W = 40.0
+FUTSAL_FIELD_H = 20.0
+FUTSAL_GOAL_W = 3.0
+FUTSAL_SHOT_THREAT_CAP = 0.8
 DEFAULT_FPA_REPORT_TITLE = "FPA Visual Reports"
 
 ACTION_CODES = {
@@ -96,8 +100,14 @@ TAG_CODES = {
     "sp": "Set Piece",
     # 페널티킥 — 유일하게 즉시 채점이 달라짐: xG를 좌표 무시하고 PENALTY_XG 고정.
     "pk": "Penalty",
+    # 풋살: 인플레이 롱킥/롱패스, 압박 해제, 세컨드볼. 킥인은 c/cc 액션으로 구분한다.
+    "lk": "Long Kick",
+    "pb": "Press Break",
+    "sb": "Second Ball",
+    "2v1": "Two-on-One",
+    "3v2": "Three-on-Two",
 }
-TWO_DOT_ACTION_CODES = {"s", "c", "r", "e", "z", "tr", "pn"}
+TWO_DOT_ACTION_CODES = {"s", "c", "cc", "r", "e", "z", "tr", "pn"}
 # 수비 액션(태클/인터셉트/차단/클리어) — 상대 '패스 공' 경로를 before 프레임에 화살표로 그림 (2026-07-09 확정).
 # 화살표 start=상대 볼 출발점, end=끊은(클리어한) 지점. 점수 = 상대가 만든 전진위협을 막은 값 =
 # '상대 공격방향' 기준 EPV(end)−EPV(start) (prevented threat). 좌표 2개(화살표)로 채점, EPV-방어만 사용.
@@ -514,6 +524,47 @@ def _epv_state_value(x: Any, y: Any, *, centrality_floor: float = EPV_CENTRALITY
 def _epv_delta(start_x: Any, start_y: Any, end_x: Any, end_y: Any) -> float | None:
     before = _epv_state_value(start_x, start_y)
     after = _epv_state_value(end_x, end_y)
+    if before is None or after is None:
+        return None
+    return round(after - before, 4)
+
+
+def _futsal_normalized_coordinates(x: Any, y: Any) -> tuple[float, float] | None:
+    """FPA의 공통 105×68 입력 그리드를 실제 풋살 40×20m로 변환한다."""
+    x_value = _finite_float(x)
+    y_value = _finite_float(y)
+    if x_value is None or y_value is None:
+        return None
+    return (
+        max(0.0, min(FUTSAL_FIELD_W, x_value / FIELD_W * FUTSAL_FIELD_W)),
+        max(0.0, min(FUTSAL_FIELD_H, y_value / FIELD_H * FUTSAL_FIELD_H)),
+    )
+
+
+def _futsal_shot_threat(x: Any, y: Any) -> float | None:
+    """QC Shot Threat v0.1 — 거리·골문 각도 기반 풋살 xG proxy.
+
+    최고값은 골문 중앙의 0.8이고, 골문에서 멀어지거나 유효 골문각이 좁아질수록
+    부채꼴 형태로 감소한다. 학습·보정 전 공개 표기는 Shot Threat로 제한한다.
+    """
+    coords = _futsal_normalized_coordinates(x, y)
+    if coords is None:
+        return None
+    pitch_x, pitch_y = coords
+    dx = max(0.001, FUTSAL_FIELD_W - pitch_x)
+    center_offset = pitch_y - FUTSAL_FIELD_H / 2
+    distance = math.hypot(dx, center_offset)
+    upper = math.atan2(FUTSAL_GOAL_W / 2 - center_offset, dx)
+    lower = math.atan2(-FUTSAL_GOAL_W / 2 - center_offset, dx)
+    goal_angle = abs(upper - lower)
+    angle_share = max(0.0, min(1.0, goal_angle / math.pi))
+    value = FUTSAL_SHOT_THREAT_CAP * math.exp(-0.10 * distance) * (angle_share ** 0.55)
+    return round(max(0.0, min(FUTSAL_SHOT_THREAT_CAP, value)), 4)
+
+
+def _futsal_threat_delta(start_x: Any, start_y: Any, end_x: Any, end_y: Any) -> float | None:
+    before = _futsal_shot_threat(start_x, start_y)
+    after = _futsal_shot_threat(end_x, end_y)
     if before is None or after is None:
         return None
     return round(after - before, 4)
@@ -1960,6 +2011,7 @@ def generate_log_entry(
     direction: str,
     timeline: str,
     dual_pitch: dict[str, Any] | None = None,
+    sport: str = "FOOTBALL",
 ) -> dict[str, Any]:
     parts = stat_input.lower().split(".", 1)
     base_action_part = parts[0]
@@ -1985,6 +2037,10 @@ def generate_log_entry(
     # 정확 매칭만 인정. 미인식 2글자+ 코드를 첫 글자 액션으로 조용히 대체하던 폴백 제거.
     # (예: 'qw' 오타나 삭제된 'gp'가 다른 액션으로 둔갑하던 버그 — 2026-07-21. qq(획득)는 같은 날 single 전용으로 복원)
     action_name = ACTION_CODES.get(action_code_raw)
+    # 퀸컵 풋살에서는 c/cc가 크로스가 아닌 킥인 실패/성공이다. 인플레이 롱킥은
+    # s.lk/ss.lk로 Pass + Long Kick 태그를 유지해, 두 상황을 리포트에서 분리한다.
+    if sport.upper() == "FUTSAL" and action_code_raw in {"c", "cc"}:
+        action_name = "Kick-in"
     if not action_name:
         raise ValueError(f"알 수 없는 액션 코드: '{action_code_raw}'")
 
@@ -1994,7 +2050,7 @@ def generate_log_entry(
 
     # 받는 선수 번호 필수 = 패스/크로스/스로인만. 첫 글자('s') 기준으로 판정하면
     # Save(sv)·Sprint(st) 같은 무관 액션까지 걸리므로 액션 이름으로 판정 (2026-07-21)
-    if action_name in ("Pass", "Cross", "Throw-in") and not player_to:
+    if action_name in ("Pass", "Cross", "Throw-in", "Kick-in") and not player_to:
         raise ValueError(f"'{action_name}' 액션은 받는 선수 번호가 필요합니다. (예: 10{action_code_raw}8)")
 
     tags_list = [TAG_CODES[tag_code] for tag_code in tag_codes if tag_code in TAG_CODES]
@@ -2010,6 +2066,11 @@ def generate_log_entry(
             tags_list.extend(["Retained", "Success", "Possession Retained"])
         else:
             tags_list.extend(["Lost", "Fail", "Possession Lost"])
+    elif action_name == "Kick-in":
+        if action_code_raw == "cc":
+            tags_list.extend(["Retained", "Success", "Possession Retained", "Set Piece"])
+        else:
+            tags_list.extend(["Lost", "Fail", "Possession Lost", "Set Piece"])
     elif action_code_raw == "ddd":
         tags_list.extend(["Goal", "On Target", "Success"])
     elif action_code_raw == "dd":
@@ -2069,7 +2130,7 @@ def generate_log_entry(
         start_x_adj = FIELD_W - start_x if direction == "left" else start_x
         end_x_adj = FIELD_W - end_x if direction == "left" else end_x
         # Progressive는 전진 '전달' 액션(패스/크로스/드리블 등)에만 — 수비(상대 공/슛 경로)엔 부적절하므로 제외
-        if action_name != "Throw-in" and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
+        if action_name not in {"Throw-in", "Kick-in"} and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
         if action_name == "Throw-in":
             throw_distance = float(np.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2))
@@ -2101,8 +2162,16 @@ def generate_log_entry(
     if deduped_tags:
         log_text += f" | Tags: {', '.join(deduped_tags)}"
 
+    # 풋살은 거리·골문 각도 기반 QC Shot Threat를 xG proxy로 쓴다. 축구 xG는 쓰지
+    # 않되, Pitch Control은 좌표 정규화 기반 로직이므로 공통 계산을 유지한다.
+    is_futsal = sport.upper() == "FUTSAL"
     metrics: dict[str, Any] = {}
-    if action_name == "Shot":
+    if is_futsal and action_name == "Shot":
+        threat = _futsal_shot_threat(start_x_adj, start_y)
+        if threat is not None:
+            metrics["xG"] = threat
+            metrics["ShotThreat"] = threat
+    elif action_name == "Shot":
         if "Penalty" in deduped_tags:
             metrics["xG"] = PENALTY_XG
         else:
@@ -2123,7 +2192,12 @@ def generate_log_entry(
     metric_end_x = end_x if end_x is not None else start_x
     metric_end_y = end_y if end_y is not None else start_y
     metric_end_x_adj = end_x_adj if end_x_adj is not None else start_x_adj
-    if action_code_raw in SHOT_BLOCK_CODES:
+    if is_futsal and action_code_raw in SHOT_BLOCK_CODES:
+        threat = _futsal_shot_threat(FIELD_W - start_x_adj, start_y)
+        if threat is not None:
+            metrics["xG"] = threat
+            metrics["ShotThreat"] = threat
+    elif action_code_raw in SHOT_BLOCK_CODES:
         # 슛블락: 막은 슛의 xG를 블로커에게 승계. 화살표 start=슈터(상대) 위치를 상대 공격방향으로 뒤집어
         # estimate_xg 계산. EPV/PC는 슛블락에 무의미하므로 생략, xG 컬럼만 채움.
         try:
@@ -2134,6 +2208,17 @@ def generate_log_entry(
             metrics["xG"] = round(float(block_xg["xg"]) * BLOCK_CREDIT, 4)
         except (KeyError, TypeError, ValueError):
             pass
+    elif is_futsal:
+        # Threat Delta = 풋살 EPV proxy. 패스/운반 후 골문 위협이 얼마나 변했는지다.
+        if action_code_raw in DEFENSE_ARROW_CODES | DUEL_CODES:
+            epv_value = _futsal_threat_delta(metric_end_x_adj, metric_end_y, start_x_adj, start_y)
+        else:
+            epv_value = _futsal_threat_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
+        if epv_value is not None:
+            metrics["EPV"] = epv_value
+        pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
+        if pc_value is not None:
+            metrics["PC"] = pc_value
     else:
         if action_code_raw == "pr":
             # 압박(pr)은 팀 단위 지배력 다툼이라 PC(피치컨트롤 변화)만 의미가 있다.
@@ -2208,6 +2293,7 @@ def generate_log_entry(
             "PathDistance": str(round(path_distance, 2)) if path_points else "",
             "DualState": dual_state_text,
             "xG": _metric_text_value(metrics.get("xG")),
+            "ShotThreat": _metric_text_value(metrics.get("ShotThreat")),
             "xGOT": "",
             # 슛 기회 창출량 — 패스류만 채워진다(PASS_CHANCE_CODES).
             "xRC": _metric_text_value(metrics.get("xRC")),
