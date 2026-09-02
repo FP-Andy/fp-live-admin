@@ -7,6 +7,18 @@ import { useSportContext } from '../../../../components/SportContext';
 
 type DualDotTeam = 'ally' | 'opponent';
 type TeamSide = 'home' | 'away';
+type FpaSport = 'FOOTBALL' | 'FUTSAL';
+
+// 화면의 1050×680은 오버레이를 위한 고정 캔버스일 뿐, 저장하는 실측 좌표는 종목마다
+// 달라야 한다. 풋살은 반드시 40×20m 원좌표로 저장한다.
+const PITCH_DIMENSIONS: Record<FpaSport, { width: number; height: number }> = {
+  FOOTBALL: { width: 105, height: 68 },
+  FUTSAL: { width: 40, height: 20 },
+};
+
+function pitchDimensions(sport: FpaSport = 'FOOTBALL') {
+  return PITCH_DIMENSIONS[sport];
+}
 
 // 팀 레이어는 화면 표시용 home/away와 xFP scoring용 ally/opponent를 분리한다.
 // ally/opponent는 현재 Stat Input의 Team 값 기준으로 payload 생성 시 확정된다.
@@ -243,6 +255,7 @@ type LogPreview = {
   // 슛 골대 클릭 지점 — "gx,gy,공격방향" (gx,gy 0~1 정규화, 빗나간 슛은 범위 밖 값). 씬 모션 슛 경로 렌더용.
   GoalMouth?: string;
   StatInput?: string; // 원본 스탯 코드 — 장면 저장 시 최종 좌표로 재채점하기 위해 각 행에 보존
+  Sport?: FpaSport;
 };
 
 // FinePlay 신청 라인업(사이드별) — 태깅 등번호 검증용. 서버 lineup_sides / fineplay-lineup 응답과 1:1.
@@ -453,10 +466,19 @@ function shouldPromptXgot(statInput: string, row: LogPreview) {
   return row.Action === 'Shot' && /(^|, )On Target|(^|, )Off Target|(^|, )Goal/.test(row.Tags || '');
 }
 
-function screenFromMeter(meterX: number, meterY: number) {
+function screenFromMeter(meterX: number, meterY: number, sport: FpaSport = 'FOOTBALL') {
+  const { width, height } = pitchDimensions(sport);
+  // agusrjs/futsal-pitch SVG viewBox = -2 -2 44 24. 실제 코트(파랑)는 x=0..40,
+  // y=0..20이고, 나머지는 2m 빨간 프레임이다. 오버레이 좌표도 이 안쪽 코트에 맞춘다.
+  if (sport === 'FUTSAL') {
+    return {
+      screen_x: Number((((2 + meterX) / 44) * 1050).toFixed(2)),
+      screen_y: Number((((2 + (height - meterY)) / 24) * 680).toFixed(2)),
+    };
+  }
   return {
-    screen_x: Number(((meterX / 105) * 1050).toFixed(2)),
-    screen_y: Number((((68 - meterY) / 68) * 680).toFixed(2)),
+    screen_x: Number(((meterX / width) * 1050).toFixed(2)),
+    screen_y: Number((((height - meterY) / height) * 680).toFixed(2)),
   };
 }
 
@@ -661,16 +683,21 @@ const LINEUP_FRONT_X = 48;  // 하프라인 조금 앞
 const LINEUP_Y_MARGIN = 7;  // 터치라인 여유
 
 /** 행·격자열 → 미터 좌표. attacksRight=false 면 피치를 180° 돌린다(x·y 동시 반전). */
-function lineupMeters(row: number, rowCount: number, gridX: number, attacksRight: boolean) {
+function lineupMeters(row: number, rowCount: number, gridX: number, attacksRight: boolean, sport: FpaSport = 'FOOTBALL') {
+  const { width, height } = pitchDimensions(sport);
+  const lineupGkX = sport === 'FUTSAL' ? 2.5 : LINEUP_GK_X;
+  const lineupBackX = sport === 'FUTSAL' ? 8 : LINEUP_BACK_X;
+  const lineupFrontX = sport === 'FUTSAL' ? 18 : LINEUP_FRONT_X;
+  const lineupYMargin = sport === 'FUTSAL' ? 2 : LINEUP_Y_MARGIN;
   const outfieldSpans = Math.max(1, rowCount - 2);
   const x = row === 0
-    ? LINEUP_GK_X
-    : LINEUP_BACK_X + ((row - 1) / outfieldSpans) * (LINEUP_FRONT_X - LINEUP_BACK_X);
+    ? lineupGkX
+    : lineupBackX + ((row - 1) / outfieldSpans) * (lineupFrontX - lineupBackX);
   // 공격 방향을 바라볼 때 gridX 0 이 왼쪽 = y 큰 쪽.
-  const y = 68 - LINEUP_Y_MARGIN - (gridX / 4) * (68 - 2 * LINEUP_Y_MARGIN);
+  const y = height - lineupYMargin - (gridX / 4) * (height - 2 * lineupYMargin);
   return attacksRight
     ? { meter_x: Number(x.toFixed(2)), meter_y: Number(y.toFixed(2)) }
-    : { meter_x: Number((105 - x).toFixed(2)), meter_y: Number((68 - y).toFixed(2)) };
+    : { meter_x: Number((width - x).toFixed(2)), meter_y: Number((height - y).toFixed(2)) };
 }
 
 function toPayloadDot(dot: PitchDot, actorTeam?: TeamSide) {
@@ -707,13 +734,22 @@ function colorForDualDot(teamSide?: TeamSide, role?: string, team?: DualDotTeam)
   return team === 'opponent' ? '#4377EB' : '#FF8A01';
 }
 
-function normalizePitchDot(raw: Partial<PitchDot> & { team_side?: TeamSide }, actorTeam?: TeamSide): PitchDot | null {
-  const meterX = Number(raw.meter_x);
-  const meterY = Number(raw.meter_y);
+function normalizePitchDot(raw: Partial<PitchDot> & { team_side?: TeamSide }, actorTeam?: TeamSide, sport: FpaSport = 'FOOTBALL'): PitchDot | null {
+  let meterX = Number(raw.meter_x);
+  let meterY = Number(raw.meter_y);
   if (!Number.isFinite(meterX) || !Number.isFinite(meterY)) return null;
-  const screen = Number.isFinite(Number(raw.screen_x)) && Number.isFinite(Number(raw.screen_y))
-    ? { screen_x: Number(raw.screen_x), screen_y: Number(raw.screen_y) }
-    : screenFromMeter(meterX, meterY);
+  const { width, height } = pitchDimensions(sport);
+  // 40×20 코트 SVG만 먼저 배포됐던 시점의 풋살 로그는 105×68 기준으로 저장됐다.
+  // 코트 범위를 넘는 값만 변환하므로, 정상적인 새 풋살 좌표는 절대 다시 스케일하지 않는다.
+  if (sport === 'FUTSAL' && (meterX > width || meterY > height)) {
+    meterX = (meterX / 105) * width;
+    meterY = (meterY / 68) * height;
+  }
+  meterX = Math.min(Math.max(meterX, 0), width);
+  meterY = Math.min(Math.max(meterY, 0), height);
+  // 기존 screen 좌표도 같이 버리고 현재 종목의 실측 좌표로 다시 만든다. 안 그러면
+  // 105×68 저장값을 40×20으로 바꿔도 화면 위 위치는 옛 비율에 남는다.
+  const screen = screenFromMeter(meterX, meterY, sport);
   const legacyLayerSide: TeamSide | undefined =
     raw.layer === 'atk' || raw.layer === 'atk_gk' ? 'home'
       : raw.layer === 'def' || raw.layer === 'def_gk' ? 'away'
@@ -759,31 +795,31 @@ function latestDualStateFromLogs(logsToScan: string[]): ParsedDualState | null {
   return null;
 }
 
-function dotsFromDualState(logsToScan: string[], side: PitchSide, fallbackActorTeam?: TeamSide) {
+function dotsFromDualState(logsToScan: string[], side: PitchSide, fallbackActorTeam?: TeamSide, sport: FpaSport = 'FOOTBALL') {
   const state = latestDualStateFromLogs(logsToScan);
   const actorTeam = state?.actor_team || fallbackActorTeam;
   const points = side === 'before' ? state?.before : state?.after;
   if (!Array.isArray(points)) return [];
   return points
-    .map((point) => normalizePitchDot(point, actorTeam))
+    .map((point) => normalizePitchDot(point, actorTeam, sport))
     .filter((dot): dot is PitchDot => Boolean(dot));
 }
 
-function hydrateSceneDots(dots: PitchDot[], logsToScan: string[], side: PitchSide, fallbackActorTeam?: TeamSide) {
+function hydrateSceneDots(dots: PitchDot[], logsToScan: string[], side: PitchSide, fallbackActorTeam?: TeamSide, sport: FpaSport = 'FOOTBALL') {
   const normalized = dots
-    .map((dot) => normalizePitchDot(dot, fallbackActorTeam))
+    .map((dot) => normalizePitchDot(dot, fallbackActorTeam, sport))
     .filter((dot): dot is PitchDot => Boolean(dot));
-  return normalized.length ? normalized : dotsFromDualState(logsToScan, side, fallbackActorTeam);
+  return normalized.length ? normalized : dotsFromDualState(logsToScan, side, fallbackActorTeam, sport);
 }
 
-function sceneFromDualLogs(rows: LogPreview[], logsToScan: string[], fallbackActorTeam?: TeamSide): SavedScene | null {
+function sceneFromDualLogs(rows: LogPreview[], logsToScan: string[], fallbackActorTeam?: TeamSide, sport: FpaSport = 'FOOTBALL'): SavedScene | null {
   const state = latestDualStateFromLogs(logsToScan);
   if (!state) return null;
   const header = logsToScan[0]?.split(' | ') || [];
   const headerTeam = header[1] === 'home' || header[1] === 'away' ? header[1] : undefined;
   const actorTeam = state.actor_team || headerTeam || fallbackActorTeam;
-  const beforeDotsFromState = dotsFromDualState(logsToScan, 'before', actorTeam);
-  const afterDotsFromState = dotsFromDualState(logsToScan, 'after', actorTeam);
+  const beforeDotsFromState = dotsFromDualState(logsToScan, 'before', actorTeam, sport);
+  const afterDotsFromState = dotsFromDualState(logsToScan, 'after', actorTeam, sport);
   if (!beforeDotsFromState.length && !afterDotsFromState.length) return null;
   return {
     rows,
@@ -812,7 +848,7 @@ function sceneStateFromRow(row: LogPreview) {
   }
 }
 
-function scenesFromPersistedRows(rows: LogPreview[], logsToScan: string[], fallbackActorTeam?: TeamSide) {
+function scenesFromPersistedRows(rows: LogPreview[], logsToScan: string[], fallbackActorTeam?: TeamSide, sport: FpaSport = 'FOOTBALL') {
   const groups = new Map<string, { rows: LogPreview[]; logs: string[]; state: ReturnType<typeof sceneStateFromRow> }>();
   rows.forEach((row, index) => {
     const sceneIndex = (row as PersistedLogRow).SceneIndex;
@@ -834,8 +870,8 @@ function scenesFromPersistedRows(rows: LogPreview[], logsToScan: string[], fallb
       const scene: SavedScene = {
         rows: group.rows,
         logs: group.logs,
-        beforeDots: hydrateSceneDots(beforeSource, group.logs, 'before', fallbackActorTeam),
-        afterDots: hydrateSceneDots(afterSource, group.logs, 'after', fallbackActorTeam),
+        beforeDots: hydrateSceneDots(beforeSource, group.logs, 'before', fallbackActorTeam, sport),
+        afterDots: hydrateSceneDots(afterSource, group.logs, 'after', fallbackActorTeam, sport),
         passArrows: Array.isArray(state.passArrows) ? state.passArrows.map((arrow) => ({ ...arrow })) : [],
         primary: typeof state.primary === 'number' ? state.primary : null,
       };
@@ -844,12 +880,22 @@ function scenesFromPersistedRows(rows: LogPreview[], logsToScan: string[], fallb
     .filter((scene): scene is SavedScene => Boolean(scene));
 }
 
-function dotFromClientPoint(clientX: number, clientY: number, rect: DOMRect): PitchDot {
+function dotFromClientPoint(clientX: number, clientY: number, rect: DOMRect, sport: FpaSport = 'FOOTBALL'): PitchDot {
   const x = Math.min(Math.max(clientX - rect.left, 0), rect.width);
   const y = Math.min(Math.max(clientY - rect.top, 0), rect.height);
+  const { width, height } = pitchDimensions(sport);
+  if (sport === 'FUTSAL') {
+    const meterX = Math.min(Math.max(((x / rect.width) * 44) - 2, 0), width);
+    const meterY = Math.min(Math.max(height - (((y / rect.height) * 24) - 2), 0), height);
+    return {
+      meter_x: Number(meterX.toFixed(2)),
+      meter_y: Number(meterY.toFixed(2)),
+      ...screenFromMeter(meterX, meterY, sport),
+    };
+  }
   return {
-    meter_x: Number(((x / rect.width) * 105).toFixed(2)),
-    meter_y: Number((((rect.height - y) / rect.height) * 68).toFixed(2)),
+    meter_x: Number(((x / rect.width) * width).toFixed(2)),
+    meter_y: Number((((rect.height - y) / rect.height) * height).toFixed(2)),
     screen_x: Number(((x / rect.width) * 1050).toFixed(2)),
     screen_y: Number(((y / rect.height) * 680).toFixed(2)),
   };
@@ -1050,11 +1096,11 @@ function generateMatchId() {
     (Number(char) ^ (Math.random() * 16) >> (Number(char) / 4)).toString(16));
 }
 
-function buildRenderPitchDots(sourceDots: PitchDot[]): RenderPitchDot[] {
+function buildRenderPitchDots(sourceDots: PitchDot[], sport: FpaSport = 'FOOTBALL'): RenderPitchDot[] {
   let allyCount = 0;
   let opponentCount = 0;
   return sourceDots.map((sourceDot) => {
-    const dot = normalizePitchDot(sourceDot) || sourceDot;
+    const dot = normalizePitchDot(sourceDot, undefined, sport) || sourceDot;
     const dotTeam = dot.team || 'ally';
     // 잔상은 A1·O2 같은 순번을 먹지 않는다 — 활성화 여부에 따라 실제 점의 라벨이 흔들리면 안 된다.
     const teamIndex = dot.ghost ? 0 : dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
@@ -1193,7 +1239,7 @@ export default function FpaLivePage() {
     rect: DOMRect | undefined,
   ) => {
     if (!arm || arm.side !== side || !rect) return;
-    const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+    const c = dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport);
     setArrowPreview({ canvas, side, x: c.screen_x, y: c.screen_y });
   };
 
@@ -1340,7 +1386,7 @@ export default function FpaLivePage() {
   ];
 
   const buildRowsForPersistence = () => {
-    if (inputMode !== 'dual') return allRows;
+    if (inputMode !== 'dual') return allRows.map((row) => ({ ...row, Sport: row.Sport || fpaSport }));
     const scenesToPersist = collectScenesForPersistence();
     // match–clip–action: SceneIndex = 클립 번호, SceneActionIndex = 클립 안 연번.
     // 같은 클립의 여러 액션(장면)이 한 SceneIndex 로 묶여 다운스트림(클립 매칭)에 클립 단위로 전달된다.
@@ -1353,6 +1399,7 @@ export default function FpaLivePage() {
         actionCounters.set(clipIndex, nextSeq);
         return {
           ...row,
+          Sport: row.Sport || fpaSport,
           SceneIndex: String(clipIndex),
           SceneActionIndex: String(nextSeq),
           SceneState: sceneState,
@@ -1538,23 +1585,23 @@ export default function FpaLivePage() {
   );
 
   const beforePitchDots = useMemo(
-    () => buildRenderPitchDots(beforeDots),
-    [beforeDots]
+    () => buildRenderPitchDots(beforeDots, fpaSport),
+    [beforeDots, fpaSport]
   );
 
   const afterPitchDots = useMemo(
-    () => buildRenderPitchDots(afterDots),
-    [afterDots]
+    () => buildRenderPitchDots(afterDots, fpaSport),
+    [afterDots, fpaSport]
   );
 
   const editBeforePitchDots = useMemo(
-    () => buildRenderPitchDots(editBeforeDots),
-    [editBeforeDots]
+    () => buildRenderPitchDots(editBeforeDots, fpaSport),
+    [editBeforeDots, fpaSport]
   );
 
   const editAfterPitchDots = useMemo(
-    () => buildRenderPitchDots(editAfterDots),
-    [editAfterDots]
+    () => buildRenderPitchDots(editAfterDots, fpaSport),
+    [editAfterDots, fpaSport]
   );
 
   const dualPointSummary = useMemo(() => {
@@ -1658,7 +1705,7 @@ export default function FpaLivePage() {
   const handlePitchClick = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = pitchRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const nextDot = dotFromClientPoint(event.clientX, event.clientY, rect);
+    const nextDot = dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport);
     setDots((prev) => [...prev, nextDot]);
     statInputRef.current?.focus();
   };
@@ -1668,7 +1715,7 @@ export default function FpaLivePage() {
     if (!rect) return;
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점
     if (pendingPass && pendingPass.side === side) {
-      const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+      const c = dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport);
       pushDualUndo();
       const arrow = { side, startId: pendingPass.startId, x1: pendingPass.sx, y1: pendingPass.sy, x2: c.screen_x, y2: c.screen_y, code: pendingPass.code, rowIndex: rows.length };
       setPassArrows((prev) => [...prev, arrow]);
@@ -1686,7 +1733,7 @@ export default function FpaLivePage() {
     }
     // 수비 화살표 1차 클릭 = 상대 볼 출발점 → pendingPass 로 승격(2차 클릭에서 화살표 완성)
     if (pendingDefStart && pendingDefStart.side === side) {
-      const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+      const c = dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport);
       setPendingPass({ code: pendingDefStart.code, side, sx: c.screen_x, sy: c.screen_y, mx: c.meter_x, my: c.meter_y });
       setPendingDefStart(null);
       setStatus(`${arrowArmHint(pendingDefStart.code, 'end')} · Esc 취소`);
@@ -1694,7 +1741,7 @@ export default function FpaLivePage() {
     }
     const nextDot: PitchDot = {
       id: newDotId(),
-      ...dotFromClientPoint(event.clientX, event.clientY, rect),
+      ...dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport),
       team: relationForTeamSide(currentLayer.teamSide, team),
       teamSide: currentLayer.teamSide,
       layer: currentLayer.key,
@@ -1974,8 +2021,8 @@ export default function FpaLivePage() {
     const nextEditTimeline = /^\d{1,3}:\d{2}$/.test(header[3] || '') ? header[3] : timeline;
     setEditRows(scene.rows);
     setEditLogs(scene.logs);
-    setEditBeforeDots(hydrateSceneDots(scene.beforeDots, scene.logs, 'before', nextEditTeam).map((dot) => ({ ...dot })));
-    setEditAfterDots(hydrateSceneDots(scene.afterDots, scene.logs, 'after', nextEditTeam).map((dot) => ({ ...dot })));
+    setEditBeforeDots(hydrateSceneDots(scene.beforeDots, scene.logs, 'before', nextEditTeam, fpaSport).map((dot) => ({ ...dot })));
+    setEditAfterDots(hydrateSceneDots(scene.afterDots, scene.logs, 'after', nextEditTeam, fpaSport).map((dot) => ({ ...dot })));
     setEditPassArrows(scene.passArrows.map((arrow) => ({ ...arrow })));
     setEditPrimary(scene.primary);
     setEditingSceneIndex(selectedSceneIndex);
@@ -2077,7 +2124,7 @@ export default function FpaLivePage() {
     if (!rect) return;
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점 (라이브와 동일)
     if (editPendingPass && editPendingPass.side === side) {
-      const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+      const c = dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport);
       const arrow = { side, startId: editPendingPass.startId, x1: editPendingPass.sx, y1: editPendingPass.sy, x2: c.screen_x, y2: c.screen_y, code: editPendingPass.code, rowIndex: editRows.length };
       setEditPassArrows((prev) => [...prev, arrow]);
       const start: PitchDot = { meter_x: editPendingPass.mx, meter_y: editPendingPass.my, screen_x: editPendingPass.sx, screen_y: editPendingPass.sy };
@@ -2089,7 +2136,7 @@ export default function FpaLivePage() {
     }
     // 수비 화살표 1차 클릭 = 상대 볼 출발점 → editPendingPass 로 승격 (라이브와 동일)
     if (editPendingDefStart && editPendingDefStart.side === side) {
-      const c = dotFromClientPoint(event.clientX, event.clientY, rect);
+      const c = dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport);
       setEditPendingPass({ code: editPendingDefStart.code, side, sx: c.screen_x, sy: c.screen_y, mx: c.meter_x, my: c.meter_y });
       setEditPendingDefStart(null);
       setStatus(`수정용: ${arrowArmHint(editPendingDefStart.code, 'end')} · Esc 취소`);
@@ -2097,7 +2144,7 @@ export default function FpaLivePage() {
     }
     const nextDot: PitchDot = {
       id: newDotId(),
-      ...dotFromClientPoint(event.clientX, event.clientY, rect),
+      ...dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport),
       team: relationForTeamSide(currentLayer.teamSide, editTeam),
       teamSide: currentLayer.teamSide,
       layer: currentLayer.key,
@@ -2394,13 +2441,21 @@ export default function FpaLivePage() {
     }
   };
 
-  // 화살표 screen 좌표(0~1050 / 0~680) → meter dot 역변환 (dotFromClientPoint 의 역)
-  const screenToMeterDot = (sx: number, sy: number): PitchDot => ({
-    meter_x: Number(((sx / 1050) * 105).toFixed(2)),
-    meter_y: Number((((680 - sy) / 680) * 68).toFixed(2)),
-    screen_x: sx,
-    screen_y: sy,
-  });
+  // 화살표 screen 좌표(0~1050 / 0~680) → 실측 meter dot 역변환.
+  // 풋살은 빨간 프레임이 아닌 안쪽 파란 40×20 코트만 좌표계로 쓴다.
+  const screenToMeterDot = (sx: number, sy: number): PitchDot => {
+    if (fpaSport === 'FUTSAL') {
+      const meterX = Math.min(Math.max((sx / 1050) * 44 - 2, 0), 40);
+      const meterY = Math.min(Math.max(20 - ((sy / 680) * 24 - 2), 0), 20);
+      return { meter_x: Number(meterX.toFixed(2)), meter_y: Number(meterY.toFixed(2)), ...screenFromMeter(meterX, meterY, fpaSport) };
+    }
+    return {
+      meter_x: Number(((sx / 1050) * 105).toFixed(2)),
+      meter_y: Number((((680 - sy) / 680) * 68).toFixed(2)),
+      screen_x: sx,
+      screen_y: sy,
+    };
+  };
 
   // 패스 화살표 도착점을 드래그로 옮긴 뒤 놓을 때 → 해당 로그 행을 새 [시작,도착]으로 재채점(제자리 교체)
   const rescorePassArrow = async (canvas: 'live' | 'edit', arrow: PassArrow) => {
@@ -2671,6 +2726,7 @@ export default function FpaLivePage() {
           team: editTeam,
           direction: editDirection,
           timeline: editTimeline,
+          sport: fpaSport,
         }),
       });
       if (!response.ok) {
@@ -2769,6 +2825,7 @@ export default function FpaLivePage() {
           team: editTeam,
           direction: editDirection,
           timeline: editTimeline,
+          sport: fpaSport,
         }),
       });
 
@@ -2848,7 +2905,7 @@ export default function FpaLivePage() {
         // 실제로 움직이기 시작한 첫 순간에만 undo 스냅샷 (클릭만으로는 안 쌓음)
         if (!arrowDrag.moved && !isEditArrow) pushDualUndo();
         arrowDrag.moved = true;
-        const coords = dotFromClientPoint(event.clientX, event.clientY, arrowRect);
+        const coords = dotFromClientPoint(event.clientX, event.clientY, arrowRect, fpaSport);
         (isEditArrow ? setEditPassArrows : setPassArrows)((prev) => {
           const target = prev[arrowDrag.index];
           if (!target) return prev;
@@ -2883,7 +2940,7 @@ export default function FpaLivePage() {
         if (!isEdit) pushDualUndo();
         dragging.historyPushed = true;
       }
-      const coords = dotFromClientPoint(event.clientX, event.clientY, rect);
+      const coords = dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport);
       // 위치만 갱신 — team/role/color/number/id 보존 (안 하면 레이어 색 사라져 홈/어웨이 뒤바뀐 듯 보임)
       // ghost 는 반드시 떼고 쓴다: 잔상을 눌러 바로 끌면 활성화(setState)가 반영되기 전에
       // 이 핸들러가 옛 스냅샷(ghost=true)을 새 좌표로 다시 써서 활성화가 취소돼 버린다.
@@ -3115,6 +3172,7 @@ export default function FpaLivePage() {
           match_id: matchId,
           teamid_h: teamIdH,
           teamid_a: teamIdA,
+          sport: fpaSport,
         }),
       });
 
@@ -3170,8 +3228,10 @@ export default function FpaLivePage() {
       };
       const importedLogs = data.logs || [];
       const importedRows = data.rows || [];
-      const persistedScenes = scenesFromPersistedRows(importedRows, importedLogs, team);
-      const dualScene = sceneFromDualLogs(importedRows, importedLogs, team);
+      const importedSport: FpaSport = importedRows.some((row) => row.Sport === 'FUTSAL') ? 'FUTSAL' : fpaSport;
+      setFpaSport(importedSport);
+      const persistedScenes = scenesFromPersistedRows(importedRows, importedLogs, team, importedSport);
+      const dualScene = sceneFromDualLogs(importedRows, importedLogs, team, importedSport);
       if (persistedScenes.length) {
         setInputMode('dual');
         setSavedScenes(persistedScenes);
@@ -3375,11 +3435,11 @@ export default function FpaLivePage() {
         const isGk = grid.id === 'gk' || (isCustom && grid.gridY === CUSTOM_GK_GRID_Y);
         const layerKey = `${side}_${isGk ? 'gk' : 'field'}`;
         const layer = DUAL_LAYERS.find((entry) => entry.key === layerKey) ?? DUAL_LAYERS[0];
-        const meters = lineupMeters(rowMap.get(grid.gridY) ?? 0, rowCount, grid.gridX, attacksRight);
+        const meters = lineupMeters(rowMap.get(grid.gridY) ?? 0, rowCount, grid.gridX, attacksRight, fpaSport);
         nextDots.push({
           id: newDotId(),
           ...meters,
-          ...screenFromMeter(meters.meter_x, meters.meter_y),
+          ...screenFromMeter(meters.meter_x, meters.meter_y, fpaSport),
           team: relationForTeamSide(side, team),
           teamSide: side,
           layer: layer.key,
@@ -3616,8 +3676,9 @@ export default function FpaLivePage() {
       }>(`/fpa/matches/${match.id}/logs`);
       const savedLogs = saved.logs || [];
       const savedRows = saved.rows || [];
-      const persistedScenes = scenesFromPersistedRows(savedRows, savedLogs, team);
-      const dualScene = sceneFromDualLogs(savedRows, savedLogs, team);
+      const matchSport: FpaSport = match.sport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL';
+      const persistedScenes = scenesFromPersistedRows(savedRows, savedLogs, team, matchSport);
+      const dualScene = sceneFromDualLogs(savedRows, savedLogs, team, matchSport);
       if (persistedScenes.length) {
         setInputMode('dual');
         setSavedScenes(persistedScenes);

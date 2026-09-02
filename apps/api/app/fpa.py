@@ -530,14 +530,18 @@ def _epv_delta(start_x: Any, start_y: Any, end_x: Any, end_y: Any) -> float | No
 
 
 def _futsal_normalized_coordinates(x: Any, y: Any) -> tuple[float, float] | None:
-    """FPA의 공통 105×68 입력 그리드를 실제 풋살 40×20m로 변환한다."""
+    """풋살 FPA의 실제 40×20m 원좌표를 안전하게 제한한다.
+
+    새 FPA는 화면의 파란 코트(40×20) 기준으로 저장한다. 105×68 입력을 다시
+    축소하는 방식은 좌표계 오류를 숨기므로 제거했다.
+    """
     x_value = _finite_float(x)
     y_value = _finite_float(y)
     if x_value is None or y_value is None:
         return None
     return (
-        max(0.0, min(FUTSAL_FIELD_W, x_value / FIELD_W * FUTSAL_FIELD_W)),
-        max(0.0, min(FUTSAL_FIELD_H, y_value / FIELD_H * FUTSAL_FIELD_H)),
+        max(0.0, min(FUTSAL_FIELD_W, x_value)),
+        max(0.0, min(FUTSAL_FIELD_H, y_value)),
     )
 
 
@@ -1149,11 +1153,14 @@ def analyze_pass_data(df: pd.DataFrame) -> pd.DataFrame:
     if not all(col in df.columns for col in coord_cols + ["Direction"]):
         return df
 
+    is_futsal = df.get("Sport", pd.Series("FOOTBALL", index=df.index)).astype(str).str.upper() == "FUTSAL"
+    pitch_length = np.where(is_futsal, FUTSAL_FIELD_W, FIELD_W)
+    pitch_width = np.where(is_futsal, FUTSAL_FIELD_H, FIELD_H)
     is_left_direction = df["Direction"].str.lower() == "left"
-    df["StartX_adj"] = np.where(is_left_direction, FIELD_W - df["StartX"], df["StartX"])
-    df["StartY_adj"] = np.where(is_left_direction, FIELD_H - df["StartY"], df["StartY"])
-    df["EndX_adj"] = np.where(is_left_direction, FIELD_W - df["EndX"], df["EndX"])
-    df["EndY_adj"] = np.where(is_left_direction, FIELD_H - df["EndY"], df["EndY"])
+    df["StartX_adj"] = np.where(is_left_direction, pitch_length - df["StartX"], df["StartX"])
+    df["StartY_adj"] = np.where(is_left_direction, pitch_width - df["StartY"], df["StartY"])
+    df["EndX_adj"] = np.where(is_left_direction, pitch_length - df["EndX"], df["EndX"])
+    df["EndY_adj"] = np.where(is_left_direction, pitch_width - df["EndY"], df["EndY"])
 
     distance = np.sqrt((df["EndX_adj"] - df["StartX_adj"]) ** 2 + (df["EndY_adj"] - df["StartY_adj"]) ** 2)
     df["Distance"] = distance
@@ -1850,7 +1857,9 @@ def draw_heatmap(df: pd.DataFrame, player_id: str) -> str:
     return image
 
 
-def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teamid_a: str) -> pd.DataFrame:
+def parse_logs_to_dataframe(
+    logs: list[str], match_id: str, teamid_h: str, teamid_a: str, sport: str = "FOOTBALL"
+) -> pd.DataFrame:
     parsed_logs: list[dict[str, Any]] = []
     for log in logs:
         log_dict: dict[str, Any] = {}
@@ -1859,6 +1868,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         log_dict["Team"] = parts[1]
         log_dict["Direction"] = parts[2]
         log_dict["Time"] = parts[3]
+        log_dict["Sport"] = "FUTSAL" if sport.upper() == "FUTSAL" else "FOOTBALL"
         pos_match = re.search(r"Pos\((.+?), (.+?)\)", parts[4])
         if pos_match:
             log_dict["StartX"], log_dict["StartY"] = pos_match.groups()
@@ -1876,7 +1886,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         log_dict["AfterHomePointCount"], log_dict["AfterAwayPointCount"] = "", ""
         log_dict["BeforeGkPointCount"], log_dict["AfterGkPointCount"] = "", ""
         log_dict["BeforeNumberedPointCount"], log_dict["AfterNumberedPointCount"] = "", ""
-        log_dict["xG"], log_dict["xGOT"], log_dict["EPV"], log_dict["PC"] = "", "", "", ""
+        log_dict["xG"], log_dict["ShotThreat"], log_dict["xGOT"], log_dict["EPV"], log_dict["PC"] = "", "", "", "", ""
         log_dict["GoalMouth"], log_dict["GoalMouthX"], log_dict["GoalMouthY"] = "", "", ""
         for part in parts[6:]:
             if part.startswith("Path("):
@@ -1922,11 +1932,15 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
             elif part.startswith("Metrics: "):
                 metrics = _parse_metrics(part)
                 log_dict["xG"] = metrics.get("xG", "")
+                log_dict["ShotThreat"] = metrics.get("ShotThreat", "")
                 log_dict["xGOT"] = metrics.get("xGOT", "")
                 log_dict["xRC"] = metrics.get("xRC", "")
                 log_dict["xPK"] = metrics.get("xPK", "")
                 log_dict["EPV"] = metrics.get("EPV", "")
                 log_dict["PC"] = metrics.get("PC", "")
+            elif part.startswith("Sport: "):
+                sport_value = part.removeprefix("Sport: ").strip().upper()
+                log_dict["Sport"] = "FUTSAL" if sport_value == "FUTSAL" else "FOOTBALL"
             elif part.startswith("GoalMouth: "):
                 # 골대 프레임 기준 좌표 — 골대 안 0~1, 빗나간 슛은 범위 밖 값.
                 # 원문("gx,gy,공격방향")을 그대로 보존해야 불러오기→전송에서 슛 모션 궤적이 살아난다.
@@ -1954,6 +1968,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
     columns = [
         "No",
         "MatchID",
+        "Sport",
         "TeamID",
         "Half",
         "Team",
@@ -1991,6 +2006,7 @@ def parse_logs_to_dataframe(logs: list[str], match_id: str, teamid_h: str, teami
         "BeforeNumberedPointCount",
         "AfterNumberedPointCount",
         "xG",
+        "ShotThreat",
         "xGOT",
         "xRC",
         "xPK",
@@ -2016,6 +2032,8 @@ def generate_log_entry(
     parts = stat_input.lower().split(".", 1)
     base_action_part = parts[0]
     tag_codes = parts[1].split(".") if len(parts) > 1 else []
+    is_futsal = sport.upper() == "FUTSAL"
+    pitch_width = FUTSAL_FIELD_W if is_futsal else float(FIELD_W)
 
     if base_action_part.isdigit():
         player_from = base_action_part
@@ -2039,7 +2057,7 @@ def generate_log_entry(
     action_name = ACTION_CODES.get(action_code_raw)
     # 퀸컵 풋살에서는 c/cc가 크로스가 아닌 킥인 실패/성공이다. 인플레이 롱킥은
     # s.lk/ss.lk로 Pass + Long Kick 태그를 유지해, 두 상황을 리포트에서 분리한다.
-    if sport.upper() == "FUTSAL" and action_code_raw in {"c", "cc"}:
+    if is_futsal and action_code_raw in {"c", "cc"}:
         action_name = "Kick-in"
     if not action_name:
         raise ValueError(f"알 수 없는 액션 코드: '{action_code_raw}'")
@@ -2101,8 +2119,8 @@ def generate_log_entry(
         path_points = [(float(dot["meter_x"]), float(dot["meter_y"])) for dot in dots]
         start_x, start_y = path_points[0]
         end_x, end_y = path_points[-1]
-        start_x_adj = FIELD_W - start_x if direction == "left" else start_x
-        end_x_adj = FIELD_W - end_x if direction == "left" else end_x
+        start_x_adj = pitch_width - start_x if direction == "left" else start_x
+        end_x_adj = pitch_width - end_x if direction == "left" else end_x
         path_distance = _path_distance(path_points)
         action_str = f"{player_from} {action_name}"
         log_text = (
@@ -2127,8 +2145,8 @@ def generate_log_entry(
         start_pos, end_pos = dots[-2], dots[-1]
         start_x, start_y = float(start_pos["meter_x"]), float(start_pos["meter_y"])
         end_x, end_y = float(end_pos["meter_x"]), float(end_pos["meter_y"])
-        start_x_adj = FIELD_W - start_x if direction == "left" else start_x
-        end_x_adj = FIELD_W - end_x if direction == "left" else end_x
+        start_x_adj = pitch_width - start_x if direction == "left" else start_x
+        end_x_adj = pitch_width - end_x if direction == "left" else end_x
         # Progressive는 전진 '전달' 액션(패스/크로스/드리블 등)에만 — 수비(상대 공/슛 경로)엔 부적절하므로 제외
         if action_name not in {"Throw-in", "Kick-in"} and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
@@ -2147,10 +2165,10 @@ def generate_log_entry(
             raise ValueError("좌표 1개가 필요합니다.")
         start_pos = dots[-1]
         start_x, start_y = float(start_pos["meter_x"]), float(start_pos["meter_y"])
-        start_x_adj = FIELD_W - start_x if direction == "left" else start_x
+        start_x_adj = pitch_width - start_x if direction == "left" else start_x
         log_text = f"{half} | {team} | {direction} | {timeline} | Pos({start_x}, {start_y}) | {player_from} {action_name}"
 
-    in_penalty_box = is_in_penalty_area(start_x_adj, start_y) or is_in_either_penalty_area(start_x, start_y)
+    in_penalty_box = (not is_futsal) and (is_in_penalty_area(start_x_adj, start_y) or is_in_either_penalty_area(start_x, start_y))
     if in_penalty_box and "In-box" not in tags_list:
         tags_list.append("In-box")
     elif action_name in ["Goal", "Shot On Target", "Shot", "Blocked Shot"] and "Out-box" not in tags_list:
@@ -2164,7 +2182,6 @@ def generate_log_entry(
 
     # 풋살은 거리·골문 각도 기반 QC Shot Threat를 xG proxy로 쓴다. 축구 xG는 쓰지
     # 않되, Pitch Control은 좌표 정규화 기반 로직이므로 공통 계산을 유지한다.
-    is_futsal = sport.upper() == "FUTSAL"
     metrics: dict[str, Any] = {}
     if is_futsal and action_name == "Shot":
         threat = _futsal_shot_threat(start_x_adj, start_y)
@@ -2193,7 +2210,7 @@ def generate_log_entry(
     metric_end_y = end_y if end_y is not None else start_y
     metric_end_x_adj = end_x_adj if end_x_adj is not None else start_x_adj
     if is_futsal and action_code_raw in SHOT_BLOCK_CODES:
-        threat = _futsal_shot_threat(FIELD_W - start_x_adj, start_y)
+        threat = _futsal_shot_threat(pitch_width - start_x_adj, start_y)
         if threat is not None:
             metrics["xG"] = threat
             metrics["ShotThreat"] = threat
@@ -2274,6 +2291,8 @@ def generate_log_entry(
         else:
             log_text += f" | Metrics: {metrics_text}"
 
+    log_text += f" | Sport: {'FUTSAL' if is_futsal else 'FOOTBALL'}"
+
     dual_state_text = json.dumps(compact_dual_state, ensure_ascii=False, separators=(",", ":")) if compact_dual_state else ""
     if dual_state_text:
         log_text += f" | DualState: {dual_state_text}"
@@ -2301,6 +2320,7 @@ def generate_log_entry(
             "xPK": _metric_text_value(metrics.get("xPK")),
             "EPV": _metric_text_value(metrics.get("EPV")),
             "PC": _metric_text_value(metrics.get("PC")),
+            "Sport": "FUTSAL" if is_futsal else "FOOTBALL",
         },
     }
 

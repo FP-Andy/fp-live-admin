@@ -5320,7 +5320,7 @@ def export_fpa_logs(body: FpaExportLogsRequest):
     if not body.logs:
         raise HTTPException(status_code=400, detail="No logs to process")
     try:
-        df = parse_logs_to_dataframe(body.logs, body.match_id, body.teamid_h, body.teamid_a)
+        df = parse_logs_to_dataframe(body.logs, body.match_id, body.teamid_h, body.teamid_a, body.sport)
         workbook = build_analysis_workbook(df, scene_rows=body.rows)
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex

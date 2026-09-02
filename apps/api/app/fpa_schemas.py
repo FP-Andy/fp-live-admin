@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class FpaDot(BaseModel):
@@ -38,6 +38,20 @@ class FpaGenerateLogRequest(BaseModel):
     timeline: str = Field(min_length=1, max_length=20)
     sport: Literal["FOOTBALL", "FUTSAL"] = "FOOTBALL"
 
+    @model_validator(mode="after")
+    def validate_pitch_coordinates(self):
+        """풋살 태깅은 화면·저장·분석 모두 40×20m 실좌표만 받는다."""
+        if self.sport != "FUTSAL":
+            return self
+        dots = [*self.dots]
+        if self.dual_pitch:
+            dots.extend(self.dual_pitch.before.dots)
+            dots.extend(self.dual_pitch.after.dots)
+        for dot in dots:
+            if dot.meter_x > 40 or dot.meter_y > 20:
+                raise ValueError("풋살 FPA 좌표는 파란 코트 기준 0–40m × 0–20m여야 합니다.")
+        return self
+
 
 class FpaGenerateLogResponse(BaseModel):
     log_text: str
@@ -50,6 +64,7 @@ class FpaExportLogsRequest(BaseModel):
     match_id: str = ""
     teamid_h: str = ""
     teamid_a: str = ""
+    sport: Literal["FOOTBALL", "FUTSAL"] = "FOOTBALL"
 
 
 class FpaVisualizeResponse(BaseModel):

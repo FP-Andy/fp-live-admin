@@ -7992,6 +7992,12 @@ html.fpa-embed .topbar {
   object-fit: fill;
 }
 
+/* SVG 전체는 빨간 2m 프레임까지 포함해 44×24, 내부 파란 실코트는 정확히 40×20m다.
+   기존 축구 비율(1050×680)로 늘리면 파란 코트도 2:1이 아니게 되므로 원본 비율을 보존한다. */
+.fpa-live-shell .fpa-pitch.fpa-pitch-futsal {
+  aspect-ratio: 44 / 24;
+}
+
 .fpa-live-shell .fpa-pitch-futsal .fpa-futsal-pitch-image {
   display: block;
   pointer-events: none;
