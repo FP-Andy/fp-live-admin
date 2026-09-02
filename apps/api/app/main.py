@@ -8806,7 +8806,7 @@ async def upload_manual_clip(
     여러 클립이 동시에 올라오므로(병렬 업로드) 여기서는 job_metadata 를 건드리지 않는다.
     - 파일명은 클라이언트가 준 고유 index 로 정해 동시 요청끼리 이름이 겹치지 않게 하고,
     - 구간 정보는 클립마다 독립 사이드카(clip_XXX.json)로 남겨 서로 덮어쓰지 않게 한다.
-    합칠 때 이 사이드카들을 requested_start 순으로 모아 순서를 잡는다(list_manual_clip_info).
+    합칠 때 이 사이드카들을 order(=index) 순으로 모아 순서를 잡는다(list_manual_clip_info).
     무거운 디스크 복사는 스레드풀로 넘겨 이벤트 루프(다른 사용자의 요청)를 막지 않는다.
     """
     _require_manual_job(db, job_id, user)
@@ -8828,6 +8828,9 @@ async def upload_manual_clip(
                 "name": name,
                 "requested_start": round(float(requested_start), 3),
                 "requested_end": round(float(requested_end), 3),
+                # 원본이 여러 개면 requested_start 는 '그 원본 안에서의' 초라 파일이
+                # 달라지면 다시 작아진다. 합칠 순서는 이 order 로만 정한다.
+                "order": index,
             }),
             encoding="utf-8",
         )
