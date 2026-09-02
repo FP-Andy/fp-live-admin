@@ -11,6 +11,13 @@ services:
       - ${HIGHLIGHT_MODELS_HOST_DIR:-../../models}:/app/models:ro
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      # Recorded Broadcast overlay source/output are stored in the same
+      # private video bucket as the FHL API.  Keep this explicit instead of
+      # relying on an image-level default so the GPU worker can render and
+      # publish offline deliveries independently from the API server.
+      HIGHLIGHT_S3_BUCKET: ${HIGHLIGHT_S3_BUCKET:-}
+      HIGHLIGHT_S3_REGION: ${HIGHLIGHT_S3_REGION:-}
+      HIGHLIGHT_S3_ENDPOINT_URL: ${HIGHLIGHT_S3_ENDPOINT_URL:-}
       HIGHLIGHT_RUNTIME_DIR: /app/runtime/highlight
       HIGHLIGHT_WORKER_POLL_SECONDS: ${HIGHLIGHT_WORKER_POLL_SECONDS:-5}
       HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS: ${HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS:-1}

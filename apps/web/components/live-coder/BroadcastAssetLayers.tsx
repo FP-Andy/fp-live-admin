@@ -11,6 +11,7 @@ export type BroadcastCaptureGraphic =
   | 'MATCH_DOMINANCE';
 
 const fallbackColors = { HOME: '#ff7900', AWAY: '#1e27ff' } as const;
+const fallbackLogos = { HOME: '/broadcast/defaults/home.png', AWAY: '/broadcast/defaults/away.png' } as const;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -40,7 +41,7 @@ function team(snapshot: BroadcastSnapshot, side: 'HOME' | 'AWAY') {
     // placeholder must never replace the actual team name.
     name: matchTeam.name || label || side,
     color: color || fallbackColors[side],
-    logoUrl: logoUrl || '',
+    logoUrl: logoUrl || fallbackLogos[side],
     score: Number(matchTeam.score || 0),
   };
 }
@@ -196,7 +197,12 @@ function ShotsComparison({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const shots = snapshot.analysis.xg || [];
   const stats = (side: 'HOME' | 'AWAY') => {
     const rows = shots.filter((item) => item.team === side);
-    return { shots: rows.length, onTarget: rows.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length };
+    const baseline = snapshot.analysis.shots_comparison_baseline?.[side];
+    return {
+      shots: rows.length + Math.max(0, Number(baseline?.shots || 0)),
+      onTarget: rows.filter((item) => Number(item.xgot || 0) > 0 || item.is_goal).length
+        + Math.max(0, Number(baseline?.on_target || 0)),
+    };
   };
   const homeStats = stats('HOME');
   const awayStats = stats('AWAY');

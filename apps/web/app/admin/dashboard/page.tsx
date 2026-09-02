@@ -299,7 +299,7 @@ export default function Dashboard() {
   const load = async () => {
     try {
       const [matchesData, classData, streamStatusData, scheduleData] = await Promise.all([
-        apiJson<Match[]>(`/matches?sport=${sport}&include_fpa_manual=false`),
+        apiJson<Match[]>(`/matches?sport=${sport}&include_fpa_manual=false&compact=true`),
         apiJson<CompetitionClass[]>('/competition-classes'),
         apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
         apiJson<ScheduleEntry[]>('/schedule-entries').catch(() => []),
@@ -318,7 +318,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 3000);
+    // 목록은 가벼운 compact 응답만 받는다. 5초 주기면 운영 상태를 보기에 충분하면서
+    // 여러 탭이 열려도 아카이브·에셋 metadata를 반복 전송/렌더하지 않는다.
+    const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
   }, [sport]);
 

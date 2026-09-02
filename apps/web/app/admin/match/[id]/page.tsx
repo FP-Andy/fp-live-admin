@@ -88,6 +88,7 @@ export default function MatchPage() {
   const [xgPlayerKey, setXgPlayerKey] = useState('');
   const [lineupFirstSide, setLineupFirstSide] = useState<Team>('HOME');
   const [isUploadingLineup, setIsUploadingLineup] = useState(false);
+  const [isUploadingRecordSheet, setIsUploadingRecordSheet] = useState(false);
   const [isSwappingLineup, setIsSwappingLineup] = useState(false);
   const [manualLineupSide, setManualLineupSide] = useState<Team>('HOME');
   const [manualLineupNumber, setManualLineupNumber] = useState('');
@@ -96,6 +97,7 @@ export default function MatchPage() {
   const [isSavingManualLineup, setIsSavingManualLineup] = useState(false);
   const [isManualLineupOpen, setIsManualLineupOpen] = useState(false);
   const lineupInputRef = useRef<HTMLInputElement | null>(null);
+  const recordSheetInputRef = useRef<HTMLInputElement | null>(null);
   const [shotPoint, setShotPoint] = useState<{ x: number; y: number } | null>(null);
   const [isOnTargetShot, setIsOnTargetShot] = useState(false);
   const [goalmouthPoint, setGoalmouthPoint] = useState<{ x: number; y: number } | null>(null);
@@ -327,7 +329,7 @@ export default function MatchPage() {
 
   useEffect(() => {
     setXgPlayerKey('');
-  }, [xgTeam, match?.metadata?.lineup_pdf_uploaded_at, match?.metadata?.lineup_manual_updated_at]);
+  }, [xgTeam, match?.metadata?.lineup_pdf_uploaded_at, match?.metadata?.lineup_record_sheet_uploaded_at, match?.metadata?.lineup_manual_updated_at]);
 
   useEffect(() => {
     if (isGoalShot && !isOnTargetShot) {
@@ -852,6 +854,36 @@ export default function MatchPage() {
     }
   };
 
+  const uploadLineupRecordSheet = async (file: File | null) => {
+    if (!file || !canWrite || isUploadingRecordSheet) return;
+    setIsUploadingRecordSheet(true);
+    setCopyMessage('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('first_team_side', lineupFirstSide);
+      const response = await fetch(`${API_BASE}/matches/${id}/lineup/record-sheet`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || 'Excel lineup upload failed');
+      }
+      const data = await response.json();
+      setMatch(data.match);
+      const homeCount = data.lineups?.teams?.HOME?.length || 0;
+      const awayCount = data.lineups?.teams?.AWAY?.length || 0;
+      setCopyMessage(`엑셀 명단 반영: 홈 ${homeCount}명 / 원정 ${awayCount}명`);
+    } catch (error) {
+      setCopyMessage(error instanceof Error ? error.message : 'Excel lineup upload failed');
+    } finally {
+      setIsUploadingRecordSheet(false);
+      if (recordSheetInputRef.current) recordSheetInputRef.current.value = '';
+      setTimeout(() => setCopyMessage(''), 3000);
+    }
+  };
+
   const swapLineupSides = async () => {
     if (!canWrite || isSwappingLineup || !hasLineupPlayers) return;
     setIsSwappingLineup(true);
@@ -1370,13 +1402,13 @@ export default function MatchPage() {
           </div>
           <div className="match-lineup-actions">
             <div className="match-lineup-action-row">
-              <span className="muted">Lineup PDF first team</span>
-              <select value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team)} disabled={!canWrite || isUploadingLineup}>
+              <span className="muted">파일 첫 팀 → FLA</span>
+              <select value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team)} disabled={!canWrite || isUploadingLineup || isUploadingRecordSheet}>
                 <option value="HOME">HOME</option>
                 <option value="AWAY">AWAY</option>
               </select>
               <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
-                {isUploadingLineup ? 'Parsing...' : 'Upload Lineup PDF'}
+                {isUploadingLineup ? '분석 중…' : 'PDF 명단 업로드'}
               </button>
               <input
                 ref={lineupInputRef}
@@ -1384,6 +1416,16 @@ export default function MatchPage() {
                 accept="application/pdf,.pdf"
                 style={{ display: 'none' }}
                 onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
+              />
+              <button className="btn-secondary" onClick={() => recordSheetInputRef.current?.click()} disabled={!canWrite || isUploadingRecordSheet}>
+                {isUploadingRecordSheet ? '반영 중…' : '815 엑셀 명단 업로드'}
+              </button>
+              <input
+                ref={recordSheetInputRef}
+                type="file"
+                accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
+                style={{ display: 'none' }}
+                onChange={(event) => uploadLineupRecordSheet(event.target.files?.[0] || null)}
               />
             </div>
             <div className="match-lineup-action-row">
