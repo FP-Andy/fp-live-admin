@@ -133,6 +133,8 @@ export default function ManualHighlightPage() {
   const pendingSeekRef = useRef<number | null>(null);
   // 원본을 넘어갈 때 재생을 이어갈지.
   const resumeRef = useRef(false);
+  // 태그를 눌러 '그 클립만' 재생 중일 때의 끝 지점(이어붙인 초). null 이면 그냥 재생.
+  const previewEndRef = useRef<number | null>(null);
 
   // 각 원본이 이어붙인 타임라인에서 시작하는 지점.
   const offsets = useMemo(() => {
@@ -279,27 +281,24 @@ export default function ManualHighlightPage() {
     if (videoRef.current) videoRef.current.playbackRate = speed;
   }, [speed, videoUrl]);
 
-  const seekTo = useCallback((t: number) => {
+  const seekTo = useCallback((t: number, opts?: { play?: boolean }) => {
     if (!sources.length) return;
+    // 다른 데로 옮기면 태그 미리보기는 취소한다 — 그 구간을 벗어나기 때문.
+    previewEndRef.current = null;
     const { index, local } = locate(Math.max(0, Math.min(duration, t)));
     if (index !== activeIndex) {
       // 다른 원본이면 src 가 바뀐 뒤에야 옮길 수 있다. 재생 중이었으면 이어서 재생한다.
       pendingSeekRef.current = local;
-      resumeRef.current = !videoRef.current?.paused;
+      resumeRef.current = opts?.play ?? !videoRef.current?.paused;
       setActiveIndex(index);
       setCurrent(offsets[index] + local);
       return;
     }
     const v = videoRef.current;
-    if (v) v.currentTime = local;
+    if (!v) return;
+    v.currentTime = local;
+    if (opts?.play) void v.play();
   }, [sources, locate, duration, activeIndex, offsets]);
-
-  // 태그 클릭용 — 영상 시간을 옮기면서, 목록을 보다 아래로 스크롤한 상태여도
-  // 플레이어가 보이도록 화면을 위로 데려온다. (키보드 화살표 seek 에는 붙이지 않는다.)
-  const seekAndReveal = useCallback((t: number) => {
-    seekTo(t);
-    videoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [seekTo]);
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
@@ -322,6 +321,26 @@ export default function ManualHighlightPage() {
   }, [offsets, activeIndex]);
 
   const removeTag = (id: string) => setTags((prev) => prev.filter((p) => p.id !== id));
+
+  /** 이 태그로 만들어질 클립 구간 [시작, 끝] — 이어붙인 좌표. 원본 경계에서 잘린다. */
+  const clipRange = (tag: Tag): [number, number] => {
+    const { index } = locate(tag.t);
+    const srcStart = offsets[index] ?? 0;
+    const srcEnd = srcStart + (sources[index]?.duration ?? 0);
+    return [
+      Math.max(srcStart, tag.t - effBefore(tag)),
+      Math.min(srcEnd, tag.t + effAfter(tag)),
+    ];
+  };
+
+  /** 태그를 누르면 그 클립 구간만 재생하고 끝에서 멈춘다 — 실제로 어떤 클립이 나올지 확인용. */
+  const playTagClip = (tag: Tag) => {
+    const [start, end] = clipRange(tag);
+    seekTo(start, { play: true });
+    // seekTo 가 미리보기를 지우므로 그 뒤에 건다.
+    previewEndRef.current = end;
+    videoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   // 태그의 개별 앞/뒤 초를 바꾼다. undefined 로 넘기면 오버라이드를 지우고 전역 기본값으로 되돌린다.
   const updateTagPad = (id: string, key: 'before' | 'after', value: number | undefined) => {
@@ -671,8 +690,22 @@ export default function ManualHighlightPage() {
               }}
               onError={() => setUnsupported(true)}
               // 재생 위치는 이어붙인 좌표로 환산해 둔다 — 태그도 타임라인도 이 좌표를 쓴다.
-              onTimeUpdate={(e) => setCurrent((offsets[activeIndex] ?? 0) + e.currentTarget.currentTime)}
+              onTimeUpdate={(e) => {
+                const v = e.currentTarget;
+                const at = (offsets[activeIndex] ?? 0) + v.currentTime;
+                setCurrent(at);
+                // 태그로 시작한 미리보기면 클립 끝에서 멈춘다.
+                if (previewEndRef.current !== null && at >= previewEndRef.current) {
+                  previewEndRef.current = null;
+                  v.pause();
+                }
+              }}
               onEnded={() => {
+                // 태그 미리보기 중이면 그 클립까지만 보여주고 멈춘다.
+                if (previewEndRef.current !== null) {
+                  previewEndRef.current = null;
+                  return;
+                }
                 // 마지막이 아니면 다음 원본을 이어서 재생한다 — 한 편처럼 보이게.
                 if (activeIndex + 1 >= sources.length) return;
                 pendingSeekRef.current = 0;
@@ -835,13 +868,13 @@ export default function ManualHighlightPage() {
                       }}
                     >
                       <span style={{ color: 'var(--muted, #999)', width: 28 }}>{i + 1}</span>
-                      {/* 확인은 클립을 처음부터 봐야 하므로, 태깅 시점이 아니라 클립 시작(앞 패딩 적용)으로 옮긴다. */}
+                      {/* 이 태그로 어떤 클립이 나오는지 그대로 보여준다 — 클립 시작부터 재생하고 끝에서 멈춘다. */}
                       <button
                         style={smallBtn}
-                        title={`클립 시작(${fmt(Math.max(0, tag.t - before))})으로 이동 — 태깅 시점은 ${fmt(tag.t)}`}
-                        onClick={() => seekAndReveal(Math.max(0, tag.t - before))}
+                        title={`이 클립만 재생 (${fmt(clipRange(tag)[0])} ~ ${fmt(clipRange(tag)[1])}) — 태깅 시점은 ${fmt(tag.t)}`}
+                        onClick={() => playTagClip(tag)}
                       >
-                        {fmt(tag.t)}
+                        ▶ {fmt(tag.t)}
                       </button>
                       {sources.length > 1 ? (
                         // 이어붙인 좌표만 보면 원본 어디인지 알 수 없다. 파일 안 위치도 같이 보여준다.
