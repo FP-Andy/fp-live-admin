@@ -444,6 +444,7 @@ def merge_clips_for_job(job_id: str) -> None:
                     "-f", "concat", "-safe", "0",
                     "-i", str(list_file),
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                    "-pix_fmt", "yuv420p",
                     "-c:a", "aac",
                     "-movflags", "+faststart",
                     str(export_path),
@@ -451,8 +452,10 @@ def merge_clips_for_job(job_id: str) -> None:
                 check=True, capture_output=True, text=True,
             )
         except subprocess.CalledProcessError as ex:
-            detail = (ex.stderr or ex.stdout or str(ex))[-300:]
-            update_job(db, job_id, status="error", error_message=f"합치기 실패: {detail}")
+            update_job(
+                db, job_id, status="error",
+                error_message=f"합치기 실패: {_ffmpeg_failure_detail(ex)}",
+            )
             return
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
@@ -540,6 +543,20 @@ def list_manual_clip_info(job_id: str) -> list[dict]:
     return infos
 
 
+def _ffmpeg_failure_detail(ex: subprocess.CalledProcessError) -> str:
+    """ffmpeg 실패를 사람이 읽을 수 있는 한 줄로. 진행률 로그에 원인이 묻히지 않게 한다.
+
+    -9(SIGKILL)/137 은 커널 OOM killer 가 죽인 것이라 stderr 에 아무 설명도 남지 않는다.
+    그대로 두면 "합치기 실패: frame=3246 fps=190 ..." 같은 진행률만 보이므로 여기서 못 박는다.
+    """
+    if ex.returncode in (-9, 137):
+        return "메모리가 부족해 인코딩이 중단됐습니다(커널이 ffmpeg 를 종료). 클립 수나 해상도를 줄여 다시 시도해 주세요."
+    detail = (ex.stderr or ex.stdout or str(ex)).strip()
+    # 진행률 줄(frame=... fps=...)은 원인이 아니므로 버리고 실제 메시지만 남긴다.
+    lines = [ln for ln in detail.splitlines() if ln.strip() and not ln.lstrip().startswith("frame=")]
+    return (" / ".join(lines[-3:]) or detail)[-300:]
+
+
 def merge_manual_clips_for_job(job_id: str) -> None:
     """수동 태깅 클립들을 정확한 지점으로 다듬어 하나로 합친다.
 
@@ -600,7 +617,9 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         if has_intro:
             iw, ih, ifps = _probe_video_dims(clips_to_use[0][0])
 
-        args: list[str] = ["ffmpeg", "-y"]
+        # -nostats: 진행률 줄을 stderr 에 쏟지 않게 한다. capture_output 으로 전부 메모리에
+        # 쌓이는 데다, 실패했을 때 정작 원인 메시지를 밀어내 버린다.
+        args: list[str] = ["ffmpeg", "-y", "-nostats"]
         # 인트로 입력은 맨 앞에 둬 클립 입력 인덱스가 그 뒤로 밀리게 한다.
         if has_intro:
             args += ["-loop", "1", "-t", f"{intro_dur:.3f}", "-i", str(intro_path)]
@@ -687,6 +706,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             "-filter_complex", filter_complex,
             "-map", v_map, "-map", a_map,
             "-c:v", "libx264", "-preset", MERGE_PRESET, "-crf", "23",
+            # 체인 앞쪽의 format=yuv420p 는 xfade 의 '입력' 링크만 묶는다. 출력 링크는 인코더와
+            # 다시 협상해 yuv444p(High 4:4:4 Predictive)로 빠지는데, 그 프로파일은 브라우저·
+            # 모바일 하드웨어 디코더가 못 읽는다. 출력 픽셀포맷을 여기서 못 박는다.
+            "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-movflags", "+faststart",
             str(export_path),
@@ -695,8 +718,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         try:
             subprocess.run(args, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as ex:
-            detail = (ex.stderr or ex.stdout or str(ex))[-300:]
-            update_job(db, job_id, status="error", error_message=f"합치기 실패: {detail}")
+            update_job(
+                db, job_id, status="error",
+                error_message=f"합치기 실패: {_ffmpeg_failure_detail(ex)}",
+            )
             return
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
