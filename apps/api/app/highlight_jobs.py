@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -517,6 +518,24 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
         return 1280, 720, "30"
 
 
+def _has_audio(path: Path) -> bool:
+    """클립에 오디오 트랙이 있는가. 없으면 무음을 만들어 붙여야 조각 규격이 맞는다."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_type",
+                "-of", "default=nw=1:nk=1",
+                str(path),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        return "audio" in (result.stdout or "")
+    except subprocess.CalledProcessError:
+        return False
+
+
 def list_manual_clip_info(job_id: str) -> list[dict]:
     """수동 태깅 클립들의 구간 정보를 합칠 순서대로 모아 돌려준다.
 
@@ -560,9 +579,22 @@ def _ffmpeg_failure_detail(ex: subprocess.CalledProcessError) -> str:
     if ex.returncode in (-9, 137):
         return "메모리가 부족해 인코딩이 중단됐습니다(커널이 ffmpeg 를 종료). 클립 수나 해상도를 줄여 다시 시도해 주세요."
     detail = (ex.stderr or ex.stdout or str(ex)).strip()
-    # 진행률 줄(frame=... fps=...)은 원인이 아니므로 버리고 실제 메시지만 남긴다.
-    lines = [ln for ln in detail.splitlines() if ln.strip() and not ln.lstrip().startswith("frame=")]
-    return (" / ".join(lines[-3:]) or detail)[-300:]
+    # ffmpeg 은 실패해도 끝에 인코더 통계(x264 의 mb/QP/kb-s 요약)를 잔뜩 뱉는다. 그대로
+    # 마지막 줄을 보여주면 "i8c dc,h,v,p: 50% 30% ..." 같은 통계만 보이고 원인은 묻힌다.
+    # 진행률·통계를 걷어내고, 원인처럼 보이는 줄을 우선 고른다.
+    lines = [
+        ln.strip() for ln in detail.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("frame=")
+    ]
+    noise = re.compile(r"^\[libx264 .*\]\s*(frame |mb |i16 |i8c |coded |kb/s|final ratefactor|ref P|8x8|direct|profile|using )", re.I)
+    lines = [ln for ln in lines if not noise.search(ln)]
+    hints = re.compile(
+        r"(error|invalid|could not|cannot|failed|no such|denied|unsupported|out of memory|no space)",
+        re.I,
+    )
+    # "Conversion failed!" 는 결과만 알려줄 뿐 원인이 아니라 뒤로 미룬다.
+    picked = [ln for ln in lines if hints.search(ln) and "conversion failed" not in ln.lower()]
+    return (" / ".join((picked or lines)[-3:]) or detail)[-300:]
 
 
 def merge_manual_clips_for_job(job_id: str) -> None:
@@ -622,115 +654,206 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         except (TypeError, ValueError):
             intro_dur = INTRO_SEC
         has_intro = bool(intro_path) and intro_path.exists() and intro_dur > 0
-        if has_intro:
-            iw, ih, ifps = _probe_video_dims(clips_to_use[0][0])
 
-        # -nostats: 진행률 줄을 stderr 에 쏟지 않게 한다. capture_output 으로 전부 메모리에
-        # 쌓이는 데다, 실패했을 때 정작 원인 메시지를 밀어내 버린다.
-        args: list[str] = ["ffmpeg", "-y", "-nostats"]
-        # 인트로 입력은 맨 앞에 둬 클립 입력 인덱스가 그 뒤로 밀리게 한다.
-        if has_intro:
-            args += ["-loop", "1", "-t", f"{intro_dur:.3f}", "-i", str(intro_path)]
-            args += [
-                "-f", "lavfi", "-t", f"{intro_dur:.3f}",
-                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-            ]
-            clip_base = 2
-        else:
-            clip_base = 0
+        # 예전에는 클립 N 개를 한 filter_complex 에 전부 물려 xfade 로 체인했다. 그러면
+        # 디코더 컨텍스트 N 개가 동시에 살아 있어야 해서, 3840x800 클립 19 개면 6.1GB 까지
+        # 올라가 커널 OOM killer 에 죽었다(앱 서버 t3.medium 은 4GB). 대신 조각으로 나눠 굽는다.
+        #
+        #   본체_k = 클립_k 에서 앞뒤 크로스페이드 몫을 뺀 구간      (입력 1개)
+        #   전환_k = 클립_k 의 꼬리 d 초 + 클립_{k+1} 의 머리 d 초  (입력 2개, xfade)
+        #   결과   = 본체_0, 전환_0, 본체_1, 전환_1, …, 본체_{n-1}
+        #
+        # 마지막에 concat 디먹서로 이어 붙이므로 어느 순간에도 입력이 2개를 넘지 않는다.
+        # 보이는 결과는 종전과 같다 — xfade 는 A 의 마지막 d 초와 B 의 처음 d 초에만 걸리고
+        # 그 바깥 구간은 원본 그대로이기 때문이다.
+        work = job_dir(job_id) / "merge_pieces"
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True, exist_ok=True)
 
-        for path, offset, duration in clips_to_use:
-            args += ["-ss", f"{offset:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
+        # 인트로 이미지를 맞출 규격이자, 모든 조각을 통일할 규격.
+        vw, vh, vfps = _probe_video_dims(clips_to_use[0][0])
+        iw, ih, ifps = vw, vh, vfps
 
-        # 클립 사이는 크로스페이드(디졸브)로 잇는다. concat(하드컷) 대신 xfade(영상)+
-        # acrossfade(오디오)를 누적 offset 으로 체인한다. 원본이 하나라 클립들의 규격은
-        # 항상 동일해 xfade 가 안전하다. 인트로가 붙을 때만 이미지를 규격에 맞추고,
-        # 인트로→첫 클립은 지금처럼 하드컷(concat)으로 둔다(크로스페이드는 클립끼리만).
-        chains: list[str] = []
-
-        intro_v = intro_a = None
-        if has_intro:
-            ifade = INTRO_FADE_SEC
-            # 이미지를 클립 해상도·fps·SAR·픽셀포맷에 맞추고, 처음에 검정에서 페이드인만 한다.
-            # 끝에는 페이드아웃하지 않아 인트로가 밝게 유지되다 첫 클립으로 바로 하드컷된다.
-            chains.append(
-                f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
-                f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
-                f"fade=t=in:st=0:d={ifade:.3f}[vintro]"
-            )
-            intro_v, intro_a = "[vintro]", "[1:a]"
-
-        # 각 클립 영상을 xfade 가 받아들이도록 SAR·픽셀포맷을 통일한다(단일 원본이라 규격 동일).
-        # 오디오는 anull 로 한 번 통과시켜 항상 필터그래프 라벨로 만든다. 그래야 클립이
-        # 하나뿐이라 acrossfade 를 안 거치는 경우에도 raw 입력이 아닌 라벨을 -map 할 수 있다.
-        clip_v: list[str] = []
-        clip_a: list[str] = []
-        for k in range(used):
-            idx = clip_base + k
-            chains.append(f"[{idx}:v]setsar=1,format=yuv420p[cv{k}]")
-            chains.append(f"[{idx}:a]anull[ca{k}]")
-            clip_v.append(f"[cv{k}]")
-            clip_a.append(f"[ca{k}]")
-
-        # 클립들을 크로스페이드로 누적 연결. offset 은 그때까지 이어붙인 길이 - 페이드,
-        # 새 길이는 두 스트림 합에서 겹친 페이드만큼 뺀 값이다.
-        lengths = [clips_to_use[k][2] for k in range(used)]
-        if used == 1:
-            v_out, a_out = clip_v[0], clip_a[0]
-        else:
-            acc_len = lengths[0]
-            cur_v, cur_a = clip_v[0], clip_a[0]
-            for i in range(1, used):
-                # 이 경계에 걸 수 있는 페이드는 양쪽 길이를 넘을 수 없다. 짧은 클립이면 줄인다.
-                d = min(XFADE_SEC, acc_len, lengths[i])
-                nv, na = f"[xv{i}]", f"[xa{i}]"
-                if d <= 0.02:
-                    # 페이드를 걸 여유가 없는 경계(아주 짧은 클립)는 이 경계만 하드컷으로.
-                    chains.append(
-                        f"{cur_v}{cur_a}{clip_v[i]}{clip_a[i]}concat=n=2:v=1:a=1{nv}{na}"
-                    )
-                    acc_len = acc_len + lengths[i]
-                else:
-                    offset = max(0.0, acc_len - d)
-                    chains.append(
-                        f"{cur_v}{clip_v[i]}"
-                        f"xfade=transition=fade:duration={d:.3f}:offset={offset:.3f}{nv}"
-                    )
-                    chains.append(f"{cur_a}{clip_a[i]}acrossfade=d={d:.3f}{na}")
-                    acc_len = acc_len + lengths[i] - d
-                cur_v, cur_a = nv, na
-            v_out, a_out = cur_v, cur_a
-
-        if has_intro:
-            # 인트로(하드컷) + 크로스페이드로 이어붙인 클립 묶음.
-            chains.append(f"{intro_v}{intro_a}{v_out}{a_out}concat=n=2:v=1:a=1[v][a]")
-            v_map, a_map = "[v]", "[a]"
-        else:
-            v_map, a_map = v_out, a_out
-
-        filter_complex = ";".join(chains)
-        export_path = exports_dir() / f"{job_id}_export.mp4"
-        args += [
-            "-filter_complex", filter_complex,
-            "-map", v_map, "-map", a_map,
+        # 조각들은 concat 디먹서로 영상 재인코딩 없이 이어 붙이므로 규격이 한 톨도 달라선
+        # 안 된다. 원본이 여러 개면 프레임레이트가 서로 다를 수 있어 -r 로 못 박는다.
+        encode = [
             "-c:v", "libx264", "-preset", MERGE_PRESET, "-crf", "23",
             # 체인 앞쪽의 format=yuv420p 는 xfade 의 '입력' 링크만 묶는다. 출력 링크는 인코더와
             # 다시 협상해 yuv444p(High 4:4:4 Predictive)로 빠지는데, 그 프로파일은 브라우저·
             # 모바일 하드웨어 디코더가 못 읽는다. 출력 픽셀포맷을 여기서 못 박는다.
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
-            str(export_path),
+            "-pix_fmt", "yuv420p", "-r", vfps,
+            "-c:a", "aac", "-ar", "44100", "-ac", "2",
         ]
 
+        # xfade 는 두 입력의 해상도·프레임레이트가 같아야 하고, concat 디먹서도 조각 규격이
+        # 같아야 무재인코딩으로 붙는다. 원본이 여러 개면 파일마다 다를 수 있으므로 모든
+        # 영상 입력을 첫 클립 규격으로 맞춰 둔다(같은 규격이면 사실상 통과 필터다).
+        norm_v = (
+            f"scale={vw}:{vh}:force_original_aspect_ratio=decrease,"
+            f"pad={vw}:{vh}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={vfps},format=yuv420p"
+        )
+
+        lengths = [c[2] for c in clips_to_use]
+        has_sound = [_has_audio(c[0]) for c in clips_to_use]
+
+        # 경계마다 걸 크로스페이드 길이. 양쪽 클립의 1/3 을 넘지 않게 두면 어떤 클립도
+        # 앞뒤 페이드를 뺀 본체가 반드시 남는다(본체 >= 길이/3). 너무 짧으면 하드컷.
+        fades: list[float] = []
+        for k in range(used - 1):
+            d = min(XFADE_SEC, lengths[k] / 3.0, lengths[k + 1] / 3.0)
+            fades.append(0.0 if d <= 0.02 else d)
+
+        def head_fade(k: int) -> float:
+            return fades[k - 1] if k > 0 else 0.0
+
+        def tail_fade(k: int) -> float:
+            return fades[k] if k < used - 1 else 0.0
+
+        def clip_input(k: int, start: float, dur: float) -> list[str]:
+            return ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(clips_to_use[k][0])]
+
+        def silence(dur: float) -> list[str]:
+            """무음 트랙 입력. 필요한 길이보다 넉넉히 만들고 -shortest 로 영상에 맞춰 자른다.
+
+            딱 맞는 길이로 주면 영상 필터와 같은 그래프에 있을 때 오디오 쪽이 한 프레임도
+            내지 못한 채 EOF 로 끝나 "Could not open encoder before EOF" 로 죽는다.
+            """
+            return ["-f", "lavfi", "-t", f"{dur + 1.0:.3f}",
+                    "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+
+        pieces: list[Path] = []
+        rendered = 0
+        total_pieces = used + len(fades) + (1 if has_intro else 0)
+
+        def bump_progress() -> None:
+            nonlocal rendered
+            rendered += 1
+            percent = 30 + int(60 * rendered / max(1, total_pieces))
+            update_job(db, job_id, job_metadata=_json_safe({
+                **metadata,
+                "progress": _progress_payload(
+                    "merging", percent, f"조각 굽는 중 {rendered}/{total_pieces}",
+                ),
+            }))
+
         try:
-            subprocess.run(args, check=True, capture_output=True, text=True)
+            # 인트로 사진 — 종전처럼 하드컷으로 맨 앞에 붙는다(크로스페이드는 클립끼리만).
+            if has_intro:
+                out = work / "p000_intro.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-nostats",
+                    "-loop", "1", "-t", f"{intro_dur:.3f}", "-i", str(intro_path),
+                    *silence(intro_dur),
+                    "-filter_complex",
+                    f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
+                    f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
+                    f"fade=t=in:st=0:d={INTRO_FADE_SEC:.3f}[v]",
+                    "-map", "[v]", "-map", "1:a", "-shortest", *encode, str(out),
+                ], check=True, capture_output=True, text=True)
+                pieces.append(out)
+                bump_progress()
+
+            for k in range(used):
+                _, offset, length = clips_to_use[k]
+                # ── 본체: 앞뒤 페이드 몫을 뺀 구간 ──
+                body_start = offset + head_fade(k)
+                body_dur = length - head_fade(k) - tail_fade(k)
+                out = work / f"p{len(pieces):03d}_body{k:03d}.mp4"
+                args = ["ffmpeg", "-y", "-nostats", *clip_input(k, body_start, body_dur)]
+                if has_sound[k]:
+                    audio_map = "0:a"
+                else:
+                    args += silence(body_dur)
+                    audio_map = "1:a"
+                args += [
+                    "-filter_complex", f"[0:v]{norm_v}[v]",
+                    "-map", "[v]", "-map", audio_map,
+                    *([] if has_sound[k] else ["-shortest"]),
+                    *encode, str(out),
+                ]
+                subprocess.run(args, check=True, capture_output=True, text=True)
+                pieces.append(out)
+                bump_progress()
+
+                # ── 전환: 이 클립 꼬리 + 다음 클립 머리 ──
+                d = tail_fade(k)
+                if d <= 0:
+                    continue
+                nxt = k + 1
+                out = work / f"p{len(pieces):03d}_x{k:03d}.mp4"
+                args = [
+                    "ffmpeg", "-y", "-nostats",
+                    *clip_input(k, offset + length - d, d),
+                    *clip_input(nxt, clips_to_use[nxt][1], d),
+                ]
+                chains = [
+                    f"[0:v]{norm_v}[xa]",
+                    f"[1:v]{norm_v}[xb]",
+                    f"[xa][xb]xfade=transition=fade:duration={d:.3f}:offset=0[v]",
+                ]
+                # 무음 클립이 섞이면 acrossfade 를 걸 스트림이 없다. 그쪽만 무음을 만들어 준다.
+                a_left, a_right = "0:a", "1:a"
+                extra = 2
+                if not has_sound[k]:
+                    args += silence(d)
+                    a_left = f"{extra}:a"
+                    extra += 1
+                if not has_sound[nxt]:
+                    args += silence(d)
+                    a_right = f"{extra}:a"
+                    extra += 1
+                # acrossfade 는 첫 입력의 길이가 페이드 길이와 '같으면' 한 프레임도 내지 못하고
+                # 죽는다(Could not open encoder before EOF). 전환 조각은 정확히 d 초만 잘라
+                # 쓰므로 항상 그 조건에 걸린다. 같은 결과를 내는 페이드아웃+페이드인 합성으로
+                # 바꾼다 — acrossfade 의 기본 곡선(tri)도 afade 기본과 같은 선형이다.
+                # apad→atrim 으로 양쪽을 정확히 d 초로 맞춰, 오디오가 짧거나 없어도 견딘다.
+                afmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+                chains.append(
+                    f"[{a_left}]{afmt},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
+                    f"afade=t=out:st=0:d={d:.3f}[la]"
+                )
+                chains.append(
+                    f"[{a_right}]{afmt},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
+                    f"afade=t=in:st=0:d={d:.3f}[ra]"
+                )
+                chains.append(
+                    "[la][ra]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
+                )
+                args += [
+                    "-filter_complex", ";".join(chains),
+                    "-map", "[v]", "-map", "[a]",
+                    *([] if (has_sound[k] and has_sound[nxt]) else ["-shortest"]),
+                    *encode, str(out),
+                ]
+                subprocess.run(args, check=True, capture_output=True, text=True)
+                pieces.append(out)
+                bump_progress()
+
+            # ── 이어 붙이기: 디먹서라 한 번에 한 조각만 연다(메모리 일정) ──
+            list_file = work / "concat.txt"
+            list_file.write_text(
+                "".join(f"file '{p.name}'\n" for p in pieces), encoding="utf-8",
+            )
+            export_path = exports_dir() / f"{job_id}_export.mp4"
+            metadata["progress"] = _progress_payload("merging", 92, "이어 붙이는 중")
+            update_job(db, job_id, job_metadata=_json_safe(metadata))
+            subprocess.run([
+                "ffmpeg", "-y", "-nostats",
+                "-f", "concat", "-safe", "0", "-i", str(list_file),
+                # 영상은 그대로 복사(재인코딩 없음). 오디오만 다시 인코딩해 조각 경계의
+                # AAC 프라이밍 간극으로 '틱' 소리가 나지 않게 한다.
+                "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+                "-movflags", "+faststart",
+                str(export_path),
+            ], check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as ex:
             update_job(
                 db, job_id, status="error",
                 error_message=f"합치기 실패: {_ffmpeg_failure_detail(ex)}",
             )
             return
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
