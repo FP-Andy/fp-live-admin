@@ -58,7 +58,9 @@ function FutsalPitch({ alt }: { alt: string }) {
       <g fill="none" stroke="#FFFFFF" strokeWidth="0.14">
         <rect height="20" width="40" x="0" y="0" />
         <path d="M20 0V20M17 10a3 3 0 1 0 6 0a3 3 0 1 0-6 0" />
-        <path d="M0 17.83A6 6 0 0 1 6 11.83V8.17A6 6 0 0 1 0 2.17M40 17.83A6 6 0 0 0 34 11.83V8.17A6 6 0 0 0 40 2.17" />
+        {/* 6 m areas are inside the court.  The previous sweep flags drew the
+            arcs out toward the red surround, mirroring the supplied reference. */}
+        <path d="M0 2.17A6 6 0 0 1 6 8.17V11.83A6 6 0 0 1 0 17.83M40 2.17A6 6 0 0 0 34 8.17V11.83A6 6 0 0 0 40 17.83" />
         <path d="M0 8.5V11.5M40 8.5V11.5M10 19.7V20.3M15 19.7V20.3M25 19.7V20.3M30 19.7V20.3" />
         <path d="M0 0a.625.625 0 0 1 .625.625M40 0a.625.625 0 0 0-.625.625M0 20a.625.625 0 0 0 .625-.625M40 20a.625.625 0 0 1-.625-.625" />
       </g>

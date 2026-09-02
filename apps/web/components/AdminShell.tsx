@@ -187,6 +187,21 @@ const FCM_ITEMS: NavItem[] = [
   },
 ];
 
+const FUTSAL_FCM_ITEMS: NavItem[] = [
+  {
+    href: '/admin/fcm/futsal',
+    label: 'Queen Cup Cards',
+    icon: '▣',
+    match: (pathname) => pathname.startsWith('/admin/fcm/futsal'),
+  },
+  {
+    href: '/admin/fcm/guide',
+    label: 'Guide',
+    icon: '⋯',
+    match: (pathname) => pathname.startsWith('/admin/fcm/guide'),
+  },
+];
+
 const NAV_SECTIONS: NavSection[] = [
   { id: 'FLA', label: 'FLA', items: FLA_ITEMS },
   { id: 'FHL', label: 'FHL', items: FHL_ITEMS },
@@ -293,7 +308,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
     if (sport === 'BASKETBALL') {
       items = section.id === 'FLA' ? BASKETBALL_FLA_ITEMS : [];
     } else if (sport === 'FUTSAL') {
-      items = section.id === 'FLA' ? FUTSAL_FLA_ITEMS : section.id === 'FPA' ? FPA_ITEMS : [];
+      items = section.id === 'FLA' ? FUTSAL_FLA_ITEMS : section.id === 'FPA' ? FPA_ITEMS : section.id === 'FCM' ? FUTSAL_FCM_ITEMS : [];
     } else if (section.id === 'FLA' && user?.role !== 'SUPERADMIN') {
       items = section.items.filter((item) => item.href === '/admin/dashboard');
     } else if (section.id === 'FHL') {

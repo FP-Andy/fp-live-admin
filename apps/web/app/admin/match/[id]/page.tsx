@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine, ResponsiveContainer } from 'recharts';
@@ -12,6 +12,53 @@ const HALF_PITCH_LENGTH = 52.5;
 const XG_VISIBLE_LENGTH = 40;
 const XG_VISIBLE_OFFSET = HALF_PITCH_LENGTH - XG_VISIBLE_LENGTH;
 const PITCH_WIDTH = 68;
+const FUTSAL_HALF_PITCH_LENGTH = 20;
+const FUTSAL_PITCH_WIDTH = 20;
+
+function futsalShotThreat(x: number, y: number) {
+  // The stored coordinate is a 40 × 20 m court coordinate attacking the
+  // right goal.  This matches the FPA Queen Cup ShotThreat proxy (cap .80).
+  const dx = Math.max(0.001, 40 - x);
+  const offset = y - 10;
+  const distance = Math.hypot(dx, offset);
+  const angle = Math.abs(Math.atan2(1.5 - offset, dx) - Math.atan2(-1.5 - offset, dx));
+  return Math.max(0, Math.min(0.8, 0.8 * Math.exp(-0.1 * distance) * Math.pow(angle / Math.PI, 0.55)));
+}
+
+function FutsalShotPitch({
+  shotPoint,
+  onClick,
+  isOnTarget,
+}: {
+  shotPoint: { x: number; y: number } | null;
+  onClick: (event: MouseEvent<HTMLDivElement>) => void;
+  isOnTarget: boolean;
+}) {
+  return (
+    <div
+      className="futsal-shot-pitch"
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      aria-label="풋살 슛 위치 입력 피치"
+    >
+      <svg viewBox="-2 -2 24 24" preserveAspectRatio="none" aria-hidden="true">
+        <rect x="-2" y="-2" width="24" height="24" fill="#e6302f" />
+        <rect x="0" y="0" width="20" height="20" fill="#007ac0" />
+        <g fill="none" stroke="#fff" strokeWidth="0.14">
+          <rect x="0" y="0" width="20" height="20" />
+          <path d="M8.5 0V-1.2H11.5V0M2.17 0A6 6 0 0 1 8.17 6H11.83A6 6 0 0 1 17.83 0" />
+          <path d="M0 20H20M0 0H20" />
+        </g>
+        <g fill="#fff"><circle cx="10" cy="6" r=".12" /><circle cx="10" cy="10" r=".12" /></g>
+      </svg>
+      {shotPoint ? <span className="futsal-shot-marker" style={{ left: `${(shotPoint.y / FUTSAL_PITCH_WIDTH) * 100}%`, top: `${(1 - shotPoint.x / FUTSAL_HALF_PITCH_LENGTH) * 100}%` }} /> : null}
+      <span className="futsal-shot-pitch-label top">상대 골문</span>
+      <span className="futsal-shot-pitch-label bottom">20m × 20m · 공격 하프</span>
+      <span className="futsal-shot-pitch-label state">{isOnTarget ? '골문 좌표 입력 활성화' : '피치를 눌러 슛 위치 입력'}</span>
+    </div>
+  );
+}
 
 function regulationHalfMinutes(competitionClass?: string | null, firstHalfMinutes?: number | null) {
   if (Number.isFinite(Number(firstHalfMinutes)) && Number(firstHalfMinutes) > 0) {
@@ -133,6 +180,7 @@ export default function MatchPage() {
 
   const lineups = (match?.metadata?.lineups?.teams || {}) as Partial<Record<Team, LineupPlayer[]>>;
   const hasLineupPlayers = Boolean((lineups.HOME || []).length || (lineups.AWAY || []).length);
+  const isFutsal = match?.sport === 'FUTSAL';
   const xgPlayerOptions = useMemo(() => lineups[xgTeam] || [], [lineups, xgTeam]);
   const selectedXgPlayer = useMemo(
     () => xgPlayerOptions.find((player) => `${player.number}|${player.name}` === xgPlayerKey) || null,
@@ -170,6 +218,12 @@ export default function MatchPage() {
 
   const getShotCoordinates = () => {
     if (!shotPoint) return null;
+    if (isFutsal) {
+      return {
+        shot_x: Number((FUTSAL_HALF_PITCH_LENGTH + shotPoint.x).toFixed(2)),
+        shot_y: Number(shotPoint.y.toFixed(2)),
+      };
+    }
     return {
       shot_x: Number((HALF_PITCH_LENGTH + XG_VISIBLE_OFFSET + shotPoint.x).toFixed(2)),
       shot_y: shotPoint.y,
@@ -1119,9 +1173,10 @@ export default function MatchPage() {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-    // Rotated fixed-width zone (CCW 90deg visual): top is goal, bottom is 40m line.
-    const y = (px / rect.width) * PITCH_WIDTH;
-    const x = (1 - py / rect.height) * XG_VISIBLE_LENGTH;
+    // In both layouts top is the attacking goal. Queen Cup uses a 20 × 20 m
+    // attacking half, while football keeps the existing 40 × 68 m zone.
+    const y = (px / rect.width) * (isFutsal ? FUTSAL_PITCH_WIDTH : PITCH_WIDTH);
+    const x = (1 - py / rect.height) * (isFutsal ? FUTSAL_HALF_PITCH_LENGTH : XG_VISIBLE_LENGTH);
     setShotPoint({ x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) });
     setXgEstimateMeta('');
   };
@@ -1140,6 +1195,12 @@ export default function MatchPage() {
     const shotCoordinates = getShotCoordinates();
     if (!shotPoint || !shotCoordinates) {
       setXgEstimateMeta('Click on the pitch first');
+      return;
+    }
+    if (isFutsal) {
+      const threat = futsalShotThreat(shotCoordinates.shot_x, shotCoordinates.shot_y);
+      setXgValue(threat.toFixed(3));
+      setXgEstimateMeta(`Shot Threat=${threat.toFixed(3)} / 0.800 · 골문 거리·각도 기반`);
       return;
     }
     const res = await apiFetch('/xg/estimate', {
@@ -1678,7 +1739,7 @@ export default function MatchPage() {
           <div className="card card-panel grid">
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <h3 style={{ margin: 0 }}>xG Input</h3>
+                <h3 style={{ margin: 0 }}>{isFutsal ? 'Shot Threat Input' : 'xG Input'}</h3>
                 <select value={xgTeam} onChange={(e) => setXgTeam(e.target.value as Team)}>
                   <option value="HOME">HOME</option>
                   <option value="AWAY">AWAY</option>
@@ -1691,20 +1752,20 @@ export default function MatchPage() {
                     </option>
                   ))}
                 </select>
-                <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>{isOwnGoal ? 'Record OG' : 'Record xG'}</button>
+                <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>{isOwnGoal ? 'Record OG' : isFutsal ? 'Record Threat' : 'Record xG'}</button>
               </div>
             </div>
             <div className="grid" style={{ gap: 10 }}>
               <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                <span style={{ minWidth: 40, fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>xG</span>
-                <input value={xgValue} onChange={(e) => setXgValue(e.target.value)} placeholder="xG" style={{ minWidth: 120 }} />
-                  <button className="btn-secondary" onClick={estimateXgFromPitch} disabled={!canWrite}>Estimate xG</button>
+                <span style={{ minWidth: isFutsal ? 118 : 40, fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>{isFutsal ? 'Shot Threat' : 'xG'}</span>
+                <input value={xgValue} onChange={(e) => setXgValue(e.target.value)} placeholder={isFutsal ? '0.000–0.800' : 'xG'} style={{ minWidth: 120 }} />
+                  <button className="btn-secondary" onClick={estimateXgFromPitch} disabled={!canWrite}>{isFutsal ? '위협도 추정' : 'Estimate xG'}</button>
               </div>
-              <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+              {!isFutsal ? <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
                 <span style={{ minWidth: 62, fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>xGOT</span>
                 <input value={xgotValue} readOnly placeholder="xGOT" style={{ minWidth: 120, opacity: 0.95 }} />
                 <button className="btn-secondary" onClick={estimateXgotFromGoalmouth} disabled={!canWrite}>Estimate xGOT</button>
-              </div>
+              </div> : null}
             </div>
             <div
               style={{
@@ -1715,7 +1776,7 @@ export default function MatchPage() {
                 marginTop: isOnTargetShot ? 132 : 4,
               }}
             >
-              {isOnTargetShot ? (
+              {isOnTargetShot && !isFutsal ? (
                 <div
                   style={{
                     position: 'absolute',
@@ -1889,6 +1950,7 @@ export default function MatchPage() {
                   </div>
                 </div>
               ) : null}
+              {isFutsal ? <FutsalShotPitch shotPoint={shotPoint} onClick={onPitchClick} isOnTarget={isOnTargetShot} /> : <>
               <div
                 onClick={onPitchClick}
                 style={{
@@ -1951,11 +2013,12 @@ export default function MatchPage() {
               </div>
               <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>68m x 40m (rotated)</div>
             </div>
+              </>}
             </div>
             <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
-              <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>On Target</button>
+              {!isFutsal ? <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>On Target</button> : null}
               <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>Goal</button>
-              <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>Header</button>
+              {!isFutsal ? <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>Header</button> : null}
               <button className={isWeakFootShot ? 'btn-active' : ''} onClick={() => setIsWeakFootShot((prev) => !prev)} disabled={!canWrite}>Difficult</button>
               <button
                 className={isOwnGoal ? 'btn-active' : ''}
@@ -1973,7 +2036,7 @@ export default function MatchPage() {
                   : 'Click pitch to set shot location'}
               </span>
             </div>
-            <div className="muted">Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.</div>
+            <div className="muted">{isFutsal ? '풋살 20 × 20m 공격 하프의 골문 거리·각도로 Shot Threat(최대 0.800)를 추정합니다.' : 'Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.'}</div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
             {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}</div> : null}
           </div>

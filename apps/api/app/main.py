@@ -8216,6 +8216,45 @@ def summary(match_id: UUID, db: Session = Depends(get_db)):
     return _cache_set(_match_response_cache, cache_key, _build_match_summary(match_id, db))
 
 
+@app.get("/api/matches/{match_id}/events")
+def list_match_events_for_card_news(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """Internal FLA event feed for FCM.
+
+    The public partner feed deliberately remains football-only.  Card news is
+    an authenticated console workflow, so it also exposes Queen Cup FUTSAL
+    scoring events and their player attribution.
+    """
+    if not db.get(Match, match_id):
+        raise HTTPException(status_code=404, detail="Match not found")
+    rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id)
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+    return {
+        "match_id": str(match_id),
+        "events": [
+            {
+                "id": str(row.id),
+                "type": row.type,
+                "team": row.team,
+                "player_number": row.player_number,
+                "player_name": row.player_name,
+                "is_goal": bool(row.is_goal),
+                "xg": row.xg,
+                "shot_x": row.shot_x,
+                "shot_y": row.shot_y,
+            }
+            for row in rows
+        ],
+    }
+
+
 @app.get("/api/matches/{match_id}/dominance")
 def dominance(
     match_id: UUID,
