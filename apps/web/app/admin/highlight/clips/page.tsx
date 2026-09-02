@@ -176,6 +176,8 @@ export default function ClipResultsPage() {
   const [selectedMatch, setSelectedMatch] = useState<MatchRow | null>(null);
   const [clips, setClips] = useState<ClipRow[]>([]);
   const [detail, setDetail] = useState<ClipDetail | null>(null);
+  // 영상 src 는 클립이 바뀔 때만 갈아끼운다 — 아래 effect 참고.
+  const [videoSource, setVideoSource] = useState<{ clipId: string; url: string } | null>(null);
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -257,6 +259,21 @@ export default function ClipResultsPage() {
     }
   }, []);
 
+  // 프리사인이 만료(6시간)되거나 네트워크가 끊겨 재생이 실패하면, 그때만 새 서명을 받아 갈아끼우고
+  // 보던 위치로 되돌려 놓는다. 평소에는 위 effect 가 URL 을 붙들고 있어 재생이 끊기지 않는다.
+  const playedAtRef = useRef(0);      // 지금 보고 있는 위치(초)
+  const restoreAtRef = useRef<number | null>(null);  // 재발급 직후 한 번만 되돌릴 위치
+  const refreshVideoSource = useCallback(async (clipId: string) => {
+    try {
+      const d = await apiJson<ClipDetail>(`/highlight/clip-results/clips/${clipId}`);
+      if (!d.video_url) return;
+      restoreAtRef.current = playedAtRef.current;
+      setVideoSource({ clipId, url: d.video_url });
+    } catch {
+      /* 재발급 실패는 조용히 둔다 — 사용자가 새로고침으로 다시 열 수 있다. */
+    }
+  }, []);
+
   // 장면 모션은 서버가 렌더+S3 업로드까지 하므로(액션당 수 초) 클립 열 때·dual 저장 직후·수동 새로고침에만 부른다.
   const loadMotions = useCallback(async (clipId: string) => {
     setMotions([]);
@@ -276,6 +293,24 @@ export default function ClipResultsPage() {
       setMotionMsg(err instanceof Error ? err.message : String(err));
     }
   }, []);
+
+  // 영상 URL 은 S3 프리사인이라 조회할 때마다 서명이 달라진다. 액션을 새로 읽을 때마다(창 포커스,
+  // dual 저장 알림, 새로고침 버튼) 새 URL 이 <video src> 에 꽂히면 브라우저가 미디어를 통째로 다시
+  // 로드해 재생 위치가 0 으로 돌아간다 — 태깅 중 일시정지했다가 돌아오면 처음부터 재생되던 원인.
+  // 같은 클립을 보고 있는 동안에는 처음 받은 URL 을 그대로 붙들어 둔다(유효기간 6시간).
+  useEffect(() => {
+    const url = detail?.video_url;
+    if (!detail || !url) {
+      setVideoSource(null);
+      return;
+    }
+    setVideoSource((prev) => {
+      if (prev && prev.clipId === detail.id) return prev;
+      playedAtRef.current = 0;
+      restoreAtRef.current = null;
+      return { clipId: detail.id, url };
+    });
+  }, [detail]);
 
   // dual 팝업에서 저장하고 돌아오면(창 포커스) 액션을 다시 읽는다.
   useEffect(() => {
@@ -837,8 +872,16 @@ export default function ClipResultsPage() {
 
           {detail.video_url ? (
             <video
-              src={detail.video_url}
+              src={videoSource?.clipId === detail.id ? videoSource.url : detail.video_url}
               controls
+              onError={() => { void refreshVideoSource(detail.id); }}
+              onTimeUpdate={(e) => { playedAtRef.current = e.currentTarget.currentTime; }}
+              onLoadedMetadata={(e) => {
+                // 다른 클립으로 넘어간 경우엔 0 부터 — 재발급 때만 위치를 복원한다.
+                const at = restoreAtRef.current;
+                restoreAtRef.current = null;
+                if (at !== null && at > 0) e.currentTarget.currentTime = at;
+              }}
               // 고정 px 대신 화면 높이 비례 — 큰 모니터에서 그만큼 크게 보인다.
               // 아래 액션 목록이 바로 이어지므로 태깅 화면(68vh)보다 조금 낮게 잡는다.
               style={{ width: '100%', maxHeight: '62vh', minHeight: 320, background: '#000', borderRadius: 8 }}
