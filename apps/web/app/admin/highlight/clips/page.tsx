@@ -176,6 +176,8 @@ export default function ClipResultsPage() {
   const [selectedMatch, setSelectedMatch] = useState<MatchRow | null>(null);
   const [clips, setClips] = useState<ClipRow[]>([]);
   const [detail, setDetail] = useState<ClipDetail | null>(null);
+  // 영상 src 는 클립이 바뀔 때만 갈아끼운다 — 아래 effect 참고.
+  const [videoSource, setVideoSource] = useState<{ clipId: string; url: string } | null>(null);
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -190,6 +192,10 @@ export default function ClipResultsPage() {
   // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  // 대회 인입(competition-results) 전송 폼 — 사전 작업 매치를 신청 없이 앱으로 보낸다.
+  const [compForm, setCompForm] = useState<
+    { fpcCompetitionId: string; name: string; round: string; playedAt: string; venue: string } | null
+  >(null);
   // 제목 편집 중인 클립. null 이면 편집 중 아님. 비워서 저장하면 오버라이드 해제.
   const [titleEdit, setTitleEdit] = useState<{ id: string; value: string } | null>(null);
   const [titleSaving, setTitleSaving] = useState(false);
@@ -253,6 +259,21 @@ export default function ClipResultsPage() {
     }
   }, []);
 
+  // 프리사인이 만료(6시간)되거나 네트워크가 끊겨 재생이 실패하면, 그때만 새 서명을 받아 갈아끼우고
+  // 보던 위치로 되돌려 놓는다. 평소에는 위 effect 가 URL 을 붙들고 있어 재생이 끊기지 않는다.
+  const playedAtRef = useRef(0);      // 지금 보고 있는 위치(초)
+  const restoreAtRef = useRef<number | null>(null);  // 재발급 직후 한 번만 되돌릴 위치
+  const refreshVideoSource = useCallback(async (clipId: string) => {
+    try {
+      const d = await apiJson<ClipDetail>(`/highlight/clip-results/clips/${clipId}`);
+      if (!d.video_url) return;
+      restoreAtRef.current = playedAtRef.current;
+      setVideoSource({ clipId, url: d.video_url });
+    } catch {
+      /* 재발급 실패는 조용히 둔다 — 사용자가 새로고침으로 다시 열 수 있다. */
+    }
+  }, []);
+
   // 장면 모션은 서버가 렌더+S3 업로드까지 하므로(액션당 수 초) 클립 열 때·dual 저장 직후·수동 새로고침에만 부른다.
   const loadMotions = useCallback(async (clipId: string) => {
     setMotions([]);
@@ -272,6 +293,24 @@ export default function ClipResultsPage() {
       setMotionMsg(err instanceof Error ? err.message : String(err));
     }
   }, []);
+
+  // 영상 URL 은 S3 프리사인이라 조회할 때마다 서명이 달라진다. 액션을 새로 읽을 때마다(창 포커스,
+  // dual 저장 알림, 새로고침 버튼) 새 URL 이 <video src> 에 꽂히면 브라우저가 미디어를 통째로 다시
+  // 로드해 재생 위치가 0 으로 돌아간다 — 태깅 중 일시정지했다가 돌아오면 처음부터 재생되던 원인.
+  // 같은 클립을 보고 있는 동안에는 처음 받은 URL 을 그대로 붙들어 둔다(유효기간 6시간).
+  useEffect(() => {
+    const url = detail?.video_url;
+    if (!detail || !url) {
+      setVideoSource(null);
+      return;
+    }
+    setVideoSource((prev) => {
+      if (prev && prev.clipId === detail.id) return prev;
+      playedAtRef.current = 0;
+      restoreAtRef.current = null;
+      return { clipId: detail.id, url };
+    });
+  }, [detail]);
 
   // dual 팝업에서 저장하고 돌아오면(창 포커스) 액션을 다시 읽는다.
   useEffect(() => {
@@ -507,6 +546,51 @@ export default function ClipResultsPage() {
     }
   };
 
+  // 대회 인입 — 분석 신청 없이 사전 작업 매치를 앱으로 보낸다(수신부 competition-results).
+  // 팀은 이름·선수는 등번호로 싣고 매칭은 FinePlay 스테이징에서 한다. fpcMatchId 로 멱등.
+  const sendCompetition = async () => {
+    if (!selectedMatch?.match_id || !compForm) return;
+    if (!compForm.fpcCompetitionId.trim()) { setMsg('대회 ID(fpcCompetitionId)는 필수입니다.'); return; }
+    setBusy(true);
+    setMsg('');
+    try {
+      const match: Record<string, string> = {};
+      if (compForm.playedAt.trim()) match.playedAt = compForm.playedAt.trim();
+      if (compForm.venue.trim()) match.venue = compForm.venue.trim();
+      const res = await apiJson<{
+        callback_status?: string; http_status?: number; sent?: boolean;
+        summary?: { teams_with_lineup?: number; players?: number; clips?: number; profiles?: number; warnings?: string[] };
+      }>(
+        `/highlight/clip-results/matches/${selectedMatch.match_id}/send-competition`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            competition: {
+              fpcCompetitionId: compForm.fpcCompetitionId.trim(),
+              name: compForm.name.trim(),
+              ...(compForm.round.trim() ? { round: compForm.round.trim() } : {}),
+            },
+            match,
+          }),
+        },
+      );
+      const s = res.summary;
+      const summaryTxt = s
+        ? ` (팀 ${s.teams_with_lineup ?? 0} · 선수 ${s.players ?? 0} · 클립 ${s.clips ?? 0} · 프로필 ${s.profiles ?? 0}${s.warnings?.length ? ` · ⚠ ${s.warnings.join(' / ')}` : ''})`
+        : '';
+      // 수신부가 아직 검증전용이면 sent=false·501("계약 통과·저장 대기")로 온다 — 실패 아님.
+      const head = res.sent ? '대회 인입 전송 완료' : `대회 인입 — ${res.callback_status ?? ''}`;
+      setMsg(`${head}${summaryTxt}`);
+      setCompForm(null);
+      await loadMatches();
+    } catch (err) {
+      // 수신부 400(계약 위반)은 errors 를 담아 던진다 — 본문을 그대로 보여준다.
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // 딥링크 진입 땐 아카이브 잡까지 받아오므로, 목록 표시는 토글 기준으로 다시 거른다.
   const visibleMatches = showArchived ? matches : matches.filter((m) => !m.archived);
 
@@ -550,6 +634,16 @@ export default function ClipResultsPage() {
                   >
                     ⬆ FinePlay로 전송{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
                   </button>
+                  {selectedMatch.plan?.source === 'standalone' ? (
+                    <button
+                      style={primaryBtn}
+                      onClick={() => setCompForm({ fpcCompetitionId: '', name: '', round: '', playedAt: '', venue: '' })}
+                      disabled={busy}
+                      title="분석 신청 없이 대회 클립으로 앱에 보냅니다 — 팀·선수 매칭은 FinePlay 스테이징에서 확정합니다"
+                    >
+                      🏆 대회 인입 전송
+                    </button>
+                  ) : null}
                 </>
               ) : null}
             </>
@@ -573,6 +667,55 @@ export default function ClipResultsPage() {
         </div>
         {msg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}</p> : null}
       </div>
+
+      {compForm ? (
+        <div
+          onClick={() => { if (!busy) setCompForm(null); }}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 100,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ ...card, width: 420, maxWidth: '92vw', marginBottom: 0 }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>🏆 대회 인입 전송</h3>
+            <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--muted, #999)' }}>
+              분석 신청 없이 이 사전 작업 매치를 앱으로 보냅니다. 팀·선수 매칭은 FinePlay 스테이징에서 확정합니다.
+            </p>
+            {([
+              ['fpcCompetitionId', '대회 ID *', '예: cup-2026-fine', 'text'],
+              ['name', '대회 이름', '예: 2026 파인컵', 'text'],
+              ['round', '라운드', '예: 8강', 'text'],
+              ['playedAt', '경기 일시', '', 'datetime-local'],
+              ['venue', '장소', '예: 상암 보조구장', 'text'],
+            ] as const).map(([key, label, ph, inputType]) => (
+              <label key={key} style={{ display: 'block', marginBottom: 10 }}>
+                <span style={{ display: 'block', fontSize: 12, marginBottom: 4, color: 'var(--muted, #bbb)' }}>{label}</span>
+                <input
+                  type={inputType}
+                  value={compForm[key]}
+                  placeholder={ph}
+                  onChange={(e) => setCompForm((f) => (f ? { ...f, [key]: e.target.value } : f))}
+                  style={{
+                    width: '100%', padding: '7px 9px', borderRadius: 6, boxSizing: 'border-box',
+                    border: '1px solid var(--border-ghost, #3a3a42)',
+                    background: 'var(--surface-input, #1b1b1f)', color: 'var(--text, #eee)',
+                  }}
+                />
+              </label>
+            ))}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button style={smallBtn} onClick={() => setCompForm(null)} disabled={busy}>취소</button>
+              <button
+                style={primaryBtn}
+                onClick={() => void sendCompetition()}
+                disabled={busy || !compForm.fpcCompetitionId.trim()}
+              >
+                {busy ? '전송 중…' : '전송'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {!selectedMatch ? (
         <div style={card}>
@@ -729,8 +872,16 @@ export default function ClipResultsPage() {
 
           {detail.video_url ? (
             <video
-              src={detail.video_url}
+              src={videoSource?.clipId === detail.id ? videoSource.url : detail.video_url}
               controls
+              onError={() => { void refreshVideoSource(detail.id); }}
+              onTimeUpdate={(e) => { playedAtRef.current = e.currentTarget.currentTime; }}
+              onLoadedMetadata={(e) => {
+                // 다른 클립으로 넘어간 경우엔 0 부터 — 재발급 때만 위치를 복원한다.
+                const at = restoreAtRef.current;
+                restoreAtRef.current = null;
+                if (at !== null && at > 0) e.currentTarget.currentTime = at;
+              }}
               // 고정 px 대신 화면 높이 비례 — 큰 모니터에서 그만큼 크게 보인다.
               // 아래 액션 목록이 바로 이어지므로 태깅 화면(68vh)보다 조금 낮게 잡는다.
               style={{ width: '100%', maxHeight: '62vh', minHeight: 320, background: '#000', borderRadius: 8 }}
