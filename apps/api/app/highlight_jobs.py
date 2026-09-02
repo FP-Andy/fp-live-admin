@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -578,9 +579,22 @@ def _ffmpeg_failure_detail(ex: subprocess.CalledProcessError) -> str:
     if ex.returncode in (-9, 137):
         return "메모리가 부족해 인코딩이 중단됐습니다(커널이 ffmpeg 를 종료). 클립 수나 해상도를 줄여 다시 시도해 주세요."
     detail = (ex.stderr or ex.stdout or str(ex)).strip()
-    # 진행률 줄(frame=... fps=...)은 원인이 아니므로 버리고 실제 메시지만 남긴다.
-    lines = [ln for ln in detail.splitlines() if ln.strip() and not ln.lstrip().startswith("frame=")]
-    return (" / ".join(lines[-3:]) or detail)[-300:]
+    # ffmpeg 은 실패해도 끝에 인코더 통계(x264 의 mb/QP/kb-s 요약)를 잔뜩 뱉는다. 그대로
+    # 마지막 줄을 보여주면 "i8c dc,h,v,p: 50% 30% ..." 같은 통계만 보이고 원인은 묻힌다.
+    # 진행률·통계를 걷어내고, 원인처럼 보이는 줄을 우선 고른다.
+    lines = [
+        ln.strip() for ln in detail.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("frame=")
+    ]
+    noise = re.compile(r"^\[libx264 .*\]\s*(frame |mb |i16 |i8c |coded |kb/s|final ratefactor|ref P|8x8|direct|profile|using )", re.I)
+    lines = [ln for ln in lines if not noise.search(ln)]
+    hints = re.compile(
+        r"(error|invalid|could not|cannot|failed|no such|denied|unsupported|out of memory|no space)",
+        re.I,
+    )
+    # "Conversion failed!" 는 결과만 알려줄 뿐 원인이 아니라 뒤로 미룬다.
+    picked = [ln for ln in lines if hints.search(ln) and "conversion failed" not in ln.lower()]
+    return (" / ".join((picked or lines)[-3:]) or detail)[-300:]
 
 
 def merge_manual_clips_for_job(job_id: str) -> None:
@@ -788,7 +802,23 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     args += silence(d)
                     a_right = f"{extra}:a"
                     extra += 1
-                chains.append(f"[{a_left}][{a_right}]acrossfade=d={d:.3f}[a]")
+                # acrossfade 는 첫 입력의 길이가 페이드 길이와 '같으면' 한 프레임도 내지 못하고
+                # 죽는다(Could not open encoder before EOF). 전환 조각은 정확히 d 초만 잘라
+                # 쓰므로 항상 그 조건에 걸린다. 같은 결과를 내는 페이드아웃+페이드인 합성으로
+                # 바꾼다 — acrossfade 의 기본 곡선(tri)도 afade 기본과 같은 선형이다.
+                # apad→atrim 으로 양쪽을 정확히 d 초로 맞춰, 오디오가 짧거나 없어도 견딘다.
+                afmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+                chains.append(
+                    f"[{a_left}]{afmt},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
+                    f"afade=t=out:st=0:d={d:.3f}[la]"
+                )
+                chains.append(
+                    f"[{a_right}]{afmt},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
+                    f"afade=t=in:st=0:d={d:.3f}[ra]"
+                )
+                chains.append(
+                    "[la][ra]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
+                )
                 args += [
                     "-filter_complex", ";".join(chains),
                     "-map", "[v]", "-map", "[a]",
