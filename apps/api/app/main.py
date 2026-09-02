@@ -11097,6 +11097,257 @@ def clip_result_resend(
     return {"callback_status": "sent", "clips": len(payload["clips"])}
 
 
+def _competition_team_id(fpc_match_id: str, side: str) -> str:
+    """대회 팀 ID 합성 — 경기+사이드. 신청이 없어 FinePlay teamId 가 없으므로 우리가 만든다.
+    재전송해도 같은 값이라 FinePlay 매칭이 보존된다(핸드오프 스펙 §2-4·§3)."""
+    return f"{fpc_match_id}:{side}"
+
+
+def _competition_player_id(team_id: str, jersey: str) -> str:
+    """대회 선수 ID 합성 — {fpcTeamId}:{등번호}. 경기 안에서 유일하기만 하면 된다(§3)."""
+    return f"{team_id}:{jersey}"
+
+
+def _build_competition_payload(
+    db: Session,
+    clips: list[HighlightClip],
+    job: HighlightJob,
+    *,
+    competition: dict,
+    match: dict,
+    labels: dict[str, str],
+) -> tuple[dict, dict]:
+    """사전 작업 매치 → 대회 인입(competition-results) payload (핸드오프 스펙 §2-2).
+
+    analysis-results 는 신청 단위라 한 팀 관점 payload 를 홈/어웨이 따로 보냈다. 대회는
+    신청이 없어 teamId/playerId 가 없다 — 두 팀을 한 payload 에 담고, 팀은 fpcTeamId(경기+
+    사이드), 선수는 fpcPlayerId(fpcTeamId+등번호)로 우리가 합성해 가리킨다. 클립 분석 조립은
+    기존 사이드별 로직(_build_clip_result_payload)을 그대로 재사용하되, 라인업에 fpcPlayerId 를
+    playerId 로 심어 involvedPlayers 가 그 키로 묶이게 한다(합성 ID 는 콜론이 있어 userId 로
+    오인되지 않는다). 라인업 없는 팀 클립은 익명으로 그 팀에 귀속된다(§4-2, 미가입 선수 허용).
+    """
+    metadata = dict(job.job_metadata or {})
+    fpc_match_id = str(match.get("fpcMatchId") or "").strip()
+    links = dict(metadata.get("links") or {})
+
+    match_meta: dict = {}
+    if metadata.get("match_id"):
+        try:
+            m = db.get(Match, UUID(str(metadata["match_id"])))
+            match_meta = (m.metadata_json if m else None) or {}
+        except (ValueError, TypeError):
+            match_meta = {}
+    team_names = {
+        "home": str(match_meta.get("home_team") or labels.get("home") or ""),
+        "away": str(match_meta.get("away_team") or labels.get("away") or ""),
+    }
+
+    teams: list[dict] = []
+    warnings: list[str] = []
+    seen_clip_keys: set[str] = set()
+    merged_clips: list[dict] = []
+    profiles_by_id: dict[str, dict] = {}
+
+    for side in ("home", "away"):
+        team_id = _competition_team_id(fpc_match_id, side)
+        link = links.get(side) or {}
+        raw_lineup = list(link.get("lineup") or [])
+
+        players_block: list[dict] = []
+        injected_lineup: list[dict] = []
+        for entry in raw_lineup:
+            if not isinstance(entry, dict):
+                continue
+            jersey = str(entry.get("jerseyNumber") or entry.get("number") or "").strip()
+            if not jersey:
+                continue
+            pid = _competition_player_id(team_id, jersey)
+            player: dict = {
+                "fpcPlayerId": pid,
+                "name": str(entry.get("name") or "").strip(),
+            }
+            # 수신부 DTO 는 jerseyNumber 가 Integer — 숫자일 때만 싣는다(조끼 배번은 숫자).
+            if jersey.isdigit():
+                player["jerseyNumber"] = int(jersey)
+            position = str(entry.get("position") or "").strip()
+            if position:
+                player["position"] = position
+            players_block.append(player)
+            # 매칭 재사용을 위해 fpcPlayerId 를 playerId 로 심는다.
+            inj = dict(entry)
+            inj["jerseyNumber"] = jersey
+            inj["playerId"] = pid
+            injected_lineup.append(inj)
+
+        teams.append({
+            "fpcTeamId": team_id,
+            "name": team_names.get(side) or side,
+            "side": side.upper(),
+            "players": players_block,
+        })
+        if not raw_lineup:
+            warnings.append(f"{side} 라인업 없음 — 해당 팀 클립은 익명 귀속")
+
+        # 이 팀 관점 클립 조립 재사용 — 자기 팀 클립만, 자기(합성) 라인업으로 재매칭.
+        side_payload = _build_clip_result_payload(
+            db, clips, job,
+            our_side=side,
+            labels=labels,
+            rid=fpc_match_id,
+            team_id=team_id,
+            lineup=injected_lineup,
+            side_filter=side,
+            include_analysis=True,
+        )
+        for clip in side_payload.get("clips") or []:
+            key = str(clip.get("clipKey") or clip.get("fpcClipId") or "")
+            if not key or key in seen_clip_keys:
+                # team_side 없는 옛 클립은 양쪽 조립에 다 걸린다 — 먼저 처리한 홈에만 귀속.
+                continue
+            seen_clip_keys.add(key)
+            clip["fpcTeamId"] = team_id
+            # 수신부 DTO 는 durationSeconds 가 Integer — float 이면 Jackson 역직렬화가 막힌다.
+            hv = clip.get("highlightVideo")
+            if isinstance(hv, dict) and hv.get("durationSeconds") is not None:
+                try:
+                    hv["durationSeconds"] = int(round(float(hv["durationSeconds"])))
+                except (TypeError, ValueError):
+                    hv.pop("durationSeconds", None)
+            for p in clip.get("involvedPlayers") or []:
+                pid = p.pop("playerId", None)
+                if pid is None:
+                    continue
+                p["fpcPlayerId"] = str(pid)
+                prof = profiles_by_id.setdefault(str(pid), {
+                    "fpcPlayerId": str(pid),
+                    "profile": {
+                        "name": p.get("playerName"),
+                        "jerseyNumber": (p.get("playerView") or {}).get("jerseyNumber"),
+                        "clipCount": 0,
+                        "bestClipScore": None,
+                    },
+                })
+                prof["profile"]["clipCount"] += 1
+                cs = p.get("clipScore")
+                if cs is not None:
+                    prev = prof["profile"]["bestClipScore"]
+                    prof["profile"]["bestClipScore"] = cs if prev is None else max(prev, cs)
+            merged_clips.append(clip)
+
+    payload: dict = {
+        "competition": {
+            "fpcCompetitionId": str(competition.get("fpcCompetitionId") or "").strip(),
+            "name": str(competition.get("name") or "").strip(),
+        },
+        "match": {"fpcMatchId": fpc_match_id},
+        "teams": teams,
+        "clips": merged_clips,
+        "playerProfiles": list(profiles_by_id.values()),
+        "pipelineVersion": FINEPLAY_PIPELINE_VERSION,
+        "status": "DONE",
+    }
+    if competition.get("round"):
+        payload["competition"]["round"] = str(competition["round"]).strip()
+    if match.get("playedAt"):
+        payload["match"]["playedAt"] = str(match["playedAt"]).strip()
+    if match.get("venue"):
+        payload["match"]["venue"] = str(match["venue"]).strip()
+
+    summary = {
+        "teams_with_lineup": len([t for t in teams if t["players"]]),
+        "players": sum(len(t["players"]) for t in teams),
+        "clips": len(merged_clips),
+        "profiles": len(profiles_by_id),
+        "warnings": warnings,
+    }
+    return payload, summary
+
+
+@app.post("/api/highlight/clip-results/matches/{match_id}/send-competition")
+def clip_result_send_competition(
+    match_id: UUID,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """사전 작업 매치의 클립을 대회 인입(competition-results)으로 앱에 보낸다.
+
+    분석 신청 없이 보내는 경로 — 팀은 이름, 선수는 등번호+이름으로 싣고 매칭은 FinePlay
+    스테이징에서 한다(신청 연결·콜백 held 를 우회). 재전송은 fpcMatchId 로 멱등.
+
+    body: {competition:{fpcCompetitionId,name,round?}, match:{fpcMatchId?,playedAt?,venue?}}
+    fpcMatchId 생략 시 잡의 사전작업 ID(pre-xxxx)를 멱등키로 쓴다.
+    """
+    clips = (
+        db.query(HighlightClip)
+        .filter(HighlightClip.match_id == match_id)
+        .order_by(HighlightClip.order_index)
+        .all()
+    )
+    if not clips:
+        raise HTTPException(status_code=404, detail="이 매치에 클립이 없습니다.")
+    job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
+    if not job:
+        raise HTTPException(status_code=409, detail="클립의 원본 잡이 없습니다.")
+    metadata = dict(job.job_metadata or {})
+    if not metadata.get("standalone"):
+        raise HTTPException(status_code=409, detail="대회 인입은 사전 작업 매치에만 쓸 수 있습니다.")
+
+    competition = dict(body.get("competition") if isinstance(body.get("competition"), dict) else {})
+    if not str(competition.get("fpcCompetitionId") or "").strip():
+        # 수신부 검증이 필수로 막는다 — 왕복 전에 여기서 명확히 알린다.
+        raise HTTPException(status_code=400, detail="competition.fpcCompetitionId 는 필수입니다.")
+    match_body = dict(body.get("match") if isinstance(body.get("match"), dict) else {})
+    if not str(match_body.get("fpcMatchId") or "").strip():
+        match_body["fpcMatchId"] = str(metadata.get("analysis_request_id") or f"match:{match_id}")
+
+    payload, summary = _build_competition_payload(
+        db, clips, job, competition=competition, match=match_body, labels=labels,
+    )
+    if not payload["clips"]:
+        raise HTTPException(status_code=409, detail="보낼 클립이 없습니다 (클립 팀 사이드 태깅 확인).")
+
+    client = fineplay_default_client()
+    metadata["competition_payload"] = payload
+    metadata["competition_summary"] = summary
+    if not client.configured:
+        metadata["competition_callback_status"] = "skipped (FINEPLAY_API_TOKEN 미설정)"
+        update_job(db, job.id, job_metadata=metadata)
+        return {"callback_status": metadata["competition_callback_status"], "summary": summary, "sent": False}
+    try:
+        result = client.post_competition_results(payload)
+    except Exception as exc:
+        metadata["competition_callback_status"] = f"failed: {exc}"
+        update_job(db, job.id, job_metadata=metadata)
+        raise HTTPException(status_code=502, detail=f"대회 인입 전송 실패: {exc}")
+
+    code = int(result.get("status_code") or 0)
+    rbody = result.get("body") if isinstance(result.get("body"), dict) else {}
+    if code == 200:
+        status_label = "sent"
+    elif code == 501:
+        # 수신부가 계약 검증은 통과했으나 아직 저장 미구현 — 실패 아님(핸드오프 상태).
+        status_label = "contract-ok (수신부 저장 준비 중 · 501)"
+    elif code == 400:
+        errs = rbody.get("errors")
+        metadata["competition_callback_status"] = f"rejected(400): {errs}"
+        update_job(db, job.id, job_metadata=metadata)
+        raise HTTPException(status_code=422, detail={"message": "대회 인입 계약 위반(수신부 400)", "errors": errs})
+    else:
+        metadata["competition_callback_status"] = f"failed: HTTP {code} {rbody}"
+        update_job(db, job.id, job_metadata=metadata)
+        raise HTTPException(status_code=502, detail=f"대회 인입 실패: HTTP {code}")
+
+    metadata["competition_callback_status"] = status_label
+    update_job(db, job.id, job_metadata=metadata)
+    _audit(
+        db, "COMPETITION_RESULT_SENT", "highlight_job",
+        actor=user, target_id=job.id,
+        details={"fpcMatchId": match_body["fpcMatchId"], "http_status": code, **summary},
+    )
+    return {"callback_status": status_label, "http_status": code, "summary": summary, "response": rbody, "sent": code == 200}
+
+
 def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "operator":

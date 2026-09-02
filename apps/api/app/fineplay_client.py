@@ -106,6 +106,29 @@ class FinePlayClient:
             resp.raise_for_status()
             return resp.json() if resp.content else {}
 
+    def post_competition_results(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST /competition-results — 분석 신청 없는 대회 클립 인입(멱등키 fpcMatchId).
+
+        analysis-results 와 달리 teamId/playerId 가 없다. 팀은 이름, 선수는 등번호+이름으로
+        보내고, 클립은 fpcTeamId·fpcPlayerId(우리가 합성한 경기 내 유일 ID)로 가리킨다 —
+        FinePlay 가 스테이징에 받아 매칭 확정 후 팀·선수에 부여한다(핸드오프 스펙 §2).
+        영상은 analysis-results 와 같은 방식으로 이미 S3 에 올라가 있다.
+
+        수신부는 현재 계약 검증만 한다 — 200=접수(FAILED) / 501=계약 통과·저장 준비 중 /
+        400=계약 위반(body.errors 에 위치). 상태코드로 구분해야 하므로 raise_for_status
+        하지 않고 {status_code, body} 를 그대로 돌려준다(호출부가 해석).
+        """
+        import httpx
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(
+                self._url("/competition-results"), headers=self._headers(), json=payload
+            )
+            try:
+                body = resp.json() if resp.content else {}
+            except ValueError:
+                body = {"raw": resp.text}
+            return {"status_code": resp.status_code, "body": body}
+
     def heartbeat(
         self, analysis_request_id: int | str, *, lease_seconds: int | None = None
     ) -> dict[str, Any]:
