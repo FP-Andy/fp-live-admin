@@ -21,6 +21,9 @@ type JobStatus = {
 type Tag = { id: string; t: number; before?: number; after?: number };
 type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number };
 
+/** 이어붙일 원본 하나. duration 은 파일을 고른 직후 메타데이터에서 읽어 채운다. */
+type Source = { file: File; url: string; duration: number };
+
 const SPEEDS = [1, 1.5, 2, 3, 4];
 const SEEK_STEP = 5;
 const AUTOSAVE_PREFIX = 'fhl.manual.tags.';
@@ -73,15 +76,33 @@ function fmt(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** 재생하지 않고 길이만 읽는다 — 이어붙인 타임라인을 만들려면 각 원본의 길이가 먼저 필요하다. */
+function probeDuration(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.onloadedmetadata = () => {
+      const d = probe.duration;
+      probe.src = '';
+      // 길이를 못 읽으면(Infinity·NaN) 이어붙인 좌표가 통째로 어긋나므로 실패로 본다.
+      if (!Number.isFinite(d) || d <= 0) reject(new Error('영상 길이를 읽을 수 없습니다.'));
+      else resolve(d);
+    };
+    probe.onerror = () => reject(new Error('영상을 열 수 없습니다.'));
+    probe.src = url;
+  });
+}
+
 const fmtBytes = (bytes: number) => {
   const mb = bytes / (1024 * 1024);
   return mb < 1024 ? `${mb.toFixed(0)} MB` : `${(mb / 1024).toFixed(2)} GB`;
 };
 
 export default function ManualHighlightPage() {
-  const [file, setFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string>('');
-  const [duration, setDuration] = useState(0);
+  // 원본을 여러 개 고르면 고른 순서대로 이어붙인 '하나의 타임라인' 처럼 다룬다.
+  // 태그·클립 구간은 전부 이 이어붙인 좌표(글로벌 초)이고, 실제로 자를 때만 파일별 좌표로 되돌린다.
+  const [sources, setSources] = useState<Source[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
   const [current, setCurrent] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -107,27 +128,52 @@ export default function ManualHighlightPage() {
   const [introDuration, setIntroDuration] = useState(1.8);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const urlRef = useRef<string>('');
+  const urlsRef = useRef<string[]>([]);
+  // 원본이 바뀐 뒤 옮겨갈 위치(그 원본 안의 초). 메타데이터가 온 다음에야 적용할 수 있다.
+  const pendingSeekRef = useRef<number | null>(null);
+  // 원본을 넘어갈 때 재생을 이어갈지.
+  const resumeRef = useRef(false);
 
-  // 자동저장 키는 파일을 특정할 수 있는 최소 정보로 만든다 (이름+크기).
+  // 각 원본이 이어붙인 타임라인에서 시작하는 지점.
+  const offsets = useMemo(() => {
+    const out: number[] = [];
+    let acc = 0;
+    for (const src of sources) {
+      out.push(acc);
+      acc += src.duration;
+    }
+    return out;
+  }, [sources]);
+  const duration = useMemo(() => sources.reduce((sum, src) => sum + src.duration, 0), [sources]);
+  const videoUrl = sources[activeIndex]?.url || '';
+
+  /** 이어붙인 좌표 t 가 몇 번째 원본의 몇 초인지. */
+  const locate = useCallback((t: number) => {
+    if (!sources.length) return { index: 0, local: 0 };
+    let i = 0;
+    while (i + 1 < sources.length && t >= offsets[i] + sources[i].duration) i += 1;
+    return { index: i, local: Math.max(0, Math.min(sources[i].duration, t - offsets[i])) };
+  }, [sources, offsets]);
+
+  // 자동저장 키는 고른 원본 전체를 특정한다 (이름+크기, 순서 포함).
+  // 순서가 다르면 태그 좌표의 의미가 달라지므로 다른 작업으로 봐야 한다.
   const storageKey = useMemo(
-    () => (file ? `${AUTOSAVE_PREFIX}${file.name}:${file.size}` : ''),
-    [file],
+    () => (sources.length
+      ? `${AUTOSAVE_PREFIX}${sources.map((src) => `${src.file.name}:${src.file.size}`).join('|')}`
+      : ''),
+    [sources],
   );
 
   const revoke = useCallback(() => {
-    if (urlRef.current) {
-      URL.revokeObjectURL(urlRef.current);
-      urlRef.current = '';
-    }
+    for (const url of urlsRef.current) URL.revokeObjectURL(url);
+    urlsRef.current = [];
   }, []);
 
   useEffect(() => revoke, [revoke]);
 
-  const pickFile = (f: File | null) => {
+  const pickFiles = async (list: FileList | null) => {
     revoke();
     setTags([]);
-    setDuration(0);
     setCurrent(0);
     setPlaying(false);
     setUnsupported(false);
@@ -135,14 +181,44 @@ export default function ManualHighlightPage() {
     setClips([]);
     setCutError('');
     setCutProgress(null);
-    setFile(f);
-    if (!f) {
-      setVideoUrl('');
-      return;
+    setActiveIndex(0);
+    setSources([]);
+    const files = list ? Array.from(list) : [];
+    if (!files.length) return;
+
+    // 길이를 다 읽어야 이어붙인 좌표가 나온다. 하나라도 못 읽으면 태깅 자체가 어긋나므로 중단한다.
+    setStatus('영상 길이를 읽는 중…');
+    const made: Source[] = [];
+    for (const f of files) {
+      const url = URL.createObjectURL(f);
+      urlsRef.current.push(url);
+      try {
+        made.push({ file: f, url, duration: await probeDuration(url) });
+      } catch {
+        revoke();
+        setUnsupported(true);
+        setStatus('');
+        return;
+      }
     }
-    const url = URL.createObjectURL(f);
-    urlRef.current = url;
-    setVideoUrl(url);
+    setSources(made);
+    setStatus(made.length > 1
+      ? `${made.length}개를 고른 순서대로 이어 붙였습니다 — 총 ${fmt(made.reduce((sum, src) => sum + src.duration, 0))}`
+      : '');
+  };
+
+  /** 원본 순서 바꾸기 — 태그 좌표가 통째로 어긋나므로 태그가 없을 때만 허용한다. */
+  const moveSource = (index: number, delta: number) => {
+    setSources((prev) => {
+      const to = index + delta;
+      if (to < 0 || to >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[to]] = [next[to], next[index]];
+      return next;
+    });
+    setActiveIndex(0);
+    setCurrent(0);
+    setClips([]);
   };
 
   // 인트로 사진 미리보기용 objectURL 을 갈아끼울 때마다 이전 것을 해제한다.
@@ -204,10 +280,19 @@ export default function ManualHighlightPage() {
   }, [speed, videoUrl]);
 
   const seekTo = useCallback((t: number) => {
+    if (!sources.length) return;
+    const { index, local } = locate(Math.max(0, Math.min(duration, t)));
+    if (index !== activeIndex) {
+      // 다른 원본이면 src 가 바뀐 뒤에야 옮길 수 있다. 재생 중이었으면 이어서 재생한다.
+      pendingSeekRef.current = local;
+      resumeRef.current = !videoRef.current?.paused;
+      setActiveIndex(index);
+      setCurrent(offsets[index] + local);
+      return;
+    }
     const v = videoRef.current;
-    if (!v) return;
-    v.currentTime = Math.max(0, Math.min(v.duration || 0, t));
-  }, []);
+    if (v) v.currentTime = local;
+  }, [sources, locate, duration, activeIndex, offsets]);
 
   // 태그 클릭용 — 영상 시간을 옮기면서, 목록을 보다 아래로 스크롤한 상태여도
   // 플레이어가 보이도록 화면을 위로 데려온다. (키보드 화살표 seek 에는 붙이지 않는다.)
@@ -226,7 +311,7 @@ export default function ManualHighlightPage() {
   const addTag = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    const t = v.currentTime;
+    const t = (offsets[activeIndex] ?? 0) + v.currentTime;
     setTags((prev) => {
       // 같은 지점을 두 번 찍는 실수를 막는다 (1초 이내면 무시).
       if (prev.some((p) => Math.abs(p.t - t) < 1)) return prev;
@@ -234,7 +319,7 @@ export default function ManualHighlightPage() {
       next.sort((a, b) => a.t - b.t);
       return next;
     });
-  }, []);
+  }, [offsets, activeIndex]);
 
   const removeTag = (id: string) => setTags((prev) => prev.filter((p) => p.id !== id));
 
@@ -256,13 +341,15 @@ export default function ManualHighlightPage() {
       if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) return;
       if (!videoRef.current) return;
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
-      if (e.code === 'ArrowLeft') { e.preventDefault(); seekTo(videoRef.current.currentTime - SEEK_STEP); return; }
-      if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(videoRef.current.currentTime + SEEK_STEP); return; }
+      // seekTo 는 이어붙인 좌표를 받는다. 재생기 시간은 현재 원본 안의 초라 오프셋을 더해야 한다.
+      const now = (offsets[activeIndex] ?? 0) + videoRef.current.currentTime;
+      if (e.code === 'ArrowLeft') { e.preventDefault(); seekTo(now - SEEK_STEP); return; }
+      if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(now + SEEK_STEP); return; }
       if (e.key === 's' || e.key === 'S') { e.preventDefault(); addTag(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay, seekTo, addTag]);
+  }, [togglePlay, seekTo, addTag, offsets, activeIndex]);
 
   // 추출이나 업로드 도중에 창을 닫으면 작업이 끊기고, 업로드 중이었다면 서버에
   // 클립이 일부만 올라간 잡이 남는다. 최소한 경고는 띄운다.
@@ -282,23 +369,61 @@ export default function ManualHighlightPage() {
   useEffect(() => { setClips([]); setCutError(''); }, [tags, padBefore, padAfter]);
 
   const runCut = async () => {
-    if (!file || !tags.length || cutting) return;
+    if (!sources.length || !tags.length || cutting) return;
     setCutting(true);
     setCutError('');
     setClips([]);
     try {
       // ffmpeg 코어는 처음 쓸 때만 받는다(31MB). 초기 번들에는 넣지 않는다.
       const { cutClipsLocally } = await import('../../../../lib/localCut');
-      const requests = tags.map((tag) => {
+
+      // 태그는 이어붙인 좌표지만 자르는 건 원본 파일 하나하나다. 태그마다 어느 원본인지
+      // 찾아 그 안의 초로 되돌린다. 앞뒤 패딩이 원본 경계를 넘으면 그 원본 끝에서 자른다 —
+      // 두 파일에 걸친 한 장면을 두 클립으로 쪼개면 합칠 때 그 사이에 크로스페이드가 끼어
+      // 한 장면이 두 번 페이드되는 것처럼 보인다.
+      const perSource: { start: number; end: number }[][] = sources.map(() => []);
+      const placement: { src: number; pos: number }[] = [];
+      let clamped = 0;
+      for (const tag of tags) {
+        const { index, local } = locate(tag.t);
         const before = effBefore(tag);
         const after = effAfter(tag);
-        return {
-          start: Math.max(0, tag.t - before),
-          end: Math.min(duration || tag.t + after, tag.t + after),
-        };
-      });
-      const made = await cutClipsLocally(file, requests, setCutProgress);
+        const start = Math.max(0, local - before);
+        const end = Math.min(sources[index].duration, local + after);
+        if (start > local - before || end < local + after) clamped += 1;
+        placement.push({ src: index, pos: perSource[index].length });
+        perSource[index].push({ start, end });
+      }
+
+      // 원본별로 순서대로 자른다. 진행률은 전체 태그 수 기준으로 이어 붙인다.
+      const cutBySource: CutClip[][] = [];
+      let doneSoFar = 0;
+      for (let i = 0; i < sources.length; i += 1) {
+        if (!perSource[i].length) {
+          cutBySource.push([]);
+          continue;
+        }
+        const base = doneSoFar;
+        const isLast = !sources.slice(i + 1).some((_, k) => perSource[i + 1 + k].length);
+        // eslint-disable-next-line no-await-in-loop -- ffmpeg.wasm 인스턴스가 하나뿐이라 순차 처리해야 한다
+        const madeHere = await cutClipsLocally(sources[i].file, perSource[i], (p) => {
+          setCutProgress({
+            done: base + p.done,
+            total: tags.length,
+            phase: p.phase === 'finished' && !isLast ? 'cutting' : p.phase,
+          });
+        });
+        doneSoFar += perSource[i].length;
+        cutBySource.push(madeHere);
+      }
+
+      // 업로드·합치기 순서는 index 로 정해진다. 원본별로 잘랐으니 여기서 이어붙인
+      // 시간 순으로 번호를 다시 매긴다(tags 는 이미 시간순 정렬).
+      const made = placement.map((at, n) => ({ ...cutBySource[at.src][at.pos], index: n + 1 }));
       setClips(made);
+      if (clamped) {
+        setCutError(`알림: ${clamped}개 클립은 원본 경계에 걸려 그 영상 끝(또는 처음)까지만 잘랐습니다.`);
+      }
     } catch (err) {
       setCutError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -310,7 +435,7 @@ export default function ManualHighlightPage() {
 
   // 클립을 서버로 보내고 합치기까지 맡긴다. 원본은 올라가지 않는다.
   const publish = async () => {
-    if (!file || !clips.length || publishing) return;
+    if (!sources.length || !clips.length || publishing) return;
     setPublishing(true);
     setPublishError('');
     setDoneJobId('');
@@ -319,7 +444,11 @@ export default function ManualHighlightPage() {
     try {
       const { job_id: jobId } = await apiJson<{ job_id: string }>('/highlight/manual-jobs', {
         method: 'POST',
-        body: JSON.stringify({ source_filename: file.name }),
+        body: JSON.stringify({
+          source_filename: sources.length === 1
+            ? sources[0].file.name
+            : `${sources[0].file.name} 외 ${sources.length - 1}개`,
+        }),
       });
 
       // 병렬 업로드 — 클립을 하나씩 줄세우지 않고 여러 개를 동시에 올려 네트워크 왕복
@@ -431,20 +560,68 @@ export default function ManualHighlightPage() {
         <h2 style={{ fontSize: 18, marginTop: 0, marginBottom: 4 }}>수동 하이라이트 태깅</h2>
         <p style={{ fontSize: 13, color: 'var(--muted, #999)', marginTop: 0, marginBottom: 12 }}>
           영상을 업로드하지 않고 바로 재생합니다. 배속으로 넘겨보며 하이라이트 지점을 찍으면,
-          이후 그 구간만 잘라 올립니다.
+          이후 그 구간만 잘라 올립니다. 여러 개를 고르면 <strong>고른 순서대로 이어 붙여</strong>
+          한 편처럼 재생·태깅하고, 합본도 그 순서로 나옵니다.
         </p>
 
         <input
           type="file"
           accept="video/*"
-          onChange={(e) => pickFile(e.target.files?.[0] || null)}
+          multiple
+          onChange={(e) => { void pickFiles(e.target.files); }}
           style={{ fontSize: 13 }}
         />
-        {file ? (
-          <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>
-            {file.name} · {fmtBytes(file.size)}
-            {duration ? ` · ${fmt(duration)}` : ''}
-          </p>
+        {sources.length ? (
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {sources.map((src, i) => (
+              <div
+                key={`${src.file.name}:${src.file.size}:${i}`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 12,
+                  padding: '5px 9px', borderRadius: 6,
+                  background: i === activeIndex ? 'var(--surface-input, #16161a)' : 'transparent',
+                  border: `1px solid ${i === activeIndex ? 'var(--border-ghost, #3a3a42)' : 'transparent'}`,
+                  color: 'var(--muted, #999)',
+                }}
+              >
+                <span style={{ width: 18, color: 'var(--text, #eee)' }}>{i + 1}</span>
+                <button
+                  style={{ ...smallBtn, padding: '2px 8px' }}
+                  onClick={() => seekTo(offsets[i])}
+                  title="이 영상 처음으로 이동"
+                >
+                  ▶
+                </button>
+                <span style={{ color: 'var(--text, #eee)' }}>{src.file.name}</span>
+                <span>{fmtBytes(src.file.size)} · {fmt(src.duration)}</span>
+                {sources.length > 1 ? (
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                    <button
+                      style={{ ...smallBtn, padding: '2px 7px' }}
+                      disabled={i === 0 || tags.length > 0}
+                      title={tags.length ? '태그를 지운 뒤에 순서를 바꿀 수 있습니다 (태그 위치가 어긋납니다)' : '위로'}
+                      onClick={() => moveSource(i, -1)}
+                    >
+                      ▲
+                    </button>
+                    <button
+                      style={{ ...smallBtn, padding: '2px 7px' }}
+                      disabled={i === sources.length - 1 || tags.length > 0}
+                      title={tags.length ? '태그를 지운 뒤에 순서를 바꿀 수 있습니다 (태그 위치가 어긋납니다)' : '아래로'}
+                      onClick={() => moveSource(i, 1)}
+                    >
+                      ▼
+                    </button>
+                  </span>
+                ) : null}
+              </div>
+            ))}
+            {sources.length > 1 ? (
+              <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '4px 0 0' }}>
+                총 {sources.length}개 · {fmt(duration)} — 위 순서대로 이어 붙여 다룹니다.
+              </p>
+            ) : null}
+          </div>
         ) : null}
 
         {unsupported ? (
@@ -476,11 +653,27 @@ export default function ManualHighlightPage() {
               src={videoUrl}
               style={{ width: '100%', maxHeight: '60vh', background: '#000', borderRadius: 8 }}
               onLoadedMetadata={(e) => {
-                setDuration(e.currentTarget.duration || 0);
-                e.currentTarget.playbackRate = speed;
+                const v = e.currentTarget;
+                v.playbackRate = speed;
+                // 원본을 갈아끼운 직후에만 위치를 옮긴다(seekTo·자동 전환에서 예약해 둔 값).
+                const at = pendingSeekRef.current;
+                pendingSeekRef.current = null;
+                if (at !== null) v.currentTime = at;
+                if (resumeRef.current) {
+                  resumeRef.current = false;
+                  void v.play();
+                }
               }}
               onError={() => setUnsupported(true)}
-              onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
+              // 재생 위치는 이어붙인 좌표로 환산해 둔다 — 태그도 타임라인도 이 좌표를 쓴다.
+              onTimeUpdate={(e) => setCurrent((offsets[activeIndex] ?? 0) + e.currentTarget.currentTime)}
+              onEnded={() => {
+                // 마지막이 아니면 다음 원본을 이어서 재생한다 — 한 편처럼 보이게.
+                if (activeIndex + 1 >= sources.length) return;
+                pendingSeekRef.current = 0;
+                resumeRef.current = true;
+                setActiveIndex(activeIndex + 1);
+              }}
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
               controls
@@ -502,6 +695,23 @@ export default function ManualHighlightPage() {
                 seekTo(((e.clientX - rect.left) / rect.width) * duration);
               }}
             >
+              {/* 원본 경계 — 어디서 다음 영상으로 넘어가는지 눈에 보이게 */}
+              {duration && sources.length > 1
+                ? offsets.slice(1).map((off, i) => (
+                    <div
+                      key={`boundary-${i}`}
+                      title={`${i + 2}번째 영상 시작 (${fmt(off)})`}
+                      style={{
+                        position: 'absolute',
+                        left: `${(off / duration) * 100}%`,
+                        top: 0,
+                        bottom: 0,
+                        width: 1,
+                        background: 'var(--muted, #999)',
+                      }}
+                    />
+                  ))
+                : null}
               {duration ? (
                 <div
                   style={{
@@ -550,6 +760,7 @@ export default function ManualHighlightPage() {
               </label>
 
               <span style={{ fontSize: 13, color: 'var(--muted, #999)', marginLeft: 'auto' }}>
+                {sources.length > 1 ? `${activeIndex + 1}/${sources.length}번째 · ` : ''}
                 {fmt(current)} / {fmt(duration)}
               </span>
             </div>
@@ -620,6 +831,12 @@ export default function ManualHighlightPage() {
                     >
                       <span style={{ color: 'var(--muted, #999)', width: 28 }}>{i + 1}</span>
                       <button style={smallBtn} onClick={() => seekAndReveal(tag.t)}>{fmt(tag.t)}</button>
+                      {sources.length > 1 ? (
+                        // 이어붙인 좌표만 보면 원본 어디인지 알 수 없다. 파일 안 위치도 같이 보여준다.
+                        <span style={{ fontSize: 11, color: 'var(--muted, #999)' }}>
+                          {locate(tag.t).index + 1}번 {fmt(locate(tag.t).local)}
+                        </span>
+                      ) : null}
 
                       <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 3 }}>
                         앞

@@ -518,7 +518,7 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
 
 
 def list_manual_clip_info(job_id: str) -> list[dict]:
-    """수동 태깅 클립들의 구간 정보를 requested_start 순으로 모아 돌려준다.
+    """수동 태깅 클립들의 구간 정보를 합칠 순서대로 모아 돌려준다.
 
     업로드는 병렬이라 job_metadata 대신 클립마다 남긴 사이드카(clip_XXX.json)가 근거다.
     한 요청이 다른 요청의 기록을 덮어쓰지 않도록 파일 단위로 분리해 두었기 때문이다.
@@ -538,8 +538,16 @@ def list_manual_clip_info(job_id: str) -> list[dict]:
             continue
         if not (d / name).exists():
             continue
-        infos.append({"name": name, "requested_start": req_start, "requested_end": req_end})
-    infos.sort(key=lambda c: c["requested_start"])
+        infos.append({
+            "name": name,
+            "requested_start": req_start,
+            "requested_end": req_end,
+            "order": data.get("order"),
+        })
+    # 원본이 여러 개면 requested_start 는 '그 원본 안에서의' 초라 파일이 바뀌면 다시
+    # 작아진다. 그래서 순서는 업로드 때 받은 order 로 정하고, order 가 없는 옛 잡만
+    # 종전대로 requested_start 로 정렬한다(그때는 원본이 하나뿐이라 결과가 같다).
+    infos.sort(key=lambda c: (c["order"] is None, c["order"] or 0, c["requested_start"]))
     return infos
 
 
