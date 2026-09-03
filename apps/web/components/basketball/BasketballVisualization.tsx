@@ -38,6 +38,7 @@ type BasketballMatch = {
     period_minutes?: number;
   } | null;
 };
+type BasketballMatchPage = { items: BasketballMatch[]; total: number };
 
 type BasketballState = {
   events?: GameEvent[];
@@ -579,10 +580,10 @@ export default function BasketballVisualization() {
 
   useEffect(() => {
     let mounted = true;
-    apiJson<BasketballMatch[]>('/matches?sport=BASKETBALL')
-      .then((rows) => {
+    apiJson<BasketballMatchPage>('/matches/page?sport=BASKETBALL&archived=true&limit=100&compact=false')
+      .then((data) => {
         if (!mounted) return;
-        const archivedRows = rows.filter((row) => row.archived);
+        const archivedRows = Array.isArray(data.items) ? data.items : [];
         setMatches(archivedRows);
         setSelectedId((current) => current && archivedRows.some((row) => row.id === current) ? current : archivedRows[0]?.id || '');
       })

@@ -6533,6 +6533,114 @@ def list_dashboard_matches(
     }
 
 
+def _dashboard_bootstrap_payload(
+    *,
+    sport: str,
+    archived: bool,
+    competition_class: str | None,
+    limit: int,
+    offset: int,
+    db: Session,
+) -> dict:
+    """Build the dashboard's current page and summary values in one place."""
+    sport_code = _normalize_sport(sport)
+    class_code = (competition_class or "").strip().upper()
+    scope = db.query(Match).filter(Match.sport == sport_code, Match.competition_class != "FPA")
+    active_scope = scope.filter(Match.archived.is_(False))
+    archived_scope = scope.filter(Match.archived.is_(True))
+    page_scope = archived_scope if archived else active_scope
+    if class_code:
+        page_scope = page_scope.filter(Match.competition_class == class_code)
+    class_rows = scope.with_entities(Match.competition_class).distinct().order_by(Match.competition_class).all()
+    return {
+        "items": [_serialize_match(row, compact=True) for row in page_scope.order_by(desc(Match.created_at)).offset(offset).limit(limit).all()],
+        "total": page_scope.order_by(None).count(),
+        "active_total": active_scope.order_by(None).count(),
+        "archived_total": archived_scope.order_by(None).count(),
+        "assigned_total": active_scope.filter(Match.operator_id.isnot(None)).order_by(None).count(),
+        "rtmp_total": active_scope.filter(Match.metadata_json["ingest_protocol"].astext == "RTMP").order_by(None).count(),
+        "class_options": [str(row[0]) for row in class_rows if row[0]],
+    }
+
+
+@app.get("/api/dashboard/bootstrap")
+def get_dashboard_bootstrap(
+    sport: str = Query(default="FOOTBALL"),
+    archived: bool = Query(default=False),
+    competition_class: str | None = Query(default=None),
+    limit: int = Query(default=7, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """One startup request for the console dashboard, instead of five round trips."""
+    try:
+        stream_status = _gateway_status()
+    except HTTPException as ex:
+        stream_status = {"ok": False, "lines": [], "running_match_ids": [], "detail": ex.detail}
+    schedule_rows = db.query(ScheduleEntry).order_by(
+        ScheduleEntry.match_date.asc(), ScheduleEntry.kickoff_time.asc(), ScheduleEntry.home_team.asc()
+    ).all()
+    class_rows = db.query(CompetitionClass).order_by(CompetitionClass.code.asc()).all()
+    return {
+        "user": {"id": user.id, "name": user.name, "role": user.role},
+        "matches": _dashboard_bootstrap_payload(
+            sport=sport, archived=archived, competition_class=competition_class,
+            limit=limit, offset=offset, db=db,
+        ),
+        "competition_classes": [_serialize_competition_class(row) for row in class_rows],
+        "schedule_entries": [_serialize_schedule_entry(row) for row in schedule_rows],
+        "stream_status": stream_status,
+    }
+
+
+@app.get("/api/matches/page")
+def list_match_page(
+    sport: str = Query(default="FOOTBALL"),
+    archived: bool | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    compact: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """General paged match list for non-dashboard tools; never download history by default."""
+    query = db.query(Match).filter(Match.sport == _normalize_sport(sport))
+    if archived is not None:
+        query = query.filter(Match.archived.is_(archived))
+    total = query.order_by(None).count()
+    rows = query.order_by(desc(Match.created_at)).offset(offset).limit(limit).all()
+    return {"items": [_serialize_match(row, compact=compact) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/fpa/replay-matches")
+def list_fpa_replay_matches(db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    """Return only active Football matches that actually contain a persisted dual replay scene.
+
+    The old client loaded every football match then issued one saved-log request
+    per match. This server-side join collapses hundreds of high-latency calls
+    into one small response.
+    """
+    rows = (
+        db.query(FpaSavedLog, Match)
+        .join(Match, Match.id == FpaSavedLog.match_id)
+        .filter(Match.sport == "FOOTBALL", Match.archived.is_(False))
+        .order_by(desc(Match.created_at))
+        .all()
+    )
+    items = []
+    for saved, match in rows:
+        saved_rows = list(saved.rows or [])
+        saved_logs = list(saved.logs or [])
+        has_replay = any(
+            isinstance(row, dict) and (row.get("SceneIndex") or row.get("SceneState") or row.get("DualState"))
+            for row in saved_rows
+        ) or any("DualState" in str(log) for log in saved_logs)
+        if has_replay:
+            items.append({"match": _serialize_match(match, compact=True), "saved": _serialize_fpa_saved_log(saved, match.id)})
+    return {"items": items}
+
+
 @app.get("/api/fpa/matches")
 def list_fpa_matches(
     limit: int = Query(default=30, ge=1, le=100),

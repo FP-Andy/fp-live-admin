@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { API_BASE, apiFetch, apiJson, fetchSessionUser, type SessionUser } from '../../../lib/api';
+import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../lib/api';
 import { useSportContext, type Sport } from '../../../components/SportContext';
 
 type Match = {
@@ -46,6 +46,37 @@ type DashboardMatchPage = {
   rtmp_total: number;
   class_options: string[];
 };
+
+type DashboardBootstrap = {
+  user: SessionUser;
+  matches: DashboardMatchPage;
+  competition_classes: CompetitionClass[];
+  schedule_entries: ScheduleEntry[];
+  stream_status: StreamStatus;
+};
+
+const DASHBOARD_STATIC_CACHE_KEY = 'fpc.dashboard-static.v1';
+const DASHBOARD_STATIC_CACHE_MS = 5 * 60 * 1000;
+
+function readDashboardStaticCache(): { competitionClasses: CompetitionClass[]; scheduleEntries: ScheduleEntry[] } | null {
+  try {
+    const raw = window.sessionStorage.getItem(DASHBOARD_STATIC_CACHE_KEY);
+    const value = raw ? JSON.parse(raw) : null;
+    if (!value || Date.now() - Number(value.savedAt) > DASHBOARD_STATIC_CACHE_MS) return null;
+    if (!Array.isArray(value.competitionClasses) || !Array.isArray(value.scheduleEntries)) return null;
+    return { competitionClasses: value.competitionClasses, scheduleEntries: value.scheduleEntries };
+  } catch {
+    return null;
+  }
+}
+
+function writeDashboardStaticCache(competitionClasses: CompetitionClass[], scheduleEntries: ScheduleEntry[]) {
+  try {
+    window.sessionStorage.setItem(DASHBOARD_STATIC_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), competitionClasses, scheduleEntries }));
+  } catch {
+    // Private browsing/storage limits must not block the dashboard.
+  }
+}
 
 type CompetitionClass = {
   code: string;
@@ -316,33 +347,44 @@ export default function Dashboard() {
     fpa_home_staff: '',
     fpa_away_staff: '',
   });
+  const [bootstrapReady, setBootstrapReady] = useState(false);
+  const loadedQueryRef = useRef('');
 
-  const load = async () => {
+  const matchQuery = () => {
+    const currentPage = listMode === 'active' ? activePage : archivedPage;
+    const params = new URLSearchParams({
+      sport,
+      archived: String(listMode === 'archived'),
+      limit: String(PAGE_SIZE),
+      offset: String((currentPage - 1) * PAGE_SIZE),
+    });
+    if (classFilter !== 'ALL') params.set('competition_class', classFilter);
+    return params;
+  };
+
+  const applyMatchPage = (matchesData: DashboardMatchPage) => {
+    setMatches(Array.isArray(matchesData.items) ? matchesData.items : []);
+    setMatchTotal(Number(matchesData.total) || 0);
+    setActiveMatchTotal(Number(matchesData.active_total) || 0);
+    setArchivedMatchTotal(Number(matchesData.archived_total) || 0);
+    setAssignedMatchTotal(Number(matchesData.assigned_total) || 0);
+    setRtmpMatchTotal(Number(matchesData.rtmp_total) || 0);
+    setMatchClassOptions(Array.isArray(matchesData.class_options) ? matchesData.class_options : []);
+  };
+
+  const loadBootstrap = async () => {
     try {
-      const currentPage = listMode === 'active' ? activePage : archivedPage;
-      const params = new URLSearchParams({
-        sport,
-        archived: String(listMode === 'archived'),
-        limit: String(PAGE_SIZE),
-        offset: String((currentPage - 1) * PAGE_SIZE),
-      });
-      if (classFilter !== 'ALL') params.set('competition_class', classFilter);
-      const [matchesData, classData, streamStatusData, scheduleData] = await Promise.all([
-        apiJson<DashboardMatchPage>(`/dashboard/matches?${params.toString()}`),
-        apiJson<CompetitionClass[]>('/competition-classes'),
-        apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
-        apiJson<ScheduleEntry[]>('/schedule-entries').catch(() => []),
-      ]);
-      setMatches(Array.isArray(matchesData.items) ? matchesData.items : []);
-      setMatchTotal(Number(matchesData.total) || 0);
-      setActiveMatchTotal(Number(matchesData.active_total) || 0);
-      setArchivedMatchTotal(Number(matchesData.archived_total) || 0);
-      setAssignedMatchTotal(Number(matchesData.assigned_total) || 0);
-      setRtmpMatchTotal(Number(matchesData.rtmp_total) || 0);
-      setMatchClassOptions(Array.isArray(matchesData.class_options) ? matchesData.class_options : []);
-      setCompetitionClasses(Array.isArray(classData) ? classData : []);
-      setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
-      setScheduleEntries(Array.isArray(scheduleData) ? scheduleData : []);
+      const params = matchQuery();
+      const data = await apiJson<DashboardBootstrap>(`/dashboard/bootstrap?${params.toString()}`);
+      applyMatchPage(data.matches);
+      const classes = Array.isArray(data.competition_classes) ? data.competition_classes : [];
+      const schedules = Array.isArray(data.schedule_entries) ? data.schedule_entries : [];
+      setCompetitionClasses(classes);
+      setScheduleEntries(schedules);
+      writeDashboardStaticCache(classes, schedules);
+      setSessionUser(data.user || null);
+      setRunningMatchIds(Array.isArray(data.stream_status?.running_match_ids) ? data.stream_status.running_match_ids : []);
+      loadedQueryRef.current = params.toString();
       setError('');
     } catch (loadError) {
       setMatches([]);
@@ -353,23 +395,53 @@ export default function Dashboard() {
       setRtmpMatchTotal(0);
       setRunningMatchIds([]);
       setError(loadError instanceof Error ? loadError.message : 'API unavailable. Run API server or infra/app compose stack.');
+    } finally {
+      setBootstrapReady(true);
     }
   };
 
   useEffect(() => {
-    load();
-    // 경기·일정 목록은 한 번에 수백 건이 될 수 있다. 15초 주기로 낮춰 여러 Console 탭이
-    // 동일한 목록을 반복 전송·렌더링하는 부하를 줄인다. gateway 상태는 API에서 짧은
-    // timeout과 offline 캐시로 별도 보호한다.
-    const timer = setInterval(load, 15000);
-    return () => clearInterval(timer);
-  }, [sport, listMode, classFilter, activePage, archivedPage]);
+    setBootstrapReady(false);
+    const cached = readDashboardStaticCache();
+    if (cached) {
+      setCompetitionClasses(cached.competitionClasses);
+      setScheduleEntries(cached.scheduleEntries);
+    }
+    void loadBootstrap();
+  // Sport context changes the entire data scope; bootstrap once for the new scope.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sport]);
+
+  const refreshLive = async () => {
+    try {
+      const params = matchQuery();
+      const [matchesData, streamStatusData] = await Promise.all([
+        apiJson<DashboardMatchPage>(`/dashboard/matches?${params.toString()}`),
+        apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
+      ]);
+      applyMatchPage(matchesData);
+      setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
+      loadedQueryRef.current = params.toString();
+      setError('');
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : '경기 목록을 불러오지 못했습니다.');
+    }
+  };
 
   useEffect(() => {
-    fetchSessionUser()
-      .then(setSessionUser)
-      .catch(() => setSessionUser(null));
-  }, []);
+    if (!bootstrapReady) return;
+    const params = matchQuery();
+    if (loadedQueryRef.current !== params.toString()) void refreshLive();
+    // The recurring call refreshes only dynamic match/stream state. Competition
+    // classes and schedules stay in the five-minute session cache.
+    const timer = setInterval(() => void refreshLive(), 15000);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bootstrapReady, listMode, classFilter, activePage, archivedPage]);
+
+  const load = async () => {
+    await loadBootstrap();
+  };
 
   const isSuperuser = sessionUser?.role === 'SUPERADMIN';
 

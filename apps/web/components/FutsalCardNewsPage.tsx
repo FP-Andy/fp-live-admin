@@ -20,6 +20,7 @@ type Match = {
     };
   };
 };
+type MatchPage = { items: Match[]; total: number };
 type FpaRow = { Player?: string; Team?: string; Action?: string; Tags?: string; xG?: string | number; ShotThreat?: string | number };
 type FpaLog = { rows?: FpaRow[]; teamid_h?: string; teamid_a?: string };
 type FlaEvent = { team: Team; player_number?: string | null; player_name?: string | null; is_goal?: boolean; xg?: number | null };
@@ -89,7 +90,7 @@ export default function FutsalCardNewsPage() {
   const [status, setStatus] = useState('');
   const [downloading, setDownloading] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { apiJson<Match[]>('/matches?sport=FUTSAL&compact=true').then((data) => { setMatches(data); setMatchId(data[0]?.id || ''); }).catch((error) => setStatus(error instanceof Error ? error.message : '풋살 경기를 불러오지 못했습니다.')); }, []);
+  useEffect(() => { apiJson<MatchPage>('/matches/page?sport=FUTSAL&limit=100&compact=true').then((data) => { const rows = Array.isArray(data.items) ? data.items : []; setMatches(rows); setMatchId(rows[0]?.id || ''); }).catch((error) => setStatus(error instanceof Error ? error.message : '풋살 경기를 불러오지 못했습니다.')); }, []);
   const match = matches.find((item) => item.id === matchId) || null;
   const players = useMemo(() => {
     const lineup = match?.metadata?.lineups?.teams?.[side] || [];
