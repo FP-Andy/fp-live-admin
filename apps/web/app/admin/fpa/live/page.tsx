@@ -57,7 +57,8 @@ function sideLabel(side: TeamSide): string {
    흰 터치라인이 요소 가장자리에 오도록 CSS 로 키워 밀어 넣는다(globals.css 참고).
    실측: scene/pitch.png 1281x829, 터치라인 중심 L34.5 R1246.5 T23.5 B805.5.
    → 마킹 위치가 기존 fpa-field.png 와 경기장 폭 대비 0.15%(약 0.16m) 차이라 무시 가능. */
-const PITCH_SRC = '/scene/pitch.png';
+// 원본 pitch.png와 같은 마킹을 WebP로 압축해 첫 FPA 진입 시 1.4MB 다운로드를 줄인다.
+const PITCH_SRC = '/scene/pitch.webp';
 
 // agusrjs/futsal-pitch의 Futsal().draw(horizontal, color=True) 기하를 React SVG로
 // 이식했다. 원본은 MIT License (Copyright 2025 Agustín Rojas)이며, 40×20m 코트,
@@ -330,6 +331,17 @@ type Match = {
     away_team?: string;
   } | null;
 };
+
+type FpaMatchPage = {
+  items: Match[];
+  total: number;
+  limit: number;
+  offset: number;
+  class_options: string[];
+  round_options: number[];
+};
+
+const FPA_MATCH_PAGE_SIZE = 30;
 
 type DualStatePoint = {
   meter_x?: number;
@@ -1344,23 +1356,20 @@ export default function FpaLivePage() {
   const [busy, setBusy] = useState(false);
   const [availableMatches, setAvailableMatches] = useState<Match[]>([]);
   const [matchPickerOpen, setMatchPickerOpen] = useState(false);
+  const [matchPickerLoading, setMatchPickerLoading] = useState(false);
   const [matchFilterClass, setMatchFilterClass] = useState('ALL');
   const [matchFilterRound, setMatchFilterRound] = useState('ALL');
+  const [matchFilterSearch, setMatchFilterSearch] = useState('');
+  const [matchClassOptions, setMatchClassOptions] = useState<string[]>([]);
+  const [matchRoundOptions, setMatchRoundOptions] = useState<number[]>([]);
+  const [matchPage, setMatchPage] = useState(1);
+  const [matchTotal, setMatchTotal] = useState(0);
+  const matchPickerRequestRef = useRef(0);
   const isFutsal = fpaSport === 'FUTSAL';
   const activePitchSrc = PITCH_SRC;
   const activePitchLabel = isFutsal ? 'futsal pitch' : 'football field';
 
-  const matchClassOptions = Array.from(new Set(availableMatches.map((m) => m.competition_class)))
-    .sort((a, b) => a.localeCompare(b, 'ko'));
-  const matchRoundOptions = Array.from(new Set(
-    availableMatches
-      .filter((m) => matchFilterClass === 'ALL' || m.competition_class === matchFilterClass)
-      .map((m) => m.round_number)
-  )).sort((a, b) => a - b);
-  const filteredAvailableMatches = availableMatches.filter((m) =>
-    (matchFilterClass === 'ALL' || m.competition_class === matchFilterClass) &&
-    (matchFilterRound === 'ALL' || String(m.round_number) === matchFilterRound)
-  );
+  const matchPageCount = Math.max(1, Math.ceil(matchTotal / FPA_MATCH_PAGE_SIZE));
 
   // 전체 로그 = 저장된 장면들(flatten) + 현재 버퍼 (single 은 savedScenes 비어 있어 = 현재 버퍼). 저장/내보내기용.
   const allLogs = [...savedScenes.flatMap((scene) => scene.logs), ...logs];
@@ -3644,18 +3653,54 @@ export default function FpaLivePage() {
     }
   };
 
-  const openMatchPicker = async () => {
+  const loadFpaMatchPage = async ({
+    page = matchPage,
+    competitionClass = matchFilterClass,
+    round = matchFilterRound,
+    search = matchFilterSearch,
+  }: {
+    page?: number;
+    competitionClass?: string;
+    round?: string;
+    search?: string;
+  } = {}) => {
+    const requestId = matchPickerRequestRef.current + 1;
+    matchPickerRequestRef.current = requestId;
+    const params = new URLSearchParams({
+      limit: String(FPA_MATCH_PAGE_SIZE),
+      offset: String((page - 1) * FPA_MATCH_PAGE_SIZE),
+    });
+    if (competitionClass !== 'ALL') params.set('competition_class', competitionClass);
+    if (round !== 'ALL') params.set('round_number', round);
+    if (search.trim()) params.set('search', search.trim());
+    setMatchPickerLoading(true);
+    setStatus('경기 목록 불러오는 중');
+    try {
+      const data = await apiJson<FpaMatchPage>(`/fpa/matches?${params.toString()}`);
+      if (requestId !== matchPickerRequestRef.current) return;
+      setAvailableMatches(Array.isArray(data.items) ? data.items : []);
+      setMatchTotal(Number.isFinite(data.total) ? data.total : 0);
+      setMatchClassOptions(Array.isArray(data.class_options) ? data.class_options : []);
+      setMatchRoundOptions(Array.isArray(data.round_options) ? data.round_options : []);
+      setMatchPage(page);
+      setStatus(`경기 ${data.total || 0}건 중 ${data.items?.length || 0}건 표시`);
+    } catch (error) {
+      if (requestId !== matchPickerRequestRef.current) return;
+      setAvailableMatches([]);
+      setMatchTotal(0);
+      setStatus(error instanceof Error ? error.message : '경기 목록 불러오기 실패');
+    } finally {
+      if (requestId === matchPickerRequestRef.current) setMatchPickerLoading(false);
+    }
+  };
+
+  const openMatchPicker = () => {
     setMatchPickerOpen(true);
     setMatchFilterClass('ALL');
     setMatchFilterRound('ALL');
-    setStatus('경기 목록 불러오는 중');
-    try {
-      const data = await apiJson<Match[]>('/matches');
-      setAvailableMatches(Array.isArray(data) ? data : []);
-      setStatus('경기 선택 준비됨');
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : '경기 목록 불러오기 실패');
-    }
+    setMatchFilterSearch('');
+    setMatchPage(1);
+    void loadFpaMatchPage({ page: 1, competitionClass: 'ALL', round: 'ALL', search: '' });
   };
 
   const loadMatch = async (match: Match) => {
@@ -4937,13 +4982,29 @@ export default function FpaLivePage() {
               <button className="button-compact btn-secondary" onClick={() => setMatchPickerOpen(false)}>닫기</button>
             </div>
             <div className="row" style={{ gap: 8, marginBottom: 10, justifyContent: 'flex-start' }}>
+              <label className="field-stack" style={{ minWidth: 220, flex: 1 }}>
+                <span className="field-label">경기 검색</span>
+                <input
+                  placeholder="홈팀 · 어웨이팀 · 경기명"
+                  value={matchFilterSearch}
+                  onChange={(e) => setMatchFilterSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void loadFpaMatchPage({ page: 1 });
+                  }}
+                />
+              </label>
+              <button className="button-compact btn-secondary" disabled={matchPickerLoading} onClick={() => void loadFpaMatchPage({ page: 1 })} type="button">
+                검색
+              </button>
               <label className="field-stack" style={{ minWidth: 140 }}>
                 <span className="field-label">대회</span>
                 <select
                   value={matchFilterClass}
                   onChange={(e) => {
-                    setMatchFilterClass(e.target.value);
+                    const nextClass = e.target.value;
+                    setMatchFilterClass(nextClass);
                     setMatchFilterRound('ALL');
+                    void loadFpaMatchPage({ page: 1, competitionClass: nextClass, round: 'ALL' });
                   }}
                 >
                   <option value="ALL">전체</option>
@@ -4954,7 +5015,11 @@ export default function FpaLivePage() {
               </label>
               <label className="field-stack" style={{ minWidth: 110 }}>
                 <span className="field-label">라운드</span>
-                <select value={matchFilterRound} onChange={(e) => setMatchFilterRound(e.target.value)}>
+                <select value={matchFilterRound} onChange={(e) => {
+                  const nextRound = e.target.value;
+                  setMatchFilterRound(nextRound);
+                  void loadFpaMatchPage({ page: 1, round: nextRound });
+                }}>
                   <option value="ALL">전체</option>
                   {matchRoundOptions.map((round) => (
                     <option key={round} value={String(round)}>{round}R</option>
@@ -4974,7 +5039,7 @@ export default function FpaLivePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredAvailableMatches.map((match) => (
+                  {availableMatches.map((match) => (
                     <tr key={match.id}>
                       <td>{match.sport === 'FUTSAL' ? 'FUTSAL' : match.sport === 'BASKETBALL' ? 'BASKETBALL' : 'FOOTBALL'}</td>
                       <td>{match.competition_class}</td>
@@ -4987,13 +5052,30 @@ export default function FpaLivePage() {
                       </td>
                     </tr>
                   ))}
-                  {!filteredAvailableMatches.length ? (
+                  {!availableMatches.length && !matchPickerLoading ? (
                     <tr>
                       <td colSpan={5} className="muted">해당 조건의 경기가 없습니다</td>
                     </tr>
                   ) : null}
                 </tbody>
               </table>
+            </div>
+            <div className="row" style={{ alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+              <span className="muted">총 {matchTotal}건 · {matchPage} / {matchPageCount} 페이지</span>
+              <div className="row" style={{ gap: 6 }}>
+                <button
+                  className="button-compact btn-secondary"
+                  disabled={matchPickerLoading || matchPage <= 1}
+                  onClick={() => void loadFpaMatchPage({ page: matchPage - 1 })}
+                  type="button"
+                >이전</button>
+                <button
+                  className="button-compact btn-secondary"
+                  disabled={matchPickerLoading || matchPage >= matchPageCount}
+                  onClick={() => void loadFpaMatchPage({ page: matchPage + 1 })}
+                  type="button"
+                >다음</button>
+              </div>
             </div>
           </div>
         </div>

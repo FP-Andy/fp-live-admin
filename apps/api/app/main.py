@@ -343,6 +343,18 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
         statements.append("CREATE INDEX IF NOT EXISTS ix_highlight_jobs_owner_id ON highlight_jobs (owner_id)")
 
+    # FPA 경기 선택기는 누적된 경기 테이블을 최신순으로 자주 읽는다. 목록 전용 복합
+    # 인덱스로 필터·정렬·페이지 조회가 전체 스캔으로 커지지 않게 한다.
+    if "matches" in table_names:
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_fpa_picker "
+            "ON matches (competition_class, round_number, created_at DESC)"
+        )
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_fpa_picker_recent "
+            "ON matches (created_at DESC)"
+        )
+
     # 녹화 중계 오버레이 편집: 기존 초안에도 전·후반 종료 기준점을 추가한다.
     if "broadcast_overlay_projects" in table_names and "first_half_video_end_sec" not in broadcast_overlay_project_columns:
         statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN first_half_video_end_sec DOUBLE PRECISION")
@@ -1810,7 +1822,9 @@ def _match_list_metadata(metadata: Any) -> dict:
     """
     source = metadata if isinstance(metadata, dict) else {}
     compact: dict[str, Any] = {}
-    for key in ("stream_mode", "ingest_protocol"):
+    # FPA 선택기는 이 목록 응답만으로 홈·어웨이 라벨을 채운다. 상세 metadata 전체를
+    # 보내지 않되, 태깅 시작에 필요한 최소 식별 정보는 남긴다.
+    for key in ("stream_mode", "ingest_protocol", "home_team", "away_team"):
         if key in source:
             compact[key] = source[key]
     broadcast = source.get("broadcast")
@@ -6459,6 +6473,57 @@ def list_matches(
         query = query.filter(Match.competition_class != "FPA")
     rows = query.order_by(desc(Match.created_at)).all()
     return _cache_set(_match_response_cache, cache_key, [_serialize_match(r, compact=compact) for r in rows])
+
+
+@app.get("/api/fpa/matches")
+def list_fpa_matches(
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    competition_class: str | None = Query(default=None),
+    round_number: int | None = Query(default=None, ge=1),
+    search: str | None = Query(default=None, max_length=80),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """FPA 경기 선택기 전용 페이지 조회.
+
+    일반 /matches는 다른 화면의 전체 목록 호환성을 위해 유지한다. FPA는 경기 수가
+    쌓여도 필요한 30건만 받아야 하므로, 서버에서 필터·검색·페이지를 처리한다.
+    """
+    base_query = db.query(Match)
+    class_code = (competition_class or "").strip().upper()
+    if class_code:
+        base_query = base_query.filter(Match.competition_class == class_code)
+    if round_number is not None:
+        base_query = base_query.filter(Match.round_number == round_number)
+    search_text = (search or "").strip()
+    if search_text:
+        base_query = base_query.filter(Match.name.ilike(f"%{search_text}%"))
+
+    total = base_query.order_by(None).count()
+    rows = (
+        base_query
+        .order_by(desc(Match.created_at))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # 드롭다운 값은 현재 30건이 아니라 전체 경기 기준으로 제공한다. 대회를 먼저
+    # 고르고 라운드를 좁혀도 페이지 밖의 경기를 놓치지 않는다.
+    class_rows = db.query(Match.competition_class).distinct().order_by(Match.competition_class).all()
+    round_query = db.query(Match.round_number)
+    if class_code:
+        round_query = round_query.filter(Match.competition_class == class_code)
+    round_rows = round_query.distinct().order_by(Match.round_number).all()
+    return {
+        "items": [_serialize_match(row, compact=True) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "class_options": [str(row[0]) for row in class_rows if row[0]],
+        "round_options": [int(row[0]) for row in round_rows if row[0] is not None],
+    }
 
 
 @app.get("/api/broadcast/matches/{match_id}/state")
