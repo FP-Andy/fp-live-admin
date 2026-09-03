@@ -25,6 +25,7 @@ from .highlight_produce_job import ProduceSpec, run_produce
 from .highlight_storage import default_storage
 from .highlight_storage import output_prefix as storage_output_prefix
 from .scene_motion import attach_scene_motions
+from .scoreboard import board_placement, render_scoreboard_file
 from .models import FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
@@ -557,11 +558,19 @@ def list_manual_clip_info(job_id: str) -> list[dict]:
             continue
         if not (d / name).exists():
             continue
+        # kind 는 태그 종류(home_goal/home/away/away_goal). tag_offset 은 클립 시작에서
+        # 태깅 시점까지의 초 — 점수판이 '그 순간에' 올라가려면 이 위치가 있어야 한다.
+        try:
+            tag_offset = float(data.get("tag_offset"))
+        except (TypeError, ValueError):
+            tag_offset = None
         infos.append({
             "name": name,
             "requested_start": req_start,
             "requested_end": req_end,
             "order": data.get("order"),
+            "kind": str(data.get("kind") or ""),
+            "tag_offset": tag_offset,
         })
     # 원본이 여러 개면 requested_start 는 '그 원본 안에서의' 초라 파일이 바뀌면 다시
     # 작아진다. 그래서 순서는 업로드 때 받은 order 로 정하고, order 가 없는 옛 잡만
@@ -597,6 +606,48 @@ def _ffmpeg_failure_detail(ex: subprocess.CalledProcessError) -> str:
     return (" / ".join((picked or lines)[-3:]) or detail)[-300:]
 
 
+def _scoreboard_plan(
+    metadata: dict,
+    clip_meta: list[dict],
+    lengths: list[float],
+) -> tuple[dict, list[tuple[int, int]], list[tuple[int, int]], list[float]] | None:
+    """점수판 설정과 클립별 점수 상태를 계산한다. 꺼져 있으면 None.
+
+    골 태그는 '태깅한 그 순간' 점수를 올린다. 그래서 클립마다 골 이전 점수(pre)와
+    이후 점수(post), 그리고 클립 안에서 점수가 바뀌는 지점(goal_at)을 함께 낸다.
+    """
+    config = metadata.get("scoreboard")
+    if not isinstance(config, dict) or not config.get("enabled"):
+        return None
+
+    def _int(key: str) -> int:
+        try:
+            return max(0, int(config.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    home, away = _int("start_home"), _int("start_away")
+    pre: list[tuple[int, int]] = []
+    post: list[tuple[int, int]] = []
+    goal_at: list[float] = []
+    for k, info in enumerate(clip_meta):
+        pre.append((home, away))
+        kind = str(info.get("kind") or "")
+        if kind == "home_goal":
+            home += 1
+        elif kind == "away_goal":
+            away += 1
+        post.append((home, away))
+        # 태그 시점을 못 받은 옛 클립은 클립 한가운데로 본다(그래도 순서는 맞는다).
+        raw = info.get("tag_offset")
+        try:
+            at = float(raw)
+        except (TypeError, ValueError):
+            at = lengths[k] / 2.0
+        goal_at.append(max(0.0, min(lengths[k], at)))
+    return config, pre, post, goal_at
+
+
 def merge_manual_clips_for_job(job_id: str) -> None:
     """수동 태깅 클립들을 정확한 지점으로 다듬어 하나로 합친다.
 
@@ -626,6 +677,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         # 먼저 쓸 수 있는 클립만 (경로·오프셋·길이) 로 모은다. 인트로 이미지를
         # 클립 해상도에 맞추려면 클립 하나의 규격을 먼저 알아야 하기 때문이다.
         clips_to_use: list[tuple[Path, float, float]] = []
+        # 점수판은 클립별 태그 종류(골/하이라이트)와 골 시점이 있어야 그린다.
+        used_meta: list[dict] = []
         for info in clip_info:
             path = clips_dir(job_id) / str(info.get("name", ""))
             if not path.exists():
@@ -640,6 +693,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 continue
             offset = max(0.0, req_start - _probe_start_time(path))
             clips_to_use.append((path, offset, duration))
+            used_meta.append(info)
 
         used = len(clips_to_use)
         if used == 0:
@@ -709,6 +763,88 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         def tail_fade(k: int) -> float:
             return fades[k] if k < used - 1 else 0.0
 
+        # ── 점수판 ────────────────────────────────────────────────────────
+        # 골 태그는 '태깅한 그 순간' 점수를 올린다. 조각(본체/전환)마다 그 안에서
+        # 점수가 바뀌는 지점을 찾아, 구간별로 다른 점수판 PNG 를 overlay 로 얹는다.
+        # 점수판은 화면에 고정된 판이라 전환 조각에서도 크로스페이드 뒤에 얹어
+        # 장면만 디졸브되고 판은 그대로 남게 한다.
+        sb = _scoreboard_plan(metadata, used_meta, lengths)
+        sb_dir = work / "sb"
+        sb_cache: dict[tuple[int, int], Path] = {}
+        if sb:
+            sb_cfg, sb_pre, sb_post, sb_goal = sb
+            sb_board_w, _sb_h, sb_x, sb_y = board_placement(
+                vw, vh,
+                float(sb_cfg.get("size_pct") or 28),
+                float(sb_cfg.get("pos_x") or 0),
+                float(sb_cfg.get("pos_y") or 0),
+            )
+
+        def sb_image(score: tuple[int, int]) -> Path:
+            """그 점수의 점수판 PNG. 같은 점수는 한 번만 굽고 돌려 쓴다."""
+            path = sb_cache.get(score)
+            if path is None:
+                path = render_scoreboard_file(
+                    sb_dir / f"sb_{score[0]}_{score[1]}.png",
+                    str(sb_cfg.get("home_name") or ""),
+                    str(sb_cfg.get("away_name") or ""),
+                    score[0], score[1], sb_board_w,
+                    sb_cfg.get("home_color"), sb_cfg.get("away_color"),
+                )
+                sb_cache[score] = path
+            return path
+
+        def score_at(k: int, rel_t: float) -> tuple[int, int]:
+            """클립 k 의 rel_t 초(요청 구간 시작 기준)에 보여야 할 점수."""
+            return sb_post[k] if rel_t >= sb_goal[k] else sb_pre[k]
+
+        def make_segments(cuts: list[float], score_of) -> list[tuple[tuple[int, int], float, float]]:
+            """경계 후보로 조각을 나누고, 점수가 같은 이웃 구간은 도로 합친다."""
+            if not sb:
+                return []
+            edges = sorted({round(c, 3) for c in cuts})
+            out: list[tuple[tuple[int, int], float, float]] = []
+            for a, b in zip(edges, edges[1:]):
+                if b - a <= 0.001:
+                    continue
+                score = score_of((a + b) / 2.0)
+                if out and out[-1][0] == score:
+                    out[-1] = (score, out[-1][1], b)
+                else:
+                    out.append((score, a, b))
+            return out
+
+        def overlay_args(
+            base: str, segs: list[tuple[tuple[int, int], float, float]], idx: int,
+        ) -> tuple[list[str], list[str], str, int]:
+            """점수판 입력·필터 체인. (추가 입력, 추가 체인, 최종 영상 라벨, 다음 입력번호)
+
+            구간이 하나뿐이면 enable 없이 통째로 얹는다. 여러 개면 시간으로 나누는데,
+            마지막 구간은 lt/gte 로 열어 둔다 — between 은 끝 프레임이 부동소수 오차로
+            살짝 넘어가면 점수판이 한 프레임 사라진다.
+            """
+            if not segs:
+                return [], [], base, idx
+            ins: list[str] = []
+            chains: list[str] = []
+            cur = base
+            last = len(segs) - 1
+            for i, (score, a, b) in enumerate(segs):
+                ins += ["-i", str(sb_image(score))]
+                label = f"sb{i}"
+                if last == 0:
+                    enable = ""
+                elif i == 0:
+                    enable = f":enable='lt(t,{b:.3f})'"
+                elif i == last:
+                    enable = f":enable='gte(t,{a:.3f})'"
+                else:
+                    enable = f":enable='between(t,{a:.3f},{b:.3f})'"
+                chains.append(f"[{cur}][{idx}:v]overlay={sb_x}:{sb_y}{enable}[{label}]")
+                cur = label
+                idx += 1
+            return ins, chains, cur, idx
+
         def clip_input(k: int, start: float, dur: float) -> list[str]:
             return ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(clips_to_use[k][0])]
 
@@ -755,19 +891,31 @@ def merge_manual_clips_for_job(job_id: str) -> None:
 
             for k in range(used):
                 _, offset, length = clips_to_use[k]
+                goal_ref = sb_goal[k] if sb else 0.0
                 # ── 본체: 앞뒤 페이드 몫을 뺀 구간 ──
                 body_start = offset + head_fade(k)
                 body_dur = length - head_fade(k) - tail_fade(k)
                 out = work / f"p{len(pieces):03d}_body{k:03d}.mp4"
                 args = ["ffmpeg", "-y", "-nostats", *clip_input(k, body_start, body_dur)]
+                next_input = 1
                 if has_sound[k]:
                     audio_map = "0:a"
                 else:
                     args += silence(body_dur)
-                    audio_map = "1:a"
+                    audio_map = f"{next_input}:a"
+                    next_input += 1
+                # 본체는 클립 안 [head_fade, length-tail_fade] 구간. 조각 시간 0 이
+                # 클립 시간 head_fade 에 해당하므로 골 시점도 그만큼 당겨서 본다.
+                chains = [f"[0:v]{norm_v}[v0]"]
+                segs = make_segments(
+                    [0.0, body_dur, goal_ref - head_fade(k)],
+                    lambda tau: score_at(k, tau + head_fade(k)),
+                ) if sb else []
+                sb_ins, sb_chains, vlabel, next_input = overlay_args("v0", segs, next_input)
+                args += sb_ins
                 args += [
-                    "-filter_complex", f"[0:v]{norm_v}[v]",
-                    "-map", "[v]", "-map", audio_map,
+                    "-filter_complex", ";".join(chains + sb_chains),
+                    "-map", f"[{vlabel}]", "-map", audio_map,
                     *([] if has_sound[k] else ["-shortest"]),
                     *encode, str(out),
                 ]
@@ -789,7 +937,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 chains = [
                     f"[0:v]{norm_v}[xa]",
                     f"[1:v]{norm_v}[xb]",
-                    f"[xa][xb]xfade=transition=fade:duration={d:.3f}:offset=0[v]",
+                    f"[xa][xb]xfade=transition=fade:duration={d:.3f}:offset=0[v0]",
                 ]
                 # 무음 클립이 섞이면 acrossfade 를 걸 스트림이 없다. 그쪽만 무음을 만들어 준다.
                 a_left, a_right = "0:a", "1:a"
@@ -802,6 +950,19 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     args += silence(d)
                     a_right = f"{extra}:a"
                     extra += 1
+
+                # 전환 조각의 조각시간 τ 는 왼쪽 클립의 (length-d+τ) 이자 오른쪽 클립의 τ 다.
+                # 보통은 두 클립의 점수가 같아(왼쪽 골 반영 후 = 오른쪽 시작 전) 한 장으로
+                # 끝나지만, 뒤 패딩이 아주 짧아 골 순간이 전환 구간에 걸리면 여기서 바뀐다.
+                trans_segs = make_segments(
+                    [0.0, d, sb_goal[k] - (length - d), sb_goal[nxt]],
+                    lambda tau: max(
+                        score_at(k, length - d + tau), score_at(nxt, tau),
+                        key=lambda sc: sc[0] + sc[1],
+                    ),
+                ) if sb else []
+                sb_ins, sb_chains, vlabel, extra = overlay_args("v0", trans_segs, extra)
+                args += sb_ins
                 # acrossfade 는 첫 입력의 길이가 페이드 길이와 '같으면' 한 프레임도 내지 못하고
                 # 죽는다(Could not open encoder before EOF). 전환 조각은 정확히 d 초만 잘라
                 # 쓰므로 항상 그 조건에 걸린다. 같은 결과를 내는 페이드아웃+페이드인 합성으로
@@ -820,8 +981,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     "[la][ra]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
                 )
                 args += [
-                    "-filter_complex", ";".join(chains),
-                    "-map", "[v]", "-map", "[a]",
+                    "-filter_complex", ";".join(chains + sb_chains),
+                    "-map", f"[{vlabel}]", "-map", "[a]",
                     *([] if (has_sound[k] and has_sound[nxt]) else ["-shortest"]),
                     *encode, str(out),
                 ]
