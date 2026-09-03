@@ -159,7 +159,13 @@ SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
 PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://console.fineludens.kr").rstrip("/")
-GATEWAY_STATUS_TIMEOUT_SECONDS = float(os.getenv("GATEWAY_STATUS_TIMEOUT_SECONDS", "1.0"))
+# Console 대시보드는 운영 화면을 열 때마다 gateway 상태를 확인한다. 미디어 서버가 꺼진
+# 상태에서는 이 확인이 전체 화면을 기다리게 해서는 안 된다.
+GATEWAY_STATUS_TIMEOUT_SECONDS = float(os.getenv("GATEWAY_STATUS_TIMEOUT_SECONDS", "0.35"))
+GATEWAY_STATUS_FAILURE_COOLDOWN_SECONDS = float(os.getenv("GATEWAY_STATUS_FAILURE_COOLDOWN_SECONDS", "15"))
+_gateway_status_failure_until = 0.0
+_gateway_status_failure_detail = ""
+_gateway_status_failure_lock = threading.Lock()
 HLS_PROBE_TIMEOUT_SECONDS = float(os.getenv("HLS_PROBE_TIMEOUT_SECONDS", "1.5"))
 MEDIA_CONTROL_URL = os.getenv("MEDIA_CONTROL_URL", "").strip()
 MEDIA_CONTROL_TOKEN = os.getenv("MEDIA_CONTROL_TOKEN", "").strip()
@@ -1083,9 +1089,16 @@ def _gateway_clear_stream(match_id: UUID) -> None:
 
 
 def _gateway_status() -> dict:
+    global _gateway_status_failure_until, _gateway_status_failure_detail
     gateway_base = os.getenv("GATEWAY_API_BASE", "http://host.docker.internal:8090").rstrip("/")
     if not gateway_base:
         raise HTTPException(status_code=500, detail="GATEWAY_API_BASE not configured")
+
+    # 꺼진 gateway에 대시보드 탭마다 다시 접속하면 1초짜리 timeout이 누적된다.
+    # 첫 실패 뒤에는 짧은 cooldown 동안 즉시 실패를 돌려주고, 다른 API·DB 작업을 막지 않는다.
+    with _gateway_status_failure_lock:
+        if time.monotonic() < _gateway_status_failure_until:
+            raise HTTPException(status_code=503, detail=_gateway_status_failure_detail or "gateway status temporarily unavailable")
 
     try:
         with httpx.Client(timeout=GATEWAY_STATUS_TIMEOUT_SECONDS) as client:
@@ -1093,7 +1106,15 @@ def _gateway_status() -> dict:
             resp.raise_for_status()
             data = resp.json()
     except Exception as ex:
-        raise HTTPException(status_code=502, detail=f"gateway status failed: {ex}") from ex
+        detail = f"gateway status failed: {ex}"
+        with _gateway_status_failure_lock:
+            _gateway_status_failure_detail = detail
+            _gateway_status_failure_until = time.monotonic() + GATEWAY_STATUS_FAILURE_COOLDOWN_SECONDS
+        raise HTTPException(status_code=502, detail=detail) from ex
+
+    with _gateway_status_failure_lock:
+        _gateway_status_failure_until = 0.0
+        _gateway_status_failure_detail = ""
 
     lines = data.get("lines") or []
     running_match_ids: list[str] = []
@@ -6805,7 +6826,17 @@ def archive_match(
 
 @app.get("/api/admin/streams/status")
 def get_admin_stream_status():
-    return _gateway_status()
+    # 대시보드에선 gateway 미가동이 정상적인 운영 상태일 수 있다. 5xx로 렌더를 실패시키지
+    # 않고, 명시적인 offline 상태를 돌려줘 목록·일정 등 나머지 기능은 계속 사용 가능하게 한다.
+    try:
+        return _gateway_status()
+    except HTTPException as ex:
+        return {
+            "ok": False,
+            "lines": [],
+            "running_match_ids": [],
+            "detail": ex.detail,
+        }
 
 
 @app.get("/api/admin/schedule-slack/status")

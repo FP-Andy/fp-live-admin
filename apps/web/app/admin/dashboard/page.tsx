@@ -323,9 +323,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     load();
-    // 목록은 가벼운 compact 응답만 받는다. 5초 주기면 운영 상태를 보기에 충분하면서
-    // 여러 탭이 열려도 아카이브·에셋 metadata를 반복 전송/렌더하지 않는다.
-    const timer = setInterval(load, 5000);
+    // 경기·일정 목록은 한 번에 수백 건이 될 수 있다. 15초 주기로 낮춰 여러 Console 탭이
+    // 동일한 목록을 반복 전송·렌더링하는 부하를 줄인다. gateway 상태는 API에서 짧은
+    // timeout과 offline 캐시로 별도 보호한다.
+    const timer = setInterval(load, 15000);
     return () => clearInterval(timer);
   }, [sport]);
 
