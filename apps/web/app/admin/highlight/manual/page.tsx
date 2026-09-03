@@ -17,12 +17,55 @@ type JobStatus = {
 // 로컬 우선 태깅: 원본을 서버에 올리지 않고 브라우저에서 바로 재생하며 하이라이트 지점을 찍는다.
 // 태그는 타임코드(초)일 뿐이라 용량이 없다시피 하고, 클립 추출은 이후 단계에서 붙는다.
 
+// 태그 종류. 골이면 점수판 점수가 그 시점에 올라가고, 하이라이트면 점수는 그대로다.
+// 없으면(undefined) 팀 구분 없는 일반 태그 — 점수판에는 영향을 주지 않는다.
+type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal';
+
 // before/after 는 이 태그만의 개별 앞/뒤 초. 없으면(undefined) 전역 padBefore/padAfter 를 따른다.
-type Tag = { id: string; t: number; before?: number; after?: number };
-type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number };
+type Tag = { id: string; t: number; before?: number; after?: number; kind?: TagKind };
+
+/** 하이라이트 위에 새길 점수판 설정. 합칠 때 서버로 한 번 보낸다. */
+type Scoreboard = {
+  enabled: boolean;
+  homeName: string;
+  awayName: string;
+  homeColor: string;
+  awayColor: string;
+  startHome: number;
+  startAway: number;
+  sizePct: number;
+};
+type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number; scoreboard?: Scoreboard };
 
 /** 이어붙일 원본 하나. duration 은 파일을 고른 직후 메타데이터에서 읽어 채운다. */
 type Source = { file: File; url: string; duration: number };
+
+// 태깅 단축키. code 는 물리 키라 한글 입력 상태와 무관하게 잡히고, hangul/letter 는
+// code 가 오지 않는 브라우저를 위한 보루다.
+const TAG_KINDS: {
+  key: TagKind; code: string; letter: string; hangul: string;
+  label: string; badge: string; color: string; side: 'home' | 'away'; goal: boolean;
+}[] = [
+  { key: 'home_goal', code: 'KeyQ', letter: 'q', hangul: 'ㅂ', label: '홈 골', badge: '홈 골', color: '#2F6FED', side: 'home', goal: true },
+  { key: 'home', code: 'KeyW', letter: 'w', hangul: 'ㅈ', label: '홈 장면', badge: '홈', color: '#2F6FED', side: 'home', goal: false },
+  { key: 'away', code: 'KeyE', letter: 'e', hangul: 'ㄷ', label: '원정 장면', badge: '원정', color: '#E8452F', side: 'away', goal: false },
+  { key: 'away_goal', code: 'KeyR', letter: 'r', hangul: 'ㄱ', label: '원정 골', badge: '원정 골', color: '#E8452F', side: 'away', goal: true },
+];
+const KIND_BY_KEY = new Map(TAG_KINDS.map((k) => [k.key, k]));
+
+const DEFAULT_SCOREBOARD: Scoreboard = {
+  enabled: false,
+  homeName: '',
+  awayName: '',
+  homeColor: '#2F6FED',
+  awayColor: '#E8452F',
+  startHome: 0,
+  startAway: 0,
+  sizePct: 28,
+};
+
+// 점수판 판때기 비율(디자인 828.46 x 157.76). 서버 렌더러와 같은 값이어야 한다.
+const BOARD_ASPECT = 828.46 / 157.76;
 
 const SPEEDS = [1, 1.5, 2, 3, 4];
 const SEEK_STEP = 5;
@@ -98,6 +141,46 @@ const fmtBytes = (bytes: number) => {
   return mb < 1024 ? `${mb.toFixed(0)} MB` : `${(mb / 1024).toFixed(2)} GB`;
 };
 
+/** 결과물에 새겨질 점수판 미리보기. 서버 렌더러(app/scoreboard.py)와 같은 디자인·비율이다. */
+function ScoreboardPreview({ config, home, away }: { config: Scoreboard; home: number; away: number }) {
+  const W = 420;
+  const H = Math.round(W / BOARD_ASPECT);
+  // 디자인 원본(828.46 폭) 좌표를 미리보기 크기로 환산한다 — 서버와 같은 비율.
+  const px = (v: number) => `${(v * W) / 828.46}px`;
+  const bar = (color: string): React.CSSProperties => ({
+    position: 'absolute', top: '50%', transform: 'translateY(-50%)',
+    width: px(14), height: px(92), borderRadius: px(7), background: color,
+  });
+  const name: React.CSSProperties = {
+    position: 'absolute', top: '50%', transform: 'translateY(-50%)',
+    fontSize: px(46), fontWeight: 700, whiteSpace: 'nowrap',
+    overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: px(250),
+  };
+  return (
+    <div
+      style={{
+        position: 'relative', width: W, height: H, borderRadius: px(14), color: '#fff',
+        background: 'linear-gradient(90deg, #1B2B3F 0%, rgba(27, 43, 63, 0.8) 100%)',
+      }}
+    >
+      <div style={{ ...bar(config.homeColor), left: px(26) }} />
+      <div style={{ ...bar(config.awayColor), right: px(26) }} />
+      <span style={{ ...name, left: px(60) }}>{config.homeName || 'HOME'}</span>
+      <span style={{ ...name, right: px(60), textAlign: 'right' }}>{config.awayName || 'AWAY'}</span>
+      <div
+        style={{
+          position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+          width: px(184), height: px(96), borderRadius: px(10), background: 'rgba(12, 20, 31, 0.82)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: px(58), fontWeight: 800, letterSpacing: px(2),
+        }}
+      >
+        {home} - {away}
+      </div>
+    </div>
+  );
+}
+
 export default function ManualHighlightPage() {
   // 원본을 여러 개 고르면 고른 순서대로 이어붙인 '하나의 타임라인' 처럼 다룬다.
   // 태그·클립 구간은 전부 이 이어붙인 좌표(글로벌 초)이고, 실제로 자를 때만 파일별 좌표로 되돌린다.
@@ -107,6 +190,7 @@ export default function ManualHighlightPage() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [tags, setTags] = useState<Tag[]>([]);
+  const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
   const [padBefore, setPadBefore] = useState(7);
   const [padAfter, setPadAfter] = useState(4);
   const [status, setStatus] = useState('');
@@ -260,6 +344,9 @@ export default function ManualHighlightPage() {
       setTags(saved.tags);
       setPadBefore(saved.padBefore ?? 7);
       setPadAfter(saved.padAfter ?? 4);
+      // 팀명·색까지 같이 돌아와야 한다. 태그만 복원되고 점수판이 초기화되면
+      // 같은 태그인데 결과물의 점수판이 조용히 달라진다.
+      if (saved.scoreboard) setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
       setStatus(
         `이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore ?? 7}초 / 뒤 ${saved.padAfter ?? 4}초`,
       );
@@ -271,11 +358,14 @@ export default function ManualHighlightPage() {
   useEffect(() => {
     if (!storageKey) return;
     if (tags.length) {
-      localStorage.setItem(storageKey, JSON.stringify({ tags, padBefore, padAfter } satisfies SavedWork));
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({ tags, padBefore, padAfter, scoreboard } satisfies SavedWork),
+      );
     } else {
       localStorage.removeItem(storageKey);
     }
-  }, [tags, padBefore, padAfter, storageKey]);
+  }, [tags, padBefore, padAfter, scoreboard, storageKey]);
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed;
@@ -307,20 +397,39 @@ export default function ManualHighlightPage() {
     else v.pause();
   }, []);
 
-  const addTag = useCallback(() => {
+  const addTag = useCallback((kind?: TagKind) => {
     const v = videoRef.current;
     if (!v) return;
     const t = (offsets[activeIndex] ?? 0) + v.currentTime;
     setTags((prev) => {
       // 같은 지점을 두 번 찍는 실수를 막는다 (1초 이내면 무시).
       if (prev.some((p) => Math.abs(p.t - t) < 1)) return prev;
-      const next = [...prev, { id: `${t.toFixed(3)}-${Math.random().toString(36).slice(2, 7)}`, t }];
+      const next = [...prev, { id: `${t.toFixed(3)}-${Math.random().toString(36).slice(2, 7)}`, t, kind }];
       next.sort((a, b) => a.t - b.t);
       return next;
     });
   }, [offsets, activeIndex]);
 
   const removeTag = (id: string) => setTags((prev) => prev.filter((p) => p.id !== id));
+
+  const setTagKind = (id: string, kind?: TagKind) =>
+    setTags((prev) => prev.map((p) => (p.id === id ? { ...p, kind } : p)));
+
+  // 태그마다 '그 클립이 끝난 시점'의 점수. 골 태그면 자기 자신을 포함해 올라간다 —
+  // 서버가 새기는 점수와 같은 계산이라, 목록에서 미리 그대로 확인할 수 있다.
+  const runningScores = useMemo(() => {
+    let home = scoreboard.startHome;
+    let away = scoreboard.startAway;
+    return tags.map((tag) => {
+      if (tag.kind === 'home_goal') home += 1;
+      else if (tag.kind === 'away_goal') away += 1;
+      return [home, away] as [number, number];
+    });
+  }, [tags, scoreboard.startHome, scoreboard.startAway]);
+
+  const finalScore = runningScores.length
+    ? runningScores[runningScores.length - 1]
+    : ([scoreboard.startHome, scoreboard.startAway] as [number, number]);
 
   /** 이 태그로 만들어질 클립 구간 [시작, 끝] — 이어붙인 좌표. 원본 경계에서 잘린다. */
   const clipRange = (tag: Tag): [number, number] => {
@@ -369,6 +478,15 @@ export default function ManualHighlightPage() {
       if (e.code === 'KeyS' || e.key === 's' || e.key === 'S' || e.key === 'ㄴ') {
         e.preventDefault();
         addTag();
+        return;
+      }
+      // Q/W/E/R — 홈 골·홈 장면·원정 장면·원정 골. 한글 자판(ㅂㅈㄷㄱ)에서도 같다.
+      const kind = TAG_KINDS.find((k) => (
+        e.code === k.code || e.key === k.letter || e.key === k.letter.toUpperCase() || e.key === k.hangul
+      ));
+      if (kind) {
+        e.preventDefault();
+        addTag(kind.key);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -488,6 +606,13 @@ export default function ManualHighlightPage() {
         form.append('requested_start', String(clip.requestedStart));
         form.append('requested_end', String(clip.requestedEnd));
         form.append('index', String(clip.index));
+        // 점수판용. 클립 index 는 태그 순서 그대로라(runCut 의 placement) 짝이 맞는다.
+        // tag_offset 은 클립 시작에서 태깅 시점까지의 초 — 골이면 그 지점에서 점수가 오른다.
+        const tag = tags[clip.index - 1];
+        if (tag) {
+          if (tag.kind) form.append('kind', tag.kind);
+          form.append('tag_offset', String(Math.max(0, tag.t - clipRange(tag)[0])));
+        }
         const res = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/clips`, {
           method: 'POST',
           credentials: 'include',
@@ -529,7 +654,21 @@ export default function ManualHighlightPage() {
       // 여기서부터는 서버 몫 — 탭을 닫아도 합치기는 끝나고 "수동 결과물"에 뜬다.
       setPublishPhase('merging');
       setPublishMsg('서버에서 다듬고 합치는 중...');
-      await apiJson(`/highlight/manual-jobs/${jobId}/merge`, { method: 'POST' });
+      await apiJson(`/highlight/manual-jobs/${jobId}/merge`, {
+        method: 'POST',
+        body: JSON.stringify({
+          scoreboard: scoreboard.enabled ? {
+            enabled: true,
+            home_name: scoreboard.homeName,
+            away_name: scoreboard.awayName,
+            home_color: scoreboard.homeColor,
+            away_color: scoreboard.awayColor,
+            start_home: scoreboard.startHome,
+            start_away: scoreboard.startAway,
+            size_pct: scoreboard.sizePct,
+          } : { enabled: false },
+        }),
+      });
 
       // 합치기는 재인코딩이라 몇 초 걸린다. 끝날 때까지 상태를 확인한다.
       for (;;) {
@@ -784,7 +923,19 @@ export default function ManualHighlightPage() {
 
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
               <button style={btn} onClick={togglePlay}>{playing ? '⏸ 정지' : '▶ 재생'}</button>
-              <button style={primaryBtn} onClick={addTag}>＋ 지금 지점 태깅 (S / ㄴ)</button>
+              {/* onClick 에 addTag 를 그대로 물리면 MouseEvent 가 kind 로 넘어간다. 반드시 감싼다. */}
+              <button style={primaryBtn} onClick={() => addTag()}>＋ 태깅 (S / ㄴ)</button>
+              {TAG_KINDS.map((kind) => (
+                <button
+                  key={kind.key}
+                  style={{ ...smallBtn, padding: '8px 12px', borderColor: kind.color }}
+                  title={`${kind.label} — ${kind.letter.toUpperCase()} (한글 ${kind.hangul})`}
+                  onClick={() => addTag(kind.key)}
+                >
+                  <span style={{ color: kind.color, fontWeight: 700 }}>{kind.letter.toUpperCase()}</span>
+                  {' '}{kind.label}
+                </button>
+              ))}
 
               <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 배속
@@ -804,7 +955,9 @@ export default function ManualHighlightPage() {
             </div>
 
             <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '10px 0 0' }}>
-              단축키 — <strong>Space</strong> 재생·정지 · <strong>←/→</strong> {SEEK_STEP}초 이동 · <strong>S</strong>(한글 <strong>ㄴ</strong>) 태깅
+              단축키 — <strong>Space</strong> 재생·정지 · <strong>←/→</strong> {SEEK_STEP}초 이동 · <strong>S</strong>(<strong>ㄴ</strong>) 일반 태깅
+              {' · '}
+              <strong>Q</strong>(ㅂ) 홈 골 · <strong>W</strong>(ㅈ) 홈 장면 · <strong>E</strong>(ㄷ) 원정 장면 · <strong>R</strong>(ㄱ) 원정 골
             </p>
           </div>
 
@@ -839,9 +992,103 @@ export default function ManualHighlightPage() {
               ) : null}
             </div>
 
+            {/* 점수판 — 합칠 때 서버가 영상 좌상단에 새긴다. 골 태그를 찍은 그 시점에 점수가 올라간다. */}
+            <div
+              style={{
+                marginBottom: 14, padding: 12, borderRadius: 8,
+                background: 'var(--surface-input, #16161a)',
+                border: '1px solid var(--border-ghost, #2c2c32)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={scoreboard.enabled}
+                    onChange={(e) => setScoreboard((p) => ({ ...p, enabled: e.target.checked }))}
+                  />
+                  점수판 새기기
+                </label>
+                <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                  {scoreboard.enabled
+                    ? `골 태그(Q·R)를 찍은 순간 점수가 올라갑니다 — 최종 ${finalScore[0]} : ${finalScore[1]}`
+                    : '영상 왼쪽 위에 팀명과 점수를 새깁니다.'}
+                </span>
+              </div>
+
+              {scoreboard.enabled ? (
+                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 12 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {([
+                      ['home', '홈', scoreboard.homeName, scoreboard.homeColor, scoreboard.startHome],
+                      ['away', '원정', scoreboard.awayName, scoreboard.awayColor, scoreboard.startAway],
+                    ] as const).map(([side, label, nameValue, colorValue, startValue]) => (
+                      <div key={side} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12, color: 'var(--muted, #999)', width: 32 }}>{label}</span>
+                        <input
+                          type="text"
+                          maxLength={20}
+                          placeholder={side === 'home' ? 'HOME' : 'AWAY'}
+                          value={nameValue}
+                          onChange={(e) => setScoreboard((p) => (
+                            side === 'home'
+                              ? { ...p, homeName: e.target.value }
+                              : { ...p, awayName: e.target.value }
+                          ))}
+                          style={{ ...numInput, width: 150 }}
+                        />
+                        <input
+                          type="color"
+                          value={colorValue}
+                          title={`${label} 팀 색`}
+                          onChange={(e) => setScoreboard((p) => (
+                            side === 'home'
+                              ? { ...p, homeColor: e.target.value }
+                              : { ...p, awayColor: e.target.value }
+                          ))}
+                          style={{ width: 34, height: 28, padding: 0, border: '1px solid var(--border-ghost, #3a3a42)', borderRadius: 6, background: 'transparent' }}
+                        />
+                        {/* 후반만 태깅하는 경우처럼 0-0 에서 시작하지 않을 때 쓴다. */}
+                        <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                          시작 점수
+                          <input
+                            type="number" min={0} max={99}
+                            value={startValue}
+                            onChange={(e) => {
+                              const n = Math.max(0, Math.min(99, Number(e.target.value) || 0));
+                              setScoreboard((p) => (side === 'home' ? { ...p, startHome: n } : { ...p, startAway: n }));
+                            }}
+                            style={{ ...numInput, width: 52 }}
+                          />
+                        </label>
+                      </div>
+                    ))}
+                    <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      크기
+                      <input
+                        type="range" min={14} max={45} step={1}
+                        value={scoreboard.sizePct}
+                        onChange={(e) => setScoreboard((p) => ({ ...p, sizePct: Number(e.target.value) }))}
+                        style={{ width: 140 }}
+                      />
+                      화면 가로의 {scoreboard.sizePct}%
+                    </label>
+                  </div>
+
+                  <div>
+                    <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                    <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: '6px 0 0' }}>
+                      미리보기 (최종 점수 기준) — 실제로는 영상 왼쪽 위에 들어갑니다.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
             {tags.length === 0 ? (
               <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
-                아직 태그가 없습니다. 재생하며 하이라이트 지점에서 <strong>S</strong>를 누르세요.
+                아직 태그가 없습니다. 재생하며 하이라이트 지점에서 <strong>S</strong>(일반)나
+                {' '}<strong>Q·W·E·R</strong>(홈 골·홈 장면·원정 장면·원정 골)을 누르세요.
               </p>
             ) : (
               <>
@@ -880,6 +1127,33 @@ export default function ManualHighlightPage() {
                         // 이어붙인 좌표만 보면 원본 어디인지 알 수 없다. 파일 안 위치도 같이 보여준다.
                         <span style={{ fontSize: 11, color: 'var(--muted, #999)' }}>
                           {locate(tag.t).index + 1}번 {fmt(locate(tag.t).local)}
+                        </span>
+                      ) : null}
+
+                      {/* 태그 종류. 골로 바꾸면 이 시점부터 점수판 점수가 올라간다. */}
+                      <select
+                        value={tag.kind ?? ''}
+                        onChange={(e) => setTagKind(tag.id, (e.target.value || undefined) as TagKind | undefined)}
+                        style={{
+                          ...smallBtn, padding: '3px 6px', fontSize: 12,
+                          borderColor: (tag.kind && KIND_BY_KEY.get(tag.kind)?.color) || 'var(--border-ghost, #3a3a42)',
+                        }}
+                      >
+                        <option value="">일반</option>
+                        {TAG_KINDS.map((kind) => (
+                          <option key={kind.key} value={kind.key}>{kind.label}</option>
+                        ))}
+                      </select>
+                      {scoreboard.enabled ? (
+                        <span
+                          style={{
+                            fontSize: 12, fontVariantNumeric: 'tabular-nums',
+                            color: tag.kind && KIND_BY_KEY.get(tag.kind)?.goal ? '#eee' : 'var(--muted, #999)',
+                            fontWeight: tag.kind && KIND_BY_KEY.get(tag.kind)?.goal ? 700 : 400,
+                          }}
+                          title="이 클립이 끝난 시점의 점수"
+                        >
+                          {runningScores[i][0]} : {runningScores[i][1]}
                         </span>
                       ) : null}
 
