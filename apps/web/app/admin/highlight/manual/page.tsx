@@ -34,11 +34,14 @@ type Scoreboard = {
   startHome: number;
   startAway: number;
   sizePct: number;
+  /** 여백을 뺀 놓을 수 있는 범위 안에서의 비율(0~100). (0,0) 왼쪽 위 · (100,100) 오른쪽 아래. */
+  posX: number;
+  posY: number;
 };
 type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number; scoreboard?: Scoreboard };
 
-/** 이어붙일 원본 하나. duration 은 파일을 고른 직후 메타데이터에서 읽어 채운다. */
-type Source = { file: File; url: string; duration: number };
+/** 이어붙일 원본 하나. 길이·해상도는 파일을 고른 직후 메타데이터에서 읽어 채운다. */
+type Source = { file: File; url: string; duration: number; width: number; height: number };
 
 // 태깅 단축키. code 는 물리 키라 한글 입력 상태와 무관하게 잡히고, hangul/letter 는
 // code 가 오지 않는 브라우저를 위한 보루다.
@@ -62,7 +65,16 @@ const DEFAULT_SCOREBOARD: Scoreboard = {
   startHome: 0,
   startAway: 0,
   sizePct: 28,
+  posX: 0,
+  posY: 0,
 };
+
+/** 위치 프리셋 3x3. 값은 posX/posY 비율이다. */
+const POS_PRESETS: { x: number; y: number; label: string }[] = [
+  { x: 0, y: 0, label: '왼쪽 위' }, { x: 50, y: 0, label: '가운데 위' }, { x: 100, y: 0, label: '오른쪽 위' },
+  { x: 0, y: 50, label: '왼쪽 중간' }, { x: 50, y: 50, label: '정중앙' }, { x: 100, y: 50, label: '오른쪽 중간' },
+  { x: 0, y: 100, label: '왼쪽 아래' }, { x: 50, y: 100, label: '가운데 아래' }, { x: 100, y: 100, label: '오른쪽 아래' },
+];
 
 // 점수판 판때기 비율(디자인 828.46 x 157.76). 서버 렌더러와 같은 값이어야 한다.
 const BOARD_ASPECT = 828.46 / 157.76;
@@ -119,21 +131,43 @@ function fmt(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-/** 재생하지 않고 길이만 읽는다 — 이어붙인 타임라인을 만들려면 각 원본의 길이가 먼저 필요하다. */
-function probeDuration(url: string): Promise<number> {
+/** 재생하지 않고 길이·해상도만 읽는다.
+ *  길이는 이어붙인 타임라인에, 해상도는 점수판 위치 미리보기에 쓴다. */
+function probeMeta(url: string): Promise<{ duration: number; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const probe = document.createElement('video');
     probe.preload = 'metadata';
     probe.onloadedmetadata = () => {
-      const d = probe.duration;
+      const duration = probe.duration;
+      const width = probe.videoWidth;
+      const height = probe.videoHeight;
       probe.src = '';
       // 길이를 못 읽으면(Infinity·NaN) 이어붙인 좌표가 통째로 어긋나므로 실패로 본다.
-      if (!Number.isFinite(d) || d <= 0) reject(new Error('영상 길이를 읽을 수 없습니다.'));
-      else resolve(d);
+      if (!Number.isFinite(duration) || duration <= 0) reject(new Error('영상 길이를 읽을 수 없습니다.'));
+      // 해상도는 못 읽어도 태깅 자체는 되므로 16:9 로 가정하고 넘어간다.
+      else resolve({ duration, width: width || 1920, height: height || 1080 });
     };
     probe.onerror = () => reject(new Error('영상을 열 수 없습니다.'));
     probe.src = url;
   });
+}
+
+/** 점수판 크기·자리 계산 — 서버(app/scoreboard.py 의 board_placement)와 같아야 한다.
+ *  좌표는 전부 '영상 픽셀' 기준이고, 미리보기는 이 값을 비율로 줄여 그린다. */
+function boardPlacement(videoW: number, videoH: number, sizePct: number, posX: number, posY: number) {
+  const pct = Math.max(10, Math.min(60, sizePct)) / 100;
+  const w = Math.max(160, Math.round(Math.min(videoW * pct, videoH * 0.18 * BOARD_ASPECT)));
+  const h = Math.max(30, Math.round(w / BOARD_ASPECT));
+  const margin = Math.max(16, Math.round(videoW * 0.021));
+  const freeX = Math.max(0, videoW - w - 2 * margin);
+  const freeY = Math.max(0, videoH - h - 2 * margin);
+  const clamp = (v: number) => Math.max(0, Math.min(100, v)) / 100;
+  return {
+    w, h, margin,
+    x: margin + Math.round(freeX * clamp(posX)),
+    y: margin + Math.round(freeY * clamp(posY)),
+    freeX, freeY,
+  };
 }
 
 const fmtBytes = (bytes: number) => {
@@ -142,8 +176,11 @@ const fmtBytes = (bytes: number) => {
 };
 
 /** 결과물에 새겨질 점수판 미리보기. 서버 렌더러(app/scoreboard.py)와 같은 디자인·비율이다. */
-function ScoreboardPreview({ config, home, away }: { config: Scoreboard; home: number; away: number }) {
-  const W = 420;
+function ScoreboardPreview(
+  { config, home, away, width = 420 }:
+  { config: Scoreboard; home: number; away: number; width?: number },
+) {
+  const W = width;
   const H = Math.round(W / BOARD_ASPECT);
   // 디자인 원본(828.46 폭) 좌표를 미리보기 크기로 환산한다 — 서버와 같은 비율.
   const px = (v: number) => `${(v * W) / 828.46}px`;
@@ -181,6 +218,106 @@ function ScoreboardPreview({ config, home, away }: { config: Scoreboard; home: n
   );
 }
 
+/** 영상 화면 비율 박스 위에서 점수판을 끌어 옮긴다.
+ *  좌표 계산은 서버(board_placement)와 같은 식이라, 여기서 보이는 자리가 결과물의 자리다. */
+function ScoreboardPlacer({
+  config, videoW, videoH, home, away, frameUrl, onMove,
+}: {
+  config: Scoreboard;
+  videoW: number;
+  videoH: number;
+  home: number;
+  away: number;
+  frameUrl: string;
+  onMove: (posX: number, posY: number) => void;
+}) {
+  const PREVIEW_W = 440;
+  const scale = PREVIEW_W / Math.max(1, videoW);
+  const previewH = Math.max(80, Math.round(videoH * scale));
+  const place = boardPlacement(videoW, videoH, config.sizePct, config.posX, config.posY);
+
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  // 판을 집은 지점(판 왼쪽 위에서의 거리). 집은 곳이 아니라 판 모서리를 기준으로 옮겨야
+  // 커서 위치에서 판이 튀지 않는다.
+  const grabRef = useRef<{ dx: number; dy: number } | null>(null);
+
+  const moveTo = (clientX: number, clientY: number) => {
+    const box = boxRef.current;
+    const grab = grabRef.current;
+    if (!box || !grab) return;
+    const rect = box.getBoundingClientRect();
+    // 화면 좌표 → 영상 픽셀 좌표 → 여백을 뺀 범위 안에서의 비율
+    const x = (clientX - rect.left - grab.dx) / scale - place.margin;
+    const y = (clientY - rect.top - grab.dy) / scale - place.margin;
+    // 0·50·100 근처면 딱 붙인다 — 손으로 정확히 모서리·정중앙에 맞추기는 어렵다.
+    const snap = (v: number) => {
+      const clamped = Math.max(0, Math.min(100, v));
+      for (const anchor of [0, 50, 100]) if (Math.abs(clamped - anchor) < 5) return anchor;
+      return Math.round(clamped);
+    };
+    onMove(
+      snap(place.freeX > 0 ? (x / place.freeX) * 100 : 0),
+      snap(place.freeY > 0 ? (y / place.freeY) * 100 : 0),
+    );
+  };
+
+  return (
+    <div
+      ref={boxRef}
+      style={{
+        position: 'relative', width: PREVIEW_W, height: previewH,
+        borderRadius: 8, overflow: 'hidden', userSelect: 'none',
+        border: '1px solid var(--border-ghost, #3a3a42)',
+        background: frameUrl ? `center/cover no-repeat url(${frameUrl})` : '#20321f',
+      }}
+    >
+      {!frameUrl ? (
+        <span style={{ position: 'absolute', left: 10, top: 8, fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
+          영상 화면 비율 {videoW}×{videoH}
+        </span>
+      ) : null}
+      <div
+        role="button"
+        tabIndex={0}
+        title="끌어서 옮기세요"
+        onPointerDown={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          grabRef.current = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          if (grabRef.current) moveTo(e.clientX, e.clientY);
+        }}
+        onPointerUp={(e) => {
+          grabRef.current = null;
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }}
+        // 방향키로도 1%씩 미세 조정할 수 있게 한다.
+        onKeyDown={(e) => {
+          const step = e.shiftKey ? 10 : 1;
+          const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+          if (!move) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onMove(
+            Math.max(0, Math.min(100, config.posX + move[0])),
+            Math.max(0, Math.min(100, config.posY + move[1])),
+          );
+        }}
+        style={{
+          position: 'absolute',
+          left: place.x * scale,
+          top: place.y * scale,
+          cursor: 'grab',
+          touchAction: 'none',
+        }}
+      >
+        <ScoreboardPreview config={config} home={home} away={away} width={place.w * scale} />
+      </div>
+    </div>
+  );
+}
+
 export default function ManualHighlightPage() {
   // 원본을 여러 개 고르면 고른 순서대로 이어붙인 '하나의 타임라인' 처럼 다룬다.
   // 태그·클립 구간은 전부 이 이어붙인 좌표(글로벌 초)이고, 실제로 자를 때만 파일별 좌표로 되돌린다.
@@ -191,6 +328,8 @@ export default function ManualHighlightPage() {
   const [speed, setSpeed] = useState(1);
   const [tags, setTags] = useState<Tag[]>([]);
   const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
+  // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
+  const [frameUrl, setFrameUrl] = useState('');
   const [padBefore, setPadBefore] = useState(7);
   const [padAfter, setPadAfter] = useState(4);
   const [status, setStatus] = useState('');
@@ -279,7 +418,7 @@ export default function ManualHighlightPage() {
       const url = URL.createObjectURL(f);
       urlsRef.current.push(url);
       try {
-        made.push({ file: f, url, duration: await probeDuration(url) });
+        made.push({ file: f, url, ...(await probeMeta(url)) });
       } catch {
         revoke();
         setUnsupported(true);
@@ -390,6 +529,32 @@ export default function ManualHighlightPage() {
     if (opts?.play) void v.play();
   }, [sources, locate, duration, activeIndex, offsets]);
 
+  /** 지금 보이는 화면을 정지화면으로 담아 점수판 위치 미리보기 배경으로 쓴다. */
+  const captureFrame = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth || v.readyState < 2) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 480;
+    canvas.height = Math.max(1, Math.round((v.videoHeight / v.videoWidth) * 480));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    // 원본은 blob URL(같은 출처)이라 캔버스가 오염되지 않는다. 그래도 만약을 대비해 감싼다.
+    try {
+      setFrameUrl(canvas.toDataURL('image/jpeg', 0.7));
+    } catch {
+      /* 못 담으면 단색 배경으로 보여준다 */
+    }
+  }, []);
+
+  // 점수판을 켤 때 한 번 담아 둔다 — 빈 상자보다 실제 장면 위가 훨씬 가늠하기 쉽다.
+  useEffect(() => {
+    if (scoreboard.enabled && !frameUrl) captureFrame();
+  }, [scoreboard.enabled, frameUrl, captureFrame]);
+
+  // 원본을 새로 고르면 이전 화면은 더 이상 맞지 않는다.
+  useEffect(() => { setFrameUrl(''); }, [sources]);
+
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -426,6 +591,13 @@ export default function ManualHighlightPage() {
       return [home, away] as [number, number];
     });
   }, [tags, scoreboard.startHome, scoreboard.startAway]);
+
+  // 합치기는 '첫 클립'의 규격에 모든 조각을 맞춘다(highlight_jobs 의 norm_v). 첫 클립은
+  // 가장 이른 태그가 있는 원본에서 나오므로, 미리보기도 그 원본의 해상도로 그려야 맞다.
+  const boardVideo = useMemo(() => {
+    const src = tags.length ? sources[locate(tags[0].t).index] : sources[0];
+    return { w: src?.width || 1920, h: src?.height || 1080 };
+  }, [tags, sources, locate]);
 
   const finalScore = runningScores.length
     ? runningScores[runningScores.length - 1]
@@ -666,6 +838,8 @@ export default function ManualHighlightPage() {
             start_home: scoreboard.startHome,
             start_away: scoreboard.startAway,
             size_pct: scoreboard.sizePct,
+            pos_x: scoreboard.posX,
+            pos_y: scoreboard.posY,
           } : { enabled: false },
         }),
       });
@@ -1076,10 +1250,49 @@ export default function ManualHighlightPage() {
                   </div>
 
                   <div>
+                    {/* 프레임 안 점수판은 실제 비율이라 작다. 글자·색 확인용으로 크게도 보여준다. */}
                     <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
-                    <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: '6px 0 0' }}>
-                      미리보기 (최종 점수 기준) — 실제로는 영상 왼쪽 위에 들어갑니다.
+                    <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: '6px 0 10px' }}>
+                      새겨질 점수판 (최종 점수 기준)
                     </p>
+                    <ScoreboardPlacer
+                      config={scoreboard}
+                      videoW={boardVideo.w}
+                      videoH={boardVideo.h}
+                      home={finalScore[0]}
+                      away={finalScore[1]}
+                      frameUrl={frameUrl}
+                      onMove={(posX, posY) => setScoreboard((p) => ({ ...p, posX, posY }))}
+                    />
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 8, flexWrap: 'wrap' }}>
+                      {/* 9칸 프리셋 — 모서리·가운데는 끌지 않고 한 번에 맞춘다. */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 22px)', gap: 3 }}>
+                        {POS_PRESETS.map((preset) => {
+                          const on = scoreboard.posX === preset.x && scoreboard.posY === preset.y;
+                          return (
+                            <button
+                              key={preset.label}
+                              title={preset.label}
+                              onClick={() => setScoreboard((p) => ({ ...p, posX: preset.x, posY: preset.y }))}
+                              style={{
+                                width: 22, height: 16, padding: 0, cursor: 'pointer',
+                                borderRadius: 3,
+                                border: `1px solid ${on ? 'var(--accent, #3b82f6)' : 'var(--border-ghost, #3a3a42)'}`,
+                                background: on ? 'var(--accent, #3b82f6)' : 'var(--button-dark, #2a2a30)',
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--muted, #999)', flex: 1, minWidth: 180 }}>
+                        점수판을 <strong>끌어서</strong> 옮기거나 왼쪽 9칸으로 맞추세요.
+                        모서리·정중앙 근처에서는 딱 붙습니다. 최종 점수 기준으로 그려집니다.
+                        <div style={{ marginTop: 4 }}>가로 {scoreboard.posX}% · 세로 {scoreboard.posY}%</div>
+                      </div>
+                      <button style={smallBtn} onClick={captureFrame} title="지금 보이는 장면을 배경으로 담습니다">
+                        현재 화면 담기
+                      </button>
+                    </div>
                   </div>
                 </div>
               ) : null}

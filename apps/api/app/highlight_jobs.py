@@ -25,7 +25,7 @@ from .highlight_produce_job import ProduceSpec, run_produce
 from .highlight_storage import default_storage
 from .highlight_storage import output_prefix as storage_output_prefix
 from .scene_motion import attach_scene_motions
-from .scoreboard import board_size_for_video, render_scoreboard_file
+from .scoreboard import board_placement, render_scoreboard_file
 from .models import FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
@@ -773,8 +773,12 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         sb_cache: dict[tuple[int, int], Path] = {}
         if sb:
             sb_cfg, sb_pre, sb_post, sb_goal = sb
-            sb_board_w, _ = board_size_for_video(vw, vh, float(sb_cfg.get("size_pct") or 28))
-            sb_margin = max(16, round(vw * 0.021))
+            sb_board_w, _sb_h, sb_x, sb_y = board_placement(
+                vw, vh,
+                float(sb_cfg.get("size_pct") or 28),
+                float(sb_cfg.get("pos_x") or 0),
+                float(sb_cfg.get("pos_y") or 0),
+            )
 
         def sb_image(score: tuple[int, int]) -> Path:
             """그 점수의 점수판 PNG. 같은 점수는 한 번만 굽고 돌려 쓴다."""
@@ -836,7 +840,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     enable = f":enable='gte(t,{a:.3f})'"
                 else:
                     enable = f":enable='between(t,{a:.3f},{b:.3f})'"
-                chains.append(f"[{cur}][{idx}:v]overlay={sb_margin}:{sb_margin}{enable}[{label}]")
+                chains.append(f"[{cur}][{idx}:v]overlay={sb_x}:{sb_y}{enable}[{label}]")
                 cur = label
                 idx += 1
             return ins, chains, cur, idx

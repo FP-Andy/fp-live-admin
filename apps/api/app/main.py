@@ -8911,10 +8911,13 @@ def merge_manual_job(
             value = str(scoreboard.get(key) or "").strip()
             return value if re.fullmatch(r"#[0-9A-Fa-f]{6}", value) else fallback
 
-        try:
-            size_pct = float(scoreboard.get("size_pct") or 28)
-        except (TypeError, ValueError):
-            size_pct = 28.0
+        def _pct(key: str, fallback: float, lo: float, hi: float) -> float:
+            try:
+                return max(lo, min(hi, float(scoreboard.get(key))))
+            except (TypeError, ValueError):
+                return fallback
+
+        size_pct = _pct("size_pct", 28.0, 10.0, 60.0)
         metadata = dict(job.job_metadata or {})
         metadata["scoreboard"] = {
             "enabled": True,
@@ -8924,7 +8927,10 @@ def merge_manual_job(
             "away_color": _color("away_color", "#E8452F"),
             "start_home": _score("start_home"),
             "start_away": _score("start_away"),
-            "size_pct": max(10.0, min(60.0, size_pct)),
+            "size_pct": size_pct,
+            # 여백을 뺀 놓을 수 있는 범위 안에서의 비율. (0,0) 왼쪽 위 · (100,100) 오른쪽 아래.
+            "pos_x": _pct("pos_x", 0.0, 0.0, 100.0),
+            "pos_y": _pct("pos_y", 0.0, 0.0, 100.0),
         }
         update_job(db, job_id, job_metadata=metadata)
 

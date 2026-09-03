@@ -200,6 +200,30 @@ def board_size_for_video(
     return w, max(30, round(w / BOARD_ASPECT))
 
 
+def board_placement(
+    video_w: int, video_h: int,
+    size_pct: float = 28.0, pos_x: float = 0.0, pos_y: float = 0.0,
+) -> tuple[int, int, int, int]:
+    """점수판 크기와 놓일 자리. (폭, 높이, 왼쪽 x, 위쪽 y)
+
+    pos_x/pos_y 는 여백을 뺀 '놓을 수 있는 범위' 안에서의 비율(0~100)이다.
+    (0,0) 왼쪽 위 · (50,50) 정중앙 · (100,100) 오른쪽 아래.
+    화면 가장자리에 딱 붙지 않도록 사방에 같은 여백을 남긴다.
+    """
+    w, h = board_size_for_video(video_w, video_h, size_pct)
+    margin = max(16, round(video_w * 0.021))
+    free_x = max(0, video_w - w - 2 * margin)
+    free_y = max(0, video_h - h - 2 * margin)
+
+    def _frac(value: float) -> float:
+        try:
+            return max(0.0, min(100.0, float(value))) / 100.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    return w, h, margin + round(free_x * _frac(pos_x)), margin + round(free_y * _frac(pos_y))
+
+
 def render_scoreboard_file(
     path: Path,
     home_name: str,
