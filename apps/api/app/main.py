@@ -354,6 +354,14 @@ def _ensure_runtime_schema() -> None:
             "CREATE INDEX IF NOT EXISTS ix_matches_fpa_picker_recent "
             "ON matches (created_at DESC)"
         )
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_dashboard_page "
+            "ON matches (sport, archived, created_at DESC)"
+        )
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_dashboard_class_page "
+            "ON matches (sport, archived, competition_class, created_at DESC)"
+        )
 
     # 녹화 중계 오버레이 편집: 기존 초안에도 전·후반 종료 기준점을 추가한다.
     if "broadcast_overlay_projects" in table_names and "first_half_video_end_sec" not in broadcast_overlay_project_columns:
@@ -6473,6 +6481,56 @@ def list_matches(
         query = query.filter(Match.competition_class != "FPA")
     rows = query.order_by(desc(Match.created_at)).all()
     return _cache_set(_match_response_cache, cache_key, [_serialize_match(r, compact=compact) for r in rows])
+
+
+@app.get("/api/dashboard/matches")
+def list_dashboard_matches(
+    sport: str = Query(default="FOOTBALL"),
+    archived: bool = Query(default=False),
+    competition_class: str | None = Query(default=None),
+    limit: int = Query(default=7, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """Dashboard list paging, avoiding a full historical match download on every refresh."""
+    sport_code = _normalize_sport(sport)
+    class_code = (competition_class or "").strip().upper()
+    scope = db.query(Match).filter(
+        Match.sport == sport_code,
+        Match.competition_class != "FPA",
+    )
+    active_scope = scope.filter(Match.archived.is_(False))
+    archived_scope = scope.filter(Match.archived.is_(True))
+    page_scope = archived_scope if archived else active_scope
+    if class_code:
+        page_scope = page_scope.filter(Match.competition_class == class_code)
+
+    # These inexpensive aggregate counts keep the existing overview cards
+    # accurate without forcing the browser to receive every historical row.
+    active_total = active_scope.order_by(None).count()
+    archived_total = archived_scope.order_by(None).count()
+    assigned_total = active_scope.filter(Match.operator_id.isnot(None)).order_by(None).count()
+    rtmp_total = active_scope.filter(
+        Match.metadata_json["ingest_protocol"].astext == "RTMP"
+    ).order_by(None).count()
+    total = page_scope.order_by(None).count()
+    rows = page_scope.order_by(desc(Match.created_at)).offset(offset).limit(limit).all()
+    class_rows = (
+        scope.with_entities(Match.competition_class)
+        .distinct()
+        .order_by(Match.competition_class)
+        .all()
+    )
+    return {
+        "items": [_serialize_match(row, compact=True) for row in rows],
+        "total": total,
+        "active_total": active_total,
+        "archived_total": archived_total,
+        "assigned_total": assigned_total,
+        "rtmp_total": rtmp_total,
+        "class_options": [str(row[0]) for row in class_rows if row[0]],
+    }
 
 
 @app.get("/api/fpa/matches")

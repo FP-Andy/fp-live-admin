@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../lib/api';
+import { API_BASE, apiFetch, apiJson, fetchSessionUser, type SessionUser } from '../../../lib/api';
 import { useSportContext, type Sport } from '../../../components/SportContext';
 
 type Match = {
@@ -35,6 +35,16 @@ type Match = {
 
 type StreamStatus = {
   running_match_ids?: string[];
+};
+
+type DashboardMatchPage = {
+  items: Match[];
+  total: number;
+  active_total: number;
+  archived_total: number;
+  assigned_total: number;
+  rtmp_total: number;
+  class_options: string[];
 };
 
 type CompetitionClass = {
@@ -233,6 +243,12 @@ export default function Dashboard() {
   const PAGE_SIZE = 7;
   const { sport } = useSportContext();
   const [matches, setMatches] = useState<Match[]>([]);
+  const [matchTotal, setMatchTotal] = useState(0);
+  const [activeMatchTotal, setActiveMatchTotal] = useState(0);
+  const [archivedMatchTotal, setArchivedMatchTotal] = useState(0);
+  const [assignedMatchTotal, setAssignedMatchTotal] = useState(0);
+  const [rtmpMatchTotal, setRtmpMatchTotal] = useState(0);
+  const [matchClassOptions, setMatchClassOptions] = useState<string[]>([]);
   const [competitionClasses, setCompetitionClasses] = useState<CompetitionClass[]>([]);
   const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
   const [homeTeam, setHomeTeam] = useState('');
@@ -303,19 +319,38 @@ export default function Dashboard() {
 
   const load = async () => {
     try {
+      const currentPage = listMode === 'active' ? activePage : archivedPage;
+      const params = new URLSearchParams({
+        sport,
+        archived: String(listMode === 'archived'),
+        limit: String(PAGE_SIZE),
+        offset: String((currentPage - 1) * PAGE_SIZE),
+      });
+      if (classFilter !== 'ALL') params.set('competition_class', classFilter);
       const [matchesData, classData, streamStatusData, scheduleData] = await Promise.all([
-        apiJson<Match[]>(`/matches?sport=${sport}&include_fpa_manual=false&compact=true`),
+        apiJson<DashboardMatchPage>(`/dashboard/matches?${params.toString()}`),
         apiJson<CompetitionClass[]>('/competition-classes'),
         apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
         apiJson<ScheduleEntry[]>('/schedule-entries').catch(() => []),
       ]);
-      setMatches(Array.isArray(matchesData) ? matchesData : []);
+      setMatches(Array.isArray(matchesData.items) ? matchesData.items : []);
+      setMatchTotal(Number(matchesData.total) || 0);
+      setActiveMatchTotal(Number(matchesData.active_total) || 0);
+      setArchivedMatchTotal(Number(matchesData.archived_total) || 0);
+      setAssignedMatchTotal(Number(matchesData.assigned_total) || 0);
+      setRtmpMatchTotal(Number(matchesData.rtmp_total) || 0);
+      setMatchClassOptions(Array.isArray(matchesData.class_options) ? matchesData.class_options : []);
       setCompetitionClasses(Array.isArray(classData) ? classData : []);
       setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
       setScheduleEntries(Array.isArray(scheduleData) ? scheduleData : []);
       setError('');
     } catch (loadError) {
       setMatches([]);
+      setMatchTotal(0);
+      setActiveMatchTotal(0);
+      setArchivedMatchTotal(0);
+      setAssignedMatchTotal(0);
+      setRtmpMatchTotal(0);
       setRunningMatchIds([]);
       setError(loadError instanceof Error ? loadError.message : 'API unavailable. Run API server or infra/app compose stack.');
     }
@@ -328,10 +363,10 @@ export default function Dashboard() {
     // timeout과 offline 캐시로 별도 보호한다.
     const timer = setInterval(load, 15000);
     return () => clearInterval(timer);
-  }, [sport]);
+  }, [sport, listMode, classFilter, activePage, archivedPage]);
 
   useEffect(() => {
-    apiJson<SessionUser>('/session/me')
+    fetchSessionUser()
       .then(setSessionUser)
       .catch(() => setSessionUser(null));
   }, []);
@@ -852,46 +887,19 @@ export default function Dashboard() {
     return [...teams].sort((a, b) => a.localeCompare(b, 'ko'));
   }, [selectedCompetition, competitionClass]);
   const usesTeamDropdown = selectedTeamOptions.length > 0;
-  const assignedCount = useMemo(() => matches.filter((match) => !match.archived && match.operator_id).length, [matches]);
-  const rtmpCount = useMemo(
-    () => matches.filter((match) => !match.archived && match.metadata?.ingest_protocol === 'RTMP').length,
-    [matches]
-  );
-  const activeMatches = useMemo(
-    () => matches.filter((match) => !match.archived),
-    [matches]
-  );
-  const archivedMatches = useMemo(
-    () => matches.filter((match) => match.archived),
-    [matches]
-  );
   const availableClasses = useMemo(() => {
     const classes = new Set([
       ...competitionOptions.map((item) => item.code),
-      ...matches.map((match) => (match.competition_class || 'K3').toUpperCase()),
+      ...matchClassOptions.map((item) => item.toUpperCase()),
     ]);
     return ['ALL', ...Array.from(classes).sort()];
-  }, [competitionOptions, matches]);
-  const filteredActiveMatches = useMemo(
-    () =>
-      activeMatches.filter((match) => classFilter === 'ALL' || (match.competition_class || 'K3').toUpperCase() === classFilter),
-    [activeMatches, classFilter]
-  );
-  const filteredArchivedMatches = useMemo(
-    () =>
-      archivedMatches.filter((match) => classFilter === 'ALL' || (match.competition_class || 'K3').toUpperCase() === classFilter),
-    [archivedMatches, classFilter]
-  );
-  const pagedActiveMatches = useMemo(
-    () => filteredActiveMatches.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
-    [filteredActiveMatches, activePage]
-  );
-  const pagedArchivedMatches = useMemo(
-    () => filteredArchivedMatches.slice((archivedPage - 1) * PAGE_SIZE, archivedPage * PAGE_SIZE),
-    [filteredArchivedMatches, archivedPage]
-  );
-  const activePageCount = Math.max(1, Math.ceil(filteredActiveMatches.length / PAGE_SIZE));
-  const archivedPageCount = Math.max(1, Math.ceil(filteredArchivedMatches.length / PAGE_SIZE));
+  }, [competitionOptions, matchClassOptions]);
+  const activePageCount = listMode === 'active'
+    ? Math.max(1, Math.ceil(matchTotal / PAGE_SIZE))
+    : Math.max(1, Math.ceil(activeMatchTotal / PAGE_SIZE));
+  const archivedPageCount = listMode === 'archived'
+    ? Math.max(1, Math.ceil(matchTotal / PAGE_SIZE))
+    : Math.max(1, Math.ceil(archivedMatchTotal / PAGE_SIZE));
 
   useEffect(() => {
     setActivePage(1);
@@ -906,7 +914,7 @@ export default function Dashboard() {
     if (archivedPage > archivedPageCount) setArchivedPage(archivedPageCount);
   }, [archivedPage, archivedPageCount]);
 
-  const visibleMatches = listMode === 'active' ? pagedActiveMatches : pagedArchivedMatches;
+  const visibleMatches = matches;
   const currentPage = listMode === 'active' ? activePage : archivedPage;
   const currentPageCount = listMode === 'active' ? activePageCount : archivedPageCount;
   const setCurrentPage = (nextPage: number) => {
@@ -933,19 +941,19 @@ export default function Dashboard() {
               <div className="metric-strip metric-strip-overview">
                 <div className="metric-tile success">
                   <span className="muted">Total Matches</span>
-                  <strong>{matches.length}</strong>
+                  <strong>{activeMatchTotal + archivedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile tech">
                   <span className="muted">Archived</span>
-                  <strong>{archivedMatches.length}</strong>
+                  <strong>{archivedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile">
                   <span className="muted">Assigned</span>
-                  <strong>{assignedCount}</strong>
+                  <strong>{assignedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile">
                   <span className="muted">RTMP Pipelines</span>
-                  <strong>{sport === 'FOOTBALL' ? rtmpCount : 0}</strong>
+                  <strong>{sport === 'FOOTBALL' ? rtmpMatchTotal : 0}</strong>
                 </div>
               </div>
             </div>
@@ -1209,7 +1217,7 @@ export default function Dashboard() {
                   </div>
                 );
               })}
-              {(listMode === 'active' ? filteredActiveMatches.length : filteredArchivedMatches.length) === 0 ? (
+              {matchTotal === 0 ? (
                 <div className="muted">
                   {listMode === 'active' ? 'No active matches for this class.' : 'No archived matches for this class.'}
                 </div>

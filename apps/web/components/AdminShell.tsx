@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { apiFetch, apiJson, displayRole, type SessionUser } from '../lib/api';
+import { apiFetch, clearCachedSessionUser, displayRole, fetchSessionUser, readCachedSessionUser, type SessionUser } from '../lib/api';
 import { clearFpaDraft, FPA_DRAFT_WARNING_MESSAGE, hasFpaDraft } from './FpaDraftGuard';
 import { SportProvider, SPORTS, useSportContext, type Sport } from './SportContext';
 
@@ -301,6 +301,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const pendingSportChangeRef = useRef<Sport | null>(null);
+  const initialPathRef = useRef(pathname || '/admin/dashboard');
   const currentPath = pathname || '/admin/dashboard';
   const pageMeta = getPageMeta(currentPath);
   const visibleSections = NAV_SECTIONS.map((section) => {
@@ -319,19 +320,21 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
+    const cachedUser = readCachedSessionUser();
+    if (cachedUser) setUser(cachedUser);
 
-    apiJson<SessionUser>('/session/me')
+    fetchSessionUser()
       .then((data) => {
         if (active) setUser(data);
       })
       .catch(() => {
-        router.replace(`/login?next=${encodeURIComponent(pathname || '/admin/dashboard')}`);
+        if (active) router.replace(`/login?next=${encodeURIComponent(initialPathRef.current)}`);
       });
 
     return () => {
       active = false;
     };
-  }, [pathname, router]);
+  }, [router]);
 
   useEffect(() => {
     if (pendingSportChangeRef.current) return;
@@ -353,6 +356,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
       clearFpaDraft();
     }
     await apiFetch('/session/logout', { method: 'POST' });
+    clearCachedSessionUser();
     router.replace('/login');
     router.refresh();
   };
@@ -387,7 +391,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
             <div className="sidebar-main">
               <div className="sidebar-user">
                 <div className="sidebar-eyebrow">Signed In</div>
-                <strong>{user?.name || 'Loading...'}</strong>
+                <strong>{user?.name || 'Signed in'}</strong>
                 <span className="muted">@{user?.id || 'session'}{user?.role ? ` · ${displayRole(user.role)}` : ''}</span>
               </div>
 
