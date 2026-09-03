@@ -5863,7 +5863,10 @@ async def download_fpa_visual_archive(file: UploadFile = File(...), report_title
 
 
 @app.get("/api/competition-classes", response_model=list[CompetitionClassResponse])
-def list_competition_classes(db: Session = Depends(get_db)):
+def list_competition_classes(response: Response, db: Session = Depends(get_db)):
+    # This endpoint is already public and changes infrequently. A short shared
+    # cache removes a cross-region round trip without involving session data.
+    response.headers["Cache-Control"] = "public, max-age=60, s-maxage=300"
     rows = db.query(CompetitionClass).order_by(CompetitionClass.code.asc()).all()
     return [_serialize_competition_class(row) for row in rows]
 
@@ -6465,11 +6468,16 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 
 @app.get("/api/matches")
 def list_matches(
+    response: Response,
     sport: str | None = Query(default=None),
     include_fpa_manual: bool = Query(default=True),
     compact: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
+    # Match list has long been a public read endpoint. Cache compact list
+    # variants briefly at the edge; write paths and authenticated endpoints are
+    # deliberately excluded from CloudFront cache behaviours.
+    response.headers["Cache-Control"] = "public, max-age=15, s-maxage=30"
     cache_key = ("list_matches", _normalize_sport(sport) if sport else "", include_fpa_manual, compact)
     cached = _cache_get(_match_response_cache, cache_key)
     if cached is not None:
