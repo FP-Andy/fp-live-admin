@@ -1369,6 +1369,26 @@ export default function FpaLivePage() {
   const activePitchSrc = PITCH_SRC;
   const activePitchLabel = isFutsal ? 'futsal pitch' : 'football field';
 
+  // SportContext는 localStorage 값을 클라이언트에서 복원한다. 따라서 첫 렌더는
+  // FOOTBALL일 수 있고, useState 초기값만으로는 Queen Cup 컨텍스트 전환을 놓친다.
+  // 아직 경기·초안이 없는 경우에만 컨텍스트를 따라가 기존 기록의 좌표계를 보호한다.
+  useEffect(() => {
+    const hasDraftContent = Boolean(
+      matchId !== 'ID'
+      || logs.length
+      || rows.length
+      || savedScenes.length
+      || dots.length
+      || beforeDots.length
+      || afterDots.length
+      || passArrows.length,
+    );
+    if (hasDraftContent) return;
+
+    const nextSport: FpaSport = selectedSport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL';
+    setFpaSport((current) => current === nextSport ? current : nextSport);
+  }, [afterDots.length, beforeDots.length, dots.length, logs.length, matchId, passArrows.length, rows.length, savedScenes.length, selectedSport]);
+
   const matchPageCount = Math.max(1, Math.ceil(matchTotal / FPA_MATCH_PAGE_SIZE));
 
   // 전체 로그 = 저장된 장면들(flatten) + 현재 버퍼 (single 은 savedScenes 비어 있어 = 현재 버퍼). 저장/내보내기용.
