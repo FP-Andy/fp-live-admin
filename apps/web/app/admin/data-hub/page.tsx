@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE, apiJson } from '../../../lib/api';
 import { useSportContext } from '../../../components/SportContext';
 
 type HubMatch = {
   id: string;
   name: string;
-  sport?: 'FOOTBALL' | 'BASKETBALL';
+  sport?: 'FOOTBALL' | 'BASKETBALL' | 'FUTSAL';
   competition_class: string;
   round_number: number;
   archived: boolean;
@@ -21,13 +21,20 @@ export default function DataHubPage() {
   const [matches, setMatches] = useState<HubMatch[]>([]);
   const [competitionFilter, setCompetitionFilter] = useState('ALL');
   const [status, setStatus] = useState('Loading data hub');
+  const loadRequestRef = useRef(0);
 
   const load = async () => {
+    const requestId = ++loadRequestRef.current;
+    setStatus('Loading data hub');
     try {
       const data = await apiJson<HubMatch[]>(`/data-hub/matches?sport=${sport}`);
+      // SportContext는 클라이언트에서 복원된다. 초기 FOOTBALL 요청이 늦게
+      // 끝나도 뒤이어 선택된 FUTSAL/BASKETBALL 목록을 덮어쓰면 안 된다.
+      if (requestId !== loadRequestRef.current) return;
       setMatches(Array.isArray(data) ? data : []);
       setStatus('');
     } catch (error) {
+      if (requestId !== loadRequestRef.current) return;
       setStatus(error instanceof Error ? error.message : 'Data hub unavailable');
     }
   };
@@ -51,7 +58,7 @@ export default function DataHubPage() {
         <div>
           <div className="sidebar-eyebrow">Shared Match Data</div>
           <h1>Data Hub</h1>
-          <p>{sport === 'BASKETBALL' ? '현재 Basketball 컨텍스트의 경기 데이터를 분리해서 봅니다.' : 'FLA 경기 데이터와 저장된 FPA 분석 데이터를 같은 match 기준으로 내려받습니다.'}</p>
+          <p>{sport === 'BASKETBALL' ? '현재 Basketball 컨텍스트의 경기 데이터를 분리해서 봅니다.' : sport === 'FUTSAL' ? '현재 Queen Cup 풋살 경기의 FLA·FPA 데이터를 같은 match 기준으로 내려받습니다.' : 'FLA 경기 데이터와 저장된 FPA 분석 데이터를 같은 match 기준으로 내려받습니다.'}</p>
         </div>
       </section>
 
@@ -59,7 +66,7 @@ export default function DataHubPage() {
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Downloads</div>
-            <h3>{sport === 'BASKETBALL' ? '농구 경기별 데이터' : '경기별 데이터'}</h3>
+            <h3>{sport === 'BASKETBALL' ? '농구 경기별 데이터' : sport === 'FUTSAL' ? '풋살 경기별 데이터' : '경기별 데이터'}</h3>
           </div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <label className="field-stack dashboard-filter-select">
