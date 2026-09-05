@@ -293,6 +293,7 @@ export default function Dashboard() {
   const [futsalFirstHalfMinutes, setFutsalFirstHalfMinutes] = useState(15);
   const [futsalSecondHalfMinutes, setFutsalSecondHalfMinutes] = useState(15);
   const [assignOperator, setAssignOperator] = useState(false);
+  const [broadcastGraphicsEnabled, setBroadcastGraphicsEnabled] = useState(true);
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('RTMP');
   const [error, setError] = useState('');
   const [listMode, setListMode] = useState<'active' | 'archived'>('active');
@@ -498,7 +499,9 @@ export default function Dashboard() {
                 media_enabled: false,
                 live_coder_enabled: false,
               }
-          : undefined,
+          : {
+              broadcast_enabled: broadcastGraphicsEnabled,
+            },
       }),
     });
 
@@ -518,6 +521,7 @@ export default function Dashboard() {
     setFutsalFirstHalfMinutes(15);
     setFutsalSecondHalfMinutes(15);
     setAssignOperator(false);
+    setBroadcastGraphicsEnabled(true);
     setIngestProtocol('RTMP');
     await load();
   };
@@ -1159,15 +1163,26 @@ export default function Dashboard() {
 
                 <div className="field-stack field-stack-operator">
                   <div className="field-label">operator 상속</div>
-                  <label className="row operator-toggle-inline">
-                    <input
-                      type="checkbox"
-                      checked={assignOperator}
-                      onChange={(e) => setAssignOperator(e.target.checked)}
-                      style={{ minHeight: 'auto', width: 18, height: 18 }}
-                    />
-                    <span>현재 계정 사용</span>
-                  </label>
+                  <div className="operator-toggle-group">
+                    <label className="row operator-toggle-inline">
+                      <input
+                        type="checkbox"
+                        checked={assignOperator}
+                        onChange={(e) => setAssignOperator(e.target.checked)}
+                        style={{ minHeight: 'auto', width: 18, height: 18 }}
+                      />
+                      <span>현재 계정 사용</span>
+                    </label>
+                    {sport === 'FOOTBALL' ? <label className="row operator-toggle-inline broadcast-toggle-inline">
+                      <input
+                        type="checkbox"
+                        checked={broadcastGraphicsEnabled}
+                        onChange={(e) => setBroadcastGraphicsEnabled(e.target.checked)}
+                        style={{ minHeight: 'auto', width: 18, height: 18 }}
+                      />
+                      <span>Broadcast 그래픽 생성</span>
+                    </label> : null}
+                  </div>
                 </div>
 
                 <div className="field-stack field-stack-generated">

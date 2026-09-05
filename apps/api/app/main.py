@@ -2175,6 +2175,16 @@ def _broadcast_assets_manifest(match_obj: Match) -> dict:
     }
 
 
+def _broadcast_graphics_enabled(match_obj: Match) -> bool:
+    """Return whether this match is opted in to automatic Broadcast graphics.
+
+    Legacy matches predate this setting, so a missing value deliberately means
+    enabled.  Only an explicit JSON boolean ``false`` opts a match out.
+    """
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    return metadata.get("broadcast_enabled") is not False
+
+
 def _broadcast_is_running(match_obj: Match, db: Session) -> bool:
     """Return the current FLA clock playback state for the showroom status.
 
@@ -2221,6 +2231,8 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
     exactly three immutable goal-shot artifacts.
     """
     if _normalize_sport(getattr(match_obj, "sport", None)) != "FOOTBALL":
+        return None
+    if not _broadcast_graphics_enabled(match_obj):
         return None
     if not force and (match_obj.archived or not _broadcast_has_started(match_obj, db)):
         return None
@@ -2351,6 +2363,9 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
     and archived matches therefore retain the same stats, goals and xT while
     showing the new team identity consistently.
     """
+    if not _broadcast_graphics_enabled(match_obj):
+        return _broadcast_assets_manifest(match_obj)
+
     with _broadcast_asset_render_lock:
         manifest = _broadcast_assets_manifest(match_obj)
         store = BroadcastAssetStore()
@@ -2754,7 +2769,7 @@ def _refresh_all_broadcast_assets() -> None:
             .order_by(Match.created_at.desc())
             .all()
             )
-            if not _is_completed_broadcast_demo(row)
+            if not _is_completed_broadcast_demo(row) and _broadcast_graphics_enabled(row)
         ]
     finally:
         db.close()
@@ -6230,6 +6245,10 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     extra_second_half_minutes = int(getattr(competition, "extra_second_half_minutes", None) or 15) if competition else 15
     metadata = dict(body.metadata or {})
     metadata["sport"] = sport
+    if sport == "FOOTBALL":
+        # New football matches opt in by default; an explicit false is the
+        # lightweight per-match switch that keeps Chromium rendering idle.
+        metadata["broadcast_enabled"] = metadata.get("broadcast_enabled") is not False
     metadata["stream_mode"] = body.stream_mode
     metadata["home_team"] = home_team
     metadata["away_team"] = away_team
@@ -6944,6 +6963,7 @@ def list_broadcast_live_matches(
     rows = [
         row for row in rows
         if not _is_completed_broadcast_demo(row)
+        and _broadcast_graphics_enabled(row)
         and (not row.archived or any(_broadcast_assets_manifest(row).get(key) for key in ("live", "archive", "xg_goals", "dominance")))
     ]
     rows.sort(
@@ -6983,6 +7003,8 @@ def get_completed_broadcast_demo(db: Session = Depends(get_db)):
 @app.get("/api/broadcast/v1/matches/{match_id}")
 def get_broadcast_showroom_match(match_id: UUID, db: Session = Depends(get_db)):
     row = _require_football_match_for_partner(match_id, db)
+    if not _broadcast_graphics_enabled(row):
+        raise HTTPException(status_code=404, detail="Broadcast graphics are disabled for this match")
     return _broadcast_public_match(row, db)
 
 
@@ -6995,6 +7017,8 @@ def refresh_broadcast_assets(
 ):
     """FPC can call this after pushing new data instead of waiting for the minute worker."""
     row = _require_football_match_for_partner(match_id, db)
+    if not _broadcast_graphics_enabled(row):
+        raise HTTPException(status_code=409, detail="Broadcast graphics are disabled for this match")
     manifest = _refresh_broadcast_assets(row, db, force=finalize)
     if manifest is None:
         raise HTTPException(status_code=409, detail="Match has not started; use finalize=true only after the final data write")
@@ -9710,6 +9734,8 @@ def _render_broadcast_overlay_asset(
     video.  This path deliberately goes through the same Live Coder capture
     renderer and Broadcast asset store as the public Broadcast URLs.
     """
+    if not _broadcast_graphics_enabled(match_obj):
+        raise HTTPException(status_code=409, detail="Broadcast graphics are disabled for this match")
     max_match_clock = max(
         _overlay_match_latest_clock_ms(match_obj.id, db),
         (
