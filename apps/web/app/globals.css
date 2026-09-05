@@ -3299,6 +3299,15 @@ a:focus-visible {
   border-top: 0;
 }
 
+.dashboard-match-list {
+  gap: 0;
+}
+
+.dashboard-match-list .match-item {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

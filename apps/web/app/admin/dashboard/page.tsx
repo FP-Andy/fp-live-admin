@@ -1244,7 +1244,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="match-list">
+            <div className="match-list dashboard-match-list">
               {visibleMatches.map((match) => {
                 const isRunning = runningMatchIds.includes(match.id);
                 return (
@@ -1252,35 +1252,8 @@ export default function Dashboard() {
                     <div className="grid match-item-main" style={{ gap: 8 }}>
                       <div className="row" style={{ flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: 18 }}>{match.name}</strong>
-                        <span className="status-pill">{match.competition_class || 'K3'}</span>
-                        <span className="status-pill tech">{match.sport === 'BASKETBALL' ? 'BASKETBALL' : match.sport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL'}</span>
-                        <span className="status-pill warning">R{match.round_number || 1}</span>
                         <span className={`status-pill ${match.archived ? 'archived' : isRunning ? 'running' : 'stopped'}`}>
                           {match.archived ? 'ARCHIVED' : isRunning ? 'RUNNING' : 'STOPPED'}
-                        </span>
-                      </div>
-                      <div className="muted">operator: {match.operator_id || 'unassigned'}</div>
-                      <div className="match-meta-group">
-                        <span className={`meta-chip ${match.metadata?.stream_mode === 'MANUAL' ? 'warning' : ''}`}>
-                          mode: {match.sport === 'BASKETBALL' ? 'manual court' : match.sport === 'FUTSAL' ? 'manual futsal' : match.metadata?.stream_mode === 'MANUAL' ? 'manual field' : 'stream'}
-                        </span>
-                        <span className={`meta-chip ${match.metadata?.ingest_protocol ? 'tech' : ''}`}>
-                          protocol: {match.sport === 'BASKETBALL' || match.sport === 'FUTSAL' ? 'n/a' : match.metadata?.ingest_protocol || 'not set'}
-                        </span>
-                        <span className={`meta-chip ${
-                          match.sport === 'BASKETBALL' || match.sport === 'FUTSAL' || match.metadata?.stream_mode === 'MANUAL'
-                            ? ''
-                            : match.hls_url
-                              ? 'success'
-                              : 'warning'
-                        }`}>
-                          {match.sport === 'BASKETBALL' || match.sport === 'FUTSAL'
-                            ? 'no stream'
-                            : match.metadata?.stream_mode === 'MANUAL'
-                            ? 'no hls'
-                            : match.hls_url
-                              ? 'hls ready'
-                              : 'hls pending'}
                         </span>
                       </div>
                       <div className="muted">
