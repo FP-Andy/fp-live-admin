@@ -993,6 +993,13 @@ export default function Dashboard() {
   const visibleMatches = matches;
   const currentPage = listMode === 'active' ? activePage : archivedPage;
   const currentPageCount = listMode === 'active' ? activePageCount : archivedPageCount;
+  // Keep long archive histories navigable without rendering every page number.
+  // Pages move in compact groups of five: 6–10, 11–15, and so on.
+  const paginationGroupStart = Math.floor((currentPage - 1) / 5) * 5 + 1;
+  const visiblePageNumbers = Array.from(
+    { length: Math.min(5, currentPageCount - paginationGroupStart + 1) },
+    (_, index) => paginationGroupStart + index,
+  );
   const setCurrentPage = (nextPage: number) => {
     if (listMode === 'active') {
       setActivePage(nextPage);
@@ -1312,28 +1319,34 @@ export default function Dashboard() {
             </div>
 
             {currentPageCount > 1 ? (
-              <div className="pagination-bar">
-                <button onClick={() => setCurrentPage(Math.max(1, currentPage - 1))} disabled={currentPage === 1}>
-                  {'<'}
+              <nav className="pagination-bar dashboard-pagination" aria-label="경기 목록 페이지 이동">
+                <button
+                  className="dashboard-pagination-nav"
+                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                  disabled={currentPage === 1}
+                >
+                  <span aria-hidden="true">←</span><span className="dashboard-pagination-label">이전</span>
                 </button>
-                <div className="pagination-pages">
-                  {Array.from({ length: currentPageCount }, (_, index) => {
-                    const page = index + 1;
-                    return (
-                      <button
-                        key={page}
-                        className={page === currentPage ? 'btn-active' : ''}
-                        onClick={() => setCurrentPage(page)}
-                      >
-                        {page}
-                      </button>
-                    );
-                  })}
+                <div className="pagination-pages dashboard-pagination-pages">
+                  {visiblePageNumbers.map((page) => (
+                    <button
+                      key={page}
+                      className={page === currentPage ? 'btn-active' : ''}
+                      aria-current={page === currentPage ? 'page' : undefined}
+                      onClick={() => setCurrentPage(page)}
+                    >
+                      {page}
+                    </button>
+                  ))}
                 </div>
-                <button onClick={() => setCurrentPage(Math.min(currentPageCount, currentPage + 1))} disabled={currentPage === currentPageCount}>
-                  {'>'}
+                <button
+                  className="dashboard-pagination-nav"
+                  onClick={() => setCurrentPage(Math.min(currentPageCount, currentPage + 1))}
+                  disabled={currentPage === currentPageCount}
+                >
+                  <span className="dashboard-pagination-label">다음</span><span aria-hidden="true">→</span>
                 </button>
-              </div>
+              </nav>
             ) : null}
           </div>
 
