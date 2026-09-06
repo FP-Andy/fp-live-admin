@@ -1,0 +1,93 @@
+name: Rebuild corrected halftime dominance asset
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/rebuild-halftime-dominance-38a5f7cc.yml
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    if: ${{ contains(toJson(github.event.head_commit.added), '.github/workflows/rebuild-halftime-dominance-38a5f7cc.yml') }}
+    runs-on: [self-hosted, live-admin-app, production]
+    timeout-minutes: 20
+    steps:
+      - name: Deploy the approved added-time fix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP_DIR="/home/ubuntu/fp-live-admin"
+          COMPOSE_FILE="infra/app/docker-compose.yml"
+          cd "$APP_DIR"
+          git fetch origin main
+          git reset --hard origin/main
+          git clean -fd
+          git checkout -B main origin/main
+          docker compose -f "$COMPOSE_FILE" build api web
+          docker compose -f "$COMPOSE_FILE" up -d api web
+          for i in $(seq 1 30); do
+            if docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" >/dev/null 2>&1; then
+              break
+            fi
+            [ "$i" -eq 30 ] && { docker compose -f "$COMPOSE_FILE" logs --tail=80 api; exit 1; }
+            sleep 2
+          done
+          docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload
+
+      - name: Replace only the requested halftime asset
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd /home/ubuntu/fp-live-admin/infra/app
+          docker compose exec -T api python - <<'PY'
+          from datetime import datetime
+          from uuid import UUID
+
+          from app.broadcast_assets import BroadcastAssetStore, render_live_coder_asset_pairs, store_asset_pair
+          from app.db import SessionLocal
+          from app.main import _broadcast_asset_render_lock, _build_broadcast_halftime_snapshot
+          from app.models import Match
+
+          match_id = UUID("38a5f7cc-9f2f-4149-9691-7e1cf5f44e42")
+          db = SessionLocal()
+          try:
+              match = db.get(Match, match_id)
+              if match is None:
+                  raise RuntimeError("match not found")
+              captured = _build_broadcast_halftime_snapshot(match, db)
+              if captured is None:
+                  raise RuntimeError("halftime marker is not available")
+              snapshot, source_clock_ms = captured
+              asset_type = "match-dominance-halftime"
+              with _broadcast_asset_render_lock:
+                  rendered = render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
+                  stored = store_asset_pair(
+                      BroadcastAssetStore(),
+                      f"{match_id}/archive/45/{asset_type}",
+                      asset_type,
+                      snapshot,
+                      immutable=True,
+                      rendered=rendered,
+                  ).as_dict()
+
+              metadata = dict(match.metadata_json or {})
+              assets = dict(metadata.get("broadcast_assets") or {})
+              dominance = dict(assets.get("dominance") or {})
+              dominance["halftime"] = {**stored, "source_clock_ms": source_clock_ms}
+              assets["dominance"] = dominance
+              assets["last_generated_at"] = datetime.utcnow().isoformat()
+              metadata["broadcast_assets"] = assets
+              match.metadata_json = metadata
+              db.commit()
+              print({
+                  "asset_url": stored.get("asset_url"),
+                  "home_score": snapshot["match"]["home"]["score"],
+                  "away_score": snapshot["match"]["away"]["score"],
+                  "source_clock_ms": source_clock_ms,
+              })
+          finally:
+              db.close()
+          PY
