@@ -364,10 +364,20 @@ function dominancePath(items: DominanceItem[], startX = 505, width = 1362, midY 
   }, '');
 }
 
-function dominanceGoalPoint(items: DominanceItem[], clockMs: number, startX = 505, width = 1362, midY = 633, amplitude = 222) {
+function dominanceGoalPoint(
+  items: DominanceItem[],
+  clockMs: number,
+  startX = 505,
+  width = 1362,
+  midY = 633,
+  amplitude = 222,
+  timelineEndMs?: number,
+) {
   if (!items.length) return null;
   const binMs = 3 * 60_000;
-  const endMs = Math.max(binMs, Number(items[items.length - 1].base_time_ms || 0) + binMs);
+  const endMs = timelineEndMs
+    ? Math.max(1, timelineEndMs)
+    : Math.max(binMs, Number(items[items.length - 1].base_time_ms || 0) + binMs);
   const index = clamp(Math.floor(Math.max(0, clockMs) / binMs), 0, items.length - 1);
   const value = clamp(Number(items[index].dominance || 0), -1, 1);
   return {
@@ -401,10 +411,24 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const matchTitleStyle = dominanceTitleStyle(home.name, away.name);
   const goalMarkers = (snapshot.analysis.xg || [])
     .filter((item) => item.is_goal && Number(item.event_clock_ms || 0) <= currentClockMs)
-    .map((item) => ({
-      side: item.team === 'AWAY' ? 'AWAY' as const : 'HOME' as const,
-      point: dominanceGoalPoint(items, Number(item.event_clock_ms || 0)),
-    }))
+    .map((item) => {
+      const eventClockMs = Number(item.event_clock_ms || 0);
+      const markerClockMs = firstHalf
+        ? Math.min(eventClockMs, firstHalfMinutes * 60_000)
+        : eventClockMs;
+      return {
+        side: item.team === 'AWAY' ? 'AWAY' as const : 'HOME' as const,
+        point: dominanceGoalPoint(
+          items,
+          markerClockMs,
+          505,
+          1362,
+          633,
+          222,
+          firstHalf ? firstHalfMinutes * 60_000 : undefined,
+        ),
+      };
+    })
     .filter((item): item is { side: 'HOME' | 'AWAY'; point: NonNullable<ReturnType<typeof dominanceGoalPoint>> } => Boolean(item.point));
   const style = { '--home-color': home.color, '--away-color': away.color } as CSSProperties;
   return (

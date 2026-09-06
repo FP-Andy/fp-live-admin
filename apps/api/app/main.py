@@ -2223,6 +2223,35 @@ def _broadcast_dominance_checkpoints(match_obj: Match) -> tuple[tuple[int, str, 
     )
 
 
+def _build_broadcast_halftime_snapshot(match_obj: Match, db: Session) -> tuple[dict, int] | None:
+    """Build the final first-half frame after added time has actually ended.
+
+    The halftime marker is written when the next half starts. Its clock is
+    therefore the authoritative first-half cutoff: a 45+N goal is included,
+    while a second-half action is not. The graphic itself still presents the
+    period as 45 minutes, with any added-time goal marker anchored at 45'.
+    """
+    first_half_ms = max(1, int(getattr(match_obj, "first_half_minutes", None) or 45)) * 60_000
+    halftime_start_ms = _period_start_marker_ms(match_obj.id, db, "HALFTIME_START")
+    if halftime_start_ms is None or int(halftime_start_ms) < first_half_ms:
+        return None
+
+    source_clock_ms = int(halftime_start_ms)
+    snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=source_clock_ms)
+    snapshot["match"].update({
+        "clock": _fmt_clock_ms(first_half_ms),
+        "clock_ms": first_half_ms,
+        "fla_clock": _fmt_clock_ms(first_half_ms),
+        "fla_clock_ms": first_half_ms,
+        "running": False,
+    })
+    for event in snapshot.get("analysis", {}).get("xg") or []:
+        if event.get("is_goal") and int(event.get("event_clock_ms") or 0) > first_half_ms:
+            event["event_clock_ms"] = first_half_ms
+            event["event_clock"] = _fmt_clock_ms(first_half_ms)
+    return snapshot, source_clock_ms
+
+
 def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
     """Render current live assets and capture their required archive points.
 
@@ -2322,17 +2351,35 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
 
     dominance = dict(manifest.get("dominance") or {})
     for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
-        if clock_ms >= minute * 60_000 and not (isinstance(dominance.get(slot), dict) and dominance[slot].get("asset_url")):
+        existing = dominance.get(slot) if isinstance(dominance.get(slot), dict) else {}
+        source_clock_ms: int | None = None
+        if slot == "halftime":
+            captured = _build_broadcast_halftime_snapshot(match_obj, db)
+            if captured is None:
+                # Do not freeze a 45:00 card while first-half added time is
+                # still underway. It is captured once the halftime marker
+                # confirms the period has ended.
+                continue
+            historical_snapshot, source_clock_ms = captured
+            if existing.get("asset_url") and int(existing.get("source_clock_ms") or -1) == source_clock_ms:
+                continue
+        else:
+            if clock_ms < minute * 60_000 or existing.get("asset_url"):
+                continue
             historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
-            dominance_rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])
-            dominance[slot] = store_asset_pair(
-                store,
-                f"{match_key}/archive/{minute}/{asset_type}",
-                asset_type,
-                historical_snapshot,
-                immutable=True,
-                rendered=dominance_rendered[asset_type],
-            ).as_dict()
+
+        dominance_rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])
+        stored = store_asset_pair(
+            store,
+            f"{match_key}/archive/{minute}/{asset_type}",
+            asset_type,
+            historical_snapshot,
+            immutable=True,
+            rendered=dominance_rendered[asset_type],
+        ).as_dict()
+        if source_clock_ms is not None:
+            stored["source_clock_ms"] = source_clock_ms
+        dominance[slot] = stored
     manifest["dominance"] = dominance
     manifest["last_generated_at"] = datetime.utcnow().isoformat()
 
@@ -2446,9 +2493,16 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
         for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
             if not isinstance(dominance.get(slot), dict):
                 continue
-            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+            source_clock_ms: int | None = None
+            if slot == "halftime":
+                captured = _build_broadcast_halftime_snapshot(match_obj, db)
+                if captured is None:
+                    continue
+                historical_snapshot, source_clock_ms = captured
+            else:
+                historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
             rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])[asset_type]
-            dominance[slot] = store_asset_pair(
+            stored = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
@@ -2456,6 +2510,9 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
                 immutable=True,
                 rendered=rendered,
             ).as_dict()
+            if source_clock_ms is not None:
+                stored["source_clock_ms"] = source_clock_ms
+            dominance[slot] = stored
         manifest["dominance"] = dominance
         manifest["last_generated_at"] = datetime.utcnow().isoformat()
 
