@@ -936,12 +936,25 @@ const DUEL_ARROW_CODES = new Set(['b', 'bb']);
 // 두 번 클릭으로 **볼 경로**를 그리는 액션 전체 — 색·선종류·끝점 마커를 패스와 달리 준다.
 const BALL_PATH_ARROW_CODES = new Set([...DEFENSE_ARROW_CODES, ...DUEL_ARROW_CODES]);
 const SHOT_BLOCK_CODES = new Set(['qw']);
+// 압박(pr)도 상대 볼 경로를 화살표로 그린다 — 시작=압박 시작 시점의 상대 볼 위치,
+// 끝=압박 뒤 볼이 간 위치. 그 경로 반경 8m 가 곧 채점 영역이다(백엔드
+// PRESS_BALL_PATH_RADIUS_M). 그전에는 프레임에 찍힌 전원의 hull 로 쟀는데, 압박의
+// 대상인 볼이 산식에 안 들어가 성공/실패가 거꾸로 읽혔다.
+//
+// 압박은 **팀 단위라 번호 없이 코드만** 입력한다(`4q` 가 아니라 그냥 `pr`).
+// statInputActionCode 는 번호가 앞에 붙은 형태만 읽으므로 pr 은 늘 빈 문자열이 된다 —
+// 그래서 여기서 따로 본다. statInputActionCode 자체를 번호 없는 형태까지 허용하도록
+// 넓히면, 번호를 아직 안 붙인 중간 입력(`q`, `b`)이 화살표를 무장시켜 버린다.
+const PRESS_ARROW_CODES = new Set(['pr']);
 function statInputActionCode(statInput?: string | null) {
   const base = (statInput ?? '').trim().split('.', 1)[0] || '';
   return base.match(/^\d+([a-z]+)$/i)?.[1].toLowerCase() ?? '';
 }
+function statInputIsPressArrow(statInput?: string | null) {
+  return PRESS_ARROW_CODES.has((statInput ?? '').trim().split('.', 1)[0].toLowerCase());
+}
 function statInputIsBallPathArrow(statInput?: string | null) {
-  return BALL_PATH_ARROW_CODES.has(statInputActionCode(statInput));
+  return BALL_PATH_ARROW_CODES.has(statInputActionCode(statInput)) || statInputIsPressArrow(statInput);
 }
 function statInputIsDuelArrow(statInput?: string | null) {
   return DUEL_ARROW_CODES.has(statInputActionCode(statInput));
@@ -968,6 +981,9 @@ function arrowArmHint(code: string, stage: 'start' | 'end') {
   }
   if (statInputIsDuelArrow(code)) {
     return stage === 'start' ? '볼이 온 곳 클릭' : '경합 지점 클릭 · 채점 기준';
+  }
+  if (statInputIsPressArrow(code)) {
+    return stage === 'start' ? '압박 전 상대 볼 위치 클릭' : '압박 후 볼이 간 곳 클릭 · 채점 영역 기준';
   }
   if (statInputIsBallPathArrow(code)) {
     return stage === 'start' ? '상대 볼 출발점 클릭' : '끊은 지점 클릭';
