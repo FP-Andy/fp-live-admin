@@ -90,6 +90,74 @@ DUEL_CODES = frozenset({"S11", "S12"})
 # (fpa._press_region_pitch_control). 전용 밴드(PRESS_SCORE_BAND)와 점수 분배가 여기 걸린다.
 PRESS_CODE = "S9"
 
+# 세이브(골키퍼) — 2026-09-07 신설.
+#
+# 그전까지 Save 는 `classify_action_code` 가 24코드를 안 붙여 **점수가 아예 계산되지
+# 않았다**. 키퍼는 무슨 선방을 하든 XFP_PLACEHOLDER_SCORE(50, '유효 액션 없음')에
+# 머물렀다 — 월드클래스 선방과 아무것도 안 한 선수의 클립 점수가 같았다.
+#
+# 재는 값은 **xGOT** 이다. xG 가 아니다.
+#   xG   = 그 자리에서 쏘면 들어갈 확률 → 슈터의 몫이다.
+#   xGOT = 그 코스로 온 유효슛이 들어갈 확률 → **키퍼가 실제로 마주한 난이도**다.
+# 같은 12m 에서 와도 톱코너와 정면은 전혀 다른 선방인데 xG 는 둘을 구분하지 못한다.
+# 블록(qw)이 xG 를 쓰는 건 코스가 정해지기 **전에** 몸을 던지는 행위라서고, 세이브는
+# 코스가 정해진 **뒤의** 행위다.
+#
+# 채점은 **두 축을 각각 줄세워 섞는다** (2026-09-07 운영 결정):
+#     score = 75 + 25 × (0.65×xGOT백분위 + 0.35×xG백분위)
+#
+# 왜 goal 곡선을 그대로 쓰면 안 되나 — 그 곡선은 '모든 슛의 xG' 분포(대부분 0.05 이하)로
+# 구운 것이다. 반면 세이브의 xGOT 은 **유효슛이었던 공만** 모인 훨씬 높은 분포라
+# (막은 슛 6000개 시뮬레이션 중앙값 0.176) 전부 꼭대기에 붙었다 — 중앙값 92점,
+# 90점 이상이 67.4%. 그래서 세이브 전용 앵커(save_xgot·save_xg)를 따로 둔다.
+#
+# ⚠️ 두 축은 독립이 아니다. xGOT 공식이 xG 를 58% 품고 있어(XG_SHARE_IN_XGOT)
+# 실측 corr(xG, xGOT) = +0.64 다. 즉 xG 를 따로 넣는 건 같은 정보를 일부 두 번 세는
+# 것이고, 같은 xGOT 안에서 xG 가 높다는 건 '가까운 데서 나쁜 코스로 온 슛'을 뜻한다
+# (실측: xG 높은 20% 의 코스품질 0.35 vs 낮은 20% 의 0.64). 그걸 알고도 넣기로 한
+# 결정이다 — 가까운 거리는 반응시간이 짧다는 판단. 되돌리려면 SAVE_XG_WEIGHT 를 0 으로.
+SAVE_SCORE_BAND: tuple[int, int] = (75, 100)
+SAVE_XGOT_WEIGHT = 0.65
+SAVE_XG_WEIGHT = 0.35
+
+# 밴드 안 위치를 **볼록하게** 휜다 — `mix ** SAVE_SCORE_GAMMA`.
+#
+# 백분위를 그대로 곱하면 점수가 밴드에 **균등하게** 깔린다(백분위는 정의상 균등하다).
+# 그러면 90점 이상이 38% 나온다 — 고득점이 흔해서 '잘 막았다' 가 안 된다.
+# γ>1 이면 낮은 쪽은 완만하고 높은 쪽만 가파르게 올라가, 100 에 가까울수록 희귀해진다.
+#
+# γ=2.5 인 이유 (막은 슛 6000개 시뮬레이션):
+#     γ    중앙값   90점+    98점+
+#     1.0    87    38.0%    7.1%   ← 균등, 고득점이 흔하다
+#     2.5    79    13.9%    3.1%   ← 채택
+#     4.0    76     8.6%    1.9%   ← 과하다(아래 참조)
+# 열 번에 한 번쯤 90점대가 나오고 98점 이상은 경기당 한 번 볼까 말까가 된다.
+# **최상급은 안 깎인다** — 일대일·톱코너 세이브는 여전히 97~99점이다.
+# γ=4 는 '살짝 까다로운' 세이브(79점)와 정면 약슛(75점)의 차이를 4점까지 눌러
+# 변별이 아까운 구간까지 뭉갠다.
+SAVE_SCORE_GAMMA = 2.5
+#
+# ⚠️ 코드 S13 은 **잠정 배정**이다. 노션 『xFP 24개 액션 정의』의 정본 배정을 확인하지
+# 못했다(비어 있는 슬롯은 S6·S8·S10·S13·S14). 정본이 다르면 이 상수만 바꾸면 된다.
+SAVE_CODE = "S13"
+
+# 캐칭·펀칭(골키퍼) — 2026-09-07 신설. Save 와 같은 이유로 그전까지 점수가 없었다.
+#
+# 재는 값은 **상대가 찬 위치의 위협 × 회수계수**다(fpa._gk_claim_value). 대부분
+# 크로스라 킥 위치가 곧 그 공이 만들던 위협의 크기고, 캐칭/펀칭은 회수계수로 갈린다.
+#
+# **전용 곡선(gk_claim)을 쓴다.** defense 곡선을 그대로 쓰면 크로스 원점이 전부 그
+# 곡선의 꼭대기 꼬리에 몰려 거의 모든 캐칭이 96~99점이 된다(실측: 크로스류 점수 폭
+# 7점, 표본의 93%가 90점 이상). 전용 곡선에서는 캐칭 68~94 · 펀칭 51~74 로 펴지고
+# 같은 자리에서 캐칭−펀칭이 평균 20점 갈린다(기존 계수·곡선으로는 2점이었다).
+#
+# 두 액션이 **한 코드·한 곡선을 공유하는 것이 설계**다. 액션마다 곡선을 따로 주면
+# 회수계수의 곱셈이 백분위에서 상쇄돼 캐칭과 펀칭의 순서가 사라진다(DEFENSE_CODES 와
+# 같은 이유).
+#
+# ⚠️ S14 도 SAVE_CODE 와 같이 **잠정 배정**이다 — 정본 확인 후 상수만 바꾸면 된다.
+GK_CLAIM_CODE = "S14"
+
 # ── 슛 결과별 차등 채점 ──────────────────────────────────────────────────────
 # 슛·유효슛·골은 24코드가 전부 G1 이고 원시 기대효과도 xG 하나뿐이라, 골이든 빗나간
 # 슛이든 xG 가 같으면 점수가 같았다. 결과가 점수를 가르도록 결과별 밴드를 둔다.
@@ -468,6 +536,12 @@ def effect_basis(code: str, action: dict[str, Any]) -> str | None:
     # 경합도 같다 — 이긴 자리의 소유권 전환가치로 재므로 defense 곡선(DUEL_CODES 주석).
     if code in DUEL_CODES:
         return "defense"
+    # 세이브는 전용 곡선(save_xgot)으로 잰다 — goal 곡선은 스케일이 안 맞는다(SAVE_CODE 주석).
+    if code == SAVE_CODE:
+        return "save_xgot"
+    # 캐칭·펀칭은 킥 위치 위협 × 회수계수 → 전용 gk_claim 곡선(GK_CLAIM_CODE 주석).
+    if code == GK_CLAIM_CODE:
+        return "gk_claim"
     return outcome_family(code)
 
 
@@ -517,6 +591,42 @@ def shot_outcome_shape(action: dict[str, Any]) -> float:
     return max(0.0, min(1.0, t + SHOT_DIFFICULTY_WEIGHT * q * (1.0 - 2.0 * t)))
 
 
+def save_outcome_score(action: dict[str, Any]) -> int | None:
+    """세이브(S13)의 점수 — 두 축을 각각 줄세워 섞어 밴드에 얹는다.
+
+        score = 75 + 25 × (0.65×xGOT백분위 + 0.35×xG백분위) ** 2.5
+
+    지수 2.5 가 고득점을 희귀하게 만든다(SAVE_SCORE_GAMMA).
+    근거와 주의는 SAVE_SCORE_BAND 위 주석 참조. xGOT 이 없으면(골문 코스 미입력)
+    잴 근거가 없어 None — 호출부가 점수를 안 준다.
+
+    xG 가 없으면 xGOT 축만으로 밴드를 채운다. 0 으로 깎지 않는다 — 근거가 없는 것과
+    값이 낮은 것은 다르고, 전자로 점수를 내리면 '기록이 덜 된 세이브' 가 벌을 받는다.
+    """
+    try:
+        xgot = float(action.get("xgot") or 0)
+    except (TypeError, ValueError):
+        return None
+    if xgot <= 0:
+        return None
+    p_xgot = raw_to_percentile(SAVE_CODE, xgot, "save_xgot")
+    if p_xgot is None:
+        return None
+    try:
+        xg = float(action.get("xg") or 0)
+    except (TypeError, ValueError):
+        xg = 0.0
+    p_xg = raw_to_percentile(SAVE_CODE, xg, "save_xg") if xg > 0 else None
+    if p_xg is None:
+        mix = p_xgot
+    else:
+        mix = SAVE_XGOT_WEIGHT * p_xgot + SAVE_XG_WEIGHT * p_xg
+    lo, hi = SAVE_SCORE_BAND
+    # 볼록 곡선 — 100 에 가까울수록 희귀해진다(SAVE_SCORE_GAMMA 주석).
+    shaped = max(0.0, min(1.0, mix)) ** SAVE_SCORE_GAMMA
+    return int(round(lo + (hi - lo) * shaped))
+
+
 def shot_outcome_score(action: dict[str, Any]) -> int | None:
     """슛 결과(슛·블록·유효슛·골)별 차등 점수. 슛류가 아니거나 근거가 없으면 None."""
     band = SHOT_SCORE_BANDS.get(str(action.get("action") or ""))
@@ -552,12 +662,20 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
         if linked_shot_xg is None or linked_shot_xg <= 0:
             return None
         return linked_shot_xg * LINK_CREDIT
+    if code == SAVE_CODE:
+        # 세이브는 **xGOT** 으로 잰다 — 키퍼가 마주한 실제 난이도(SAVE_CODE 주석).
+        # xG 로 폴백하지 않는다. 골문 코스를 안 찍었으면 '어려운 선방이었다' 는 근거가
+        # 없는 것이고, 그때 슛 위치 xG 로 대신 채우면 정면으로 온 쉬운 공도 자리만
+        # 좋으면 고득점이 된다. 근거가 없으면 점수를 주지 않는 쪽이 맞다.
+        v = float(action.get("xgot") or 0)
+        return v if v > 0 else None
     # 수비는 Outcome 이 Possession 이어도 ΔPC 를 쓰지 않는다 — 아래 주석 참조.
     fam = effect_basis(code, action)
     if fam == "goal":  # 슛블락 — 막은 슛의 xG(×BLOCK_CREDIT)가 xG 컬럼에 들어온다.
         v = float(action.get("xg") or 0)
         return v if v > 0 else None
-    if fam in ("progression", "defense"):  # 수비 전환가치도 EPV 컬럼으로 들어온다.
+    # 캐칭·펀칭도 EPV 컬럼을 쓴다 — 수비 전환가치와 같이 델타가 아니라 레벨이다.
+    if fam in ("progression", "defense", "gk_claim"):  # 수비 전환가치도 EPV 컬럼으로 들어온다.
         v = float(action.get("epv") or 0)
         return v if v > 0 else None
     if fam == "possession":
@@ -651,6 +769,9 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             # (fineplay_fpa.analysis_from_actions 참조).
             if code == "G1":
                 banded = shot_outcome_score(pa)
+            elif code == SAVE_CODE:
+                # 세이브는 두 축(xGOT·xG)을 섞어 [75,100] 밴드에 얹는다(save_outcome_score).
+                banded = save_outcome_score(pa)
             else:
                 # 어시스트·키패스 밴드가 먼저다 — 이들은 G2(goal 군)라 소유 압축과 겹치지 않는다.
                 banded = pass_outcome_score(pa, p)

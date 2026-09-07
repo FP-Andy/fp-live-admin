@@ -19,7 +19,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from .fpa import press_movement_shares
-from .xfp_score import PRESS_CODE, prefer_progression, press_share_score, score_clip_actions
+from .xfp_score import (
+    GK_CLAIM_CODE,
+    PRESS_CODE,
+    SAVE_CODE,
+    prefer_progression,
+    press_share_score,
+    score_clip_actions,
+)
 
 # FPA Action 명(fpa.ACTION_CODES 값) → FinePlay contributionRole.
 # 서버가 아는 롤: SHOOTER PASSER CROSSER DRIBBLER PENETRATOR INTERCEPTOR PRESSER DUELER
@@ -872,6 +879,12 @@ def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | N
         return "S5" if not opp else "S7"
     if name == "Press":
         return "S9"
+    # 골키퍼 — 코드가 없어 점수가 통째로 빠져 있던 액션들이다.
+    # 세이브는 xGOT(goal 곡선), 캐칭·펀칭은 킥 위치 위협×회수계수(gk_claim 전용 곡선).
+    if name == "Save":
+        return SAVE_CODE
+    if name in ("Catching", "Punching"):
+        return GK_CLAIM_CODE
     if name == "Duel":
         return "S11" if not opp else "S12"
     return None

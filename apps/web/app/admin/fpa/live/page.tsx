@@ -419,6 +419,10 @@ function extractActionCode(statInput: string) {
 function shouldPromptXgot(statInput: string, row: LogPreview) {
   const actionCode = extractActionCode(statInput);
   if (actionCode === 'd' || actionCode === 'dd' || actionCode === 'ddd') return true;
+  // 세이브도 골문 코스를 받는다 — 키퍼가 마주한 난이도가 곧 그 슛의 xGOT 이기 때문이다.
+  // 화살표(슈터 위치)를 다 그린 뒤에만 띄운다. 점 1개로 찍은 경우엔 슈터 위치가 없어
+  // xG 가 안 나오고, 따라서 xGOT 도 만들 수 없다.
+  if (actionCode === 'sv') return true;
   return row.Action === 'Shot' && /(^|, )On Target|(^|, )Off Target|(^|, )Goal/.test(row.Tags || '');
 }
 
@@ -946,6 +950,19 @@ const SHOT_BLOCK_CODES = new Set(['qw']);
 // 그래서 여기서 따로 본다. statInputActionCode 자체를 번호 없는 형태까지 허용하도록
 // 넓히면, 번호를 아직 안 붙인 중간 입력(`q`, `b`)이 화살표를 무장시켜 버린다.
 const PRESS_ARROW_CODES = new Set(['pr']);
+// 세이브(sv)도 상대 슛 궤적을 화살표로 그린다 — 시작=상대 슈터 위치, 끝=막아낸 지점.
+// 블록(qw)과 같은 모양이지만 채점 재료가 다르다: 블록은 슛 위치의 xG, 세이브는 그 슛이
+// 골문 어디로 왔는지까지 반영한 **xGOT**. 그래서 화살표를 다 그린 뒤 슛과 똑같이 골대
+// UI 를 띄워 코스를 받는다(shouldPromptXgot).
+//
+// 그전까지 sv 는 점 하나 찍고 코드만 넣는 액션이라, 캐칭·펀칭과 완전히 같은 값이
+// 나왔다(EPV=0.000, PC=0.032) — 키퍼가 마주한 슛이 산식에 안 들어갔다.
+const SAVE_ARROW_CODES = new Set(['sv']);
+// 캐칭(v)·펀칭(vv) — 시작=상대가 찬 위치(대개 크로스), 끝=키퍼가 잡거나 쳐낸 지점.
+// 점수는 **시작점의 위협 × 회수계수**로 나고, 끝점은 좌표로만 남는다. 끝점 EPV 는
+// 골문에 가까울수록 높아서 그대로 쓰면 '물러설수록 고득점' 이 되기 때문이다
+// (fpa.GK_CLAIM_ARROW_CODES 주석 참조). 그래도 찍는 건 나중에 검증하기 위해서다.
+const GK_CLAIM_ARROW_CODES = new Set(['v', 'vv']);
 function statInputActionCode(statInput?: string | null) {
   const base = (statInput ?? '').trim().split('.', 1)[0] || '';
   return base.match(/^\d+([a-z]+)$/i)?.[1].toLowerCase() ?? '';
@@ -953,8 +970,17 @@ function statInputActionCode(statInput?: string | null) {
 function statInputIsPressArrow(statInput?: string | null) {
   return PRESS_ARROW_CODES.has((statInput ?? '').trim().split('.', 1)[0].toLowerCase());
 }
+function statInputIsSaveArrow(statInput?: string | null) {
+  return SAVE_ARROW_CODES.has(statInputActionCode(statInput));
+}
+function statInputIsGkClaimArrow(statInput?: string | null) {
+  return GK_CLAIM_ARROW_CODES.has(statInputActionCode(statInput));
+}
 function statInputIsBallPathArrow(statInput?: string | null) {
-  return BALL_PATH_ARROW_CODES.has(statInputActionCode(statInput)) || statInputIsPressArrow(statInput);
+  return BALL_PATH_ARROW_CODES.has(statInputActionCode(statInput))
+    || statInputIsPressArrow(statInput)
+    || statInputIsSaveArrow(statInput)
+    || statInputIsGkClaimArrow(statInput);
 }
 function statInputIsDuelArrow(statInput?: string | null) {
   return DUEL_ARROW_CODES.has(statInputActionCode(statInput));
@@ -984,6 +1010,12 @@ function arrowArmHint(code: string, stage: 'start' | 'end') {
   }
   if (statInputIsPressArrow(code)) {
     return stage === 'start' ? '압박 전 상대 볼 위치 클릭' : '압박 후 볼이 간 곳 클릭 · 채점 영역 기준';
+  }
+  if (statInputIsSaveArrow(code)) {
+    return stage === 'start' ? '상대 슛 위치 클릭 · xGOT 기준' : '막아낸 지점 클릭 · 다음에 골문 코스 입력';
+  }
+  if (statInputIsGkClaimArrow(code)) {
+    return stage === 'start' ? '상대가 찬 위치 클릭 · 채점 기준' : '잡거나 쳐낸 지점 클릭 · 기록용';
   }
   if (statInputIsBallPathArrow(code)) {
     return stage === 'start' ? '상대 볼 출발점 클릭' : '끊은 지점 클릭';
@@ -2365,7 +2397,31 @@ export default function FpaLivePage() {
         return next;
       });
       setPrimaryRowIndex((prev) => (prev == null ? nextRowIndex : prev));
-      setStatus('패스 화살표 완성 · 채점됨');
+      // 세이브는 화살표를 다 그린 **여기서** 골대 UI 로 이어져야 한다. 슛(d/dd/ddd)은
+      // 점 하나로 제출되어 일반 제출 경로에서 xGOT 흐름이 열리지만, sv 는 2클릭
+      // 화살표라 이 함수로 들어온다 — 여기서 안 열면 골문 코스를 받을 데가 없고,
+      // 그러면 xGOT 이 안 만들어져 세이브가 무득점이 된다(_raw_effect 는 xG 로
+      // 폴백하지 않는다).
+      const rawXg = Number(data.log_data.xG || extractMetricValue(data.log_text, 'xG') || 0);
+      if (statInputIsSaveArrow(code) && Number.isFinite(rawXg) && rawXg > 0) {
+        const tags = data.log_data.Tags || '';
+        setPendingXgot({
+          canvas: 'live',
+          rowIndex: nextRowIndex,
+          xg: Math.min(Math.max(rawXg, 0), 1),
+          isOnTarget: true,   // 막아냈다는 건 유효슛이었다는 뜻이다
+          isGoal: false,
+          isHeader: tags.includes('Header'),
+          isWeakFoot: tags.includes('Weak Foot'),
+          underPressure: tags.includes('Under Pressure'),
+          oneOnOne: tags.includes('One-on-One') || tags.includes('1v1'),
+        });
+        setGoalmouthPoint(null);
+        setXgotEstimate(null);
+        setStatus('세이브 화살표 완성. 볼이 골문 어디로 왔는지 클릭하세요 (xGOT = 막아낸 위협)');
+        return;
+      }
+      setStatus(statInputIsGkClaimArrow(code) ? '골키퍼 처리 기록 완료 · 채점됨' : '패스 화살표 완성 · 채점됨');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '패스 채점 실패');
     } finally {
@@ -2663,7 +2719,27 @@ export default function FpaLivePage() {
         return next;
       });
       setEditPrimary((prev) => (prev == null ? nextRowIndex : prev));
-      setStatus('수정용 액션에 패스 추가 · 채점됨');
+      // 라이브(scorePass)와 같은 이유로 수정용 캔버스에서도 세이브는 골대 UI 로 잇는다.
+      const editRawXg = Number(data.log_data.xG || extractMetricValue(data.log_text, 'xG') || 0);
+      if (statInputIsSaveArrow(code) && Number.isFinite(editRawXg) && editRawXg > 0) {
+        const tags = data.log_data.Tags || '';
+        setPendingXgot({
+          canvas: 'edit',
+          rowIndex: nextRowIndex,
+          xg: Math.min(Math.max(editRawXg, 0), 1),
+          isOnTarget: true,
+          isGoal: false,
+          isHeader: tags.includes('Header'),
+          isWeakFoot: tags.includes('Weak Foot'),
+          underPressure: tags.includes('Under Pressure'),
+          oneOnOne: tags.includes('One-on-One') || tags.includes('1v1'),
+        });
+        setGoalmouthPoint(null);
+        setXgotEstimate(null);
+        setStatus('수정용: 세이브 화살표 완성. 볼이 골문 어디로 왔는지 클릭하세요');
+        return;
+      }
+      setStatus(statInputIsGkClaimArrow(code) ? '수정용: 골키퍼 처리 기록 완료 · 채점됨' : '수정용 액션에 패스 추가 · 채점됨');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '패스 채점 실패');
     } finally {
@@ -3036,17 +3112,23 @@ export default function FpaLivePage() {
         if (actorSel.side === 'before') setBeforeDots(assign);
         else setAfterDots(assign);
       }
+      const isSave = extractActionCode(requestedStatInput) === 'sv';
       const promptXgot = inputMode === 'dual' && shouldPromptXgot(requestedStatInput, data.log_data);
       const rawXg = Number(data.log_data.xG || extractMetricValue(data.log_text, 'xG') || 0);
-      if (promptXgot && Number.isFinite(rawXg)) {
+      // 세이브는 슈터 위치(화살표 시작점)가 있어야 xG 가 나오고, 그게 있어야 xGOT 을
+      // 만들 수 있다. 점 1개로 찍었으면 xG 가 비므로 골대 UI 를 띄우지 않는다.
+      if (promptXgot && Number.isFinite(rawXg) && (!isSave || rawXg > 0)) {
         const tags = data.log_data.Tags || '';
-        const isOffTarget = extractActionCode(requestedStatInput) === 'd' || tags.includes('Off Target');
+        // 막아냈다는 건 유효슛이었다는 뜻이다 — 세이브는 항상 on target 으로 본다.
+        const isOffTarget = !isSave
+          && (extractActionCode(requestedStatInput) === 'd' || tags.includes('Off Target'));
         setPendingXgot({
           canvas: 'live',
           rowIndex: nextRowIndex,
           xg: Math.min(Math.max(rawXg, 0), 1),
           isOnTarget: !isOffTarget,
-          isGoal: extractActionCode(requestedStatInput) === 'ddd' || tags.includes('Goal'),
+          isGoal: !isSave
+            && (extractActionCode(requestedStatInput) === 'ddd' || tags.includes('Goal')),
           isHeader: tags.includes('Header'),
           isWeakFoot: tags.includes('Weak Foot'),
           underPressure: tags.includes('Under Pressure'),
@@ -3054,9 +3136,11 @@ export default function FpaLivePage() {
         });
         setGoalmouthPoint(null);
         setXgotEstimate(null);
-        setStatus(isOffTarget
-          ? '슛 로그 추가 완료. 골대 기준 빗나간 위치를 클릭해 기록하세요'
-          : '유효슈팅 로그 추가 완료. 골문 위치를 클릭해 xGOT를 입력하세요');
+        setStatus(isSave
+          ? '세이브 로그 추가 완료. 볼이 골문 어디로 왔는지 클릭하세요 (xGOT = 막아낸 위협)'
+          : isOffTarget
+            ? '슛 로그 추가 완료. 골대 기준 빗나간 위치를 클릭해 기록하세요'
+            : '유효슈팅 로그 추가 완료. 골문 위치를 클릭해 xGOT를 입력하세요');
         return;
       }
       if (inputMode === 'dual') {

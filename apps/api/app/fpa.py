@@ -145,6 +145,51 @@ DUEL_CODES = {"bb", "b"}
 # 점수 = 막은 슛의 xG를 블로커에게 승계(상대 공격방향으로 슈터 위치 뒤집어 estimate_xg) × BLOCK_CREDIT. xG 컬럼 사용.
 SHOT_BLOCK_CODES = {"qw"}
 BLOCK_CREDIT = 1.0
+
+# 세이브(sv) — 골키퍼가 막은 슛. 블록과 같은 모양의 화살표를 쓴다
+# (start=상대 슈터 위치, end=막아낸 지점) (2026-09-07).
+#
+# 왜 필요했나 — 그전까지 sv 는 점 하나 찍고 코드만 넣는 액션이라, 같은 장면에서
+# 캐칭·펀칭과 **완전히 같은 값**(EPV=0.000, PC=0.032)이 나왔다. EPV 는 시작=끝이라
+# 정의상 0 이고 PC 는 키퍼가 1m 움직인 걸 잰 숫자였다. 즉 키퍼가 마주한 슛에 대한
+# 정보가 산식에 한 톨도 안 들어갔다. 게다가 fineplay_fpa.classify_action_code 가
+# Save 에 24코드를 안 붙여 xFP 점수 자체가 계산되지 않았다(키퍼는 늘 50점).
+#
+# 블록과 다른 점은 **무엇으로 재는가**다.
+#   블록 = 코스가 정해지기 전에 몸을 던지는 행위 → 슛 위치의 xG 가 맞다.
+#   세이브 = 코스가 정해진 뒤의 행위 → **xGOT**(그 코스로 온 유효슛이 들어갈 확률)이
+#            키퍼가 실제로 마주한 난이도다. 같은 자리에서 온 슛이라도 톱코너와 정면은
+#            전혀 다른 선방인데 xG 는 둘을 구분하지 못한다.
+# 그래서 여기서는 슈터 위치의 xG 만 채워 두고(=xGOT 산출의 입력), 골문 코스는 슛과
+# 똑같이 골대 UI 로 받아 클라이언트가 /xgot/estimate 로 계산해 행에 병합한다.
+# 채점이 보는 값은 그렇게 채워진 xGOT 이다.
+SAVE_ARROW_CODES = {"sv"}
+
+# 캐칭(v)·펀칭(vv) — 상대가 **찬 위치**에서 처리 지점까지를 화살표로 그린다
+# (start=상대 킥 위치, end=키퍼가 잡거나 쳐낸 지점) (2026-09-07).
+#
+# 점수는 **start(킥 위치)의 상대 기준 EPV × 회수계수**다. 대부분 크로스라 킥 위치가
+# 곧 그 공이 만들던 위협의 크기다.
+#
+# **end(처리 지점)는 기록만 하고 점수에 넣지 않는다.** 처리 지점 EPV 는 정보량이
+# 오히려 더 많지만(범위 0.0358~0.0661, 킥 위치의 두 배) **부호가 위험하다** — 골문에
+# 가까울수록 높아서, 그대로 가산하면 '뒤로 물러설수록 고득점' 이 된다. 나와서 끊는 게
+# 좋은 키핑인데 반대로 채점되는 것이다. 게다가 처리 지점은 키퍼의 선택과 공의 궤적이
+# 섞인 값이라 액션 간 비교에서 교란된다. 개별 캐칭을 위치로 채점하는 established 기준도
+# 없다(집계 지표인 AvgDist·cross-stopping% 만 있다). 그래서 지금은 좌표만 남기고,
+# 태깅이 쌓이면 '킥 위치 대비 얼마나 앞에서 끊었나'(궤적을 통제한 델타)가 실제로
+# 실점과 상관이 있는지 확인한 뒤 넣는다.
+GK_CLAIM_ARROW_CODES = {"v", "vv"}
+
+# 회수 성공도 — DEFENSE_RETENTION 과 같은 눈금을 쓴다.
+#   캐칭 1.00 : 잡았다는 건 소유권까지 가져왔다는 뜻이라 인터셉트(1.00)와 같은 자리.
+#   펀칭 0.55 : 위협은 지웠지만 볼은 살아 있다 — 컷아웃(0.55)과 같은 성격이다.
+#               클리어(0.20)보다 높게 둔 건, 펀칭은 압박 속 헛발질이 아니라 의도적으로
+#               위험지역 밖으로 보내는 처리라서다.
+# 이 계수가 캐칭과 펀칭을 가르는 유일한 축이다. 두 액션이 **한 곡선을 공유**해야
+# 곱셈이 백분위에서 상쇄되지 않는다(DEFENSE_RETENTION 과 같은 이유).
+GK_CLAIM_RETENTION = {"Catching": 1.00, "Punching": 0.55}
+GK_CLAIM_RETENTION_DEFAULT = 0.55
 # 페널티킥 고정 xG — 좌표 기반 공식은 인플레이 전용이라 PK엔 적용하지 않음
 PENALTY_XG = 0.75
 SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
@@ -1163,6 +1208,28 @@ def _press_region_pitch_control(
     )
 
 
+def _gk_claim_value(kick_x_adj: Any, kick_y: Any, action_name: Any = None) -> float | None:
+    """캐칭·펀칭의 가치 = 상대가 찬 지점의 **상대 기준** 위협 × 회수 성공도.
+
+    kick_x_adj/kick_y 는 우리 태깅 기준(공격방향 정규화) 좌표 — 화살표 시작점이다.
+    상대는 반대로 공격하므로 `FIELD_W - x` 로 뒤집어 상대 기준 EPV 를 잰다
+    (블록·세이브가 슈터 위치를 뒤집는 것과 같은 처리).
+
+    각도 항은 수비 전용 바닥(DEFENSE_CENTRALITY_FLOOR)을 쓴다. 캐칭·펀칭의 원점은
+    거의 전부 측면 크로스라, 공격 모델의 바닥(0.45)을 쓰면 터치라인이 반 이하로
+    눌려 정작 대부분의 표본이 바닥을 친다 — `_defense_turnover_value` 가 같은 이유로
+    같은 선택을 했다.
+    """
+    x_value = _finite_float(kick_x_adj)
+    if x_value is None:
+        return None
+    threat = _epv_state_value(FIELD_W - x_value, kick_y, centrality_floor=DEFENSE_CENTRALITY_FLOOR)
+    if threat is None:
+        return None
+    coef = GK_CLAIM_RETENTION.get(str(action_name or ""), GK_CLAIM_RETENTION_DEFAULT)
+    return round(threat * coef, 4)
+
+
 def _path_distance(points: list[tuple[float, float]]) -> float:
     if len(points) < 2:
         return 0.0
@@ -2139,10 +2206,12 @@ def generate_log_entry(
         #   수비 = 상대 볼/슛 경로 (EPV-prevented 또는 xG-prevented)
         #   경합 = 볼이 온 경로 — 끝점이 경합 지점이고 그게 곧 채점 좌표다
         #   압박 = 상대 볼이 압박 전후로 간 경로 — 채점 영역의 중심선이다
+        #   세이브 = 상대 슛 궤적 — start 가 슈터 위치라 xG(→xGOT)의 기준이 된다
         # 필수가 아니라 **선택**이다(TWO_DOT_ACTION_CODES 가 아니다) — 점 1개로 찍던
         # 기존 방식이 그대로 살아 있어야 옛 데이터와 간단 태깅이 안 깨진다.
         if not requires_two_dots and action_code_raw in (
             DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES | PRESS_ARROW_CODES
+            | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES
         ) and len(dots) >= 2:
             requires_two_dots = True
     if not is_dribble and requires_two_dots:
@@ -2154,7 +2223,7 @@ def generate_log_entry(
         start_x_adj = FIELD_W - start_x if direction == "left" else start_x
         end_x_adj = FIELD_W - end_x if direction == "left" else end_x
         # Progressive는 전진 '전달' 액션(패스/크로스/드리블 등)에만 — 수비(상대 공/슛 경로)엔 부적절하므로 제외
-        if action_name != "Throw-in" and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES | PRESS_ARROW_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
+        if action_name != "Throw-in" and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES | PRESS_ARROW_CODES | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
         if action_name == "Throw-in":
             throw_distance = float(np.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2))
@@ -2219,6 +2288,41 @@ def generate_log_entry(
             metrics["xG"] = round(float(block_xg["xg"]) * BLOCK_CREDIT, 4)
         except (KeyError, TypeError, ValueError):
             pass
+    elif action_code_raw in SAVE_ARROW_CODES:
+        # 세이브: 화살표 start=상대 슈터 위치를 **상대 공격방향으로 뒤집어** xG 를 낸다
+        # (블록과 같은 좌표 처리). 이 xG 는 점수가 아니라 xGOT 산출의 입력이다 —
+        # 골문 코스는 클라이언트가 골대 UI 로 받아 /xgot/estimate 로 계산해 행에 병합한다.
+        #
+        # 화살표가 없으면(점 1개로 찍은 옛 로그) start 가 곧 키퍼 위치라 슈터 위치가
+        # 없다. 그때는 xG 를 만들지 않는다 — 키퍼 자리를 슛 위치로 오해해 채우면
+        # '골문 앞에서 쏜 슛' 이 되어 값이 통째로 틀린다.
+        #
+        # EPV/PC 는 세이브에 무의미해 생략한다. 시작=끝이라 EPV 는 정의상 0 이고,
+        # PC 는 키퍼가 몇 m 움직였는지를 재던 숫자였다(개정 전 sv 가 받던 값).
+        if end_x is not None:
+            try:
+                save_xg = shared_estimate_xg(
+                    "HOME", "L2R", float(FIELD_W - start_x_adj), float(start_y),
+                    "Header" in deduped_tags, "Weak Foot" in deduped_tags,
+                )
+                metrics["xG"] = round(float(save_xg["xg"]), 4)
+            except (KeyError, TypeError, ValueError):
+                pass
+    elif action_code_raw in GK_CLAIM_ARROW_CODES:
+        # 캐칭·펀칭: 화살표 start=상대 킥 위치의 위협 × 회수계수(_gk_claim_value).
+        # 수비 전환가치와 같은 자리(EPV 컬럼)에 넣는다 — 둘 다 '레벨' 이지 델타가 아니다.
+        # end(처리 지점)는 로그의 두 번째 Pos 로 남을 뿐 점수에 안 들어간다.
+        #
+        # 화살표가 없으면(점 1개로 찍은 옛 로그) 킥 위치가 없다. 그때는 값을 만들지
+        # 않는다 — start 가 곧 키퍼 자리라, 그걸 킥 위치로 오해하면 우리 골문 앞에서
+        # 크로스가 올라온 것으로 계산된다.
+        #
+        # PC 는 넣지 않는다. 개정 전 캐칭·펀칭이 받던 PC=0.032 는 키퍼가 몇 m
+        # 움직였는지를 재던 숫자였고, 세 GK 액션이 전부 같은 값을 받던 원인이었다.
+        if end_x is not None:
+            claim_value = _gk_claim_value(start_x_adj, start_y, action_name)
+            if claim_value is not None:
+                metrics["EPV"] = claim_value
     else:
         if action_code_raw == "pr":
             # 압박(pr)은 팀 단위 지배력 다툼이라 PC(피치컨트롤 변화)만 의미가 있다.
