@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: '/icon.svg',
-    apple: '/icon.svg',
+    apple: '/icons/fpc-icon-192.png',
   },
 };
 

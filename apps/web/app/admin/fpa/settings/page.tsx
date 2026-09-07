@@ -94,6 +94,15 @@ const examples = [
   ['10ddd.c.f.w', '10번 선수가 역습 상황에서 약발로 골', 'Counter Attack + Foot + Weak Foot'],
 ] as const;
 
+const futsalProfileRows = [
+  ['cc / c', '킥인 성공 / 실패', '퀸컵 풋살에서 Cross 대신 Kick-in으로 표시. 좌표 2개와 수신자 번호를 입력'],
+  ['10ss8.lk', '인플레이 롱킥 성공', '일반 패스 성공 + Long Kick 태그. 킥인과 분리해 집계'],
+  ['10s8.lk', '인플레이 롱킥 실패', '일반 패스 실패 + Long Kick 태그'],
+  ['4ss7.pb', '압박 해제 패스', '가까운 압박자 또는 압박선을 넘어 다음 플레이를 이어간 경우만 입력'],
+  ['qq.sb', '세컨드볼 회수', '킥인·경합 뒤 루즈볼을 재점유한 위치 1개'],
+  ['aa / q / qw / ww', '수비 효과 4지표', '태클 / 인터셉트 / 슛 블락 / 차단만 수비 육각에 합산'],
+] as const;
+
 const scoringRows = [
   ['Passing', '(성공률 * 0.8) + (전진패스 * 1.5) + (키패스 * 2.5) + (어시스트 * 5) + (박스안패스 * 3) - (패스미스 * 0.5)'],
   ['Shooting', '((득점 - xG) * 10) + (xG * 15) + (헤더득점 * 5) + (중거리/박스밖득점 * 3)'],
@@ -271,6 +280,17 @@ export default function FpaSettingsPage() {
           </div>
         </div>
         <GuideTable headers={['입력', '의미', '메모']} rows={examples} />
+      </section>
+
+      <section className="card card-utility grid">
+        <div className="section-heading">
+          <div>
+            <div className="sidebar-eyebrow">Queen Cup</div>
+            <h3 style={{ margin: 0 }}>풋살 프로필</h3>
+          </div>
+        </div>
+        <div className="muted">풋살 경기에서만 적용됩니다. `c/cc`는 킥인이고, 인플레이 롱킥은 `s.lk/ss.lk`입니다. 축구 xG·EPV는 풋살에 적용하지 않고 좌표·결과 원본을 수집합니다.</div>
+        <GuideTable headers={['입력', '의미', '판정']} rows={futsalProfileRows} />
       </section>
 
       <section className="grid hero-form-grid" style={{ alignItems: 'start' }}>

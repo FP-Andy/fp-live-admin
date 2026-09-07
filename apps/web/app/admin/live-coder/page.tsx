@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../../../lib/api';
 import type { MatchListItem } from '../../../components/live-coder/types';
 
+type MatchPage = { items: MatchListItem[]; total: number };
+
 export default function LiveCoderPage() {
   const [matches, setMatches] = useState<MatchListItem[]>([]);
   const [error, setError] = useState('');
@@ -13,9 +15,9 @@ export default function LiveCoderPage() {
     let active = true;
     const load = async () => {
       try {
-        const data = await apiJson<MatchListItem[]>('/matches?sport=FOOTBALL&compact=true');
+        const data = await apiJson<MatchPage>('/matches/page?sport=FOOTBALL&archived=false&limit=100&compact=true');
         if (active) {
-          setMatches(Array.isArray(data) ? data : []);
+          setMatches(Array.isArray(data.items) ? data.items : []);
           setError('');
         }
       } catch (loadError) {
@@ -30,7 +32,7 @@ export default function LiveCoderPage() {
     };
   }, []);
 
-  const activeMatches = useMemo(() => matches.filter((match) => !match.archived), [matches]);
+  const activeMatches = useMemo(() => matches, [matches]);
 
   return (
     <main className="page-stack live-coder-page">

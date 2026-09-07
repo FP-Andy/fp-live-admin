@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../lib/api';
 import { useSportContext, type Sport } from '../../../components/SportContext';
@@ -27,6 +27,8 @@ type Match = {
       push_url?: string;
       pull_url?: string;
     };
+    sport_profile?: string;
+    player_format?: 5 | 6 | 7;
   } | null;
   operator_id?: string | null;
 };
@@ -34,6 +36,47 @@ type Match = {
 type StreamStatus = {
   running_match_ids?: string[];
 };
+
+type DashboardMatchPage = {
+  items: Match[];
+  total: number;
+  active_total: number;
+  archived_total: number;
+  assigned_total: number;
+  rtmp_total: number;
+  class_options: string[];
+};
+
+type DashboardBootstrap = {
+  user: SessionUser;
+  matches: DashboardMatchPage;
+  competition_classes: CompetitionClass[];
+  schedule_entries: ScheduleEntry[];
+  stream_status: StreamStatus;
+};
+
+const DASHBOARD_STATIC_CACHE_KEY = 'fpc.dashboard-static.v1';
+const DASHBOARD_STATIC_CACHE_MS = 5 * 60 * 1000;
+
+function readDashboardStaticCache(): { competitionClasses: CompetitionClass[]; scheduleEntries: ScheduleEntry[] } | null {
+  try {
+    const raw = window.sessionStorage.getItem(DASHBOARD_STATIC_CACHE_KEY);
+    const value = raw ? JSON.parse(raw) : null;
+    if (!value || Date.now() - Number(value.savedAt) > DASHBOARD_STATIC_CACHE_MS) return null;
+    if (!Array.isArray(value.competitionClasses) || !Array.isArray(value.scheduleEntries)) return null;
+    return { competitionClasses: value.competitionClasses, scheduleEntries: value.scheduleEntries };
+  } catch {
+    return null;
+  }
+}
+
+function writeDashboardStaticCache(competitionClasses: CompetitionClass[], scheduleEntries: ScheduleEntry[]) {
+  try {
+    window.sessionStorage.setItem(DASHBOARD_STATIC_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), competitionClasses, scheduleEntries }));
+  } catch {
+    // Private browsing/storage limits must not block the dashboard.
+  }
+}
 
 type CompetitionClass = {
   code: string;
@@ -231,6 +274,12 @@ export default function Dashboard() {
   const PAGE_SIZE = 7;
   const { sport } = useSportContext();
   const [matches, setMatches] = useState<Match[]>([]);
+  const [matchTotal, setMatchTotal] = useState(0);
+  const [activeMatchTotal, setActiveMatchTotal] = useState(0);
+  const [archivedMatchTotal, setArchivedMatchTotal] = useState(0);
+  const [assignedMatchTotal, setAssignedMatchTotal] = useState(0);
+  const [rtmpMatchTotal, setRtmpMatchTotal] = useState(0);
+  const [matchClassOptions, setMatchClassOptions] = useState<string[]>([]);
   const [competitionClasses, setCompetitionClasses] = useState<CompetitionClass[]>([]);
   const [runningMatchIds, setRunningMatchIds] = useState<string[]>([]);
   const [homeTeam, setHomeTeam] = useState('');
@@ -240,7 +289,11 @@ export default function Dashboard() {
   const [streamMode, setStreamMode] = useState<'STREAM' | 'MANUAL'>('STREAM');
   const [basketballPeriodCount, setBasketballPeriodCount] = useState(4);
   const [basketballPeriodMinutes, setBasketballPeriodMinutes] = useState(10);
+  const [futsalPlayerFormat, setFutsalPlayerFormat] = useState<5 | 6 | 7>(6);
+  const [futsalFirstHalfMinutes, setFutsalFirstHalfMinutes] = useState(15);
+  const [futsalSecondHalfMinutes, setFutsalSecondHalfMinutes] = useState(15);
   const [assignOperator, setAssignOperator] = useState(false);
+  const [broadcastGraphicsEnabled, setBroadcastGraphicsEnabled] = useState(true);
   const [ingestProtocol, setIngestProtocol] = useState<'SRT' | 'RTMP'>('RTMP');
   const [error, setError] = useState('');
   const [listMode, setListMode] = useState<'active' | 'archived'>('active');
@@ -295,40 +348,101 @@ export default function Dashboard() {
     fpa_home_staff: '',
     fpa_away_staff: '',
   });
+  const [bootstrapReady, setBootstrapReady] = useState(false);
+  const loadedQueryRef = useRef('');
 
-  const load = async () => {
+  const matchQuery = () => {
+    const currentPage = listMode === 'active' ? activePage : archivedPage;
+    const params = new URLSearchParams({
+      sport,
+      archived: String(listMode === 'archived'),
+      limit: String(PAGE_SIZE),
+      offset: String((currentPage - 1) * PAGE_SIZE),
+    });
+    if (classFilter !== 'ALL') params.set('competition_class', classFilter);
+    return params;
+  };
+
+  const applyMatchPage = (matchesData: DashboardMatchPage) => {
+    setMatches(Array.isArray(matchesData.items) ? matchesData.items : []);
+    setMatchTotal(Number(matchesData.total) || 0);
+    setActiveMatchTotal(Number(matchesData.active_total) || 0);
+    setArchivedMatchTotal(Number(matchesData.archived_total) || 0);
+    setAssignedMatchTotal(Number(matchesData.assigned_total) || 0);
+    setRtmpMatchTotal(Number(matchesData.rtmp_total) || 0);
+    setMatchClassOptions(Array.isArray(matchesData.class_options) ? matchesData.class_options : []);
+  };
+
+  const loadBootstrap = async () => {
     try {
-      const [matchesData, classData, streamStatusData, scheduleData] = await Promise.all([
-        apiJson<Match[]>(`/matches?sport=${sport}&include_fpa_manual=false&compact=true`),
-        apiJson<CompetitionClass[]>('/competition-classes'),
-        apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
-        apiJson<ScheduleEntry[]>('/schedule-entries').catch(() => []),
-      ]);
-      setMatches(Array.isArray(matchesData) ? matchesData : []);
-      setCompetitionClasses(Array.isArray(classData) ? classData : []);
-      setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
-      setScheduleEntries(Array.isArray(scheduleData) ? scheduleData : []);
+      const params = matchQuery();
+      const data = await apiJson<DashboardBootstrap>(`/dashboard/bootstrap?${params.toString()}`);
+      applyMatchPage(data.matches);
+      const classes = Array.isArray(data.competition_classes) ? data.competition_classes : [];
+      const schedules = Array.isArray(data.schedule_entries) ? data.schedule_entries : [];
+      setCompetitionClasses(classes);
+      setScheduleEntries(schedules);
+      writeDashboardStaticCache(classes, schedules);
+      setSessionUser(data.user || null);
+      setRunningMatchIds(Array.isArray(data.stream_status?.running_match_ids) ? data.stream_status.running_match_ids : []);
+      loadedQueryRef.current = params.toString();
       setError('');
     } catch (loadError) {
       setMatches([]);
+      setMatchTotal(0);
+      setActiveMatchTotal(0);
+      setArchivedMatchTotal(0);
+      setAssignedMatchTotal(0);
+      setRtmpMatchTotal(0);
       setRunningMatchIds([]);
       setError(loadError instanceof Error ? loadError.message : 'API unavailable. Run API server or infra/app compose stack.');
+    } finally {
+      setBootstrapReady(true);
     }
   };
 
   useEffect(() => {
-    load();
-    // 목록은 가벼운 compact 응답만 받는다. 5초 주기면 운영 상태를 보기에 충분하면서
-    // 여러 탭이 열려도 아카이브·에셋 metadata를 반복 전송/렌더하지 않는다.
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
+    setBootstrapReady(false);
+    const cached = readDashboardStaticCache();
+    if (cached) {
+      setCompetitionClasses(cached.competitionClasses);
+      setScheduleEntries(cached.scheduleEntries);
+    }
+    void loadBootstrap();
+  // Sport context changes the entire data scope; bootstrap once for the new scope.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sport]);
 
+  const refreshLive = async () => {
+    try {
+      const params = matchQuery();
+      const [matchesData, streamStatusData] = await Promise.all([
+        apiJson<DashboardMatchPage>(`/dashboard/matches?${params.toString()}`),
+        apiJson<StreamStatus>('/admin/streams/status').catch(() => ({ running_match_ids: [] })),
+      ]);
+      applyMatchPage(matchesData);
+      setRunningMatchIds(Array.isArray(streamStatusData.running_match_ids) ? streamStatusData.running_match_ids : []);
+      loadedQueryRef.current = params.toString();
+      setError('');
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : '경기 목록을 불러오지 못했습니다.');
+    }
+  };
+
   useEffect(() => {
-    apiJson<SessionUser>('/session/me')
-      .then(setSessionUser)
-      .catch(() => setSessionUser(null));
-  }, []);
+    if (!bootstrapReady) return;
+    const params = matchQuery();
+    if (loadedQueryRef.current !== params.toString()) void refreshLive();
+    // The recurring call refreshes only dynamic match/stream state. Competition
+    // classes and schedules stay in the five-minute session cache.
+    const timer = setInterval(() => void refreshLive(), 15000);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bootstrapReady, listMode, classFilter, activePage, archivedPage]);
+
+  const load = async () => {
+    await loadBootstrap();
+  };
 
   const isSuperuser = sessionUser?.role === 'SUPERADMIN';
 
@@ -343,6 +457,7 @@ export default function Dashboard() {
     const away = awayTeam.trim();
     if (!home || !away) return '';
     if (sport === 'BASKETBALL') return `[BASKETBALL | ${roundNumber}R] ${home} vs ${away}`;
+    if (sport === 'FUTSAL') return `[FUTSAL-QUEENCUP | ${roundNumber}R] ${home} vs ${away}`;
     return `[${competitionClass} | ${roundNumber}R] ${home} vs ${away}`;
   }, [sport, competitionClass, roundNumber, homeTeam, awayTeam]);
 
@@ -362,18 +477,31 @@ export default function Dashboard() {
       body: JSON.stringify({
         name: generatedMatchName,
         sport,
-        competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : competitionClass,
+        competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : sport === 'FUTSAL' ? 'FUTSAL-QUEENCUP' : competitionClass,
         round_number: roundNumber,
-        stream_mode: sport === 'BASKETBALL' ? 'MANUAL' : streamMode,
+        stream_mode: sport === 'FOOTBALL' ? streamMode : 'MANUAL',
         assign_operator: assignOperator,
         ingest_protocol: sport === 'FOOTBALL' && streamMode === 'STREAM' ? ingestProtocol : null,
+        first_half_minutes: sport === 'FUTSAL' ? futsalFirstHalfMinutes : undefined,
+        second_half_minutes: sport === 'FUTSAL' ? futsalSecondHalfMinutes : undefined,
         metadata: sport === 'BASKETBALL'
           ? {
               period_count: basketballPeriodCount,
               period_minutes: basketballPeriodMinutes,
               shot_clock_seconds: 24,
             }
-          : undefined,
+          : sport === 'FUTSAL'
+            ? {
+                sport_profile: 'FUTSAL_QUEENCUP',
+                player_format: futsalPlayerFormat,
+                pitch_length_m: 40,
+                pitch_width_m: 20,
+                media_enabled: false,
+                live_coder_enabled: false,
+              }
+          : {
+              broadcast_enabled: broadcastGraphicsEnabled,
+            },
       }),
     });
 
@@ -389,7 +517,11 @@ export default function Dashboard() {
     setStreamMode('STREAM');
     setBasketballPeriodCount(4);
     setBasketballPeriodMinutes(10);
+    setFutsalPlayerFormat(6);
+    setFutsalFirstHalfMinutes(15);
+    setFutsalSecondHalfMinutes(15);
     setAssignOperator(false);
+    setBroadcastGraphicsEnabled(true);
     setIngestProtocol('RTMP');
     await load();
   };
@@ -831,46 +963,19 @@ export default function Dashboard() {
     return [...teams].sort((a, b) => a.localeCompare(b, 'ko'));
   }, [selectedCompetition, competitionClass]);
   const usesTeamDropdown = selectedTeamOptions.length > 0;
-  const assignedCount = useMemo(() => matches.filter((match) => !match.archived && match.operator_id).length, [matches]);
-  const rtmpCount = useMemo(
-    () => matches.filter((match) => !match.archived && match.metadata?.ingest_protocol === 'RTMP').length,
-    [matches]
-  );
-  const activeMatches = useMemo(
-    () => matches.filter((match) => !match.archived),
-    [matches]
-  );
-  const archivedMatches = useMemo(
-    () => matches.filter((match) => match.archived),
-    [matches]
-  );
   const availableClasses = useMemo(() => {
     const classes = new Set([
       ...competitionOptions.map((item) => item.code),
-      ...matches.map((match) => (match.competition_class || 'K3').toUpperCase()),
+      ...matchClassOptions.map((item) => item.toUpperCase()),
     ]);
     return ['ALL', ...Array.from(classes).sort()];
-  }, [competitionOptions, matches]);
-  const filteredActiveMatches = useMemo(
-    () =>
-      activeMatches.filter((match) => classFilter === 'ALL' || (match.competition_class || 'K3').toUpperCase() === classFilter),
-    [activeMatches, classFilter]
-  );
-  const filteredArchivedMatches = useMemo(
-    () =>
-      archivedMatches.filter((match) => classFilter === 'ALL' || (match.competition_class || 'K3').toUpperCase() === classFilter),
-    [archivedMatches, classFilter]
-  );
-  const pagedActiveMatches = useMemo(
-    () => filteredActiveMatches.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
-    [filteredActiveMatches, activePage]
-  );
-  const pagedArchivedMatches = useMemo(
-    () => filteredArchivedMatches.slice((archivedPage - 1) * PAGE_SIZE, archivedPage * PAGE_SIZE),
-    [filteredArchivedMatches, archivedPage]
-  );
-  const activePageCount = Math.max(1, Math.ceil(filteredActiveMatches.length / PAGE_SIZE));
-  const archivedPageCount = Math.max(1, Math.ceil(filteredArchivedMatches.length / PAGE_SIZE));
+  }, [competitionOptions, matchClassOptions]);
+  const activePageCount = listMode === 'active'
+    ? Math.max(1, Math.ceil(matchTotal / PAGE_SIZE))
+    : Math.max(1, Math.ceil(activeMatchTotal / PAGE_SIZE));
+  const archivedPageCount = listMode === 'archived'
+    ? Math.max(1, Math.ceil(matchTotal / PAGE_SIZE))
+    : Math.max(1, Math.ceil(archivedMatchTotal / PAGE_SIZE));
 
   useEffect(() => {
     setActivePage(1);
@@ -885,9 +990,16 @@ export default function Dashboard() {
     if (archivedPage > archivedPageCount) setArchivedPage(archivedPageCount);
   }, [archivedPage, archivedPageCount]);
 
-  const visibleMatches = listMode === 'active' ? pagedActiveMatches : pagedArchivedMatches;
+  const visibleMatches = matches;
   const currentPage = listMode === 'active' ? activePage : archivedPage;
   const currentPageCount = listMode === 'active' ? activePageCount : archivedPageCount;
+  // Keep long archive histories navigable without rendering every page number.
+  // Pages move in compact groups of five: 6–10, 11–15, and so on.
+  const paginationGroupStart = Math.floor((currentPage - 1) / 5) * 5 + 1;
+  const visiblePageNumbers = Array.from(
+    { length: Math.min(5, currentPageCount - paginationGroupStart + 1) },
+    (_, index) => paginationGroupStart + index,
+  );
   const setCurrentPage = (nextPage: number) => {
     if (listMode === 'active') {
       setActivePage(nextPage);
@@ -905,26 +1017,26 @@ export default function Dashboard() {
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Overview</div>
-                  <h2>{sport === 'BASKETBALL' ? '농구 운영 대시보드' : '운영 대시보드'}</h2>
+                  <h2>{sport === 'BASKETBALL' ? '농구 운영 대시보드' : sport === 'FUTSAL' ? '퀸컵 풋살 운영 대시보드' : '운영 대시보드'}</h2>
                 </div>
                 <span className="status-pill running">Live {liveCount}</span>
               </div>
               <div className="metric-strip metric-strip-overview">
                 <div className="metric-tile success">
                   <span className="muted">Total Matches</span>
-                  <strong>{matches.length}</strong>
+                  <strong>{activeMatchTotal + archivedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile tech">
                   <span className="muted">Archived</span>
-                  <strong>{archivedMatches.length}</strong>
+                  <strong>{archivedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile">
                   <span className="muted">Assigned</span>
-                  <strong>{assignedCount}</strong>
+                  <strong>{assignedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile">
                   <span className="muted">RTMP Pipelines</span>
-                  <strong>{sport === 'FOOTBALL' ? rtmpCount : 0}</strong>
+                  <strong>{sport === 'FOOTBALL' ? rtmpMatchTotal : 0}</strong>
                 </div>
               </div>
             </div>
@@ -933,7 +1045,7 @@ export default function Dashboard() {
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Create Match</div>
-                  <h3>{sport === 'BASKETBALL' ? '농구 경기 등록' : '새 경기 등록'}</h3>
+                  <h3>{sport === 'BASKETBALL' ? '농구 경기 등록' : sport === 'FUTSAL' ? '퀸컵 풋살 경기 등록' : '새 경기 등록'}</h3>
                 </div>
                 {sport === 'FOOTBALL' ? <button className="button-compact btn-secondary" onClick={openCompetitionClassModal}>
                   대회 관리
@@ -1035,29 +1147,65 @@ export default function Dashboard() {
                   </>
                 ) : null}
 
+                {sport === 'FUTSAL' ? (
+                  <>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">경기 포맷</div>
+                      <select value={futsalPlayerFormat} onChange={(e) => setFutsalPlayerFormat(Number(e.target.value) as 5 | 6 | 7)}>
+                        <option value={5}>5 vs 5</option>
+                        <option value={6}>6 vs 6</option>
+                        <option value={7}>7 vs 7</option>
+                      </select>
+                    </div>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">전반 시간</div>
+                      <input min={1} max={60} step={1} type="number" value={futsalFirstHalfMinutes} onChange={(e) => setFutsalFirstHalfMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 15)))} />
+                    </div>
+                    <div className="field-stack field-stack-short">
+                      <div className="field-label">후반 시간</div>
+                      <input min={1} max={60} step={1} type="number" value={futsalSecondHalfMinutes} onChange={(e) => setFutsalSecondHalfMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 15)))} />
+                    </div>
+                  </>
+                ) : null}
+
                 <div className="field-stack field-stack-operator">
                   <div className="field-label">operator 상속</div>
-                  <label className="row operator-toggle-inline">
-                    <input
-                      type="checkbox"
-                      checked={assignOperator}
-                      onChange={(e) => setAssignOperator(e.target.checked)}
-                      style={{ minHeight: 'auto', width: 18, height: 18 }}
-                    />
-                    <span>현재 계정 사용</span>
-                  </label>
+                  <div className="operator-toggle-group">
+                    <label className="row operator-toggle-inline">
+                      <input
+                        type="checkbox"
+                        checked={assignOperator}
+                        onChange={(e) => setAssignOperator(e.target.checked)}
+                        style={{ minHeight: 'auto', width: 18, height: 18 }}
+                      />
+                      <span>현재 계정 사용</span>
+                    </label>
+                    {sport === 'FOOTBALL' ? <label className="row operator-toggle-inline broadcast-toggle-inline">
+                      <input
+                        type="checkbox"
+                        checked={broadcastGraphicsEnabled}
+                        onChange={(e) => setBroadcastGraphicsEnabled(e.target.checked)}
+                        style={{ minHeight: 'auto', width: 18, height: 18 }}
+                      />
+                      <span>Broadcast 그래픽 생성</span>
+                    </label> : null}
+                  </div>
                 </div>
 
                 <div className="field-stack field-stack-generated">
                   <div className="field-label">생성이름</div>
                   <div className="kbd dashboard-generated-name">
-                    {generatedMatchName || (sport === 'BASKETBALL' ? `[BASKETBALL | ${roundNumber}R] 홈팀 vs 어웨이팀` : `[${competitionClass} | ${roundNumber}R] 홈팀 vs 어웨이팀`)}
+                    {generatedMatchName || (sport === 'BASKETBALL' ? `[BASKETBALL | ${roundNumber}R] 홈팀 vs 어웨이팀` : sport === 'FUTSAL' ? `[FUTSAL-QUEENCUP | ${roundNumber}R] 홈팀 vs 어웨이팀` : `[${competitionClass} | ${roundNumber}R] 홈팀 vs 어웨이팀`)}
                   </div>
                 </div>
               </div>
               {sport === 'FOOTBALL' ? <div className="muted dashboard-class-time">
                 경기 시간: 전반 {selectedCompetition?.first_half_minutes || 45}분 / 후반 {selectedCompetition?.second_half_minutes || 45}분
-              </div> : (
+              </div> : sport === 'FUTSAL' ? (
+                <div className="muted dashboard-class-time">
+                  퀸컵 풋살 · {futsalPlayerFormat} vs {futsalPlayerFormat} · 전반 {futsalFirstHalfMinutes}분 / 후반 {futsalSecondHalfMinutes}분 · 수동 FLA/FPA
+                </div>
+              ) : (
                 <div className="muted dashboard-class-time">
                   경기 시간: {basketballPeriodCount}Q × {basketballPeriodMinutes}분 · 수동 기록 MVP
                 </div>
@@ -1096,7 +1244,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="match-list">
+            <div className="match-list dashboard-match-list">
               {visibleMatches.map((match) => {
                 const isRunning = runningMatchIds.includes(match.id);
                 return (
@@ -1104,35 +1252,8 @@ export default function Dashboard() {
                     <div className="grid match-item-main" style={{ gap: 8 }}>
                       <div className="row" style={{ flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: 18 }}>{match.name}</strong>
-                        <span className="status-pill">{match.competition_class || 'K3'}</span>
-                        <span className="status-pill tech">{match.sport === 'BASKETBALL' ? 'BASKETBALL' : 'FOOTBALL'}</span>
-                        <span className="status-pill warning">R{match.round_number || 1}</span>
                         <span className={`status-pill ${match.archived ? 'archived' : isRunning ? 'running' : 'stopped'}`}>
                           {match.archived ? 'ARCHIVED' : isRunning ? 'RUNNING' : 'STOPPED'}
-                        </span>
-                      </div>
-                      <div className="muted">operator: {match.operator_id || 'unassigned'}</div>
-                      <div className="match-meta-group">
-                        <span className={`meta-chip ${match.metadata?.stream_mode === 'MANUAL' ? 'warning' : ''}`}>
-                          mode: {match.sport === 'BASKETBALL' ? 'manual court' : match.metadata?.stream_mode === 'MANUAL' ? 'manual field' : 'stream'}
-                        </span>
-                        <span className={`meta-chip ${match.metadata?.ingest_protocol ? 'tech' : ''}`}>
-                          protocol: {match.sport === 'BASKETBALL' ? 'n/a' : match.metadata?.ingest_protocol || 'not set'}
-                        </span>
-                        <span className={`meta-chip ${
-                          match.sport === 'BASKETBALL' || match.metadata?.stream_mode === 'MANUAL'
-                            ? ''
-                            : match.hls_url
-                              ? 'success'
-                              : 'warning'
-                        }`}>
-                          {match.sport === 'BASKETBALL'
-                            ? 'no stream'
-                            : match.metadata?.stream_mode === 'MANUAL'
-                            ? 'no hls'
-                            : match.hls_url
-                              ? 'hls ready'
-                              : 'hls pending'}
                         </span>
                       </div>
                       <div className="muted">
@@ -1163,7 +1284,7 @@ export default function Dashboard() {
                   </div>
                 );
               })}
-              {(listMode === 'active' ? filteredActiveMatches.length : filteredArchivedMatches.length) === 0 ? (
+              {matchTotal === 0 ? (
                 <div className="muted">
                   {listMode === 'active' ? 'No active matches for this class.' : 'No archived matches for this class.'}
                 </div>
@@ -1171,28 +1292,34 @@ export default function Dashboard() {
             </div>
 
             {currentPageCount > 1 ? (
-              <div className="pagination-bar">
-                <button onClick={() => setCurrentPage(Math.max(1, currentPage - 1))} disabled={currentPage === 1}>
-                  {'<'}
+              <nav className="pagination-bar dashboard-pagination" aria-label="경기 목록 페이지 이동">
+                <button
+                  className="dashboard-pagination-nav"
+                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                  disabled={currentPage === 1}
+                >
+                  <span aria-hidden="true">←</span><span className="dashboard-pagination-label">이전</span>
                 </button>
-                <div className="pagination-pages">
-                  {Array.from({ length: currentPageCount }, (_, index) => {
-                    const page = index + 1;
-                    return (
-                      <button
-                        key={page}
-                        className={page === currentPage ? 'btn-active' : ''}
-                        onClick={() => setCurrentPage(page)}
-                      >
-                        {page}
-                      </button>
-                    );
-                  })}
+                <div className="pagination-pages dashboard-pagination-pages">
+                  {visiblePageNumbers.map((page) => (
+                    <button
+                      key={page}
+                      className={page === currentPage ? 'btn-active' : ''}
+                      aria-current={page === currentPage ? 'page' : undefined}
+                      onClick={() => setCurrentPage(page)}
+                    >
+                      {page}
+                    </button>
+                  ))}
                 </div>
-                <button onClick={() => setCurrentPage(Math.min(currentPageCount, currentPage + 1))} disabled={currentPage === currentPageCount}>
-                  {'>'}
+                <button
+                  className="dashboard-pagination-nav"
+                  onClick={() => setCurrentPage(Math.min(currentPageCount, currentPage + 1))}
+                  disabled={currentPage === currentPageCount}
+                >
+                  <span className="dashboard-pagination-label">다음</span><span aria-hidden="true">→</span>
                 </button>
-              </div>
+              </nav>
             ) : null}
           </div>
 

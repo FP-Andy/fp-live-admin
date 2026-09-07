@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, primeSessionUser, type SessionUser } from '../lib/api';
 
 export default function LoginForm({ nextPath }: { nextPath: string }) {
   const router = useRouter();
@@ -34,6 +34,8 @@ export default function LoginForm({ nextPath }: { nextPath: string }) {
         setError((await response.text()) || '로그인에 실패했습니다.');
         return;
       }
+
+      primeSessionUser(await response.json() as SessionUser);
 
       router.replace(nextPath);
       router.refresh();

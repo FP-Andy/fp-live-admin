@@ -2,11 +2,12 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-export type Sport = 'FOOTBALL' | 'BASKETBALL';
+export type Sport = 'FOOTBALL' | 'BASKETBALL' | 'FUTSAL';
 
 export const SPORTS: Array<{ value: Sport; label: string; shortLabel: string }> = [
   { value: 'FOOTBALL', label: 'Football', shortLabel: 'FB' },
   { value: 'BASKETBALL', label: 'Basketball', shortLabel: 'BB' },
+  { value: 'FUTSAL', label: 'Futsal · Queen Cup', shortLabel: 'FT' },
 ];
 
 const STORAGE_KEY = 'fineplay.selectedSport';
@@ -19,7 +20,8 @@ type SportContextValue = {
 const SportContext = createContext<SportContextValue | null>(null);
 
 function normalizeSport(value: string | null | undefined): Sport {
-  return value === 'BASKETBALL' ? 'BASKETBALL' : 'FOOTBALL';
+  if (value === 'BASKETBALL' || value === 'FUTSAL') return value;
+  return 'FOOTBALL';
 }
 
 export function SportProvider({ children }: { children: React.ReactNode }) {

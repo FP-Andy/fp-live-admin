@@ -159,7 +159,13 @@ SESSION_COOKIE_NAME = "live_admin_session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
 PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://console.fineludens.kr").rstrip("/")
-GATEWAY_STATUS_TIMEOUT_SECONDS = float(os.getenv("GATEWAY_STATUS_TIMEOUT_SECONDS", "1.0"))
+# Console 대시보드는 운영 화면을 열 때마다 gateway 상태를 확인한다. 미디어 서버가 꺼진
+# 상태에서는 이 확인이 전체 화면을 기다리게 해서는 안 된다.
+GATEWAY_STATUS_TIMEOUT_SECONDS = float(os.getenv("GATEWAY_STATUS_TIMEOUT_SECONDS", "0.35"))
+GATEWAY_STATUS_FAILURE_COOLDOWN_SECONDS = float(os.getenv("GATEWAY_STATUS_FAILURE_COOLDOWN_SECONDS", "15"))
+_gateway_status_failure_until = 0.0
+_gateway_status_failure_detail = ""
+_gateway_status_failure_lock = threading.Lock()
 HLS_PROBE_TIMEOUT_SECONDS = float(os.getenv("HLS_PROBE_TIMEOUT_SECONDS", "1.5"))
 MEDIA_CONTROL_URL = os.getenv("MEDIA_CONTROL_URL", "").strip()
 MEDIA_CONTROL_TOKEN = os.getenv("MEDIA_CONTROL_TOKEN", "").strip()
@@ -336,6 +342,26 @@ def _ensure_runtime_schema() -> None:
     if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
         statements.append("CREATE INDEX IF NOT EXISTS ix_highlight_jobs_owner_id ON highlight_jobs (owner_id)")
+
+    # FPA 경기 선택기는 누적된 경기 테이블을 최신순으로 자주 읽는다. 목록 전용 복합
+    # 인덱스로 필터·정렬·페이지 조회가 전체 스캔으로 커지지 않게 한다.
+    if "matches" in table_names:
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_fpa_picker "
+            "ON matches (competition_class, round_number, created_at DESC)"
+        )
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_fpa_picker_recent "
+            "ON matches (created_at DESC)"
+        )
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_dashboard_page "
+            "ON matches (sport, archived, created_at DESC)"
+        )
+        statements.append(
+            "CREATE INDEX IF NOT EXISTS ix_matches_dashboard_class_page "
+            "ON matches (sport, archived, competition_class, created_at DESC)"
+        )
 
     # 녹화 중계 오버레이 편집: 기존 초안에도 전·후반 종료 기준점을 추가한다.
     if "broadcast_overlay_projects" in table_names and "first_half_video_end_sec" not in broadcast_overlay_project_columns:
@@ -1083,9 +1109,16 @@ def _gateway_clear_stream(match_id: UUID) -> None:
 
 
 def _gateway_status() -> dict:
+    global _gateway_status_failure_until, _gateway_status_failure_detail
     gateway_base = os.getenv("GATEWAY_API_BASE", "http://host.docker.internal:8090").rstrip("/")
     if not gateway_base:
         raise HTTPException(status_code=500, detail="GATEWAY_API_BASE not configured")
+
+    # 꺼진 gateway에 대시보드 탭마다 다시 접속하면 1초짜리 timeout이 누적된다.
+    # 첫 실패 뒤에는 짧은 cooldown 동안 즉시 실패를 돌려주고, 다른 API·DB 작업을 막지 않는다.
+    with _gateway_status_failure_lock:
+        if time.monotonic() < _gateway_status_failure_until:
+            raise HTTPException(status_code=503, detail=_gateway_status_failure_detail or "gateway status temporarily unavailable")
 
     try:
         with httpx.Client(timeout=GATEWAY_STATUS_TIMEOUT_SECONDS) as client:
@@ -1093,7 +1126,15 @@ def _gateway_status() -> dict:
             resp.raise_for_status()
             data = resp.json()
     except Exception as ex:
-        raise HTTPException(status_code=502, detail=f"gateway status failed: {ex}") from ex
+        detail = f"gateway status failed: {ex}"
+        with _gateway_status_failure_lock:
+            _gateway_status_failure_detail = detail
+            _gateway_status_failure_until = time.monotonic() + GATEWAY_STATUS_FAILURE_COOLDOWN_SECONDS
+        raise HTTPException(status_code=502, detail=detail) from ex
+
+    with _gateway_status_failure_lock:
+        _gateway_status_failure_until = 0.0
+        _gateway_status_failure_detail = ""
 
     lines = data.get("lines") or []
     running_match_ids: list[str] = []
@@ -1775,8 +1816,8 @@ def _estimate_xgot(
 
 def _normalize_sport(value: str | None) -> str:
     normalized = (value or "FOOTBALL").strip().upper()
-    if normalized not in {"FOOTBALL", "BASKETBALL"}:
-        raise HTTPException(status_code=400, detail="sport must be FOOTBALL or BASKETBALL")
+    if normalized not in {"FOOTBALL", "BASKETBALL", "FUTSAL"}:
+        raise HTTPException(status_code=400, detail="sport must be FOOTBALL, BASKETBALL, or FUTSAL")
     return normalized
 
 
@@ -1789,7 +1830,9 @@ def _match_list_metadata(metadata: Any) -> dict:
     """
     source = metadata if isinstance(metadata, dict) else {}
     compact: dict[str, Any] = {}
-    for key in ("stream_mode", "ingest_protocol"):
+    # FPA 선택기는 이 목록 응답만으로 홈·어웨이 라벨을 채운다. 상세 metadata 전체를
+    # 보내지 않되, 태깅 시작에 필요한 최소 식별 정보는 남긴다.
+    for key in ("stream_mode", "ingest_protocol", "home_team", "away_team"):
         if key in source:
             compact[key] = source[key]
     broadcast = source.get("broadcast")
@@ -2132,6 +2175,16 @@ def _broadcast_assets_manifest(match_obj: Match) -> dict:
     }
 
 
+def _broadcast_graphics_enabled(match_obj: Match) -> bool:
+    """Return whether this match is opted in to automatic Broadcast graphics.
+
+    Legacy matches predate this setting, so a missing value deliberately means
+    enabled.  Only an explicit JSON boolean ``false`` opts a match out.
+    """
+    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    return metadata.get("broadcast_enabled") is not False
+
+
 def _broadcast_is_running(match_obj: Match, db: Session) -> bool:
     """Return the current FLA clock playback state for the showroom status.
 
@@ -2170,6 +2223,35 @@ def _broadcast_dominance_checkpoints(match_obj: Match) -> tuple[tuple[int, str, 
     )
 
 
+def _build_broadcast_halftime_snapshot(match_obj: Match, db: Session) -> tuple[dict, int] | None:
+    """Build the final first-half frame after added time has actually ended.
+
+    The halftime marker is written when the next half starts. Its clock is
+    therefore the authoritative first-half cutoff: a 45+N goal is included,
+    while a second-half action is not. The graphic itself still presents the
+    period as 45 minutes, with any added-time goal marker anchored at 45'.
+    """
+    first_half_ms = max(1, int(getattr(match_obj, "first_half_minutes", None) or 45)) * 60_000
+    halftime_start_ms = _period_start_marker_ms(match_obj.id, db, "HALFTIME_START")
+    if halftime_start_ms is None or int(halftime_start_ms) < first_half_ms:
+        return None
+
+    source_clock_ms = int(halftime_start_ms)
+    snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=source_clock_ms)
+    snapshot["match"].update({
+        "clock": _fmt_clock_ms(first_half_ms),
+        "clock_ms": first_half_ms,
+        "fla_clock": _fmt_clock_ms(first_half_ms),
+        "fla_clock_ms": first_half_ms,
+        "running": False,
+    })
+    for event in snapshot.get("analysis", {}).get("xg") or []:
+        if event.get("is_goal") and int(event.get("event_clock_ms") or 0) > first_half_ms:
+            event["event_clock_ms"] = first_half_ms
+            event["event_clock"] = _fmt_clock_ms(first_half_ms)
+    return snapshot, source_clock_ms
+
+
 def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: bool = False) -> dict | None:
     """Render current live assets and capture their required archive points.
 
@@ -2178,6 +2260,8 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
     exactly three immutable goal-shot artifacts.
     """
     if _normalize_sport(getattr(match_obj, "sport", None)) != "FOOTBALL":
+        return None
+    if not _broadcast_graphics_enabled(match_obj):
         return None
     if not force and (match_obj.archived or not _broadcast_has_started(match_obj, db)):
         return None
@@ -2267,17 +2351,35 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
 
     dominance = dict(manifest.get("dominance") or {})
     for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
-        if clock_ms >= minute * 60_000 and not (isinstance(dominance.get(slot), dict) and dominance[slot].get("asset_url")):
+        existing = dominance.get(slot) if isinstance(dominance.get(slot), dict) else {}
+        source_clock_ms: int | None = None
+        if slot == "halftime":
+            captured = _build_broadcast_halftime_snapshot(match_obj, db)
+            if captured is None:
+                # Do not freeze a 45:00 card while first-half added time is
+                # still underway. It is captured once the halftime marker
+                # confirms the period has ended.
+                continue
+            historical_snapshot, source_clock_ms = captured
+            if existing.get("asset_url") and int(existing.get("source_clock_ms") or -1) == source_clock_ms:
+                continue
+        else:
+            if clock_ms < minute * 60_000 or existing.get("asset_url"):
+                continue
             historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
-            dominance_rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])
-            dominance[slot] = store_asset_pair(
-                store,
-                f"{match_key}/archive/{minute}/{asset_type}",
-                asset_type,
-                historical_snapshot,
-                immutable=True,
-                rendered=dominance_rendered[asset_type],
-            ).as_dict()
+
+        dominance_rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])
+        stored = store_asset_pair(
+            store,
+            f"{match_key}/archive/{minute}/{asset_type}",
+            asset_type,
+            historical_snapshot,
+            immutable=True,
+            rendered=dominance_rendered[asset_type],
+        ).as_dict()
+        if source_clock_ms is not None:
+            stored["source_clock_ms"] = source_clock_ms
+        dominance[slot] = stored
     manifest["dominance"] = dominance
     manifest["last_generated_at"] = datetime.utcnow().isoformat()
 
@@ -2308,6 +2410,9 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
     and archived matches therefore retain the same stats, goals and xT while
     showing the new team identity consistently.
     """
+    if not _broadcast_graphics_enabled(match_obj):
+        return _broadcast_assets_manifest(match_obj)
+
     with _broadcast_asset_render_lock:
         manifest = _broadcast_assets_manifest(match_obj)
         store = BroadcastAssetStore()
@@ -2388,9 +2493,16 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
         for minute, asset_type, slot in _broadcast_dominance_checkpoints(match_obj):
             if not isinstance(dominance.get(slot), dict):
                 continue
-            historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
+            source_clock_ms: int | None = None
+            if slot == "halftime":
+                captured = _build_broadcast_halftime_snapshot(match_obj, db)
+                if captured is None:
+                    continue
+                historical_snapshot, source_clock_ms = captured
+            else:
+                historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
             rendered = render_live_coder_asset_pairs(historical_snapshot, [asset_type])[asset_type]
-            dominance[slot] = store_asset_pair(
+            stored = store_asset_pair(
                 store,
                 f"{match_key}/archive/{minute}/{asset_type}",
                 asset_type,
@@ -2398,6 +2510,9 @@ def _rebuild_broadcast_branding_assets(match_obj: Match, db: Session) -> dict:
                 immutable=True,
                 rendered=rendered,
             ).as_dict()
+            if source_clock_ms is not None:
+                stored["source_clock_ms"] = source_clock_ms
+            dominance[slot] = stored
         manifest["dominance"] = dominance
         manifest["last_generated_at"] = datetime.utcnow().isoformat()
 
@@ -2711,7 +2826,7 @@ def _refresh_all_broadcast_assets() -> None:
             .order_by(Match.created_at.desc())
             .all()
             )
-            if not _is_completed_broadcast_demo(row)
+            if not _is_completed_broadcast_demo(row) and _broadcast_graphics_enabled(row)
         ]
     finally:
         db.close()
@@ -5309,6 +5424,7 @@ def generate_fpa_log(body: FpaGenerateLogRequest):
             direction=body.direction,
             timeline=body.timeline,
             dual_pitch=body.dual_pitch.model_dump() if body.dual_pitch else None,
+            sport=body.sport,
         )
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -5319,7 +5435,7 @@ def export_fpa_logs(body: FpaExportLogsRequest):
     if not body.logs:
         raise HTTPException(status_code=400, detail="No logs to process")
     try:
-        df = parse_logs_to_dataframe(body.logs, body.match_id, body.teamid_h, body.teamid_a)
+        df = parse_logs_to_dataframe(body.logs, body.match_id, body.teamid_h, body.teamid_a, body.sport)
         workbook = build_analysis_workbook(df, scene_rows=body.rows)
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
@@ -5819,7 +5935,10 @@ async def download_fpa_visual_archive(file: UploadFile = File(...), report_title
 
 
 @app.get("/api/competition-classes", response_model=list[CompetitionClassResponse])
-def list_competition_classes(db: Session = Depends(get_db)):
+def list_competition_classes(response: Response, db: Session = Depends(get_db)):
+    # This endpoint is already public and changes infrequently. A short shared
+    # cache removes a cross-region round trip without involving session data.
+    response.headers["Cache-Control"] = "public, max-age=60, s-maxage=300"
     rows = db.query(CompetitionClass).order_by(CompetitionClass.code.asc()).all()
     return [_serialize_competition_class(row) for row in rows]
 
@@ -6168,21 +6287,25 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
             raise HTTPException(status_code=400, detail="Round number does not match match name format")
         home_team = name_match.group("home").strip()
         away_team = name_match.group("away").strip()
-    elif sport == "BASKETBALL":
+    elif sport in {"BASKETBALL", "FUTSAL"}:
         raw_teams = body.name.strip().split(" vs ")
         if len(raw_teams) != 2 or not raw_teams[0].strip() or not raw_teams[1].strip():
-            raise HTTPException(status_code=400, detail="Basketball match name must include 'HOME vs AWAY'")
+            raise HTTPException(status_code=400, detail=f"{sport.title()} match name must include 'HOME vs AWAY'")
         home_team = raw_teams[0].strip()
         away_team = raw_teams[1].strip()
     else:
         raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
 
-    first_half_minutes = competition.first_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
-    second_half_minutes = competition.second_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10))
+    first_half_minutes = body.first_half_minutes or (competition.first_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10)))
+    second_half_minutes = body.second_half_minutes or (competition.second_half_minutes if competition else int((body.metadata or {}).get("period_minutes", 10)))
     extra_first_half_minutes = int(getattr(competition, "extra_first_half_minutes", None) or 15) if competition else 15
     extra_second_half_minutes = int(getattr(competition, "extra_second_half_minutes", None) or 15) if competition else 15
     metadata = dict(body.metadata or {})
     metadata["sport"] = sport
+    if sport == "FOOTBALL":
+        # New football matches opt in by default; an explicit false is the
+        # lightweight per-match switch that keeps Chromium rendering idle.
+        metadata["broadcast_enabled"] = metadata.get("broadcast_enabled") is not False
     metadata["stream_mode"] = body.stream_mode
     metadata["home_team"] = home_team
     metadata["away_team"] = away_team
@@ -6421,11 +6544,16 @@ def get_rtmp_info(match_id: UUID, db: Session = Depends(get_db)):
 
 @app.get("/api/matches")
 def list_matches(
+    response: Response,
     sport: str | None = Query(default=None),
     include_fpa_manual: bool = Query(default=True),
     compact: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
+    # Match list has long been a public read endpoint. Cache compact list
+    # variants briefly at the edge; write paths and authenticated endpoints are
+    # deliberately excluded from CloudFront cache behaviours.
+    response.headers["Cache-Control"] = "public, max-age=15, s-maxage=30"
     cache_key = ("list_matches", _normalize_sport(sport) if sport else "", include_fpa_manual, compact)
     cached = _cache_get(_match_response_cache, cache_key)
     if cached is not None:
@@ -6437,6 +6565,215 @@ def list_matches(
         query = query.filter(Match.competition_class != "FPA")
     rows = query.order_by(desc(Match.created_at)).all()
     return _cache_set(_match_response_cache, cache_key, [_serialize_match(r, compact=compact) for r in rows])
+
+
+@app.get("/api/dashboard/matches")
+def list_dashboard_matches(
+    sport: str = Query(default="FOOTBALL"),
+    archived: bool = Query(default=False),
+    competition_class: str | None = Query(default=None),
+    limit: int = Query(default=7, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """Dashboard list paging, avoiding a full historical match download on every refresh."""
+    sport_code = _normalize_sport(sport)
+    class_code = (competition_class or "").strip().upper()
+    scope = db.query(Match).filter(
+        Match.sport == sport_code,
+        Match.competition_class != "FPA",
+    )
+    active_scope = scope.filter(Match.archived.is_(False))
+    archived_scope = scope.filter(Match.archived.is_(True))
+    page_scope = archived_scope if archived else active_scope
+    if class_code:
+        page_scope = page_scope.filter(Match.competition_class == class_code)
+
+    # These inexpensive aggregate counts keep the existing overview cards
+    # accurate without forcing the browser to receive every historical row.
+    active_total = active_scope.order_by(None).count()
+    archived_total = archived_scope.order_by(None).count()
+    assigned_total = active_scope.filter(Match.operator_id.isnot(None)).order_by(None).count()
+    rtmp_total = active_scope.filter(
+        Match.metadata_json["ingest_protocol"].astext == "RTMP"
+    ).order_by(None).count()
+    total = page_scope.order_by(None).count()
+    rows = page_scope.order_by(desc(Match.created_at)).offset(offset).limit(limit).all()
+    class_rows = (
+        scope.with_entities(Match.competition_class)
+        .distinct()
+        .order_by(Match.competition_class)
+        .all()
+    )
+    return {
+        "items": [_serialize_match(row, compact=True) for row in rows],
+        "total": total,
+        "active_total": active_total,
+        "archived_total": archived_total,
+        "assigned_total": assigned_total,
+        "rtmp_total": rtmp_total,
+        "class_options": [str(row[0]) for row in class_rows if row[0]],
+    }
+
+
+def _dashboard_bootstrap_payload(
+    *,
+    sport: str,
+    archived: bool,
+    competition_class: str | None,
+    limit: int,
+    offset: int,
+    db: Session,
+) -> dict:
+    """Build the dashboard's current page and summary values in one place."""
+    sport_code = _normalize_sport(sport)
+    class_code = (competition_class or "").strip().upper()
+    scope = db.query(Match).filter(Match.sport == sport_code, Match.competition_class != "FPA")
+    active_scope = scope.filter(Match.archived.is_(False))
+    archived_scope = scope.filter(Match.archived.is_(True))
+    page_scope = archived_scope if archived else active_scope
+    if class_code:
+        page_scope = page_scope.filter(Match.competition_class == class_code)
+    class_rows = scope.with_entities(Match.competition_class).distinct().order_by(Match.competition_class).all()
+    return {
+        "items": [_serialize_match(row, compact=True) for row in page_scope.order_by(desc(Match.created_at)).offset(offset).limit(limit).all()],
+        "total": page_scope.order_by(None).count(),
+        "active_total": active_scope.order_by(None).count(),
+        "archived_total": archived_scope.order_by(None).count(),
+        "assigned_total": active_scope.filter(Match.operator_id.isnot(None)).order_by(None).count(),
+        "rtmp_total": active_scope.filter(Match.metadata_json["ingest_protocol"].astext == "RTMP").order_by(None).count(),
+        "class_options": [str(row[0]) for row in class_rows if row[0]],
+    }
+
+
+@app.get("/api/dashboard/bootstrap")
+def get_dashboard_bootstrap(
+    sport: str = Query(default="FOOTBALL"),
+    archived: bool = Query(default=False),
+    competition_class: str | None = Query(default=None),
+    limit: int = Query(default=7, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """One startup request for the console dashboard, instead of five round trips."""
+    try:
+        stream_status = _gateway_status()
+    except HTTPException as ex:
+        stream_status = {"ok": False, "lines": [], "running_match_ids": [], "detail": ex.detail}
+    schedule_rows = db.query(ScheduleEntry).order_by(
+        ScheduleEntry.match_date.asc(), ScheduleEntry.kickoff_time.asc(), ScheduleEntry.home_team.asc()
+    ).all()
+    class_rows = db.query(CompetitionClass).order_by(CompetitionClass.code.asc()).all()
+    return {
+        "user": {"id": user.id, "name": user.name, "role": user.role},
+        "matches": _dashboard_bootstrap_payload(
+            sport=sport, archived=archived, competition_class=competition_class,
+            limit=limit, offset=offset, db=db,
+        ),
+        "competition_classes": [_serialize_competition_class(row) for row in class_rows],
+        "schedule_entries": [_serialize_schedule_entry(row) for row in schedule_rows],
+        "stream_status": stream_status,
+    }
+
+
+@app.get("/api/matches/page")
+def list_match_page(
+    sport: str = Query(default="FOOTBALL"),
+    archived: bool | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    compact: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """General paged match list for non-dashboard tools; never download history by default."""
+    query = db.query(Match).filter(Match.sport == _normalize_sport(sport))
+    if archived is not None:
+        query = query.filter(Match.archived.is_(archived))
+    total = query.order_by(None).count()
+    rows = query.order_by(desc(Match.created_at)).offset(offset).limit(limit).all()
+    return {"items": [_serialize_match(row, compact=compact) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/fpa/replay-matches")
+def list_fpa_replay_matches(db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+    """Return only active Football matches that actually contain a persisted dual replay scene.
+
+    The old client loaded every football match then issued one saved-log request
+    per match. This server-side join collapses hundreds of high-latency calls
+    into one small response.
+    """
+    rows = (
+        db.query(FpaSavedLog, Match)
+        .join(Match, Match.id == FpaSavedLog.match_id)
+        .filter(Match.sport == "FOOTBALL", Match.archived.is_(False))
+        .order_by(desc(Match.created_at))
+        .all()
+    )
+    items = []
+    for saved, match in rows:
+        saved_rows = list(saved.rows or [])
+        saved_logs = list(saved.logs or [])
+        has_replay = any(
+            isinstance(row, dict) and (row.get("SceneIndex") or row.get("SceneState") or row.get("DualState"))
+            for row in saved_rows
+        ) or any("DualState" in str(log) for log in saved_logs)
+        if has_replay:
+            items.append({"match": _serialize_match(match, compact=True), "saved": _serialize_fpa_saved_log(saved, match.id)})
+    return {"items": items}
+
+
+@app.get("/api/fpa/matches")
+def list_fpa_matches(
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    competition_class: str | None = Query(default=None),
+    round_number: int | None = Query(default=None, ge=1),
+    search: str | None = Query(default=None, max_length=80),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """FPA 경기 선택기 전용 페이지 조회.
+
+    일반 /matches는 다른 화면의 전체 목록 호환성을 위해 유지한다. FPA는 경기 수가
+    쌓여도 필요한 30건만 받아야 하므로, 서버에서 필터·검색·페이지를 처리한다.
+    """
+    base_query = db.query(Match)
+    class_code = (competition_class or "").strip().upper()
+    if class_code:
+        base_query = base_query.filter(Match.competition_class == class_code)
+    if round_number is not None:
+        base_query = base_query.filter(Match.round_number == round_number)
+    search_text = (search or "").strip()
+    if search_text:
+        base_query = base_query.filter(Match.name.ilike(f"%{search_text}%"))
+
+    total = base_query.order_by(None).count()
+    rows = (
+        base_query
+        .order_by(desc(Match.created_at))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # 드롭다운 값은 현재 30건이 아니라 전체 경기 기준으로 제공한다. 대회를 먼저
+    # 고르고 라운드를 좁혀도 페이지 밖의 경기를 놓치지 않는다.
+    class_rows = db.query(Match.competition_class).distinct().order_by(Match.competition_class).all()
+    round_query = db.query(Match.round_number)
+    if class_code:
+        round_query = round_query.filter(Match.competition_class == class_code)
+    round_rows = round_query.distinct().order_by(Match.round_number).all()
+    return {
+        "items": [_serialize_match(row, compact=True) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "class_options": [str(row[0]) for row in class_rows if row[0]],
+        "round_options": [int(row[0]) for row in round_rows if row[0] is not None],
+    }
 
 
 @app.get("/api/broadcast/matches/{match_id}/state")
@@ -6683,6 +7020,7 @@ def list_broadcast_live_matches(
     rows = [
         row for row in rows
         if not _is_completed_broadcast_demo(row)
+        and _broadcast_graphics_enabled(row)
         and (not row.archived or any(_broadcast_assets_manifest(row).get(key) for key in ("live", "archive", "xg_goals", "dominance")))
     ]
     rows.sort(
@@ -6722,6 +7060,8 @@ def get_completed_broadcast_demo(db: Session = Depends(get_db)):
 @app.get("/api/broadcast/v1/matches/{match_id}")
 def get_broadcast_showroom_match(match_id: UUID, db: Session = Depends(get_db)):
     row = _require_football_match_for_partner(match_id, db)
+    if not _broadcast_graphics_enabled(row):
+        raise HTTPException(status_code=404, detail="Broadcast graphics are disabled for this match")
     return _broadcast_public_match(row, db)
 
 
@@ -6734,6 +7074,8 @@ def refresh_broadcast_assets(
 ):
     """FPC can call this after pushing new data instead of waiting for the minute worker."""
     row = _require_football_match_for_partner(match_id, db)
+    if not _broadcast_graphics_enabled(row):
+        raise HTTPException(status_code=409, detail="Broadcast graphics are disabled for this match")
     manifest = _refresh_broadcast_assets(row, db, force=finalize)
     if manifest is None:
         raise HTTPException(status_code=409, detail="Match has not started; use finalize=true only after the final data write")
@@ -6804,7 +7146,17 @@ def archive_match(
 
 @app.get("/api/admin/streams/status")
 def get_admin_stream_status():
-    return _gateway_status()
+    # 대시보드에선 gateway 미가동이 정상적인 운영 상태일 수 있다. 5xx로 렌더를 실패시키지
+    # 않고, 명시적인 offline 상태를 돌려줘 목록·일정 등 나머지 기능은 계속 사용 가능하게 한다.
+    try:
+        return _gateway_status()
+    except HTTPException as ex:
+        return {
+            "ok": False,
+            "lines": [],
+            "running_match_ids": [],
+            "detail": ex.detail,
+        }
 
 
 @app.get("/api/admin/schedule-slack/status")
@@ -8215,6 +8567,45 @@ def summary(match_id: UUID, db: Session = Depends(get_db)):
     return _cache_set(_match_response_cache, cache_key, _build_match_summary(match_id, db))
 
 
+@app.get("/api/matches/{match_id}/events")
+def list_match_events_for_card_news(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """Internal FLA event feed for FCM.
+
+    The public partner feed deliberately remains football-only.  Card news is
+    an authenticated console workflow, so it also exposes Queen Cup FUTSAL
+    scoring events and their player attribution.
+    """
+    if not db.get(Match, match_id):
+        raise HTTPException(status_code=404, detail="Match not found")
+    rows = (
+        db.query(Event)
+        .filter(Event.match_id == match_id)
+        .order_by(Event.clock_ms.asc(), Event.created_at.asc())
+        .all()
+    )
+    return {
+        "match_id": str(match_id),
+        "events": [
+            {
+                "id": str(row.id),
+                "type": row.type,
+                "team": row.team,
+                "player_number": row.player_number,
+                "player_name": row.player_name,
+                "is_goal": bool(row.is_goal),
+                "xg": row.xg,
+                "shot_x": row.shot_x,
+                "shot_y": row.shot_y,
+            }
+            for row in rows
+        ],
+    }
+
+
 @app.get("/api/matches/{match_id}/dominance")
 def dominance(
     match_id: UUID,
@@ -9449,6 +9840,8 @@ def _render_broadcast_overlay_asset(
     video.  This path deliberately goes through the same Live Coder capture
     renderer and Broadcast asset store as the public Broadcast URLs.
     """
+    if not _broadcast_graphics_enabled(match_obj):
+        raise HTTPException(status_code=409, detail="Broadcast graphics are disabled for this match")
     max_match_clock = max(
         _overlay_match_latest_clock_ms(match_obj.id, db),
         (

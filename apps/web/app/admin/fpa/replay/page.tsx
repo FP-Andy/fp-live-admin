@@ -34,31 +34,7 @@ type SavedLogsResponse = {
   updated_at?: string | null;
 };
 
-const REPLAY_LOG_LOAD_CONCURRENCY = 4;
-
-async function settledMapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  mapper: (item: T) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
-  const results = new Array<PromiseSettledResult<R>>(items.length);
-  let nextIndex = 0;
-
-  const worker = async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      try {
-        results[index] = { status: 'fulfilled', value: await mapper(items[index]) };
-      } catch (reason) {
-        results[index] = { status: 'rejected', reason };
-      }
-    }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
+type ReplayMatchResponse = { items: Array<{ match: Match; saved: SavedLogsResponse }> };
 
 type PitchDot = {
   id?: string;
@@ -510,25 +486,17 @@ export default function FpaReplayPage() {
       setBusy(true);
         setStatus('듀얼모드 FPA 데이터가 있는 경기만 찾는 중');
       try {
-        const data = await apiJson<Match[]>('/matches?sport=FOOTBALL');
-        // Archived fixtures remain available as records elsewhere, but they
-        // are never part of the live replay work queue.  Skipping them before
-        // the per-match log requests keeps historical volume away from the
-        // API/DB pool used by active operations and broadcast rendering.
-        const sourceMatches = Array.isArray(data) ? data.filter((match) => !match.archived) : [];
-        const results = await settledMapWithConcurrency(
-          sourceMatches,
-          REPLAY_LOG_LOAD_CONCURRENCY,
-          async (match) => {
-            const saved = await apiJson<SavedLogsResponse>(`/fpa/matches/${encodeURIComponent(match.id)}/logs`);
-            const sceneCount = buildReplayScenes(saved.rows || [], saved.logs || []).length;
-            return sceneCount > 0 ? { ...match, savedLogs: saved, sceneCount } : null;
-          },
-        );
+        // 서버에서 FPA 로그와 매치를 조인해 듀얼 장면이 있는 경기만 한 번에 받는다.
+        // 이전에는 활성 경기 수만큼 로그 요청을 병렬로 보내 원거리 API 왕복이 누적됐다.
+        const data = await apiJson<ReplayMatchResponse>('/fpa/replay-matches');
         if (!active) return;
-        const filtered = results
-          .map((result) => (result.status === 'fulfilled' ? result.value : null))
-          .filter((match): match is ReplayMatch => Boolean(match));
+        const filtered = (Array.isArray(data.items) ? data.items : [])
+          .map(({ match, saved }) => ({
+            ...match,
+            savedLogs: saved,
+            sceneCount: buildReplayScenes(saved.rows || [], saved.logs || []).length,
+          }))
+          .filter((match) => match.sceneCount > 0);
         setMatches(filtered);
         setStatus(filtered.length ? `듀얼모드 FPA 경기 ${filtered.length}개` : '듀얼모드 FPA 데이터가 있는 경기가 없습니다');
       } catch (error) {

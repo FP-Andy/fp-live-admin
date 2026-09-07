@@ -76,9 +76,19 @@ jobs:
           fi
           docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
 
-          # api/web are recreated above, so reload nginx to resolve their new
-          # Docker network addresses before checking the public endpoint.
-          docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload
+          # api/web are recreated above, so nginx needs a reload to resolve
+          # their new Docker network addresses. Its config is file-mounted;
+          # git can replace that source inode, leaving a long-lived container
+          # attached to the previous file. Recreate nginx only when its
+          # loaded config hash differs, otherwise a reload is enough.
+          source_nginx_hash="$(sha256sum "$APP_DIR/infra/app/nginx/default.conf" | awk '{print $1}')"
+          loaded_nginx_hash="$(docker compose -f "$COMPOSE_FILE" exec -T nginx sha256sum /etc/nginx/conf.d/default.conf 2>/dev/null | awk '{print $1}' || true)"
+          if [ "$source_nginx_hash" != "$loaded_nginx_hash" ]; then
+            echo "Nginx config changed; recreating nginx to mount the current file"
+            docker compose -f "$COMPOSE_FILE" up -d --force-recreate nginx
+          else
+            docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload
+          fi
 
           # External check through nginx, with a short retry for edge readiness.
           for i in $(seq 1 10); do
