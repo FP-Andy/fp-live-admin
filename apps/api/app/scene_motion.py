@@ -161,6 +161,22 @@ def _parse_arrows(value: Any) -> list[dict[str, Any]]:
 # 마지막 프레임에서 공만 살짝 튀어 보인다.
 CLEAR_EXIT_MIN_M = 1.5
 
+# ── 클리어 공이 빨라 보이는 것에 대해 (2026-09-07 검토·현행 유지) ──────────────
+# 애니메이션 시간은 장면 길이와 무관하게 고정이다(MOVE_SEC=3.0, 네이티브 뷰
+# SceneMotionView 의 MOVE 도 3.0). 그래서 꼬리가 붙어 경로가 길어지면 **같은 시간에 더
+# 먼 거리를 지나게 되어 장면 전체가 빨라진다** — 공만이 아니라 공에 묶여 그려지는
+# 화살표까지. 중앙에서 걷어낸 클리어는 터치라인까지가 30m 를 넘어 경로가 3배가 되기도
+# 한다(실측: 본 경로 15m + 꼬리 34m → 3.27배속).
+#
+# 꼬리를 8m / 본 경로의 35% 로 묶는 안을 만들어 실제 mp4 로 비교했고(1.35배속까지 내려감),
+# **채택하지 않기로 했다.** 길이를 장면마다 다르게 하려면 sceneData 에 시간 정보를
+# 실어야 하는데 그 자리가 없고(`{v, players, ball, shot, moves}`), 앱·콘솔 네이티브 뷰의
+# 타이밍 상수가 하드코딩이라 앱까지 같이 고쳐야 한다. 길이를 고정으로 두는 한 빨라지는
+# 건 피할 수 없고, 그럴 바엔 '치워냈다' 가 끝까지 보이는 쪽이 낫다는 판단이다.
+#
+# 이 문제를 다시 손대려면 꼬리를 자르지 말고 **시간 쪽**을 손대라 — 서버가 장면 길이를
+# sceneData 로 내려주고 세 렌더러가 그걸 따르게 하는 게 근본 해결이다.
+
 
 def _clear_exit_point(x: float, y: float) -> tuple[float, float] | None:
     """걷어낸 지점 → **가장 가까운 터치라인** 위의 지점. 너무 가까우면 None.
@@ -185,6 +201,8 @@ def _with_clear_exit(path: list[tuple[float, float]]) -> list[tuple[float, float
 
     **그려진 화살표는 건드리지 않는다.** 이 꼬리는 태깅된 경로가 아니라 연출이라,
     측정된 선처럼 보이면 안 된다(공만 지나간다). 채점에도 안 들어간다 — 렌더 전용이다.
+
+    꼬리를 짧게 자르는 안은 검토 후 채택하지 않았다 — CLEAR_EXIT_MIN_M 위 주석 참조.
     """
     if not path:
         return path
@@ -895,11 +913,38 @@ def _goal_mouth_xy(value: Any) -> tuple[float, float] | None:
         return None
 
 
+# 골키퍼 액션 — 골대·궤적이 **반대편**이다 (2026-09-07).
+#
+# goalMouth 문자열에 실리는 방향은 태깅 팀(우리)의 공격방향이다. 슛이면 그 방향 끝의
+# 골대가 맞지만, **세이브는 상대가 우리 골대로 쏜 것**이라 반대편 골대다. 그대로 두면
+# 오른쪽 공격일 때 골대 패널이 왼쪽(상대 골대 쪽)에 뜨고 공도 그쪽으로 날아간다 —
+# 실제로는 우리 골대가 왼쪽이니 패널은 오른쪽(빈 하프)에 떠야 하고 공은 왼쪽으로 가야 한다.
+#
+# gx(골 폭 안의 좌우)도 같이 미러된다. gx 는 **슈터 시점** 기준인데, 상대 슈터는 우리와
+# 반대 방향을 보고 있기 때문이다.
+GK_MIRROR_ACTIONS = {"Save", "Catching", "Punching"}
+
+
+def _mirror_goal_mouth(value: Any) -> Any:
+    """goalMouth 문자열의 방향만 뒤집는다 — 골키퍼 액션용(GK_MIRROR_ACTIONS 주석)."""
+    text = str(value or "").strip()
+    if not text:
+        return value
+    parts = text.split(",")
+    if len(parts) < 3:
+        # 방향이 없으면 기본이 right 로 읽히므로(아래) 명시적으로 left 를 붙인다.
+        return ",".join([*parts, "left"]) if len(parts) == 2 else value
+    parts[2] = "right" if parts[2].strip().lower() == "left" else "left"
+    return ",".join(parts)
+
+
 def _shot_target_from_goal_mouth(value: Any) -> tuple[float, float] | None:
     """extra.goalMouth("gx,gy,공격방향") → 골라인 위 미터 좌표.
 
     gx(0~1)는 골 폭 7.32m(피치 y 30.34~37.66m)에 투영한다. 높이(gy)는 탑다운에서 생략.
     공격방향 right = x=105 골대, left = x=0 골대(좌우 미러).
+
+    골키퍼 액션은 호출부에서 `_mirror_goal_mouth` 로 방향을 뒤집어 넘긴다.
     """
     text = str(value or "").strip()
     if not text:
@@ -1107,13 +1152,18 @@ def attach_scene_motions(
         # 그룹 안에 클리어가 있으면 그 장면의 끝은 '치워냈다' 이므로 대표 행이
         # 무엇이든 붙인다. 슛이 같이 있으면 붙이지 않는다(끝이 슛이다 — 각 함수가 판단).
         clear_exit = any(str(m.get("action") or "") == "Clear" for m in members)
+        # 골키퍼 액션이면 골대·궤적이 반대편이다 — GK_MIRROR_ACTIONS 주석 참조.
+        # 대표 행(goalMouth 를 들고 있는 행) 기준으로 판단한다.
+        goal_mouth_text = extra.get("goalMouth")
+        if str(rep.get("action") or "") in GK_MIRROR_ACTIONS:
+            goal_mouth_text = _mirror_goal_mouth(goal_mouth_text)
         # 앱 네이티브 씬모션용 좌표 데이터 — 스토리지·렌더와 무관하게 항상 싣는다.
         # (앱은 sceneData 우선, 없으면 sceneMotionKey mp4 폴백)
         data = build_scene_data(
             state,
             actor_jersey=str(rep.get("jersey") or "") or None,
             actor_side=str(rep.get("teamSide") or "") or None,
-            goal_mouth_text=extra.get("goalMouth"),
+            goal_mouth_text=goal_mouth_text,
             caption=caption,
             movers=movers,
             clear_exit=clear_exit,
@@ -1133,8 +1183,8 @@ def attach_scene_motions(
                     out,
                     actor_jersey=str(rep.get("jersey") or "") or None,
                     actor_side=str(rep.get("teamSide") or "") or None,
-                    shot_target=_shot_target_from_goal_mouth(extra.get("goalMouth")),
-                    goal_mouth=_goal_mouth_xy(extra.get("goalMouth")),
+                    shot_target=_shot_target_from_goal_mouth(goal_mouth_text),
+                    goal_mouth=_goal_mouth_xy(goal_mouth_text),
                     caption=caption,
                     clear_exit=clear_exit,
                 ):

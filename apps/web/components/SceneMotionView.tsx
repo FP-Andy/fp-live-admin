@@ -80,6 +80,45 @@ function toLocal(x: number, y: number, w: number, h: number) {
   return { px: left + (x / 100) * (right - left), py: bottom - (y / 68) * (bottom - top) };
 }
 
+/** 화살표별 진행률 — **공이 지나간 만큼만** 그린다.
+ *
+ * 서버 mp4 렌더(scene_motion._reveal_fractions)와 같은 규칙이다. 그전까지 여기서는
+ * 화살표를 전체 진행률(phase)로 0→100% 늘렸는데, 공은 경로 **길이 비례**로 움직인다.
+ * 둘의 기준이 달라서 화살표가 공을 따라가지 않았다 — 클리어처럼 화살표 뒤에 꼬리가
+ * 붙는 장면에서는 공이 이미 화살표 끝을 지나 라인 쪽으로 굴러가는데 선은 30% 만
+ * 그려져 있었고, 화살표가 여러 개인 장면에서는 전부 동시에 그려졌다.
+ *
+ * 공 경로는 화살표들을 이어 만든 것이라(_chain_path) 각 화살표의 시작점이 경로의
+ * 꼭짓점으로 들어 있다. 그 꼭짓점까지의 누적 거리를 화살표의 출발 거리로 삼는다.
+ * 못 찾으면(예상 밖 데이터) 예전처럼 phase 를 그대로 쓴다 — 안 그리는 것보다 낫다.
+ */
+function revealFractions(
+  passes: ScenePass[],
+  path: { x: number; y: number }[],
+  t: number,
+): number[] {
+  const clamp = (v: number) => Math.min(Math.max(v, 0), 1);
+  if (path.length < 2) return passes.map(() => clamp(t));
+  const cum: number[] = [0];
+  for (let i = 1; i < path.length; i += 1) {
+    cum.push(cum[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y));
+  }
+  const total = cum[cum.length - 1];
+  if (total <= 0) return passes.map(() => clamp(t));
+  const travelled = clamp(t) * total;
+  // 핸드오프 좌표(x 0~100 · y 0~68)는 서버가 소수 둘째 자리로 반올림해 보낸다
+  // (scene_motion._to_handoff). 화살표와 공 경로가 같은 값에서 나오므로 사실상
+  // 정확히 일치하지만, 반올림 여유를 둔다.
+  const EPS = 0.05;
+  return passes.map((p) => {
+    const at = path.findIndex((v) => Math.abs(v.x - p.x1) < EPS && Math.abs(v.y - p.y1) < EPS);
+    if (at < 0) return clamp(t);
+    const length = Math.hypot(p.x2 - p.x1, p.y2 - p.y1);
+    if (length <= 0) return travelled >= cum[at] ? 1 : 0;
+    return clamp((travelled - cum[at]) / length);
+  });
+}
+
 /** 공 경로를 진행률 0~1 로 따라간 지점 — 구간 길이에 비례해 시간 배분. */
 function pointOnPath(path: { x: number; y: number }[], t: number) {
   if (path.length === 0) return null;
@@ -174,6 +213,8 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
 
   const ballPt = pointOnPath(ballPath, phase);
   const ball = ballPt ? toLocal(ballPt.x, ballPt.y, width, height) : null;
+  // 화살표는 공이 지나간 만큼만 — 공과 같은 '경로 길이' 기준을 쓴다(revealFractions).
+  const reveal = revealFractions(passes, ballPath, phase);
 
   return (
     <div style={{ position: 'relative', width, height, overflow: 'hidden' }}>
@@ -188,14 +229,15 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
         {passes.map((p, i) => {
           const a = toLocal(p.x1, p.y1, width, height);
           const b = toLocal(p.x2, p.y2, width, height);
-          // 진행률만큼 뻗어나가게 — 핸드오프 주석의 'draw 효과'.
-          const ex = a.px + (b.px - a.px) * phase;
-          const ey = a.py + (b.py - a.py) * phase;
+          // 공이 지나간 만큼만 뻗어나가게 — 전체 phase 가 아니라 이 화살표의 진행률.
+          const frac = reveal[i] ?? phase;
+          const ex = a.px + (b.px - a.px) * frac;
+          const ey = a.py + (b.py - a.py) * frac;
           const color = p.kind === 'defense' ? PASS_FAIL : PASS_SUCCESS;
           const ang = Math.atan2(ey - a.py, ex - a.px);
           const len = 5 * k;
           const spread = 0.5;
-          const head = phase > 0.02
+          const head = frac > 0.02
             ? `${ex},${ey} ${ex - len * Math.cos(ang - spread)},${ey - len * Math.sin(ang - spread)} ${ex - len * Math.cos(ang + spread)},${ey - len * Math.sin(ang + spread)}`
             : '';
           return (
