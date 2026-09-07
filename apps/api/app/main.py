@@ -8798,6 +8798,8 @@ async def upload_manual_clip(
     requested_start: float = Form(...),
     requested_end: float = Form(...),
     index: int = Form(...),
+    kind: str = Form(""),
+    tag_offset: float = Form(-1.0),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -8815,6 +8817,9 @@ async def upload_manual_clip(
     if index < 1:
         raise HTTPException(status_code=400, detail="클립 index 가 올바르지 않습니다.")
 
+    # 모르는 값이 사이드카에 흘러들어 점수 계산을 흔들지 않게 여기서 막는다.
+    clip_kind = kind if kind in {"home_goal", "home", "away", "away_goal"} else ""
+
     name = f"clip_{index:03d}.mp4"
     target = clips_dir(job_id) / name
 
@@ -8831,6 +8836,12 @@ async def upload_manual_clip(
                 # 원본이 여러 개면 requested_start 는 '그 원본 안에서의' 초라 파일이
                 # 달라지면 다시 작아진다. 합칠 순서는 이 order 로만 정한다.
                 "order": index,
+                # 점수판용. kind 는 홈/원정·골 여부, tag_offset 은 클립 시작에서
+                # 태깅 시점까지의 초 — 골이면 그 지점에서 점수가 올라간다.
+                "kind": clip_kind,
+                "tag_offset": (
+                    None if tag_offset < 0 else round(float(tag_offset), 3)
+                ),
             }),
             encoding="utf-8",
         )
@@ -8879,12 +8890,50 @@ async def upload_manual_intro(
 def merge_manual_job(
     job_id: str,
     background_tasks: BackgroundTasks,
+    body: dict = Body(default={}),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    _require_manual_job(db, job_id, user)
+    job = _require_manual_job(db, job_id, user)
     if not list_manual_clip_info(job_id):
         raise HTTPException(status_code=409, detail="합칠 클립이 없습니다.")
+
+    # 점수판 설정. 팀명·색은 클립이 아니라 잡 전체에 걸리므로 여기서 한 번만 받는다.
+    scoreboard = body.get("scoreboard") if isinstance(body, dict) else None
+    if isinstance(scoreboard, dict) and scoreboard.get("enabled"):
+        def _score(key: str) -> int:
+            try:
+                return max(0, min(99, int(scoreboard.get(key) or 0)))
+            except (TypeError, ValueError):
+                return 0
+
+        def _color(key: str, fallback: str) -> str:
+            value = str(scoreboard.get(key) or "").strip()
+            return value if re.fullmatch(r"#[0-9A-Fa-f]{6}", value) else fallback
+
+        def _pct(key: str, fallback: float, lo: float, hi: float) -> float:
+            try:
+                return max(lo, min(hi, float(scoreboard.get(key))))
+            except (TypeError, ValueError):
+                return fallback
+
+        size_pct = _pct("size_pct", 28.0, 10.0, 60.0)
+        metadata = dict(job.job_metadata or {})
+        metadata["scoreboard"] = {
+            "enabled": True,
+            "home_name": str(scoreboard.get("home_name") or "").strip()[:20],
+            "away_name": str(scoreboard.get("away_name") or "").strip()[:20],
+            "home_color": _color("home_color", "#2F6FED"),
+            "away_color": _color("away_color", "#E8452F"),
+            "start_home": _score("start_home"),
+            "start_away": _score("start_away"),
+            "size_pct": size_pct,
+            # 여백을 뺀 놓을 수 있는 범위 안에서의 비율. (0,0) 왼쪽 위 · (100,100) 오른쪽 아래.
+            "pos_x": _pct("pos_x", 0.0, 0.0, 100.0),
+            "pos_y": _pct("pos_y", 0.0, 0.0, 100.0),
+        }
+        update_job(db, job_id, job_metadata=metadata)
+
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
     return {"status": "merging"}
 
