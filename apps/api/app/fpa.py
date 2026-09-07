@@ -191,15 +191,10 @@ SAVE_ARROW_CODES = {"sv"}
 # 실점과 상관이 있는지 확인한 뒤 넣는다.
 GK_CLAIM_ARROW_CODES = {"v", "vv"}
 
-# 회수 성공도 — DEFENSE_RETENTION 과 같은 눈금을 쓴다.
-#   캐칭 1.00 : 잡았다는 건 소유권까지 가져왔다는 뜻이라 인터셉트(1.00)와 같은 자리.
-#   펀칭 0.55 : 위협은 지웠지만 볼은 살아 있다 — 컷아웃(0.55)과 같은 성격이다.
-#               클리어(0.20)보다 높게 둔 건, 펀칭은 압박 속 헛발질이 아니라 의도적으로
-#               위험지역 밖으로 보내는 처리라서다.
-# 이 계수가 캐칭과 펀칭을 가르는 유일한 축이다. 두 액션이 **한 곡선을 공유**해야
-# 곱셈이 백분위에서 상쇄되지 않는다(DEFENSE_RETENTION 과 같은 이유).
-GK_CLAIM_RETENTION = {"Catching": 1.00, "Punching": 0.55}
-GK_CLAIM_RETENTION_DEFAULT = 0.55
+# 캐칭과 펀칭은 **회수계수가 아니라 점수 밴드로 가른다**
+# (xfp_score.GK_CLAIM_SCORE_BANDS: 캐칭 65~93 / 펀칭 58~89).
+# 여기서 계수까지 곱하면 펀칭이 이중으로 깎여 자기 밴드 바닥에 몰린다. 그래서 이 값은
+# 액션에 무관하게 **킥 위치의 위협 그 자체**다.
 # 페널티킥 고정 xG — 좌표 기반 공식은 인플레이 전용이라 PK엔 적용하지 않음
 PENALTY_XG = 0.75
 SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
@@ -1263,8 +1258,8 @@ def _press_region_pitch_control(
     )
 
 
-def _gk_claim_value(kick_x_adj: Any, kick_y: Any, action_name: Any = None) -> float | None:
-    """캐칭·펀칭의 가치 = 상대가 찬 지점의 **상대 기준** 위협 × 회수 성공도.
+def _gk_claim_value(kick_x_adj: Any, kick_y: Any) -> float | None:
+    """캐칭·펀칭의 가치 = 상대가 찬 지점의 **상대 기준** 위협.
 
     kick_x_adj/kick_y 는 우리 태깅 기준(공격방향 정규화) 좌표 — 화살표 시작점이다.
     상대는 반대로 공격하므로 `FIELD_W - x` 로 뒤집어 상대 기준 EPV 를 잰다
@@ -1279,10 +1274,7 @@ def _gk_claim_value(kick_x_adj: Any, kick_y: Any, action_name: Any = None) -> fl
     if x_value is None:
         return None
     threat = _epv_state_value(FIELD_W - x_value, kick_y, centrality_floor=DEFENSE_CENTRALITY_FLOOR)
-    if threat is None:
-        return None
-    coef = GK_CLAIM_RETENTION.get(str(action_name or ""), GK_CLAIM_RETENTION_DEFAULT)
-    return round(threat * coef, 4)
+    return None if threat is None else round(threat, 4)
 
 
 def _path_distance(points: list[tuple[float, float]]) -> float:
@@ -2414,7 +2406,8 @@ def generate_log_entry(
             except (KeyError, TypeError, ValueError):
                 pass
     elif action_code_raw in GK_CLAIM_ARROW_CODES:
-        # 캐칭·펀칭: 화살표 start=상대 킥 위치의 위협 × 회수계수(_gk_claim_value).
+        # 캐칭·펀칭: 화살표 start=상대 킥 위치의 위협(_gk_claim_value).
+        # 캐칭/펀칭 구분은 여기가 아니라 점수 밴드가 한다(xfp_score.GK_CLAIM_SCORE_BANDS).
         # 수비 전환가치와 같은 자리(EPV 컬럼)에 넣는다 — 둘 다 '레벨' 이지 델타가 아니다.
         # end(처리 지점)는 로그의 두 번째 Pos 로 남을 뿐 점수에 안 들어간다.
         #
@@ -2425,7 +2418,7 @@ def generate_log_entry(
         # PC 는 넣지 않는다. 개정 전 캐칭·펀칭이 받던 PC=0.032 는 키퍼가 몇 m
         # 움직였는지를 재던 숫자였고, 세 GK 액션이 전부 같은 값을 받던 원인이었다.
         if end_x is not None:
-            claim_value = _gk_claim_value(start_x_adj, start_y, action_name)
+            claim_value = _gk_claim_value(start_x_adj, start_y)
             if claim_value is not None:
                 metrics["EPV"] = claim_value
 

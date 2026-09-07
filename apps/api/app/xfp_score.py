@@ -158,6 +158,42 @@ SAVE_CODE = "S13"
 # ⚠️ S14 도 SAVE_CODE 와 같이 **잠정 배정**이다 — 정본 확인 후 상수만 바꾸면 된다.
 GK_CLAIM_CODE = "S14"
 
+# 캐칭·펀칭 밴드와 곡선 (2026-09-07 운영 결정).
+#
+#     score = 밴드하한 + 밴드폭 × 백분위 ** GK_CLAIM_SCORE_GAMMA
+#
+# **액션별로 밴드가 다르다.** 캐칭은 잡아서 소유권까지 가져오고 펀칭은 위협만 지우므로,
+# 같은 자리에서 처리했어도 캐칭이 위다. 두 밴드가 겹치는 구간을 두는 건 의도다 —
+# 좋은 자리의 펀칭이 나쁜 자리의 캐칭보다 높을 수 있어야 한다.
+#
+# 상한 93/89 — 세이브(100)보다 낮다. 크로스를 처리한 건 위협을 지운 것이지 골을 막은
+# 게 아니다. 하한 65/58 — 압박과 같은 근거다(태그 자체가 '처리했다' 는 판정이다).
+#
+# ⚠️ 밴드가 캐칭/펀칭을 가르므로 **회수계수는 곱하지 않는다**(fpa._gk_claim_value).
+# 둘 다 걸면 펀칭이 이중으로 깎여, 자기 밴드 바닥에 몰린다.
+#
+# 세이브와 같이 **볼록하게**(γ=2.5) 휜다 — 백분위를 그대로 쓰면 점수가 밴드에 균등하게
+# 깔려 고득점이 흔해진다. 캐칭 기준 90점 이상이 12.4% → 5.0% 가 된다.
+GK_CLAIM_SCORE_BANDS: dict[str, tuple[int, int]] = {
+    "Catching": (65, 93),
+    "Punching": (58, 89),
+}
+GK_CLAIM_SCORE_BAND_DEFAULT: tuple[int, int] = (58, 89)
+GK_CLAIM_SCORE_GAMMA = 2.5
+
+
+def gk_claim_outcome_score(action: dict[str, Any], percentile: float) -> int:
+    """캐칭·펀칭의 밴드 안 점수 — GK_CLAIM_SCORE_BANDS 주석 참조.
+
+    액션 이름을 못 읽으면(구버전 행) 낮은 쪽 밴드를 쓴다 — 모르는 처리에 캐칭의
+    상한을 주는 것보다 안전하다.
+    """
+    lo, hi = GK_CLAIM_SCORE_BANDS.get(
+        str(action.get("action") or ""), GK_CLAIM_SCORE_BAND_DEFAULT
+    )
+    shaped = max(0.0, min(1.0, percentile)) ** GK_CLAIM_SCORE_GAMMA
+    return int(round(lo + (hi - lo) * shaped))
+
 # ── 슛 결과별 차등 채점 ──────────────────────────────────────────────────────
 # 슛·유효슛·골은 24코드가 전부 G1 이고 원시 기대효과도 xG 하나뿐이라, 골이든 빗나간
 # 슛이든 xG 가 같으면 점수가 같았다. 결과가 점수를 가르도록 결과별 밴드를 둔다.
@@ -772,6 +808,9 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             elif code == SAVE_CODE:
                 # 세이브는 두 축(xGOT·xG)을 섞어 [75,100] 밴드에 얹는다(save_outcome_score).
                 banded = save_outcome_score(pa)
+            elif code == GK_CLAIM_CODE:
+                # 캐칭·펀칭은 액션별 밴드에 볼록 곡선으로 얹는다(GK_CLAIM_SCORE_BANDS).
+                banded = gk_claim_outcome_score(pa, p)
             else:
                 # 어시스트·키패스 밴드가 먼저다 — 이들은 G2(goal 군)라 소유 압축과 겹치지 않는다.
                 banded = pass_outcome_score(pa, p)
