@@ -114,6 +114,26 @@ TWO_DOT_ACTION_CODES = {"s", "c", "cc", "r", "e", "z", "tr", "pn"}
 # 제외: Duel(b/bb)=경합 포인트. Clear(w)는 2026-07-30 화살표 방식으로 편입(점 1개면 기존 단독 지점 하위호환).
 DEFENSE_ARROW_CODES = {"aa", "q", "ww", "w"}
 
+# 압박(pr) — 수비 액션과 같은 규칙으로 **상대 볼 경로**를 화살표로 그린다 (2026-09-07).
+# start=압박 시작 시점의 상대 볼 위치, end=압박 뒤 볼이 간 위치.
+#
+# 왜 필요했나 — 그전까지 압박 채점(_press_region_pitch_control)은 프레임에 찍힌 전원의
+# convex hull+5m 평균 지배율 변화라, 정작 압박의 대상인 **볼이 산식에 안 들어갔다**.
+# 그래서 값이 압박의 성패가 아니라 '아군을 몇 명 어디에 찍었나' 에 지배됐다. 합성 장면
+# 200+200 시뮬레이션(성공=조여듦/실패=뚫림):
+#     현재 hull 방식 : 성공 평균 −0.065 · 성공의 74.5% 가 음수 · 분리도 d=−1.68
+#     볼 경로 8m     : 성공 평균 +0.180 · 성공의 92.7% 가 양수 · 분리도 d=+2.00
+# 성공한 압박의 3/4 이 음수 → Possession=MAX(0,ΔPC) 에서 0 으로 잘리고 백분위 최하 →
+# PRESS_SCORE_BAND 하한 65 에 그대로 붙었다. 즉 PC 축이 아무 말도 못 하고 있었다.
+# 무관한 아군을 3명 더 찍었을 때 값이 흔들린 폭도 0.078 → 0.009 로 줄었다(약 9배).
+#
+# 화살표는 **선택**이다 — 점 1개로 찍던 옛 로그는 hull 방식으로 그대로 채점된다
+# (_press_region_pitch_control 의 폴백). 옛 로그에는 볼이 어디로 갔는지가 없고,
+# 그게 '조여서 몰았다' 와 '옛 자리를 쫓았다' 를 가르는 유일한 정보라 소급이 불가능하다.
+# (전 볼위치 원만으로 백필하는 안도 재봤으나 d=−2.13 으로 오히려 더 뒤집혔다 —
+# 실패한 압박이 곧 '볼이 있던 자리로 몰려간' 장면이기 때문이다.)
+PRESS_ARROW_CODES = {"pr"}
+
 # 경합(Duel) — 화살표가 아니라 **경합 포인트**다. 볼이 어디로 갔는지는 안 찍는다.
 #
 # 그래서 시작=끝이라 ΔEPV 가 정의상 0 이고(실데이터 확인: `EPV=0.000`), 남는 재료가
@@ -135,6 +155,46 @@ DUEL_CODES = {"bb", "b"}
 # 점수 = 막은 슛의 xG를 블로커에게 승계(상대 공격방향으로 슈터 위치 뒤집어 estimate_xg) × BLOCK_CREDIT. xG 컬럼 사용.
 SHOT_BLOCK_CODES = {"qw"}
 BLOCK_CREDIT = 1.0
+
+# 세이브(sv) — 골키퍼가 막은 슛. 블록과 같은 모양의 화살표를 쓴다
+# (start=상대 슈터 위치, end=막아낸 지점) (2026-09-07).
+#
+# 왜 필요했나 — 그전까지 sv 는 점 하나 찍고 코드만 넣는 액션이라, 같은 장면에서
+# 캐칭·펀칭과 **완전히 같은 값**(EPV=0.000, PC=0.032)이 나왔다. EPV 는 시작=끝이라
+# 정의상 0 이고 PC 는 키퍼가 1m 움직인 걸 잰 숫자였다. 즉 키퍼가 마주한 슛에 대한
+# 정보가 산식에 한 톨도 안 들어갔다. 게다가 fineplay_fpa.classify_action_code 가
+# Save 에 24코드를 안 붙여 xFP 점수 자체가 계산되지 않았다(키퍼는 늘 50점).
+#
+# 블록과 다른 점은 **무엇으로 재는가**다.
+#   블록 = 코스가 정해지기 전에 몸을 던지는 행위 → 슛 위치의 xG 가 맞다.
+#   세이브 = 코스가 정해진 뒤의 행위 → **xGOT**(그 코스로 온 유효슛이 들어갈 확률)이
+#            키퍼가 실제로 마주한 난이도다. 같은 자리에서 온 슛이라도 톱코너와 정면은
+#            전혀 다른 선방인데 xG 는 둘을 구분하지 못한다.
+# 그래서 여기서는 슈터 위치의 xG 만 채워 두고(=xGOT 산출의 입력), 골문 코스는 슛과
+# 똑같이 골대 UI 로 받아 클라이언트가 /xgot/estimate 로 계산해 행에 병합한다.
+# 채점이 보는 값은 그렇게 채워진 xGOT 이다.
+SAVE_ARROW_CODES = {"sv"}
+
+# 캐칭(v)·펀칭(vv) — 상대가 **찬 위치**에서 처리 지점까지를 화살표로 그린다
+# (start=상대 킥 위치, end=키퍼가 잡거나 쳐낸 지점) (2026-09-07).
+#
+# 점수는 **start(킥 위치)의 상대 기준 EPV × 회수계수**다. 대부분 크로스라 킥 위치가
+# 곧 그 공이 만들던 위협의 크기다.
+#
+# **end(처리 지점)는 기록만 하고 점수에 넣지 않는다.** 처리 지점 EPV 는 정보량이
+# 오히려 더 많지만(범위 0.0358~0.0661, 킥 위치의 두 배) **부호가 위험하다** — 골문에
+# 가까울수록 높아서, 그대로 가산하면 '뒤로 물러설수록 고득점' 이 된다. 나와서 끊는 게
+# 좋은 키핑인데 반대로 채점되는 것이다. 게다가 처리 지점은 키퍼의 선택과 공의 궤적이
+# 섞인 값이라 액션 간 비교에서 교란된다. 개별 캐칭을 위치로 채점하는 established 기준도
+# 없다(집계 지표인 AvgDist·cross-stopping% 만 있다). 그래서 지금은 좌표만 남기고,
+# 태깅이 쌓이면 '킥 위치 대비 얼마나 앞에서 끊었나'(궤적을 통제한 델타)가 실제로
+# 실점과 상관이 있는지 확인한 뒤 넣는다.
+GK_CLAIM_ARROW_CODES = {"v", "vv"}
+
+# 캐칭과 펀칭은 **회수계수가 아니라 점수 밴드로 가른다**
+# (xfp_score.GK_CLAIM_SCORE_BANDS: 캐칭 65~93 / 펀칭 58~89).
+# 여기서 계수까지 곱하면 펀칭이 이중으로 깎여 자기 밴드 바닥에 몰린다. 그래서 이 값은
+# 액션에 무관하게 **킥 위치의 위협 그 자체**다.
 # 페널티킥 고정 xG — 좌표 기반 공식은 인플레이 전용이라 PK엔 적용하지 않음
 PENALTY_XG = 0.75
 SHOT_RESULT_TAGS = {"Goal", "On Target", "Off Target", "Blocked"}
@@ -1017,6 +1077,17 @@ def _pitch_control_delta(
 PRESS_REGION_MARGIN_M = 5.0
 PRESS_REGION_GRID_STEP_M = 1.0
 
+# 압박 채점 영역의 반경 — 상대 볼 경로(전→후)에서 이 거리 안쪽. 전·후 볼 위치를 중심으로
+# 한 두 원의 합집합과 같다.
+#
+# 8m 인 이유. 반경을 줄일수록 시뮬레이션 지표는 단조적으로 좋아지지만(5m 에서 d=2.42),
+# 그건 장면 생성기가 압박자를 볼 3~8m 에 놓기 때문이라 근거로 못 쓴다. 대신 경계는
+# 산식 자신이 준다 — 반경이 0 으로 가면 이 지표는 볼 한 점의 _pitch_control_at 과 같아져
+# '공간을 얼마나 먹었나' 가 아니라 '볼 옆에 누가 있나' 가 된다. PC 모델의 도달시간
+# (반응 0.7s + 8m/5.5m/s ≈ 2.2s)이 압박에서 실제로 볼을 다툴 수 있는 범위와 맞는 자리로
+# 8m 을 잡았다. 실측 pr 로그가 쌓이면 재조정 대상이다.
+PRESS_BALL_PATH_RADIUS_M = 8.0
+
 
 def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     pts = sorted(set(points))
@@ -1103,9 +1174,59 @@ def _region_mean_pitch_control(px: Any, py: Any, home_points: list[tuple[float, 
     return float(np.mean(home_probability * 2 - 1))
 
 
-def _press_region_pitch_control(dual_state: dict[str, Any] | None) -> tuple[float, float, float] | None:
-    """압박(pr): 점이 아니라 프레임 선수들(before∪after)의 convex hull + 마진 영역을
-    그리드로 깔고, 영역 평균 지배율의 before→after 변화로 잰다. (before_mean, after_mean, delta)
+def _press_ball_path_grid(
+    ball_start: tuple[float, float],
+    ball_end: tuple[float, float],
+) -> tuple[Any, Any] | None:
+    """상대 볼 경로에서 PRESS_BALL_PATH_RADIUS_M 이내의 격자. 피치 밖은 잘라낸다.
+
+    경로가 한 점이면(볼이 안 움직였다) 그냥 그 점 중심의 원이 된다 — 캡슐의 특수한 경우라
+    따로 분기하지 않는다."""
+    radius = PRESS_BALL_PATH_RADIUS_M
+    step = PRESS_REGION_GRID_STEP_M
+    ax, ay = ball_start
+    bx, by = ball_end
+    grid_x = np.arange(
+        max(0.0, min(ax, bx) - radius), min(float(FIELD_W), max(ax, bx) + radius) + step / 2, step
+    )
+    grid_y = np.arange(
+        max(0.0, min(ay, by) - radius), min(float(FIELD_H), max(ay, by) + radius) + step / 2, step
+    )
+    if grid_x.size == 0 or grid_y.size == 0:
+        return None
+    mesh_x, mesh_y = np.meshgrid(grid_x, grid_y)
+    px = mesh_x.ravel()
+    py = mesh_y.ravel()
+    dx = bx - ax
+    dy = by - ay
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq <= 0:
+        distance = np.sqrt((px - ax) ** 2 + (py - ay) ** 2)
+    else:
+        t = np.clip(((px - ax) * dx + (py - ay) * dy) / seg_len_sq, 0.0, 1.0)
+        distance = np.sqrt((px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2)
+    mask = distance <= radius
+    if not mask.any():
+        return None
+    return px[mask], py[mask]
+
+
+def _press_region_pitch_control(
+    dual_state: dict[str, Any] | None,
+    ball_start: tuple[float, float] | None = None,
+    ball_end: tuple[float, float] | None = None,
+) -> tuple[float, float, float] | None:
+    """압박(pr): 점이 아니라 **영역** 평균 지배율의 before→after 변화로 잰다.
+    (before_mean, after_mean, delta)
+
+    영역은 상대 볼 경로(ball_start→ball_end) 반경 PRESS_BALL_PATH_RADIUS_M 캡슐이다 —
+    전·후 볼 위치를 중심으로 한 두 원의 합집합. **양 프레임에 같은 영역을 쓴다**: 영역이
+    프레임마다 움직이면 '볼이 나쁜 데로 갔다' 가 델타에 섞여 '공간을 얼마나 먹었나' 와
+    구분되지 않는다.
+
+    볼 경로가 없으면(화살표를 안 찍은 옛 로그) 예전 방식 — 프레임 전원의 convex hull +
+    마진 — 으로 폴백한다. 소급 불가라 값이 바뀌지 않는 쪽을 택한 것이다. 자세한 근거는
+    PRESS_ARROW_CODES 주석 참조.
 
     반환값은 `_actor_pc_sign` 으로 행위자 기준을 맞춘 뒤 나간다 — 셋 다 같은 부호를 쓰므로
     delta = after − before 관계는 그대로 유지된다."""
@@ -1118,7 +1239,10 @@ def _press_region_pitch_control(dual_state: dict[str, Any] | None) -> tuple[floa
         after_home, after_away = before_home, before_away
     if not before_home or not before_away or not after_home or not after_away:
         return None
-    grid = _press_region_grid(before_home + before_away + after_home + after_away)
+    if ball_start is not None and ball_end is not None:
+        grid = _press_ball_path_grid(ball_start, ball_end)
+    else:
+        grid = _press_region_grid(before_home + before_away + after_home + after_away)
     if grid is None:
         return None
     px, py = grid
@@ -1132,6 +1256,25 @@ def _press_region_pitch_control(dual_state: dict[str, Any] | None) -> tuple[floa
         _drop_negative_zero(round(sign * after_mean, 4)),
         _drop_negative_zero(round(sign * (after_mean - before_mean), 4)),
     )
+
+
+def _gk_claim_value(kick_x_adj: Any, kick_y: Any) -> float | None:
+    """캐칭·펀칭의 가치 = 상대가 찬 지점의 **상대 기준** 위협.
+
+    kick_x_adj/kick_y 는 우리 태깅 기준(공격방향 정규화) 좌표 — 화살표 시작점이다.
+    상대는 반대로 공격하므로 `FIELD_W - x` 로 뒤집어 상대 기준 EPV 를 잰다
+    (블록·세이브가 슈터 위치를 뒤집는 것과 같은 처리).
+
+    각도 항은 수비 전용 바닥(DEFENSE_CENTRALITY_FLOOR)을 쓴다. 캐칭·펀칭의 원점은
+    거의 전부 측면 크로스라, 공격 모델의 바닥(0.45)을 쓰면 터치라인이 반 이하로
+    눌려 정작 대부분의 표본이 바닥을 친다 — `_defense_turnover_value` 가 같은 이유로
+    같은 선택을 했다.
+    """
+    x_value = _finite_float(kick_x_adj)
+    if x_value is None:
+        return None
+    threat = _epv_state_value(FIELD_W - x_value, kick_y, centrality_floor=DEFENSE_CENTRALITY_FLOOR)
+    return None if threat is None else round(threat, 4)
 
 
 def _path_distance(points: list[tuple[float, float]]) -> float:
@@ -2133,10 +2276,13 @@ def generate_log_entry(
         # 볼 경로 화살표(start,end) 2점이 오면 two-dot로 처리한다.
         #   수비 = 상대 볼/슛 경로 (EPV-prevented 또는 xG-prevented)
         #   경합 = 볼이 온 경로 — 끝점이 경합 지점이고 그게 곧 채점 좌표다
+        #   압박 = 상대 볼이 압박 전후로 간 경로 — 채점 영역의 중심선이다
+        #   세이브 = 상대 슛 궤적 — start 가 슈터 위치라 xG(→xGOT)의 기준이 된다
         # 필수가 아니라 **선택**이다(TWO_DOT_ACTION_CODES 가 아니다) — 점 1개로 찍던
         # 기존 방식이 그대로 살아 있어야 옛 데이터와 간단 태깅이 안 깨진다.
         if not requires_two_dots and action_code_raw in (
-            DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES
+            DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES | PRESS_ARROW_CODES
+            | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES
         ) and len(dots) >= 2:
             requires_two_dots = True
     if not is_dribble and requires_two_dots:
@@ -2148,7 +2294,10 @@ def generate_log_entry(
         start_x_adj = pitch_width - start_x if direction == "left" else start_x
         end_x_adj = pitch_width - end_x if direction == "left" else end_x
         # Progressive는 전진 '전달' 액션(패스/크로스/드리블 등)에만 — 수비(상대 공/슛 경로)엔 부적절하므로 제외
-        if action_name not in {"Throw-in", "Kick-in"} and action_code_raw not in (DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
+        if action_name not in {"Throw-in", "Kick-in"} and action_code_raw not in (
+            DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES
+            | PRESS_ARROW_CODES | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES
+        ) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
         if action_name == "Throw-in":
             throw_distance = float(np.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2))
@@ -2236,6 +2385,43 @@ def generate_log_entry(
         pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
         if pc_value is not None:
             metrics["PC"] = pc_value
+    elif action_code_raw in SAVE_ARROW_CODES:
+        # 세이브: 화살표 start=상대 슈터 위치를 **상대 공격방향으로 뒤집어** xG 를 낸다
+        # (블록과 같은 좌표 처리). 이 xG 는 점수가 아니라 xGOT 산출의 입력이다 —
+        # 골문 코스는 클라이언트가 골대 UI 로 받아 /xgot/estimate 로 계산해 행에 병합한다.
+        #
+        # 화살표가 없으면(점 1개로 찍은 옛 로그) start 가 곧 키퍼 위치라 슈터 위치가
+        # 없다. 그때는 xG 를 만들지 않는다 — 키퍼 자리를 슛 위치로 오해해 채우면
+        # '골문 앞에서 쏜 슛' 이 되어 값이 통째로 틀린다.
+        #
+        # EPV/PC 는 세이브에 무의미해 생략한다. 시작=끝이라 EPV 는 정의상 0 이고,
+        # PC 는 키퍼가 몇 m 움직였는지를 재던 숫자였다(개정 전 sv 가 받던 값).
+        if end_x is not None:
+            try:
+                save_xg = shared_estimate_xg(
+                    "HOME", "L2R", float(FIELD_W - start_x_adj), float(start_y),
+                    "Header" in deduped_tags, "Weak Foot" in deduped_tags,
+                )
+                metrics["xG"] = round(float(save_xg["xg"]), 4)
+            except (KeyError, TypeError, ValueError):
+                pass
+    elif action_code_raw in GK_CLAIM_ARROW_CODES:
+        # 캐칭·펀칭: 화살표 start=상대 킥 위치의 위협(_gk_claim_value).
+        # 캐칭/펀칭 구분은 여기가 아니라 점수 밴드가 한다(xfp_score.GK_CLAIM_SCORE_BANDS).
+        # 수비 전환가치와 같은 자리(EPV 컬럼)에 넣는다 — 둘 다 '레벨' 이지 델타가 아니다.
+        # end(처리 지점)는 로그의 두 번째 Pos 로 남을 뿐 점수에 안 들어간다.
+        #
+        # 화살표가 없으면(점 1개로 찍은 옛 로그) 킥 위치가 없다. 그때는 값을 만들지
+        # 않는다 — start 가 곧 키퍼 자리라, 그걸 킥 위치로 오해하면 우리 골문 앞에서
+        # 크로스가 올라온 것으로 계산된다.
+        #
+        # PC 는 넣지 않는다. 개정 전 캐칭·펀칭이 받던 PC=0.032 는 키퍼가 몇 m
+        # 움직였는지를 재던 숫자였고, 세 GK 액션이 전부 같은 값을 받던 원인이었다.
+        if end_x is not None:
+            claim_value = _gk_claim_value(start_x_adj, start_y)
+            if claim_value is not None:
+                metrics["EPV"] = claim_value
+
     else:
         if action_code_raw == "pr":
             # 압박(pr)은 팀 단위 지배력 다툼이라 PC(피치컨트롤 변화)만 의미가 있다.
@@ -2273,8 +2459,17 @@ def generate_log_entry(
             if packing is not None:
                 metrics["xPK"] = packing
         if action_code_raw == "pr":
-            # 압박은 점 대 점이 아니라 프레임 선수 영역(convex hull+마진) 평균 지배율의 변화로 잰다.
-            press_pc = _press_region_pitch_control(compact_dual_state)
+            # 압박은 점 대 점이 아니라 **영역** 평균 지배율의 변화로 잰다. 영역은 상대 볼
+            # 경로(화살표) 반경 8m 캡슐이고, 화살표가 없는 옛 로그는 함수 안에서 예전
+            # hull 방식으로 폴백한다. end_x 는 화살표가 있을 때만 채워지므로
+            # metric_end_x(없으면 start 로 메운 값)가 아니라 **원본 end_x** 를 넘긴다 —
+            # 그래야 '볼이 안 움직였다' 와 '안 찍었다' 가 구분된다.
+            ball_path_end = (end_x, end_y) if end_x is not None and end_y is not None else None
+            press_pc = _press_region_pitch_control(
+                compact_dual_state,
+                (start_x, start_y) if ball_path_end else None,
+                ball_path_end,
+            )
             pc_value = press_pc[2] if press_pc else None
         else:
             pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (metric_end_x, metric_end_y))
@@ -2480,7 +2675,7 @@ def build_model_config_sheet() -> pd.DataFrame:
         ("pitch_control_scale", "1=home 100%, 0=balanced, -1=away 100%"),
         ("pitch_control_sign_convention", "v0.3: reported PC/PC_Delta are actor-relative — away-actor values are negated so +1 always means the acting team controls (v0.2 reported raw home-relative values)"),
         ("pitch_control_default_parameters", "reaction_time=0.7s, shared_player_speed=5.5m/s, tau=1.15"),
-        ("press_pc_region", "Press PC = mean PC over 1m-step grid inside convex hull(before∪after frame players) + 5m margin, clipped to pitch; PC_Delta = after_mean - before_mean (same region, both frames)"),
+        ("press_pc_region", "Press PC = mean PC over 1m-step grid within 8m of the opponent ball path (arrow start->end; union of discs at both ball positions), clipped to pitch; PC_Delta = after_mean - before_mean (same region, both frames). Legacy rows without a ball-path arrow fall back to convex hull(before u after frame players) + 5m margin"),
         ("action_score_formula", "BaseWeight * LevelMultiplier * OutcomeMultiplier * ReliabilityFactor"),
     ]
     return pd.DataFrame(rows, columns=["Field", "Value"])
@@ -2584,6 +2779,9 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
             after_values.append("")
             delta_values.append("")
             continue
+        # 압박 영역은 '볼이 안 움직였다' 와 '화살표를 안 찍었다' 를 구분해야 하므로,
+        # start 로 메우기 **전에** 볼 경로 유무를 잡아둔다.
+        ball_path = (start_x, start_y, end_x, end_y) if end_x is not None and end_y is not None else None
         if end_x is None:
             end_x = start_x
         if end_y is None:
@@ -2595,7 +2793,11 @@ def build_pitch_control_calculation_sheet(analyzed: pd.DataFrame) -> pd.DataFram
             after_home, after_away = before_home, before_away
         if str(row.get("EventType") or "") == "Press":
             # _press_region_pitch_control 은 이미 행위자 기준으로 부호를 맞춰 돌려준다.
-            press_pc = _press_region_pitch_control(state)
+            press_pc = _press_region_pitch_control(
+                state,
+                (ball_path[0], ball_path[1]) if ball_path else None,
+                (ball_path[2], ball_path[3]) if ball_path else None,
+            )
             before_pc, after_pc, delta_pc = press_pc if press_pc else (None, None, None)
         else:
             # 시트에 찍히는 Before/After/Delta 도 채점값과 같은 행위자 기준으로 통일한다.

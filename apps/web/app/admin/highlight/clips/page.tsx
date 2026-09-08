@@ -107,6 +107,49 @@ function fmt(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// ── 구간(세그먼트) ────────────────────────────────────────────────────────────
+// 액션별 start/end 초를 손으로 치던 것을, 영상을 보며 자르고 끌어다 넣는 방식으로 바꾼다.
+//
+// **저장 형식은 그대로 '액션별 start/end' 다.** 구간은 화면에서만 쓰는 도구라 서버 API·앱
+// 전송 계약이 하나도 안 바뀐다(PUT .../actions 그대로). 그래서 구간 경계는 저장된 액션
+// offset 에서 되유도한다 — 액션이 들어 있는 칸은 새로고침해도 그대로 살아난다.
+//
+// 다만 **아직 액션을 안 넣은 칸**은 offset 에 흔적이 안 남아 되유도가 안 된다. 다 잘라놓고
+// 나중에 채우는 방식으로 쓰면 그 빈 칸이 사라지므로, 그것만 브라우저에 따로 기억한다.
+// localStorage 를 쓴 건 DB 스키마를 건드리지 않기 위해서고, 그래서 이 기억은 그 브라우저
+// 안에서만 유효하다 — 액션이 든 칸은 서버 값에서 복원되니 협업에 문제가 없다.
+const SEG_EPS = 0.05;          // 경계 비교 허용 오차(초). 값은 소수 첫째 자리까지만 쓴다.
+const SEG_MIN = 0.2;           // 이보다 짧은 칸은 만들지 않는다.
+const segStoreKey = (clipId: string) => `fla.clipSegments.${clipId}`;
+const round1 = (v: number) => Math.round(v * 10) / 10;
+const nearSec = (a: number | null | undefined, b: number) => a != null && Math.abs(a - b) <= SEG_EPS;
+
+type Segment = { start: number; end: number };
+
+/** 경계 목록 → 칸 목록. 경계가 없으면 클립 전체가 한 칸이다(= 지금 동작). */
+function segmentsFrom(splits: number[], duration: number): Segment[] {
+  if (!(duration > 0)) return [];
+  const bounds = [0, ...splits, duration]
+    .filter((v) => Number.isFinite(v) && v >= 0 && v <= duration)
+    .sort((a, b) => a - b);
+  const out: Segment[] = [];
+  for (let i = 0; i < bounds.length - 1; i += 1) {
+    if (bounds[i + 1] - bounds[i] >= SEG_MIN) out.push({ start: bounds[i], end: bounds[i + 1] });
+  }
+  return out.length ? out : [{ start: 0, end: duration }];
+}
+
+/** 근접값을 하나로 접고 정렬. 되유도한 경계와 기억해 둔 경계를 합칠 때 쓴다. */
+function mergeSplits(values: number[], duration: number): number[] {
+  const out: number[] = [];
+  for (const v of values.map(round1).sort((a, b) => a - b)) {
+    if (!(v > SEG_EPS) || !(v < duration - SEG_EPS)) continue;
+    if (out.length && v - out[out.length - 1] <= SEG_EPS) continue;
+    out.push(v);
+  }
+  return out;
+}
+
 function TeamBadge({ side, labels }: { side?: string | null; labels?: { home?: string; away?: string } }) {
   if (side !== 'home' && side !== 'away') {
     return <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>팀 미지정</span>;
@@ -199,6 +242,11 @@ export default function ClipResultsPage() {
   // 제목 편집 중인 클립. null 이면 편집 중 아님. 비워서 저장하면 오버라이드 해제.
   const [titleEdit, setTitleEdit] = useState<{ id: string; value: string } | null>(null);
   const [titleSaving, setTitleSaving] = useState(false);
+  // 구간 경계(초). 클립을 열 때 액션 offset + 기억해 둔 빈 칸에서 되유도한다 — 위 주석 참조.
+  const [splits, setSplits] = useState<number[]>([]);
+  // 드래그 중인 액션의 seq. 구간 칸에 떨어뜨리면 그 칸의 start/end 가 액션에 들어간다.
+  const [dragSeq, setDragSeq] = useState<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -254,6 +302,20 @@ export default function ClipResultsPage() {
       const d = await apiJson<ClipDetail>(`/highlight/clip-results/clips/${clipId}`);
       setDetail(d);
       setActions(d.actions);
+      // 구간 경계 되유도 — 액션에 찍힌 start/end 가 곧 경계다. 여기에, 아직 액션을 안 넣어
+      // offset 에 흔적이 없는 칸을 브라우저 기억에서 더한다.
+      const duration = Number(d.duration_seconds || 0);
+      const fromActions = d.actions
+        .flatMap((a) => [a.startOffset, a.endOffset])
+        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+      let remembered: number[] = [];
+      try {
+        const raw = JSON.parse(window.localStorage.getItem(segStoreKey(clipId)) || '[]');
+        if (Array.isArray(raw)) remembered = raw.filter((v) => typeof v === 'number');
+      } catch {
+        /* 사파리 프라이빗 등 — 기억이 없으면 되유도분만 쓴다 */
+      }
+      setSplits(mergeSplits([...fromActions, ...remembered], duration));
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
     }
@@ -360,6 +422,88 @@ export default function ClipResultsPage() {
   const setOffset = (idx: number, key: 'startOffset' | 'endOffset', value: string) => {
     const num = value === '' ? null : Number(value);
     setActions((prev) => prev.map((a, i) => (i === idx ? { ...a, [key]: Number.isFinite(num as number) ? num : null } : a)));
+  };
+
+  // 빈 칸까지 살아남게 경계를 브라우저에 남긴다. 액션이 든 칸은 서버 값에서 복원되므로
+  // 이 기억이 없거나 다른 브라우저여도 작업 결과 자체는 안 잃는다.
+  useEffect(() => {
+    if (!detail) return;
+    try {
+      window.localStorage.setItem(segStoreKey(detail.id), JSON.stringify(splits));
+    } catch {
+      /* 저장 못 해도 기능은 그대로 — 빈 칸만 새로고침에서 사라진다 */
+    }
+  }, [detail, splits]);
+
+  // duration_seconds 가 비어 있는 클립도 있어 start/end 로 보완한다 — 없으면 구간 기능이
+  // 통째로 잠긴다.
+  const clipDuration = Number(
+    detail?.duration_seconds || (detail ? Math.max(0, detail.end_sec - detail.start_sec) : 0),
+  );
+  const segments = segmentsFrom(splits, clipDuration);
+  /** 액션이 어느 칸에 있는가 — 칸 경계와 offset 이 맞으면 그 칸. 아니면 미배정(-1). */
+  const segIndexOf = (a: ActionRow) =>
+    segments.findIndex((s) => nearSec(a.startOffset, s.start) && nearSec(a.endOffset, s.end));
+
+  const seekTo = (sec: number) => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.currentTime = Math.max(0, sec + 0.01);
+  };
+
+  // 재생 위치에서 칸을 나눈다. 잘린 칸에 있던 액션은 **앞쪽** 칸에 남는다 — 뒤로 갈 것만
+  // 끌어다 옮기면 되게. (아무 액션도 없던 칸이면 옮길 것도 없다.)
+  const splitHere = () => {
+    if (!detail) return;
+    if (!(clipDuration > 0)) { setMsg('클립 길이를 알 수 없어 구간을 나눌 수 없습니다.'); return; }
+    const at = round1(videoRef.current?.currentTime ?? playedAtRef.current);
+    if (at < SEG_MIN || at > clipDuration - SEG_MIN) {
+      setMsg(`클립 처음·끝 ${SEG_MIN}초 안에서는 나눌 수 없습니다.`);
+      return;
+    }
+    if (splits.some((s) => Math.abs(s - at) <= SEG_EPS)) {
+      setMsg(`${at.toFixed(1)}초에는 이미 경계가 있습니다.`);
+      return;
+    }
+    const cut = segments.find((s) => s.start < at && at < s.end);
+    if (cut) {
+      setActions((prev) => prev.map((a) => (nearSec(a.startOffset, cut.start) && nearSec(a.endOffset, cut.end)
+        ? { ...a, endOffset: at }
+        : a)));
+    }
+    setSplits(mergeSplits([...splits, at], clipDuration));
+    setMsg(`${at.toFixed(1)}초에서 나눴습니다. 액션을 끌어다 넣으세요.`);
+  };
+
+  /** 경계 하나를 지운다 — 양옆 칸이 합쳐지고, 그 칸들의 액션은 합쳐진 칸으로 따라간다. */
+  const removeSplit = (at: number) => {
+    const merged = segments.filter((s) => nearSec(s.start, at) || nearSec(s.end, at));
+    if (merged.length === 2) {
+      const start = merged[0].start;
+      const end = merged[1].end;
+      setActions((prev) => prev.map((a) => (merged.some((s) => nearSec(a.startOffset, s.start) && nearSec(a.endOffset, s.end))
+        ? { ...a, startOffset: round1(start), endOffset: round1(end) }
+        : a)));
+    }
+    setSplits(splits.filter((s) => Math.abs(s - at) > SEG_EPS));
+  };
+
+  const clearSplits = () => {
+    // 모든 액션의 offset 까지 지우므로 한 번 확인받는다 — 손으로 맞춰둔 값도 같이 날아간다.
+    if (!window.confirm('구간과 모든 액션의 시작·끝 초를 지웁니다. 계속할까요?')) return;
+    setSplits([]);
+    setActions((prev) => prev.map((a) => ({ ...a, startOffset: null, endOffset: null })));
+    setMsg('구간을 모두 지웠습니다. 저장하면 균등 분할로 나갑니다.');
+  };
+
+  /** 드래그한 액션을 칸에 넣는다. segIndex 가 null 이면 미배정으로 되돌린다. */
+  const dropOnSegment = (segIndex: number | null) => {
+    if (dragSeq == null) return;
+    const seg = segIndex == null ? null : segments[segIndex];
+    setActions((prev) => prev.map((a) => (a.seq === dragSeq
+      ? { ...a, startOffset: seg ? round1(seg.start) : null, endOffset: seg ? round1(seg.end) : null }
+      : a)));
+    setDragSeq(null);
   };
 
   const saveOffsets = async () => {
@@ -872,6 +1016,7 @@ export default function ClipResultsPage() {
 
           {detail.video_url ? (
             <video
+              ref={videoRef}
               src={videoSource?.clipId === detail.id ? videoSource.url : detail.video_url}
               controls
               onError={() => { void refreshVideoSource(detail.id); }}
@@ -891,6 +1036,96 @@ export default function ClipResultsPage() {
           )}
 
           <div style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+              <h3 style={{ fontSize: 14, margin: 0 }}>구간 ({segments.length})</h3>
+              <button
+                style={{ ...smallBtn, background: 'var(--accent, #3b82f6)', borderColor: 'transparent' }}
+                onClick={splitHere}
+                disabled={!(clipDuration > 0)}
+                title="지금 재생 중인 위치에서 구간을 둘로 나눕니다"
+              >
+                ✂ 재생 위치에서 분리
+              </button>
+              <button style={smallBtn} onClick={clearSplits} disabled={!splits.length && !actions.some((a) => a.startOffset != null)}>
+                구간 초기화
+              </button>
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                액션을 끌어다 칸에 넣으면 그 칸의 시작·끝 초가 액션에 들어갑니다.
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+              {segments.map((seg, si) => {
+                const inSeg = actions.filter((a) => segIndexOf(a) === si);
+                const width = clipDuration > 0 ? ((seg.end - seg.start) / clipDuration) * 100 : 100;
+                return (
+                  <div
+                    key={`seg-${seg.start}-${seg.end}`}
+                    onDragOver={(e) => { e.preventDefault(); }}
+                    onDrop={(e) => { e.preventDefault(); dropOnSegment(si); }}
+                    style={{
+                      border: `1px dashed ${dragSeq != null ? 'var(--accent, #3b82f6)' : 'var(--border-ghost, #3a3a42)'}`,
+                      borderRadius: 8,
+                      padding: '8px 10px',
+                      background: 'var(--surface-input, #16161a)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text, #eee)' }}>
+                        {seg.start.toFixed(1)}s ~ {seg.end.toFixed(1)}s
+                      </span>
+                      <span style={{ color: 'var(--muted, #999)' }}>({(seg.end - seg.start).toFixed(1)}초)</span>
+                      <button style={{ ...smallBtn, padding: '2px 8px' }} onClick={() => seekTo(seg.start)}>
+                        ▶ 이 칸부터
+                      </button>
+                      {si > 0 ? (
+                        <button
+                          style={{ ...smallBtn, padding: '2px 8px' }}
+                          onClick={() => removeSplit(seg.start)}
+                          title="앞 칸과 합칩니다"
+                        >
+                          ↥ 앞과 합치기
+                        </button>
+                      ) : null}
+                      <span style={{ marginLeft: 'auto', color: 'var(--muted, #999)' }}>액션 {inSeg.length}개</span>
+                    </div>
+                    {/* 칸 길이를 눈으로 — 전체 클립 대비 비율 */}
+                    <div style={{ height: 4, borderRadius: 2, background: 'var(--border-ghost, #2c2c32)', margin: '6px 0' }}>
+                      <div style={{ width: `${width}%`, height: '100%', borderRadius: 2, background: 'var(--accent, #3b82f6)' }} />
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minHeight: 24, alignItems: 'center' }}>
+                      {inSeg.length === 0 ? (
+                        <span style={{ fontSize: 12, color: 'var(--muted, #666)' }}>여기로 액션을 끌어다 놓으세요</span>
+                      ) : inSeg.map((a) => (
+                        <span
+                          key={`chip-${a.seq}`}
+                          draggable
+                          onDragStart={() => setDragSeq(a.seq)}
+                          onDragEnd={() => setDragSeq(null)}
+                          style={{
+                            fontSize: 12, padding: '2px 8px', borderRadius: 6, cursor: 'grab',
+                            background: 'var(--button-dark, #2a2a30)', border: '1px solid var(--border-ghost, #3a3a42)',
+                          }}
+                        >
+                          {a.seq}. {a.actionLabel}{a.jersey ? ` #${a.jersey}` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {/* 미배정 — 여기로 끌어다 놓으면 offset 이 비워지고 저장 시 균등 분할로 나간다 */}
+              <div
+                onDragOver={(e) => { e.preventDefault(); }}
+                onDrop={(e) => { e.preventDefault(); dropOnSegment(null); }}
+                style={{
+                  border: '1px dashed var(--border-ghost, #3a3a42)', borderRadius: 8,
+                  padding: '6px 10px', fontSize: 12, color: 'var(--muted, #999)',
+                }}
+              >
+                미배정 ({actions.filter((a) => segIndexOf(a) < 0).length}개) — 여기 있는 액션은 저장 시 균등 분할됩니다
+              </div>
+            </div>
+
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
               <h3 style={{ fontSize: 14, margin: 0 }}>액션 ({actions.length})</h3>
               <button style={smallBtn} onClick={() => void openClip(detail.id)}>새로고침</button>
@@ -909,10 +1144,25 @@ export default function ClipResultsPage() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {actions.map((a, i) => (
-                  <div key={`${a.seq}-${i}`} style={{
-                    display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
-                    padding: '6px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
-                  }}>
+                  <div
+                    key={`${a.seq}-${i}`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
+                      padding: '6px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
+                      opacity: dragSeq === a.seq ? 0.5 : 1,
+                    }}
+                  >
+                    {/* 손잡이만 드래그 대상 — 행 전체를 draggable 로 두면 아래 숫자 입력칸에서
+                        텍스트 선택이 막힌다. */}
+                    <span
+                      draggable
+                      onDragStart={() => setDragSeq(a.seq)}
+                      onDragEnd={() => setDragSeq(null)}
+                      title="끌어서 위 구간 칸에 넣기"
+                      style={{ cursor: 'grab', color: 'var(--muted, #666)', fontSize: 14, lineHeight: 1, userSelect: 'none' }}
+                    >
+                      ⠿
+                    </span>
                     <button
                       title="대표 액션 지정 — 클립 제목·mainAction 기준. 다시 누르면 해제(자동 규칙)."
                       style={{
