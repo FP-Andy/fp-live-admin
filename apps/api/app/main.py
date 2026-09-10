@@ -9333,6 +9333,26 @@ def merge_manual_job(
         }
         update_job(db, job_id, job_metadata=metadata)
 
+    # 우리 로고(워터마크) — 점수판과 따로 켜고 끈다. 영상 내내 같은 자리에 얹힌다.
+    watermark = body.get("watermark") if isinstance(body, dict) else None
+    if isinstance(watermark, dict) and watermark.get("enabled"):
+        def _wm(key: str, fallback: float, lo: float, hi: float) -> float:
+            try:
+                return max(lo, min(hi, float(watermark.get(key))))
+            except (TypeError, ValueError):
+                return fallback
+
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["watermark"] = {
+            "enabled": True,
+            "size_pct": _wm("size_pct", 5.0, 1.0, 25.0),
+            "opacity": _wm("opacity", 0.55, 0.05, 1.0),
+            # 여백을 뺀 범위 안에서의 비율. 기본은 우상단(100, 0).
+            "pos_x": _wm("pos_x", 100.0, 0.0, 100.0),
+            "pos_y": _wm("pos_y", 0.0, 0.0, 100.0),
+        }
+        update_job(db, job_id, job_metadata=metadata)
+
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
     return {"status": "merging"}
 

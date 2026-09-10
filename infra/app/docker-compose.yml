@@ -27,6 +27,7 @@ services:
     volumes:
       - ../../templetes:/app/templetes:ro
       - ../../assets/fonts:/app/assets/fonts:ro
+      - ../../assets/brand:/app/assets/brand:ro
       - ../../assets/fcm/goalkeeper:/app/assets/fcm/goalkeeper:ro
       - ../../runtime:/app/runtime
     environment:

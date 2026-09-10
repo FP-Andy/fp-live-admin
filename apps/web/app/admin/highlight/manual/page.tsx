@@ -281,98 +281,143 @@ function ScoreboardPreview(
   );
 }
 
-/** 영상 화면 비율 박스 위에서 점수판을 끌어 옮긴다.
- *  좌표 계산은 서버(board_placement)와 같은 식이라, 여기서 보이는 자리가 결과물의 자리다. */
-function ScoreboardPlacer({
-  config, videoW, videoH, home, away, frameUrl, onMove, onResize,
-}: {
-  config: Scoreboard;
-  videoW: number;
-  videoH: number;
-  home: number;
-  away: number;
-  frameUrl: string;
+/** 우리 로고(브랜드 마크) 설정 — 영상 내내 같은 자리에 얹히는 한 장. */
+type Watermark = {
+  enabled: boolean;
+  sizePct: number;
+  opacity: number;
+  posX: number;
+  posY: number;
+};
+
+// 로고 원본 비율(세로/가로). assets/brand/fineplay-mark.png 과 같은 값이라야
+// 미리보기와 결과물이 같은 크기로 나온다.
+const MARK_RATIO = 1024 / 974;
+const MARK_SRC = '/brand/fineplay-mark.png';
+
+const DEFAULT_WATERMARK: Watermark = {
+  enabled: true,
+  // 중계 화면의 방송사 로고가 보통 이 정도다 — 경기를 가리지 않으면서 눈에는 들어오는 선.
+  sizePct: 5,
+  opacity: 0.55,
+  posX: 100,   // 우상단
+  posY: 0,
+};
+
+/** 로고 크기·자리. 서버(watermark.mark_placement)와 같은 식이라 여기 보이는 자리가 결과물의 자리다. */
+function markPlacement(videoW: number, videoH: number, sizePct: number, posX: number, posY: number) {
+  const pct = Math.max(1, Math.min(25, sizePct)) / 100;
+  let raw = videoW * pct;
+  // 파노라마(3840x800)처럼 납작한 원본에서 세로를 다 먹지 않게 한 번 더 묶는다.
+  if (raw * MARK_RATIO > videoH * 0.2) raw = (videoH * 0.2) / MARK_RATIO;
+  const w = Math.max(24, Math.round(raw));
+  const h = Math.max(24, Math.round(w * MARK_RATIO));
+  const margin = Math.max(16, Math.round(videoW * 0.021));
+  const freeX = Math.max(0, videoW - w - 2 * margin);
+  const freeY = Math.max(0, videoH - h - 2 * margin);
+  const clamp = (v: number) => Math.max(0, Math.min(100, v)) / 100;
+  return {
+    w, h, margin, freeX, freeY,
+    x: margin + Math.round(freeX * clamp(posX)),
+    y: margin + Math.round(freeY * clamp(posY)),
+  };
+}
+
+/** 배치기가 다루는 오버레이 한 장. 점수판이든 로고든 이 모양이면 똑같이 끌 수 있다. */
+type PlacedItem = {
+  key: 'board' | 'mark';
+  label: string;
+  /** 지금 크기·자리 */
+  place: { w: number; h: number; x: number; y: number; margin: number; freeX: number; freeY: number };
+  /** 크기를 바꿔 봤을 때의 자리(고정 모서리 계산용) */
+  recompute: (sizePct: number) => { w: number; h: number; margin: number; freeX: number; freeY: number };
+  sizePct: number;
+  sizeRange: [number, number];
   onMove: (posX: number, posY: number) => void;
   onResize: (sizePct: number, posX: number, posY: number) => void;
+  render: (width: number) => React.ReactNode;
+};
+
+/** 영상 화면 비율 박스 위에서 오버레이들을 끌어 옮긴다.
+ *
+ *  좌표 계산은 서버(board_placement / mark_placement)와 같은 식이라, 여기서 보이는 자리가
+ *  결과물의 자리다. 여러 장을 얹으므로 '고른 것' 만 끌리고 크기 핸들이 붙는다 —
+ *  전부 동시에 잡히면 서로 겹칠 때 원하는 걸 집을 수 없다. */
+function OverlayPlacer({
+  items, videoW, videoH, frameUrl, selected, onSelect,
+}: {
+  items: PlacedItem[];
+  videoW: number;
+  videoH: number;
+  frameUrl: string;
+  selected: 'board' | 'mark';
+  onSelect: (key: 'board' | 'mark') => void;
 }) {
   const PREVIEW_W = 440;
   const scale = PREVIEW_W / Math.max(1, videoW);
   const previewH = Math.max(80, Math.round(videoH * scale));
-  const place = boardPlacement(videoW, videoH, config.sizePct, config.posX, config.posY, Boolean(config.logoUrl));
 
   const boxRef = useRef<HTMLDivElement | null>(null);
-  // 판을 집은 지점(판 왼쪽 위에서의 거리). 집은 곳이 아니라 판 모서리를 기준으로 옮겨야
-  // 커서 위치에서 판이 튀지 않는다.
+  // 집은 지점(왼쪽 위에서의 거리). 집은 곳이 아니라 모서리를 기준으로 옮겨야 커서에서 튀지 않는다.
   const grabRef = useRef<{ dx: number; dy: number } | null>(null);
+  const resizeRef = useRef<{ ax: number; ay: number; corner: string } | null>(null);
 
-  const moveTo = (clientX: number, clientY: number) => {
+  const frac = (v: number) => Math.round(Math.max(0, Math.min(100, v)) * 100) / 100;
+  const active = items.find((i) => i.key === selected) || items[0];
+
+  const moveTo = (clientX: number, clientY: number, item: PlacedItem) => {
     const box = boxRef.current;
     const grab = grabRef.current;
     if (!box || !grab) return;
     const rect = box.getBoundingClientRect();
     // 화면 좌표 → 영상 픽셀 좌표 → 여백을 뺀 범위 안에서의 비율
-    const x = (clientX - rect.left - grab.dx) / scale - place.margin;
-    const y = (clientY - rect.top - grab.dy) / scale - place.margin;
-    // 자동 흡착(0·50·100 근처면 달라붙기)은 뺐다 — 흡착 범위가 1920px 영상에서 65px 라
-    // 그 안에서는 미세 조정이 아예 안 됐다. 정확한 모서리·정중앙은 아래 프리셋 버튼으로
-    // 한 번에 잡을 수 있으므로 드래그는 자유롭게 둔다.
-    //
+    const x = (clientX - rect.left - grab.dx) / scale - item.place.margin;
+    const y = (clientY - rect.top - grab.dy) / scale - item.place.margin;
+    // 자동 흡착은 뺐다 — 흡착 범위가 1920px 영상에서 65px 라 그 안에서 미세 조정이 안 됐다.
     // 소수 둘째 자리까지 남긴다. 정수 %로 반올림하면 한 칸이 13px 이라 뚝뚝 끊긴다.
-    const frac = (v: number) => Math.round(Math.max(0, Math.min(100, v)) * 100) / 100;
-    onMove(
-      frac(place.freeX > 0 ? (x / place.freeX) * 100 : 0),
-      frac(place.freeY > 0 ? (y / place.freeY) * 100 : 0),
+    item.onMove(
+      frac(item.place.freeX > 0 ? (x / item.place.freeX) * 100 : 0),
+      frac(item.place.freeY > 0 ? (y / item.place.freeY) * 100 : 0),
     );
   };
 
-  // 최종 영상에서의 실제 픽셀 좌표(판 왼쪽 위 기준). 화면에 숫자로 보여주고,
-  // 그 숫자로 직접 입력해 옮길 수 있게 한다 — 드래그만으로는 정확한 값을 맞출 수 없다.
-  const pxX = place.x;
-  const pxY = place.y;
-  const frac = (v: number) => Math.round(Math.max(0, Math.min(100, v)) * 100) / 100;
-  const setPx = (nextX: number, nextY: number) => {
-    const cx = Math.max(place.margin, Math.min(place.margin + place.freeX, nextX));
-    const cy = Math.max(place.margin, Math.min(place.margin + place.freeY, nextY));
-    onMove(
-      frac(place.freeX > 0 ? ((cx - place.margin) / place.freeX) * 100 : 0),
-      frac(place.freeY > 0 ? ((cy - place.margin) / place.freeY) * 100 : 0),
+  /** 최종 영상 기준 픽셀 좌표로 직접 옮긴다 — 드래그만으로는 정확한 값을 못 맞춘다. */
+  const setPx = (item: PlacedItem, nextX: number, nextY: number) => {
+    const cx = Math.max(item.place.margin, Math.min(item.place.margin + item.place.freeX, nextX));
+    const cy = Math.max(item.place.margin, Math.min(item.place.margin + item.place.freeY, nextY));
+    item.onMove(
+      frac(item.place.freeX > 0 ? ((cx - item.place.margin) / item.place.freeX) * 100 : 0),
+      frac(item.place.freeY > 0 ? ((cy - item.place.margin) / item.place.freeY) * 100 : 0),
     );
   };
 
-  // ── 크기 조절 ──────────────────────────────────────────────────────────
-  // 네 모서리 핸들을 끌어 직접 키우고 줄인다. 잡은 반대편 모서리가 고정돼, 선택 상자를
-  // 다루는 감각 그대로다. 퍼센트 슬라이더만으로는 '얼마나 커지는지' 를 보면서 못 맞춘다.
-  //
-  // 판 비율은 고정이라 가로만 정하면 세로가 따라온다. 그래서 가로 이동량만 본다.
-  const resizeRef = useRef<{ ax: number; ay: number; corner: string } | null>(null);
-  const applyResize = (pointerX: number, pointerY: number) => {
+  // 네 모서리 핸들을 끌어 크기를 바꾼다. 잡은 반대편 모서리가 고정돼 선택 상자를 다루는
+  // 감각 그대로다. 비율이 고정이라 가로 이동량만 본다.
+  const applyResize = (pointerX: number, item: PlacedItem) => {
     const box = boxRef.current;
     const grab = resizeRef.current;
     if (!box || !grab) return;
     const rect = box.getBoundingClientRect();
     const vx = (pointerX - rect.left) / scale;
-    const vy = (pointerY - rect.top) / scale;
     const wantW = Math.abs(vx - grab.ax);
-    const nextPct = Math.max(10, Math.min(60, (wantW / Math.max(1, videoW)) * 100));
+    const [lo, hi] = item.sizeRange;
+    const nextPct = Math.max(lo, Math.min(hi, (wantW / Math.max(1, videoW)) * 100));
     // 새 크기로 다시 계산해야 고정 모서리가 실제로 안 움직인다(폭에 하한·상한이 걸린다).
-    const next = boardPlacement(videoW, videoH, nextPct, 0, 0, Boolean(config.logoUrl));
+    const next = item.recompute(nextPct);
     const originX = grab.corner.includes('w') ? grab.ax - next.w : grab.ax;
     const originY = grab.corner.includes('n') ? grab.ay - next.h : grab.ay;
     const cx = Math.max(next.margin, Math.min(next.margin + next.freeX, originX));
     const cy = Math.max(next.margin, Math.min(next.margin + next.freeY, originY));
-    onResize(
+    item.onResize(
       Math.round(nextPct * 100) / 100,
       frac(next.freeX > 0 ? ((cx - next.margin) / next.freeX) * 100 : 0),
       frac(next.freeY > 0 ? ((cy - next.margin) / next.freeY) * 100 : 0),
     );
-    void vy;
   };
 
-  const handleStyle = (corner: string): React.CSSProperties => {
+  const handleStyle = (corner: string, w: number, h: number): React.CSSProperties => {
     const size = 10;
     const half = size / 2;
-    const w = place.w * scale;
-    const h = place.h * scale;
     return {
       position: 'absolute',
       width: size, height: size,
@@ -388,114 +433,132 @@ function ScoreboardPlacer({
 
   return (
     <div style={{ width: PREVIEW_W }}>
-    <div
-      ref={boxRef}
-      style={{
-        position: 'relative', width: PREVIEW_W, height: previewH,
-        borderRadius: 8, overflow: 'hidden', userSelect: 'none',
-        border: '1px solid var(--border-ghost, #3a3a42)',
-        background: frameUrl ? `center/cover no-repeat url(${frameUrl})` : '#20321f',
-      }}
-    >
-      {!frameUrl ? (
-        <span style={{ position: 'absolute', left: 10, top: 8, fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
-          영상 화면 비율 {videoW}×{videoH}
-        </span>
-      ) : null}
       <div
-        role="button"
-        tabIndex={0}
-        title="끌어서 옮기세요"
-        onPointerDown={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          grabRef.current = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (grabRef.current) moveTo(e.clientX, e.clientY);
-        }}
-        onPointerUp={(e) => {
-          grabRef.current = null;
-          e.currentTarget.releasePointerCapture(e.pointerId);
-        }}
-        // 방향키는 **영상 픽셀 1px** 씩 옮긴다(Shift 10px). % 단위로 움직이면
-        // 영상 크기에 따라 한 칸이 10px 을 넘어 미세 조정이 안 된다.
-        onKeyDown={(e) => {
-          const step = e.shiftKey ? 10 : 1;
-          const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
-          if (!move) return;
-          e.preventDefault();
-          e.stopPropagation();
-          setPx(pxX + move[0], pxY + move[1]);
-        }}
+        ref={boxRef}
         style={{
-          position: 'absolute',
-          left: place.x * scale,
-          top: place.y * scale,
-          cursor: 'grab',
-          touchAction: 'none',
+          position: 'relative', width: PREVIEW_W, height: previewH,
+          borderRadius: 8, overflow: 'hidden', userSelect: 'none',
+          border: '1px solid var(--border-ghost, #3a3a42)',
+          background: frameUrl ? `center/cover no-repeat url(${frameUrl})` : '#20321f',
         }}
       >
-        <ScoreboardPreview config={config} home={home} away={away} width={place.w * scale} />
-        {(['nw', 'ne', 'sw', 'se'] as const).map((corner) => (
-          <div
-            key={corner}
-            style={handleStyle(corner)}
-            title="끌어서 크기 조절"
-            onPointerDown={(e) => {
-              e.stopPropagation();   // 판 이동으로 번지지 않게
-              // 잡은 반대편 모서리를 고정점으로 잡는다.
-              resizeRef.current = {
-                ax: corner.includes('w') ? place.x + place.w : place.x,
-                ay: corner.includes('n') ? place.y + place.h : place.y,
-                corner,
-              };
-              e.currentTarget.setPointerCapture(e.pointerId);
-            }}
-            onPointerMove={(e) => {
-              if (!resizeRef.current) return;
-              e.stopPropagation();
-              applyResize(e.clientX, e.clientY);
-            }}
-            onPointerUp={(e) => {
-              resizeRef.current = null;
-              e.currentTarget.releasePointerCapture(e.pointerId);
-            }}
-          />
-        ))}
-      </div>
+        {!frameUrl ? (
+          <span style={{ position: 'absolute', left: 10, top: 8, fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
+            영상 화면 비율 {videoW}×{videoH}
+          </span>
+        ) : null}
+
+        {items.map((item) => {
+          const isActive = item.key === selected;
+          const w = item.place.w * scale;
+          const h = item.place.h * scale;
+          return (
+            <div
+              key={item.key}
+              role="button"
+              tabIndex={0}
+              title={isActive ? '끌어서 옮기세요' : `${item.label} 고르기`}
+              onPointerDown={(e) => {
+                if (!isActive) { onSelect(item.key); return; }
+                const r = e.currentTarget.getBoundingClientRect();
+                grabRef.current = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (isActive && grabRef.current) moveTo(e.clientX, e.clientY, item);
+              }}
+              onPointerUp={(e) => {
+                grabRef.current = null;
+                try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 이미 놓였음 */ }
+              }}
+              // 방향키는 **영상 픽셀 1px** 씩(Shift 10px). % 로 움직이면 영상 크기에 따라
+              // 한 칸이 10px 을 넘어 미세 조정이 안 된다.
+              onKeyDown={(e) => {
+                if (!isActive) return;
+                const step = e.shiftKey ? 10 : 1;
+                const move = {
+                  ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+                  ArrowUp: [0, -step], ArrowDown: [0, step],
+                }[e.key];
+                if (!move) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setPx(item, item.place.x + move[0], item.place.y + move[1]);
+              }}
+              style={{
+                position: 'absolute',
+                left: item.place.x * scale,
+                top: item.place.y * scale,
+                cursor: isActive ? 'grab' : 'pointer',
+                touchAction: 'none',
+                outline: isActive ? '1px dashed rgba(255,255,255,0.55)' : 'none',
+                outlineOffset: 2,
+              }}
+            >
+              {item.render(w)}
+              {isActive ? (['nw', 'ne', 'sw', 'se'] as const).map((corner) => (
+                <div
+                  key={corner}
+                  style={handleStyle(corner, w, h)}
+                  title="끌어서 크기 조절"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();   // 이동으로 번지지 않게
+                    resizeRef.current = {
+                      ax: corner.includes('w') ? item.place.x + item.place.w : item.place.x,
+                      ay: corner.includes('n') ? item.place.y + item.place.h : item.place.y,
+                      corner,
+                    };
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                  }}
+                  onPointerMove={(e) => {
+                    if (!resizeRef.current) return;
+                    e.stopPropagation();
+                    applyResize(e.clientX, item);
+                  }}
+                  onPointerUp={(e) => {
+                    resizeRef.current = null;
+                    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 이미 놓였음 */ }
+                  }}
+                />
+              )) : null}
+            </div>
+          );
+        })}
       </div>
 
       {/* 최종 영상 기준 좌표. 눈으로 확인하고 숫자로도 고칠 수 있게 한다. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap', fontSize: 12 }}>
-        <span style={{ color: 'var(--muted, #999)' }}>위치(px)</span>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          X
-          <input
-            type="number"
-            step={1}
-            value={pxX}
-            onChange={(e) => setPx(Number(e.target.value), pxY)}
-            style={{ ...numInput, width: 64 }}
-          />
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          Y
-          <input
-            type="number"
-            step={1}
-            value={pxY}
-            onChange={(e) => setPx(pxX, Number(e.target.value))}
-            style={{ ...numInput, width: 64 }}
-          />
-        </label>
-        <span style={{ color: 'var(--muted, #666)' }}>
-          / 판 {place.w}×{place.h} · 영상 {videoW}×{videoH}
-        </span>
-        <span style={{ color: 'var(--muted, #666)' }}>
-          가능 범위 X {place.margin}~{place.margin + place.freeX} · Y {place.margin}~{place.margin + place.freeY}
-        </span>
-      </div>
+      {active ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap', fontSize: 12 }}>
+          <span style={{ color: 'var(--muted, #999)' }}>{active.label} 위치(px)</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            X
+            <input
+              type="number"
+              step={1}
+              value={active.place.x}
+              onChange={(e) => setPx(active, Number(e.target.value), active.place.y)}
+              style={{ ...numInput, width: 64 }}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            Y
+            <input
+              type="number"
+              step={1}
+              value={active.place.y}
+              onChange={(e) => setPx(active, active.place.x, Number(e.target.value))}
+              style={{ ...numInput, width: 64 }}
+            />
+          </label>
+          <span style={{ color: 'var(--muted, #666)' }}>
+            / {active.place.w}×{active.place.h} · 영상 {videoW}×{videoH}
+          </span>
+          <span style={{ color: 'var(--muted, #666)' }}>
+            가능 범위 X {active.place.margin}~{active.place.margin + active.place.freeX}
+            {' · '}Y {active.place.margin}~{active.place.margin + active.place.freeY}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -510,6 +573,9 @@ export default function ManualHighlightPage() {
   const [speed, setSpeed] = useState(1);
   const [tags, setTags] = useState<Tag[]>([]);
   const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
+  const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
+  // 배치 화면에서 지금 만지고 있는 오버레이. 겹칠 때 원하는 걸 집으려면 하나만 잡혀야 한다.
+  const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
   // 기본 앞/뒤 패딩 — 실제 태깅에서 굳은 값(2026-09-09).
@@ -1028,6 +1094,14 @@ export default function ManualHighlightPage() {
             // 대회 로고는 dataURL 그대로 보낸다 — 서버가 PNG 로 풀어 판 위에 얹는다.
             logo_url: scoreboard.logoUrl || '',
           } : { enabled: false },
+          // 우리 로고 — 점수판과 따로 켜고 끈다. 영상 내내 같은 자리에 얹힌다.
+          watermark: watermark.enabled ? {
+            enabled: true,
+            size_pct: watermark.sizePct,
+            opacity: watermark.opacity,
+            pos_x: watermark.posX,
+            pos_y: watermark.posY,
+          } : { enabled: false },
         }),
       });
 
@@ -1375,6 +1449,56 @@ export default function ManualHighlightPage() {
                     ? `골 태그(Q·R)를 찍은 순간 점수가 올라갑니다 — 최종 ${finalScore[0]} : ${finalScore[1]}`
                     : '영상 왼쪽 위에 팀명과 점수를 새깁니다.'}
                 </span>
+
+                <span style={{ width: 1, height: 16, background: 'var(--border-ghost, #2c2c32)' }} />
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={watermark.enabled}
+                    onChange={(e) => setWatermark((p) => ({ ...p, enabled: e.target.checked }))}
+                  />
+                  우리 로고
+                </label>
+                {watermark.enabled ? (
+                  <>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                      <span style={{ color: 'var(--muted, #999)' }}>투명도</span>
+                      <input
+                        type="range"
+                        min={5}
+                        max={100}
+                        step={5}
+                        value={Math.round(watermark.opacity * 100)}
+                        onChange={(e) => setWatermark((p) => ({ ...p, opacity: Number(e.target.value) / 100 }))}
+                        style={{ width: 110 }}
+                      />
+                      <span style={{ color: 'var(--muted, #999)', width: 34 }}>
+                        {Math.round(watermark.opacity * 100)}%
+                      </span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                      <span style={{ color: 'var(--muted, #999)' }}>크기</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={25}
+                        step={0.5}
+                        value={watermark.sizePct}
+                        onChange={(e) => setWatermark((p) => ({
+                          ...p,
+                          sizePct: Math.max(1, Math.min(25, Number(e.target.value) || 1)),
+                        }))}
+                        style={{ ...numInput, width: 60 }}
+                      />
+                      <span style={{ color: 'var(--muted, #999)' }}>%</span>
+                    </label>
+                  </>
+                ) : (
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                    영상 오른쪽 위에 우리 로고를 옅게 새깁니다.
+                  </span>
+                )}
               </div>
 
               {scoreboard.enabled ? (
@@ -1467,15 +1591,62 @@ export default function ManualHighlightPage() {
                     <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: '6px 0 10px' }}>
                       새겨질 점수판 (최종 점수 기준)
                     </p>
-                    <ScoreboardPlacer
-                      config={scoreboard}
+                    <OverlayPlacer
                       videoW={boardVideo.w}
                       videoH={boardVideo.h}
-                      home={finalScore[0]}
-                      away={finalScore[1]}
                       frameUrl={frameUrl}
-                      onMove={(posX, posY) => setScoreboard((p) => ({ ...p, posX, posY }))}
-                      onResize={(sizePct, posX, posY) => setScoreboard((p) => ({ ...p, sizePct, posX, posY }))}
+                      selected={activeOverlay}
+                      onSelect={setActiveOverlay}
+                      items={[
+                        {
+                          key: 'board' as const,
+                          label: '점수판',
+                          place: boardPlacement(
+                            boardVideo.w, boardVideo.h,
+                            scoreboard.sizePct, scoreboard.posX, scoreboard.posY,
+                            Boolean(scoreboard.logoUrl),
+                          ),
+                          recompute: (pct: number) => boardPlacement(
+                            boardVideo.w, boardVideo.h, pct, 0, 0, Boolean(scoreboard.logoUrl),
+                          ),
+                          sizePct: scoreboard.sizePct,
+                          sizeRange: [10, 60] as [number, number],
+                          onMove: (posX: number, posY: number) => setScoreboard((p) => ({ ...p, posX, posY })),
+                          onResize: (sizePct: number, posX: number, posY: number) =>
+                            setScoreboard((p) => ({ ...p, sizePct, posX, posY })),
+                          render: (width: number) => (
+                            <ScoreboardPreview
+                              config={scoreboard}
+                              home={finalScore[0]}
+                              away={finalScore[1]}
+                              width={width}
+                            />
+                          ),
+                        },
+                        ...(watermark.enabled ? [{
+                          key: 'mark' as const,
+                          label: '로고',
+                          place: markPlacement(
+                            boardVideo.w, boardVideo.h,
+                            watermark.sizePct, watermark.posX, watermark.posY,
+                          ),
+                          recompute: (pct: number) => markPlacement(boardVideo.w, boardVideo.h, pct, 0, 0),
+                          sizePct: watermark.sizePct,
+                          sizeRange: [1, 25] as [number, number],
+                          onMove: (posX: number, posY: number) => setWatermark((p) => ({ ...p, posX, posY })),
+                          onResize: (sizePct: number, posX: number, posY: number) =>
+                            setWatermark((p) => ({ ...p, sizePct, posX, posY })),
+                          render: (width: number) => (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={MARK_SRC}
+                              alt="로고"
+                              draggable={false}
+                              style={{ width, height: width * MARK_RATIO, opacity: watermark.opacity, display: 'block' }}
+                            />
+                          ),
+                        }] : []),
+                      ]}
                     />
                     <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 8, flexWrap: 'wrap' }}>
                       {/* 9칸 프리셋 — 모서리·가운데는 끌지 않고 한 번에 맞춘다. */}

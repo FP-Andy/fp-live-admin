@@ -30,6 +30,14 @@ from .highlight_storage import default_storage
 from .highlight_storage import output_prefix as storage_output_prefix
 from .scene_motion import attach_scene_motions
 from .scoreboard import board_placement, render_scoreboard_file
+from .watermark import (
+    DEFAULT_OPACITY as WM_DEFAULT_OPACITY,
+    DEFAULT_POS_X as WM_DEFAULT_POS_X,
+    DEFAULT_POS_Y as WM_DEFAULT_POS_Y,
+    DEFAULT_SIZE_PCT as WM_DEFAULT_SIZE_PCT,
+    mark_placement,
+    render_watermark_file,
+)
 from .models import FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
@@ -815,6 +823,46 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 with_logo=sb_logo is not None,
             )
 
+        # ── 우리 로고(워터마크) ───────────────────────────────────────────
+        # 점수판과 달리 내용에 따라 바뀌지 않으므로 한 장만 굽고 조각마다 돌려 쓴다.
+        # 투명도는 PNG 알파에 이미 곱해져 있다.
+        wm_cfg = metadata.get("watermark")
+        wm_path: Path | None = None
+        wm_x = wm_y = 0
+        if isinstance(wm_cfg, dict) and wm_cfg.get("enabled"):
+            def _wm_num(key: str, fallback: float) -> float:
+                try:
+                    return float(wm_cfg.get(key))
+                except (TypeError, ValueError):
+                    return fallback
+
+            wm_w, _wm_h, wm_x, wm_y = mark_placement(
+                vw, vh,
+                _wm_num("size_pct", WM_DEFAULT_SIZE_PCT),
+                _wm_num("pos_x", WM_DEFAULT_POS_X),
+                _wm_num("pos_y", WM_DEFAULT_POS_Y),
+            )
+            try:
+                wm_path = render_watermark_file(
+                    work / "watermark.png", wm_w, _wm_num("opacity", WM_DEFAULT_OPACITY),
+                )
+            except (OSError, ValueError):
+                # 로고 파일이 없거나 깨졌으면 로고만 빼고 계속한다 — 하이라이트 자체를
+                # 못 만들 이유는 아니다.
+                logger.warning("워터마크를 그리지 못했습니다 (job %s)", job_id)
+                wm_path = None
+
+        def mark_args(base: str, idx: int) -> tuple[list[str], list[str], str, int]:
+            """로고 한 겹. 점수판 위에 얹는다(점수판을 가리지 않는 자리에 두는 게 전제)."""
+            if wm_path is None:
+                return [], [], base, idx
+            return (
+                ["-i", str(wm_path)],
+                [f"[{base}][{idx}:v]overlay={wm_x}:{wm_y}[wm]"],
+                "wm",
+                idx + 1,
+            )
+
         def sb_image(score: tuple[int, int]) -> Path:
             """그 점수의 점수판 PNG. 같은 점수는 한 번만 굽고 돌려 쓴다."""
             path = sb_cache.get(score)
@@ -912,15 +960,20 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 인트로 사진 — 종전처럼 하드컷으로 맨 앞에 붙는다(크로스페이드는 클립끼리만).
             if has_intro:
                 out = work / "p000_intro.mp4"
+                intro_wm_ins, intro_wm_chains, intro_label, _ = mark_args("v", 2)
                 subprocess.run([
                     "ffmpeg", "-y", "-nostats",
                     "-loop", "1", "-t", f"{intro_dur:.3f}", "-i", str(intro_path),
                     *silence(intro_dur),
+                    *intro_wm_ins,
                     "-filter_complex",
-                    f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
-                    f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
-                    f"fade=t=in:st=0:d={INTRO_FADE_SEC:.3f}[v]",
-                    "-map", "[v]", "-map", "1:a", "-shortest", *encode, str(out),
+                    ";".join([
+                        f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
+                        f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
+                        f"fade=t=in:st=0:d={INTRO_FADE_SEC:.3f}[v]",
+                        *intro_wm_chains,
+                    ]),
+                    "-map", f"[{intro_label}]", "-map", "1:a", "-shortest", *encode, str(out),
                 ], check=True, capture_output=True, text=True)
                 pieces.append(out)
                 bump_progress()
@@ -948,9 +1001,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     lambda tau: score_at(k, tau + head_fade(k)),
                 ) if sb else []
                 sb_ins, sb_chains, vlabel, next_input = overlay_args("v0", segs, next_input)
-                args += sb_ins
+                wm_ins, wm_chains, vlabel, next_input = mark_args(vlabel, next_input)
+                args += sb_ins + wm_ins
                 args += [
-                    "-filter_complex", ";".join(chains + sb_chains),
+                    "-filter_complex", ";".join(chains + sb_chains + wm_chains),
                     "-map", f"[{vlabel}]", "-map", audio_map,
                     *([] if has_sound[k] else ["-shortest"]),
                     *encode, str(out),
@@ -998,7 +1052,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     ),
                 ) if sb else []
                 sb_ins, sb_chains, vlabel, extra = overlay_args("v0", trans_segs, extra)
-                args += sb_ins
+                wm_ins, wm_chains, vlabel, extra = mark_args(vlabel, extra)
+                args += sb_ins + wm_ins
                 # acrossfade 는 첫 입력의 길이가 페이드 길이와 '같으면' 한 프레임도 내지 못하고
                 # 죽는다(Could not open encoder before EOF). 전환 조각은 정확히 d 초만 잘라
                 # 쓰므로 항상 그 조건에 걸린다. 같은 결과를 내는 페이드아웃+페이드인 합성으로
@@ -1017,7 +1072,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     "[la][ra]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
                 )
                 args += [
-                    "-filter_complex", ";".join(chains + sb_chains),
+                    "-filter_complex", ";".join(chains + sb_chains + wm_chains),
                     "-map", f"[{vlabel}]", "-map", "[a]",
                     *([] if (has_sound[k] and has_sound[nxt]) else ["-shortest"]),
                     *encode, str(out),
