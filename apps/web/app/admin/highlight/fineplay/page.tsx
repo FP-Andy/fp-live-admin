@@ -124,7 +124,8 @@ type Tag = {
 // 유튜브 신청은 팀이 링크만 준 것이라 우리가 받아 둬야 재생할 수 있다. 다 받기 전까지
 // url 은 null 이고, 그동안 fetch 로 진행 상황이 온다.
 type SourceFetch = {
-  status: 'pending' | 'downloading' | 'done' | 'error';
+  /** idle = 받기 시작조차 안 한 상태(배포 전에 claim 된 신청). */
+  status: 'idle' | 'pending' | 'downloading' | 'done' | 'error';
   percent: number;
   code?: string | null;
   detail?: string | null;
@@ -143,6 +144,7 @@ const YT_REASON: Record<string, string> = {
   YT_PRIVATE: '비공개(또는 멤버십 전용)로 바뀐 영상입니다',
   YT_DELETED: '삭제된 영상입니다',
   YT_RESTRICTED: '연령·지역 제한으로 받을 수 없습니다',
+  YT_BLOCKED: '유튜브가 서버 접속을 막았습니다 (영상 문제가 아닙니다)',
   YT_FETCH_ERROR: '다운로드에 실패했습니다',
 };
 
@@ -804,7 +806,8 @@ export default function FineplayJobsPage() {
   // 유튜브를 받는 동안에는 5초마다 다시 물어본다. 다 받으면 url 이 채워지고 멈춘다.
   // (풀경기는 수 분 걸린다 — 담당자가 화면을 띄워 두면 알아서 재생 가능해진다.)
   useEffect(() => {
-    if (!selected || !pendingFetch) return;
+    // 받는 중일 때만 다시 물어본다. 시작도 안 한 건 물어봐야 달라질 게 없다.
+    if (!selected || !pendingFetch || pendingFetch.fetch?.status === 'idle') return;
     const timer = setInterval(async () => {
       try {
         const res = await apiJson<{ videos?: SourceVideo[] }>(
@@ -1617,14 +1620,45 @@ export default function FineplayJobsPage() {
                 </a>
               ) : null}
               <button style={smallBtn} onClick={retryYoutubeFetch}>다시 받기</button>
+              {failedFetch.fetch?.code === 'YT_BLOCKED' ? (
+                <span style={{ width: '100%', fontSize: 12, opacity: 0.85 }}>
+                  영상은 멀쩡합니다. 서버 IP 가 막힌 것이라 다시 눌러도 같을 수 있습니다 —
+                  유튜브 로그인 쿠키(YTDLP_COOKIES)를 서버에 두면 풀립니다.
+                </span>
+              ) : null}
+              {/* 실제로 yt-dlp 가 뱉은 말. 분류가 틀릴 수 있으므로 원문을 같이 보여준다 —
+                  '삭제됨' 이라는데 링크를 열면 멀쩡한 경우가 실제로 있었다. */}
+              {failedFetch.fetch?.detail ? (
+                <details style={{ width: '100%', fontSize: 11, opacity: 0.75 }}>
+                  <summary style={{ cursor: 'pointer' }}>자세한 오류 보기</summary>
+                  <pre style={{ whiteSpace: 'pre-wrap', margin: '6px 0 0', maxHeight: 160, overflow: 'auto' }}>
+                    {failedFetch.fetch.detail}
+                  </pre>
+                </details>
+              ) : null}
             </div>
           ) : pendingFetch ? (
             <div style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
-              <p style={{ margin: '0 0 8px' }}>
-                유튜브 영상을 받는 중입니다 — <strong>{pendingFetch.fetch?.percent ?? 0}%</strong>
-                {'  '}(풀경기는 몇 분 걸립니다. 이 화면을 열어 두면 다 받는 대로 재생됩니다)
-              </p>
-              <div style={{ height: 6, borderRadius: 3, background: 'var(--border-ghost, #2c2c32)' }}>
+              {pendingFetch.fetch?.status === 'idle' ? (
+                <p style={{ margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span>
+                    아직 받기 시작하지 않았습니다.
+                    {' '}<span style={{ opacity: 0.75 }}>(이 기능이 생기기 전에 접수된 신청입니다)</span>
+                  </span>
+                  <button style={smallBtn} onClick={retryYoutubeFetch}>받기 시작</button>
+                </p>
+              ) : (
+                <p style={{ margin: '0 0 8px' }}>
+                  유튜브 영상을 받는 중입니다 — <strong>{pendingFetch.fetch?.percent ?? 0}%</strong>
+                  {'  '}(풀경기는 몇 분 걸립니다. 이 화면을 열어 두면 다 받는 대로 재생됩니다)
+                </p>
+              )}
+              <div
+                style={{
+                  height: 6, borderRadius: 3, background: 'var(--border-ghost, #2c2c32)',
+                  display: pendingFetch.fetch?.status === 'idle' ? 'none' : 'block',
+                }}
+              >
                 <div
                   style={{
                     width: `${Math.max(2, pendingFetch.fetch?.percent ?? 0)}%`,
