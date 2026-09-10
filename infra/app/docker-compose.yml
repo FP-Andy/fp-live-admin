@@ -64,6 +64,10 @@ services:
       FINEPLAY_API_TOKEN: ${FINEPLAY_API_TOKEN:-}
       FINEPLAY_WORKER_ID: ${FINEPLAY_WORKER_ID:-fpc-worker-1}
       FINEPLAY_PIPELINE_VERSION: ${FINEPLAY_PIPELINE_VERSION:-fpc-transport-v0.1}
+      # 유튜브 쿠키 파일 경로(컨테이너 안 기준). 유튜브가 데이터센터 IP 를 막을 때 이걸로 푼다.
+      # .env 에만 적어 두면 전달되지 않는다 — 이 구성은 env_file 을 쓰지 않아서, 여기 적힌
+      # 키만 컨테이너로 넘어간다.
+      YTDLP_COOKIES: ${YTDLP_COOKIES:-}
       # Broadcast showroom assets. The image URLs are public, but writes use a
       # separate ingest key and S3 credentials never leave the API container.
       BROADCAST_PUBLIC_BASE_URL: ${BROADCAST_PUBLIC_BASE_URL:-https://broadcast.fineludens.kr}

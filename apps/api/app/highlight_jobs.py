@@ -314,6 +314,24 @@ YT_JS_ARGS = ["--remote-components", "ejs:github"]
 # 유튜브 쿠키 파일(Netscape 형식). 서버 IP 가 막혔을 때 이걸로 푼다.
 YT_COOKIES = os.getenv("YTDLP_COOKIES", "").strip()
 
+
+def youtube_cookie_args() -> list[str]:
+    """yt-dlp 에 넘길 쿠키 인자. 설정됐는데 파일이 없으면 **소리 내어** 알린다.
+
+    말없이 쿠키 없이 진행하면 '설정이 틀렸다' 와 '유튜브가 막았다' 가 똑같은 증상으로
+    보인다 — 실제로 그것 때문에 한참 헤맸다(2026-09-11).
+    """
+    if not YT_COOKIES:
+        return []
+    if not Path(YT_COOKIES).exists():
+        logger.warning(
+            "YTDLP_COOKIES 가 %s 로 설정됐지만 파일이 없다 — 쿠키 없이 진행한다. "
+            "컨테이너 안 경로인지, compose 의 environment 에 키가 있는지 확인할 것.",
+            YT_COOKIES,
+        )
+        return []
+    return ["--cookies", YT_COOKIES]
+
 YT_FORMAT = (
     "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]"
     "/b[height<=1080][vcodec^=avc1]"
@@ -385,8 +403,7 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None) -> None:
         "-f", YT_FORMAT,
         *YT_JS_ARGS,
         # 유튜브는 데이터센터 IP 를 봇으로 본다. 로그인 쿠키를 주면 통과한다.
-        # YTDLP_COOKIES 에 cookies.txt 경로를 두면 쓴다(없으면 그냥 없이 간다).
-        *(["--cookies", YT_COOKIES] if YT_COOKIES and Path(YT_COOKIES).exists() else []),
+        *youtube_cookie_args(),
         "--downloader", "aria2c",
         "--downloader-args", "aria2c:-x 16 -s 16 -k 1M",
         "--merge-output-format", "mp4",
@@ -415,7 +432,11 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None) -> None:
     proc.wait()
     detail = "\n".join(tail)
     if proc.returncode != 0:
-        raise YoutubeFetchError(classify_youtube_failure(detail), detail[-500:])
+        # 쿠키를 실제로 썼는지 남긴다. 안 썼는데 '막혔다' 고 나오면 원인이 다르다.
+        used = "쿠키 사용함" if youtube_cookie_args() else (
+            f"쿠키 없음(YTDLP_COOKIES={YT_COOKIES or '미설정'})")
+        raise YoutubeFetchError(classify_youtube_failure(detail),
+                                f"[{used}]\n{detail[-500:]}")
 
     if not dest.exists():
         # 확장자가 다르게 떨어졌으면(webm 등) 그걸 쓴다.
@@ -527,7 +548,7 @@ def download_link_for_job(job_id: str) -> None:
             "-f",
             YT_FORMAT,
             *YT_JS_ARGS,
-            *(["--cookies", YT_COOKIES] if YT_COOKIES and Path(YT_COOKIES).exists() else []),
+            *youtube_cookie_args(),
             "--downloader",
             "aria2c",
             "--downloader-args",
