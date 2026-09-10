@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import io
 import json
 import logging
 import os
@@ -12,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
@@ -26,6 +30,14 @@ from .highlight_storage import default_storage
 from .highlight_storage import output_prefix as storage_output_prefix
 from .scene_motion import attach_scene_motions
 from .scoreboard import board_placement, render_scoreboard_file
+from .watermark import (
+    DEFAULT_OPACITY as WM_DEFAULT_OPACITY,
+    DEFAULT_POS_X as WM_DEFAULT_POS_X,
+    DEFAULT_POS_Y as WM_DEFAULT_POS_Y,
+    DEFAULT_SIZE_PCT as WM_DEFAULT_SIZE_PCT,
+    mark_placement,
+    render_watermark_file,
+)
 from .models import FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob
 
 HIGHLIGHT_RUNTIME_DIR = Path(os.getenv("HIGHLIGHT_RUNTIME_DIR", "/app/runtime/highlight")).resolve()
@@ -738,6 +750,8 @@ def list_manual_clip_info(job_id: str) -> list[dict]:
             tag_offset = None
         infos.append({
             "name": name,
+            "score_before": data.get("score_before"),
+            "score_after": data.get("score_after"),
             "requested_start": req_start,
             "requested_end": req_end,
             "order": data.get("order"),
@@ -778,6 +792,32 @@ def _ffmpeg_failure_detail(ex: subprocess.CalledProcessError) -> str:
     return (" / ".join((picked or lines)[-3:]) or detail)[-300:]
 
 
+def _decode_logo(data_url: Any, out_dir: Path) -> Path | None:
+    """점수판 대회 로고 dataURL → PNG 파일. 없거나 못 읽으면 None(로고 없이 그린다).
+
+    화면에서 파일을 골라 dataURL 로 실어 보내므로 서버에 따로 업로드 API 를 두지
+    않는다 — 로고는 잡 하나에 한 장뿐이고 합치기 때만 쓰인다.
+    """
+    raw = str(data_url or "")
+    if "," not in raw or not raw.startswith("data:"):
+        return None
+    try:
+        payload = base64.b64decode(raw.split(",", 1)[1], validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not payload:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "logo.png"
+    try:
+        # 어떤 형식으로 올렸든 PNG(알파 보존)로 통일해 둔다.
+        with Image.open(io.BytesIO(payload)) as img:
+            img.convert("RGBA").save(path, format="PNG")
+    except Exception:
+        return None
+    return path
+
+
 def _scoreboard_plan(
     metadata: dict,
     clip_meta: list[dict],
@@ -802,14 +842,33 @@ def _scoreboard_plan(
     pre: list[tuple[int, int]] = []
     post: list[tuple[int, int]] = []
     goal_at: list[float] = []
+
+    def _pair(raw) -> tuple[int, int] | None:
+        """화면이 보낸 [홈, 원정]. 모양이 아니면 None."""
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            return None
+        try:
+            return max(0, int(raw[0])), max(0, int(raw[1]))
+        except (TypeError, ValueError):
+            return None
+
     for k, info in enumerate(clip_meta):
-        pre.append((home, away))
-        kind = str(info.get("kind") or "")
-        if kind == "home_goal":
-            home += 1
-        elif kind == "away_goal":
-            away += 1
-        post.append((home, away))
+        # 화면이 점수를 보냈으면 그대로 쓴다. 거기엔 **클립을 만들지 않은 골**(상대 골 등)
+        # 까지 이미 반영돼 있어서, 여기서 kind 로 다시 쌓으면 그게 빠진다.
+        sent_before = _pair(info.get("score_before"))
+        sent_after = _pair(info.get("score_after"))
+        if sent_before and sent_after:
+            pre.append(sent_before)
+            post.append(sent_after)
+            home, away = sent_after
+        else:
+            pre.append((home, away))
+            kind = str(info.get("kind") or "")
+            if kind == "home_goal":
+                home += 1
+            elif kind == "away_goal":
+                away += 1
+            post.append((home, away))
         # 태그 시점을 못 받은 옛 클립은 클립 한가운데로 본다(그래도 순서는 맞는다).
         raw = info.get("tag_offset")
         try:
@@ -943,13 +1002,58 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         sb = _scoreboard_plan(metadata, used_meta, lengths)
         sb_dir = work / "sb"
         sb_cache: dict[tuple[int, int], Path] = {}
+        sb_logo: Path | None = None
         if sb:
             sb_cfg, sb_pre, sb_post, sb_goal = sb
+            sb_logo = _decode_logo(sb_cfg.get("logo_url"), sb_dir)
+            # 로고가 있으면 판보다 세로가 길다 — 그 높이로 자리를 잡아야 위쪽에 붙였을 때
+            # 로고가 화면 밖으로 잘리지 않는다.
             sb_board_w, _sb_h, sb_x, sb_y = board_placement(
                 vw, vh,
                 float(sb_cfg.get("size_pct") or 28),
                 float(sb_cfg.get("pos_x") or 0),
                 float(sb_cfg.get("pos_y") or 0),
+                with_logo=sb_logo is not None,
+            )
+
+        # ── 우리 로고(워터마크) ───────────────────────────────────────────
+        # 점수판과 달리 내용에 따라 바뀌지 않으므로 한 장만 굽고 조각마다 돌려 쓴다.
+        # 투명도는 PNG 알파에 이미 곱해져 있다.
+        wm_cfg = metadata.get("watermark")
+        wm_path: Path | None = None
+        wm_x = wm_y = 0
+        if isinstance(wm_cfg, dict) and wm_cfg.get("enabled"):
+            def _wm_num(key: str, fallback: float) -> float:
+                try:
+                    return float(wm_cfg.get(key))
+                except (TypeError, ValueError):
+                    return fallback
+
+            wm_w, _wm_h, wm_x, wm_y = mark_placement(
+                vw, vh,
+                _wm_num("size_pct", WM_DEFAULT_SIZE_PCT),
+                _wm_num("pos_x", WM_DEFAULT_POS_X),
+                _wm_num("pos_y", WM_DEFAULT_POS_Y),
+            )
+            try:
+                wm_path = render_watermark_file(
+                    work / "watermark.png", wm_w, _wm_num("opacity", WM_DEFAULT_OPACITY),
+                )
+            except (OSError, ValueError):
+                # 로고 파일이 없거나 깨졌으면 로고만 빼고 계속한다 — 하이라이트 자체를
+                # 못 만들 이유는 아니다.
+                logger.warning("워터마크를 그리지 못했습니다 (job %s)", job_id)
+                wm_path = None
+
+        def mark_args(base: str, idx: int) -> tuple[list[str], list[str], str, int]:
+            """로고 한 겹. 점수판 위에 얹는다(점수판을 가리지 않는 자리에 두는 게 전제)."""
+            if wm_path is None:
+                return [], [], base, idx
+            return (
+                ["-i", str(wm_path)],
+                [f"[{base}][{idx}:v]overlay={wm_x}:{wm_y}[wm]"],
+                "wm",
+                idx + 1,
             )
 
         def sb_image(score: tuple[int, int]) -> Path:
@@ -962,6 +1066,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     str(sb_cfg.get("away_name") or ""),
                     score[0], score[1], sb_board_w,
                     sb_cfg.get("home_color"), sb_cfg.get("away_color"),
+                    sb_logo,
                 )
                 sb_cache[score] = path
             return path
@@ -1048,15 +1153,20 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 인트로 사진 — 종전처럼 하드컷으로 맨 앞에 붙는다(크로스페이드는 클립끼리만).
             if has_intro:
                 out = work / "p000_intro.mp4"
+                intro_wm_ins, intro_wm_chains, intro_label, _ = mark_args("v", 2)
                 subprocess.run([
                     "ffmpeg", "-y", "-nostats",
                     "-loop", "1", "-t", f"{intro_dur:.3f}", "-i", str(intro_path),
                     *silence(intro_dur),
+                    *intro_wm_ins,
                     "-filter_complex",
-                    f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
-                    f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
-                    f"fade=t=in:st=0:d={INTRO_FADE_SEC:.3f}[v]",
-                    "-map", "[v]", "-map", "1:a", "-shortest", *encode, str(out),
+                    ";".join([
+                        f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
+                        f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
+                        f"fade=t=in:st=0:d={INTRO_FADE_SEC:.3f}[v]",
+                        *intro_wm_chains,
+                    ]),
+                    "-map", f"[{intro_label}]", "-map", "1:a", "-shortest", *encode, str(out),
                 ], check=True, capture_output=True, text=True)
                 pieces.append(out)
                 bump_progress()
@@ -1084,9 +1194,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     lambda tau: score_at(k, tau + head_fade(k)),
                 ) if sb else []
                 sb_ins, sb_chains, vlabel, next_input = overlay_args("v0", segs, next_input)
-                args += sb_ins
+                wm_ins, wm_chains, vlabel, next_input = mark_args(vlabel, next_input)
+                args += sb_ins + wm_ins
                 args += [
-                    "-filter_complex", ";".join(chains + sb_chains),
+                    "-filter_complex", ";".join(chains + sb_chains + wm_chains),
                     "-map", f"[{vlabel}]", "-map", audio_map,
                     *([] if has_sound[k] else ["-shortest"]),
                     *encode, str(out),
@@ -1134,7 +1245,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     ),
                 ) if sb else []
                 sb_ins, sb_chains, vlabel, extra = overlay_args("v0", trans_segs, extra)
-                args += sb_ins
+                wm_ins, wm_chains, vlabel, extra = mark_args(vlabel, extra)
+                args += sb_ins + wm_ins
                 # acrossfade 는 첫 입력의 길이가 페이드 길이와 '같으면' 한 프레임도 내지 못하고
                 # 죽는다(Could not open encoder before EOF). 전환 조각은 정확히 d 초만 잘라
                 # 쓰므로 항상 그 조건에 걸린다. 같은 결과를 내는 페이드아웃+페이드인 합성으로
@@ -1153,7 +1265,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     "[la][ra]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
                 )
                 args += [
-                    "-filter_complex", ";".join(chains + sb_chains),
+                    "-filter_complex", ";".join(chains + sb_chains + wm_chains),
                     "-map", f"[{vlabel}]", "-map", "[a]",
                     *([] if (has_sound[k] and has_sound[nxt]) else ["-shortest"]),
                     *encode, str(out),
@@ -1381,6 +1493,20 @@ def run_fineplay_produce(job_id: str) -> None:
                 continue
             if end <= start:
                 continue
+            def _pair(raw) -> tuple[int, int] | None:
+                """화면이 보낸 [홈, 원정]. 모양이 아니면 None(점수판을 그리지 않는다)."""
+                if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                    return None
+                try:
+                    return max(0, int(raw[0])), max(0, int(raw[1]))
+                except (TypeError, ValueError):
+                    return None
+
+            try:
+                goal_at = float(c.get("goalAt"))
+            except (TypeError, ValueError):
+                goal_at = None
+
             specs.append(ClipSpec(
                 source_video_id=str(c.get("sourceVideoId") or default_video),
                 start=start,
@@ -1388,6 +1514,10 @@ def run_fineplay_produce(job_id: str) -> None:
                 clip_id=str(c.get("clipId") or f"fpc-{rid}-{i + 1:03d}"),
                 main_action=c.get("mainAction"),
                 make_vertical=bool(c.get("makeVertical")),
+                # 점수판용 — 클립을 만들지 않은 골까지 화면에서 이미 반영해 보낸다.
+                score_before=_pair(c.get("scoreBefore")),
+                score_after=_pair(c.get("scoreAfter")),
+                goal_at=goal_at,
             ))
             team = str(c.get("team") or "").strip().lower()
             clip_teams[specs[-1].clip_id] = team if team in ("home", "away") else None
@@ -1404,6 +1534,11 @@ def run_fineplay_produce(job_id: str) -> None:
                 pipeline_version=FINEPLAY_PIPELINE_VERSION,
                 # 유튜브 원본은 S3 가 아니라 우리가 받아 둔 파일에서 읽는다.
                 youtube_path=lambda vid: fineplay_youtube_path(job_id, vid),
+                # 점수판·로고. 없으면 종전대로 아무것도 얹지 않는다.
+                overlay={
+                    "scoreboard": metadata.get("scoreboard"),
+                    "watermark": metadata.get("watermark"),
+                } if (metadata.get("scoreboard") or metadata.get("watermark")) else None,
             )
         except Exception as exc:
             update_job(db, job_id, status="error", error_message=f"렌더/업로드 실패: {exc}")

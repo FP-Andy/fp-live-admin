@@ -9193,6 +9193,10 @@ async def upload_manual_clip(
     index: int = Form(...),
     kind: str = Form(""),
     tag_offset: float = Form(-1.0),
+    # 이 클립이 시작할 때 / 끝날 때 보여야 할 점수. 화면이 계산해서 보낸다.
+    # 클립을 만들지 않는 골(상대 골 등)도 여기 이미 반영돼 있다.
+    score_before: str = Form(""),
+    score_after: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -9212,6 +9216,19 @@ async def upload_manual_clip(
 
     # 모르는 값이 사이드카에 흘러들어 점수 계산을 흔들지 않게 여기서 막는다.
     clip_kind = kind if kind in {"home_goal", "home", "away", "away_goal"} else ""
+
+    def _score(raw: str) -> list[int] | None:
+        """"2:1" 을 [2, 1] 로. 모양이 아니면 None — 그때는 kind 로 쌓아 계산한다."""
+        parts = str(raw or "").split(":")
+        if len(parts) != 2:
+            return None
+        try:
+            return [max(0, int(parts[0])), max(0, int(parts[1]))]
+        except ValueError:
+            return None
+
+    before = _score(score_before)
+    after = _score(score_after)
 
     name = f"clip_{index:03d}.mp4"
     target = clips_dir(job_id) / name
@@ -9235,6 +9252,10 @@ async def upload_manual_clip(
                 "tag_offset": (
                     None if tag_offset < 0 else round(float(tag_offset), 3)
                 ),
+                # 화면이 계산한 점수. 클립이 없는 골까지 반영돼 있어서, 이 값이 있으면
+                # kind 로 다시 쌓지 않고 그대로 쓴다.
+                "score_before": before,
+                "score_after": after,
             }),
             encoding="utf-8",
         )
@@ -9310,20 +9331,48 @@ def merge_manual_job(
             except (TypeError, ValueError):
                 return fallback
 
-        size_pct = _pct("size_pct", 28.0, 10.0, 60.0)
+        size_pct = _pct("size_pct", 24.33, 10.0, 60.0)
         metadata = dict(job.job_metadata or {})
         metadata["scoreboard"] = {
             "enabled": True,
             "home_name": str(scoreboard.get("home_name") or "").strip()[:20],
             "away_name": str(scoreboard.get("away_name") or "").strip()[:20],
-            "home_color": _color("home_color", "#2F6FED"),
-            "away_color": _color("away_color", "#E8452F"),
+            "home_color": _color("home_color", "#FF7400"),
+            "away_color": _color("away_color", "#0000FF"),
             "start_home": _score("start_home"),
             "start_away": _score("start_away"),
             "size_pct": size_pct,
             # 여백을 뺀 놓을 수 있는 범위 안에서의 비율. (0,0) 왼쪽 위 · (100,100) 오른쪽 아래.
-            "pos_x": _pct("pos_x", 0.0, 0.0, 100.0),
-            "pos_y": _pct("pos_y", 0.0, 0.0, 100.0),
+            "pos_x": _pct("pos_x", 2.18, 0.0, 100.0),
+            "pos_y": _pct("pos_y", 4.42, 0.0, 100.0),
+            # 대회 로고(dataURL). 합치기 때 PNG 로 풀어 판 위에 얹는다. 없으면 빈 문자열이고
+            # 그때는 로고 없이 판만 그린다. 2MB 를 넘으면 버린다 — 잡 메타에 통째로 들어가는
+            # 값이라 무한정 키우면 안 된다.
+            "logo_url": (
+                str(scoreboard.get("logo_url") or "")
+                if len(str(scoreboard.get("logo_url") or "")) <= 2_800_000
+                else ""
+            ),
+        }
+        update_job(db, job_id, job_metadata=metadata)
+
+    # 우리 로고(워터마크) — 점수판과 따로 켜고 끈다. 영상 내내 같은 자리에 얹힌다.
+    watermark = body.get("watermark") if isinstance(body, dict) else None
+    if isinstance(watermark, dict) and watermark.get("enabled"):
+        def _wm(key: str, fallback: float, lo: float, hi: float) -> float:
+            try:
+                return max(lo, min(hi, float(watermark.get(key))))
+            except (TypeError, ValueError):
+                return fallback
+
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["watermark"] = {
+            "enabled": True,
+            "size_pct": _wm("size_pct", 5.0, 1.0, 25.0),
+            "opacity": _wm("opacity", 0.55, 0.05, 1.0),
+            # 여백을 뺀 범위 안에서의 비율. 기본은 우상단(100, 0).
+            "pos_x": _wm("pos_x", 100.0, 0.0, 100.0),
+            "pos_y": _wm("pos_y", 0.0, 0.0, 100.0),
         }
         update_job(db, job_id, job_metadata=metadata)
 
@@ -11391,6 +11440,21 @@ def produce_fineplay_job(
         if pc.get("clipId") and pc.get("team"):
             prev_teams[str(pc["clipId"])] = str(pc["team"])
 
+    def _clip_score(raw) -> list[int] | None:
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            return None
+        try:
+            return [max(0, int(raw[0])), max(0, int(raw[1]))]
+        except (TypeError, ValueError):
+            return None
+
+    def _clip_goal_at(raw) -> float | None:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return round(value, 3) if value >= 0 else None
+
     clips: list[dict] = []
     for c in body.get("clips") or []:
         try:
@@ -11413,6 +11477,12 @@ def produce_fineplay_job(
                 "sourceVideoId": (str(c.get("sourceVideoId")).strip() or None) if c.get("sourceVideoId") else None,
                 # 편집룸 재편집 시 기존 clipId 를 유지하면 같은 키로 덮어써(멱등) 중복이 없다.
                 "clipId": (str(c.get("clipId")).strip() or None) if c.get("clipId") else None,
+                # 점수판용. 화면이 계산해서 보낸다 — 클립을 만들지 않은 골(신청팀
+                # 하이라이트의 상대 골)까지 이미 반영돼 있어서 서버가 다시 세지 않는다.
+                "scoreBefore": _clip_score(c.get("scoreBefore")),
+                "scoreAfter": _clip_score(c.get("scoreAfter")),
+                # 클립 시작에서 골까지의 초. 그 지점에서 점수가 바뀐다.
+                "goalAt": _clip_goal_at(c.get("goalAt")),
             })
     if not clips:
         raise HTTPException(status_code=400, detail="유효한 구간(end > start)이 없습니다.")
@@ -11421,6 +11491,45 @@ def produce_fineplay_job(
     metadata["clips"] = clips
     # 자동 전송 없음 — sendCallback=true 일 때만 produce 후 콜백. 기본은 생성만(클립 결과 탭에서 명시 전송).
     metadata["send_on_produce"] = bool(body.get("sendCallback"))
+
+    # ── 클립에 새길 오버레이 ─────────────────────────────────────────────
+    # 수동 하이라이트와 같은 설정 모양이라, 두 흐름이 같은 그림을 같은 자리에 그린다.
+    def _pct(source: dict, key: str, fallback: float, lo: float, hi: float) -> float:
+        try:
+            return max(lo, min(hi, float(source.get(key))))
+        except (TypeError, ValueError):
+            return fallback
+
+    def _hex_color(value, fallback: str) -> str:
+        text = str(value or "").strip()
+        return text if re.fullmatch(r"#[0-9A-Fa-f]{6}", text) else fallback
+
+    board = body.get("scoreboard") if isinstance(body.get("scoreboard"), dict) else None
+    if board and board.get("enabled"):
+        metadata["scoreboard"] = {
+            "enabled": True,
+            "home_name": str(board.get("home_name") or "").strip()[:20],
+            "away_name": str(board.get("away_name") or "").strip()[:20],
+            "home_color": _hex_color(board.get("home_color"), "#FF7400"),
+            "away_color": _hex_color(board.get("away_color"), "#0000FF"),
+            "size_pct": _pct(board, "size_pct", 24.33, 10.0, 60.0),
+            "pos_x": _pct(board, "pos_x", 2.18, 0.0, 100.0),
+            "pos_y": _pct(board, "pos_y", 4.42, 0.0, 100.0),
+        }
+    else:
+        metadata.pop("scoreboard", None)
+
+    mark = body.get("watermark") if isinstance(body.get("watermark"), dict) else None
+    if mark and mark.get("enabled"):
+        metadata["watermark"] = {
+            "enabled": True,
+            "size_pct": _pct(mark, "size_pct", 5.0, 1.0, 25.0),
+            "opacity": _pct(mark, "opacity", 0.55, 0.05, 1.0),
+            "pos_x": _pct(mark, "pos_x", 100.0, 0.0, 100.0),
+            "pos_y": _pct(mark, "pos_y", 0.0, 0.0, 100.0),
+        }
+    else:
+        metadata.pop("watermark", None)
 
     if "fpaMatchId" in body:
         raw_fpa_id = str(body.get("fpaMatchId") or "").strip()

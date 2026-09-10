@@ -36,6 +36,15 @@ from .highlight_produce import (
     produce_clip,
 )
 from .highlight_storage import Storage
+from .scoreboard import board_placement, render_scoreboard_file
+from .watermark import (
+    DEFAULT_OPACITY as WM_DEFAULT_OPACITY,
+    DEFAULT_POS_X as WM_DEFAULT_POS_X,
+    DEFAULT_POS_Y as WM_DEFAULT_POS_Y,
+    DEFAULT_SIZE_PCT as WM_DEFAULT_SIZE_PCT,
+    mark_placement,
+    render_watermark_file,
+)
 
 # 매니페스트를 받아 렌더할 클립 구간 목록을 정하는 함수(태깅/AI). 범위 밖이라 주입식.
 DecideClips = Callable[[Manifest], list[ClipSpec]]
@@ -96,17 +105,23 @@ def process_job(
     pipeline_version: str,
     workdir: Path | None = None,
     youtube_path: Callable[[str], Path] | None = None,
+    overlay: dict | None = None,
 ) -> dict:
     """확정된 매니페스트 + 클립 구간으로 영상을 만들어 올리고 결과 payload 를 반환한다.
 
     youtube_path 는 유튜브 원본의 로컬 파일 자리를 알려 주는 함수다. 유튜브 영상은
     S3 에 없어서 presign 할 키가 없고, 대신 미리 받아 둔 파일을 그대로 읽는다.
+
+    overlay 는 클립에 새길 점수판·로고 설정이다({"scoreboard": {...}, "watermark": {...}}).
+    없으면 아무것도 얹지 않는다(종전과 같다).
     """
     if workdir is not None:
         workdir.mkdir(parents=True, exist_ok=True)
-        return _process_in(workdir, manifest, clip_specs, storage, pipeline_version, youtube_path)
+        return _process_in(workdir, manifest, clip_specs, storage, pipeline_version,
+                           youtube_path, overlay)
     with tempfile.TemporaryDirectory(prefix="fpc_job_") as tmp:
-        return _process_in(Path(tmp), manifest, clip_specs, storage, pipeline_version, youtube_path)
+        return _process_in(Path(tmp), manifest, clip_specs, storage, pipeline_version,
+                           youtube_path, overlay)
 
 
 def _process_in(
@@ -116,6 +131,7 @@ def _process_in(
     storage: Storage,
     pipeline_version: str,
     youtube_path: Callable[[str], Path] | None = None,
+    overlay: dict | None = None,
 ) -> dict:
     if not clip_specs:
         return build_result_payload(
@@ -164,12 +180,96 @@ def _process_in(
         if src.has_audio is None:
             src.has_audio = _probe_has_audio(src.target)
 
+    # ── 오버레이(점수판·로고) ────────────────────────────────────────────
+    # 수동 하이라이트와 같은 그림을 클립마다 새긴다. 클립은 각자 따로 나가므로 점수는
+    # '그 클립 시점의 점수' 다 — 클립 안에서 골이 나면 그 지점에서 바뀐다.
+    overlay_dir = work / "overlay"
+    _sb_cache: dict[tuple[int, int], Path] = {}
+    _overlay_geom: dict[str, object] = {}
+
+    def _prepare_overlay(sample: Path | str) -> None:
+        """첫 클립 규격으로 자리와 로고를 한 번만 정한다."""
+        if _overlay_geom or not overlay:
+            return
+        vw, vh, _ = _probe_video_dims(sample)
+        _overlay_geom["w"] = vw
+        _overlay_geom["h"] = vh
+        board = overlay.get("scoreboard") or {}
+        if board.get("enabled"):
+            bw, _bh, bx, by = board_placement(
+                vw, vh,
+                float(board.get("size_pct") or 24.33),
+                float(board.get("pos_x") or 0),
+                float(board.get("pos_y") or 0),
+                with_logo=False,
+            )
+            _overlay_geom["board"] = (bw, bx, by)
+        mark = overlay.get("watermark") or {}
+        if mark.get("enabled"):
+            mw, _mh, mx, my = mark_placement(
+                vw, vh,
+                float(mark.get("size_pct") or WM_DEFAULT_SIZE_PCT),
+                float(mark.get("pos_x") or WM_DEFAULT_POS_X),
+                float(mark.get("pos_y") or WM_DEFAULT_POS_Y),
+            )
+            try:
+                _overlay_geom["mark"] = (
+                    render_watermark_file(overlay_dir / "wm.png", mw,
+                                          float(mark.get("opacity") or WM_DEFAULT_OPACITY)),
+                    mx, my,
+                )
+            except (OSError, ValueError):
+                pass   # 로고를 못 그리면 로고만 빼고 계속한다
+
+    def _board_png(score: tuple[int, int]) -> Path:
+        cached = _sb_cache.get(score)
+        if cached is None:
+            board = (overlay or {}).get("scoreboard") or {}
+            bw = _overlay_geom["board"][0]  # type: ignore[index]
+            cached = render_scoreboard_file(
+                overlay_dir / f"sb_{score[0]}_{score[1]}.png",
+                str(board.get("home_name") or ""), str(board.get("away_name") or ""),
+                score[0], score[1], bw,
+                board.get("home_color"), board.get("away_color"), None,
+            )
+            _sb_cache[score] = cached
+        return cached
+
+    def _overlays_for(spec: ClipSpec) -> list[dict]:
+        if not overlay or not _overlay_geom:
+            return []
+        marks: list[dict] = []
+        if "board" in _overlay_geom and spec.score_before and spec.score_after:
+            _bw, bx, by = _overlay_geom["board"]        # type: ignore[misc]
+            before = tuple(spec.score_before)
+            after = tuple(spec.score_after)
+            length = max(0.0, spec.end - spec.start)
+            at = spec.goal_at
+            if before == after or at is None or at <= 0 or at >= length:
+                # 클립 안에서 점수가 바뀌지 않는다 — 한 장이면 된다.
+                marks.append({"path": _board_png(after if before == after else before),
+                              "x": bx, "y": by})
+            else:
+                # 태깅한 그 순간 점수가 오른다. 마지막 구간은 gte 로 열어 둔다 —
+                # between 은 끝 프레임이 부동소수 오차로 넘어가면 판이 한 프레임 사라진다.
+                marks.append({"path": _board_png(before), "x": bx, "y": by,
+                              "enable": f"lt(t,{at:.3f})"})
+                marks.append({"path": _board_png(after), "x": bx, "y": by,
+                              "enable": f"gte(t,{at:.3f})"})
+        if "mark" in _overlay_geom:
+            wm_path, mx, my = _overlay_geom["mark"]      # type: ignore[misc]
+            marks.append({"path": wm_path, "x": mx, "y": my})
+        return marks
+
     def render_one(spec: ClipSpec) -> ClipOutput:
         src = sources[spec.source_video_id]
 
         local_h = work / f"{spec.clip_id}.mp4"
+        _prepare_overlay(src.target)
+        marks = _overlays_for(spec)
         try:
-            produce_clip(src.target, spec.start, spec.end, local_h, has_audio=src.has_audio)
+            produce_clip(src.target, spec.start, spec.end, local_h,
+                         has_audio=src.has_audio, overlays=marks)
         except RuntimeError:
             if src.local is not None:
                 raise  # 이미 로컬 파일로 렌더하다 실패 — 폴백 없음
@@ -177,7 +277,8 @@ def _process_in(
             local = src.ensure_local(storage, work / "src" / f"{spec.source_video_id}.mp4")
             if src.has_audio is None:
                 src.has_audio = _probe_has_audio(local)
-            produce_clip(local, spec.start, spec.end, local_h, has_audio=src.has_audio)
+            produce_clip(local, spec.start, spec.end, local_h,
+                         has_audio=src.has_audio, overlays=marks)
 
         local_thumb = work / f"{spec.clip_id}_thumb.jpg"
         extract_thumbnail(local_h, local_thumb, at=min(0.5, max(0.0, (spec.end - spec.start) / 2)))
