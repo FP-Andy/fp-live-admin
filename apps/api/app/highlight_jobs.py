@@ -304,6 +304,9 @@ def create_player_proxy_for_job(job_id: str) -> None:
 # H.264(avc1) 를 먼저 고른다 — 요즘 유튜브는 1080p mp4 를 AV1 로도 주는데, 그러면
 # 브라우저 태깅 재생이 무겁고 클립 렌더도 AV1 디코드를 타서 느려진다. 결과물은 어차피
 # H.264 라 처음부터 H.264 로 받는 편이 낫다. 없으면 아무거나 받아 온다(못 받는 것보다는 낫다).
+# 유튜브 쿠키 파일(Netscape 형식). 서버 IP 가 막혔을 때 이걸로 푼다.
+YT_COOKIES = os.getenv("YTDLP_COOKIES", "").strip()
+
 YT_FORMAT = (
     "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]"
     "/b[height<=1080][vcodec^=avc1]"
@@ -330,6 +333,9 @@ YT_PRIVATE = "YT_PRIVATE"
 YT_DELETED = "YT_DELETED"
 YT_RESTRICTED = "YT_RESTRICTED"
 YT_FETCH_ERROR = "YT_FETCH_ERROR"
+# 서버 IP 가 막힌 경우. 영상은 멀쩡한데 데이터센터 IP 라서 유튜브가 거부한다 —
+# 삭제·비공개와 전혀 다른 문제이고, 손쓰는 방법도 다르다(쿠키·프록시).
+YT_BLOCKED = "YT_BLOCKED"
 
 
 def classify_youtube_failure(stderr: str) -> str:
@@ -340,6 +346,13 @@ def classify_youtube_failure(stderr: str) -> str:
     먼저 봐야 지역 제한을 삭제로 잘못 읽지 않는다.
     """
     text = (stderr or "").lower()
+    # 봇 차단을 **가장 먼저** 본다. 서버에서 받으면 유튜브가 "Sign in to confirm you're
+    # not a bot" 과 함께 "Video unavailable" 을 같이 뱉는 일이 잦은데, 뒤 문구만 보면
+    # 멀쩡한 영상을 '삭제됨' 으로 읽는다(2026-09-11 실제로 그렇게 잘못 떴다).
+    if ("not a bot" in text or "sign in to confirm" in text
+            or "confirm you're not" in text or "cookies" in text
+            or "429" in text or "too many requests" in text):
+        return YT_BLOCKED
     if "private video" in text or "members-only" in text or "join this channel" in text:
         return YT_PRIVATE
     if "your country" in text or "not available in your location" in text:
@@ -363,6 +376,9 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None) -> None:
     cmd = [
         "yt-dlp",
         "-f", YT_FORMAT,
+        # 유튜브는 데이터센터 IP 를 봇으로 본다. 로그인 쿠키를 주면 통과한다.
+        # YTDLP_COOKIES 에 cookies.txt 경로를 두면 쓴다(없으면 그냥 없이 간다).
+        *(["--cookies", YT_COOKIES] if YT_COOKIES and Path(YT_COOKIES).exists() else []),
         "--downloader", "aria2c",
         "--downloader-args", "aria2c:-x 16 -s 16 -k 1M",
         "--merge-output-format", "mp4",
@@ -431,6 +447,13 @@ def fetch_youtube_sources_for_job(job_id: str) -> None:
             return
 
         state = dict(metadata.get("youtube_fetch") or {})
+
+        # 이미 받는 중이면 손대지 않는다. 받는 중인 파일은 아직 최종 이름이 없어서
+        # (yt-dlp 가 임시 이름으로 쓴다) '파일이 있나' 로는 못 걸러진다 — 두 번 부르면
+        # 같은 영상을 두 번 받게 된다.
+        if any(str((state.get(v.video_id) or {}).get("status")) == "downloading" for v in targets):
+            logger.info("유튜브 취득이 이미 돌고 있다 — 건너뜀 (job %s)", job_id)
+            return
 
         def save(video_id: str, **fields) -> None:
             entry = dict(state.get(video_id) or {})

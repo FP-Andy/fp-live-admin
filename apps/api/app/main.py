@@ -11079,6 +11079,33 @@ def unlink_standalone_request(
     return {"job_id": job_id, "side": side, "removed": True}
 
 
+def _needs_youtube_fetch(job: HighlightJob) -> bool:
+    """이 잡에 아직 받지 못한 유튜브 원본이 있나.
+
+    받는 중이거나 이미 받아 둔 것은 건드리지 않는다. 실패로 남은 것은 다시 받는다 —
+    유튜브 쪽 일시적인 거부(서버 IP 차단 등)는 다음에 될 수도 있다.
+    """
+    if job.mode != "fineplay":
+        return False
+    metadata = job.job_metadata or {}
+    try:
+        manifest = fineplay_parse_manifest(metadata.get("manifest") or {})
+    except Exception:  # noqa: BLE001 - 매니페스트가 깨졌으면 그냥 넘어간다
+        return False
+    targets = [v for v in manifest.videos if v.is_youtube]
+    if not targets:
+        return False
+    state = metadata.get("youtube_fetch") or {}
+    for video in targets:
+        entry = state.get(video.video_id) or {}
+        if str(entry.get("status")) == "downloading":
+            return False   # 이미 돌고 있다
+        path = fineplay_youtube_path(job.id, video.video_id)
+        if not path.exists() or path.stat().st_size == 0:
+            return True
+    return False
+
+
 @app.post("/api/highlight/fineplay-jobs/poll")
 def poll_fineplay_jobs(
     background_tasks: BackgroundTasks,
@@ -11100,14 +11127,21 @@ def poll_fineplay_jobs(
 
     claimed: list[str] = []
     skipped = 0
+    # 새로 claim 한 것뿐 아니라, 이미 있는 잡 중 아직 못 받은 유튜브도 여기서 받기
+    # 시작한다 — 이 기능이 생기기 전에 claim 된 신청은 그러지 않으면 영영 안 받는다.
+    refetched: list[str] = []
     jobs = data if isinstance(data, list) else (data.get("jobs") or [])
     for m in jobs:
         rid = m.get("analysisRequestId")
         if rid is None:
             continue
         job_id = f"fp-{rid}"
-        if db.get(HighlightJob, job_id):
+        existing = db.get(HighlightJob, job_id)
+        if existing:
             skipped += 1
+            if _needs_youtube_fetch(existing):
+                background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
+                refetched.append(job_id)
             continue
         try:
             cr = client.claim(rid, pipeline_version=FINEPLAY_PIPELINE_VERSION)
@@ -11201,7 +11235,7 @@ def poll_fineplay_jobs(
     db.commit()
     if claimed:
         _match_response_cache.clear()
-    return {"claimed": claimed, "skipped": skipped}
+    return {"claimed": claimed, "skipped": skipped, "refetched": refetched}
 
 
 @app.get("/api/highlight/fineplay-jobs/{job_id}/source-url")
@@ -11245,7 +11279,12 @@ def fineplay_source_url(
                 "source": "YOUTUBE",
                 "youtubeUrl": v.youtube_url,
                 "fetch": {
-                    "status": "done" if ready else str(entry.get("status") or "pending"),
+                    # 기록이 아예 없으면 idle — 받기 시작조차 안 한 상태다. 배포 전에
+                    # claim 된 신청이 여기 해당한다(폴링은 이미 있는 잡을 건너뛴다).
+                    "status": (
+                        "done" if ready
+                        else str(entry.get("status") or ("idle" if not entry else "pending"))
+                    ),
                     "percent": int(entry.get("percent") or (100 if ready else 0)),
                     "code": entry.get("code"),
                     "detail": entry.get("detail"),
