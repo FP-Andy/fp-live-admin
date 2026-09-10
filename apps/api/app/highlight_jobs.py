@@ -1321,6 +1321,20 @@ def run_fineplay_produce(job_id: str) -> None:
                 continue
             if end <= start:
                 continue
+            def _pair(raw) -> tuple[int, int] | None:
+                """화면이 보낸 [홈, 원정]. 모양이 아니면 None(점수판을 그리지 않는다)."""
+                if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                    return None
+                try:
+                    return max(0, int(raw[0])), max(0, int(raw[1]))
+                except (TypeError, ValueError):
+                    return None
+
+            try:
+                goal_at = float(c.get("goalAt"))
+            except (TypeError, ValueError):
+                goal_at = None
+
             specs.append(ClipSpec(
                 source_video_id=str(c.get("sourceVideoId") or default_video),
                 start=start,
@@ -1328,6 +1342,10 @@ def run_fineplay_produce(job_id: str) -> None:
                 clip_id=str(c.get("clipId") or f"fpc-{rid}-{i + 1:03d}"),
                 main_action=c.get("mainAction"),
                 make_vertical=bool(c.get("makeVertical")),
+                # 점수판용 — 클립을 만들지 않은 골까지 화면에서 이미 반영해 보낸다.
+                score_before=_pair(c.get("scoreBefore")),
+                score_after=_pair(c.get("scoreAfter")),
+                goal_at=goal_at,
             ))
             team = str(c.get("team") or "").strip().lower()
             clip_teams[specs[-1].clip_id] = team if team in ("home", "away") else None
@@ -1342,6 +1360,11 @@ def run_fineplay_produce(job_id: str) -> None:
             payload = process_job(
                 manifest, specs, default_storage(),
                 pipeline_version=FINEPLAY_PIPELINE_VERSION,
+                # 점수판·로고. 없으면 종전대로 아무것도 얹지 않는다.
+                overlay={
+                    "scoreboard": metadata.get("scoreboard"),
+                    "watermark": metadata.get("watermark"),
+                } if (metadata.get("scoreboard") or metadata.get("watermark")) else None,
             )
         except Exception as exc:
             update_job(db, job_id, status="error", error_message=f"렌더/업로드 실패: {exc}")

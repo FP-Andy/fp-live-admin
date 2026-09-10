@@ -11337,6 +11337,21 @@ def produce_fineplay_job(
         if pc.get("clipId") and pc.get("team"):
             prev_teams[str(pc["clipId"])] = str(pc["team"])
 
+    def _clip_score(raw) -> list[int] | None:
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            return None
+        try:
+            return [max(0, int(raw[0])), max(0, int(raw[1]))]
+        except (TypeError, ValueError):
+            return None
+
+    def _clip_goal_at(raw) -> float | None:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return round(value, 3) if value >= 0 else None
+
     clips: list[dict] = []
     for c in body.get("clips") or []:
         try:
@@ -11359,6 +11374,12 @@ def produce_fineplay_job(
                 "sourceVideoId": (str(c.get("sourceVideoId")).strip() or None) if c.get("sourceVideoId") else None,
                 # 편집룸 재편집 시 기존 clipId 를 유지하면 같은 키로 덮어써(멱등) 중복이 없다.
                 "clipId": (str(c.get("clipId")).strip() or None) if c.get("clipId") else None,
+                # 점수판용. 화면이 계산해서 보낸다 — 클립을 만들지 않은 골(신청팀
+                # 하이라이트의 상대 골)까지 이미 반영돼 있어서 서버가 다시 세지 않는다.
+                "scoreBefore": _clip_score(c.get("scoreBefore")),
+                "scoreAfter": _clip_score(c.get("scoreAfter")),
+                # 클립 시작에서 골까지의 초. 그 지점에서 점수가 바뀐다.
+                "goalAt": _clip_goal_at(c.get("goalAt")),
             })
     if not clips:
         raise HTTPException(status_code=400, detail="유효한 구간(end > start)이 없습니다.")
@@ -11367,6 +11388,45 @@ def produce_fineplay_job(
     metadata["clips"] = clips
     # 자동 전송 없음 — sendCallback=true 일 때만 produce 후 콜백. 기본은 생성만(클립 결과 탭에서 명시 전송).
     metadata["send_on_produce"] = bool(body.get("sendCallback"))
+
+    # ── 클립에 새길 오버레이 ─────────────────────────────────────────────
+    # 수동 하이라이트와 같은 설정 모양이라, 두 흐름이 같은 그림을 같은 자리에 그린다.
+    def _pct(source: dict, key: str, fallback: float, lo: float, hi: float) -> float:
+        try:
+            return max(lo, min(hi, float(source.get(key))))
+        except (TypeError, ValueError):
+            return fallback
+
+    def _hex_color(value, fallback: str) -> str:
+        text = str(value or "").strip()
+        return text if re.fullmatch(r"#[0-9A-Fa-f]{6}", text) else fallback
+
+    board = body.get("scoreboard") if isinstance(body.get("scoreboard"), dict) else None
+    if board and board.get("enabled"):
+        metadata["scoreboard"] = {
+            "enabled": True,
+            "home_name": str(board.get("home_name") or "").strip()[:20],
+            "away_name": str(board.get("away_name") or "").strip()[:20],
+            "home_color": _hex_color(board.get("home_color"), "#FF7400"),
+            "away_color": _hex_color(board.get("away_color"), "#0000FF"),
+            "size_pct": _pct(board, "size_pct", 24.33, 10.0, 60.0),
+            "pos_x": _pct(board, "pos_x", 2.18, 0.0, 100.0),
+            "pos_y": _pct(board, "pos_y", 4.42, 0.0, 100.0),
+        }
+    else:
+        metadata.pop("scoreboard", None)
+
+    mark = body.get("watermark") if isinstance(body.get("watermark"), dict) else None
+    if mark and mark.get("enabled"):
+        metadata["watermark"] = {
+            "enabled": True,
+            "size_pct": _pct(mark, "size_pct", 5.0, 1.0, 25.0),
+            "opacity": _pct(mark, "opacity", 0.55, 0.05, 1.0),
+            "pos_x": _pct(mark, "pos_x", 100.0, 0.0, 100.0),
+            "pos_y": _pct(mark, "pos_y", 0.0, 0.0, 100.0),
+        }
+    else:
+        metadata.pop("watermark", None)
 
     if "fpaMatchId" in body:
         raw_fpa_id = str(body.get("fpaMatchId") or "").strip()

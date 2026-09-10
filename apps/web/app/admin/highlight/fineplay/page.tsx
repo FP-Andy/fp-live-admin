@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import { API_BASE, apiJson } from '../../../../lib/api';
+import {
+  DEFAULT_SCOREBOARD, DEFAULT_WATERMARK, MARK_RATIO, MARK_SRC,
+  OverlayPlacer, ScoreboardPreview, boardPlacement, markPlacement,
+  type Scoreboard, type Watermark,
+} from '../../../../components/HighlightOverlay';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 
 // FinePlay 연동 태깅: claim 한 작업의 원본을 S3 스트리밍으로 재생하며 태깅하고,
@@ -105,6 +110,11 @@ const badgeStyle: React.CSSProperties = {
 // videoIdx/videoId: 다중 영상 신청에서 태그가 찍힌 원본(탭). clampEnd: 그 영상 길이(끝 넘김 방지).
 type Tag = {
   id: string; t: number; team: 'home' | 'away';
+  /** 이 순간이 골인가. 점수판을 올리는 건 골 태그뿐이다. */
+  goal?: boolean;
+  /** 골이지만 장면은 넣지 않는다 — 점수판만 올린다.
+   *  신청팀 하이라이트에서 상대 골이 이것이다(그 팀이 잘한 것만 담아야 하므로). */
+  scoreOnly?: boolean;
   padBefore?: number; padAfter?: number;
   videoIdx: number; videoId?: string; clampEnd?: number;
 };
@@ -313,6 +323,12 @@ export default function FineplayJobsPage() {
   // 탭 전환 후 이어서 시킹할 시간(다른 영상의 태그 클릭) — 메타데이터 로드 시 적용.
   const pendingSeekRef = useRef<number | null>(null);
   const [sourceError, setSourceError] = useState('');
+  // 클립에 새길 오버레이. 수동 태깅과 같은 설정 모양이라 결과물도 같은 그림이 나온다.
+  const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
+  const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
+  const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
+  // 오버레이 자리를 잡을 기준 규격. 원본 해상도를 모르면 1080p 로 본다(대부분 그렇다).
+  const overlayVideo = { w: 1920, h: 1080 };
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -813,7 +829,7 @@ export default function FineplayJobsPage() {
     if ((tag.videoIdx ?? 0) === activeVideoIdx) void v.play();
   };
 
-  const addTag = useCallback((team: 'home' | 'away') => {
+  const addTag = useCallback((team: 'home' | 'away', opts?: { goal?: boolean; scoreOnly?: boolean }) => {
     const v = videoRef.current;
     if (!v || !sourceUrl) return;
     const t = v.currentTime;
@@ -821,6 +837,8 @@ export default function FineplayJobsPage() {
       id: `${Date.now()}-${Math.random()}`,
       t,
       team,
+      goal: opts?.goal || opts?.scoreOnly || undefined,
+      scoreOnly: opts?.scoreOnly || undefined,
       videoIdx: activeVideoIdx,
       videoId: sourceVideos[activeVideoIdx]?.videoId,
       clampEnd: v.duration || sourceVideos[activeVideoIdx]?.durationSeconds || undefined,
@@ -829,6 +847,36 @@ export default function FineplayJobsPage() {
     setTags((prev) => [...prev, tag]
       .sort((a, b) => (a.videoIdx - b.videoIdx) || (a.t - b.t)));
   }, [sourceUrl, activeVideoIdx, sourceVideos]);
+
+  /** 장면으로 만들 태그. '점수만' 은 빠진다. */
+  const clipTags = tags.filter((t) => !t.scoreOnly);
+
+  /** 태그마다 그 시점의 점수(그 태그까지 반영). 점수만 반영하는 골도 여기서 센다. */
+  const runningScores = (() => {
+    let home = scoreboard.startHome;
+    let away = scoreboard.startAway;
+    return tags.map((tag) => {
+      if (tag.goal) {
+        if (tag.team === 'home') home += 1;
+        else away += 1;
+      }
+      return [home, away] as [number, number];
+    });
+  })();
+  const finalScore = runningScores.length
+    ? runningScores[runningScores.length - 1]
+    : ([scoreboard.startHome, scoreboard.startAway] as [number, number]);
+
+  const toggleTagGoal = (id: string) => {
+    setTags((prev) => prev.map((tag) => (tag.id === id
+      // 일반 → 골 → 골(점수만) → 일반 으로 돌아간다.
+      ? (!tag.goal
+        ? { ...tag, goal: true, scoreOnly: undefined }
+        : (!tag.scoreOnly
+          ? { ...tag, goal: true, scoreOnly: true }
+          : { ...tag, goal: undefined, scoreOnly: undefined }))
+      : tag)));
+  };
 
   const toggleTagTeam = (id: string) => {
     setTags((prev) => prev.map((tag) =>
@@ -867,21 +915,52 @@ export default function FineplayJobsPage() {
     setProducing(true);
     setProduceError('');
     try {
-      const clips = tags.map((tag) => {
+      // '점수만' 태그는 장면을 만들지 않는다 — 점수판에만 반영된다(위 runningScores).
+      const clips = tags.flatMap((tag, ti) => {
+        if (tag.scoreOnly) return [];
         // 화면에서 미리보기로 확인한 구간과 정확히 같은 값을 보낸다.
         const { start, end } = clipRangeOf(tag);
-        return {
+        const after = runningScores[ti] ?? [scoreboard.startHome, scoreboard.startAway];
+        const before = ti > 0
+          ? (runningScores[ti - 1] ?? [scoreboard.startHome, scoreboard.startAway])
+          : [scoreboard.startHome, scoreboard.startAway];
+        return [{
           start,
           end,
           team: tag.team,
           makeVertical,
           sourceVideoId: tag.videoId,
-        };
+          // 점수판용 — 클립을 만들지 않은 골까지 이미 반영된 숫자다.
+          scoreBefore: before,
+          scoreAfter: after,
+          // 클립 시작에서 골까지의 초. 그 지점에서 점수가 바뀐다.
+          goalAt: tag.goal ? Math.max(0, tag.t - start) : undefined,
+        }];
       });
       await apiJson(`/highlight/fineplay-jobs/${selected.id}/produce`, {
         method: 'POST',
         // fpaMatchId: '' 는 연결 해제 — 서버는 키가 있을 때만 링크를 갱신한다.
-        body: JSON.stringify({ clips, fpaMatchId, fpaOurSide, sendCallback }),
+        body: JSON.stringify({
+          clips, fpaMatchId, fpaOurSide, sendCallback,
+          // 클립에 새길 오버레이. 수동 태깅과 같은 모양이라 서버도 같은 코드로 그린다.
+          scoreboard: scoreboard.enabled ? {
+            enabled: true,
+            home_name: scoreboard.homeName,
+            away_name: scoreboard.awayName,
+            home_color: scoreboard.homeColor,
+            away_color: scoreboard.awayColor,
+            size_pct: scoreboard.sizePct,
+            pos_x: scoreboard.posX,
+            pos_y: scoreboard.posY,
+          } : { enabled: false },
+          watermark: watermark.enabled ? {
+            enabled: true,
+            size_pct: watermark.sizePct,
+            opacity: watermark.opacity,
+            pos_x: watermark.posX,
+            pos_y: watermark.posY,
+          } : { enabled: false },
+        }),
       });
       setProduceMsg('서버에서 클립 만드는 중...');
 
@@ -1576,6 +1655,20 @@ export default function FineplayJobsPage() {
                         {tag.team === 'home' ? '홈' : '어웨이'}
                       </button>
                       <button
+                        style={{
+                          ...smallBtn,
+                          ...(tag.goal
+                            ? { background: tag.scoreOnly ? 'transparent' : '#16a34a',
+                                borderColor: tag.scoreOnly ? '#16a34a' : 'transparent',
+                                color: tag.scoreOnly ? '#16a34a' : undefined }
+                            : {}),
+                        }}
+                        title="일반 → 골 → 골(점수만) 순으로 바뀝니다. '점수만' 은 클립을 만들지 않고 점수판만 올립니다"
+                        onClick={() => toggleTagGoal(tag.id)}
+                      >
+                        {tag.scoreOnly ? '골·점수만' : tag.goal ? '골' : '장면'}
+                      </button>
+                      <button
                         style={smallBtn}
                         title="클립 시작으로 이동해 끝까지 재생 — 실제 잘릴 구간을 그대로 확인"
                         onClick={() => previewClip(tag)}
@@ -1690,12 +1783,164 @@ export default function FineplayJobsPage() {
                     ))}
                   </div>
                 ) : null}
+                {/* ── 오버레이 ─────────────────────────────────────────────
+                    클립마다 새길 점수판과 우리 로고. 수동 태깅과 같은 코드로 그리므로
+                    여기서 본 자리가 결과물의 자리다. */}
+                <div
+                  style={{
+                    marginBottom: 14, padding: 12, borderRadius: 8,
+                    background: 'var(--surface-input, #16161a)',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+                      <input
+                        type="checkbox"
+                        checked={scoreboard.enabled}
+                        onChange={(e) => setScoreboard((p) => ({ ...p, enabled: e.target.checked }))}
+                      />
+                      점수판 새기기
+                    </label>
+                    <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                      {scoreboard.enabled
+                        ? `골 태그를 찍은 순간 점수가 올라갑니다 — 최종 ${finalScore[0]} : ${finalScore[1]}`
+                        : '클립마다 그 시점의 점수를 새깁니다.'}
+                    </span>
+
+                    <span style={{ width: 1, height: 16, background: 'var(--border-ghost, #2c2c32)' }} />
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+                      <input
+                        type="checkbox"
+                        checked={watermark.enabled}
+                        onChange={(e) => setWatermark((p) => ({ ...p, enabled: e.target.checked }))}
+                      />
+                      우리 로고
+                    </label>
+                    {watermark.enabled ? (
+                      <>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                          <span style={{ color: 'var(--muted, #999)' }}>투명도</span>
+                          <input
+                            type="range" min={5} max={100} step={5}
+                            value={Math.round(watermark.opacity * 100)}
+                            onChange={(e) => setWatermark((p) => ({ ...p, opacity: Number(e.target.value) / 100 }))}
+                            style={{ width: 110 }}
+                          />
+                          <span style={{ color: 'var(--muted, #999)', width: 34 }}>
+                            {Math.round(watermark.opacity * 100)}%
+                          </span>
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                          <span style={{ color: 'var(--muted, #999)' }}>크기</span>
+                          <input
+                            type="number" min={1} max={25} step={0.5}
+                            value={watermark.sizePct}
+                            onChange={(e) => setWatermark((p) => ({
+                              ...p, sizePct: Math.max(1, Math.min(25, Number(e.target.value) || 1)),
+                            }))}
+                            style={{ ...smallBtn, width: 60, cursor: 'text' }}
+                          />
+                          <span style={{ color: 'var(--muted, #999)' }}>%</span>
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+
+                  {scoreboard.enabled || watermark.enabled ? (
+                    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 12 }}>
+                      {scoreboard.enabled ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {([
+                            ['home', '홈', scoreboard.homeName, scoreboard.homeColor],
+                            ['away', '원정', scoreboard.awayName, scoreboard.awayColor],
+                          ] as const).map(([side, label, nameValue, colorValue]) => (
+                            <div key={side} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: 12, color: 'var(--muted, #999)', width: 32 }}>{label}</span>
+                              <input
+                                type="text" maxLength={20}
+                                placeholder={side === 'home' ? 'HOME' : 'AWAY'}
+                                value={nameValue}
+                                onChange={(e) => setScoreboard((p) => (side === 'home'
+                                  ? { ...p, homeName: e.target.value }
+                                  : { ...p, awayName: e.target.value }))}
+                                style={{ ...smallBtn, width: 140, cursor: 'text' }}
+                              />
+                              <input
+                                type="color" value={colorValue}
+                                title={`${label} 팀 색`}
+                                onChange={(e) => setScoreboard((p) => (side === 'home'
+                                  ? { ...p, homeColor: e.target.value }
+                                  : { ...p, awayColor: e.target.value }))}
+                                style={{ width: 30, height: 26, padding: 0, border: 'none', background: 'none' }}
+                              />
+                            </div>
+                          ))}
+                          <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                          <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: 0 }}>
+                            새겨질 점수판 (최종 점수 기준)
+                          </p>
+                        </div>
+                      ) : null}
+
+                      <OverlayPlacer
+                        videoW={overlayVideo.w}
+                        videoH={overlayVideo.h}
+                        frameUrl=""
+                        selected={activeOverlay}
+                        onSelect={setActiveOverlay}
+                        items={[
+                          ...(scoreboard.enabled ? [{
+                            key: 'board' as const,
+                            label: '점수판',
+                            place: boardPlacement(overlayVideo.w, overlayVideo.h,
+                              scoreboard.sizePct, scoreboard.posX, scoreboard.posY, false),
+                            recompute: (pct: number) =>
+                              boardPlacement(overlayVideo.w, overlayVideo.h, pct, 0, 0, false),
+                            sizePct: scoreboard.sizePct,
+                            sizeRange: [10, 60] as [number, number],
+                            onMove: (posX: number, posY: number) => setScoreboard((p) => ({ ...p, posX, posY })),
+                            onResize: (sizePct: number, posX: number, posY: number) =>
+                              setScoreboard((p) => ({ ...p, sizePct, posX, posY })),
+                            render: (width: number) => (
+                              <ScoreboardPreview
+                                config={scoreboard} home={finalScore[0]} away={finalScore[1]} width={width}
+                              />
+                            ),
+                          }] : []),
+                          ...(watermark.enabled ? [{
+                            key: 'mark' as const,
+                            label: '로고',
+                            place: markPlacement(overlayVideo.w, overlayVideo.h,
+                              watermark.sizePct, watermark.posX, watermark.posY),
+                            recompute: (pct: number) =>
+                              markPlacement(overlayVideo.w, overlayVideo.h, pct, 0, 0),
+                            sizePct: watermark.sizePct,
+                            sizeRange: [1, 25] as [number, number],
+                            onMove: (posX: number, posY: number) => setWatermark((p) => ({ ...p, posX, posY })),
+                            onResize: (sizePct: number, posX: number, posY: number) =>
+                              setWatermark((p) => ({ ...p, sizePct, posX, posY })),
+                            render: (width: number) => (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={MARK_SRC} alt="로고" draggable={false}
+                                style={{ width, height: width * MARK_RATIO, opacity: watermark.opacity, display: 'block' }}
+                              />
+                            ),
+                          }] : []),
+                        ]}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   {/* 전송 버튼은 두지 않는다 — FinePlay 전송은 클립 결과 탭 한 곳에서만
                       한다. 여기서 바로 보내면 구간을 다듬기 전에 나가고, 전송 창구가
                       둘로 갈려 무엇이 언제 나갔는지 한 곳에서 안 보인다. */}
-                  <button style={primaryBtn} onClick={() => void produce()} disabled={producing || !tags.length}>
-                    {producing ? '처리 중...' : `🎬 클립 ${tags.length}개 생성 (클립 결과에 보관)`}
+                  <button style={primaryBtn} onClick={() => void produce()} disabled={producing || !clipTags.length}>
+                    {producing ? '처리 중...' : `🎬 클립 ${clipTags.length}개 생성 (클립 결과에 보관)`}
                   </button>
                   <label style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input type="checkbox" checked={makeVertical} onChange={(e) => setMakeVertical(e.target.checked)} />

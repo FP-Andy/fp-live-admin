@@ -94,6 +94,7 @@ def build_produce_args(
     preset: str = MERGE_PRESET,
     crf: str = MERGE_CRF,
     has_audio: bool | None = None,
+    overlays: list[dict] | None = None,
 ) -> list[str]:
     """단일 원본 + 구간들로 컷+머지 ffmpeg 인자를 만든다.
 
@@ -101,6 +102,10 @@ def build_produce_args(
     source 는 로컬 경로 외에 http(s) URL(presigned) 도 받는다 — -ss 가 -i 앞이라
     ffmpeg 가 range 요청으로 필요한 구간만 읽는다. has_audio 를 주면 프로브를 생략한다
     (원본 하나로 클립 여러 개를 뽑을 때 URL 프로브 반복 방지).
+
+    overlays 는 이어붙인 결과 위에 순서대로 얹을 그림들이다. 한 장은
+    {"path": PNG, "x": int, "y": int, "enable": "lt(t,3.2)" | None} 모양이고,
+    enable 이 있으면 그 시간에만 보인다(점수가 클립 도중에 바뀔 때 쓴다).
     """
     valid = [s for s in segments if s.duration > 0]
     if not valid:
@@ -168,9 +173,30 @@ def build_produce_args(
         f"{concat_inputs}concat=n={n_seg}:v=1:a=1[v][a]"
     )
 
+    # 오버레이는 이어붙인 뒤에 얹는다. 입력은 맨 뒤에 붙여 앞선 구간·무음 인덱스를
+    # 밀지 않게 한다(그 인덱스는 위에서 이미 필터에 박혀 있다).
+    marks = [o for o in (overlays or []) if o.get("path")]
+    vlabel = "[v]"
+    if marks:
+        overlay_base = silent_base + (0 if has_audio else len(valid))
+        chain_parts: list[str] = []
+        cur = vlabel
+        for i, mark in enumerate(marks):
+            args += ["-i", str(mark["path"])]
+            label = f"[ov{i}]"
+            enable = mark.get("enable")
+            enable_arg = f":enable='{enable}'" if enable else ""
+            chain_parts.append(
+                f"{cur}[{overlay_base + i}:v]overlay={int(mark.get('x', 0))}:"
+                f"{int(mark.get('y', 0))}{enable_arg}{label}"
+            )
+            cur = label
+        filter_complex = filter_complex + ";" + ";".join(chain_parts)
+        vlabel = cur
+
     args += [
         "-filter_complex", filter_complex,
-        "-map", "[v]", "-map", "[a]",
+        "-map", vlabel, "-map", "[a]",
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
         "-c:a", "aac",
         "-movflags", "+faststart",
@@ -200,11 +226,16 @@ def produce_clip(
     preset: str = MERGE_PRESET,
     crf: str = MERGE_CRF,
     has_audio: bool | None = None,
+    overlays: list[dict] | None = None,
 ) -> Path:
-    """단일 구간을 하나의 클립으로 렌더한다(인트로/워터마크 없음). FinePlay 계약의 클립 단위 산출용."""
+    """단일 구간을 하나의 클립으로 렌더한다(인트로 없음). FinePlay 계약의 클립 단위 산출용.
+
+    overlays 를 주면 점수판·로고를 그 위에 새긴다 — 수동 하이라이트와 같은 그림이다.
+    """
     return produce_highlight_from_source(
         source, [Segment(start, end)], out_path,
         intro_image=None, preset=preset, crf=crf, has_audio=has_audio,
+        overlays=overlays,
     )
 
 

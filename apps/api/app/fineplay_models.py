@@ -64,6 +64,12 @@ class ClipSpec:
     clip_id: str  # fpcClipId (멱등 키). 파일명·결과 매칭에 동일 사용.
     main_action: str | None = None
     make_vertical: bool = False
+    # 점수판용. 이 클립이 시작할 때 / 끝날 때 보여야 할 점수와, 클립 안에서 점수가
+    # 바뀌는 지점(클립 시작에서의 초). 화면이 계산해서 보낸다 — 클립을 만들지 않은
+    # 골(신청팀 하이라이트의 상대 골)까지 이미 반영돼 있다.
+    score_before: tuple[int, int] | None = None
+    score_after: tuple[int, int] | None = None
+    goal_at: float | None = None
 
 
 @dataclass
