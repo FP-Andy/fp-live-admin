@@ -578,6 +578,8 @@ def list_manual_clip_info(job_id: str) -> list[dict]:
             tag_offset = None
         infos.append({
             "name": name,
+            "score_before": data.get("score_before"),
+            "score_after": data.get("score_after"),
             "requested_start": req_start,
             "requested_end": req_end,
             "order": data.get("order"),
@@ -668,14 +670,33 @@ def _scoreboard_plan(
     pre: list[tuple[int, int]] = []
     post: list[tuple[int, int]] = []
     goal_at: list[float] = []
+
+    def _pair(raw) -> tuple[int, int] | None:
+        """화면이 보낸 [홈, 원정]. 모양이 아니면 None."""
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            return None
+        try:
+            return max(0, int(raw[0])), max(0, int(raw[1]))
+        except (TypeError, ValueError):
+            return None
+
     for k, info in enumerate(clip_meta):
-        pre.append((home, away))
-        kind = str(info.get("kind") or "")
-        if kind == "home_goal":
-            home += 1
-        elif kind == "away_goal":
-            away += 1
-        post.append((home, away))
+        # 화면이 점수를 보냈으면 그대로 쓴다. 거기엔 **클립을 만들지 않은 골**(상대 골 등)
+        # 까지 이미 반영돼 있어서, 여기서 kind 로 다시 쌓으면 그게 빠진다.
+        sent_before = _pair(info.get("score_before"))
+        sent_after = _pair(info.get("score_after"))
+        if sent_before and sent_after:
+            pre.append(sent_before)
+            post.append(sent_after)
+            home, away = sent_after
+        else:
+            pre.append((home, away))
+            kind = str(info.get("kind") or "")
+            if kind == "home_goal":
+                home += 1
+            elif kind == "away_goal":
+                away += 1
+            post.append((home, away))
         # 태그 시점을 못 받은 옛 클립은 클립 한가운데로 본다(그래도 순서는 맞는다).
         raw = info.get("tag_offset")
         try:

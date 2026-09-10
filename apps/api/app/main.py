@@ -9191,6 +9191,10 @@ async def upload_manual_clip(
     index: int = Form(...),
     kind: str = Form(""),
     tag_offset: float = Form(-1.0),
+    # 이 클립이 시작할 때 / 끝날 때 보여야 할 점수. 화면이 계산해서 보낸다.
+    # 클립을 만들지 않는 골(상대 골 등)도 여기 이미 반영돼 있다.
+    score_before: str = Form(""),
+    score_after: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -9210,6 +9214,19 @@ async def upload_manual_clip(
 
     # 모르는 값이 사이드카에 흘러들어 점수 계산을 흔들지 않게 여기서 막는다.
     clip_kind = kind if kind in {"home_goal", "home", "away", "away_goal"} else ""
+
+    def _score(raw: str) -> list[int] | None:
+        """"2:1" 을 [2, 1] 로. 모양이 아니면 None — 그때는 kind 로 쌓아 계산한다."""
+        parts = str(raw or "").split(":")
+        if len(parts) != 2:
+            return None
+        try:
+            return [max(0, int(parts[0])), max(0, int(parts[1]))]
+        except ValueError:
+            return None
+
+    before = _score(score_before)
+    after = _score(score_after)
 
     name = f"clip_{index:03d}.mp4"
     target = clips_dir(job_id) / name
@@ -9233,6 +9250,10 @@ async def upload_manual_clip(
                 "tag_offset": (
                     None if tag_offset < 0 else round(float(tag_offset), 3)
                 ),
+                # 화면이 계산한 점수. 클립이 없는 골까지 반영돼 있어서, 이 값이 있으면
+                # kind 로 다시 쌓지 않고 그대로 쓴다.
+                "score_before": before,
+                "score_after": after,
             }),
             encoding="utf-8",
         )

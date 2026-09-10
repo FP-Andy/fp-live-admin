@@ -19,7 +19,9 @@ type JobStatus = {
 
 // 태그 종류. 골이면 점수판 점수가 그 시점에 올라가고, 하이라이트면 점수는 그대로다.
 // 없으면(undefined) 팀 구분 없는 일반 태그 — 점수판에는 영향을 주지 않는다.
-type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal';
+type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal'
+  // 장면은 넣지 않고 점수판만 올리는 골. 신청팀 하이라이트에서 상대 골이 이것이다.
+  | 'home_goal_only' | 'away_goal_only';
 
 // before/after 는 이 태그만의 개별 앞/뒤 초. 없으면(undefined) 전역 padBefore/padAfter 를 따른다.
 type Tag = { id: string; t: number; before?: number; after?: number; kind?: TagKind };
@@ -50,12 +52,21 @@ type Source = { file: File; url: string; duration: number; width: number; height
 const TAG_KINDS: {
   key: TagKind; code: string; letter: string; hangul: string;
   label: string; badge: string; color: string; side: 'home' | 'away'; goal: boolean;
+  /** 클립으로 만들지 여부. 생략하면 만든다. */
+  clip?: boolean;
 }[] = [
   { key: 'home_goal', code: 'KeyQ', letter: 'q', hangul: 'ㅂ', label: '홈 골', badge: '홈 골', color: '#2F6FED', side: 'home', goal: true },
   { key: 'home', code: 'KeyW', letter: 'w', hangul: 'ㅈ', label: '홈 장면', badge: '홈', color: '#2F6FED', side: 'home', goal: false },
   { key: 'away', code: 'KeyE', letter: 'e', hangul: 'ㄷ', label: '원정 장면', badge: '원정', color: '#E8452F', side: 'away', goal: false },
   { key: 'away_goal', code: 'KeyR', letter: 'r', hangul: 'ㄱ', label: '원정 골', badge: '원정 골', color: '#E8452F', side: 'away', goal: true },
+  // 점수만 올리는 골 — 클립을 만들지 않는다. 신청팀 하이라이트에서 상대 골이 여기 해당한다.
+  { key: 'home_goal_only', code: 'KeyD', letter: 'd', hangul: 'ㅇ', label: '홈 골(점수만)', badge: '홈 골·점수만', color: '#2F6FED', side: 'home', goal: true, clip: false },
+  { key: 'away_goal_only', code: 'KeyF', letter: 'f', hangul: 'ㄹ', label: '원정 골(점수만)', badge: '원정 골·점수만', color: '#E8452F', side: 'away', goal: true, clip: false },
 ];
+
+/** 그 종류가 클립으로 만들어지는가. 점수만 반영하는 골은 아니다. */
+const makesClip = (kind?: TagKind) =>
+  (TAG_KINDS.find((k) => k.key === kind)?.clip ?? true);
 const KIND_BY_KEY = new Map(TAG_KINDS.map((k) => [k.key, k]));
 
 const DEFAULT_SCOREBOARD: Scoreboard = {
@@ -586,6 +597,8 @@ export default function ManualHighlightPage() {
   const [cutting, setCutting] = useState(false);
   const [cutProgress, setCutProgress] = useState<CutProgress | null>(null);
   const [clips, setClips] = useState<CutClip[]>([]);
+  // 클립 n 번이 tags 의 몇 번째였는지. '점수만 반영' 태그를 건너뛰므로 둘이 어긋난다.
+  const [clipTagIndex, setClipTagIndex] = useState<number[]>([]);
   const [cutError, setCutError] = useState('');
   const [previewBusy, setPreviewBusy] = useState<number | null>(null);
   const [publishing, setPublishing] = useState(false);
@@ -833,12 +846,16 @@ export default function ManualHighlightPage() {
 
   // 태그마다 '그 클립이 끝난 시점'의 점수. 골 태그면 자기 자신을 포함해 올라간다 —
   // 서버가 새기는 점수와 같은 계산이라, 목록에서 미리 그대로 확인할 수 있다.
+  // 실제로 클립이 되는 태그 수. '점수만 반영' 태그는 장면을 만들지 않으므로 빠진다.
+  const clipTagCount = useMemo(() => tags.filter((t) => makesClip(t.kind)).length, [tags]);
+
   const runningScores = useMemo(() => {
     let home = scoreboard.startHome;
     let away = scoreboard.startAway;
     return tags.map((tag) => {
-      if (tag.kind === 'home_goal') home += 1;
-      else if (tag.kind === 'away_goal') away += 1;
+      // 클립을 만들지 않는 골도 점수는 올린다 — 그게 이 태그의 존재 이유다.
+      if (tag.kind === 'home_goal' || tag.kind === 'home_goal_only') home += 1;
+      else if (tag.kind === 'away_goal' || tag.kind === 'away_goal_only') away += 1;
       return [home, away] as [number, number];
     });
   }, [tags, scoreboard.startHome, scoreboard.startAway]);
@@ -935,6 +952,11 @@ export default function ManualHighlightPage() {
 
   const runCut = async () => {
     if (!sources.length || !tags.length || cutting) return;
+    if (!clipTagCount) {
+      // 전부 '점수만 반영' 이면 만들 장면이 없다. 점수판만으로는 영상이 되지 않는다.
+      setCutError('클립이 될 태그가 없습니다. 점수만 반영하는 골 말고 장면 태그를 찍어 주세요.');
+      return;
+    }
     setCutting(true);
     setCutError('');
     setClips([]);
@@ -948,8 +970,13 @@ export default function ManualHighlightPage() {
       // 한 장면이 두 번 페이드되는 것처럼 보인다.
       const perSource: { start: number; end: number }[][] = sources.map(() => []);
       const placement: { src: number; pos: number }[] = [];
+      // 이 클립이 tags 의 몇 번째 태그에서 나왔는지. 점수 계산과 종류를 되찾는 데 쓴다.
+      const fromTag: number[] = [];
       let clamped = 0;
-      for (const tag of tags) {
+      for (let ti = 0; ti < tags.length; ti += 1) {
+        const tag = tags[ti];
+        // 점수만 반영하는 골은 장면을 넣지 않는다 — 점수판만 올린다.
+        if (!makesClip(tag.kind)) continue;
         const { index, local } = locate(tag.t);
         const before = effBefore(tag);
         const after = effAfter(tag);
@@ -957,8 +984,10 @@ export default function ManualHighlightPage() {
         const end = Math.min(sources[index].duration, local + after);
         if (start > local - before || end < local + after) clamped += 1;
         placement.push({ src: index, pos: perSource[index].length });
+        fromTag.push(ti);
         perSource[index].push({ start, end });
       }
+      setClipTagIndex(fromTag);
 
       // 원본별로 순서대로 자른다. 진행률은 전체 태그 수 기준으로 이어 붙인다.
       const cutBySource: CutClip[][] = [];
@@ -974,7 +1003,7 @@ export default function ManualHighlightPage() {
         const madeHere = await cutClipsLocally(sources[i].file, perSource[i], (p) => {
           setCutProgress({
             done: base + p.done,
-            total: tags.length,
+            total: clipTagCount,
             phase: p.phase === 'finished' && !isLast ? 'cutting' : p.phase,
           });
         });
@@ -1029,12 +1058,22 @@ export default function ManualHighlightPage() {
         form.append('requested_start', String(clip.requestedStart));
         form.append('requested_end', String(clip.requestedEnd));
         form.append('index', String(clip.index));
-        // 점수판용. 클립 index 는 태그 순서 그대로라(runCut 의 placement) 짝이 맞는다.
-        // tag_offset 은 클립 시작에서 태깅 시점까지의 초 — 골이면 그 지점에서 점수가 오른다.
-        const tag = tags[clip.index - 1];
+        // 점수판용. '점수만 반영' 태그는 클립이 되지 않으므로 clip.index 와 tags 의
+        // 자리가 어긋난다 — 자를 때 남겨 둔 색인으로 되찾는다.
+        const tagIdx = clipTagIndex[clip.index - 1];
+        const tag = tagIdx === undefined ? undefined : tags[tagIdx];
         if (tag) {
           if (tag.kind) form.append('kind', tag.kind);
+          // tag_offset 은 클립 시작에서 태깅 시점까지의 초 — 골이면 그 지점에서 점수가 오른다.
           form.append('tag_offset', String(Math.max(0, tag.t - clipRange(tag)[0])));
+          // 이 클립이 시작·끝날 때의 점수. 클립을 만들지 않은 골까지 반영돼 있어서,
+          // 서버가 kind 로 다시 쌓지 않고 이 값을 그대로 쓴다.
+          const after = runningScores[tagIdx] ?? [scoreboard.startHome, scoreboard.startAway];
+          const before = tagIdx > 0
+            ? (runningScores[tagIdx - 1] ?? [scoreboard.startHome, scoreboard.startAway])
+            : [scoreboard.startHome, scoreboard.startAway];
+          form.append('score_before', `${before[0]}:${before[1]}`);
+          form.append('score_after', `${after[0]}:${after[1]}`);
         }
         const res = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/clips`, {
           method: 'POST',
@@ -1817,7 +1856,7 @@ export default function ManualHighlightPage() {
 
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <button style={primaryBtn} onClick={runCut} disabled={cutting}>
-                  {cutting ? '추출 중...' : `✂ 클립 ${tags.length}개 추출`}
+                  {cutting ? '추출 중...' : `✂ 클립 ${clipTagCount}개 추출`}
                 </button>
                 {!cutting && clips.length ? (
                   <span style={{ fontSize: 13, color: '#22c55e' }}>
