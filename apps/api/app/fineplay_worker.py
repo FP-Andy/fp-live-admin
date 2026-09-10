@@ -95,13 +95,18 @@ def process_job(
     *,
     pipeline_version: str,
     workdir: Path | None = None,
+    youtube_path: Callable[[str], Path] | None = None,
 ) -> dict:
-    """확정된 매니페스트 + 클립 구간으로 영상을 만들어 올리고 결과 payload 를 반환한다."""
+    """확정된 매니페스트 + 클립 구간으로 영상을 만들어 올리고 결과 payload 를 반환한다.
+
+    youtube_path 는 유튜브 원본의 로컬 파일 자리를 알려 주는 함수다. 유튜브 영상은
+    S3 에 없어서 presign 할 키가 없고, 대신 미리 받아 둔 파일을 그대로 읽는다.
+    """
     if workdir is not None:
         workdir.mkdir(parents=True, exist_ok=True)
-        return _process_in(workdir, manifest, clip_specs, storage, pipeline_version)
+        return _process_in(workdir, manifest, clip_specs, storage, pipeline_version, youtube_path)
     with tempfile.TemporaryDirectory(prefix="fpc_job_") as tmp:
-        return _process_in(Path(tmp), manifest, clip_specs, storage, pipeline_version)
+        return _process_in(Path(tmp), manifest, clip_specs, storage, pipeline_version, youtube_path)
 
 
 def _process_in(
@@ -110,6 +115,7 @@ def _process_in(
     clip_specs: list[ClipSpec],
     storage: Storage,
     pipeline_version: str,
+    youtube_path: Callable[[str], Path] | None = None,
 ) -> dict:
     if not clip_specs:
         return build_result_payload(
@@ -129,6 +135,21 @@ def _process_in(
         if not video:
             raise RuntimeError(f"원본 영상을 찾을 수 없습니다: {spec.source_video_id}")
         src = _SourceInput(s3_key=video.s3_key)
+        if video.is_youtube:
+            # 유튜브 원본은 미리 받아 둔 로컬 파일을 읽는다. presign 도 폴백 다운로드도
+            # 걸 데가 없으므로(S3 키가 아예 없다) 여기서 자리를 못 박는다.
+            if youtube_path is None:
+                raise RuntimeError(
+                    f"유튜브 원본을 읽을 수 없습니다(경로 미지정): {spec.source_video_id}"
+                )
+            local = youtube_path(video.video_id)
+            if not local.exists() or local.stat().st_size == 0:
+                raise RuntimeError(
+                    f"유튜브 원본이 아직 없습니다: {video.video_id} — 먼저 받아야 합니다."
+                )
+            src.local = local
+            sources[spec.source_video_id] = src
+            continue
         if callable(presign):
             try:
                 src.url = presign(video.s3_key, expires=SOURCE_URL_EXPIRES)

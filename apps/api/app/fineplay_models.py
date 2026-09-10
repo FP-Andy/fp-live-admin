@@ -11,12 +11,24 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# 매니페스트가 알려 주는 원본의 출처. 둘 다 분석 대상이고, 가져오는 길만 다르다.
+SOURCE_UPLOAD = "UPLOAD"      # 팀이 올린 파일 — S3 에 있다
+SOURCE_YOUTUBE = "YOUTUBE"    # 팀이 링크만 준 것 — 우리가 직접 받아야 한다
+
+
 @dataclass
 class ManifestVideo:
     video_id: str
-    s3_key: str
+    s3_key: str = ""
+    # 2026-07-27 계약 변경으로 유튜브는 URL 이 그대로 온다(예전엔 저쪽이 S3 로 받아줬다).
+    source: str = SOURCE_UPLOAD
+    youtube_url: str = ""
     duration_seconds: float | None = None
     resolution: str | None = None
+
+    @property
+    def is_youtube(self) -> bool:
+        return self.source == SOURCE_YOUTUBE
 
 
 @dataclass
@@ -34,17 +46,39 @@ class Manifest:
         return self.videos[0] if self.videos else None
 
 
+def _parse_video(v: dict[str, Any]) -> ManifestVideo | None:
+    """매니페스트의 videos[] 한 줄. 가져올 길이 없으면 None.
+
+    ⚠️ s3Key 만 보고 거르면 **유튜브 신청이 통째로 사라진다.** 유튜브 항목은 s3Key 가
+    null 이고, 저쪽이 null 필드를 아예 생략하므로 키 자체가 없을 수도 있다(2026-09-10
+    "매니페스트에 영상이 없습니다" 가 이 때문이었다). source 를 먼저 보고, 옛 매니페스트나
+    source 가 빠진 경우를 대비해 어느 쪽 값이 들어 있는지로도 판별한다.
+    """
+    s3_key = str(v.get("s3Key") or "").strip()
+    youtube_url = str(v.get("youtubeUrl") or "").strip()
+    source = str(v.get("source") or "").strip().upper()
+    if not source:
+        source = SOURCE_YOUTUBE if youtube_url else SOURCE_UPLOAD
+    if source == SOURCE_YOUTUBE and not youtube_url:
+        return None
+    if source != SOURCE_YOUTUBE and not s3_key:
+        return None
+    return ManifestVideo(
+        video_id=str(v.get("videoId")),
+        s3_key=s3_key,
+        source=source,
+        youtube_url=youtube_url,
+        duration_seconds=v.get("durationSeconds"),
+        resolution=v.get("resolution"),
+    )
+
+
 def parse_manifest(data: dict[str, Any]) -> Manifest:
     team = data.get("team") or {}
     videos = [
-        ManifestVideo(
-            video_id=str(v.get("videoId")),
-            s3_key=str(v.get("s3Key") or ""),
-            duration_seconds=v.get("durationSeconds"),
-            resolution=v.get("resolution"),
-        )
-        for v in (data.get("videos") or [])
-        if v.get("s3Key")
+        parsed for parsed in
+        (_parse_video(v) for v in (data.get("videos") or []) if isinstance(v, dict))
+        if parsed is not None
     ]
     return Manifest(
         analysis_request_id=data.get("analysisRequestId"),

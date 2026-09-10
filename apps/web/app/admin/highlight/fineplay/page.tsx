@@ -110,7 +110,31 @@ type Tag = {
 };
 
 // 신청 원본 영상 하나 — 앱이 보낸 순서(videos[] index)가 곧 경기 순서(전반/후반 등).
-type SourceVideo = { videoId?: string; url: string; durationSeconds?: number | null };
+//
+// 유튜브 신청은 팀이 링크만 준 것이라 우리가 받아 둬야 재생할 수 있다. 다 받기 전까지
+// url 은 null 이고, 그동안 fetch 로 진행 상황이 온다.
+type SourceFetch = {
+  status: 'pending' | 'downloading' | 'done' | 'error';
+  percent: number;
+  code?: string | null;
+  detail?: string | null;
+};
+type SourceVideo = {
+  videoId?: string;
+  url: string | null;
+  durationSeconds?: number | null;
+  source?: 'UPLOAD' | 'YOUTUBE';
+  youtubeUrl?: string;
+  fetch?: SourceFetch | null;
+};
+
+/** 유튜브 취득 실패 사유를 사람 말로. */
+const YT_REASON: Record<string, string> = {
+  YT_PRIVATE: '비공개(또는 멤버십 전용)로 바뀐 영상입니다',
+  YT_DELETED: '삭제된 영상입니다',
+  YT_RESTRICTED: '연령·지역 제한으로 받을 수 없습니다',
+  YT_FETCH_ERROR: '다운로드에 실패했습니다',
+};
 
 type FpaMatch = {
   id: string;
@@ -310,6 +334,11 @@ export default function FineplayJobsPage() {
   const [sourceVideos, setSourceVideos] = useState<SourceVideo[]>([]);
   const [activeVideoIdx, setActiveVideoIdx] = useState(0);
   const sourceUrl = sourceVideos[activeVideoIdx]?.url || '';
+  // 유튜브를 받는 중인 영상. 있으면 화면이 진행률을 보여 주고 주기적으로 다시 물어본다.
+  const pendingFetch = sourceVideos.find(
+    (v) => !v.url && v.source === 'YOUTUBE' && v.fetch?.status !== 'error',
+  );
+  const failedFetch = sourceVideos.find((v) => !v.url && v.fetch?.status === 'error');
   // 탭 전환 후 이어서 시킹할 시간(다른 영상의 태그 클릭) — 메타데이터 로드 시 적용.
   const pendingSeekRef = useRef<number | null>(null);
   const [sourceError, setSourceError] = useState('');
@@ -747,10 +776,43 @@ export default function FineplayJobsPage() {
       setFpaOurSide('home');
     }
     try {
-      const res = await apiJson<{ url: string; videoId?: string; videos?: SourceVideo[] }>(
+      const res = await apiJson<{ url: string | null; videoId?: string; videos?: SourceVideo[] }>(
         `/highlight/fineplay-jobs/${job.id}/source-url`,
       );
       setSourceVideos(res.videos?.length ? res.videos : [{ videoId: res.videoId, url: res.url }]);
+    } catch (err) {
+      setSourceError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // 유튜브를 받는 동안에는 5초마다 다시 물어본다. 다 받으면 url 이 채워지고 멈춘다.
+  // (풀경기는 수 분 걸린다 — 담당자가 화면을 띄워 두면 알아서 재생 가능해진다.)
+  useEffect(() => {
+    if (!selected || !pendingFetch) return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await apiJson<{ videos?: SourceVideo[] }>(
+          `/highlight/fineplay-jobs/${selected.id}/source-url`,
+        );
+        if (res.videos?.length) setSourceVideos(res.videos);
+      } catch {
+        /* 잠깐 실패해도 다음 차례에 다시 본다 */
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [selected, pendingFetch]);
+
+  /** 실패한 유튜브 취득을 다시 시킨다. */
+  const retryYoutubeFetch = async () => {
+    if (!selected) return;
+    setSourceError('');
+    try {
+      await apiJson(`/highlight/fineplay-jobs/${selected.id}/fetch-youtube`, { method: 'POST' });
+      setSourceVideos((prev) => prev.map((v) => (
+        v.source === 'YOUTUBE' && !v.url
+          ? { ...v, fetch: { status: 'downloading', percent: 0 } }
+          : v
+      )));
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : String(err));
     }
@@ -1453,6 +1515,46 @@ export default function FineplayJobsPage() {
           ) : null}
           {sourceError ? (
             <p style={{ fontSize: 13, color: '#ef4444' }}>원본 재생 실패: {sourceError}</p>
+          ) : failedFetch ? (
+            <div
+              style={{
+                padding: 12, borderRadius: 8, fontSize: 13,
+                background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+              }}
+            >
+              <span>
+                유튜브 영상을 받지 못했습니다 —{' '}
+                <strong>{YT_REASON[String(failedFetch.fetch?.code)] || '다운로드에 실패했습니다'}</strong>
+              </span>
+              {failedFetch.youtubeUrl ? (
+                <a
+                  href={failedFetch.youtubeUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ ...smallBtn, textDecoration: 'none' }}
+                >
+                  링크 열어 보기
+                </a>
+              ) : null}
+              <button style={smallBtn} onClick={retryYoutubeFetch}>다시 받기</button>
+            </div>
+          ) : pendingFetch ? (
+            <div style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
+              <p style={{ margin: '0 0 8px' }}>
+                유튜브 영상을 받는 중입니다 — <strong>{pendingFetch.fetch?.percent ?? 0}%</strong>
+                {'  '}(풀경기는 몇 분 걸립니다. 이 화면을 열어 두면 다 받는 대로 재생됩니다)
+              </p>
+              <div style={{ height: 6, borderRadius: 3, background: 'var(--border-ghost, #2c2c32)' }}>
+                <div
+                  style={{
+                    width: `${Math.max(2, pendingFetch.fetch?.percent ?? 0)}%`,
+                    height: '100%', borderRadius: 3, background: 'var(--accent, #3b82f6)',
+                    transition: 'width .4s',
+                  }}
+                />
+              </div>
+            </div>
           ) : !sourceUrl ? (
             <p style={{ fontSize: 13, color: 'var(--muted, #999)' }}>원본 주소 가져오는 중...</p>
           ) : (
