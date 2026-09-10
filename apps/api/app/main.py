@@ -51,6 +51,8 @@ from .highlight_jobs import (
     cut_clips_for_job,
     delete_job_files,
     download_link_for_job,
+    fetch_youtube_sources_for_job,
+    fineplay_youtube_path,
     list_manual_clip_info,
     merge_clips_for_job,
     merge_manual_clips_for_job,
@@ -11030,6 +11032,7 @@ def unlink_standalone_request(
 
 @app.post("/api/highlight/fineplay-jobs/poll")
 def poll_fineplay_jobs(
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -11110,7 +11113,12 @@ def poll_fineplay_jobs(
             owner_id=user.id,
             status="tagging",
             mode="fineplay",
-            original_filename=str(first.get("s3Key") or "").rsplit("/", 1)[-1] or "fineplay.mp4",
+            # 유튜브 신청은 s3Key 가 없다. 이름이라도 남게 링크에서 끌어온다.
+            original_filename=(
+                str(first.get("s3Key") or "").rsplit("/", 1)[-1]
+                or (str(first.get("youtubeUrl") or "").rstrip("/").rsplit("/", 1)[-1].split("?")[0])
+                or "fineplay.mp4"
+            ),
             job_metadata={
                 "display_name": team.get("teamName"),
                 "analysis_request_id": rid,
@@ -11133,6 +11141,14 @@ def poll_fineplay_jobs(
         )
         db.add(job)
         claimed.append(job_id)
+        # 유튜브 원본은 우리가 직접 받아야 한다(2026-07-27 계약 변경). 클레임하자마자
+        # 받기 시작해 두면, 담당자가 작업을 열 때쯤엔 이미 재생할 수 있다.
+        if any(
+            str((v or {}).get("source") or "").upper() == "YOUTUBE" or (v or {}).get("youtubeUrl")
+            for v in (manifest.get("videos") or [])
+            if isinstance(v, dict)
+        ):
+            background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
     db.commit()
     if claimed:
         _match_response_cache.clear()
@@ -11158,18 +11174,44 @@ def fineplay_source_url(
     manifest = fineplay_parse_manifest((job.job_metadata or {}).get("manifest") or {})
     if not manifest.videos:
         raise HTTPException(status_code=409, detail="매니페스트에 영상이 없습니다.")
+    fetch_state = dict((job.job_metadata or {}).get("youtube_fetch") or {})
+    needs_s3 = any(not v.is_youtube for v in manifest.videos)
     storage = highlight_default_storage()
-    if not storage.configured:
+    if needs_s3 and not storage.configured:
         raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
-    videos = [
-        {
+
+    videos = []
+    for v in manifest.videos:
+        if v.is_youtube:
+            # 유튜브는 presign 할 S3 키가 없다. 받아 둔 파일을 우리 서버가 흘려준다.
+            local = fineplay_youtube_path(job_id, v.video_id)
+            ready = local.exists() and local.stat().st_size > 0
+            entry = fetch_state.get(v.video_id) or {}
+            videos.append({
+                "videoId": v.video_id,
+                "url": (
+                    f"/api/highlight/fineplay-jobs/{job_id}/local-source/{v.video_id}"
+                    if ready else None
+                ),
+                "source": "YOUTUBE",
+                "youtubeUrl": v.youtube_url,
+                "fetch": {
+                    "status": "done" if ready else str(entry.get("status") or "pending"),
+                    "percent": int(entry.get("percent") or (100 if ready else 0)),
+                    "code": entry.get("code"),
+                    "detail": entry.get("detail"),
+                },
+                "durationSeconds": v.duration_seconds,
+                "resolution": v.resolution,
+            })
+            continue
+        videos.append({
             "videoId": v.video_id,
             "url": storage.presigned_get(v.s3_key, expires=21600),
+            "source": "UPLOAD",
             "durationSeconds": v.duration_seconds,
             "resolution": v.resolution,
-        }
-        for v in manifest.videos
-    ]
+        })
     return {
         "url": videos[0]["url"],
         "videoId": videos[0]["videoId"],
@@ -11177,6 +11219,67 @@ def fineplay_source_url(
         "resolution": videos[0]["resolution"],
         "videos": videos,
     }
+
+
+@app.get("/api/highlight/fineplay-jobs/{job_id}/local-source/{video_id}")
+def fineplay_local_source(
+    job_id: str,
+    video_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """받아 둔 유튜브 원본을 태깅 화면으로 흘려준다.
+
+    S3 원본은 presigned URL 로 바로 받아 가지만 유튜브는 우리 디스크에 있다. 브라우저가
+    구간을 건너뛰며 볼 수 있어야 하므로 Range 를 그대로 받아 준다(태깅은 배속·점프가
+    전부다 — 통짜로만 주면 쓸 수 없다).
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    path = fineplay_youtube_path(job_id, video_id)
+    if not path.exists() or path.stat().st_size == 0:
+        entry = ((job.job_metadata or {}).get("youtube_fetch") or {}).get(video_id) or {}
+        status = str(entry.get("status") or "pending")
+        if status == "downloading":
+            raise HTTPException(status_code=409, detail=f"영상을 받는 중입니다 ({entry.get('percent', 0)}%).")
+        if status == "error":
+            raise HTTPException(
+                status_code=409,
+                detail=f"영상을 받지 못했습니다 ({entry.get('code') or 'YT_FETCH_ERROR'}).",
+            )
+        raise HTTPException(status_code=404, detail="아직 받지 않은 영상입니다.")
+    return _serve_file_with_range(path, request, "video/mp4")
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/fetch-youtube")
+def fineplay_fetch_youtube(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """유튜브 원본 취득을 (다시) 시작한다. 클레임 때 자동으로 돌지만 실패했을 때 쓴다."""
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    manifest = fineplay_parse_manifest((job.job_metadata or {}).get("manifest") or {})
+    targets = [v for v in manifest.videos if v.is_youtube]
+    if not targets:
+        raise HTTPException(status_code=400, detail="이 신청에는 유튜브 영상이 없습니다.")
+    # 실패로 남은 것만 지워 다시 받게 한다 — 이미 받아 둔 건 그대로 둔다.
+    metadata = dict(job.job_metadata or {})
+    state = dict(metadata.get("youtube_fetch") or {})
+    for v in targets:
+        if str((state.get(v.video_id) or {}).get("status")) == "error":
+            state.pop(v.video_id, None)
+    metadata["youtube_fetch"] = state
+    update_job(db, job_id, job_metadata=metadata)
+    background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
+    _audit(db, "FINEPLAY_YOUTUBE_FETCH", "highlight", actor=user, target_id=job_id, severity="INFO")
+    db.commit()
+    return {"ok": True, "videos": [v.video_id for v in targets]}
 
 
 @app.post("/api/highlight/fineplay-jobs/{job_id}/resend-callback")

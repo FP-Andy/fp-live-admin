@@ -287,6 +287,178 @@ def create_player_proxy_for_job(job_id: str) -> None:
         db.close()
 
 
+# 유튜브에서 받을 화질·코덱.
+#
+# H.264(avc1) 를 먼저 고른다 — 요즘 유튜브는 1080p mp4 를 AV1 로도 주는데, 그러면
+# 브라우저 태깅 재생이 무겁고 클립 렌더도 AV1 디코드를 타서 느려진다. 결과물은 어차피
+# H.264 라 처음부터 H.264 로 받는 편이 낫다. 없으면 아무거나 받아 온다(못 받는 것보다는 낫다).
+YT_FORMAT = (
+    "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]"
+    "/b[height<=1080][vcodec^=avc1]"
+    "/bv*[height<=1080]+ba"
+    "/b[height<=1080]"
+)
+
+
+def fineplay_source_dir(job_id: str) -> Path:
+    """FPC 신청의 원본을 두는 자리. 유튜브처럼 S3 에 없는 원본이 여기 내려온다."""
+    path = job_dir(job_id) / "source"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def fineplay_youtube_path(job_id: str, video_id: str) -> Path:
+    """그 영상의 로컬 파일 자리. video_id 는 매니페스트 값이라 경로로 새지 않게 씻는다."""
+    safe = "".join(ch for ch in str(video_id) if ch.isalnum() or ch in "-_")[:80] or "video"
+    return fineplay_source_dir(job_id) / f"{safe}.mp4"
+
+
+# 유튜브 취득 실패 사유 — FinePlay 쪽 콜백에 그대로 실어 보낼 코드(2026-09-10 가이드 §3 제안).
+YT_PRIVATE = "YT_PRIVATE"
+YT_DELETED = "YT_DELETED"
+YT_RESTRICTED = "YT_RESTRICTED"
+YT_FETCH_ERROR = "YT_FETCH_ERROR"
+
+
+def classify_youtube_failure(stderr: str) -> str:
+    """yt-dlp 가 뱉은 말에서 사유를 고른다. 못 고르면 그 외 실패로 둔다.
+
+    순서가 중요하다 — 지역 차단은 "Video unavailable. The uploader has not made this
+    video available in your country" 처럼 삭제 문구와 함께 오는 일이 잦아서, 삭제보다
+    먼저 봐야 지역 제한을 삭제로 잘못 읽지 않는다.
+    """
+    text = (stderr or "").lower()
+    if "private video" in text or "members-only" in text or "join this channel" in text:
+        return YT_PRIVATE
+    if "your country" in text or "not available in your location" in text:
+        return YT_RESTRICTED
+    if "age" in text and ("confirm" in text or "restricted" in text or "verify" in text):
+        return YT_RESTRICTED
+    if "video unavailable" in text or "has been removed" in text or "does not exist" in text:
+        return YT_DELETED
+    return YT_FETCH_ERROR
+
+
+def fetch_youtube_source(url: str, dest: Path, on_progress=None) -> None:
+    """유튜브 영상 하나를 dest 로 받는다. 실패하면 사유 코드를 단 예외를 던진다.
+
+    받는 방식은 운영자가 링크를 붙여넣는 기존 기능(download_link_for_job)과 같다 —
+    1080p mp4 + m4a 를 aria2c 로 병렬 수신. 굳이 다르게 할 이유가 없고, 한쪽만
+    고쳐지는 일도 막는다.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmpl = str(dest.with_suffix("")) + ".%(ext)s"
+    cmd = [
+        "yt-dlp",
+        "-f", YT_FORMAT,
+        "--downloader", "aria2c",
+        "--downloader-args", "aria2c:-x 16 -s 16 -k 1M",
+        "--merge-output-format", "mp4",
+        "--newline",
+        "-o", tmpl,
+        url,
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except FileNotFoundError as exc:
+        raise YoutubeFetchError(YT_FETCH_ERROR, "yt-dlp 실행 파일을 찾을 수 없습니다.") from exc
+
+    tail: list[str] = []
+    for line in proc.stdout or []:
+        tail.append(line.rstrip())
+        if len(tail) > 40:
+            del tail[0]
+        if on_progress:
+            # "[download]  42.3% of ..." 에서 퍼센트만 집어 올린다.
+            hit = re.search(r"(\d{1,3}(?:\.\d)?)%", line)
+            if hit:
+                try:
+                    on_progress(float(hit.group(1)))
+                except (TypeError, ValueError):
+                    pass
+    proc.wait()
+    detail = "\n".join(tail)
+    if proc.returncode != 0:
+        raise YoutubeFetchError(classify_youtube_failure(detail), detail[-500:])
+
+    if not dest.exists():
+        # 확장자가 다르게 떨어졌으면(webm 등) 그걸 쓴다.
+        made = [p for p in dest.parent.glob(dest.stem + ".*") if not p.name.endswith(".part")]
+        if not made:
+            raise YoutubeFetchError(YT_FETCH_ERROR, "받은 파일을 찾을 수 없습니다.")
+        made[0].rename(dest)
+
+
+class YoutubeFetchError(RuntimeError):
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(detail or code)
+        self.code = code
+        self.detail = detail
+
+
+def fetch_youtube_sources_for_job(job_id: str) -> None:
+    """FPC 신청에 실린 유튜브 원본을 전부 내려받는다(백그라운드).
+
+    받아 둔 파일은 태깅 화면이 재생하고 클립 렌더가 읽는다 — S3 원본과 같은 자리에서
+    같은 흐름을 탄다. 진행 상황은 잡 메타의 youtube_fetch 에 영상별로 남기고,
+    화면은 그걸 보고 '받는 중 42%' 를 그린다.
+
+    이미 받아 둔 영상은 건너뛴다 — 다시 폴링하거나 다시 눌러도 되돌아가지 않는다.
+    """
+    from .fineplay_models import parse_manifest  # 순환 import 를 피해 함수 안에서
+
+    db = SessionLocal()
+    try:
+        job = db.get(HighlightJob, job_id)
+        if not job:
+            return
+        metadata = dict(job.job_metadata or {})
+        manifest = parse_manifest(metadata.get("manifest") or {})
+        targets = [v for v in manifest.videos if v.is_youtube]
+        if not targets:
+            return
+
+        state = dict(metadata.get("youtube_fetch") or {})
+
+        def save(video_id: str, **fields) -> None:
+            entry = dict(state.get(video_id) or {})
+            entry.update(fields)
+            entry["updated_at"] = datetime.utcnow().isoformat()
+            state[video_id] = entry
+            meta = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+            meta["youtube_fetch"] = state
+            update_job(db, job_id, job_metadata=_json_safe(meta))
+
+        for video in targets:
+            dest = fineplay_youtube_path(job_id, video.video_id)
+            if dest.exists() and dest.stat().st_size > 0:
+                save(video.video_id, status="done", percent=100, path=str(dest))
+                continue
+            save(video.video_id, status="downloading", percent=0, url=video.youtube_url)
+            # 퍼센트를 매 줄 저장하면 DB 를 너무 두드린다. 5% 단위로만 남긴다.
+            last = {"pct": -5.0}
+
+            def on_progress(pct: float, _vid=video.video_id, _last=last) -> None:
+                if pct - _last["pct"] >= 5.0:
+                    _last["pct"] = pct
+                    save(_vid, status="downloading", percent=int(pct))
+
+            try:
+                fetch_youtube_source(video.youtube_url, dest, on_progress=on_progress)
+            except YoutubeFetchError as exc:
+                logger.warning("유튜브 취득 실패 %s/%s: %s", job_id, video.video_id, exc.detail[:200])
+                save(video.video_id, status="error", code=exc.code, detail=exc.detail[-300:])
+                continue
+            except Exception as exc:  # noqa: BLE001 - 한 영상 실패가 나머지를 막지 않게
+                logger.exception("유튜브 취득 중 예외 %s/%s", job_id, video.video_id)
+                save(video.video_id, status="error", code=YT_FETCH_ERROR, detail=str(exc)[-300:])
+                continue
+            save(video.video_id, status="done", percent=100, path=str(dest),
+                 size=dest.stat().st_size if dest.exists() else 0)
+    finally:
+        db.close()
+
+
 def download_link_for_job(job_id: str) -> None:
     """Download an operator-submitted link into the upload dir via yt-dlp + aria2c."""
     db = SessionLocal()
@@ -310,7 +482,7 @@ def download_link_for_job(job_id: str) -> None:
         cmd = [
             "yt-dlp",
             "-f",
-            "bv[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]",
+            YT_FORMAT,
             "--downloader",
             "aria2c",
             "--downloader-args",
@@ -1230,6 +1402,8 @@ def run_fineplay_produce(job_id: str) -> None:
             payload = process_job(
                 manifest, specs, default_storage(),
                 pipeline_version=FINEPLAY_PIPELINE_VERSION,
+                # 유튜브 원본은 S3 가 아니라 우리가 받아 둔 파일에서 읽는다.
+                youtube_path=lambda vid: fineplay_youtube_path(job_id, vid),
             )
         except Exception as exc:
             update_job(db, job_id, status="error", error_message=f"렌더/업로드 실패: {exc}")
