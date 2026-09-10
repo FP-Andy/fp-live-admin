@@ -966,6 +966,28 @@ export default function FineplayJobsPage() {
       if (e.code === 'KeyD' || e.key === 'd' || e.key === 'D' || e.key === 'ㅇ') {
         e.preventDefault();
         addTag('away');
+        return;
+      }
+      // 골. 장면 키(A/D) 바로 옆에 둬서 손을 크게 옮기지 않아도 되게 했다.
+      if (e.code === 'KeyS' || e.key === 's' || e.key === 'S' || e.key === 'ㄴ') {
+        e.preventDefault();
+        addTag('home', { goal: true });
+        return;
+      }
+      if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F' || e.key === 'ㄹ') {
+        e.preventDefault();
+        addTag('away', { goal: true });
+        return;
+      }
+      // 골이지만 장면은 안 넣는 것 — 신청팀 하이라이트에서 상대 골이 이것이다.
+      if (e.code === 'KeyQ' || e.key === 'q' || e.key === 'Q' || e.key === 'ㅂ') {
+        e.preventDefault();
+        addTag('home', { scoreOnly: true });
+        return;
+      }
+      if (e.code === 'KeyR' || e.key === 'r' || e.key === 'R' || e.key === 'ㄱ') {
+        e.preventDefault();
+        addTag('away', { scoreOnly: true });
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1748,10 +1770,40 @@ export default function FineplayJobsPage() {
                   ＋ 홈 {fpaTeams.home !== 'Home' ? fpaTeams.home : ''} 태깅 (A / ㅁ)
                 </button>
                 <button
+                  style={{ ...btn, background: '#16a34a', borderColor: 'transparent' }}
+                  onClick={() => addTag('home', { goal: true })}
+                  title="홈 골 — 클립도 만들고 점수판도 올린다"
+                >
+                  ⚽ 홈 골 (S / ㄴ)
+                </button>
+                <button
                   style={{ ...btn, background: '#7c3aed', borderColor: 'transparent' }}
                   onClick={() => addTag('away')}
                 >
                   ＋ 어웨이 {fpaTeams.away !== 'Away' ? fpaTeams.away : ''} 태깅 (D / ㅇ)
+                </button>
+                <button
+                  style={{ ...btn, background: '#16a34a', borderColor: 'transparent' }}
+                  onClick={() => addTag('away', { goal: true })}
+                  title="어웨이 골 — 클립도 만들고 점수판도 올린다"
+                >
+                  ⚽ 어웨이 골 (F / ㄹ)
+                </button>
+                {/* 장면은 넣지 않고 점수판만 올리는 골. 신청팀 하이라이트에서 상대 골이
+                    이것이다 — 그 팀이 잘한 것만 담아야 하므로 상대 골 장면은 넣지 않는다. */}
+                <button
+                  style={{ ...btn, background: 'transparent', borderColor: '#16a34a', color: '#16a34a' }}
+                  onClick={() => addTag('home', { scoreOnly: true })}
+                  title="점수판만 올린다 — 이 장면은 클립으로 만들지 않는다"
+                >
+                  홈 골·점수만 (Q / ㅂ)
+                </button>
+                <button
+                  style={{ ...btn, background: 'transparent', borderColor: '#16a34a', color: '#16a34a' }}
+                  onClick={() => addTag('away', { scoreOnly: true })}
+                  title="점수판만 올린다 — 이 장면은 클립으로 만들지 않는다"
+                >
+                  어웨이 골·점수만 (R / ㄱ)
                 </button>
                 <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
                   {fmt(current)} / {fmt(duration)}
