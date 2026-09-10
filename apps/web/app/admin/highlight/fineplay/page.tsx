@@ -14,6 +14,13 @@ import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 // 구간을 서버로 보내면 서버가 클립 렌더 → S3 업로드 → 결과 콜백까지 처리한다.
 // 원본을 내려받지도, 브라우저에서 자르지도 않는다.
 
+/** 앱이 보내는 유니폼 색은 ARGB 정수다(예: 4294901760 = 0xFFFF0000 = 빨강). */
+function argbToCss(argb?: number | null): string | null {
+  if (typeof argb !== 'number' || !Number.isFinite(argb)) return null;
+  const hex = (argb >>> 0).toString(16).padStart(8, '0');
+  return `#${hex.slice(2)}`;   // 앞 두 자리는 알파 — 스와치에는 쓰지 않는다
+}
+
 // 산출 지시 — 신청 옵션(BASIC_HIGHLIGHT / FREE_XFP_TOKEN / XFP_SINGLE / FULL_REPORT)
 // 으로 서버가 판정한다. basic 이면 FPA dual 태깅 없이 구간만 잘라 보내면 된다.
 type PlanTier = 'xfp' | 'basic';
@@ -35,7 +42,13 @@ type FpJob = {
   job_metadata?: {
     display_name?: string | null;
     analysis_request_id?: number | string;
-    manifest?: { videos?: { durationSeconds?: number }[] } | null;
+    manifest?: {
+      videos?: { durationSeconds?: number }[];
+      // 신청한 팀. 홈/어웨이 중 어느 쪽인지는 claim 때 정해진다(컨벤션: 홈 = 신청팀).
+      team?: { teamName?: string; jerseyColorArgb?: number } | null;
+      opponent?: { name?: string } | null;
+      lineup?: unknown[];
+    } | null;
     clips?: { start: number; end: number }[];
     progress?: { detail?: string } | null;
     result_payload?: { clips?: unknown[] } | null;
@@ -1617,6 +1630,53 @@ export default function FineplayJobsPage() {
               나중에 유료 전환 시 재전송만으로 나갑니다).
             </p>
           ) : null}
+          {/* ── 신청팀 ─────────────────────────────────────────────────
+              영상만 보고 어느 팀을 담아야 하는지 매번 되짚지 않도록, 신청한 팀이 어느
+              쪽이고 무슨 색 옷인지 태깅 내내 눈에 둔다. */}
+          {selected?.job_metadata?.manifest?.team ? (
+            <div
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                marginBottom: 10, padding: '8px 12px', borderRadius: 8,
+                background: 'var(--surface-input, #16161a)',
+                border: '1px solid var(--border-ghost, #2c2c32)',
+              }}
+            >
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>신청팀</span>
+              {argbToCss(selected.job_metadata.manifest.team.jerseyColorArgb) ? (
+                <span
+                  title={`유니폼 색 ${argbToCss(selected.job_metadata.manifest.team.jerseyColorArgb)}`}
+                  style={{
+                    width: 16, height: 16, borderRadius: 4, display: 'inline-block',
+                    background: argbToCss(selected.job_metadata.manifest.team.jerseyColorArgb) as string,
+                    border: '1px solid rgba(255,255,255,0.35)',
+                  }}
+                />
+              ) : null}
+              <strong style={{ fontSize: 14 }}>
+                {selected.job_metadata.manifest.team.teamName || '(팀명 없음)'}
+              </strong>
+              <span
+                style={{
+                  fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+                  background: fpaOurSide === 'home' ? 'var(--accent, #3b82f6)' : '#7c3aed',
+                  color: '#fff',
+                }}
+              >
+                {fpaOurSide === 'home' ? '홈' : '어웨이'}
+              </span>
+              {selected.job_metadata.manifest.opponent?.name ? (
+                <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                  vs {selected.job_metadata.manifest.opponent.name}
+                  {' · '}{fpaOurSide === 'home' ? '어웨이' : '홈'}
+                </span>
+              ) : null}
+              <span style={{ fontSize: 12, color: 'var(--muted, #666)', marginLeft: 'auto' }}>
+                이 팀이 잘한 장면을 담습니다
+              </span>
+            </div>
+          ) : null}
+
           {sourceError ? (
             <p style={{ fontSize: 13, color: '#ef4444' }}>원본 재생 실패: {sourceError}</p>
           ) : failedFetch ? (
