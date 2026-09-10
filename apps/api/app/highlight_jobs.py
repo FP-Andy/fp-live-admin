@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import io
 import json
 import logging
 import os
@@ -12,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
@@ -606,6 +610,32 @@ def _ffmpeg_failure_detail(ex: subprocess.CalledProcessError) -> str:
     return (" / ".join((picked or lines)[-3:]) or detail)[-300:]
 
 
+def _decode_logo(data_url: Any, out_dir: Path) -> Path | None:
+    """점수판 대회 로고 dataURL → PNG 파일. 없거나 못 읽으면 None(로고 없이 그린다).
+
+    화면에서 파일을 골라 dataURL 로 실어 보내므로 서버에 따로 업로드 API 를 두지
+    않는다 — 로고는 잡 하나에 한 장뿐이고 합치기 때만 쓰인다.
+    """
+    raw = str(data_url or "")
+    if "," not in raw or not raw.startswith("data:"):
+        return None
+    try:
+        payload = base64.b64decode(raw.split(",", 1)[1], validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not payload:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "logo.png"
+    try:
+        # 어떤 형식으로 올렸든 PNG(알파 보존)로 통일해 둔다.
+        with Image.open(io.BytesIO(payload)) as img:
+            img.convert("RGBA").save(path, format="PNG")
+    except Exception:
+        return None
+    return path
+
+
 def _scoreboard_plan(
     metadata: dict,
     clip_meta: list[dict],
@@ -771,13 +801,18 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         sb = _scoreboard_plan(metadata, used_meta, lengths)
         sb_dir = work / "sb"
         sb_cache: dict[tuple[int, int], Path] = {}
+        sb_logo: Path | None = None
         if sb:
             sb_cfg, sb_pre, sb_post, sb_goal = sb
+            sb_logo = _decode_logo(sb_cfg.get("logo_url"), sb_dir)
+            # 로고가 있으면 판보다 세로가 길다 — 그 높이로 자리를 잡아야 위쪽에 붙였을 때
+            # 로고가 화면 밖으로 잘리지 않는다.
             sb_board_w, _sb_h, sb_x, sb_y = board_placement(
                 vw, vh,
                 float(sb_cfg.get("size_pct") or 28),
                 float(sb_cfg.get("pos_x") or 0),
                 float(sb_cfg.get("pos_y") or 0),
+                with_logo=sb_logo is not None,
             )
 
         def sb_image(score: tuple[int, int]) -> Path:
@@ -790,6 +825,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     str(sb_cfg.get("away_name") or ""),
                     score[0], score[1], sb_board_w,
                     sb_cfg.get("home_color"), sb_cfg.get("away_color"),
+                    sb_logo,
                 )
                 sb_cache[score] = path
             return path

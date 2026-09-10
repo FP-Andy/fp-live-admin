@@ -9308,20 +9308,28 @@ def merge_manual_job(
             except (TypeError, ValueError):
                 return fallback
 
-        size_pct = _pct("size_pct", 28.0, 10.0, 60.0)
+        size_pct = _pct("size_pct", 24.33, 10.0, 60.0)
         metadata = dict(job.job_metadata or {})
         metadata["scoreboard"] = {
             "enabled": True,
             "home_name": str(scoreboard.get("home_name") or "").strip()[:20],
             "away_name": str(scoreboard.get("away_name") or "").strip()[:20],
-            "home_color": _color("home_color", "#2F6FED"),
-            "away_color": _color("away_color", "#E8452F"),
+            "home_color": _color("home_color", "#FF7400"),
+            "away_color": _color("away_color", "#0000FF"),
             "start_home": _score("start_home"),
             "start_away": _score("start_away"),
             "size_pct": size_pct,
             # 여백을 뺀 놓을 수 있는 범위 안에서의 비율. (0,0) 왼쪽 위 · (100,100) 오른쪽 아래.
-            "pos_x": _pct("pos_x", 0.0, 0.0, 100.0),
-            "pos_y": _pct("pos_y", 0.0, 0.0, 100.0),
+            "pos_x": _pct("pos_x", 2.18, 0.0, 100.0),
+            "pos_y": _pct("pos_y", 4.42, 0.0, 100.0),
+            # 대회 로고(dataURL). 합치기 때 PNG 로 풀어 판 위에 얹는다. 없으면 빈 문자열이고
+            # 그때는 로고 없이 판만 그린다. 2MB 를 넘으면 버린다 — 잡 메타에 통째로 들어가는
+            # 값이라 무한정 키우면 안 된다.
+            "logo_url": (
+                str(scoreboard.get("logo_url") or "")
+                if len(str(scoreboard.get("logo_url") or "")) <= 2_800_000
+                else ""
+            ),
         }
         update_job(db, job_id, job_metadata=metadata)
 
