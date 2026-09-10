@@ -37,6 +37,8 @@ type Scoreboard = {
   /** 여백을 뺀 놓을 수 있는 범위 안에서의 비율(0~100). (0,0) 왼쪽 위 · (100,100) 오른쪽 아래. */
   posX: number;
   posY: number;
+  /** 대회 로고(dataURL). 비어 있으면 로고 없이 판만 그린다. */
+  logoUrl: string;
 };
 type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number; scoreboard?: Scoreboard };
 
@@ -60,13 +62,22 @@ const DEFAULT_SCOREBOARD: Scoreboard = {
   enabled: false,
   homeName: '',
   awayName: '',
-  homeColor: '#2F6FED',
-  awayColor: '#E8452F',
+  homeColor: '#FF7400',
+  awayColor: '#0000FF',
   startHome: 0,
   startAway: 0,
-  sizePct: 28,
-  posX: 0,
-  posY: 0,
+  sizePct: 24.33,
+  // 좌상단에서 살짝 안쪽 — 실제로 쓰는 자리(2026-09-09).
+  //
+  // 이 값은 '여백을 뺀 놓을 수 있는 범위' 안에서의 비율이라 숫자가 눈에 안 들어온다.
+  // 1920x1080 · 크기 24.33% 에서 화면 좌표 **(70, 80)px** 이 되는 값이다
+  // (판 467x95 · 여백 40 · 여유 1373x905 → (70−40)/1373, (80−40)/905).
+  //
+  // ⚠️ 저장이 비율이라 **영상 규격이 다르면 px 자리가 달라진다.** SUFA 원본은 전부
+  // 1920x1080 이라 실질적인 문제는 없지만, 파노라마(3840x800) 같은 걸 넣으면 밀린다.
+  posX: 2.18,
+  posY: 4.42,
+  logoUrl: '',
 };
 
 /** 위치 프리셋 3x3. 값은 posX/posY 비율이다. */
@@ -77,7 +88,12 @@ const POS_PRESETS: { x: number; y: number; label: string }[] = [
 ];
 
 // 점수판 판때기 비율(디자인 828.46 x 157.76). 서버 렌더러와 같은 값이어야 한다.
-const BOARD_ASPECT = 828.46 / 157.76;
+// 서버 렌더(scoreboard.py)와 같은 값이어야 미리보기가 결과물과 일치한다.
+// Figma 가 준 928.75x182 는 기울어진 도형의 **바운딩**이라, 실제 화면 비율은
+// 시안 스크린샷 실측값(257px : 52px)을 쓴다.
+const BOARD_ASPECT = 4.94;
+const SKEW = Math.tan((12 * Math.PI) / 180);   // 12°
+const BAR_W_RATIO = 0.0623;                    // 컬러바 수평 두께 비율(실측)
 
 const SPEEDS = [1, 1.5, 2, 3, 4];
 const SEEK_STEP = 5;
@@ -154,16 +170,21 @@ function probeMeta(url: string): Promise<{ duration: number; width: number; heig
 
 /** 점수판 크기·자리 계산 — 서버(app/scoreboard.py 의 board_placement)와 같아야 한다.
  *  좌표는 전부 '영상 픽셀' 기준이고, 미리보기는 이 값을 비율로 줄여 그린다. */
-function boardPlacement(videoW: number, videoH: number, sizePct: number, posX: number, posY: number) {
+function boardPlacement(
+  videoW: number, videoH: number, sizePct: number, posX: number, posY: number,
+  withLogo = false,
+) {
   const pct = Math.max(10, Math.min(60, sizePct)) / 100;
   const w = Math.max(160, Math.round(Math.min(videoW * pct, videoH * 0.18 * BOARD_ASPECT)));
-  const h = Math.max(30, Math.round(w / BOARD_ASPECT));
+  const plateH = Math.max(30, Math.round(w / BOARD_ASPECT));
+  // 로고는 판 위로 튀어나오므로 차지하는 높이가 더 크다(서버 board_placement 와 동일).
+  const h = plateH + (withLogo ? Math.round(plateH * (61.01 / 182)) : 0);
   const margin = Math.max(16, Math.round(videoW * 0.021));
   const freeX = Math.max(0, videoW - w - 2 * margin);
   const freeY = Math.max(0, videoH - h - 2 * margin);
   const clamp = (v: number) => Math.max(0, Math.min(100, v)) / 100;
   return {
-    w, h, margin,
+    w, h, plateH, margin,
     x: margin + Math.round(freeX * clamp(posX)),
     y: margin + Math.round(freeY * clamp(posY)),
     freeX, freeY,
@@ -176,44 +197,86 @@ const fmtBytes = (bytes: number) => {
 };
 
 /** 결과물에 새겨질 점수판 미리보기. 서버 렌더러(app/scoreboard.py)와 같은 디자인·비율이다. */
+/** 점수판 미리보기 — 서버 렌더(scoreboard.py)와 같은 기하로 그린다.
+ *
+ * 판·컬러바는 12° 기울어진 평행사변형이다. clip-path 로 잘라 만든다 — skew 변환을
+ * 쓰면 안쪽 글자까지 같이 기울어진다. 로고는 판 위쪽 가운데에 절반 걸친다.
+ * 시간 표시는 없다(디자인에서 뺐다).
+ */
 function ScoreboardPreview(
   { config, home, away, width = 420 }:
   { config: Scoreboard; home: number; away: number; width?: number },
 ) {
   const W = width;
   const H = Math.round(W / BOARD_ASPECT);
-  // 디자인 원본(828.46 폭) 좌표를 미리보기 크기로 환산한다 — 서버와 같은 비율.
-  const px = (v: number) => `${(v * W) / 828.46}px`;
-  const bar = (color: string): React.CSSProperties => ({
+  const off = H * SKEW;                       // 기울기로 밀리는 가로량
+  const rise = config.logoUrl ? H * (61.01 / 182) : 0;
+  const barW = W * BAR_W_RATIO;
+  // 위쪽 변이 오른쪽으로 off 만큼 밀린 평행사변형.
+  const slant = (x0: number, w: number) =>
+    `polygon(${x0 + off}px 0, ${x0 + off + w}px 0, ${x0 + w}px 100%, ${x0}px 100%)`;
+  const nameStyle: React.CSSProperties = {
     position: 'absolute', top: '50%', transform: 'translateY(-50%)',
-    width: px(14), height: px(92), borderRadius: px(7), background: color,
-  });
-  const name: React.CSSProperties = {
-    position: 'absolute', top: '50%', transform: 'translateY(-50%)',
-    fontSize: px(46), fontWeight: 700, whiteSpace: 'nowrap',
-    overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: px(250),
+    fontSize: `${H * 0.38}px`, fontWeight: 800, whiteSpace: 'nowrap',
+    overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: `${W * 0.26}px`,
+    fontFamily: 'Paperlogy, sans-serif',
+  };
+  const scoreStyle: React.CSSProperties = {
+    position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)',
+    fontSize: `${H * 0.38}px`, fontWeight: 800, fontFamily: 'Paperlogy, sans-serif',
   };
   return (
-    <div
-      style={{
-        position: 'relative', width: W, height: H, borderRadius: px(14), color: '#fff',
-        background: 'linear-gradient(90deg, #1B2B3F 0%, rgba(27, 43, 63, 0.8) 100%)',
-      }}
-    >
-      <div style={{ ...bar(config.homeColor), left: px(26) }} />
-      <div style={{ ...bar(config.awayColor), right: px(26) }} />
-      <span style={{ ...name, left: px(60) }}>{config.homeName || 'HOME'}</span>
-      <span style={{ ...name, right: px(60), textAlign: 'right' }}>{config.awayName || 'AWAY'}</span>
+    <div style={{ position: 'relative', width: W, height: H + rise, color: '#fff' }}>
+      {/* 판 */}
       <div
         style={{
-          position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-          width: px(184), height: px(96), borderRadius: px(10), background: 'rgba(12, 20, 31, 0.82)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: px(58), fontWeight: 800, letterSpacing: px(2),
+          position: 'absolute', left: 0, top: rise, width: W, height: H,
+          background: 'linear-gradient(90deg, #1B2B3F 0%, rgba(27, 43, 63, 0.7) 100%)',
+          clipPath: slant(0, W - off),
         }}
-      >
-        {home} - {away}
+      />
+      {/* 컬러바 — 판과 같은 기울기 */}
+      <div
+        style={{
+          position: 'absolute', left: 0, top: rise, width: W, height: H,
+          background: config.homeColor, clipPath: slant(0, barW),
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute', left: 0, top: rise, width: W, height: H,
+          background: config.awayColor, clipPath: slant(W - off - barW, barW),
+        }}
+      />
+      {/* 팀명 — 컬러바 안쪽으로 */}
+      <div style={{ position: 'absolute', left: 0, top: rise, width: W, height: H }}>
+        <span style={{ ...nameStyle, left: `${barW + off * 0.5 + W * 0.026}px` }}>
+          {config.homeName || 'HOME'}
+        </span>
+        <span
+          style={{
+            ...nameStyle,
+            right: `${barW + off * 0.5 + W * 0.026}px`, textAlign: 'right',
+          }}
+        >
+          {config.awayName || 'AWAY'}
+        </span>
+        {/* 점수 — 원본 기준 가로 39.8% / 56.0% 자리 */}
+        <span style={{ ...scoreStyle, left: `${W * 0.398}px` }}>{home}</span>
+        <span style={{ ...scoreStyle, left: `${W * 0.560}px` }}>{away}</span>
       </div>
+      {/* 대회 로고 — 판 위쪽 가운데, 절반 걸침. 없으면 안 그린다 */}
+      {config.logoUrl ? (
+        <img
+          src={config.logoUrl}
+          alt=""
+          style={{
+            position: 'absolute', top: 0, left: `${W * 0.478}px`,
+            width: `${H * (122.02 / 182)}px`, height: `${H * (122.02 / 182)}px`,
+            transform: 'translateX(-50%)', objectFit: 'contain',
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -221,7 +284,7 @@ function ScoreboardPreview(
 /** 영상 화면 비율 박스 위에서 점수판을 끌어 옮긴다.
  *  좌표 계산은 서버(board_placement)와 같은 식이라, 여기서 보이는 자리가 결과물의 자리다. */
 function ScoreboardPlacer({
-  config, videoW, videoH, home, away, frameUrl, onMove,
+  config, videoW, videoH, home, away, frameUrl, onMove, onResize,
 }: {
   config: Scoreboard;
   videoW: number;
@@ -230,11 +293,12 @@ function ScoreboardPlacer({
   away: number;
   frameUrl: string;
   onMove: (posX: number, posY: number) => void;
+  onResize: (sizePct: number, posX: number, posY: number) => void;
 }) {
   const PREVIEW_W = 440;
   const scale = PREVIEW_W / Math.max(1, videoW);
   const previewH = Math.max(80, Math.round(videoH * scale));
-  const place = boardPlacement(videoW, videoH, config.sizePct, config.posX, config.posY);
+  const place = boardPlacement(videoW, videoH, config.sizePct, config.posX, config.posY, Boolean(config.logoUrl));
 
   const boxRef = useRef<HTMLDivElement | null>(null);
   // 판을 집은 지점(판 왼쪽 위에서의 거리). 집은 곳이 아니라 판 모서리를 기준으로 옮겨야
@@ -249,19 +313,81 @@ function ScoreboardPlacer({
     // 화면 좌표 → 영상 픽셀 좌표 → 여백을 뺀 범위 안에서의 비율
     const x = (clientX - rect.left - grab.dx) / scale - place.margin;
     const y = (clientY - rect.top - grab.dy) / scale - place.margin;
-    // 0·50·100 근처면 딱 붙인다 — 손으로 정확히 모서리·정중앙에 맞추기는 어렵다.
-    const snap = (v: number) => {
-      const clamped = Math.max(0, Math.min(100, v));
-      for (const anchor of [0, 50, 100]) if (Math.abs(clamped - anchor) < 5) return anchor;
-      return Math.round(clamped);
-    };
+    // 자동 흡착(0·50·100 근처면 달라붙기)은 뺐다 — 흡착 범위가 1920px 영상에서 65px 라
+    // 그 안에서는 미세 조정이 아예 안 됐다. 정확한 모서리·정중앙은 아래 프리셋 버튼으로
+    // 한 번에 잡을 수 있으므로 드래그는 자유롭게 둔다.
+    //
+    // 소수 둘째 자리까지 남긴다. 정수 %로 반올림하면 한 칸이 13px 이라 뚝뚝 끊긴다.
+    const frac = (v: number) => Math.round(Math.max(0, Math.min(100, v)) * 100) / 100;
     onMove(
-      snap(place.freeX > 0 ? (x / place.freeX) * 100 : 0),
-      snap(place.freeY > 0 ? (y / place.freeY) * 100 : 0),
+      frac(place.freeX > 0 ? (x / place.freeX) * 100 : 0),
+      frac(place.freeY > 0 ? (y / place.freeY) * 100 : 0),
     );
   };
 
+  // 최종 영상에서의 실제 픽셀 좌표(판 왼쪽 위 기준). 화면에 숫자로 보여주고,
+  // 그 숫자로 직접 입력해 옮길 수 있게 한다 — 드래그만으로는 정확한 값을 맞출 수 없다.
+  const pxX = place.x;
+  const pxY = place.y;
+  const frac = (v: number) => Math.round(Math.max(0, Math.min(100, v)) * 100) / 100;
+  const setPx = (nextX: number, nextY: number) => {
+    const cx = Math.max(place.margin, Math.min(place.margin + place.freeX, nextX));
+    const cy = Math.max(place.margin, Math.min(place.margin + place.freeY, nextY));
+    onMove(
+      frac(place.freeX > 0 ? ((cx - place.margin) / place.freeX) * 100 : 0),
+      frac(place.freeY > 0 ? ((cy - place.margin) / place.freeY) * 100 : 0),
+    );
+  };
+
+  // ── 크기 조절 ──────────────────────────────────────────────────────────
+  // 네 모서리 핸들을 끌어 직접 키우고 줄인다. 잡은 반대편 모서리가 고정돼, 선택 상자를
+  // 다루는 감각 그대로다. 퍼센트 슬라이더만으로는 '얼마나 커지는지' 를 보면서 못 맞춘다.
+  //
+  // 판 비율은 고정이라 가로만 정하면 세로가 따라온다. 그래서 가로 이동량만 본다.
+  const resizeRef = useRef<{ ax: number; ay: number; corner: string } | null>(null);
+  const applyResize = (pointerX: number, pointerY: number) => {
+    const box = boxRef.current;
+    const grab = resizeRef.current;
+    if (!box || !grab) return;
+    const rect = box.getBoundingClientRect();
+    const vx = (pointerX - rect.left) / scale;
+    const vy = (pointerY - rect.top) / scale;
+    const wantW = Math.abs(vx - grab.ax);
+    const nextPct = Math.max(10, Math.min(60, (wantW / Math.max(1, videoW)) * 100));
+    // 새 크기로 다시 계산해야 고정 모서리가 실제로 안 움직인다(폭에 하한·상한이 걸린다).
+    const next = boardPlacement(videoW, videoH, nextPct, 0, 0, Boolean(config.logoUrl));
+    const originX = grab.corner.includes('w') ? grab.ax - next.w : grab.ax;
+    const originY = grab.corner.includes('n') ? grab.ay - next.h : grab.ay;
+    const cx = Math.max(next.margin, Math.min(next.margin + next.freeX, originX));
+    const cy = Math.max(next.margin, Math.min(next.margin + next.freeY, originY));
+    onResize(
+      Math.round(nextPct * 100) / 100,
+      frac(next.freeX > 0 ? ((cx - next.margin) / next.freeX) * 100 : 0),
+      frac(next.freeY > 0 ? ((cy - next.margin) / next.freeY) * 100 : 0),
+    );
+    void vy;
+  };
+
+  const handleStyle = (corner: string): React.CSSProperties => {
+    const size = 10;
+    const half = size / 2;
+    const w = place.w * scale;
+    const h = place.h * scale;
+    return {
+      position: 'absolute',
+      width: size, height: size,
+      left: (corner.includes('w') ? 0 : w) - half,
+      top: (corner.includes('n') ? 0 : h) - half,
+      background: '#fff',
+      border: '1px solid #1B2B3F',
+      borderRadius: 2,
+      cursor: corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize',
+      touchAction: 'none',
+    };
+  };
+
   return (
+    <div style={{ width: PREVIEW_W }}>
     <div
       ref={boxRef}
       style={{
@@ -292,17 +418,15 @@ function ScoreboardPlacer({
           grabRef.current = null;
           e.currentTarget.releasePointerCapture(e.pointerId);
         }}
-        // 방향키로도 1%씩 미세 조정할 수 있게 한다.
+        // 방향키는 **영상 픽셀 1px** 씩 옮긴다(Shift 10px). % 단위로 움직이면
+        // 영상 크기에 따라 한 칸이 10px 을 넘어 미세 조정이 안 된다.
         onKeyDown={(e) => {
           const step = e.shiftKey ? 10 : 1;
           const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
           if (!move) return;
           e.preventDefault();
           e.stopPropagation();
-          onMove(
-            Math.max(0, Math.min(100, config.posX + move[0])),
-            Math.max(0, Math.min(100, config.posY + move[1])),
-          );
+          setPx(pxX + move[0], pxY + move[1]);
         }}
         style={{
           position: 'absolute',
@@ -313,6 +437,64 @@ function ScoreboardPlacer({
         }}
       >
         <ScoreboardPreview config={config} home={home} away={away} width={place.w * scale} />
+        {(['nw', 'ne', 'sw', 'se'] as const).map((corner) => (
+          <div
+            key={corner}
+            style={handleStyle(corner)}
+            title="끌어서 크기 조절"
+            onPointerDown={(e) => {
+              e.stopPropagation();   // 판 이동으로 번지지 않게
+              // 잡은 반대편 모서리를 고정점으로 잡는다.
+              resizeRef.current = {
+                ax: corner.includes('w') ? place.x + place.w : place.x,
+                ay: corner.includes('n') ? place.y + place.h : place.y,
+                corner,
+              };
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!resizeRef.current) return;
+              e.stopPropagation();
+              applyResize(e.clientX, e.clientY);
+            }}
+            onPointerUp={(e) => {
+              resizeRef.current = null;
+              e.currentTarget.releasePointerCapture(e.pointerId);
+            }}
+          />
+        ))}
+      </div>
+      </div>
+
+      {/* 최종 영상 기준 좌표. 눈으로 확인하고 숫자로도 고칠 수 있게 한다. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap', fontSize: 12 }}>
+        <span style={{ color: 'var(--muted, #999)' }}>위치(px)</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          X
+          <input
+            type="number"
+            step={1}
+            value={pxX}
+            onChange={(e) => setPx(Number(e.target.value), pxY)}
+            style={{ ...numInput, width: 64 }}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          Y
+          <input
+            type="number"
+            step={1}
+            value={pxY}
+            onChange={(e) => setPx(pxX, Number(e.target.value))}
+            style={{ ...numInput, width: 64 }}
+          />
+        </label>
+        <span style={{ color: 'var(--muted, #666)' }}>
+          / 판 {place.w}×{place.h} · 영상 {videoW}×{videoH}
+        </span>
+        <span style={{ color: 'var(--muted, #666)' }}>
+          가능 범위 X {place.margin}~{place.margin + place.freeX} · Y {place.margin}~{place.margin + place.freeY}
+        </span>
       </div>
     </div>
   );
@@ -330,8 +512,9 @@ export default function ManualHighlightPage() {
   const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
-  const [padBefore, setPadBefore] = useState(7);
-  const [padAfter, setPadAfter] = useState(4);
+  // 기본 앞/뒤 패딩 — 실제 태깅에서 굳은 값(2026-09-09).
+  const [padBefore, setPadBefore] = useState(10);
+  const [padAfter, setPadAfter] = useState(2);
   const [status, setStatus] = useState('');
   const [unsupported, setUnsupported] = useState(false);
   const [cutting, setCutting] = useState(false);
@@ -477,17 +660,17 @@ export default function ManualHighlightPage() {
       if (!raw) return;
       const parsed = JSON.parse(raw) as Tag[] | SavedWork;
       const saved: SavedWork = Array.isArray(parsed)
-        ? { tags: parsed, padBefore: 7, padAfter: 4 } // 패딩을 저장하기 전 형식
+        ? { tags: parsed, padBefore: 10, padAfter: 2 } // 패딩을 저장하기 전 형식
         : parsed;
       if (!saved?.tags?.length) return;
       setTags(saved.tags);
-      setPadBefore(saved.padBefore ?? 7);
-      setPadAfter(saved.padAfter ?? 4);
+      setPadBefore(saved.padBefore ?? 10);
+      setPadAfter(saved.padAfter ?? 2);
       // 팀명·색까지 같이 돌아와야 한다. 태그만 복원되고 점수판이 초기화되면
       // 같은 태그인데 결과물의 점수판이 조용히 달라진다.
       if (saved.scoreboard) setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
       setStatus(
-        `이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore ?? 7}초 / 뒤 ${saved.padAfter ?? 4}초`,
+        `이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore ?? 10}초 / 뒤 ${saved.padAfter ?? 2}초`,
       );
     } catch {
       /* 손상된 저장값은 무시하고 새로 시작한다 */
@@ -576,6 +759,8 @@ export default function ManualHighlightPage() {
   }, [offsets, activeIndex]);
 
   const removeTag = (id: string) => setTags((prev) => prev.filter((p) => p.id !== id));
+
+  const globalNow = () => (offsets[activeIndex] ?? 0) + (videoRef.current?.currentTime ?? 0);
 
   const setTagKind = (id: string, kind?: TagKind) =>
     setTags((prev) => prev.map((p) => (p.id === id ? { ...p, kind } : p)));
@@ -745,9 +930,8 @@ export default function ManualHighlightPage() {
     }
   };
 
-  const clipsTotalBytes = clips.reduce((sum, c) => sum + c.blob.size, 0);
+  const clipsTotalBytes = clips.reduce((sum, c) => sum + (c.blob?.size ?? 0), 0);
 
-  // 클립을 서버로 보내고 합치기까지 맡긴다. 원본은 올라가지 않는다.
   const publish = async () => {
     if (!sources.length || !clips.length || publishing) return;
     setPublishing(true);
@@ -774,6 +958,7 @@ export default function ManualHighlightPage() {
       let cursor = 0;
       const uploadOne = async (clip: CutClip) => {
         const form = new FormData();
+        if (!clip.blob) throw new Error(`클립 ${clip.index} 데이터가 없습니다`);
         form.append('clip', clip.blob, `clip_${String(clip.index).padStart(3, '0')}.mp4`);
         form.append('requested_start', String(clip.requestedStart));
         form.append('requested_end', String(clip.requestedEnd));
@@ -840,6 +1025,8 @@ export default function ManualHighlightPage() {
             size_pct: scoreboard.sizePct,
             pos_x: scoreboard.posX,
             pos_y: scoreboard.posY,
+            // 대회 로고는 dataURL 그대로 보낸다 — 서버가 PNG 로 풀어 판 위에 얹는다.
+            logo_url: scoreboard.logoUrl || '',
           } : { enabled: false },
         }),
       });
@@ -1247,6 +1434,31 @@ export default function ManualHighlightPage() {
                       />
                       화면 가로의 {scoreboard.sizePct}%
                     </label>
+                    {/* 대회 로고 — 판 위쪽 가운데에 절반 걸쳐 올라간다. 안 넣으면 안 그린다.
+                        dataURL 로 들고 있다가 합치기 요청에 그대로 실어 보낸다. */}
+                    <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      로고
+                      <input
+                        type="file"
+                        accept="image/*"
+                        style={{ fontSize: 11, width: 190 }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => setScoreboard((p) => ({ ...p, logoUrl: String(reader.result || '') }));
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                      {scoreboard.logoUrl ? (
+                        <button
+                          style={{ ...smallBtn, padding: '2px 8px' }}
+                          onClick={() => setScoreboard((p) => ({ ...p, logoUrl: '' }))}
+                        >
+                          로고 빼기
+                        </button>
+                      ) : null}
+                    </label>
                   </div>
 
                   <div>
@@ -1263,6 +1475,7 @@ export default function ManualHighlightPage() {
                       away={finalScore[1]}
                       frameUrl={frameUrl}
                       onMove={(posX, posY) => setScoreboard((p) => ({ ...p, posX, posY }))}
+                      onResize={(sizePct, posX, posY) => setScoreboard((p) => ({ ...p, sizePct, posX, posY }))}
                     />
                     <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 8, flexWrap: 'wrap' }}>
                       {/* 9칸 프리셋 — 모서리·가운데는 끌지 않고 한 번에 맞춘다. */}
@@ -1484,7 +1697,7 @@ export default function ManualHighlightPage() {
                       <span style={{ color: 'var(--muted, #999)', width: 28 }}>{clip.index}</span>
                       <span>{fmt(clip.requestedStart)} ~ {fmt(clip.requestedEnd)}</span>
                       <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
-                        {fmtBytes(clip.blob.size)}
+                        {fmtBytes(clip.blob?.size ?? 0)}
                       </span>
                       <button
                         style={{ ...smallBtn, marginLeft: 'auto' }}
