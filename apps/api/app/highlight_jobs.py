@@ -304,6 +304,13 @@ def create_player_proxy_for_job(job_id: str) -> None:
 # H.264(avc1) 를 먼저 고른다 — 요즘 유튜브는 1080p mp4 를 AV1 로도 주는데, 그러면
 # 브라우저 태깅 재생이 무겁고 클립 렌더도 AV1 디코드를 타서 느려진다. 결과물은 어차피
 # H.264 라 처음부터 H.264 로 받는 편이 낫다. 없으면 아무거나 받아 온다(못 받는 것보다는 낫다).
+# 유튜브가 거는 자바스크립트 챌린지를 푸는 데 필요한 것들.
+#
+# 런타임(deno)만으로는 부족하고 **해결 스크립트**가 따로 필요하다. 없으면
+# "n challenge solving failed" 로 막히거나(쿠키 있을 때) 포맷이 빠진 채 폴백한다.
+# yt-dlp 가 권장하는 대로 github 배포본을 받아 쓴다 — 처음 한 번 받고 캐시한다.
+YT_JS_ARGS = ["--remote-components", "ejs:github"]
+
 # 유튜브 쿠키 파일(Netscape 형식). 서버 IP 가 막혔을 때 이걸로 푼다.
 YT_COOKIES = os.getenv("YTDLP_COOKIES", "").strip()
 
@@ -376,6 +383,7 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None) -> None:
     cmd = [
         "yt-dlp",
         "-f", YT_FORMAT,
+        *YT_JS_ARGS,
         # 유튜브는 데이터센터 IP 를 봇으로 본다. 로그인 쿠키를 주면 통과한다.
         # YTDLP_COOKIES 에 cookies.txt 경로를 두면 쓴다(없으면 그냥 없이 간다).
         *(["--cookies", YT_COOKIES] if YT_COOKIES and Path(YT_COOKIES).exists() else []),
@@ -518,6 +526,8 @@ def download_link_for_job(job_id: str) -> None:
             "yt-dlp",
             "-f",
             YT_FORMAT,
+            *YT_JS_ARGS,
+            *(["--cookies", YT_COOKIES] if YT_COOKIES and Path(YT_COOKIES).exists() else []),
             "--downloader",
             "aria2c",
             "--downloader-args",

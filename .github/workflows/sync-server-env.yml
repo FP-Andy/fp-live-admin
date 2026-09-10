@@ -8,6 +8,9 @@ name: Sync Server Env
 #   FINEPLAY_S3_ACCESS_KEY_ID      pc-pipeline IAM 액세스키
 #   FINEPLAY_S3_SECRET_ACCESS_KEY  pc-pipeline IAM 시크릿
 #   FINEPLAY_API_TOKEN             (선택) FinePlay 서비스 토큰 — 오면 추가
+#   YTDLP_COOKIES_TXT              (선택) 유튜브 쿠키 파일 내용(Netscape 형식)
+#                                  통째로 붙여넣으면 서버 runtime/ 에 파일로 떨군다.
+#                                  유튜브가 데이터센터 IP 를 봇으로 보고 막을 때 이걸로 푼다.
 # 비어 있는 시크릿은 건드리지 않으므로, 토큰이 아직 없어도 실행할 수 있다.
 
 on:
@@ -38,6 +41,7 @@ jobs:
           S3_KEY_ID: ${{ secrets.FINEPLAY_S3_ACCESS_KEY_ID }}
           S3_SECRET: ${{ secrets.FINEPLAY_S3_SECRET_ACCESS_KEY }}
           FP_TOKEN: ${{ secrets.FINEPLAY_API_TOKEN }}
+          YT_COOKIES_TXT: ${{ secrets.YTDLP_COOKIES_TXT }}
         run: |
           set -Eeuo pipefail
           ENV_FILE="/home/ubuntu/fp-live-admin/infra/app/.env"
@@ -59,6 +63,21 @@ jobs:
           upsert AWS_ACCESS_KEY_ID "$S3_KEY_ID"
           upsert AWS_SECRET_ACCESS_KEY "$S3_SECRET"
           upsert FINEPLAY_API_TOKEN "$FP_TOKEN"
+
+          # 유튜브 쿠키는 여러 줄짜리 파일이라 .env 에 못 담는다. 파일로 떨구고
+          # 경로만 .env 에 넣는다. runtime/ 은 컨테이너에 마운트돼 있고 git 에서도 빠져 있다.
+          COOKIE_FILE="/home/ubuntu/fp-live-admin/runtime/yt-cookies.txt"
+          if [ -n "$YT_COOKIES_TXT" ]; then
+            mkdir -p "$(dirname "$COOKIE_FILE")"
+            printf '%s\n' "$YT_COOKIES_TXT" > "$COOKIE_FILE"
+            chmod 600 "$COOKIE_FILE"
+            # 살아있는 로그인 자격증명이라 내용은 찍지 않는다. 제대로 들어갔는지만 본다.
+            echo "wrote cookies ($(grep -vc '^#' "$COOKIE_FILE") lines,"\
+                 "login cookie: $(grep -c '__Secure-3PSID' "$COOKIE_FILE"))"
+            upsert YTDLP_COOKIES "/app/runtime/yt-cookies.txt"
+          else
+            echo "skip YTDLP_COOKIES (secret empty)"
+          fi
 
           echo "--- .env keys now present (값은 출력하지 않음) ---"
           grep -oE '^[A-Za-z_]+' "$ENV_FILE" | sort
