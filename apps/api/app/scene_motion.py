@@ -1083,6 +1083,15 @@ def build_scene_data(
 _GROUP_BOUNDARY = object()
 
 
+def scene_motion_key(prefix: str, clip_key: str, seq: Any) -> str:
+    """장면 모션 mp4 의 S3 키.
+
+    렌더(attach_scene_motions)와 조회(검수 화면)가 **같은 값**을 만들어야 해서 함수로
+    둔다 — 한쪽만 고치면 이미 올라간 mp4 를 못 찾고 매번 다시 렌더한다.
+    """
+    return f"{prefix.rstrip('/')}/scene-motion/{clip_key}-a{seq}.mp4"
+
+
 def attach_scene_motions(
     db_actions: list[dict[str, Any]],
     payload_actions: list[dict[str, Any]] | None,
@@ -1174,7 +1183,7 @@ def attach_scene_motions(
                 target["sceneData"] = data
         if not storage_ok:
             continue
-        key = f"{prefix.rstrip('/')}/scene-motion/{clip_key}-a{seq}.mp4"
+        key = scene_motion_key(prefix, clip_key, seq)
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp) / "motion.mp4"
