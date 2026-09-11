@@ -345,6 +345,74 @@ BREAKTHROUGH_SCORE_BAND: tuple[int, int] = (70, 100)
 # percentile_to_score 의 출력 범위 — 위 아핀 변환의 원본 구간이다.
 SCORE_RANGE: tuple[int, int] = (50, 100)
 
+# ── 경합(S11/S12) 전용 밴드 ────────────────────────────────────────────────
+#
+# 경합은 EPV(끊은 자리의 소유권 전환가치)로 줄세운다. 그런데 공통 변환을 그대로 타면
+# 수비 위치 특성상 원값이 쉽게 defense 앵커 상단(0.0305/0.0381/0.0419)에 닿아, 평범한
+# 우리 진영 경합이 90 점대를 받았다. 경합은 경기당 수십 번 일어나는 행위라 그 눈금으로는
+# 다른 액션과 견줄 수가 없다.
+#
+# 그래서 [60, 89] 로 옮긴다. 하한 60 은 '이긴 경합은 어쨌든 값이 있다'는 바닥이고,
+# 상한 89 는 태클·인터셉트 같은 명시적 탈취 위로 올라가지 않게 둔 천장이다.
+# 경합 액션 코드 — 우리 진영(S11)/상대 진영(S12). fineplay_fpa.classify_action_code 참조.
+DUEL_ACTION_CODES: frozenset[str] = frozenset({"S11", "S12"})
+DUEL_SCORE_BAND: tuple[int, int] = (60, 89)
+
+# 밴드 안에서는 **가운데가 두꺼운** 분포를 만든다.
+#
+# 백분위는 정의상 균등분포다. 그걸 밴드에 선형으로 얹으면 60 점도 89 점도 평범한 경합만큼
+# 흔해진다 — 대부분의 경합은 고만고만한데 점수만 넓게 퍼지는 모양이다. 그래서 백분위를
+# 정규분포의 분위수로 되돌려(Φ⁻¹) 밴드에 얹는다. 결과적으로 점수는 구간 한가운데
+# (74.5)를 평균으로 모이고 양 끝은 드물어진다 — 정말 값진 경합과 그저 그런 경합이
+# 점수로 갈린다.
+#
+# z 를 ±3σ 로 잘라 밴드 폭에 맞춘다(σ ≈ 14.5/3 ≈ 4.83). 3σ 밖은 양 끝 0.27% 라
+# 잘라도 분포 모양이 상하지 않는다.
+DUEL_SCORE_SIGMA_SPAN = 3.0
+
+
+def _inverse_normal_cdf(p: float) -> float:
+    """표준정규 분위수 Φ⁻¹(p). Acklam 근사 — 소수점 아래 아홉 자리까지 맞는다.
+
+    statistics.NormalDist().inv_cdf 로도 되지만, 이 모듈은 표준 라이브러리 밖 의존을
+    늘리지 않고 순수 계산만 담아 두는 쪽이라 직접 쓴다(다른 산식들과 같은 방식).
+    """
+    if p <= 0.0:
+        return -DUEL_SCORE_SIGMA_SPAN
+    if p >= 1.0:
+        return DUEL_SCORE_SIGMA_SPAN
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow, phigh = 0.02425, 1 - 0.02425
+    if p < plow:
+        q = (-2 * __import__("math").log(p)) ** 0.5
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    if p > phigh:
+        q = (-2 * __import__("math").log(1 - p)) ** 0.5
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    q = p - 0.5
+    r = q * q
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+           (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+
+
+def duel_outcome_score(percentile: float) -> int:
+    """경합 백분위 → [60, 89] 안의 점수. 가운데가 두꺼운 분포가 되게 얹는다."""
+    p = max(0.0, min(1.0, float(percentile)))
+    lo, hi = DUEL_SCORE_BAND
+    center = (lo + hi) / 2.0
+    sigma = (hi - lo) / 2.0 / DUEL_SCORE_SIGMA_SPAN
+    z = max(-DUEL_SCORE_SIGMA_SPAN, min(DUEL_SCORE_SIGMA_SPAN, _inverse_normal_cdf(p)))
+    return int(round(max(lo, min(hi, center + sigma * z))))
+
 
 def possession_outcome_score(code: str, action: dict[str, Any], percentile: float) -> int | None:
     """ΔPC 로 재는 액션의 밴드 안 점수. 그 축이 아니면 None(=공통 변환 그대로)."""
@@ -726,7 +794,7 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
     입력은 actionCode·groupIndex 가 이미 붙은 페이로드 액션 목록. 선정되지 못한
     액션은 점수 없이 남는다 (정본: 유효 Effect Action 만 점수화).
 
-    중복 제거는 (장면, 행위자) 단위다 — 아래 groups 주석 참조.
+    중복 제거는 **행위(event)** 단위다 — 아래 groups 주석 참조.
     """
     # 연결 슈팅(G1) 목록 — G2/G3 의 '연결 슈팅 xG' 는 그 액션 뒤 첫 슈팅의 xG.
     shots = sorted(
@@ -741,7 +809,7 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
                 return x
         return None
 
-    # 중복 제거 단위는 **행위자** 다 (장면이 아니다).
+    # 중복 제거 단위는 **행위(event)** 다 — 장면도, 행위자도 아니다.
     #
     # 정본(xFP 24개 액션 정의 3.5.1)은 "한 event_id 는 조건을 충족하면 G·P·S Action 을
     # 각각 하나씩 생성할 수 있다" 고 쓴다 — 중복 방지의 단위가 event, 곧 한 선수의 한 행위다.
@@ -755,15 +823,26 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
     #   - 소유 패스(S2)·수비(S5/S7)·압박(S9)·듀얼(S11/S12)이 전부 possession 군이라
     #     한 장면에 같이 찍히면 넷 중 하나만 살아남는다
     #   - 전진 패스와 짝지어진 침투(P6)가 거의 항상 탈락한다 — 둘 다 progression 군
-    # 행위자로 쪼개면 각자 자기 행위의 점수를 받는다. 한 선수가 한 장면에서 여러 번
-    # 찍혀도 그 안에서는 정본 규칙(군당 1개·최대 3개)이 그대로 걸리고, 선수 점수는
-    # clipScore = max(액션 점수) 라 인플레도 생기지 않는다.
+    # 처음엔 장면 단위였고, 위 문제 때문에 행위자 단위로 내렸다. 그런데 거기서 멈추니
+    # **같은 선수의 서로 다른 두 행위**가 여전히 서로를 밀어냈다 — 한 장면에서 경합과
+    # 클리어를 같이 찍으면 둘 다 possession 군이라, 계수가 4배인 경합이 이기고 클리어가
+    # 무점수로 남았다(2026-09-11 실제로 그렇게 났다). 무관한 두 행위다.
     #
-    # 등번호가 없는 행(압박 'pr' 은 팀 단위라 번호를 안 찍는다)은 팀별로 한 덩어리가 된다.
+    # 그래서 seq(행별 순번)까지 키에 넣어 행위 단위로 내린다. 정본이 말하는 단위가
+    # 그것이고(3.5.1 의 event_id), 그렇게 해야 3.5.2 의 "나머지 Action 을 점수에서
+    # 제외하는 규칙이 아니다" 와도 맞는다.
+    #
+    # 아래 '군당 1개·최대 3개' 규칙은 그대로 둔다 — 한 행위가 여러 코드를 만들게 되면
+    # (정본 3.5.1 이 허용한다) 그때 이 규칙이 제 일을 한다. 지금은 한 행이 코드 하나라
+    # 묶음마다 후보가 하나뿐이고, 따라서 아무것도 탈락하지 않는다.
+    #
+    # 선수 점수는 clipScore = max(액션 점수) 라 행을 더 살려도 인플레는 생기지 않는다.
     groups: dict[Any, list[dict[str, Any]]] = {}
     for i, pa in enumerate(payload_actions):
         scene = pa.get("groupIndex") if pa.get("groupIndex") is not None else f"solo-{i}"
-        key = (scene, pa.get("teamSide"), pa.get("jersey"))
+        # seq 가 없으면(옛 페이로드) 행 순번으로 갈음한다 — 어느 쪽이든 행마다 다르다.
+        event = pa.get("seq") if pa.get("seq") is not None else f"row-{i}"
+        key = (scene, pa.get("teamSide"), pa.get("jersey"), event)
         groups.setdefault(key, []).append(pa)
 
     for members in groups.values():
@@ -811,6 +890,11 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             elif code == GK_CLAIM_CODE:
                 # 캐칭·펀칭은 액션별 밴드에 볼록 곡선으로 얹는다(GK_CLAIM_SCORE_BANDS).
                 banded = gk_claim_outcome_score(pa, p)
+            elif code in DUEL_ACTION_CODES:
+                # 경합은 EPV 로 줄세워 [60,89] 에, 가운데가 두꺼운 분포로 얹는다.
+                # possession_outcome_score 보다 **먼저** 봐야 한다 — 경합은 possession
+                # 군이라 그냥 두면 공통 소유 밴드로 빨려 들어간다.
+                banded = duel_outcome_score(p)
             else:
                 # 어시스트·키패스 밴드가 먼저다 — 이들은 G2(goal 군)라 소유 압축과 겹치지 않는다.
                 banded = pass_outcome_score(pa, p)
