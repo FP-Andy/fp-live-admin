@@ -35,6 +35,15 @@ const SIZE_BALL = 14;
 const ARROW_LEN = 40; // 핸드오프는 20 이나 앱 실기기 검증에서 40 으로 굳었다
 const ARROW_RATIO = 32 / 59; // viewBox 59×32(글로우 포함)
 const NUMBER_SIZE = 7.5; // Giants Bold, 검정, 헥사곤 중앙
+// 골키퍼 표시 — 마커 안쪽 어두운 링. 정본은 replay 의 `.fpa-replay-dot.gk`
+// (`inset 0 0 0 3px rgba(0,0,0,0.26)`, 22px 점 기준)라 그 비율을 그대로 옮긴다.
+// 서버 mp4(scene_motion._draw 의 GK_RING)도 같은 표시를 그린다 — 여기 없어서
+// mp4 와 이 뷰가 어긋나 있었다.
+const GK_RING_W = 3 / 22;    // 마커 크기 대비 링 두께
+// 링은 마커 안쪽으로 들여 그린다. 헥사곤(24×24)의 납작한 변까지가 중심에서 10.39 라,
+// 10% 를 들이면 원이 육각형 안에 온전히 들어간다(원형 마커에서도 테두리 바로 안쪽).
+const GK_RING_INSET = 0.10;
+const GK_RING_COLOR = 'rgba(0, 0, 0, 0.26)';
 const PASS_SUCCESS = '#04FF04';
 const PASS_FAIL = '#FF0C04';
 
@@ -287,6 +296,14 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
                 src={isOurs ? '/scene/player_home_hexagon.svg' : '/scene/player_away_circle.svg'}
                 alt="" style={{ width: '100%', height: '100%', display: 'block' }}
               />
+              {p.gk ? (
+                // 골키퍼 — 마커 안쪽 링. 번호보다 아래에 깔린다.
+                <span style={{
+                  position: 'absolute', inset: s * GK_RING_INSET, borderRadius: '50%',
+                  boxShadow: `inset 0 0 0 ${Math.max(1, s * GK_RING_W)}px ${GK_RING_COLOR}`,
+                  pointerEvents: 'none',
+                }} />
+              ) : null}
               {isOurs && p.number != null && p.number !== '' ? (
                 // 넘버 = 헥사곤 중심 = 좌표점(셋이 한 점). 항상 최상단.
                 <span style={{
