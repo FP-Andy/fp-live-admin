@@ -336,10 +336,12 @@ export default function ClipResultsPage() {
     }
   }, []);
 
-  // 장면 모션은 서버가 렌더+S3 업로드까지 하므로(액션당 수 초) 클립 열 때·dual 저장 직후·수동 새로고침에만 부른다.
+  // 서버는 좌표(sceneData)만 바로 주고 mp4 렌더·업로드는 응답 뒤로 미룬다 — 예전엔 렌더를
+  // 다 기다리다 장면 많은 클립에서 504 가 났다. 그래서 이 호출 자체는 빠르지만, mp4 는 첫
+  // 조회 때 아직 없을 수 있다('모션 새로고침' 으로 다시 부르면 찬다).
   const loadMotions = useCallback(async (clipId: string) => {
     setMotions([]);
-    setMotionMsg('장면 모션 렌더 중…');
+    setMotionMsg('장면 모션 불러오는 중…');
     try {
       const res = await apiJson<{
         motions: { seq: number; url: string | null; sceneData?: SceneData | null }[];
@@ -1262,7 +1264,7 @@ export default function ClipResultsPage() {
                           height: 194, display: 'flex', alignItems: 'center', justifyContent: 'center',
                           fontSize: 12, color: 'var(--muted, #999)',
                         }}>
-                          {motionAsMp4 ? 'mp4 없음' : 'sceneData 없음'}
+                          {motionAsMp4 ? 'mp4 준비 중 — 잠시 뒤 모션 새로고침' : 'sceneData 없음'}
                         </div>
                       )}
                       <div style={{ padding: '6px 10px', fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>

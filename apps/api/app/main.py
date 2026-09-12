@@ -90,7 +90,7 @@ from .fineplay_plan import (
 )
 from .highlight_storage import default_storage as highlight_default_storage
 from .highlight_storage import output_prefix as highlight_output_prefix
-from .scene_motion import attach_scene_motions
+from .scene_motion import attach_scene_motions, scene_motion_key
 from .broadcast_assets import (
     BroadcastAssetStore,
     GOAL_ASSET_TYPE,
@@ -11956,19 +11956,43 @@ def clip_result_detail(
     return out
 
 
+def _render_scene_motions_bg(
+    actions: list[dict], clip_key: str, storage: object, prefix: str
+) -> None:
+    """장면 모션 mp4 를 **응답을 보낸 뒤에** 렌더·업로드한다.
+
+    검수 화면의 기본은 sceneData 네이티브 렌더고 mp4 는 'mp4 로 보기' 토글 전용이다.
+    그런데 예전엔 그 mp4 를 응답 경로에서 장면마다(액션당 수 초) 직렬로 다 만들고서야
+    응답했다. 장면이 일고여덟 개만 돼도 CloudFront 오리진 타임아웃(기본 30초)을 넘겨
+    504 가 났다 — 화면에 쓰지도 않는 파일을 기다리다 죽은 것이다.
+
+    DB 세션은 이 시점에 이미 닫혀 있다. 직렬화가 끝난 액션 dict 만 받아 쓴다.
+    """
+    try:
+        for warning in attach_scene_motions(
+            actions, None, clip_key=clip_key, storage=storage, prefix=prefix,
+        ):
+            print(f"scene-motion background render: {warning}")
+    except Exception as exc:  # 검수 화면은 이미 응답을 받았다 — 여기서 죽어도 조용히 둔다
+        print(f"scene-motion background render failed for {clip_key}: {exc}")
+
+
 @app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions")
 def clip_result_scene_motions(
     clip_id: str,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """클립 액션들의 장면 모션을 렌더·업로드하고 presign URL 을 돌려준다 (검수용).
+    """클립 액션들의 장면 모션 데이터를 돌려준다 (검수용).
 
     전송(resend/produce)과 같은 attach_scene_motions·S3 키를 쓰므로
     여기서 보이는 모션이 곧 앱으로 나가는 모션이다. sceneState 가 있는 액션만 생성된다.
 
-    sceneData 도 같이 준다 — 앱은 이걸로 네이티브 렌더하고 mp4 는 폴백이다.
-    콘솔이 mp4 만 보여주면 앱 화면과 다른 걸 검수하게 되므로 둘 다 내려보낸다.
+    **sceneData 는 즉시, mp4 는 뒤늦게.** 앱도 콘솔도 기본은 sceneData 네이티브
+    렌더이고 mp4 는 구버전 앱 폴백·토글용이다. 그래서 좌표 계산(수 ms)만 응답 경로에
+    두고, 렌더·업로드(액션당 수 초)는 _render_scene_motions_bg 로 미룬다. 이미 올라가
+    있는 mp4 는 그대로 링크를 준다 — 두 번째로 여는 클립은 토글이 바로 찬다.
     """
     clip = db.get(HighlightClip, clip_id)
     if not clip:
@@ -11988,24 +12012,28 @@ def clip_result_scene_motions(
         if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
         else highlight_output_prefix()
     )
+    # storage=None 이면 좌표(sceneData)만 붙고 렌더·업로드는 건너뛴다.
     warnings = attach_scene_motions(
         actions, None,
         clip_key=clip.id,
-        storage=storage,
+        storage=None,
         prefix=motion_prefix,
     )
-    # mp4 렌더가 실패해도 sceneData 는 남을 수 있다(반대도 마찬가지) — 둘 중 하나라도 있으면 내려준다.
-    motions = [
-        {
-            "seq": a.get("seq"),
-            "url": storage.presigned_get(a["sceneMotionKey"], expires=3600)
-            if a.get("sceneMotionKey")
-            else None,
-            "sceneData": a.get("sceneData"),
-        }
-        for a in actions
-        if a.get("sceneMotionKey") or a.get("sceneData")
-    ]
+    # sceneData 가 붙은 행이 곧 장면 대표다(둘 다 before/after 가 없으면 건너뛴다).
+    # mp4 는 **이미 올라가 있을 때만** 링크한다 — 없으면 아래 백그라운드가 만든다.
+    motions = []
+    for action in actions:
+        if not action.get("sceneData"):
+            continue
+        key = scene_motion_key(motion_prefix, clip.id, action.get("seq"))
+        motions.append({
+            "seq": action.get("seq"),
+            "url": storage.presigned_get(key, expires=3600) if storage.exists(key) else None,
+            "sceneData": action.get("sceneData"),
+        })
+    background_tasks.add_task(
+        _render_scene_motions_bg, actions, clip.id, storage, motion_prefix,
+    )
     return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
 
 

@@ -77,6 +77,19 @@ class S3Storage:
         )
         return key
 
+    def exists(self, key: str) -> bool:
+        """객체가 이미 올라와 있나. presign 은 존재 확인을 안 하므로 따로 묻는다.
+
+        head_object 는 왕복 수 ms 라 응답 경로에서 불러도 된다 — 렌더(액션당 수 초)를
+        건너뛸지 정하는 데 쓴다.
+        """
+        try:
+            self._client().head_object(Bucket=self.bucket, Key=key)
+            return True
+        except Exception:
+            # 404(없음)든 권한 오류든 '못 쓴다' 는 같다 — 호출부는 폴백으로 간다.
+            return False
+
     def presigned_get(self, key: str, expires: int = 3600) -> str:
         """관리자 태깅용 원본 스트리밍 URL 등. 결과물 공유에도 쓸 수 있다."""
         return self._client().generate_presigned_url(
