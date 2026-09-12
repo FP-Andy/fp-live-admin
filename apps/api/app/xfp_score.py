@@ -370,6 +370,40 @@ DUEL_SCORE_BAND: tuple[int, int] = (60, 89)
 # 잘라도 분포 모양이 상하지 않는다.
 DUEL_SCORE_SIGMA_SPAN = 3.0
 
+# ── 수비(S5/S7) 정규화 ─────────────────────────────────────────────────────
+#
+# 태클·인터셉트·컷아웃·클리어는 밴드 없이 정본 공통 변환표(percentile_to_score)를 그대로
+# 탔다. **밴드를 안 둔 것은 의도된 설계다** — 수비도 상한 100 까지 갈 수 있어야 한다.
+# 그 판단은 그대로 두고, 밴드 **안의 모양**만 고친다. 범위는 [50, 100] 그대로다.
+#
+# 무엇이 문제였나. 공통 변환표는 위가 두꺼운 계단이다(기울기 90→60→40→33→28 로 줄고,
+# 0.97 위는 98/99/100 에 뭉친다). 피치 전역 1m 격자에 네 액션을 뿌린 28,560 건으로 재니
+# **90 점 이상이 23.5%, 95 점 이상이 11.0%** 였다. 넷 중 하나가 90 점대면 90 점이라는
+# 말에 아무 뜻이 없다. 실제 경기는 더 심하다 — 수비는 값이 높은 자기 진영에 몰린다.
+#
+# 그래서 백분위를 정규분포 분위수로 되돌려(Φ⁻¹) 얹는다. 같은 격자에서 90 점 이상이
+# 9.0%, 95 점 이상이 2.5% 로 내려간다. 순서와 간격은 그대로다.
+DEFENSE_SCORE_BAND: tuple[int, int] = (50, 100)
+
+# σ 폭을 2.5 로 두는 이유 — **최고점을 지금과 같은 99 로 유지한다.**
+#
+# 수비 원시값은 물리적으로 0.0454 가 최대다(골문 정면 골라인, 앵커 상단 0.0419 의 1.08 배).
+# 백분위로 0.9908 이고, 그래서 100 점은 **지금도** 나오지 않는다 — 100 점 문턱인 백분위
+# 0.999 는 원값 0.0838(앵커 상단의 2 배)을 요구하는데 그런 자리가 피치에 없다.
+#
+# 이 조건에서 ±3σ 로 자르면 최고점이 95 로 내려앉아 상단을 과하게 누른다. ±2.5σ 는
+# 도달 가능한 최대(0.9908)를 99 점에 얹어 지금 최고점과 같은 자리를 지킨다. 100 점을
+# 실제로 닿게 하려면 σ 폭이 아니라 **앵커 상단을 실제 최대에 맞추는 것**이 손잡이다 —
+# 그건 xfp_anchors_v0.json 쪽 일이라 여기서 건드리지 않는다.
+#
+# 전진(progression)은 **같이 고치지 않는다.** 변환표는 같아도 들어오는 분포가 반대다 —
+# 전진 앵커는 실제 ΔEPV 분포보다 1.6~2 배 높게 잡혀 있어 백분위가 아래로 쏠린다(평균
+# 0.350, 수비는 0.454). 이미 90 점 이상이 9.6% 뿐이라, 정규화하면 0.1% 로 사라진다.
+DEFENSE_SCORE_SIGMA_SPAN = 2.5
+
+# Φ⁻¹ 의 양 끝에서 돌려줄 값. 호출부가 자기 σ 폭으로 다시 자르므로 넉넉하면 된다.
+_Z_LIMIT = 10.0
+
 
 def _inverse_normal_cdf(p: float) -> float:
     """표준정규 분위수 Φ⁻¹(p). Acklam 근사 — 소수점 아래 아홉 자리까지 맞는다.
@@ -378,9 +412,9 @@ def _inverse_normal_cdf(p: float) -> float:
     늘리지 않고 순수 계산만 담아 두는 쪽이라 직접 쓴다(다른 산식들과 같은 방식).
     """
     if p <= 0.0:
-        return -DUEL_SCORE_SIGMA_SPAN
+        return -_Z_LIMIT
     if p >= 1.0:
-        return DUEL_SCORE_SIGMA_SPAN
+        return _Z_LIMIT
     a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
          1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
     b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
@@ -404,14 +438,32 @@ def _inverse_normal_cdf(p: float) -> float:
            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
 
 
-def duel_outcome_score(percentile: float) -> int:
-    """경합 백분위 → [60, 89] 안의 점수. 가운데가 두꺼운 분포가 되게 얹는다."""
+def _normal_band_score(percentile: float, band: tuple[int, int], span: float) -> int:
+    """백분위 → 밴드 안 점수. **가운데가 두꺼운** 분포가 되게 얹는다.
+
+    백분위는 정의상 균등분포다. 밴드에 선형으로 얹으면 양 끝 점수가 한가운데 점수만큼
+    흔해진다 — 대부분이 고만고만한데 점수만 넓게 퍼지는 모양이다. 백분위를 정규분포의
+    분위수로 되돌리면(Φ⁻¹) 점수가 구간 한가운데로 모이고 양 끝이 드물어진다.
+
+    span 은 z 를 자르는 폭(σ 단위)이자 밴드 폭을 나누는 값이다. 작을수록 σ 가 커져
+    양 끝에 빨리 닿는다 — 도달 가능한 백분위가 1.0 에 못 미칠 때 상단을 지키는 손잡이다.
+    """
     p = max(0.0, min(1.0, float(percentile)))
-    lo, hi = DUEL_SCORE_BAND
+    lo, hi = band
     center = (lo + hi) / 2.0
-    sigma = (hi - lo) / 2.0 / DUEL_SCORE_SIGMA_SPAN
-    z = max(-DUEL_SCORE_SIGMA_SPAN, min(DUEL_SCORE_SIGMA_SPAN, _inverse_normal_cdf(p)))
+    sigma = (hi - lo) / 2.0 / span
+    z = max(-span, min(span, _inverse_normal_cdf(p)))
     return int(round(max(lo, min(hi, center + sigma * z))))
+
+
+def duel_outcome_score(percentile: float) -> int:
+    """경합 백분위 → [60, 89] 안의 점수 (DUEL_SCORE_BAND 주석 참조)."""
+    return _normal_band_score(percentile, DUEL_SCORE_BAND, DUEL_SCORE_SIGMA_SPAN)
+
+
+def defense_outcome_score(percentile: float) -> int:
+    """수비 백분위 → [50, 100] 안의 점수 (DEFENSE_SCORE_BAND 주석 참조)."""
+    return _normal_band_score(percentile, DEFENSE_SCORE_BAND, DEFENSE_SCORE_SIGMA_SPAN)
 
 
 def possession_outcome_score(code: str, action: dict[str, Any], percentile: float) -> int | None:
@@ -890,6 +942,11 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             elif code == GK_CLAIM_CODE:
                 # 캐칭·펀칭은 액션별 밴드에 볼록 곡선으로 얹는다(GK_CLAIM_SCORE_BANDS).
                 banded = gk_claim_outcome_score(pa, p)
+            elif code in DEFENSE_CODES and effect_basis(code, pa) == "defense":
+                # 태클·인터셉트·컷아웃·클리어 — 범위 [50,100] 은 그대로, 모양만 정규로.
+                # **슛블락은 제외된다**(effect_basis 가 "goal"): 막은 슛의 xG 로 재므로
+                # goal 곡선을 타고, 여기 정규화는 defense 곡선의 쏠림을 겨눈 것이다.
+                banded = defense_outcome_score(p)
             elif code in DUEL_ACTION_CODES:
                 # 경합은 EPV 로 줄세워 [60,89] 에, 가운데가 두꺼운 분포로 얹는다.
                 # possession_outcome_score 보다 **먼저** 봐야 한다 — 경합은 possession
