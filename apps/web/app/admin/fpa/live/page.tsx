@@ -3529,17 +3529,30 @@ export default function FpaLivePage() {
 
     const nextDots: PitchDot[] = [];
     const placed: string[] = [];
-    let skipped = 0;
+    let skipped = 0;       // 자리 id 가 격자에 없어 못 놓은 선수
+    let slotless = 0;      // 자리 id 자체가 비어 있는 선수
     let alreadyActive = 0;
 
     sidesWithLineup.forEach((side) => {
-      const starters = (effectiveRoster[side] ?? []).filter((p) => !p.isSubstitute && p.positionSlot);
+      const roster = effectiveRoster[side] ?? [];
+      const starters = roster.filter((p) => !p.isSubstitute && p.positionSlot);
+      // 선발인데 자리 값이 비어 있는 선수 — 조용히 사라지면 왜 안 깔렸는지 알 수가 없다.
+      slotless += roster.filter((p) => !p.isSubstitute && !p.positionSlot).length;
       if (!starters.length) return;
 
       const slotIds = starters.map((p) => p.positionSlot);
-      const isCustom = slotIds.some((id) => /^c\d+_\d+$/.test(id));
+      // **'gk' 는 두 체계에 공통이라 판정에서 뺀다.** 기록지 라벨 표에도 GK 가 있고 앱
+      // 슬롯에도 'gk' 가 있어서, 그것 하나 때문에 `some` 이 라인업 전체를 기록지로
+      // 몰아 넣었다 — 그러면 buildRecordSheetSlots 가 'player_*' 를 못 읽어 격자에
+      // GK 만 남고 필드 10명이 전부 skipped 로 빠진다(2026-09-11 운영에서 그렇게 났다).
+      // 체계를 가르는 건 필드 선수 id 다.
+      const outfieldIds = slotIds.filter((id) => id.toLowerCase() !== 'gk');
+      const isCustom = outfieldIds.some((id) => /^c\d+_\d+$/.test(id));
+      // 앱 라인업은 buildPresetSlots 가 만든 'player_{라인}_{순번}' 이다
+      // (formation_model.slotsForFormationKey — 커스텀이 아니면 항상 이 경로).
+      const isAppPreset = outfieldIds.some((id) => /^player_\d+_\d+$/.test(id));
       // 기록지 라인업은 슬롯이 포지션 라벨이다 — 포메이션 없이 라벨만으로 자리가 나온다.
-      const isRecordSheet = !isCustom && slotIds.some(isRecordSheetPosition);
+      const isRecordSheet = !isCustom && !isAppPreset && outfieldIds.some(isRecordSheetPosition);
       const slots = isCustom
         ? buildCustomGridSlots()
         : isRecordSheet
@@ -3585,7 +3598,10 @@ export default function FpaLivePage() {
       setStatus(
         alreadyActive
           ? `이미 ${alreadyActive}명이 활성화되어 있습니다 — 새로 깔 잔상이 없습니다`
-          : '배치할 선발 선수가 없습니다 — 라인업에 포지션 정보가 없을 수 있습니다',
+          : skipped || slotless
+            ? `배치할 선발 선수가 없습니다 — 자리를 못 읽은 ${skipped}명`
+              + (slotless ? ` · 자리가 비어 있는 ${slotless}명` : '')
+            : '배치할 선발 선수가 없습니다 — 라인업에 포지션 정보가 없을 수 있습니다',
       );
       return;
     }
@@ -3599,7 +3615,8 @@ export default function FpaLivePage() {
       `라인업 잔상 배치 — ${placed.join(' · ')} · 필요한 선수를 클릭하면 활성화됩니다`
       + (alreadyActive ? ` · 이미 활성화된 ${alreadyActive}명은 그대로 둠` : '')
       + (clearedGhosts ? ` · 옛 잔상 ${clearedGhosts}개 교체` : '')
-      + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : ''),
+      + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : '')
+      + (slotless ? ` · ${slotless}명은 신청에 자리가 비어 있어 건너뜀` : ''),
     );
   };
 
