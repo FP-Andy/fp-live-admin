@@ -67,6 +67,8 @@ export type BroadcastSnapshot = {
       player_number?: string | null;
       event_clock_ms?: number;
       event_clock?: string;
+      raw_event_clock_ms?: number;
+      raw_event_clock?: string;
       is_goal?: boolean;
       event_id?: string;
       shot_x?: number | null;
@@ -79,6 +81,8 @@ export type BroadcastSnapshot = {
       on_target?: number;
     }>>;
     match_dominance?: {
+      raw_aggregate_clock_ms?: number;
+      raw_aggregate_clock?: string;
       items?: Array<{
         base_time?: string;
         base_time_ms?: number;

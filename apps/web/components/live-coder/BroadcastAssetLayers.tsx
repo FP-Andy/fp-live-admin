@@ -401,6 +401,16 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
   const secondHalfMinutes = Math.max(1, Number(snapshot.match.second_half_minutes || firstHalfMinutes));
   const fullMatchMinutes = firstHalfMinutes + secondHalfMinutes;
   const firstHalf = currentClockMs <= firstHalfMinutes * 60_000;
+  // Dominance bins use FLA's uninterrupted clock. During first-half added
+  // time that clock legitimately runs beyond 45:00, while the card itself
+  // continues to label the right edge as 45'. Use that same raw extent for
+  // goal-marker placement; otherwise every marker is scaled against 45:00
+  // and drifts progressively to the right of the dominance curve.
+  const rawDominanceEndMs = Math.max(
+    1,
+    Number(snapshot.analysis.match_dominance?.raw_aggregate_clock_ms || 0),
+    Number(items[items.length - 1]?.base_time_ms || 0) + 3 * 60_000,
+  );
   const timelineDuration = firstHalf ? firstHalfMinutes : fullMatchMinutes;
   const timelineMinutes = Array.from(new Set([
     0,
@@ -413,9 +423,11 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
     .filter((item) => item.is_goal && Number(item.event_clock_ms || 0) <= currentClockMs)
     .map((item) => {
       const eventClockMs = Number(item.event_clock_ms || 0);
-      const markerClockMs = firstHalf
-        ? Math.min(eventClockMs, firstHalfMinutes * 60_000)
-        : eventClockMs;
+      // event_clock_ms is the display clock (so a first-half 45+N event can
+      // be shown as 45'). The graph, however, is laid out from raw bins.
+      // Prefer the raw event timestamp whenever it is available so both use
+      // an identical time scale.
+      const markerClockMs = Number(item.raw_event_clock_ms ?? eventClockMs);
       return {
         side: item.team === 'AWAY' ? 'AWAY' as const : 'HOME' as const,
         point: dominanceGoalPoint(
@@ -425,7 +437,7 @@ function Dominance({ snapshot }: { snapshot: BroadcastSnapshot }) {
           1362,
           633,
           222,
-          firstHalf ? firstHalfMinutes * 60_000 : undefined,
+          rawDominanceEndMs,
         ),
       };
     })
