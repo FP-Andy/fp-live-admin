@@ -2363,10 +2363,13 @@ def _refresh_broadcast_assets_unlocked(match_obj: Match, db: Session, *, force: 
                 # confirms the period has ended.
                 continue
             historical_snapshot, source_clock_ms = captured
-            if existing.get("asset_url") and int(existing.get("source_clock_ms") or -1) == source_clock_ms:
+            # A forced refresh is used after a renderer/layout release. Keep
+            # the normal de-duplication for the minute worker, but never let
+            # it preserve an image rendered by the old template code.
+            if not force and existing.get("asset_url") and int(existing.get("source_clock_ms") or -1) == source_clock_ms:
                 continue
         else:
-            if clock_ms < minute * 60_000 or existing.get("asset_url"):
+            if clock_ms < minute * 60_000 or (not force and existing.get("asset_url")):
                 continue
             historical_snapshot = _build_broadcast_snapshot(match_obj, db, as_of_clock_ms=minute * 60_000)
 
