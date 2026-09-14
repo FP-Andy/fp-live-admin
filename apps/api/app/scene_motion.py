@@ -13,6 +13,7 @@ import math
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -596,6 +597,33 @@ def _draw_goal_inset(draw: ImageDraw.ImageDraw, gx: float, gy: float) -> None:
     draw.polygon(pent, fill=(25, 25, 25))
 
 
+@lru_cache(maxsize=1)
+def _gk_glove_img() -> "Image.Image | None":
+    """골키퍼 장갑 그림(투명 배경). 없으면 None — 그때는 안 그린다."""
+    try:
+        return Image.open(_GK_GLOVE_PATH).convert("RGBA")
+    except (OSError, ValueError):
+        return None
+
+
+@lru_cache(maxsize=1)
+def _gk_glove_ratio() -> float:
+    """장갑 그림의 가로/세로 비. 그림이 없으면 대충 정사각."""
+    img = _gk_glove_img()
+    return (img.width / img.height) if img and img.height else 1.0
+
+
+def _paste_glove(draw: ImageDraw.ImageDraw, cx: float, cy: float, w: float, h: float) -> None:
+    """장갑을 (cx, cy) 중심에 붙인다. draw 가 들고 있는 이미지 위에 알파 합성."""
+    img = _gk_glove_img()
+    if img is None or w < 1 or h < 1:
+        return
+    scaled = img.resize((max(1, int(w)), max(1, int(h))), Image.LANCZOS)
+    # 프레임은 RGB 라 alpha_composite 가 안 된다 — 알파를 마스크로 써서 붙인다.
+    base = draw._image  # PIL ImageDraw 는 대상 이미지를 이 이름으로 들고 있다
+    base.paste(scaled, (int(cx - w / 2), int(cy - h / 2)), scaled)
+
+
 def _draw_goal_panel(
     draw: ImageDraw.ImageDraw,
     gx: float,
@@ -604,8 +632,15 @@ def _draw_goal_panel(
     side: str,
     ball_t: float | None,
     start_gx: float | None = None,
+    is_save: bool = False,
+    save_caught: bool = False,
 ) -> None:
     """공격 반대편 하프를 덮는 대형 정면 골대 뷰 — 슛 궤적(아크)과 공까지 그린다.
+
+    is_save=True 면 **골키퍼가 막는 장면**이다. 닿는 지점에 장갑을 세운다.
+    save_caught=True(sv.c)면 공이 장갑에 붙어 멈추고, False 면 골대 밖으로 쳐낸다.
+    is_save=False 면 슛 — 종전대로 아크 끝까지 날아간다.
+    세이브(Save)만 여기 온다(GK_SAVE_ACTION 주석).
 
     side: 패널이 덮는 하프('left'|'right'). ball_t: None=공 미표시, 0~1=아크 진행률.
     start_gx: 슈터의 골대 프레임 기준 가로 위치(0=왼쪽 포스트, 1=오른쪽 포스트).
@@ -688,9 +723,51 @@ def _draw_goal_panel(
     for i in range(steps):
         if i % 2 == 0:
             draw.line([pts[i], pts[i + 1]], fill=(250, 204, 21), width=4)
-    if ball_t is not None:
-        bx, by = bez(min(max(ball_t, 0.0), 1.0))
-        _draw_ball(draw, bx, by)
+    if ball_t is None:
+        return
+    t = min(max(ball_t, 0.0), 1.0)
+
+    if not is_save:
+        _draw_ball(draw, *bez(t))
+        return
+
+    # ── 세이브 ────────────────────────────────────────────────────────────
+    # 닿기 전까지는 아크를 타고, 닿은 뒤에는 막은 결과를 보여준다.
+    glove_h = goal_h * GK_GLOVE_H
+    glove_w = glove_h * _gk_glove_ratio()
+    # 공은 장갑 **정면**에 놓는다 — 겹쳐 그리면 공에 가려 초록 테두리로만 보인다.
+    # 날아온 방향(아크 끝 접선)의 반대쪽으로 물린다.
+    ndx, ndy = end_x - ctrl_x, end_y - ctrl_y
+    nlen = math.hypot(ndx, ndy) or 1.0
+    face = glove_w / 2 + 7.0
+    face_x, face_y = end_x - ndx / nlen * face, end_y - ndy / nlen * face
+    if t <= GK_CONTACT_T:
+        bx, by = bez(t / GK_CONTACT_T if GK_CONTACT_T > 0 else 1.0)
+        # 장갑은 공보다 조금 먼저 나와 기다린다 — 갑자기 튀어나오면 막은 게 아니라
+        # 공이 사라진 것처럼 보인다.
+        pop = min(1.0, max(0.0, (t - GK_CONTACT_T * 0.55) / (GK_CONTACT_T * 0.45)))
+    else:
+        after = (t - GK_CONTACT_T) / (1.0 - GK_CONTACT_T)
+        pop = 1.0
+        if save_caught:
+            # 잡았다 — **장갑과 같은 자리**에 겹쳐 멈춘다. 장갑이 뒤, 공이 앞이라
+            # 손에 쥔 그림이 된다(공은 장갑 다음에 그린다 — 아래 순서 참조).
+            # 옆에 붙여 놓으면 '닿기만 하고 흘렀다' 로 보인다.
+            bx, by = end_x, end_y
+        else:
+            # 쳐냈다 — 가까운 포스트 **밖으로**, 크로스바 위로 넘겨 보낸다.
+            # 골대 안에 머물면 막았는지 흘렸는지가 안 보인다.
+            sign = 1.0 if end_x >= (gx0 + gx1) / 2 else -1.0
+            e = _ease(after)
+            bx = face_x + sign * goal_w * GK_SAVE_AWAY * e
+            by = face_y - goal_h * (GK_SAVE_AWAY + 0.25) * e
+            # 패널 안에 가둔다 — 밖으로 나가면 피치 위에 공이 떠 있는 그림이 된다.
+            pad = 16.0
+            bx = min(max(bx, x0 + pad), x1 - pad)
+            by = min(max(by, y0 + pad), y1 - pad)
+    if pop > 0:
+        _paste_glove(draw, end_x, end_y, glove_w * pop, glove_h * pop)
+    _draw_ball(draw, bx, by)
 
 
 def _ease(t: float) -> float:
@@ -731,6 +808,8 @@ def render_scene_motion(
     goal_mouth: tuple[float, float] | None = None,
     caption: str | None = None,
     clear_exit: bool = False,
+    is_save: bool = False,
+    save_caught: bool = False,
 ) -> bool:
     """SceneState → mp4. 점이 하나도 없으면 False (렌더 생략).
 
@@ -888,6 +967,7 @@ def render_scene_motion(
                 _draw_goal_panel(
                     draw, goal_mouth[0], goal_mouth[1],
                     side=panel_side, ball_t=ball_t_panel, start_gx=panel_start_gx,
+                    is_save=is_save, save_caught=save_caught,
                 )
             elif goal_mouth is not None:
                 _draw_goal_inset(draw, goal_mouth[0], goal_mouth[1])
@@ -950,6 +1030,33 @@ def _goal_mouth_xy(value: Any) -> tuple[float, float] | None:
 # 반대 방향을 보고 있기 때문이다.
 GK_MIRROR_ACTIONS = {"Save", "Catching", "Punching"}
 
+# 세이브 연출 — 슛과 같은 아크만 그리면 **공이 골대로 들어간 그림**이라 막은 건지
+# 먹힌 건지 구분이 안 된다(2026-09-14). 닿는 지점에 장갑을 세우고 공을 거기서 막는다.
+#
+# **세이브(Save)만 해당한다.** 캐칭·펀칭은 골문 좌표(goalMouth)를 받지 않아 패널 자체가
+# 안 뜬다 — 점수가 '시작점 위협 × 회수계수' 라 골대 UI 로 가지 않는 설계다
+# (live/page.tsx 의 GK_CLAIM_ARROW_CODES 주석). 그 둘은 피치 위 화살표로만 보인다.
+GK_SAVE_ACTION = "Save"
+
+# 막은 뒤의 처리 — 태그로 갈린다(fpa.SAVE_TAG_CODES: sv.c / sv.p).
+#
+#   catch  잡았다 — 공이 장갑에 붙어 멈춘다. 소유권까지 가져왔다는 그림이다
+#   punch  쳐냈다 — 골대 밖으로 튕겨 나간다
+#   (없음) 옛 기록 — 어느 쪽인지 모른다. 쳐내기로 그린다(막았다까지만 말한다)
+GK_SAVE_CATCH_TAG = "Catch"
+GK_SAVE_PUNCH_TAG = "Punch"
+
+# 아크 전체에서 **공이 장갑에 닿는 시점**. 나머지는 막은 뒤(튕겨 나가는) 처리에 쓴다.
+GK_CONTACT_T = 0.72
+# 막은 공이 튕겨 나가는 거리 — 골 너비 대비. 잡았는지 쳐냈는지는 기록에 없으므로
+# '골대 밖으로 확실히 나간다' 까지만 말한다. 패널 밖으로는 안 나간다(아래 clamp) —
+# 나가면 피치 위에 공이 떠 있는 그림이 돼 어디로 갔는지가 안 보인다.
+GK_SAVE_AWAY = 0.34
+# 장갑 크기 — 골 높이 대비. 공(14px)보다 확실히 커야 '막는 손' 으로 읽힌다.
+# 장갑 한 쌍 그림이라 가로가 넓다 — 높이 기준으로 맞추고 가로는 원본 비율을 따른다.
+GK_GLOVE_H = 0.46
+_GK_GLOVE_PATH = Path(__file__).parent / "gk_glove.png"
+
 
 def _mirror_goal_mouth(value: Any) -> Any:
     """goalMouth 문자열의 방향만 뒤집는다 — 골키퍼 액션용(GK_MIRROR_ACTIONS 주석)."""
@@ -1003,6 +1110,8 @@ def build_scene_data(
     caption: str | None = None,
     movers: list[dict[str, Any]] | None = None,
     clear_exit: bool = False,
+    is_save: bool = False,
+    save_caught: bool = False,
 ) -> dict[str, Any] | None:
     """SceneState → 앱 네이티브 씬모션(씬모션ui_handoff scene_view.dart)용 좌표 데이터.
 
@@ -1111,6 +1220,11 @@ def build_scene_data(
                 origin_y = path_m[-2][1]
                 sgx = (origin_y - 30.34) / 7.32 if direction == "left" else (37.66 - origin_y) / 7.32
                 shot_info["start"] = "left" if sgx < 0.35 else ("right" if sgx > 0.65 else "center")
+        if is_save:
+            # 골키퍼가 막는 장면 — 아크 끝에 장갑을 세운다(GK_SAVE_ACTION 주석).
+            # 값이 'catch' 면 공이 장갑에 붙어 멈추고, 'punch' 면 골대 밖으로 쳐낸다.
+            # 이 키가 없으면 종전대로 슛이다.
+            shot_info["save"] = "catch" if save_caught else "punch"
         data["shot"] = shot_info
     if caption:
         data["caption"] = caption
@@ -1119,6 +1233,27 @@ def build_scene_data(
 
 # 장면 그룹핑용 경계 센티널 — sceneState 없는 행을 만나면 그룹을 끊는다.
 _GROUP_BOUNDARY = object()
+
+
+def _row_has_tag(row: dict[str, Any], tag: str) -> bool:
+    """액션 행에 이 태그가 있나. 태그가 실리는 자리가 경로마다 다르다 —
+    dual 행은 "Tags", 전송 페이로드는 extra.tags, 옛 코드는 최상위 "tags".
+    (xfp_score._has_tag 와 같은 규칙)
+    """
+    extra = row.get("extra")
+    for raw in (
+        row.get("tags"),
+        row.get("Tags"),
+        extra.get("tags") if isinstance(extra, dict) else None,
+    ):
+        if raw is None:
+            continue
+        if isinstance(raw, (list, tuple, set)):
+            if tag in {str(t).strip() for t in raw}:
+                return True
+        elif tag in {part.strip() for part in str(raw).split(",") if part.strip()}:
+            return True
+    return False
 
 
 def scene_motion_key(prefix: str, clip_key: str, seq: Any) -> str:
@@ -1202,8 +1337,14 @@ def attach_scene_motions(
         # 골키퍼 액션이면 골대·궤적이 반대편이다 — GK_MIRROR_ACTIONS 주석 참조.
         # 대표 행(goalMouth 를 들고 있는 행) 기준으로 판단한다.
         goal_mouth_text = extra.get("goalMouth")
-        if str(rep.get("action") or "") in GK_MIRROR_ACTIONS:
+        rep_action = str(rep.get("action") or "")
+        if rep_action in GK_MIRROR_ACTIONS:
             goal_mouth_text = _mirror_goal_mouth(goal_mouth_text)
+        # **대표 행이 세이브일 때만.** goalMouth 를 들고 있는 행이 곧 골대 패널의
+        # 주인이라, 같은 장면에 찍힌 상대 슛까지 세이브로 그리면 안 된다.
+        is_save = rep_action == GK_SAVE_ACTION
+        # 마무리는 태그로 갈린다(sv.c / sv.p). 옛 기록은 태그가 없어 쳐내기로 그린다.
+        save_caught = is_save and _row_has_tag(rep, GK_SAVE_CATCH_TAG)
         # 앱 네이티브 씬모션용 좌표 데이터 — 스토리지·렌더와 무관하게 항상 싣는다.
         # (앱은 sceneData 우선, 없으면 sceneMotionKey mp4 폴백)
         data = build_scene_data(
@@ -1214,6 +1355,8 @@ def attach_scene_motions(
             caption=caption,
             movers=movers,
             clear_exit=clear_exit,
+            is_save=is_save,
+            save_caught=save_caught,
         )
         if data:
             rep["sceneData"] = data
@@ -1234,6 +1377,8 @@ def attach_scene_motions(
                     goal_mouth=_goal_mouth_xy(goal_mouth_text),
                     caption=caption,
                     clear_exit=clear_exit,
+                    is_save=is_save,
+                    save_caught=save_caught,
                 ):
                     continue
                 storage.upload(out, key, content_type="video/mp4")
