@@ -46,6 +46,10 @@ const GK_RING_INSET = 0.10;
 const GK_RING_COLOR = 'rgba(0, 0, 0, 0.26)';
 const PASS_SUCCESS = '#04FF04';
 const PASS_FAIL = '#FF0C04';
+// 자막(골 장면) — 앱 xfp_scene_view 와 같은 톤. 핸드오프 §6 컬러 레퍼런스의
+// 네이비/오렌지다. 골대 패널이 반쪽을 덮으므로 반대쪽 위로 비켜 놓는다.
+const CAPTION_BG = 'rgba(33, 33, 63, 0.8)';   // #21213F cc
+const CAPTION_FG = '#FFB56D';
 
 // ── 애니메이션 (scene_motion.py 와 동일) ──────────────────────
 const HOLD_BEFORE = 0.4;
@@ -222,6 +226,10 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
 
   const ballPt = pointOnPath(ballPath, phase);
   const ball = ballPt ? toLocal(ballPt.x, ballPt.y, width, height) : null;
+  // 자막을 오른쪽에 둘 것인가 — 골대 패널(공격 반대편)의 반대쪽이다.
+  // shot 이 없으면(골대 클릭 안 한 골) 왼쪽.
+  const captionRight = Boolean(data.shot) && data.shot?.dir !== 'left';
+
   // 화살표는 공이 지나간 만큼만 — 공과 같은 '경로 길이' 기준을 쓴다(revealFractions).
   const reveal = revealFractions(passes, ballPath, phase);
 
@@ -242,7 +250,9 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
           const frac = reveal[i] ?? phase;
           const ex = a.px + (b.px - a.px) * frac;
           const ey = a.py + (b.py - a.py) * frac;
-          const color = p.kind === 'defense' ? PASS_FAIL : PASS_SUCCESS;
+          // 'defense'(상대 볼 경로)와 'fail'(실패 패스·크로스) 둘 다 빨강이다 —
+          // 아군이 의도대로 연결한 패스만 초록. 앱 ScenePass.isRed 와 같은 규칙.
+          const color = p.kind === 'pass' || !p.kind ? PASS_SUCCESS : PASS_FAIL;
           const ang = Math.atan2(ey - a.py, ex - a.px);
           const len = 5 * k;
           const spread = 0.5;
@@ -297,27 +307,18 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
                 alt="" style={{ width: '100%', height: '100%', display: 'block' }}
               />
               {p.gk ? (
-                // 골키퍼 — 마커 안쪽 링. 번호보다 아래에 깔린다.
+                // 골키퍼 — 마커 안쪽 링. 번호는 볼 뒤(5-b)에 따로 그리므로 가리지 않는다.
                 <span style={{
                   position: 'absolute', inset: s * GK_RING_INSET, borderRadius: '50%',
                   boxShadow: `inset 0 0 0 ${Math.max(1, s * GK_RING_W)}px ${GK_RING_COLOR}`,
                   pointerEvents: 'none',
                 }} />
               ) : null}
-              {isOurs && p.number != null && p.number !== '' ? (
-                // 넘버 = 헥사곤 중심 = 좌표점(셋이 한 점). 항상 최상단.
-                <span style={{
-                  position: 'absolute', inset: 0, display: 'flex',
-                  alignItems: 'center', justifyContent: 'center',
-                  fontFamily: 'Giants, sans-serif', fontWeight: 700,
-                  fontSize: NUMBER_SIZE * k, lineHeight: 1, color: '#000',
-                }}>{p.number}</span>
-              ) : null}
             </div>
           );
         })}
 
-      {/* 5) 볼 (최상단) */}
+      {/* 5) 볼 */}
       {ball ? (
         <img
           src="/scene/ball.svg" alt=""
@@ -328,18 +329,55 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
         />
       ) : null}
 
+      {/* 5-b) 등번호 — **볼보다 위**. 마커 안에 두면 공이 마커에 겹쳐 도착할 때
+          번호가 가려진다(앱 xfp_scene_view 가 같은 이유로 따로 그린다). */}
+      {players
+        .map((p, i) => ({ p, i }))
+        .filter(({ p }) => p.team === ours && p.number != null && p.number !== '')
+        .map(({ p, i }) => {
+          const x = p.x + ((p.toX ?? p.x) - p.x) * phase;
+          const y = p.y + ((p.toY ?? p.y) - p.y) * phase;
+          const c = toLocal(x, y, width, height);
+          const s = SIZE_HOME * k;
+          return (
+            // 넘버 = 헥사곤 중심 = 좌표점(셋이 한 점).
+            <span
+              key={`n${i}`}
+              style={{
+                position: 'absolute', left: c.px - s / 2, top: c.py - s / 2,
+                width: s, height: s, display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+                fontFamily: 'Giants, sans-serif', fontWeight: 700,
+                fontSize: NUMBER_SIZE * k, lineHeight: 1, color: '#000',
+                pointerEvents: 'none',
+              }}
+            >{p.number}</span>
+          );
+        })}
+
       {/* 6) 슛이면 공격 반대편 하프를 대형 정면 골대 패널로 덮는다 (피치 모션 뒤에 등장) */}
       {data.shot ? (
         <GoalPanel shot={data.shot} width={width} height={height} panelIn={panelIn} shotT={shotT} />
       ) : null}
 
-      {/* 7) 자막 */}
+      {/* 7) 자막(골 장면 "골! #7") — 앱·mp4 와 같은 모양·자리.
+          골대 패널이 한쪽 하프를 덮으므로 **반대쪽 위**에 놓는다. 하단 중앙에 두면
+          패널과 겹친다. */}
       {data.caption ? (
-        <div style={{
-          position: 'absolute', left: 0, right: 0, bottom: 8 * k, textAlign: 'center',
-          fontSize: 15 * k, fontWeight: 800, color: '#fff',
-          textShadow: '0 2px 6px rgba(0,0,0,.85)', pointerEvents: 'none',
-        }}>{data.caption}</div>
+        <div
+          style={{
+            position: 'absolute', top: 8 * k,
+            // 패널 반대쪽. 골대 클릭이 없어 shot 이 없는 골 장면은 왼쪽에 둔다
+            // (앱 xfp_scene_view 의 `shot?.attackRight == true` 분기와 같은 결과).
+            left: captionRight ? undefined : 8 * k,
+            right: captionRight ? 8 * k : undefined,
+            padding: `${3 * k}px ${8 * k}px`, borderRadius: 6 * k,
+            background: CAPTION_BG, color: CAPTION_FG,
+            fontFamily: 'Giants, sans-serif', fontWeight: 700,
+            fontSize: 11 * k, lineHeight: 1.3, whiteSpace: 'nowrap',
+            pointerEvents: 'none',
+          }}
+        >{data.caption}</div>
       ) : null}
     </div>
   );
