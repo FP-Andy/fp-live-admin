@@ -39,6 +39,16 @@ FPS = 25
 HOLD_BEFORE_SEC = 0.4
 MOVE_SEC = 3.0
 HOLD_AFTER_SEC = 0.8
+# 클리어 — 걷어낸 공이 터치라인 밖으로 나가는 **별도 구간**.
+#
+# 예전에는 이 꼬리를 공 경로 끝에 이어 붙여 MOVE_SEC 안에서 같이 돌렸다. 그러면 공이
+# 걷어낸 지점을 **먼저** 지나고(전체 길이의 앞부분이라) 수비수는 그 뒤에 도착한다 —
+# 실제로는 수비가 공에 닿아서 걷어내는 것이라 둘이 같이 도착해야 한다.
+#
+# 그래서 구간을 나눈다: MOVE 동안 공과 수비가 **함께** 걷어낸 지점에 도착하고,
+# 그 뒤 이 구간에서 **공만** 라인 밖으로 나간다. 걷어낸 직후라 빠르게 나가야 하므로
+# 이징도 강한 ease-out(_ease)을 그대로 쓴다.
+CLEAR_EXIT_SEC = 0.7
 
 BG_COLOR = (10, 14, 12)
 HOME_COLOR = (255, 146, 26)      # replay .fpa-replay-dot 주황 그라데이션 중간값
@@ -192,22 +202,25 @@ def _clear_exit_point(x: float, y: float) -> tuple[float, float] | None:
     return (x, near_y)
 
 
-def _with_clear_exit(path: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """공 경로 끝에 '터치라인 밖으로' 꼬리를 붙인다 (클리어 전용).
+def _clear_exit_target(path: list[tuple[float, float]]) -> tuple[float, float] | None:
+    """공 경로 끝에서 가장 가까운 터치라인 밖 지점 (클리어 전용). 없으면 None.
 
     클리어는 화살표가 '상대 볼 출발점 → 끊은 지점' 이라 공이 걷어낸 자리에서 그냥
     멈춘다 — 보는 쪽에선 치워냈다는 느낌이 전혀 안 난다. 그래서 끝점에서 가장 가까운
     터치라인까지 한 구간을 더 굴린다.
 
-    **그려진 화살표는 건드리지 않는다.** 이 꼬리는 태깅된 경로가 아니라 연출이라,
+    **경로에 이어 붙이지 않고 따로 돌려준다.** 이어 붙이면 공이 그 길이까지 포함해
+    시간을 나눠 쓰는 바람에 걷어낸 지점을 수비수보다 **먼저** 지나간다(CLEAR_EXIT_SEC
+    주석). 호출부가 별도 구간으로 재생한다.
+
+    **그려진 화살표도 건드리지 않는다.** 이 꼬리는 태깅된 경로가 아니라 연출이라,
     측정된 선처럼 보이면 안 된다(공만 지나간다). 채점에도 안 들어간다 — 렌더 전용이다.
 
     꼬리를 짧게 자르는 안은 검토 후 채택하지 않았다 — CLEAR_EXIT_MIN_M 위 주석 참조.
     """
     if not path:
-        return path
-    exit_point = _clear_exit_point(path[-1][0], path[-1][1])
-    return path if exit_point is None else [*path, exit_point]
+        return None
+    return _clear_exit_point(path[-1][0], path[-1][1])
 
 
 def _chain_path(arrows: list[dict]) -> list[tuple[float, float]]:
@@ -724,8 +737,9 @@ def render_scene_motion(
     공 경로: passArrows 가 있으면 화살표 체인, 없으면(드리블 등) 행위자 점의
     before→after 이동을 따라간다(actor_jersey/actor_side 로 행위자 점을 찾는다).
 
-    clear_exit=True 면 경로 끝에 터치라인까지 한 구간을 더 붙인다(클리어 연출 —
-    _with_clear_exit). 슛이 있는 장면에는 안 붙인다: 그 장면의 끝은 슛이다.
+    clear_exit=True 면 이동이 끝난 **뒤에** 공만 터치라인 밖으로 굴러 나가는 구간을
+    더한다(클리어 연출 — _clear_exit_target·CLEAR_EXIT_SEC). 경로에 이어 붙이지 않는
+    이유는 CLEAR_EXIT_SEC 주석 참조. 슛이 있는 장면에는 안 붙인다: 그 장면의 끝은 슛이다.
     """
     before = _parse_dots(scene_state.get("beforeDots") or scene_state.get("before"))
     after = _parse_dots(scene_state.get("afterDots") or scene_state.get("after"))
@@ -769,11 +783,12 @@ def render_scene_motion(
     # 않아 "공이 지나가면 그려진다"가 성립하지 않고, 공도 상대 패스를 건너뛴다.
     # 끊긴 화살표 사이는 직선으로 이어 계속 굴린다 — sceneData 와 같은 경로.
     ball_path, arrow_spans = _chain_spans(arrows)
-    if clear_exit and shot_target is None:
-        # 화살표 뒤에 붙는 꼬리다 — spans 는 그대로 두므로 화살표는 공이 지나가며
-        # 다 그려지고, 그 뒤로 공만 라인 밖으로 굴러 나간다(_reveal_fractions 는
-        # 경로 전체 길이 기준이라 자동으로 맞는다).
-        ball_path = _with_clear_exit(ball_path)
+    # 클리어 꼬리는 **경로에 붙이지 않는다** — 붙이면 공이 걷어낸 지점을 수비수보다
+    # 먼저 지나간다(CLEAR_EXIT_SEC 주석). 이동 구간이 끝난 뒤 따로 굴린다.
+    exit_target = (
+        _clear_exit_target(ball_path)
+        if clear_exit and shot_target is None else None
+    )
 
     font = _load_font(15)
     dot_r = 14.0
@@ -794,18 +809,25 @@ def render_scene_motion(
 
     hold_before = int(HOLD_BEFORE_SEC * FPS)
     move = max(1, int(MOVE_SEC * FPS))
+    # 공만 라인 밖으로 나가는 구간 — 나갈 곳이 있을 때만 시간을 준다.
+    exit_frames = int(CLEAR_EXIT_SEC * FPS) if exit_target is not None else 0
     hold_after = int(HOLD_AFTER_SEC * FPS)
-    total = hold_before + move + hold_after
+    total = hold_before + move + exit_frames + hold_after
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         for f in range(total):
+            # t: 선수·화살표·공(체인)의 진행률. exit_t: 걷어낸 공이 라인 밖으로
+            # 나가는 진행률 — t 가 1 에 닿은 **뒤에** 움직인다(둘이 같이 도착한 다음).
+            exit_t = 0.0
             if f < hold_before:
                 t = 0.0
             elif f < hold_before + move:
                 t = _ease((f - hold_before) / move)
             else:
                 t = 1.0
+                if exit_frames:
+                    exit_t = _ease(min(1.0, (f - hold_before - move) / exit_frames))
 
             img = _new_frame()
             draw = ImageDraw.Draw(img)
@@ -848,8 +870,12 @@ def render_scene_motion(
                     draw.text((px, py), number, fill=text_color, font=font, anchor="mm")
 
             # 공 — 화살표 체인을 이은 연속 경로를 길이 비례 속도로 따라간다.
+            # 클리어면 그 끝에 도착한 뒤(수비수와 함께) 라인 밖으로 더 굴러 나간다.
             if ball_path:
                 bx, by = _point_on_path(ball_path, t)
+                if exit_target is not None and exit_t > 0:
+                    bx += (exit_target[0] - ball_path[-1][0]) * exit_t
+                    by += (exit_target[1] - ball_path[-1][1]) * exit_t
                 bx += ball_offset[0]
                 by += ball_offset[1]
                 bpx, bpy = _to_px(bx, by)
@@ -1031,10 +1057,13 @@ def build_scene_data(
             else:
                 path_m = [(FIELD_W / 2, FIELD_H / 2)]
         path_m.append(shot_target)
-    elif clear_exit:
+    exit_m: tuple[float, float] | None = None
+    if shot_target is None and clear_exit:
         # 클리어 — 걷어낸 자리에서 가장 가까운 터치라인까지 공만 더 굴린다.
+        # **path 에 붙이지 않는다**: 붙이면 공이 그 길이까지 시간을 나눠 써서
+        # 걷어낸 지점을 수비수보다 먼저 지나간다(CLEAR_EXIT_SEC 주석).
         # mp4(render_scene_motion)와 같은 규칙이라 콘솔 검수와 앱 화면이 일치한다.
-        path_m = _with_clear_exit(path_m)
+        exit_m = _clear_exit_target(path_m)
 
     # 이동 셰브론(핸드오프 arrow_move_*) — 드리블/돌파=공 있는 이동, 침투=공 없는 이동.
     # 행위자 점의 before→after 이동 방향으로 회전, 위치는 이동 경로 중점.
@@ -1061,7 +1090,16 @@ def build_scene_data(
     if moves:
         data["moves"] = moves
     if path_m:
-        data["ball"] = {"path": [{"x": px, "y": py} for px, py in (_to_handoff(x, y) for x, y in path_m)]}
+        ball: dict[str, Any] = {
+            "path": [{"x": px, "y": py} for px, py in (_to_handoff(x, y) for x, y in path_m)]
+        }
+        if exit_m is not None:
+            # 클리어 전용 — 이동 구간이 끝난 **뒤에** 공만 여기로 굴러 나간다.
+            # path 와 별개라, 이 필드를 모르는 옛 앱은 걷어낸 자리에서 멈출 뿐
+            # 타이밍이 어긋나지는 않는다.
+            ex, ey = _to_handoff(*exit_m)
+            ball["exit"] = {"x": ex, "y": ey}
+        data["ball"] = ball
     gm = _goal_mouth_xy(goal_mouth_text)
     if gm is not None:
         shot_info: dict[str, Any] = {"gx": gm[0], "gy": gm[1]}

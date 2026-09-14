@@ -59,6 +59,10 @@ const HOLD_AFTER = 0.8;
 // 패널이 처음부터 떠 있으면 어디서 공이 오는지 안 보여서, 등장을 뒤로 미뤘다.
 const PANEL_IN = 0.5; // 반대편 하프에서 스윽 밀려 들어오는 시간
 const SHOT = 1.0; // 골대 안으로 아크 궤적이 그려지는 시간
+// 클리어 — 걷어낸 공이 터치라인 밖으로 나가는 **별도 구간**(scene_motion.CLEAR_EXIT_SEC).
+// 이동 구간에 이어 붙이면 공이 걷어낸 지점을 수비수보다 먼저 지나가 싱크가 어긋난다.
+// MOVE 동안 공과 수비가 함께 도착하고, 그 뒤 이 구간에서 공만 나간다.
+const CLEAR_EXIT = 0.7;
 /** 콘솔 replay 의 cubic-bezier(0.22,0.84,0.28,1) 근사 — 강한 ease-out. */
 const ease = (t: number) => 1 - (1 - t) ** 3;
 
@@ -79,7 +83,8 @@ export type SceneData = {
   players?: ScenePlayer[];
   passes?: ScenePass[];
   moves?: SceneMove[];
-  ball?: { path?: { x: number; y: number }[] };
+  // exit — 클리어 전용. path 끝에 도착한 **뒤에** 공만 여기로 굴러 나간다.
+  ball?: { path?: { x: number; y: number }[]; exit?: { x: number; y: number } };
   shot?: SceneShot;
   caption?: string;
 };
@@ -171,41 +176,47 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
   const k = width / REF_WIDTH; // 마커 스케일
   const hasShot = Boolean(data.shot);
   // 슛이면 피치 모션 → 골대 등장 → 아크 순으로 이어 붙인다.
-  const cycle = HOLD_BEFORE + MOVE + (hasShot ? PANEL_IN + SHOT : 0) + HOLD_AFTER;
+  const hasClearExit = Boolean(data.ball?.exit) && !hasShot;
+  const exitSec = hasClearExit ? CLEAR_EXIT : 0;
+  const cycle = HOLD_BEFORE + MOVE + exitSec + (hasShot ? PANEL_IN + SHOT : 0) + HOLD_AFTER;
 
   // 한 덩어리로 들고 있다가 값이 실제로 바뀔 때만 리렌더한다.
   // 사이클의 1.2초가 정지 구간이라, 프레임마다 setState 하면 그동안 헛돈다
   // (클립 하나에 장면 카드가 여러 개 붙는 화면이다).
-  type Anim = { phase: number; panelIn: number; shotT: number; armed: boolean };
+  type Anim = { phase: number; exitT: number; panelIn: number; shotT: number; armed: boolean };
   const [anim, setAnim] = useState<Anim>(
-    animate ? { phase: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: false }
-            : { phase: 1, panelIn: 1, shotT: 1, armed: true },
+    animate ? { phase: 0, exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: false }
+            : { phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true },
   );
   const last = useRef<Anim | null>(null);
   const raf = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!animate) { setAnim({ phase: 1, panelIn: 1, shotT: 1, armed: true }); return; }
+    if (!animate) { setAnim({ phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true }); return; }
     const start = performance.now();
     const tick = (now: number) => {
       const t = ((now - start) / 1000) % cycle;
       let next: Anim;
       if (t < HOLD_BEFORE) {
-        next = { phase: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: t >= HOLD_BEFORE * 0.5 };
+        next = { phase: 0, exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: t >= HOLD_BEFORE * 0.5 };
       } else if (t < HOLD_BEFORE + MOVE) {
-        next = { phase: ease((t - HOLD_BEFORE) / MOVE), panelIn: hasShot ? 0 : 1, shotT: 0, armed: true };
+        next = { phase: ease((t - HOLD_BEFORE) / MOVE), exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: true };
+      } else if (hasClearExit && t < HOLD_BEFORE + MOVE + exitSec) {
+        // 공과 수비가 함께 도착한 뒤 — 공만 라인 밖으로.
+        next = { phase: 1, exitT: ease((t - HOLD_BEFORE - MOVE) / exitSec), panelIn: 1, shotT: 0, armed: true };
       } else if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN) {
         // 공이 골라인에 닿은 순간 — 골대가 반대편 하프에서 밀려 들어온다.
-        next = { phase: 1, panelIn: ease((t - HOLD_BEFORE - MOVE) / PANEL_IN), shotT: 0, armed: true };
+        next = { phase: 1, exitT: 1, panelIn: ease((t - HOLD_BEFORE - MOVE) / PANEL_IN), shotT: 0, armed: true };
       } else if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN + SHOT) {
-        next = { phase: 1, panelIn: 1, shotT: ease((t - HOLD_BEFORE - MOVE - PANEL_IN) / SHOT), armed: true };
+        next = { phase: 1, exitT: 1, panelIn: 1, shotT: ease((t - HOLD_BEFORE - MOVE - PANEL_IN) / SHOT), armed: true };
       } else {
-        next = { phase: 1, panelIn: 1, shotT: 1, armed: true };
+        next = { phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true };
       }
       const p = last.current;
       const moved = !p
         || p.armed !== next.armed
         || Math.abs(p.phase - next.phase) > 0.002
+        || Math.abs(p.exitT - next.exitT) > 0.002
         || Math.abs(p.panelIn - next.panelIn) > 0.002
         || Math.abs(p.shotT - next.shotT) > 0.002;
       if (moved) { last.current = next; setAnim(next); }
@@ -215,7 +226,7 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
     return () => { if (raf.current !== null) cancelAnimationFrame(raf.current); };
   }, [animate, data, cycle, hasShot]);
 
-  const { phase, panelIn, shotT, armed } = anim;
+  const { phase, exitT, panelIn, shotT, armed } = anim;
 
   const players = data.players || [];
   const passes = data.passes || [];
@@ -224,7 +235,15 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
   // 헥사곤+등번호 = 이 장면을 태깅할 때 선택한 팀. 홈 고정이 아니다.
   const ours = data.ours || 'home';
 
-  const ballPt = pointOnPath(ballPath, phase);
+  const ballBase = pointOnPath(ballPath, phase);
+  // 클리어 — 걷어낸 자리에 도착한 뒤(수비수와 함께) 라인 밖으로 더 굴러 나간다.
+  const ballExit = data.ball?.exit;
+  const ballPt = ballBase && ballExit && exitT > 0 && ballPath.length
+    ? {
+      x: ballBase.x + (ballExit.x - ballPath[ballPath.length - 1].x) * exitT,
+      y: ballBase.y + (ballExit.y - ballPath[ballPath.length - 1].y) * exitT,
+    }
+    : ballBase;
   const ball = ballPt ? toLocal(ballPt.x, ballPt.y, width, height) : null;
   // 자막을 오른쪽에 둘 것인가 — 골대 패널(공격 반대편)의 반대쪽이다.
   // shot 이 없으면(골대 클릭 안 한 골) 왼쪽.
