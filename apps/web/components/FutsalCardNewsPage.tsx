@@ -25,15 +25,10 @@ type FpaRow = { Player?: string; Team?: string; Action?: string; Tags?: string; 
 type FpaLog = { rows?: FpaRow[]; teamid_h?: string; teamid_a?: string };
 type FlaEvent = { team: Team; player_number?: string | null; player_name?: string | null; is_goal?: boolean; xg?: number | null };
 type Axis = { label: string; value: number };
+type TargetMatch = { matchId: string; playerNumber: string; side: Team };
+type LoadedTargetMatch = { matchId: string; fpa: FpaLog; events: FlaEvent[] };
 
 const POSITION_LABEL: Record<Position, string> = { PIVO: '피보', ALA: '알라', FIXO: '픽소', GOLEIRO: '골레이로' };
-const positionFromLineup = (value?: string): Position => {
-  const text = String(value || '').toUpperCase();
-  if (text === 'GK' || text.includes('GOLE')) return 'GOLEIRO';
-  if (text === 'DF' || text.includes('FIX')) return 'FIXO';
-  if (text === 'FW' || text.includes('PIVO')) return 'PIVO';
-  return 'ALA';
-};
 const numberValue = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const has = (row: FpaRow, value: string) => `${row.Action || ''} ${row.Tags || ''}`.toLowerCase().includes(value.toLowerCase());
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
@@ -81,35 +76,74 @@ function Radar({ axes }: { axes: Axis[] }) {
 
 export default function FutsalCardNewsPage() {
   const [matches, setMatches] = useState<Match[]>([]);
-  const [matchId, setMatchId] = useState('');
-  const [side, setSide] = useState<Team>('HOME');
-  const [player, setPlayer] = useState('');
+  const [targets, setTargets] = useState<TargetMatch[]>([]);
+  const [loadedMatches, setLoadedMatches] = useState<LoadedTargetMatch[]>([]);
+  const [playerName, setPlayerName] = useState('');
   const [position, setPosition] = useState<Position>('ALA');
-  const [fpa, setFpa] = useState<FpaLog>({});
-  const [events, setEvents] = useState<FlaEvent[]>([]);
   const [status, setStatus] = useState('');
   const [downloading, setDownloading] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { apiJson<MatchPage>('/matches/page?sport=FUTSAL&limit=100&compact=true').then((data) => { const rows = Array.isArray(data.items) ? data.items : []; setMatches(rows); setMatchId(rows[0]?.id || ''); }).catch((error) => setStatus(error instanceof Error ? error.message : '풋살 경기를 불러오지 못했습니다.')); }, []);
-  const match = matches.find((item) => item.id === matchId) || null;
-  const players = useMemo(() => {
-    const lineup = match?.metadata?.lineups?.teams?.[side] || [];
-    if (lineup.length) return lineup;
-    // A card can still be made when the organiser did not upload a lineup:
-    // use the player numbers actually tagged in the saved FPA match log.
-    return Array.from(new Set((fpa.rows || []).map((row) => String(row.Player || '').trim()).filter(Boolean)))
-      .map((number) => ({ number, name: '', position: undefined }));
-  }, [fpa.rows, match, side]);
-  const selected = players.find((item) => item.number === player) || players[0];
-  useEffect(() => { setPlayer(players[0]?.number || ''); setPosition(positionFromLineup(players[0]?.position)); }, [matchId, side, players]);
-  useEffect(() => { if (!matchId) return; Promise.all([apiJson<FpaLog>(`/fpa/matches/${matchId}/logs`).catch(() => ({})), apiJson<{ events: FlaEvent[] }>(`/matches/${matchId}/events`).catch(() => ({ events: [] }))]).then(([log, eventData]) => { setFpa(log); setEvents(eventData.events || []); }); }, [matchId]);
-  const axes = useMemo(() => playerAxes(fpa.rows || [], events, selected?.number || '', side, position), [events, fpa.rows, position, selected?.number, side]);
-  const teamName = side === 'HOME' ? match?.metadata?.home_team || fpa.teamid_h || 'HOME' : match?.metadata?.away_team || fpa.teamid_a || 'AWAY';
-  const download = async () => { if (!cardRef.current) return; setDownloading(true); try { const png = await toPng(cardRef.current, { backgroundColor: '#071b34', cacheBust: true, pixelRatio: 2 }); const link = document.createElement('a'); link.href = png; link.download = `queen-cup-${teamName}-${selected?.number || 'player'}.png`; link.click(); } catch { setStatus('이미지 생성에 실패했습니다.'); } finally { setDownloading(false); } };
+  useEffect(() => {
+    apiJson<MatchPage>('/matches/page?sport=FUTSAL&limit=100&compact=true')
+      .then((data) => {
+        const rows = Array.isArray(data.items) ? data.items : [];
+        setMatches(rows);
+        if (rows[0]) setTargets((current) => current.length ? current : [{ matchId: rows[0].id, playerNumber: '', side: 'HOME' }]);
+      })
+      .catch((error) => setStatus(error instanceof Error ? error.message : '풋살 경기를 불러오지 못했습니다.'));
+  }, []);
+  const targetIds = useMemo(() => targets.map((target) => target.matchId).join(','), [targets]);
+  useEffect(() => {
+    const ids = targets.map((target) => target.matchId);
+    if (!ids.length) { setLoadedMatches([]); return; }
+    let cancelled = false;
+    Promise.all(ids.map(async (matchId) => {
+      const [fpa, eventData] = await Promise.all([
+        apiJson<FpaLog>(`/fpa/matches/${matchId}/logs`).catch(() => ({})),
+        apiJson<{ events: FlaEvent[] }>(`/matches/${matchId}/events`).catch(() => ({ events: [] })),
+      ]);
+      return { matchId, fpa, events: eventData.events || [] };
+    })).then((data) => { if (!cancelled) setLoadedMatches(data); });
+    return () => { cancelled = true; };
+  }, [targetIds]);
+  const matchById = useMemo(() => new Map(matches.map((match) => [match.id, match])), [matches]);
+  const dataByMatch = useMemo(() => new Map(loadedMatches.map((data) => [data.matchId, data])), [loadedMatches]);
+  const updateTarget = (matchId: string, patch: Partial<TargetMatch>) => setTargets((current) => current.map((target) => target.matchId === matchId ? { ...target, ...patch } : target));
+  const toggleTarget = (matchId: string) => setTargets((current) => {
+    const existing = current.find((target) => target.matchId === matchId);
+    if (existing) return current.filter((target) => target.matchId !== matchId);
+    if (current.length >= 5) { setStatus('선수 카드에는 대상 경기를 최대 5개까지 선택할 수 있습니다.'); return current; }
+    setStatus('');
+    return [...current, { matchId, playerNumber: current[0]?.playerNumber || '', side: current[0]?.side || 'HOME' }];
+  });
+  const aggregate = useMemo(() => {
+    const rows: FpaRow[] = [];
+    const events: FlaEvent[] = [];
+    targets.forEach((target) => {
+      const number = target.playerNumber.trim();
+      const loaded = dataByMatch.get(target.matchId);
+      if (!number || !loaded) return;
+      rows.push(...(loaded.fpa.rows || []).filter((row) => String(row.Player || '').trim() === number).map((row) => ({ ...row, Player: '__CARD_PLAYER__' })));
+      events.push(...loaded.events.filter((event) => event.team === target.side && event.is_goal && String(event.player_number || '').trim() === number).map((event) => ({ ...event, team: 'HOME' as Team, player_number: '__CARD_PLAYER__' })));
+    });
+    return { rows, events };
+  }, [dataByMatch, targets]);
+  const primaryTarget = targets[0];
+  const primaryMatch = primaryTarget ? matchById.get(primaryTarget.matchId) : null;
+  const primaryData = primaryTarget ? dataByMatch.get(primaryTarget.matchId) : null;
+  const suggestedPlayer = primaryTarget && primaryMatch
+    ? (primaryMatch.metadata?.lineups?.teams?.[primaryTarget.side] || []).find((item) => item.number === primaryTarget.playerNumber)
+    : undefined;
+  const displayName = playerName.trim() || suggestedPlayer?.name || '선수';
+  const teamName = primaryTarget?.side === 'AWAY'
+    ? primaryMatch?.metadata?.away_team || primaryData?.fpa.teamid_a || 'AWAY'
+    : primaryMatch?.metadata?.home_team || primaryData?.fpa.teamid_h || 'HOME';
+  const axes = useMemo(() => playerAxes(aggregate.rows, aggregate.events, '__CARD_PLAYER__', 'HOME', position), [aggregate, position]);
+  const download = async () => { if (!cardRef.current || !targets.some((target) => target.playerNumber.trim())) return; setDownloading(true); try { const png = await toPng(cardRef.current, { backgroundColor: '#071b34', cacheBust: true, pixelRatio: 2 }); const link = document.createElement('a'); link.href = png; link.download = `queen-cup-${teamName}-${displayName}.png`; link.click(); } catch { setStatus('이미지 생성에 실패했습니다.'); } finally { setDownloading(false); } };
   return <main className="page-stack queen-card-page">
-    <section className="card card-hero page-hero"><div className="section-heading"><div><div className="sidebar-eyebrow">FCM · Futsal</div><h2 style={{ margin: '6px 0 0' }}>Queen Cup 카드뉴스</h2></div><span className="status-pill tech">Instagram 1080 × 1350</span></div><p className="field-help">저장된 FPA 로그와 FLA 득점 기록을 합쳐 선수별 포지션 6축 카드로 만듭니다.</p></section>
-    <section className="queen-card-workspace"><aside className="card card-panel queen-card-controls"><label className="field-stack"><span className="field-label">풋살 경기</span><select value={matchId} onChange={(e) => setMatchId(e.target.value)}>{matches.length ? matches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>) : <option>경기 없음</option>}</select></label><label className="field-stack"><span className="field-label">팀</span><select value={side} onChange={(e) => setSide(e.target.value as Team)}><option value="HOME">홈</option><option value="AWAY">어웨이</option></select></label><label className="field-stack"><span className="field-label">선수</span><select value={selected?.number || ''} onChange={(e) => { setPlayer(e.target.value); const found = players.find((item) => item.number === e.target.value); setPosition(positionFromLineup(found?.position)); }}>{players.map((item) => <option key={item.number} value={item.number}>No.{item.number} {item.name || '선수'}</option>)}</select></label><label className="field-stack"><span className="field-label">카드 포지션</span><select value={position} onChange={(e) => setPosition(e.target.value as Position)}>{(Object.keys(POSITION_LABEL) as Position[]).map((item) => <option key={item} value={item}>{POSITION_LABEL[item]}</option>)}</select></label><button className="btn-primary" disabled={!selected || downloading} onClick={() => void download()} type="button">{downloading ? 'PNG 생성 중…' : '인스타 PNG 다운로드'}</button><p className="field-help">역할을 바꾸면 같은 선수 데이터도 그 포지션의 6축 기준으로 다시 해석됩니다.</p>{status ? <p className="field-help" style={{ color: '#ff9c8f' }}>{status}</p> : null}</aside>
-      <section className="queen-card-preview-wrap"><div className="queen-card-preview" ref={cardRef}><div className="queen-card-top"><span>QUEEN CUP</span><strong>PLAYER PERFORMANCE</strong></div><div className="queen-card-player"><span>{teamName}</span><h1>{selected?.name || '선수 선택'}</h1><p>NO. {selected?.number || '—'} · {POSITION_LABEL[position]}</p></div><Radar axes={axes} /><div className="queen-card-axis-grid">{axes.map((axis) => <div key={axis.label}><span>{axis.label}</span><strong>{axis.value}</strong></div>)}</div><div className="queen-card-footer"><span>FINE PLAY ANALYTICS</span><span>FLA + FPA DATA</span></div></div></section>
+    <section className="card card-hero page-hero"><div className="section-heading"><div><div className="sidebar-eyebrow">FCM · Futsal</div><h2 style={{ margin: '6px 0 0' }}>Queen Cup 선수 카드뉴스</h2></div><span className="status-pill tech">Instagram 1080 × 1350</span></div><p className="field-help">최대 5경기의 FPA 로그와 FLA 득점을 합산해 한 선수의 포지션별 6축 카드를 만듭니다. 경기마다 실제 등번호와 팀을 지정하세요.</p></section>
+    <section className="queen-card-workspace"><aside className="card card-panel queen-card-controls"><div className="field-stack"><span className="field-label">대상 경기 · 최대 5개</span><div className="queen-card-match-list">{matches.map((match) => { const checked = targets.some((target) => target.matchId === match.id); return <label className="queen-card-match-choice" key={match.id}><input checked={checked} disabled={!checked && targets.length >= 5} onChange={() => toggleTarget(match.id)} type="checkbox" /><span>{match.name}</span></label>; })}</div></div><div className="queen-card-targets">{targets.map((target, index) => { const match = matchById.get(target.matchId); const numbers = Array.from(new Set((dataByMatch.get(target.matchId)?.fpa.rows || []).map((row) => String(row.Player || '').trim()).filter(Boolean))); return <div className="queen-card-target" key={target.matchId}><strong>{index + 1}. {match?.name || '경기'}</strong><div><label>팀<select value={target.side} onChange={(e) => updateTarget(target.matchId, { side: e.target.value as Team })}><option value="HOME">홈</option><option value="AWAY">어웨이</option></select></label><label>등번호<input list={`futsal-player-numbers-${target.matchId}`} onChange={(e) => updateTarget(target.matchId, { playerNumber: e.target.value })} placeholder="예: 10" value={target.playerNumber} /><datalist id={`futsal-player-numbers-${target.matchId}`}>{numbers.map((number) => <option key={number} value={number} />)}</datalist></label></div></div>; })}</div><label className="field-stack"><span className="field-label">카드 선수명</span><input onChange={(e) => setPlayerName(e.target.value)} placeholder={suggestedPlayer?.name || '선수명 입력 (선택)'} value={playerName} /></label><label className="field-stack"><span className="field-label">카드 포지션</span><select value={position} onChange={(e) => setPosition(e.target.value as Position)}>{(Object.keys(POSITION_LABEL) as Position[]).map((item) => <option key={item} value={item}>{POSITION_LABEL[item]}</option>)}</select></label><button className="btn-primary" disabled={!targets.some((target) => target.playerNumber.trim()) || downloading} onClick={() => void download()} type="button">{downloading ? 'PNG 생성 중…' : '인스타 PNG 다운로드'}</button><p className="field-help">각 경기의 등번호가 달라도 같은 선수로 합산됩니다. 저장된 FPA 로그의 등번호는 자동완성 목록에서 고를 수 있습니다.</p>{status ? <p className="field-help" style={{ color: '#ff9c8f' }}>{status}</p> : null}</aside>
+      <section className="queen-card-preview-wrap"><div className="queen-card-preview" ref={cardRef}><div className="queen-card-top"><span>QUEEN CUP · {targets.length} MATCH{targets.length === 1 ? '' : 'ES'}</span><strong>PLAYER PERFORMANCE</strong></div><div className="queen-card-player"><span>{teamName}</span><h1>{displayName}</h1><p>NO. {targets.map((target) => target.playerNumber || '—').join(' / ')} · {POSITION_LABEL[position]}</p></div><Radar axes={axes} /><div className="queen-card-axis-grid">{axes.map((axis) => <div key={axis.label}><span>{axis.label}</span><strong>{axis.value}</strong></div>)}</div><div className="queen-card-footer"><span>FINE PLAY ANALYTICS</span><span>FLA + FPA DATA · {targets.length} MATCHES</span></div></div></section>
     </section>
   </main>;
 }
