@@ -393,7 +393,8 @@ export default function FineplayJobsPage() {
   // 다중 영상 신청: 영상 탭으로 전환하며 태깅한다. sourceUrl 은 현재 탭에서 파생.
   const [sourceVideos, setSourceVideos] = useState<SourceVideo[]>([]);
   const [activeVideoIdx, setActiveVideoIdx] = useState(0);
-  const sourceUrl = sourceVideos[activeVideoIdx]?.url || '';
+  const activeVideo = sourceVideos[activeVideoIdx];
+  const sourceUrl = activeVideo?.url || '';
   // 유튜브를 받는 중인 영상. 있으면 화면이 진행률을 보여 주고 주기적으로 다시 물어본다.
   const pendingFetch = sourceVideos.find(
     (v) => !v.url && v.source === 'YOUTUBE' && v.fetch?.status !== 'error',
@@ -1833,7 +1834,7 @@ export default function FineplayJobsPage() {
                       }}
                       onClick={() => switchVideo(i)}
                     >
-                      영상 {i + 1}
+                      {v.source === 'YOUTUBE' ? '▶ ' : ''}영상 {i + 1}
                       {v.durationSeconds ? ` (${fmt(v.durationSeconds)})` : ''}
                       {' · 태그 '}
                       {tags.filter((tag) => tag.videoIdx === i).length}
@@ -1842,6 +1843,34 @@ export default function FineplayJobsPage() {
                   <span style={{ fontSize: 12, color: 'var(--muted, #999)', alignSelf: 'center' }}>
                     앱이 보낸 순서 = 경기 순서 — 클립 번호도 이 순서를 따릅니다
                   </span>
+                </div>
+              ) : null}
+              {/* 유튜브 신청은 원본이 저쪽에 있다 — 태깅하다 원본을 확인해야 할 때
+                  (화질·구간·소리) 주소를 찾으러 나가지 않게 여기 띄운다.
+                  우리가 받아 둔 파일로 재생 중이라 이 링크는 '원본 보기' 용이다. */}
+              {activeVideo?.source === 'YOUTUBE' && activeVideo.youtubeUrl ? (
+                <div
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
+                    padding: '6px 10px', borderRadius: 6, fontSize: 12,
+                    background: 'var(--surface-input, #16161a)',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}
+                >
+                  <span style={{ color: 'var(--muted, #999)' }}>유튜브 원본</span>
+                  <a
+                    href={activeVideo.youtubeUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: 'var(--accent, #3b82f6)', wordBreak: 'break-all' }}
+                  >{activeVideo.youtubeUrl}</a>
+                  <button
+                    style={{ ...smallBtn, padding: '1px 8px', fontSize: 11, marginLeft: 'auto' }}
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(activeVideo.youtubeUrl as string);
+                      setProduceMsg('유튜브 주소를 복사했습니다.');
+                    }}
+                  >복사</button>
                 </div>
               ) : null}
               <video
