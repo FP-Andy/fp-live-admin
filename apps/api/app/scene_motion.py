@@ -13,6 +13,7 @@ import math
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -596,6 +597,33 @@ def _draw_goal_inset(draw: ImageDraw.ImageDraw, gx: float, gy: float) -> None:
     draw.polygon(pent, fill=(25, 25, 25))
 
 
+@lru_cache(maxsize=1)
+def _gk_glove_img() -> "Image.Image | None":
+    """골키퍼 장갑 그림(투명 배경). 없으면 None — 그때는 안 그린다."""
+    try:
+        return Image.open(_GK_GLOVE_PATH).convert("RGBA")
+    except (OSError, ValueError):
+        return None
+
+
+@lru_cache(maxsize=1)
+def _gk_glove_ratio() -> float:
+    """장갑 그림의 가로/세로 비. 그림이 없으면 대충 정사각."""
+    img = _gk_glove_img()
+    return (img.width / img.height) if img and img.height else 1.0
+
+
+def _paste_glove(draw: ImageDraw.ImageDraw, cx: float, cy: float, w: float, h: float) -> None:
+    """장갑을 (cx, cy) 중심에 붙인다. draw 가 들고 있는 이미지 위에 알파 합성."""
+    img = _gk_glove_img()
+    if img is None or w < 1 or h < 1:
+        return
+    scaled = img.resize((max(1, int(w)), max(1, int(h))), Image.LANCZOS)
+    # 프레임은 RGB 라 alpha_composite 가 안 된다 — 알파를 마스크로 써서 붙인다.
+    base = draw._image  # PIL ImageDraw 는 대상 이미지를 이 이름으로 들고 있다
+    base.paste(scaled, (int(cx - w / 2), int(cy - h / 2)), scaled)
+
+
 def _draw_goal_panel(
     draw: ImageDraw.ImageDraw,
     gx: float,
@@ -704,7 +732,7 @@ def _draw_goal_panel(
     # ── 세이브 ────────────────────────────────────────────────────────────
     # 닿기 전까지는 아크를 타고, 닿은 뒤에는 막은 결과를 보여준다.
     glove_h = goal_h * GK_GLOVE_H
-    glove_w = glove_h * 0.72
+    glove_w = glove_h * _gk_glove_ratio()
     # 공은 장갑 **정면**에 놓는다 — 겹쳐 그리면 공에 가려 초록 테두리로만 보인다.
     # 날아온 방향(아크 끝 접선)의 반대쪽으로 물린다.
     ndx, ndy = end_x - ctrl_x, end_y - ctrl_y
@@ -730,14 +758,7 @@ def _draw_goal_panel(
         bx = min(max(bx, x0 + pad), x1 - pad)
         by = min(max(by, y0 + pad), y1 - pad)
     if pop > 0:
-        gw, gh = glove_w * pop, glove_h * pop
-        draw.rounded_rectangle(
-            [end_x - gw / 2, end_y - gh / 2, end_x + gw / 2, end_y + gh / 2],
-            radius=max(2, int(gw * 0.35)),
-            fill=GK_GLOVE_FILL,
-            outline=GK_GLOVE_EDGE,
-            width=2,
-        )
+        _paste_glove(draw, end_x, end_y, glove_w * pop, glove_h * pop)
     _draw_ball(draw, bx, by)
 
 
@@ -1015,9 +1036,9 @@ GK_CONTACT_T = 0.72
 # 나가면 피치 위에 공이 떠 있는 그림이 돼 어디로 갔는지가 안 보인다.
 GK_SAVE_AWAY = 0.34
 # 장갑 크기 — 골 높이 대비. 공(14px)보다 확실히 커야 '막는 손' 으로 읽힌다.
-GK_GLOVE_H = 0.40
-GK_GLOVE_FILL = (30, 138, 76)      # dual 태깅 GK 마커와 같은 초록(#1E8A4C)
-GK_GLOVE_EDGE = (240, 245, 242)
+# 장갑 한 쌍 그림이라 가로가 넓다 — 높이 기준으로 맞추고 가로는 원본 비율을 따른다.
+GK_GLOVE_H = 0.46
+_GK_GLOVE_PATH = Path(__file__).parent / "gk_glove.png"
 
 
 def _mirror_goal_mouth(value: Any) -> Any:

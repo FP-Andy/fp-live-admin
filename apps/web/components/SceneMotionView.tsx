@@ -68,9 +68,10 @@ const CLEAR_EXIT = 0.7;
 // 세이브(sv)만 해당한다 — 캐칭·펀칭은 골문 좌표를 안 받아 패널 자체가 안 뜬다.
 const SAVE_CONTACT = 0.72;   // 아크에서 공이 장갑에 닿는 시점
 const SAVE_AWAY = 0.34;      // 막은 공이 튕겨 나가는 거리 (골 너비 대비)
-const SAVE_GLOVE_H = 0.40;   // 장갑 크기 (골 높이 대비)
-const SAVE_GLOVE_FILL = '#1E8A4C';   // dual 태깅 GK 마커와 같은 초록
-const SAVE_GLOVE_EDGE = '#F0F5F2';
+// 장갑 크기 — 골 높이 대비. 한 쌍 그림이라 가로가 넓어, 높이로 맞추고 가로는 원본 비율.
+const SAVE_GLOVE_H = 0.46;
+const SAVE_GLOVE_RATIO = 173 / 135;  // gk_glove.png 원본 비
+const SAVE_GLOVE_SRC = '/scene/gk_glove.png';
 /** 콘솔 replay 의 cubic-bezier(0.22,0.84,0.28,1) 근사 — 강한 ease-out. */
 const ease = (t: number) => 1 - (1 - t) ** 3;
 
@@ -463,7 +464,7 @@ function GoalPanel({
   // 세이브면 닿는 순간까지만 아크를 타고, 그 뒤엔 막은 결과를 보여준다.
   const isSave = Boolean(shot.save);
   const gloveH = goalH * SAVE_GLOVE_H;
-  const gloveW = gloveH * 0.72;
+  const gloveW = gloveH * SAVE_GLOVE_RATIO;
   // 공은 장갑 **정면**에 — 겹쳐 그리면 공에 가려 초록 테두리로만 보인다.
   const ndx = endX - ctrlX;
   const ndy = endY - ctrlY;
@@ -539,11 +540,10 @@ function GoalPanel({
       ) : null}
       {/* 골키퍼 장갑 — 공이 닿는 자리. 공보다 아래 레이어라 공이 장갑 앞에 놓인다. */}
       {glovePop > 0 ? (
-        <rect
+        <image
+          href={SAVE_GLOVE_SRC}
           x={endX - (gloveW * glovePop) / 2} y={endY - (gloveH * glovePop) / 2}
           width={gloveW * glovePop} height={gloveH * glovePop}
-          rx={gloveW * glovePop * 0.35}
-          fill={SAVE_GLOVE_FILL} stroke={SAVE_GLOVE_EDGE} strokeWidth={2 * u}
         />
       ) : null}
       {/* 골대 안 공은 피치와 같은 ball.svg · 같은 크기 */}
