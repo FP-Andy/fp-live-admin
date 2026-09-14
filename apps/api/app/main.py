@@ -3068,7 +3068,15 @@ def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSaved
     match_obj = db.get(Match, match_id)
     home_team = (body.teamid_h or "").strip() or "Home"
     away_team = (body.teamid_a or "").strip() or "Away"
-    sport = _normalize_sport(body.sport)
+    # 새 화면은 sport를 명시하지만, 배포 전 열어 둔 FPA 탭은 이 필드를 보내지
+    # 않을 수 있다. 그 경우 행에 이미 찍힌 Sport가 FUTSAL이면 이를 우선한다.
+    # 그래야 이전 클라이언트의 재저장이 풋살 경기를 다시 FOOTBALL로 되돌리지 않는다.
+    row_sports = {
+        str(row.get("Sport") or "").strip().upper()
+        for row in (body.rows or [])
+        if isinstance(row, dict)
+    }
+    sport = "FUTSAL" if "FUTSAL" in row_sports else _normalize_sport(body.sport)
     half_minutes = 20 if sport == "FUTSAL" else 45
     if match_obj:
         # 이전 버전은 standalone FPA 경기를 FOOTBALL로 고정 생성했다. 해당 수동

@@ -33,7 +33,7 @@ const numberValue = (value: unknown) => Number.isFinite(Number(value)) ? Number(
 const has = (row: FpaRow, value: string) => `${row.Action || ''} ${row.Tags || ''}`.toLowerCase().includes(value.toLowerCase());
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
 
-function playerAxes(rows: FpaRow[], events: FlaEvent[], playerNumber: string, side: Team, position: Position): Axis[] {
+function playerAxes(rows: FpaRow[], events: FlaEvent[], playerNumber: string, side: Team, position: Position, matchCount = 1): Axis[] {
   const mine = rows.filter((row) => String(row.Player || '').trim() === playerNumber);
   const actionCount = (action: string) => mine.filter((row) => has(row, action)).length;
   const passRows = mine.filter((row) => has(row, 'pass') || has(row, 'kick-in'));
@@ -49,11 +49,18 @@ function playerAxes(rows: FpaRow[], events: FlaEvent[], playerNumber: string, si
   const longKick = mine.filter((row) => has(row, 'long kick')).length;
   const saves = actionCount('save') + actionCount('catch') + actionCount('punch');
   const passRate = passRows.length ? passSuccess / passRows.length : 0;
+  // 카드가 여러 경기 데이터를 합산해도 경기 수만큼 점수가 자동 상승하면 안 된다.
+  // 100은 '해당 포지션에서 그 경기들을 지배한 수준'에만 닿도록 경기당 평균으로 환산한다.
+  const sample = Math.max(1, matchCount);
+  const perMatch = (value: number) => value / sample;
   const values = {
-    finish: clamp(goals * 45 + shotThreat * 45), shoot: clamp(shots * 20 + shotThreat * 32),
-    create: clamp(key * 35 + passSuccess * 7), link: clamp(passRate * 65 + passSuccess * 4),
-    dribble: clamp(dribble * 22), duel: clamp(duel * 24), defense: clamp(defense * 20),
-    longKick: clamp(longKick * 28 + passSuccess * 4), save: clamp(saves * 24), sweep: clamp(defense * 16 + duel * 12),
+    finish: clamp(perMatch(goals) * 30 + perMatch(shotThreat) * 28),
+    shoot: clamp(perMatch(shots) * 8 + perMatch(shotThreat) * 20),
+    create: clamp(perMatch(key) * 17 + perMatch(passSuccess) * 2.5),
+    link: clamp(passRate * 36 + Math.min(perMatch(passSuccess), 15) * 2),
+    dribble: clamp(perMatch(dribble) * 12), duel: clamp(perMatch(duel) * 11), defense: clamp(perMatch(defense) * 9),
+    longKick: clamp(perMatch(longKick) * 16 + Math.min(perMatch(passSuccess), 15) * 2),
+    save: clamp(perMatch(saves) * 18), sweep: clamp(perMatch(defense) * 6 + perMatch(duel) * 7),
   };
   if (position === 'PIVO') return [{ label: '결정력', value: values.finish }, { label: '슈팅 위협', value: values.shoot }, { label: '찬스 연결', value: values.create }, { label: '연계', value: values.link }, { label: '경합', value: values.duel }, { label: '수비', value: values.defense }];
   if (position === 'FIXO') return [{ label: '수비 회수', value: values.defense }, { label: '경합', value: values.duel }, { label: '전개 연결', value: values.link }, { label: '롱킥', value: values.longKick }, { label: '슈팅 위협', value: values.shoot }, { label: '찬스 연결', value: values.create }];
@@ -138,7 +145,8 @@ export default function FutsalCardNewsPage() {
   const teamName = primaryTarget?.side === 'AWAY'
     ? primaryMatch?.metadata?.away_team || primaryData?.fpa.teamid_a || 'AWAY'
     : primaryMatch?.metadata?.home_team || primaryData?.fpa.teamid_h || 'HOME';
-  const axes = useMemo(() => playerAxes(aggregate.rows, aggregate.events, '__CARD_PLAYER__', 'HOME', position), [aggregate, position]);
+  const sampledMatchCount = targets.filter((target) => target.playerNumber.trim()).length;
+  const axes = useMemo(() => playerAxes(aggregate.rows, aggregate.events, '__CARD_PLAYER__', 'HOME', position, sampledMatchCount), [aggregate, position, sampledMatchCount]);
   const download = async () => { if (!cardRef.current || !targets.some((target) => target.playerNumber.trim())) return; setDownloading(true); try { const png = await toPng(cardRef.current, { backgroundColor: '#071b34', cacheBust: true, pixelRatio: 2 }); const link = document.createElement('a'); link.href = png; link.download = `queen-cup-${teamName}-${displayName}.png`; link.click(); } catch { setStatus('이미지 생성에 실패했습니다.'); } finally { setDownloading(false); } };
   return <main className="page-stack queen-card-page">
     <section className="card card-hero page-hero"><div className="section-heading"><div><div className="sidebar-eyebrow">FCM · Futsal</div><h2 style={{ margin: '6px 0 0' }}>Queen Cup 선수 카드뉴스</h2></div><span className="status-pill tech">Instagram 1080 × 1350</span></div><p className="field-help">최대 5경기의 FPA 로그와 FLA 득점을 합산해 한 선수의 포지션별 6축 카드를 만듭니다. 경기마다 실제 등번호와 팀을 지정하세요.</p></section>
