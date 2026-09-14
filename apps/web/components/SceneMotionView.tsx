@@ -480,8 +480,9 @@ function GoalPanel({
   const ball = (() => {
     if (!isSave) return bez(shotT);
     if (shotT <= SAVE_CONTACT) return bez(shotT / SAVE_CONTACT);
-    // 잡았으면 장갑 정면에 붙어 멈춘다 — 소유권까지 가져왔다는 그림이다.
-    if (caught) return { x: faceX, y: faceY };
+    // 잡았으면 **장갑과 같은 자리**에 겹쳐 멈춘다. 장갑이 뒤, 공이 앞이라(그리는
+    // 순서가 그렇다) 손에 쥔 그림이 된다. 옆에 붙여 놓으면 '닿기만 하고 흘렀다' 로 보인다.
+    if (caught) return { x: endX, y: endY };
     // 쳐냈으면 가까운 포스트 밖으로, 크로스바 위로. 패널 안에 가둔다(밖으로 나가면
     // 피치 위에 공이 떠 있는 그림이 된다).
     const after = ease((shotT - SAVE_CONTACT) / (1 - SAVE_CONTACT));
