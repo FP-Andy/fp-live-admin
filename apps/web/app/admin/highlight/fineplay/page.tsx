@@ -15,6 +15,36 @@ import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 // 원본을 내려받지도, 브라우저에서 자르지도 않는다.
 
 /** 앱이 보내는 유니폼 색은 ARGB 정수다(예: 4294901760 = 0xFFFF0000 = 빨강). */
+/** 신청에 적힌 최종 스코어 (신청팀 : 상대). 없으면 null.
+ *
+ * 앱은 신청 1단계에서 ourScore/opponentScore 를 **필수로** 받는다
+ * (AnalysisRequest.isStep1Complete). 콘솔은 매니페스트를 통째로 보관하므로 그 값이
+ * 넘어오기만 하면 여기 있다. 다만 FinePlay 내부 API 가 어느 키로 실어 보내는지
+ * 확정 전이라, 있을 법한 자리를 순서대로 본다. 못 찾으면 화면이 조용히 감춘다.
+ */
+function requestScore(manifest: unknown): { our: number; opponent: number } | null {
+  const m = manifest as Record<string, unknown> | null | undefined;
+  if (!m) return null;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v
+      : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v)
+        : null;
+  const team = m.team as Record<string, unknown> | undefined;
+  const opp = m.opponent as Record<string, unknown> | undefined;
+  const nested = m.score as Record<string, unknown> | undefined;
+  const candidates: [unknown, unknown][] = [
+    [m.ourScore, m.opponentScore],
+    [nested?.our, nested?.opponent],
+    [team?.score, opp?.score],
+  ];
+  for (const [a, b] of candidates) {
+    const our = num(a);
+    const opponent = num(b);
+    if (our !== null && opponent !== null) return { our, opponent };
+  }
+  return null;
+}
+
 function argbToCss(argb?: number | null): string | null {
   if (typeof argb !== 'number' || !Number.isFinite(argb)) return null;
   const hex = (argb >>> 0).toString(16).padStart(8, '0');
@@ -45,9 +75,14 @@ type FpJob = {
     manifest?: {
       videos?: { durationSeconds?: number }[];
       // 신청한 팀. 홈/어웨이 중 어느 쪽인지는 claim 때 정해진다(컨벤션: 홈 = 신청팀).
-      team?: { teamName?: string; jerseyColorArgb?: number } | null;
-      opponent?: { name?: string } | null;
+      team?: { teamName?: string; jerseyColorArgb?: number; score?: number | null } | null;
+      opponent?: { name?: string; score?: number | null } | null;
       lineup?: unknown[];
+      // 신청 시 필수로 받는 최종 스코어(앱 AnalysisRequest.isStep1Complete).
+      // 키 위치가 확정 전이라 아래 requestScore() 가 후보를 돌며 찾는다.
+      ourScore?: number | null;
+      opponentScore?: number | null;
+      score?: { our?: number | null; opponent?: number | null } | null;
     } | null;
     clips?: { start: number; end: number }[];
     progress?: { detail?: string } | null;
@@ -337,7 +372,7 @@ export default function FineplayJobsPage() {
   // 나누는 대신 한 목록에서 걸러 본다(잡의 tier 는 사전 작업 연결로 바뀔 수 있어서).
   const [tierFilter, setTierFilter] = useState<'all' | PlanView>('all');
   // 잡별 아카이브 준비상태 — 모든 클립에 FPA 데이터가 있어야 버튼 활성화.
-  const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean }>>({});
+  const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean; work_done?: boolean }>>({});
   const [listError, setListError] = useState('');
   const [polling, setPolling] = useState(false);
   const [pollMsg, setPollMsg] = useState('');
@@ -426,7 +461,7 @@ export default function FineplayJobsPage() {
       setJobs(rows.filter((j) => !j.job_metadata?.clip_archived));
       setListError('');
       try {
-        const r = await apiJson<{ jobs: Record<string, { clip_count: number; clips_with_actions: number; ready: boolean }> }>(
+        const r = await apiJson<{ jobs: Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean; work_done?: boolean }> }>(
           '/highlight/fineplay-jobs/archive-readiness',
         );
         setReadiness(r.jobs);
@@ -945,6 +980,19 @@ export default function FineplayJobsPage() {
     ? runningScores[runningScores.length - 1]
     : ([scoreboard.startHome, scoreboard.startAway] as [number, number]);
 
+  /** 신청에 적힌 최종 스코어를 홈/어웨이 순서로 돌려놓은 것. 없으면 null.
+      매니페스트는 '신청팀 : 상대' 라, 신청팀이 어웨이면 뒤집어야 한다. */
+  const requestedScore = (() => {
+    const sc = requestScore(selected?.job_metadata?.manifest);
+    if (!sc) return null;
+    return fpaOurSide === 'home'
+      ? ([sc.our, sc.opponent] as [number, number])
+      : ([sc.opponent, sc.our] as [number, number]);
+  })();
+  /** 찍은 골이 신청 스코어와 어긋나는가 — 골 태그를 빠뜨렸다는 신호다. */
+  const scoreMismatch = requestedScore !== null
+    && (requestedScore[0] !== finalScore[0] || requestedScore[1] !== finalScore[1]);
+
   const toggleTagGoal = (id: string) => {
     setTags((prev) => prev.map((tag) => (tag.id === id
       // 일반 → 골 → 골(점수만) → 일반 으로 돌아간다.
@@ -1423,15 +1471,20 @@ export default function FineplayJobsPage() {
                           원본 삭제
                         </button>
                       ) : null}
+                      {/* 아카이브의 전제는 '작업 완료' 다 — 그 표시는 클립 결과 화면에서 한다.
+                          FPA 진행도는 참고로만 붙인다(막지 않는다). */}
                       <button
                         style={{ ...smallBtn, opacity: readiness[job.id]?.ready ? 1 : 0.45 }}
                         disabled={!readiness[job.id]?.ready}
                         title={readiness[job.id]?.ready
                           ? '아카이브 룸으로 이동 — 이 목록과 클립 결과에서 빠집니다. 데이터는 그대로, 언제든 해제·수정 가능'
-                          : `모든 클립에 FPA 데이터가 있어야 아카이브 가능 — 현재 ${readiness[job.id]?.clips_with_actions ?? 0}/${readiness[job.id]?.clip_count ?? '?'} 클립 완료 (하이라이트만 신청은 이 조건이 면제됩니다)`}
+                          : `클립 결과 화면에서 '작업 완료' 를 먼저 눌러 주세요 — 완료한 작업만 아카이브합니다`
+                            + (readiness[job.id]?.needs_fpa
+                              ? ` (FPA ${readiness[job.id]?.clips_with_actions ?? 0}/${readiness[job.id]?.clip_count ?? '?'} 클립)`
+                              : '')}
                         onClick={() => void archiveJob(job)}
                       >
-                        📦 아카이브{readiness[job.id] && !readiness[job.id].ready
+                        📦 아카이브{readiness[job.id] && !readiness[job.id].ready && readiness[job.id].needs_fpa
                           ? ` (${readiness[job.id].clips_with_actions}/${readiness[job.id].clip_count})`
                           : ''}
                       </button>
@@ -1669,6 +1722,19 @@ export default function FineplayJobsPage() {
                 <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                   vs {selected.job_metadata.manifest.opponent.name}
                   {' · '}{fpaOurSide === 'home' ? '어웨이' : '홈'}
+                </span>
+              ) : null}
+              {/* 신청에 적힌 최종 스코어 — 앱에 들어가 확인하지 않아도 되게. */}
+              {requestedScore ? (
+                <span
+                  title="신청서에 적힌 최종 스코어 (홈 : 어웨이)"
+                  style={{
+                    fontSize: 13, fontWeight: 700, padding: '2px 10px', borderRadius: 6,
+                    background: 'var(--surface, #101014)',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}
+                >
+                  최종 {requestedScore[0]} : {requestedScore[1]}
                 </span>
               ) : null}
               <span style={{ fontSize: 12, color: 'var(--muted, #666)', marginLeft: 'auto' }}>
@@ -2055,6 +2121,16 @@ export default function FineplayJobsPage() {
                         ? `골 태그를 찍은 순간 점수가 올라갑니다 — 최종 ${finalScore[0]} : ${finalScore[1]}`
                         : '클립마다 그 시점의 점수를 새깁니다.'}
                     </span>
+                    {/* 찍은 골이 신청 스코어와 다르면 골 태그를 빠뜨렸다는 뜻이다.
+                        막지는 않는다 — 시작 점수를 일부러 다르게 둔 경우도 있다. */}
+                    {scoreboard.enabled && scoreMismatch && requestedScore ? (
+                      <span
+                        title="신청서의 최종 스코어와 다릅니다 — 골 태그를 빠뜨렸는지 확인하세요"
+                        style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}
+                      >
+                        ⚠ 신청은 {requestedScore[0]} : {requestedScore[1]}
+                      </span>
+                    ) : null}
 
                     <span style={{ width: 1, height: 16, background: 'var(--border-ghost, #2c2c32)' }} />
 
