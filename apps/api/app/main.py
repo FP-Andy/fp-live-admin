@@ -3068,25 +3068,42 @@ def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSaved
     match_obj = db.get(Match, match_id)
     home_team = (body.teamid_h or "").strip() or "Home"
     away_team = (body.teamid_a or "").strip() or "Away"
+    sport = _normalize_sport(body.sport)
+    half_minutes = 20 if sport == "FUTSAL" else 45
     if match_obj:
+        # 이전 버전은 standalone FPA 경기를 FOOTBALL로 고정 생성했다. 해당 수동
+        # 경기에는 저장 시점의 종목을 복구해 FCM/Data Hub의 종목 필터와 일치시킨다.
+        metadata = dict(match_obj.metadata_json or {})
+        if metadata.get("fpa_manual_match") and match_obj.sport != sport:
+            match_obj.sport = sport
+            match_obj.first_half_minutes = half_minutes
+            match_obj.second_half_minutes = half_minutes
+            metadata.update({
+                "sport": sport,
+                "first_half_minutes": half_minutes,
+                "second_half_minutes": half_minutes,
+            })
+            match_obj.metadata_json = metadata
+            db.flush()
+            _match_response_cache.clear()
         return match_obj
     metadata = {
-        "sport": "FOOTBALL",
+        "sport": sport,
         "home_team": home_team,
         "away_team": away_team,
-        "first_half_minutes": 45,
-        "second_half_minutes": 45,
+        "first_half_minutes": half_minutes,
+        "second_half_minutes": half_minutes,
         "fpa_manual_match": True,
         "source": "fpa_live_logger",
     }
     match_obj = Match(
         id=match_id,
         name=f"[FPA | 1R] {home_team} vs {away_team}",
-        sport="FOOTBALL",
+        sport=sport,
         competition_class="FPA",
         round_number=1,
-        first_half_minutes=45,
-        second_half_minutes=45,
+        first_half_minutes=half_minutes,
+        second_half_minutes=half_minutes,
         archived=True,
         archived_at=datetime.utcnow(),
         metadata_json=metadata,

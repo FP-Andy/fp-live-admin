@@ -90,6 +90,9 @@ class FpaSavedLogsRequest(BaseModel):
     rows: list[dict[str, str]] = Field(default_factory=list)
     teamid_h: str = ""
     teamid_a: str = ""
+    # Standalone FPA 로그도 FCM/Data Hub의 종목별 경기 목록에 바로 노출돼야 한다.
+    # 기존 클라이언트의 저장 요청은 FOOTBALL로 해석해 호환성을 유지한다.
+    sport: Literal["FOOTBALL", "FUTSAL"] = "FOOTBALL"
 
 
 class FpaSavedLogsResponse(BaseModel):

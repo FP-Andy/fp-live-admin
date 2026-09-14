@@ -3926,6 +3926,7 @@ export default function FpaLivePage() {
           rows: buildRowsForPersistence(),
           teamid_h: homeTeamForSave,
           teamid_a: awayTeamForSave,
+          sport: fpaSport,
         }),
       });
       if (!response.ok) {
