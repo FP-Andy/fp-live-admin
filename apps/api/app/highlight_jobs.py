@@ -1445,10 +1445,22 @@ def _persist_clip_records(
 
     클립 PK = clipKey 라 재렌더 시 같은 행을 덮어쓰고(upsert),
     액션은 클립 단위 전체 교체라 FPA 재채점·재전송에도 멱등이다.
+
+    **이번 렌더에 없는 옛 클립은 지운다.** clipKey 는 순번이라(fpc-{rid}-001…)
+    태그를 줄여 다시 만들면 뒤쪽 키가 그대로 남았다 — 8 개로 만들었다가 5 개로 고치면
+    006·007·008 이 DB 에 유령으로 남아 클립 결과 목록에 뜨고 **전송에도 같이 나갔다.**
+    S3 의 옛 mp4 도 그대로라 재생까지 돼서, 지운 줄 알았던 장면이 앱으로 갔다.
     """
     match_id = metadata.get("match_id")
     match_uuid = uuid.UUID(str(match_id)) if match_id else None
     actions_by_key = {r["clip_key"]: r for r in action_records or []}
+
+    # 이번 렌더가 만든 키. 아래에서 이 목록에 없는 옛 행을 걷어낸다.
+    fresh_keys = {
+        str(c.get("clipKey") or c.get("fpcClipId") or "").strip()
+        for c in (payload.get("clips") or [])
+    }
+    fresh_keys.discard("")
 
     for i, clip in enumerate(payload.get("clips") or []):
         key = str(clip.get("clipKey") or clip.get("fpcClipId") or "").strip()
@@ -1497,6 +1509,22 @@ def _persist_clip_records(
                     fpa_scene_action_index=a.get("sceneActionIndex"),
                     extra=a.get("extra"),
                 ))
+
+    # 이번에 안 만들어진 옛 클립 정리 — 액션 먼저(FK), 그다음 클립.
+    # S3 객체는 건드리지 않는다: 같은 키로 다시 만들면 덮어쓰이고, 안 만들면 보관비
+    # 정리('원본 삭제')가 따로 있다. 여기서 지우다 실패하면 DB 만 비는 게 더 나쁘다.
+    stale = [
+        row.id
+        for row in db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()
+        if row.id not in fresh_keys
+    ]
+    if stale:
+        db.query(HighlightClipAction).filter(HighlightClipAction.clip_id.in_(stale)).delete(
+            synchronize_session=False
+        )
+        db.query(HighlightClip).filter(HighlightClip.id.in_(stale)).delete(
+            synchronize_session=False
+        )
     db.commit()
 
 
