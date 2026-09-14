@@ -141,6 +141,45 @@ SAVE_SCORE_GAMMA = 2.5
 # 못했다(비어 있는 슬롯은 S6·S8·S10·S13·S14). 정본이 다르면 이 상수만 바꾸면 된다.
 SAVE_CODE = "S13"
 
+# ── 세이브 마무리 가산 (sv.c) ──────────────────────────────────────────────
+#
+# 같은 슛을 막아도 **잡으면** 소유권까지 가져오고 **쳐내면** 공이 다시 살아 있다.
+# 그 차이를 태그로 받아(fpa.SAVE_TAG_CODES: sv.c=Catch / sv.p=Punch) 잡은 쪽에 얹는다.
+#
+# 왜 밴드를 가르지 않고 가산인가 — 캐칭·펀칭(공중볼 처리)은 **애초에 다른 행위**라
+# 밴드를 따로 준다(GK_CLAIM_SCORE_BANDS). 세이브는 **같은 행위의 마무리 차이**라,
+# 펀칭한 세이브를 깎는 대신 잡은 세이브를 올리는 쪽이 맞다. 그래야 태그 없는 옛 sv 와
+# 쳐낸 sv 의 눈금이 그대로 유지되고, 소급 재채점에도 값이 안 바뀐다.
+#
+# 가산은 **원래 점수가 낮을수록 크다.**
+#
+#     80 점 미만  +3
+#     90 점 미만  +2
+#     그 위       +1
+#
+# 어려운 세이브일수록 막아낸 것 자체가 값의 거의 전부다 — 거기서 마무리 차이는 덤이다.
+# 반대로 평범한 세이브는 '잡아서 끊었다' 가 상대적으로 큰 몫을 한다. 고정 가산으로 두면
+# 이 관계가 뒤집히고, 상한 100 근처에서는 clamp 에 먹혀 가산이 제멋대로 사라진다.
+#
+# 경계는 **가산 전 점수를 반올림한 값**, 곧 화면에 뜨는 점수 기준이다.
+# 반올림 전 실수로 재면 경계에서 순서가 뒤집힌다 — 79.9(+3)=82.9 가 80.0(+2)=82.0 보다
+# 높아져, 더 나은 세이브가 더 낮은 점수를 받는다. 반올림 뒤로 재면 79→82 · 80→82 로
+# 경계에서 잠깐 평평해질 뿐 절대 뒤집히지 않는다.
+SAVE_CATCH_TAG = "Catch"
+SAVE_CATCH_BONUS_TIERS: tuple[tuple[int, int], ...] = (
+    (80, 3),   # ~79 점
+    (90, 2),   # 80~89 점
+)
+SAVE_CATCH_BONUS_TOP = 1   # 90 점 이상
+
+
+def save_catch_bonus(score: float) -> int:
+    """잡은 세이브의 가산 — 가산 전 점수 기준(SAVE_CATCH_BONUS_TIERS 주석)."""
+    for limit, bonus in SAVE_CATCH_BONUS_TIERS:
+        if score < limit:
+            return bonus
+    return SAVE_CATCH_BONUS_TOP
+
 # 캐칭·펀칭(골키퍼) — 2026-09-07 신설. Save 와 같은 이유로 그전까지 점수가 없었다.
 #
 # 재는 값은 **상대가 찬 위치의 위협 × 회수계수**다(fpa._gk_claim_value). 대부분
@@ -747,6 +786,27 @@ def shot_outcome_shape(action: dict[str, Any]) -> float:
     return max(0.0, min(1.0, t + SHOT_DIFFICULTY_WEIGHT * q * (1.0 - 2.0 * t)))
 
 
+def _has_tag(action: dict[str, Any], tag: str) -> bool:
+    """액션에 이 태그가 있나. 콤마 구분 문자열도 리스트도 받는다.
+
+    태그가 실리는 자리가 경로마다 다르다 — dual 행은 "Tags", 전송 페이로드는
+    extra.tags(fineplay_fpa 가 거기 담는다), 옛 코드는 최상위 "tags". 셋 다 본다.
+    """
+    for raw in (
+        action.get("tags"),
+        action.get("Tags"),
+        (action.get("extra") or {}).get("tags") if isinstance(action.get("extra"), dict) else None,
+    ):
+        if raw is None:
+            continue
+        if isinstance(raw, (list, tuple, set)):
+            if tag in {str(t).strip() for t in raw}:
+                return True
+        elif tag in {part.strip() for part in str(raw).split(",") if part.strip()}:
+            return True
+    return False
+
+
 def save_outcome_score(action: dict[str, Any]) -> int | None:
     """세이브(S13)의 점수 — 두 축을 각각 줄세워 섞어 밴드에 얹는다.
 
@@ -780,7 +840,11 @@ def save_outcome_score(action: dict[str, Any]) -> int | None:
     lo, hi = SAVE_SCORE_BAND
     # 볼록 곡선 — 100 에 가까울수록 희귀해진다(SAVE_SCORE_GAMMA 주석).
     shaped = max(0.0, min(1.0, mix)) ** SAVE_SCORE_GAMMA
-    return int(round(lo + (hi - lo) * shaped))
+    score = int(round(lo + (hi - lo) * shaped))
+    if _has_tag(action, SAVE_CATCH_TAG):
+        # 잡아서 소유권까지 가져왔다 — 가산은 원래 점수가 낮을수록 크다.
+        score += save_catch_bonus(score)
+    return min(hi, score)
 
 
 def shot_outcome_score(action: dict[str, Any]) -> int | None:
