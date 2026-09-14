@@ -63,6 +63,14 @@ const SHOT = 1.0; // 골대 안으로 아크 궤적이 그려지는 시간
 // 이동 구간에 이어 붙이면 공이 걷어낸 지점을 수비수보다 먼저 지나가 싱크가 어긋난다.
 // MOVE 동안 공과 수비가 함께 도착하고, 그 뒤 이 구간에서 공만 나간다.
 const CLEAR_EXIT = 0.7;
+// 세이브 — 슛과 같은 아크만 그리면 **공이 골대로 들어간 그림**이라 막은 건지 먹힌 건지
+// 구분이 안 된다. 닿는 지점에 장갑을 세우고 공을 골대 밖으로 보낸다.
+// 세이브(sv)만 해당한다 — 캐칭·펀칭은 골문 좌표를 안 받아 패널 자체가 안 뜬다.
+const SAVE_CONTACT = 0.72;   // 아크에서 공이 장갑에 닿는 시점
+const SAVE_AWAY = 0.34;      // 막은 공이 튕겨 나가는 거리 (골 너비 대비)
+const SAVE_GLOVE_H = 0.40;   // 장갑 크기 (골 높이 대비)
+const SAVE_GLOVE_FILL = '#1E8A4C';   // dual 태깅 GK 마커와 같은 초록
+const SAVE_GLOVE_EDGE = '#F0F5F2';
 /** 콘솔 replay 의 cubic-bezier(0.22,0.84,0.28,1) 근사 — 강한 ease-out. */
 const ease = (t: number) => 1 - (1 - t) ** 3;
 
@@ -76,7 +84,13 @@ export type ScenePlayer = {
 };
 export type ScenePass = { kind?: 'pass' | 'defense'; x1: number; y1: number; x2: number; y2: number };
 export type SceneMove = { type: 'dribble' | 'penetrate'; x: number; y: number; deg: number };
-export type SceneShot = { gx: number; gy: number; dir?: 'left' | 'right'; start?: 'left' | 'center' | 'right' };
+export type SceneShot = {
+  gx: number; gy: number;
+  dir?: 'left' | 'right';
+  start?: 'left' | 'center' | 'right';
+  // 골키퍼가 막은 장면 — 아크 끝에 장갑을 세우고 공을 골대 밖으로 보낸다.
+  save?: boolean;
+};
 export type SceneData = {
   v?: number;
   ours?: 'home' | 'away';
@@ -446,9 +460,41 @@ function GoalPanel({
       y: v * v * startY + 2 * v * u * ctrlY + u * u * endY,
     };
   };
-  const ball = bez(shotT);
+  // 세이브면 닿는 순간까지만 아크를 타고, 그 뒤엔 막은 결과를 보여준다.
+  const isSave = Boolean(shot.save);
+  const gloveH = goalH * SAVE_GLOVE_H;
+  const gloveW = gloveH * 0.72;
+  // 공은 장갑 **정면**에 — 겹쳐 그리면 공에 가려 초록 테두리로만 보인다.
+  const ndx = endX - ctrlX;
+  const ndy = endY - ctrlY;
+  const nlen = Math.hypot(ndx, ndy) || 1;
+  const faceD = gloveW / 2 + 7 * u;
+  const faceX = endX - (ndx / nlen) * faceD;
+  const faceY = endY - (ndy / nlen) * faceD;
+
+  const ball = (() => {
+    if (!isSave) return bez(shotT);
+    if (shotT <= SAVE_CONTACT) return bez(shotT / SAVE_CONTACT);
+    // 막아낸 공 — 가까운 포스트 밖으로, 크로스바 위로. 패널 안에 가둔다(밖으로 나가면
+    // 피치 위에 공이 떠 있는 그림이 된다).
+    const after = ease((shotT - SAVE_CONTACT) / (1 - SAVE_CONTACT));
+    const sign = endX >= (gx0 + gx1) / 2 ? 1 : -1;
+    const pad = 16 * u;
+    return {
+      x: Math.min(Math.max(faceX + sign * goalW * SAVE_AWAY * after, x0 + pad), x1 - pad),
+      y: Math.min(Math.max(faceY - goalH * (SAVE_AWAY + 0.25) * after, y0 + pad), y1 - pad),
+    };
+  })();
+  // 장갑은 공보다 조금 먼저 나와 기다린다 — 갑자기 나오면 막은 게 아니라 공이 사라진
+  // 것처럼 보인다.
+  const glovePop = isSave
+    ? Math.min(1, Math.max(0, (shotT - SAVE_CONTACT * 0.55) / (SAVE_CONTACT * 0.45)))
+    : 0;
   // 궤적도 공을 따라 그려진다 — 미리 다 그려두면 결과가 먼저 보인다.
-  const arc = Array.from({ length: 25 }, (_, i) => bez((i / 24) * shotT))
+  // 세이브면 아크도 닿는 지점까지만 — 궤적이 골문 안쪽으로 더 이어지면 들어간 것처럼
+  // 보인다. 슛은 종전대로 shotT 까지.
+  const arcT = isSave ? Math.min(1, shotT / SAVE_CONTACT) : shotT;
+  const arc = Array.from({ length: 25 }, (_, i) => bez((i / 24) * arcT))
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
     .join(' ');
 
@@ -490,6 +536,15 @@ function GoalPanel({
       {/* 궤적 + 공 — 공이 지나간 만큼만 그린다 */}
       {shotT > 0.01 ? (
         <path d={arc} fill="none" stroke="#ffb56d" strokeWidth={2 * u} strokeDasharray={`${5 * u} ${5 * u}`} opacity={0.7} />
+      ) : null}
+      {/* 골키퍼 장갑 — 공이 닿는 자리. 공보다 아래 레이어라 공이 장갑 앞에 놓인다. */}
+      {glovePop > 0 ? (
+        <rect
+          x={endX - (gloveW * glovePop) / 2} y={endY - (gloveH * glovePop) / 2}
+          width={gloveW * glovePop} height={gloveH * glovePop}
+          rx={gloveW * glovePop * 0.35}
+          fill={SAVE_GLOVE_FILL} stroke={SAVE_GLOVE_EDGE} strokeWidth={2 * u}
+        />
       ) : null}
       {/* 골대 안 공은 피치와 같은 ball.svg · 같은 크기 */}
       <image
