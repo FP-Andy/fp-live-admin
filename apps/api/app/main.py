@@ -12297,6 +12297,79 @@ def clip_result_put_actions(
     }
 
 
+@app.delete("/api/highlight/clip-results/clips/{clip_id}")
+def clip_result_delete_clip(
+    clip_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """클립 하나를 지운다 — 잘못 만든 장면을 걷어내고 다시 만들 때.
+
+    액션(FPA 태깅)도 함께 지운다. **S3 영상은 남긴다** — 같은 키로 다시 만들면
+    덮어쓰이고, 안 만들면 보관비 정리('원본 삭제')가 따로 있다. 여기서 S3 까지
+    건드리다 실패하면 DB 만 비어 더 나쁜 상태가 된다.
+
+    잡 메타데이터의 clips 항목도 같이 걷어낸다 — 안 그러면 다시 만들 때
+    _persist_clip_records 가 그 구간을 되살린다.
+    """
+    clip = db.get(HighlightClip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    job = db.get(HighlightJob, clip.job_id)
+    db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == clip_id).delete(
+        synchronize_session=False
+    )
+    db.delete(clip)
+    db.commit()
+    if job is not None:
+        metadata = dict(job.job_metadata or {})
+        entries = metadata.get("clips")
+        if isinstance(entries, list):
+            kept = [
+                e for e in entries
+                if not (isinstance(e, dict) and str(e.get("clipId") or "") == clip_id)
+            ]
+            if len(kept) != len(entries):
+                metadata["clips"] = kept
+                update_job(db, job.id, job_metadata=metadata)
+    return {"clip_id": clip_id, "deleted": True}
+
+
+@app.delete("/api/highlight/clip-results/matches/{match_id}/clips")
+def clip_result_delete_all_clips(
+    match_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """이 매치의 클립을 전부 지운다 — 처음부터 다시 만들 때.
+
+    잡은 남는다(작업 목록·원본·태깅 설정 그대로). 클립과 액션만 비운다.
+    """
+    job = db.get(HighlightJob, match_id)
+    if job is None:
+        rows = db.query(HighlightClip).filter(HighlightClip.match_id == match_id).all()
+        job_ids = {r.job_id for r in rows}
+        job = db.get(HighlightJob, next(iter(job_ids))) if len(job_ids) == 1 else None
+    if job is None:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    clip_ids = [c.id for c in db.query(HighlightClip).filter(HighlightClip.job_id == job.id).all()]
+    if clip_ids:
+        db.query(HighlightClipAction).filter(HighlightClipAction.clip_id.in_(clip_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(HighlightClip).filter(HighlightClip.id.in_(clip_ids)).delete(
+            synchronize_session=False
+        )
+        db.commit()
+    metadata = dict(job.job_metadata or {})
+    metadata["clips"] = []
+    # 비운 작업을 완료로 둘 수는 없다 — 아카이브 전제가 흐려진다.
+    metadata["work_done"] = False
+    metadata["work_done_at"] = None
+    update_job(db, job.id, job_metadata=metadata)
+    return {"job_id": job.id, "deleted": len(clip_ids)}
+
+
 @app.post("/api/highlight/clip-results/clips/{clip_id}/primary")
 def clip_result_set_primary(
     clip_id: str,
