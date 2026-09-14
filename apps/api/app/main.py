@@ -9523,16 +9523,28 @@ def list_archived_jobs(
     return {"jobs": rows}
 
 
+def _fineplay_work_done(metadata: dict) -> bool:
+    """이 잡이 '작업 완료' 로 표시돼 있나.
+
+    옛 잡은 이 키가 없다 — 이미 아카이브돼 있으면 완료로 친다. 그러지 않으면
+    아카이브를 한 번 해제했다가 되돌릴 때 없던 단계가 생긴다.
+    """
+    if "work_done" in metadata:
+        return bool(metadata["work_done"])
+    return bool(metadata.get("clip_archived"))
+
+
 @app.get("/api/highlight/fineplay-jobs/archive-readiness")
 def fineplay_archive_readiness(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    """잡별 아카이브 가능 여부 — 클립 수와 FPA 데이터(액션)가 들어간 클립 수.
+    """잡별 아카이브 가능 여부 — 작업 목록의 아카이브 버튼 활성화 판단용.
 
-    모든 클립에 액션이 있어야 ready. 작업 목록의 아카이브 버튼 활성화 판단용.
-    단 하이라이트만(basic) 신청은 FPA 태깅을 하지 않으므로 액션 조건이 면제된다
-    — 안 그러면 무료 건은 영원히 아카이브가 안 된다.
+    **ready 의 기준은 '작업 완료' 표시 하나다.** 예전에는 여기서 '모든 클립에 FPA
+    액션이 있는가' 를 직접 봤는데, 그 검사가 사람이 할 판단을 대신하고 있었다
+    (set_fineplay_work_done 주석 참조). FPA 현황(clips_with_actions)은 그대로 내려
+    화면이 진행도를 보여줄 수 있게 둔다 — 다만 그것으로 막지는 않는다.
     """
     by_job: dict[str, list[str]] = {}
     for clip_id, job_id in db.query(HighlightClip.id, HighlightClip.job_id).all():
@@ -9542,15 +9554,84 @@ def fineplay_archive_readiness(
     out = {}
     for job_id, clip_ids in by_job.items():
         job = jobs.get(job_id)
-        needs_fpa = fineplay_xfp_enabled((job.job_metadata if job else None) or {})
+        metadata = (job.job_metadata if job else None) or {}
+        needs_fpa = fineplay_xfp_enabled(metadata)
         with_actions = sum(1 for c in clip_ids if c in acted)
+        work_done = _fineplay_work_done(metadata)
         out[job_id] = {
             "clip_count": len(clip_ids),
             "clips_with_actions": with_actions,
             "needs_fpa": needs_fpa,
-            "ready": bool(clip_ids) and (not needs_fpa or with_actions == len(clip_ids)),
+            "work_done": work_done,
+            "ready": bool(clip_ids) and work_done,
         }
     return {"jobs": out}
+
+
+def _fineplay_fpa_coverage(job_id: str, db: Session) -> tuple[int, int]:
+    """(FPA 액션이 있는 클립 수, 전체 클립 수)."""
+    clip_ids = [c.id for c in db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()]
+    if not clip_ids:
+        return (0, 0)
+    acted = {
+        row[0]
+        for row in db.query(HighlightClipAction.clip_id)
+        .filter(HighlightClipAction.clip_id.in_(clip_ids))
+        .distinct()
+        .all()
+    }
+    return (len(acted), len(clip_ids))
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/work-done")
+def set_fineplay_work_done(
+    job_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """이 작업을 '완료' 로 표시/해제 — body {done: bool, force?: bool}.
+
+    아카이브의 전제다. 예전에는 아카이브가 '모든 클립에 FPA 액션이 있는가' 를 직접
+    검사해 **막았는데**, 그 검사가 사람이 할 판단을 대신하고 있었다. 특히 사전 작업은
+    plan.tier 가 'xfp' 로 고정이라(신청 연결 전이라 그렇다) 신청이 안 붙은 쪽 클립까지
+    FPA 를 찍어야 아카이브가 됐다 — 찍을 이유가 없는 클립인데도.
+
+    그래서 검사를 **경고**로 낮춘다. FPA 가 덜 찍혔으면 409 로 현황을 돌려주고,
+    화면이 확인을 받아 force=true 로 다시 부른다. 누락 방지는 남고 판단은 사람이 한다.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = dict(job.job_metadata or {})
+    done = bool(body.get("done", True))
+
+    if not done and bool(metadata.get("clip_archived")):
+        # 아카이브 ⊆ 작업 완료 — 이 관계가 깨지면 목록의 뜻이 흐려진다.
+        raise HTTPException(
+            status_code=409,
+            detail="아카이브된 작업입니다 — 먼저 아카이브를 해제하세요.",
+        )
+
+    acted, total = _fineplay_fpa_coverage(job_id, db)
+    if done:
+        if total == 0:
+            raise HTTPException(status_code=409, detail="클립이 없습니다 — 먼저 클립을 생성하세요.")
+        # 하이라이트만(basic) 신청은 FPA 태깅을 하지 않으므로 경고 대상이 아니다.
+        if fineplay_xfp_enabled(metadata) and acted < total and not bool(body.get("force")):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"FPA 데이터가 {acted}/{total} 클립에만 있습니다. "
+                    "그래도 완료 처리하려면 다시 눌러 확인하세요."
+                ),
+            )
+
+    metadata["work_done"] = done
+    metadata["work_done_at"] = datetime.utcnow().isoformat() if done else None
+    metadata["work_done_by"] = (user.name or user.id) if done else None
+    update_job(db, job_id, job_metadata=metadata)
+    return {"job_id": job_id, "work_done": done, "fpa_acted": acted, "fpa_total": total}
 
 
 @app.post("/api/highlight/fineplay-jobs/{job_id}/archive")
@@ -9570,25 +9651,14 @@ def archive_fineplay_job(
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
     metadata = dict(job.job_metadata or {})
     archived = bool(body.get("archived", True))
-    if archived:
-        # 모든 클립에 FPA 데이터(액션)가 있어야 아카이브 가능 — 작업 누락 방지.
-        clip_ids = [c.id for c in db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()]
-        if not clip_ids:
-            raise HTTPException(status_code=409, detail="클립이 없습니다 — 먼저 클립을 생성하세요.")
-        # 하이라이트만(basic) 신청은 FPA 태깅을 하지 않으므로 액션 조건을 면제한다.
-        if fineplay_xfp_enabled(metadata):
-            acted = {
-                row[0]
-                for row in db.query(HighlightClipAction.clip_id)
-                .filter(HighlightClipAction.clip_id.in_(clip_ids))
-                .distinct()
-                .all()
-            }
-            if len(acted) < len(clip_ids):
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"모든 클립에 FPA 데이터가 있어야 아카이브할 수 있습니다 — {len(acted)}/{len(clip_ids)} 클립 완료.",
-                )
+    if archived and not _fineplay_work_done(metadata):
+        # 전제는 '작업 완료' 하나다. FPA 충족 여부는 그 버튼이 경고로 확인한다
+        # (set_fineplay_work_done 주석 참조) — 여기서 또 막으면 사람이 이미 내린
+        # 판단을 기계가 뒤집는 꼴이 된다.
+        raise HTTPException(
+            status_code=409,
+            detail="먼저 '작업 완료' 를 눌러 주세요 — 완료한 작업만 아카이브합니다.",
+        )
     metadata["clip_archived"] = archived
     metadata["clip_archived_at"] = datetime.utcnow().isoformat() if archived else None
     update_job(db, job_id, job_metadata=metadata)
@@ -11783,6 +11853,8 @@ def clip_result_matches(
             "analysis_request_id": metadata.get("analysis_request_id"),
             "archived": archived,
             "archived_at": metadata.get("clip_archived_at"),
+            "work_done": _fineplay_work_done(metadata),
+            "work_done_at": metadata.get("work_done_at"),
             "updated_at": g["updated_at"].isoformat() if g["updated_at"] else None,
         })
     out.sort(key=lambda r: r["updated_at"] or "", reverse=True)

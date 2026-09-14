@@ -337,7 +337,7 @@ export default function FineplayJobsPage() {
   // 나누는 대신 한 목록에서 걸러 본다(잡의 tier 는 사전 작업 연결로 바뀔 수 있어서).
   const [tierFilter, setTierFilter] = useState<'all' | PlanView>('all');
   // 잡별 아카이브 준비상태 — 모든 클립에 FPA 데이터가 있어야 버튼 활성화.
-  const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean }>>({});
+  const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean; work_done?: boolean }>>({});
   const [listError, setListError] = useState('');
   const [polling, setPolling] = useState(false);
   const [pollMsg, setPollMsg] = useState('');
@@ -426,7 +426,7 @@ export default function FineplayJobsPage() {
       setJobs(rows.filter((j) => !j.job_metadata?.clip_archived));
       setListError('');
       try {
-        const r = await apiJson<{ jobs: Record<string, { clip_count: number; clips_with_actions: number; ready: boolean }> }>(
+        const r = await apiJson<{ jobs: Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean; work_done?: boolean }> }>(
           '/highlight/fineplay-jobs/archive-readiness',
         );
         setReadiness(r.jobs);
@@ -1423,15 +1423,20 @@ export default function FineplayJobsPage() {
                           원본 삭제
                         </button>
                       ) : null}
+                      {/* 아카이브의 전제는 '작업 완료' 다 — 그 표시는 클립 결과 화면에서 한다.
+                          FPA 진행도는 참고로만 붙인다(막지 않는다). */}
                       <button
                         style={{ ...smallBtn, opacity: readiness[job.id]?.ready ? 1 : 0.45 }}
                         disabled={!readiness[job.id]?.ready}
                         title={readiness[job.id]?.ready
                           ? '아카이브 룸으로 이동 — 이 목록과 클립 결과에서 빠집니다. 데이터는 그대로, 언제든 해제·수정 가능'
-                          : `모든 클립에 FPA 데이터가 있어야 아카이브 가능 — 현재 ${readiness[job.id]?.clips_with_actions ?? 0}/${readiness[job.id]?.clip_count ?? '?'} 클립 완료 (하이라이트만 신청은 이 조건이 면제됩니다)`}
+                          : `클립 결과 화면에서 '작업 완료' 를 먼저 눌러 주세요 — 완료한 작업만 아카이브합니다`
+                            + (readiness[job.id]?.needs_fpa
+                              ? ` (FPA ${readiness[job.id]?.clips_with_actions ?? 0}/${readiness[job.id]?.clip_count ?? '?'} 클립)`
+                              : '')}
                         onClick={() => void archiveJob(job)}
                       >
-                        📦 아카이브{readiness[job.id] && !readiness[job.id].ready
+                        📦 아카이브{readiness[job.id] && !readiness[job.id].ready && readiness[job.id].needs_fpa
                           ? ` (${readiness[job.id].clips_with_actions}/${readiness[job.id].clip_count})`
                           : ''}
                       </button>

@@ -23,6 +23,8 @@ type MatchRow = {
   // 아카이브된 잡은 기본 목록에서 빠진다 — '아카이브 포함' 토글이나 아카이브 룸 딥링크로만 보인다.
   archived?: boolean;
   archived_at?: string | null;
+  work_done?: boolean;
+  work_done_at?: string | null;
   updated_at?: string | null;
 };
 
@@ -550,8 +552,44 @@ export default function ClipResultsPage() {
     }
   };
 
+  // 작업 완료: 아카이브의 전제다. FPA 가 덜 찍혔으면 서버가 409 로 현황을 알려주고,
+  // 여기서 확인을 받아 force 로 다시 부른다 — 누락 방지는 남기되 판단은 사람이 한다.
+  const toggleWorkDone = async (done: boolean) => {
+    if (!selectedMatch) return;
+    setBusy(true);
+    setMsg('');
+    const call = (force: boolean) => apiJson<{ work_done: boolean; fpa_acted: number; fpa_total: number }>(
+      `/highlight/fineplay-jobs/${selectedMatch.job_id}/work-done`,
+      { method: 'POST', body: JSON.stringify({ done, force }) },
+    );
+    try {
+      let res;
+      try {
+        res = await call(false);
+      } catch (err) {
+        // FPA 미완 경고 — 사용자가 확인하면 그대로 진행한다. 다른 오류는 그대로 띄운다.
+        const detail = err instanceof Error ? err.message : String(err);
+        if (!done || !detail.includes('FPA 데이터가')) throw err;
+        if (!window.confirm(`${detail}\n\n그래도 작업 완료로 표시할까요?`)) {
+          setMsg('작업 완료를 취소했습니다.');
+          return;
+        }
+        res = await call(true);
+      }
+      setSelectedMatch({ ...selectedMatch, work_done: res.work_done });
+      setMsg(res.work_done
+        ? `작업 완료 — FPA ${res.fpa_acted}/${res.fpa_total} 클립. 이제 아카이브할 수 있습니다.`
+        : '작업 완료 해제 — 다시 작업 중으로 표시됩니다.');
+      await loadMatches();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // 아카이브: 이 매치를 클립 결과·FinePlay 작업 목록에서 빼 '아카이브' 룸으로 보낸다 (데이터는 그대로).
-  // 해제하면 양쪽 목록으로 돌아온다. 서버가 '모든 클립에 FPA 데이터' 조건을 검사한다.
+  // 해제하면 양쪽 목록으로 돌아온다. 서버는 '작업 완료' 여부만 본다.
   const toggleArchive = async (archived: boolean) => {
     if (!selectedMatch) return;
     setBusy(true);
@@ -759,12 +797,28 @@ export default function ClipResultsPage() {
                     ✎ 이름 수정
                   </button>
                   <button
-                    style={{ ...smallBtn, marginLeft: 'auto' }}
+                    style={selectedMatch.work_done
+                      ? { ...smallBtn, marginLeft: 'auto', borderColor: '#22c55e', color: '#22c55e' }
+                      : { ...smallBtn, marginLeft: 'auto' }}
+                    onClick={() => void toggleWorkDone(!selectedMatch.work_done)}
+                    disabled={busy || selectedMatch.archived}
+                    title={selectedMatch.archived
+                      ? '아카이브된 작업입니다 — 먼저 아카이브를 해제하세요'
+                      : selectedMatch.work_done
+                        ? '작업 완료 해제 — 다시 작업 중으로 표시합니다'
+                        : '이 작업을 완료로 표시합니다 — 아카이브의 전제입니다'}
+                  >
+                    {selectedMatch.work_done ? '✓ 작업 완료' : '작업 완료로 표시'}
+                  </button>
+                  <button
+                    style={smallBtn}
                     onClick={() => void toggleArchive(!selectedMatch.archived)}
-                    disabled={busy}
+                    disabled={busy || (!selectedMatch.archived && !selectedMatch.work_done)}
                     title={selectedMatch.archived
                       ? '아카이브 해제 — 클립 결과·FinePlay 작업 목록으로 되돌립니다'
-                      : '아카이브로 이동 — 목록에서 빠지지만 데이터는 그대로, 언제든 해제 가능'}
+                      : !selectedMatch.work_done
+                        ? "먼저 '작업 완료' 를 눌러 주세요 — 완료한 작업만 아카이브합니다"
+                        : '아카이브로 이동 — 목록에서 빠지지만 데이터는 그대로, 언제든 해제 가능'}
                   >
                     {selectedMatch.archived ? '↩ 아카이브 해제' : '📦 아카이브'}
                   </button>
@@ -881,6 +935,16 @@ export default function ClipResultsPage() {
                   <span style={{ fontWeight: 600 }}>{m.name}</span>
                   <PlanBadge plan={m.plan} />
                   {m.archived ? <ArchivedBadge /> : null}
+                  {/* 아카이브 안 해도 어디까지 했는지 목록에서 보인다 — 여럿이 나눠 맡을 때 쓴다. */}
+                  {m.work_done && !m.archived ? (
+                    <span
+                      title={m.work_done_at ? `작업 완료 ${new Date(m.work_done_at).toLocaleString()}` : '작업 완료'}
+                      style={{
+                        fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 999,
+                        color: '#22c55e', border: '1px solid #22c55e',
+                      }}
+                    >✓ 완료</span>
+                  ) : null}
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span>
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>클립 {m.clip_count}개</span>
                   {m.callback_status ? (
