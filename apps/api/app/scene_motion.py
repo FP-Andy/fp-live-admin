@@ -633,11 +633,13 @@ def _draw_goal_panel(
     ball_t: float | None,
     start_gx: float | None = None,
     is_save: bool = False,
+    save_caught: bool = False,
 ) -> None:
     """공격 반대편 하프를 덮는 대형 정면 골대 뷰 — 슛 궤적(아크)과 공까지 그린다.
 
-    is_save=True 면 **골키퍼가 막는 장면**이다. 닿는 지점에 장갑을 세우고 공을 골대
-    밖으로 보낸다. False 면 슛 — 종전대로 아크 끝까지 날아간다.
+    is_save=True 면 **골키퍼가 막는 장면**이다. 닿는 지점에 장갑을 세운다.
+    save_caught=True(sv.c)면 공이 장갑에 붙어 멈추고, False 면 골대 밖으로 쳐낸다.
+    is_save=False 면 슛 — 종전대로 아크 끝까지 날아간다.
     세이브(Save)만 여기 온다(GK_SAVE_ACTION 주석).
 
     side: 패널이 덮는 하프('left'|'right'). ball_t: None=공 미표시, 0~1=아크 진행률.
@@ -747,16 +749,20 @@ def _draw_goal_panel(
     else:
         after = (t - GK_CONTACT_T) / (1.0 - GK_CONTACT_T)
         pop = 1.0
-        # 막아낸 공 — 가까운 포스트 **밖으로**, 크로스바 위로 넘겨 보낸다.
-        # 골대 안에 머물면 막았는지 흘렸는지가 안 보인다.
-        sign = 1.0 if end_x >= (gx0 + gx1) / 2 else -1.0
-        e = _ease(after)
-        bx = face_x + sign * goal_w * GK_SAVE_AWAY * e
-        by = face_y - goal_h * (GK_SAVE_AWAY + 0.25) * e
-        # 패널 안에 가둔다 — 밖으로 나가면 피치 위에 공이 떠 있는 그림이 된다.
-        pad = 16.0
-        bx = min(max(bx, x0 + pad), x1 - pad)
-        by = min(max(by, y0 + pad), y1 - pad)
+        if save_caught:
+            # 잡았다 — 장갑 정면에 붙어 멈춘다. 소유권까지 가져왔다는 그림이다.
+            bx, by = face_x, face_y
+        else:
+            # 쳐냈다 — 가까운 포스트 **밖으로**, 크로스바 위로 넘겨 보낸다.
+            # 골대 안에 머물면 막았는지 흘렸는지가 안 보인다.
+            sign = 1.0 if end_x >= (gx0 + gx1) / 2 else -1.0
+            e = _ease(after)
+            bx = face_x + sign * goal_w * GK_SAVE_AWAY * e
+            by = face_y - goal_h * (GK_SAVE_AWAY + 0.25) * e
+            # 패널 안에 가둔다 — 밖으로 나가면 피치 위에 공이 떠 있는 그림이 된다.
+            pad = 16.0
+            bx = min(max(bx, x0 + pad), x1 - pad)
+            by = min(max(by, y0 + pad), y1 - pad)
     if pop > 0:
         _paste_glove(draw, end_x, end_y, glove_w * pop, glove_h * pop)
     _draw_ball(draw, bx, by)
@@ -801,6 +807,7 @@ def render_scene_motion(
     caption: str | None = None,
     clear_exit: bool = False,
     is_save: bool = False,
+    save_caught: bool = False,
 ) -> bool:
     """SceneState → mp4. 점이 하나도 없으면 False (렌더 생략).
 
@@ -958,7 +965,7 @@ def render_scene_motion(
                 _draw_goal_panel(
                     draw, goal_mouth[0], goal_mouth[1],
                     side=panel_side, ball_t=ball_t_panel, start_gx=panel_start_gx,
-                    is_save=is_save,
+                    is_save=is_save, save_caught=save_caught,
                 )
             elif goal_mouth is not None:
                 _draw_goal_inset(draw, goal_mouth[0], goal_mouth[1])
@@ -1029,6 +1036,14 @@ GK_MIRROR_ACTIONS = {"Save", "Catching", "Punching"}
 # (live/page.tsx 의 GK_CLAIM_ARROW_CODES 주석). 그 둘은 피치 위 화살표로만 보인다.
 GK_SAVE_ACTION = "Save"
 
+# 막은 뒤의 처리 — 태그로 갈린다(fpa.SAVE_TAG_CODES: sv.c / sv.p).
+#
+#   catch  잡았다 — 공이 장갑에 붙어 멈춘다. 소유권까지 가져왔다는 그림이다
+#   punch  쳐냈다 — 골대 밖으로 튕겨 나간다
+#   (없음) 옛 기록 — 어느 쪽인지 모른다. 쳐내기로 그린다(막았다까지만 말한다)
+GK_SAVE_CATCH_TAG = "Catch"
+GK_SAVE_PUNCH_TAG = "Punch"
+
 # 아크 전체에서 **공이 장갑에 닿는 시점**. 나머지는 막은 뒤(튕겨 나가는) 처리에 쓴다.
 GK_CONTACT_T = 0.72
 # 막은 공이 튕겨 나가는 거리 — 골 너비 대비. 잡았는지 쳐냈는지는 기록에 없으므로
@@ -1094,6 +1109,7 @@ def build_scene_data(
     movers: list[dict[str, Any]] | None = None,
     clear_exit: bool = False,
     is_save: bool = False,
+    save_caught: bool = False,
 ) -> dict[str, Any] | None:
     """SceneState → 앱 네이티브 씬모션(씬모션ui_handoff scene_view.dart)용 좌표 데이터.
 
@@ -1203,9 +1219,10 @@ def build_scene_data(
                 sgx = (origin_y - 30.34) / 7.32 if direction == "left" else (37.66 - origin_y) / 7.32
                 shot_info["start"] = "left" if sgx < 0.35 else ("right" if sgx > 0.65 else "center")
         if is_save:
-            # 골키퍼가 막는 장면 — 화면은 아크 끝에 장갑을 세우고 공을 골대 밖으로
-            # 보낸다(GK_SAVE_ACTION 주석). 이 키가 없으면 종전대로 슛이다.
-            shot_info["save"] = True
+            # 골키퍼가 막는 장면 — 아크 끝에 장갑을 세운다(GK_SAVE_ACTION 주석).
+            # 값이 'catch' 면 공이 장갑에 붙어 멈추고, 'punch' 면 골대 밖으로 쳐낸다.
+            # 이 키가 없으면 종전대로 슛이다.
+            shot_info["save"] = "catch" if save_caught else "punch"
         data["shot"] = shot_info
     if caption:
         data["caption"] = caption
@@ -1214,6 +1231,27 @@ def build_scene_data(
 
 # 장면 그룹핑용 경계 센티널 — sceneState 없는 행을 만나면 그룹을 끊는다.
 _GROUP_BOUNDARY = object()
+
+
+def _row_has_tag(row: dict[str, Any], tag: str) -> bool:
+    """액션 행에 이 태그가 있나. 태그가 실리는 자리가 경로마다 다르다 —
+    dual 행은 "Tags", 전송 페이로드는 extra.tags, 옛 코드는 최상위 "tags".
+    (xfp_score._has_tag 와 같은 규칙)
+    """
+    extra = row.get("extra")
+    for raw in (
+        row.get("tags"),
+        row.get("Tags"),
+        extra.get("tags") if isinstance(extra, dict) else None,
+    ):
+        if raw is None:
+            continue
+        if isinstance(raw, (list, tuple, set)):
+            if tag in {str(t).strip() for t in raw}:
+                return True
+        elif tag in {part.strip() for part in str(raw).split(",") if part.strip()}:
+            return True
+    return False
 
 
 def scene_motion_key(prefix: str, clip_key: str, seq: Any) -> str:
@@ -1303,6 +1341,8 @@ def attach_scene_motions(
         # **대표 행이 세이브일 때만.** goalMouth 를 들고 있는 행이 곧 골대 패널의
         # 주인이라, 같은 장면에 찍힌 상대 슛까지 세이브로 그리면 안 된다.
         is_save = rep_action == GK_SAVE_ACTION
+        # 마무리는 태그로 갈린다(sv.c / sv.p). 옛 기록은 태그가 없어 쳐내기로 그린다.
+        save_caught = is_save and _row_has_tag(rep, GK_SAVE_CATCH_TAG)
         # 앱 네이티브 씬모션용 좌표 데이터 — 스토리지·렌더와 무관하게 항상 싣는다.
         # (앱은 sceneData 우선, 없으면 sceneMotionKey mp4 폴백)
         data = build_scene_data(
@@ -1314,6 +1354,7 @@ def attach_scene_motions(
             movers=movers,
             clear_exit=clear_exit,
             is_save=is_save,
+            save_caught=save_caught,
         )
         if data:
             rep["sceneData"] = data
@@ -1335,6 +1376,7 @@ def attach_scene_motions(
                     caption=caption,
                     clear_exit=clear_exit,
                     is_save=is_save,
+                    save_caught=save_caught,
                 ):
                     continue
                 storage.upload(out, key, content_type="video/mp4")

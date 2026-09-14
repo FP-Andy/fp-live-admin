@@ -89,8 +89,11 @@ export type SceneShot = {
   gx: number; gy: number;
   dir?: 'left' | 'right';
   start?: 'left' | 'center' | 'right';
-  // 골키퍼가 막은 장면 — 아크 끝에 장갑을 세우고 공을 골대 밖으로 보낸다.
-  save?: boolean;
+  // 골키퍼가 막은 장면 — 아크 끝에 장갑을 세운다.
+  //   'catch' 잡았다 — 공이 장갑에 붙어 멈춘다 (sv.c)
+  //   'punch' 쳐냈다 — 골대 밖으로 튕겨 나간다 (sv.p, 태그 없는 옛 기록도 이쪽)
+  // 옛 페이로드의 true 도 쳐내기로 읽는다.
+  save?: 'catch' | 'punch' | boolean;
 };
 export type SceneData = {
   v?: number;
@@ -463,6 +466,7 @@ function GoalPanel({
   };
   // 세이브면 닿는 순간까지만 아크를 타고, 그 뒤엔 막은 결과를 보여준다.
   const isSave = Boolean(shot.save);
+  const caught = shot.save === 'catch';
   const gloveH = goalH * SAVE_GLOVE_H;
   const gloveW = gloveH * SAVE_GLOVE_RATIO;
   // 공은 장갑 **정면**에 — 겹쳐 그리면 공에 가려 초록 테두리로만 보인다.
@@ -476,7 +480,9 @@ function GoalPanel({
   const ball = (() => {
     if (!isSave) return bez(shotT);
     if (shotT <= SAVE_CONTACT) return bez(shotT / SAVE_CONTACT);
-    // 막아낸 공 — 가까운 포스트 밖으로, 크로스바 위로. 패널 안에 가둔다(밖으로 나가면
+    // 잡았으면 장갑 정면에 붙어 멈춘다 — 소유권까지 가져왔다는 그림이다.
+    if (caught) return { x: faceX, y: faceY };
+    // 쳐냈으면 가까운 포스트 밖으로, 크로스바 위로. 패널 안에 가둔다(밖으로 나가면
     // 피치 위에 공이 떠 있는 그림이 된다).
     const after = ease((shotT - SAVE_CONTACT) / (1 - SAVE_CONTACT));
     const sign = endX >= (gx0 + gx1) / 2 ? 1 : -1;
