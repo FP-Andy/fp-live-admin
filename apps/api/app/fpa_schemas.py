@@ -93,6 +93,9 @@ class FpaSavedLogsRequest(BaseModel):
     # Standalone FPA 로그도 FCM/Data Hub의 종목별 경기 목록에 바로 노출돼야 한다.
     # 기존 클라이언트의 저장 요청은 FOOTBALL로 해석해 호환성을 유지한다.
     sport: Literal["FOOTBALL", "FUTSAL"] = "FOOTBALL"
+    # 단일 경기(예: Queen Cup 15분)는 전·후반을 합친 총 시간을 별도로 보존한다.
+    period_mode: Literal["SINGLE", "HALVES"] | None = None
+    match_minutes: int | None = Field(default=None, ge=1, le=120)
 
 
 class FpaSavedLogsResponse(BaseModel):

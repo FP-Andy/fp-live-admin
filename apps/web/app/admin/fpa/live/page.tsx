@@ -325,10 +325,14 @@ type Match = {
   round_number: number;
   archived: boolean;
   sport?: 'FOOTBALL' | 'BASKETBALL' | 'FUTSAL';
+  first_half_minutes?: number;
+  second_half_minutes?: number;
   created_at: string;
   metadata?: {
     home_team?: string;
     away_team?: string;
+    period_mode?: 'SINGLE' | 'HALVES';
+    match_minutes?: number;
   } | null;
 };
 
@@ -1208,6 +1212,8 @@ export default function FpaLivePage() {
   const [direction, setDirection] = useState<'left' | 'right'>('right');
   const [timeline, setTimeline] = useState('00:00');
   const [fpaSport, setFpaSport] = useState<'FOOTBALL' | 'FUTSAL'>(selectedSport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL');
+  const [matchPeriodMode, setMatchPeriodMode] = useState<'SINGLE' | 'HALVES'>(selectedSport === 'FUTSAL' ? 'SINGLE' : 'HALVES');
+  const [matchMinutes, setMatchMinutes] = useState(selectedSport === 'FUTSAL' ? 15 : 45);
   const [statInput, setStatInput] = useState('');
   const [inputMode, setInputMode] = useState<InputMode>('single');
   const [activeLayer, setActiveLayer] = useState<string>('home_field');
@@ -1435,6 +1441,8 @@ export default function FpaLivePage() {
 
     const nextSport: FpaSport = selectedSport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL';
     setFpaSport((current) => current === nextSport ? current : nextSport);
+    setMatchPeriodMode(nextSport === 'FUTSAL' ? 'SINGLE' : 'HALVES');
+    setMatchMinutes(nextSport === 'FUTSAL' ? 15 : 45);
   }, [afterDots.length, beforeDots.length, dots.length, logs.length, matchId, passArrows.length, rows.length, savedScenes.length, selectedSport]);
 
   const matchPageCount = Math.max(1, Math.ceil(matchTotal / FPA_MATCH_PAGE_SIZE));
@@ -3846,6 +3854,10 @@ export default function FpaLivePage() {
     try {
       const teams = parseMatchTeams(match);
       setFpaSport(match.sport === 'FUTSAL' ? 'FUTSAL' : 'FOOTBALL');
+      const isSingleMatch = match.metadata?.period_mode === 'SINGLE' || match.second_half_minutes === 0;
+      setMatchPeriodMode(isSingleMatch ? 'SINGLE' : 'HALVES');
+      setMatchMinutes(Number(match.metadata?.match_minutes || match.first_half_minutes || (match.sport === 'FUTSAL' ? 15 : 45)));
+      if (isSingleMatch) setHalf('1H');
       setMatchId(match.id);
       setTeamIdH(teams.home);
       setTeamIdA(teams.away);
@@ -3927,6 +3939,8 @@ export default function FpaLivePage() {
           teamid_h: homeTeamForSave,
           teamid_a: awayTeamForSave,
           sport: fpaSport,
+          period_mode: matchPeriodMode,
+          match_minutes: matchMinutes,
         }),
       });
       if (!response.ok) {
@@ -5262,7 +5276,9 @@ export default function FpaLivePage() {
             </div>
             {matchIdError ? <small className="fpa-field-error">{matchIdError}</small> : null}
           </label>
-          {inputMode === 'single' ? renderHalfControl() : null}
+          {inputMode === 'single' && matchPeriodMode !== 'SINGLE' ? renderHalfControl() : null}
+          {isFutsal ? <div className="fpa-live-meta-field"><span>경기 포맷</span><div className="fpa-segmented"><button className={matchPeriodMode === 'SINGLE' ? 'active' : ''} onClick={() => { setMatchPeriodMode('SINGLE'); setHalf('1H'); }} type="button">전후반 통합</button><button className={matchPeriodMode === 'HALVES' ? 'active' : ''} onClick={() => setMatchPeriodMode('HALVES')} type="button">전후반 분리</button></div></div> : null}
+          {isFutsal ? <label className="fpa-live-meta-field"><span>{matchPeriodMode === 'SINGLE' ? '총 경기 시간 (분)' : '전·후반 각 시간 (분)'}</span><input max={120} min={1} onChange={(event) => setMatchMinutes(Math.max(1, Math.min(120, Number(event.target.value) || 1)))} type="number" value={matchMinutes} /></label> : null}
           <div className="fpa-live-meta-field">
             <span>Mode</span>
             <div className="fpa-segmented">

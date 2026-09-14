@@ -1832,6 +1832,9 @@ def _match_list_metadata(metadata: Any) -> dict:
     """
     source = metadata if isinstance(metadata, dict) else {}
     compact: dict[str, Any] = {}
+    for key in ("period_mode", "match_minutes"):
+        if key in source:
+            compact[key] = source[key]
     # FPA 선택기는 이 목록 응답만으로 홈·어웨이 라벨을 채운다. 상세 metadata 전체를
     # 보내지 않되, 태깅 시작에 필요한 최소 식별 정보는 남긴다.
     for key in ("stream_mode", "ingest_protocol", "home_team", "away_team"):
@@ -1845,13 +1848,18 @@ def _match_list_metadata(metadata: Any) -> dict:
 
 def _serialize_match(row: Match, include_sport: bool = True, compact: bool = False) -> dict:
     default_first_half, default_second_half = _default_half_minutes_for_class(row.competition_class)
+    raw_metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    period_mode = str(raw_metadata.get("period_mode") or "HALVES").upper()
+    single_match = period_mode == "SINGLE"
+    first_minutes = int(raw_metadata.get("match_minutes") or row.first_half_minutes or default_first_half) if single_match else int(row.first_half_minutes or default_first_half)
+    second_minutes = 0 if single_match else int(row.second_half_minutes or default_second_half)
     payload = {
         "id": row.id,
         "name": row.name,
         "competition_class": _normalize_competition_class(row.competition_class),
         "round_number": int(row.round_number or 1),
-        "first_half_minutes": int(row.first_half_minutes or default_first_half),
-        "second_half_minutes": int(row.second_half_minutes or default_second_half),
+        "first_half_minutes": first_minutes,
+        "second_half_minutes": second_minutes,
         "extra_first_half_minutes": int(getattr(row, "extra_first_half_minutes", None) or 15),
         "extra_second_half_minutes": int(getattr(row, "extra_second_half_minutes", None) or 15),
         "archived": bool(row.archived),
@@ -3077,19 +3085,24 @@ def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSaved
         if isinstance(row, dict)
     }
     sport = "FUTSAL" if "FUTSAL" in row_sports else _normalize_sport(body.sport)
-    half_minutes = 20 if sport == "FUTSAL" else 45
+    period_mode = (body.period_mode or ("SINGLE" if sport == "FUTSAL" else "HALVES")).upper()
+    match_minutes = int(body.match_minutes or (15 if sport == "FUTSAL" and period_mode == "SINGLE" else (20 if sport == "FUTSAL" else 45)))
+    first_half_minutes = match_minutes
+    second_half_minutes = 0 if period_mode == "SINGLE" else match_minutes
     if match_obj:
         # 이전 버전은 standalone FPA 경기를 FOOTBALL로 고정 생성했다. 해당 수동
         # 경기에는 저장 시점의 종목을 복구해 FCM/Data Hub의 종목 필터와 일치시킨다.
         metadata = dict(match_obj.metadata_json or {})
-        if metadata.get("fpa_manual_match") and match_obj.sport != sport:
+        if metadata.get("fpa_manual_match"):
             match_obj.sport = sport
-            match_obj.first_half_minutes = half_minutes
-            match_obj.second_half_minutes = half_minutes
+            match_obj.first_half_minutes = first_half_minutes
+            match_obj.second_half_minutes = second_half_minutes
             metadata.update({
                 "sport": sport,
-                "first_half_minutes": half_minutes,
-                "second_half_minutes": half_minutes,
+                "period_mode": period_mode,
+                "match_minutes": match_minutes,
+                "first_half_minutes": first_half_minutes,
+                "second_half_minutes": second_half_minutes,
             })
             match_obj.metadata_json = metadata
             db.flush()
@@ -3099,8 +3112,10 @@ def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSaved
         "sport": sport,
         "home_team": home_team,
         "away_team": away_team,
-        "first_half_minutes": half_minutes,
-        "second_half_minutes": half_minutes,
+        "period_mode": period_mode,
+        "match_minutes": match_minutes,
+        "first_half_minutes": first_half_minutes,
+        "second_half_minutes": second_half_minutes,
         "fpa_manual_match": True,
         "source": "fpa_live_logger",
     }
@@ -3110,8 +3125,8 @@ def _ensure_fpa_match_for_saved_logs(db: Session, match_id: UUID, body: FpaSaved
         sport=sport,
         competition_class="FPA",
         round_number=1,
-        first_half_minutes=half_minutes,
-        second_half_minutes=half_minutes,
+        first_half_minutes=first_half_minutes,
+        second_half_minutes=second_half_minutes,
         archived=True,
         archived_at=datetime.utcnow(),
         metadata_json=metadata,
