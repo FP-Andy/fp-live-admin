@@ -58,8 +58,12 @@ ACTION_CODES = {
     "w": "Clear",
     "ww": "Cutout",
     "qw": "Block",
+    # 캐칭(v)·펀칭(vv) — **공중볼 처리**다. 크로스·코너로 올라온 공을 잡거나 쳐낸다.
+    # 슛을 막은 게 아니라 위협을 걷어낸 것이라 골문 좌표를 받지 않고, 점수도 킥 위치
+    # 위협으로 난다(GK_CLAIM_ARROW_CODES). 슛을 막은 건 아래 세이브(sv)다.
     "v": "Catching",
     "vv": "Punching",
+    # 세이브 — 슛을 막았다. 마무리를 sv.c(잡음)/sv.p(쳐냄)로 구분한다(SAVE_TAG_CODES).
     "sv": "Save",
     "bb": "Duel",
     "b": "Duel",
@@ -72,6 +76,20 @@ ACTION_CODES = {
     "st": "Sprint",
     "tr": "Throw-in",
 }
+# 세이브 전용 태그 — 슛을 막은 **뒤의 처리**를 가른다.
+#
+#   sv.c  잡았다  — 소유권까지 가져온다. 세컨볼이 없다
+#   sv.p  쳐냈다  — 위협은 지웠지만 공은 다시 살아 있다
+#
+# ⚠️ 같은 글자가 일반 TAG_CODES 에서는 다른 뜻이다(c=Counter Attack, p=Progressive).
+# 세이브에서만 이 사전을 먼저 본다 — 그래서 **세이브에는 역습·전진 태그를 못 단다.**
+# 세이브에 그 둘은 뜻이 닿지 않아(전진은 아예, 역습은 드물게) 바꿔도 잃는 게 없다고 봤다.
+# 세이브에 다른 태그를 달 일이 생기면 여기 대신 접두어를 붙이는 쪽으로 가야 한다.
+SAVE_TAG_CODES = {
+    "c": "Catch",
+    "p": "Punch",
+}
+
 TAG_CODES = {
     "k": "Key Pass",
     "a": "Assist",
@@ -2214,7 +2232,10 @@ def generate_log_entry(
     if action_name in ("Pass", "Cross", "Throw-in", "Kick-in") and not player_to:
         raise ValueError(f"'{action_name}' 액션은 받는 선수 번호가 필요합니다. (예: 10{action_code_raw}8)")
 
-    tags_list = [TAG_CODES[tag_code] for tag_code in tag_codes if tag_code in TAG_CODES]
+    # 세이브는 전용 태그 사전을 먼저 본다(SAVE_TAG_CODES) — 같은 글자의 일반 태그와
+    # 뜻이 다르다. 사전에 없는 글자는 종전대로 일반 태그로 읽는다.
+    tag_dict = {**TAG_CODES, **SAVE_TAG_CODES} if action_name == "Save" else TAG_CODES
+    tags_list = [tag_dict[tag_code] for tag_code in tag_codes if tag_code in tag_dict]
     # PK는 세트피스의 부분집합 — 소급 분리 필터가 "Set Piece" 하나로 전부 걸리도록 함께 태깅
     if "Penalty" in tags_list and "Set Piece" not in tags_list:
         tags_list.append("Set Piece")

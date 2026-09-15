@@ -59,6 +59,19 @@ const HOLD_AFTER = 0.8;
 // 패널이 처음부터 떠 있으면 어디서 공이 오는지 안 보여서, 등장을 뒤로 미뤘다.
 const PANEL_IN = 0.5; // 반대편 하프에서 스윽 밀려 들어오는 시간
 const SHOT = 1.0; // 골대 안으로 아크 궤적이 그려지는 시간
+// 클리어 — 걷어낸 공이 터치라인 밖으로 나가는 **별도 구간**(scene_motion.CLEAR_EXIT_SEC).
+// 이동 구간에 이어 붙이면 공이 걷어낸 지점을 수비수보다 먼저 지나가 싱크가 어긋난다.
+// MOVE 동안 공과 수비가 함께 도착하고, 그 뒤 이 구간에서 공만 나간다.
+const CLEAR_EXIT = 0.7;
+// 세이브 — 슛과 같은 아크만 그리면 **공이 골대로 들어간 그림**이라 막은 건지 먹힌 건지
+// 구분이 안 된다. 닿는 지점에 장갑을 세우고 공을 골대 밖으로 보낸다.
+// 세이브(sv)만 해당한다 — 캐칭·펀칭은 골문 좌표를 안 받아 패널 자체가 안 뜬다.
+const SAVE_CONTACT = 0.72;   // 아크에서 공이 장갑에 닿는 시점
+const SAVE_AWAY = 0.34;      // 막은 공이 튕겨 나가는 거리 (골 너비 대비)
+// 장갑 크기 — 골 높이 대비. 한 쌍 그림이라 가로가 넓어, 높이로 맞추고 가로는 원본 비율.
+const SAVE_GLOVE_H = 0.46;
+const SAVE_GLOVE_RATIO = 173 / 135;  // gk_glove.png 원본 비
+const SAVE_GLOVE_SRC = '/scene/gk_glove.png';
 /** 콘솔 replay 의 cubic-bezier(0.22,0.84,0.28,1) 근사 — 강한 ease-out. */
 const ease = (t: number) => 1 - (1 - t) ** 3;
 
@@ -72,14 +85,24 @@ export type ScenePlayer = {
 };
 export type ScenePass = { kind?: 'pass' | 'defense'; x1: number; y1: number; x2: number; y2: number };
 export type SceneMove = { type: 'dribble' | 'penetrate'; x: number; y: number; deg: number };
-export type SceneShot = { gx: number; gy: number; dir?: 'left' | 'right'; start?: 'left' | 'center' | 'right' };
+export type SceneShot = {
+  gx: number; gy: number;
+  dir?: 'left' | 'right';
+  start?: 'left' | 'center' | 'right';
+  // 골키퍼가 막은 장면 — 아크 끝에 장갑을 세운다.
+  //   'catch' 잡았다 — 공이 장갑에 붙어 멈춘다 (sv.c)
+  //   'punch' 쳐냈다 — 골대 밖으로 튕겨 나간다 (sv.p, 태그 없는 옛 기록도 이쪽)
+  // 옛 페이로드의 true 도 쳐내기로 읽는다.
+  save?: 'catch' | 'punch' | boolean;
+};
 export type SceneData = {
   v?: number;
   ours?: 'home' | 'away';
   players?: ScenePlayer[];
   passes?: ScenePass[];
   moves?: SceneMove[];
-  ball?: { path?: { x: number; y: number }[] };
+  // exit — 클리어 전용. path 끝에 도착한 **뒤에** 공만 여기로 굴러 나간다.
+  ball?: { path?: { x: number; y: number }[]; exit?: { x: number; y: number } };
   shot?: SceneShot;
   caption?: string;
 };
@@ -171,41 +194,47 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
   const k = width / REF_WIDTH; // 마커 스케일
   const hasShot = Boolean(data.shot);
   // 슛이면 피치 모션 → 골대 등장 → 아크 순으로 이어 붙인다.
-  const cycle = HOLD_BEFORE + MOVE + (hasShot ? PANEL_IN + SHOT : 0) + HOLD_AFTER;
+  const hasClearExit = Boolean(data.ball?.exit) && !hasShot;
+  const exitSec = hasClearExit ? CLEAR_EXIT : 0;
+  const cycle = HOLD_BEFORE + MOVE + exitSec + (hasShot ? PANEL_IN + SHOT : 0) + HOLD_AFTER;
 
   // 한 덩어리로 들고 있다가 값이 실제로 바뀔 때만 리렌더한다.
   // 사이클의 1.2초가 정지 구간이라, 프레임마다 setState 하면 그동안 헛돈다
   // (클립 하나에 장면 카드가 여러 개 붙는 화면이다).
-  type Anim = { phase: number; panelIn: number; shotT: number; armed: boolean };
+  type Anim = { phase: number; exitT: number; panelIn: number; shotT: number; armed: boolean };
   const [anim, setAnim] = useState<Anim>(
-    animate ? { phase: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: false }
-            : { phase: 1, panelIn: 1, shotT: 1, armed: true },
+    animate ? { phase: 0, exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: false }
+            : { phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true },
   );
   const last = useRef<Anim | null>(null);
   const raf = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!animate) { setAnim({ phase: 1, panelIn: 1, shotT: 1, armed: true }); return; }
+    if (!animate) { setAnim({ phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true }); return; }
     const start = performance.now();
     const tick = (now: number) => {
       const t = ((now - start) / 1000) % cycle;
       let next: Anim;
       if (t < HOLD_BEFORE) {
-        next = { phase: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: t >= HOLD_BEFORE * 0.5 };
+        next = { phase: 0, exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: t >= HOLD_BEFORE * 0.5 };
       } else if (t < HOLD_BEFORE + MOVE) {
-        next = { phase: ease((t - HOLD_BEFORE) / MOVE), panelIn: hasShot ? 0 : 1, shotT: 0, armed: true };
+        next = { phase: ease((t - HOLD_BEFORE) / MOVE), exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: true };
+      } else if (hasClearExit && t < HOLD_BEFORE + MOVE + exitSec) {
+        // 공과 수비가 함께 도착한 뒤 — 공만 라인 밖으로.
+        next = { phase: 1, exitT: ease((t - HOLD_BEFORE - MOVE) / exitSec), panelIn: 1, shotT: 0, armed: true };
       } else if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN) {
         // 공이 골라인에 닿은 순간 — 골대가 반대편 하프에서 밀려 들어온다.
-        next = { phase: 1, panelIn: ease((t - HOLD_BEFORE - MOVE) / PANEL_IN), shotT: 0, armed: true };
+        next = { phase: 1, exitT: 1, panelIn: ease((t - HOLD_BEFORE - MOVE) / PANEL_IN), shotT: 0, armed: true };
       } else if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN + SHOT) {
-        next = { phase: 1, panelIn: 1, shotT: ease((t - HOLD_BEFORE - MOVE - PANEL_IN) / SHOT), armed: true };
+        next = { phase: 1, exitT: 1, panelIn: 1, shotT: ease((t - HOLD_BEFORE - MOVE - PANEL_IN) / SHOT), armed: true };
       } else {
-        next = { phase: 1, panelIn: 1, shotT: 1, armed: true };
+        next = { phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true };
       }
       const p = last.current;
       const moved = !p
         || p.armed !== next.armed
         || Math.abs(p.phase - next.phase) > 0.002
+        || Math.abs(p.exitT - next.exitT) > 0.002
         || Math.abs(p.panelIn - next.panelIn) > 0.002
         || Math.abs(p.shotT - next.shotT) > 0.002;
       if (moved) { last.current = next; setAnim(next); }
@@ -215,7 +244,7 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
     return () => { if (raf.current !== null) cancelAnimationFrame(raf.current); };
   }, [animate, data, cycle, hasShot]);
 
-  const { phase, panelIn, shotT, armed } = anim;
+  const { phase, exitT, panelIn, shotT, armed } = anim;
 
   const players = data.players || [];
   const passes = data.passes || [];
@@ -224,7 +253,15 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
   // 헥사곤+등번호 = 이 장면을 태깅할 때 선택한 팀. 홈 고정이 아니다.
   const ours = data.ours || 'home';
 
-  const ballPt = pointOnPath(ballPath, phase);
+  const ballBase = pointOnPath(ballPath, phase);
+  // 클리어 — 걷어낸 자리에 도착한 뒤(수비수와 함께) 라인 밖으로 더 굴러 나간다.
+  const ballExit = data.ball?.exit;
+  const ballPt = ballBase && ballExit && exitT > 0 && ballPath.length
+    ? {
+      x: ballBase.x + (ballExit.x - ballPath[ballPath.length - 1].x) * exitT,
+      y: ballBase.y + (ballExit.y - ballPath[ballPath.length - 1].y) * exitT,
+    }
+    : ballBase;
   const ball = ballPt ? toLocal(ballPt.x, ballPt.y, width, height) : null;
   // 자막을 오른쪽에 둘 것인가 — 골대 패널(공격 반대편)의 반대쪽이다.
   // shot 이 없으면(골대 클릭 안 한 골) 왼쪽.
@@ -427,9 +464,45 @@ function GoalPanel({
       y: v * v * startY + 2 * v * u * ctrlY + u * u * endY,
     };
   };
-  const ball = bez(shotT);
+  // 세이브면 닿는 순간까지만 아크를 타고, 그 뒤엔 막은 결과를 보여준다.
+  const isSave = Boolean(shot.save);
+  const caught = shot.save === 'catch';
+  const gloveH = goalH * SAVE_GLOVE_H;
+  const gloveW = gloveH * SAVE_GLOVE_RATIO;
+  // 공은 장갑 **정면**에 — 겹쳐 그리면 공에 가려 초록 테두리로만 보인다.
+  const ndx = endX - ctrlX;
+  const ndy = endY - ctrlY;
+  const nlen = Math.hypot(ndx, ndy) || 1;
+  const faceD = gloveW / 2 + 7 * u;
+  const faceX = endX - (ndx / nlen) * faceD;
+  const faceY = endY - (ndy / nlen) * faceD;
+
+  const ball = (() => {
+    if (!isSave) return bez(shotT);
+    if (shotT <= SAVE_CONTACT) return bez(shotT / SAVE_CONTACT);
+    // 잡았으면 **장갑과 같은 자리**에 겹쳐 멈춘다. 장갑이 뒤, 공이 앞이라(그리는
+    // 순서가 그렇다) 손에 쥔 그림이 된다. 옆에 붙여 놓으면 '닿기만 하고 흘렀다' 로 보인다.
+    if (caught) return { x: endX, y: endY };
+    // 쳐냈으면 가까운 포스트 밖으로, 크로스바 위로. 패널 안에 가둔다(밖으로 나가면
+    // 피치 위에 공이 떠 있는 그림이 된다).
+    const after = ease((shotT - SAVE_CONTACT) / (1 - SAVE_CONTACT));
+    const sign = endX >= (gx0 + gx1) / 2 ? 1 : -1;
+    const pad = 16 * u;
+    return {
+      x: Math.min(Math.max(faceX + sign * goalW * SAVE_AWAY * after, x0 + pad), x1 - pad),
+      y: Math.min(Math.max(faceY - goalH * (SAVE_AWAY + 0.25) * after, y0 + pad), y1 - pad),
+    };
+  })();
+  // 장갑은 공보다 조금 먼저 나와 기다린다 — 갑자기 나오면 막은 게 아니라 공이 사라진
+  // 것처럼 보인다.
+  const glovePop = isSave
+    ? Math.min(1, Math.max(0, (shotT - SAVE_CONTACT * 0.55) / (SAVE_CONTACT * 0.45)))
+    : 0;
   // 궤적도 공을 따라 그려진다 — 미리 다 그려두면 결과가 먼저 보인다.
-  const arc = Array.from({ length: 25 }, (_, i) => bez((i / 24) * shotT))
+  // 세이브면 아크도 닿는 지점까지만 — 궤적이 골문 안쪽으로 더 이어지면 들어간 것처럼
+  // 보인다. 슛은 종전대로 shotT 까지.
+  const arcT = isSave ? Math.min(1, shotT / SAVE_CONTACT) : shotT;
+  const arc = Array.from({ length: 25 }, (_, i) => bez((i / 24) * arcT))
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
     .join(' ');
 
@@ -471,6 +544,14 @@ function GoalPanel({
       {/* 궤적 + 공 — 공이 지나간 만큼만 그린다 */}
       {shotT > 0.01 ? (
         <path d={arc} fill="none" stroke="#ffb56d" strokeWidth={2 * u} strokeDasharray={`${5 * u} ${5 * u}`} opacity={0.7} />
+      ) : null}
+      {/* 골키퍼 장갑 — 공이 닿는 자리. 공보다 아래 레이어라 공이 장갑 앞에 놓인다. */}
+      {glovePop > 0 ? (
+        <image
+          href={SAVE_GLOVE_SRC}
+          x={endX - (gloveW * glovePop) / 2} y={endY - (gloveH * glovePop) / 2}
+          width={gloveW * glovePop} height={gloveH * glovePop}
+        />
       ) : null}
       {/* 골대 안 공은 피치와 같은 ball.svg · 같은 크기 */}
       <image
