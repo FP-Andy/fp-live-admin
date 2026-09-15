@@ -26,7 +26,6 @@ type BroadcastMatch = {
   branding?: {
     home_logo_url?: string;
     away_logo_url?: string;
-    sources?: Record<string, string>;
     home_color?: string;
     away_color?: string;
   };
@@ -178,16 +177,15 @@ function TeamBrandingEditor({ match, onUpdated }: { match: BroadcastMatch; onUpd
     } catch (cause) { setMessage(cause instanceof Error ? cause.message : '자동 설정을 적용하지 못했습니다.'); }
     finally { setSaving(false); }
   };
-  const sourceLabel = (key: string) => ({ pdf: 'PDF 유니폼', team_logo: 'FCM 팀 로고', manual: '경기별 설정', default: '기본 설정' }[match.branding?.sources?.[key] || 'default'] || '기본 설정');
 
   return (
     <section className="broadcast-branding-editor" aria-label="팀 브랜딩 설정">
       <div><h2>팀 브랜딩 설정</h2><p>PDF의 필드 상의 색상과 FCM 팀 로고가 자동 연결됩니다. 이 경기만 다르게 사용하려면 아래에서 조정하세요.</p></div>
       <div className="broadcast-branding-editor-grid">
-        <label><span>HOME 대표 색상 · {sourceLabel('home_color')}</span><i style={{ backgroundColor: homeColor }} /><input type="color" value={homeColor} onChange={(event) => setHomeColor(event.target.value)} /><input value={homeColor} maxLength={7} onChange={(event) => setHomeColor(event.target.value)} aria-label="HOME 색상 코드" /></label>
-        <label><span>AWAY 대표 색상 · {sourceLabel('away_color')}</span><i style={{ backgroundColor: awayColor }} /><input type="color" value={awayColor} onChange={(event) => setAwayColor(event.target.value)} /><input value={awayColor} maxLength={7} onChange={(event) => setAwayColor(event.target.value)} aria-label="AWAY 색상 코드" /></label>
-        <label><span>HOME 로고</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setHomeLogo(event.target.files?.[0] || null)} /><small>{homeLogo?.name || sourceLabel('home_logo_url')}</small></label>
-        <label><span>AWAY 로고</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setAwayLogo(event.target.files?.[0] || null)} /><small>{awayLogo?.name || sourceLabel('away_logo_url')}</small></label>
+        <label><span>HOME 대표 색상</span><i style={{ backgroundColor: homeColor }} /><input type="color" value={homeColor} onChange={(event) => setHomeColor(event.target.value)} /><input value={homeColor} maxLength={7} onChange={(event) => setHomeColor(event.target.value)} aria-label="HOME 색상 코드" /></label>
+        <label><span>AWAY 대표 색상</span><i style={{ backgroundColor: awayColor }} /><input type="color" value={awayColor} onChange={(event) => setAwayColor(event.target.value)} /><input value={awayColor} maxLength={7} onChange={(event) => setAwayColor(event.target.value)} aria-label="AWAY 색상 코드" /></label>
+        <label><span>HOME 로고</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setHomeLogo(event.target.files?.[0] || null)} /><small>{homeLogo?.name || '등록된 팀 로고를 자동으로 사용합니다'}</small></label>
+        <label><span>AWAY 로고</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setAwayLogo(event.target.files?.[0] || null)} /><small>{awayLogo?.name || '등록된 팀 로고를 자동으로 사용합니다'}</small></label>
       </div>
       <div className="broadcast-branding-editor-actions">
         <button type="button" onClick={save} disabled={saving}>{saving ? '저장 중…' : '로고·색상 적용'}</button>

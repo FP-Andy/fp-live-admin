@@ -1804,12 +1804,15 @@ def _default_broadcast_state(match_obj: Match) -> dict:
     }
 
 
-def _broadcast_state(match_obj: Match) -> dict:
+def _broadcast_state(match_obj: Match, *, include_branding_sources: bool = False) -> dict:
     metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
     state = metadata.get("broadcast") if isinstance(metadata.get("broadcast"), dict) else {}
     base = _default_broadcast_state(match_obj)
     base.update({k: v for k, v in state.items() if k in base or k in {"event_payload"}})
-    base.update(resolve_branding(metadata, team_logo_urls(match_obj)))
+    branding = resolve_branding(metadata, team_logo_urls(match_obj))
+    if not include_branding_sources:
+        branding.pop("branding_sources", None)
+    base.update(branding)
     base["match_id"] = str(match_obj.id)
     base["sport"] = _normalize_sport(getattr(match_obj, "sport", None))
     base["scoreboard_visible"] = bool(base.get("scoreboard_visible"))
@@ -2725,7 +2728,6 @@ def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
             "away_logo_url": broadcast_state.get("away_logo_url") or "",
             "home_color": broadcast_state.get("home_color"),
             "away_color": broadcast_state.get("away_color"),
-            "sources": broadcast_state.get("branding_sources", {}),
         },
     }
 
@@ -6636,7 +6638,7 @@ def put_broadcast_state(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     metadata = dict(match_obj.metadata_json or {})
-    previous = _broadcast_state(match_obj)
+    previous = _broadcast_state(match_obj, include_branding_sources=True)
     allowed_graphics = {None, "ATTACK_DIRECTION_HOME", "ATTACK_DIRECTION_AWAY", "XG"}
     allowed_events = {None, "GOAL", "YELLOW_CARD", "RED_CARD", "SUBSTITUTION"}
     allowed_fullscreen = {None, "LINEUP", "HALFTIME", "FULLTIME", "MATCH_DOMINANCE"}
@@ -6716,7 +6718,7 @@ def put_broadcast_state(
     _broadcast_snapshot_cache.pop(str(match_id), None)
     if any(key in body for key in {"home_label", "away_label", "home_color", "away_color", "home_logo_url", "away_logo_url", "branding_reset"}):
         _queue_broadcast_branding_refresh(match_id)
-    return next_state
+    return {key: value for key, value in next_state.items() if key != "branding_sources"}
 
 
 @app.post("/api/broadcast/matches/{match_id}/logo")
@@ -6751,7 +6753,7 @@ async def upload_broadcast_logo(
     path.write_bytes(payload)
 
     metadata = dict(match_obj.metadata_json or {})
-    previous = _broadcast_state(match_obj)
+    previous = _broadcast_state(match_obj, include_branding_sources=True)
     next_state = {
         **previous,
         f"{team_key.lower()}_logo_url": f"/api/broadcast/assets/logos/{filename}",
@@ -6764,7 +6766,7 @@ async def upload_broadcast_logo(
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
     _queue_broadcast_branding_refresh(match_id)
-    return next_state
+    return {key: value for key, value in next_state.items() if key != "branding_sources"}
 
 
 @app.post("/api/broadcast/matches/{match_id}/fullscreen-image")
@@ -6799,7 +6801,7 @@ async def upload_broadcast_fullscreen_image(
     path.write_bytes(payload)
 
     metadata = dict(match_obj.metadata_json or {})
-    previous = _broadcast_state(match_obj)
+    previous = _broadcast_state(match_obj, include_branding_sources=True)
     fullscreen_image_urls = dict(previous.get("fullscreen_image_urls") or {})
     fullscreen_image_urls[scene_key] = f"/api/broadcast/assets/logos/{filename}"
     next_state = {
@@ -6812,7 +6814,7 @@ async def upload_broadcast_fullscreen_image(
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
-    return next_state
+    return {key: value for key, value in next_state.items() if key != "branding_sources"}
 
 
 @app.get("/api/broadcast/assets/logos/{filename}")
