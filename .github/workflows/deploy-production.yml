@@ -51,6 +51,26 @@ jobs:
           git checkout -B main origin/main
 
           docker compose -f "$COMPOSE_FILE" build api web
+
+          # Reject a missing/invalid private account manifest before replacing
+          # the running API. This check imports no DB code or delivery workers.
+          docker compose -f "$COMPOSE_FILE" run --rm --no-deps -T --entrypoint python api - <<'PY'
+          import json, os
+          from pathlib import Path
+          from app.auth_security import normalize_login, valid_secret_hash
+          payload = json.loads(Path(os.environ["FPC_ADMIN_ACCOUNTS_FILE"]).read_text())
+          accounts = payload.get("accounts")
+          assert payload.get("version") == 1 and isinstance(accounts, list) and accounts, "Invalid account manifest"
+          seen = set()
+          for entry in accounts:
+              login = normalize_login(entry["login"])
+              name = entry["name"].strip()
+              assert 0 < len(login) <= 80 and 0 < len(name) <= 80 and login not in seen, "Invalid account entry"
+              assert valid_secret_hash(entry["password_hash"]), "Invalid account hash"
+              seen.add(login)
+          print(f"Private administrator manifest verified: {len(accounts)} accounts")
+          PY
+
           docker compose -f "$COMPOSE_FILE" up -d api web
           docker compose -f "$COMPOSE_FILE" ps api web
 

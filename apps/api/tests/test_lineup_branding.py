@@ -243,9 +243,14 @@ class TeamLogoApiTests(unittest.TestCase):
         url = f'/api/broadcast/matches/{self.match_id}/state'
         automatic = self.client.post(url, json={'scoreboard_visible': False}).json()
         self.assertEqual(automatic['home_color'], '#15803d')
-        self.assertEqual(automatic['branding_sources']['home_color'], 'pdf')
+        self.assertNotIn('branding_sources', automatic)
+        with self.session() as db:
+            self.assertEqual(db.get(Match, self.match_id).metadata_json['broadcast']['branding_sources']['home_color'], 'pdf')
         edited = self.client.post(url, json={'home_color': '#123456'}).json()
-        self.assertEqual(edited['branding_sources']['home_color'], 'manual')
+        self.assertEqual(edited['home_color'], '#123456')
+        self.assertNotIn('branding_sources', edited)
+        with self.session() as db:
+            self.assertEqual(db.get(Match, self.match_id).metadata_json['broadcast']['branding_sources']['home_color'], 'manual')
         reset = self.client.post(url, json={'branding_reset': True}).json()
         self.assertEqual(reset['home_color'], '#15803d')
         self.assertFalse(reset['scoreboard_visible'])
