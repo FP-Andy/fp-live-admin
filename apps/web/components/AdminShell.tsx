@@ -1,6 +1,8 @@
 'use client';
 
 import Link from 'next/link';
+import ConsoleIcon from './ConsoleIcon';
+import { ThemeToggle } from './ConsoleTheme';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { apiFetch, clearCachedSessionUser, displayRole, fetchSessionUser, readCachedSessionUser, type SessionUser } from '../lib/api';
@@ -46,12 +48,6 @@ const FLA_ITEMS: NavItem[] = [
     label: 'Live Coder',
     icon: '▥',
     match: (pathname) => pathname.startsWith('/admin/live-coder'),
-  },
-  {
-    href: '/admin/system',
-    label: 'System',
-    icon: '⚙',
-    match: (pathname) => pathname.startsWith('/admin/system'),
   },
 ];
 
@@ -162,12 +158,6 @@ const FPA_ITEMS: NavItem[] = [
 
 const FCM_ITEMS: NavItem[] = [
   {
-    href: '/admin/fcm/workspace',
-    label: 'Workspace',
-    icon: '▣',
-    match: (pathname) => pathname.startsWith('/admin/fcm/workspace'),
-  },
-  {
     href: '/admin/fcm/match-status',
     label: 'Match Status',
     icon: '◎',
@@ -178,6 +168,12 @@ const FCM_ITEMS: NavItem[] = [
     label: 'Templates',
     icon: '◫',
     match: (pathname) => pathname.startsWith('/admin/fcm/templates'),
+  },
+  {
+    href: '/admin/fcm/workspace',
+    label: 'Workspace',
+    icon: '▣',
+    match: (pathname) => pathname.startsWith('/admin/fcm/workspace'),
   },
   {
     href: '/admin/fcm/guide',
@@ -256,7 +252,7 @@ function getPageMeta(pathname: string) {
     return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'AI+Log' };
   }
   if (pathname.startsWith('/admin/system')) {
-    return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'System' };
+    return { product: 'SYSTEM', eyebrow: 'Console Settings', title: 'System' };
   }
   if (pathname.startsWith('/admin/fpa/live')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Live Logger' };
@@ -300,10 +296,25 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
   const { sport, setSport } = useSportContext();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   const pendingSportChangeRef = useRef<Sport | null>(null);
-  const initialPathRef = useRef(pathname || '/admin/dashboard');
   const currentPath = pathname || '/admin/dashboard';
   const pageMeta = getPageMeta(currentPath);
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(pageMeta.product);
+  useEffect(() => { setExpandedProduct(pageMeta.product); }, [pageMeta.product]);
+  useEffect(() => {
+    try {
+      const saved = window.sessionStorage.getItem('fpc.sidebar.open');
+      setSidebarOpen(saved === null ? !window.matchMedia('(max-width: 760px)').matches : saved === 'true');
+    } catch { /* Storage is optional. */ }
+  }, []);
+  useEffect(() => {
+    if (window.matchMedia('(max-width: 760px)').matches) setSidebarOpen(false);
+  }, [currentPath]);
+  const toggleSidebar = (open: boolean) => {
+    setSidebarOpen(open);
+    try { window.sessionStorage.setItem('fpc.sidebar.open', String(open)); } catch { /* Optional. */ }
+  };
   const visibleSections = NAV_SECTIONS.map((section) => {
     let items = section.items;
     if (sport === 'BASKETBALL') {
@@ -328,13 +339,16 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
         if (active) setUser(data);
       })
       .catch(() => {
-        if (active) router.replace(`/login?next=${encodeURIComponent(initialPathRef.current)}`);
+        if (active) {
+          setUser(null);
+          router.replace(`/login?next=${encodeURIComponent(currentPath)}`);
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [router]);
+  }, [router, currentPath]);
 
   useEffect(() => {
     if (pendingSportChangeRef.current) return;
@@ -373,15 +387,14 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
 
   return (
     <div className={`app-shell ${sidebarOpen ? 'expanded' : 'collapsed'}`}>
-      <aside className={`sidebar ${sidebarOpen ? 'open' : 'collapsed'}`}>
+      <aside id="console-sidebar" className="sidebar" hidden={!sidebarOpen} onKeyDown={(event) => { if (event.key === 'Escape') { toggleSidebar(false); sidebarToggleRef.current?.focus(); } }}>
         <div className="sidebar-brand">
-          <button className="sidebar-toggle" onClick={() => setSidebarOpen((prev) => !prev)} aria-label="Toggle sidebar">
-            {sidebarOpen ? '←' : '→'}
+          <button className="sidebar-toggle" onClick={() => { toggleSidebar(false); sidebarToggleRef.current?.focus(); }} aria-label="사이드바 숨기기" aria-controls="console-sidebar" aria-expanded={sidebarOpen}>
+            <ConsoleIcon name="panel" />
           </button>
           {sidebarOpen ? (
             <div>
-              <div className="sidebar-eyebrow">Fine Play Console</div>
-              <strong>Multi-Product Ops</strong>
+              <div className="console-wordmark"><img src="/brand/fineplay-mark.svg" alt="" width="28" height="30" /><strong>Fine Play<span>console</span></strong></div>
             </div>
           ) : null}
         </div>
@@ -389,12 +402,6 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
         {sidebarOpen ? (
           <>
             <div className="sidebar-main">
-              <div className="sidebar-user">
-                <div className="sidebar-eyebrow">Signed In</div>
-                <strong>{user?.name || 'Signed in'}</strong>
-                <span className="muted">@{user?.id || 'session'}{user?.role ? ` · ${displayRole(user.role)}` : ''}</span>
-              </div>
-
               <div className="sidebar-sport-switcher">
                 <div className="sidebar-eyebrow">Sport Context</div>
                 <select
@@ -412,22 +419,25 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
               <nav className="sidebar-nav">
                 {visibleSections.map((section) => (
                   <div className="sidebar-section" key={section.id}>
-                    <Link
+                    <button
                       className={`product-badge product-toggle ${pageMeta.product === section.id ? 'active' : ''}`}
-                      href={section.items[0]?.href || '/admin/dashboard'}
+                      onClick={() => setExpandedProduct((current) => current === section.id ? null : section.id)}
+                      aria-expanded={expandedProduct === section.id}
+                      aria-controls={`nav-${section.id}`}
                     >
-                      <span>{section.label}</span>
-                      <span className={`product-toggle-icon ${pageMeta.product === section.id ? 'open' : ''}`}>⌄</span>
-                    </Link>
-                    {pageMeta.product === section.id ? (
-                      <div className="product-nav">
+                      <span className="product-label"><span className="product-monogram">{section.label}</span><span>{({ FLA: 'Live Analytics', FHL: 'Highlights', FPA: 'Performance', FCM: 'Card Studio' })[section.id]}</span></span>
+                      <span className={`product-toggle-icon ${expandedProduct === section.id ? 'open' : ''}`}>⌄</span>
+                    </button>
+                    {expandedProduct === section.id ? (
+                      <div className="product-nav" id={`nav-${section.id}`}>
                         {section.items.map((item) => (
                           <Link
                             className={item.match(currentPath) ? 'active' : ''}
                             href={item.href}
+                            aria-current={item.match(currentPath) ? 'page' : undefined}
                             key={item.href}
                           >
-                            <span className="nav-icon">{item.icon}</span>
+                            <span className="nav-icon"><ConsoleIcon name={item.label} /></span>
                             {item.label}
                           </Link>
                         ))}
@@ -440,14 +450,19 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
                   href={DATA_HUB_ITEM.href}
                 >
                   <span>
-                    <span className="nav-icon">{DATA_HUB_ITEM.icon}</span>
+                    <span className="nav-icon"><ConsoleIcon name="data" /></span>
                     {DATA_HUB_ITEM.label}
                   </span>
                 </Link>
               </nav>
 
               <div className="sidebar-footer">
-                <button onClick={logout}>Log Out</button>
+                {user?.role === 'SUPERADMIN' ? (
+                  <Link className={`sidebar-system-link ${currentPath.startsWith('/admin/system') ? 'active' : ''}`} href="/admin/system" aria-current={currentPath.startsWith('/admin/system') ? 'page' : undefined}>
+                    <ConsoleIcon name="System" /> System
+                  </Link>
+                ) : null}
+                <button onClick={logout}><ConsoleIcon name="logout" /> 로그아웃</button>
               </div>
             </div>
 
@@ -459,18 +474,33 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
               <div>이메일 : official@fineplay.kr</div>
               <div>© 2026 Fine Ludens Co., Ltd All rights reserved</div>
             </div>
+
           </>
         ) : null}
       </aside>
 
-      <div className="app-main">
+      <div className="app-main" onKeyDown={(event) => { if (event.key === 'Escape' && sidebarOpen) { toggleSidebar(false); sidebarToggleRef.current?.focus(); } }}>
         <header className="topbar">
-          <div>
-            <div className="sidebar-eyebrow">{pageMeta.eyebrow}</div>
+          <div className="topbar-leading">
+            <button
+              ref={sidebarToggleRef}
+              className="topbar-sidebar-toggle"
+              onClick={() => toggleSidebar(!sidebarOpen)}
+              aria-label={sidebarOpen ? '사이드바 숨기기' : '사이드바 열기'}
+              title={sidebarOpen ? '사이드바 숨기기' : '사이드바 열기'}
+              aria-expanded={sidebarOpen}
+              aria-controls="console-sidebar"
+            >
+              <ConsoleIcon name="panel" />
+            </button>
+            <div>
+            <div className="sidebar-eyebrow">Workspace <span className="breadcrumb-divider">/</span> {pageMeta.product}</div>
             <h1>{pageMeta.title}</h1>
+            </div>
           </div>
           <div className="topbar-actions">
-            {(currentPath.startsWith('/admin/basketball/match/') || (currentPath.startsWith('/admin/match/') && !currentPath.endsWith('/edit'))) ? (
+            <ThemeToggle />
+            {currentPath.startsWith('/admin/basketball/match/') ? (
               <Link className="button-link button-compact btn-secondary" href="/admin/dashboard">Dashboard</Link>
             ) : null}
             <div className="topbar-badge sport-context-badge">
@@ -485,6 +515,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
         </header>
 
         <div className="app-content">{children}</div>
+
       </div>
     </div>
   );

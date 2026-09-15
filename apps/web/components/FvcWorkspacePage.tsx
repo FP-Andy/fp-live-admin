@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { FcmWorkflow, ConsoleToolbar, ConsoleEmpty } from './ConsoleTools';
 import { useEffect, useMemo, useState } from 'react';
 import { API_BASE, apiJson } from '../lib/api';
 import { RawMatchRecord, getEligibleFcmMatches } from '../lib/fcm';
@@ -37,6 +38,7 @@ function formatDateTime(value?: string | null) {
 }
 
 export default function FvcWorkspacePage() {
+  const [readiness, setReadiness] = useState('ALL');
   const [league, setLeague] = useState('K3');
   const [round, setRound] = useState<number>(1);
   const [matches, setMatches] = useState<RawMatchRecord[]>([]);
@@ -141,6 +143,8 @@ export default function FvcWorkspacePage() {
     };
   }, [eligibleMatches, league, queueRows, rounds.length, submissionMap]);
 
+  const visibleQueueRows = queueRows.filter(match => ['HOME', 'AWAY'].some(side => readiness === 'ALL' || (readiness === 'READY') === submissionMap.has(`${match.id}:${side}`)));
+
   const handleGenerate = async () => {
     setGenerating(true);
     setError('');
@@ -202,7 +206,8 @@ export default function FvcWorkspacePage() {
   };
 
   return (
-    <div className="page-stack">
+    <div className="page-stack console-page fcm-workspace-page">
+      <FcmWorkflow current="workspace" />
       <section className="fvc-workspace">
         <aside className="fvc-sidebar card card-panel">
           <div className="sidebar-eyebrow">Card Builder</div>
@@ -245,11 +250,11 @@ export default function FvcWorkspacePage() {
           <div className="fvc-sidebar-section">
             <button
               className="btn-primary"
-              disabled={queueRows.length === 0 || summary.ready === 0 || generating}
+              disabled={queueRows.length === 0 || summary.ready === 0 || generating || generatingCardKey !== null}
               onClick={handleGenerate}
               type="button"
             >
-              {generating ? '생성 준비 중' : '카드 생성 + 다운로드'}
+              {generating ? '생성 준비 중' : `준비된 ${summary.ready}팀 일괄 다운로드`}
             </button>
           </div>
         </aside>
@@ -265,7 +270,7 @@ export default function FvcWorkspacePage() {
 
             <div className="fvc-summary-grid">
               <div className="metric-tile">
-                <div className="sidebar-eyebrow">리그 전체 경기</div>
+                <div className="sidebar-eyebrow">리그 전체 팀</div>
                 <strong>{summary.total}</strong>
               </div>
               <div className="metric-tile tech">
@@ -277,7 +282,7 @@ export default function FvcWorkspacePage() {
                 <strong>{summary.currentRound}</strong>
               </div>
               <div className="metric-tile">
-                <div className="sidebar-eyebrow">생성 가능</div>
+                <div className="sidebar-eyebrow">데이터 제출 완료</div>
                 <strong>{summary.ready}</strong>
               </div>
             </div>
@@ -295,9 +300,10 @@ export default function FvcWorkspacePage() {
             {loading ? <p className="field-help">경기 목록을 불러오는 중입니다.</p> : null}
             {error ? <p className="field-help" style={{ color: '#ff9c8f' }}>{error}</p> : null}
 
+            <ConsoleToolbar><label className="field-stack"><span className="field-label">제출 상태</span><select value={readiness} onChange={event => setReadiness(event.target.value)}><option value="ALL">전체 팀</option><option value="READY">제출 완료</option><option value="PENDING">미제출</option></select></label><p className="field-help">미제출 팀은 경기 상세에서 선수와 스탯을 먼저 제출하세요. 생성 전 템플릿도 확인하세요.</p></ConsoleToolbar>
             <div className="fvc-table-scroll">
               <div className="fvc-table">
-                {queueRows.map((match, index) => {
+                {visibleQueueRows.map((match, index) => {
                   const homeSubmission = submissionMap.get(`${match.id}:HOME`);
                   const awaySubmission = submissionMap.get(`${match.id}:AWAY`);
 
@@ -322,26 +328,27 @@ export default function FvcWorkspacePage() {
                       {[
                         { side: 'HOME' as const, teamName: match.homeTeam, submission: homeSubmission },
                         { side: 'AWAY' as const, teamName: match.awayTeam, submission: awaySubmission },
-                      ].map((row) => (
+                      ].filter(row => readiness === 'ALL' || (readiness === 'READY') === Boolean(row.submission)).map((row) => (
                         <div className="fvc-table-row" key={`${match.id}-${row.side}`}>
-                          <span>{row.teamName}</span>
-                          <span>{row.submission ? `NO.${row.submission.player_id} ${row.submission.player_name || ''}`.trim() : '-'}</span>
-                          <span>{row.submission?.selected_stats?.[0] || '-'}</span>
-                          <span>{row.submission?.submitted_by || match.operatorId || '미지정'}</span>
+                          <span data-label="팀">{row.teamName}</span>
+                          <span data-label="선수">{row.submission ? `NO.${row.submission.player_id} ${row.submission.player_name || ''}`.trim() : '-'}</span>
+                          <span data-label="주요 스탯">{row.submission?.selected_stats?.[0] || '-'}</span>
+                          <span data-label="제출자">{row.submission?.submitted_by || match.operatorId || '미지정'}</span>
                           <span>
                             <Link className="button-link button-compact" href={`/admin/fcm/match-status/${match.id}`}>
-                              열기
+                              {row.submission ? '제출 내용 수정' : '데이터 제출'}
                             </Link>
                           </span>
                           <span>
                             <span className={`status-pill ${row.submission ? 'running' : 'warning'}`}>
-                              {row.submission ? 'Ready' : 'Pending'}
+                              {row.submission ? '제출 완료' : '미제출'}
                             </span>
                           </span>
                           <span>
                             <button
                               className="btn-success button-compact"
-                              disabled={!row.submission || generatingCardKey === `${match.id}:${row.side}`}
+                              disabled={!row.submission || generating || generatingCardKey !== null}
+                              title={!row.submission ? '선수와 스탯을 먼저 제출하세요' : '이 팀의 카드 다운로드'}
                               onClick={() => {
                                 if (row.submission) handleGenerateSingle(row.submission);
                               }}
@@ -358,8 +365,8 @@ export default function FvcWorkspacePage() {
               </div>
             </div>
 
-            {!loading && !error && queueRows.length === 0 ? (
-              <p className="field-help">선택한 리그/라운드에 연결된 archived match가 없습니다.</p>
+            {!loading && !error && visibleQueueRows.length === 0 ? (
+              <ConsoleEmpty title="조건에 맞는 팀이 없습니다.">{readiness !== 'ALL' ? <button onClick={() => setReadiness('ALL')} type="button">전체 상태 보기</button> : '대회와 라운드를 확인하세요.'}</ConsoleEmpty>
             ) : null}
           </section>
         </div>

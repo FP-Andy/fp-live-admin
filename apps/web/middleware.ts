@@ -22,9 +22,8 @@ export function middleware(request: NextRequest) {
     loginUrl.searchParams.set('next', pathname);
     return NextResponse.redirect(loginUrl);
   }
-  if (pathname === '/login' && hasSession) {
-    return NextResponse.redirect(new URL('/admin/dashboard', request.url));
-  }
+  // Cookie presence cannot prove a session is valid: expired/revoked sessions
+  // must be able to reach the login form without a redirect loop.
   return NextResponse.next();
 }
 

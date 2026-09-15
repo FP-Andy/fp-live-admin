@@ -273,6 +273,7 @@ function TeamCombobox({
 export default function Dashboard() {
   const PAGE_SIZE = 7;
   const { sport } = useSportContext();
+  const [createOpen, setCreateOpen] = useState(false);
   const [matches, setMatches] = useState<Match[]>([]);
   const [matchTotal, setMatchTotal] = useState(0);
   const [activeMatchTotal, setActiveMatchTotal] = useState(0);
@@ -1010,38 +1011,38 @@ export default function Dashboard() {
 
   return (
     <>
-      <main className="page-stack">
+      <main className="page-stack console-dashboard">
         <section className="page-hero">
           <div className="hero-grid">
             <div className="card card-hero grid hero-card-compact">
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Overview</div>
-                  <h2>{sport === 'BASKETBALL' ? '농구 운영 대시보드' : sport === 'FUTSAL' ? '퀸컵 풋살 운영 대시보드' : '운영 대시보드'}</h2>
+                  <h2>{sport === 'BASKETBALL' ? '농구 운영 현황' : sport === 'FUTSAL' ? '퀸컵 풋살 운영 현황' : '운영 현황'}</h2>
                 </div>
-                <span className="status-pill running">Live {liveCount}</span>
+                <div className="row"><span className={`status-pill ${liveCount > 0 ? 'running' : 'stopped'}`}><span className="live-indicator" /> LIVE {liveCount}</span><a className="button-link btn-primary" href="#create-match" onClick={() => setCreateOpen(true)}>＋ 새 경기 등록</a></div>
               </div>
               <div className="metric-strip metric-strip-overview">
                 <div className="metric-tile success">
-                  <span className="muted">Total Matches</span>
+                  <span className="muted">전체 경기 <span className="metric-index">01</span></span>
                   <strong>{activeMatchTotal + archivedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile tech">
-                  <span className="muted">Archived</span>
+                  <span className="muted">보관된 경기 <span className="metric-index">02</span></span>
                   <strong>{archivedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile">
-                  <span className="muted">Assigned</span>
+                  <span className="muted">배정된 경기 <span className="metric-index">03</span></span>
                   <strong>{assignedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile">
-                  <span className="muted">RTMP Pipelines</span>
+                  <span className="muted">RTMP 파이프라인 <span className="metric-index">04</span></span>
                   <strong>{sport === 'FOOTBALL' ? rtmpMatchTotal : 0}</strong>
                 </div>
               </div>
             </div>
 
-            <div className="card card-panel grid hero-card-wide">
+            <details className="card card-panel create-match-disclosure" id="create-match" open={createOpen} onToggle={(event) => setCreateOpen(event.currentTarget.open)}><summary><span><span className="create-plus">＋</span> 새 경기 등록 <span className="muted">대회와 팀을 선택해 운영을 시작하세요</span></span><span className="disclosure-chevron">⌄</span></summary><div className="grid hero-card-wide">
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Create Match</div>
@@ -1214,7 +1215,7 @@ export default function Dashboard() {
                 <button className="btn-primary" onClick={createMatch}>Create Match</button>
               </div>
               {error ? <p className="form-error" style={{ margin: 0 }}>{error}</p> : null}
-            </div>
+            </div></details>
           </div>
         </section>
 
@@ -1229,8 +1230,8 @@ export default function Dashboard() {
 
             <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 16 }}>
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <button className={listMode === 'active' ? 'btn-active' : ''} onClick={() => setListMode('active')}>Active</button>
-                <button className={listMode === 'archived' ? 'btn-active' : ''} onClick={() => setListMode('archived')}>Archived</button>
+                <button className={listMode === 'active' ? 'btn-active' : ''} onClick={() => setListMode('active')} aria-pressed={listMode === 'active'}>진행 경기</button>
+                <button className={listMode === 'archived' ? 'btn-active' : ''} onClick={() => setListMode('archived')} aria-pressed={listMode === 'archived'}>보관 경기</button>
               </div>
               <div className="field-stack dashboard-filter-select">
                 <span className="field-label">{sport === 'BASKETBALL' ? '종목 필터' : '대회 필터'}</span>
@@ -1265,7 +1266,7 @@ export default function Dashboard() {
                     </div>
                     <div className="match-actions">
                       <Link className="button-link button-compact btn-primary" href={match.sport === 'BASKETBALL' ? `/admin/basketball/match/${match.id}` : `/admin/match/${match.id}`}>
-                        {match.archived ? 'Open Read-Only' : 'Open'}
+                        {match.archived ? '기록 보기' : '경기 제어'}
                       </Link>
                       {match.archived ? (
                         <Link className="button-link button-compact btn-secondary" href={`/admin/match/${match.id}/edit`}>
@@ -1285,9 +1286,7 @@ export default function Dashboard() {
                 );
               })}
               {matchTotal === 0 ? (
-                <div className="muted">
-                  {listMode === 'active' ? 'No active matches for this class.' : 'No archived matches for this class.'}
-                </div>
+                <div className="dashboard-empty"><div className="empty-pitch" aria-hidden="true"><span /></div><strong>{listMode === 'active' ? '진행 중인 경기가 없습니다' : '보관된 경기가 없습니다'}</strong><p>{listMode === 'active' ? '새 경기를 등록하거나 대회 필터를 변경해 보세요.' : '종료 후 보관한 경기를 이곳에서 확인할 수 있습니다.'}</p></div>
               ) : null}
             </div>
 
@@ -1327,15 +1326,15 @@ export default function Dashboard() {
               <div className="section-heading">
                 <div>
                   <div className="sidebar-eyebrow">Schedule</div>
-                  <h3>Match Calendar</h3>
+                  <h3>경기 일정</h3>
                 </div>
                 <div className="row">
-                  <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
-                    Prev
+                  <button aria-label="이전 달" onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}>
+                    ‹
                   </button>
                   <strong style={{ minWidth: 90, textAlign: 'center' }}>{monthLabel}</strong>
-                  <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
-                    Next
+                  <button aria-label="다음 달" onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}>
+                    ›
                   </button>
                 </div>
               </div>
@@ -1356,22 +1355,24 @@ export default function Dashboard() {
                     <button
                       key={dateKey}
                       className={`day-cell ${isSelected ? 'selected' : ''}`}
+                      aria-pressed={isSelected}
+                      aria-label={`${dateKey}, ${count}개 경기`}
                       onClick={() => setSelectedDate(dateKey)}
                     >
                       <div style={{ fontWeight: 700 }}>{day}</div>
                       <div className="muted" style={{ color: count > 0 ? 'var(--accent)' : undefined }}>
-                        {count > 0 ? `${count} match${count > 1 ? 'es' : ''}` : '-'}
+                        {count > 0 ? `${count} 경기` : ''}
                       </div>
                     </button>
                   );
                 })}
               </div>
 
-              <div style={{ marginTop: 16 }}>
-                <div className="section-heading">
+              <div className="schedule-details">
+                <div className="section-heading schedule-details-heading">
                   <div>
-                    <div style={{ fontWeight: 700 }}>Fixtures on {selectedDate}</div>
-                    <div className="muted">{selectedMatches.length} fixtures</div>
+                    <div style={{ fontWeight: 700 }}>{selectedDate} 일정</div>
+                    <div className="muted">{selectedMatches.length}개 경기</div>
                   </div>
                   <div className="schedule-toolbar">
                     <button className="button-compact btn-secondary" onClick={downloadScheduleTemplate}>CSV 템플릿</button>
@@ -1384,18 +1385,11 @@ export default function Dashboard() {
                 {scheduleNotice ? <p className="muted">{scheduleNotice}</p> : null}
 
                 {selectedMatches.length === 0 ? (
-                  <div className="muted">No fixtures</div>
+                  <div className="schedule-empty">선택한 날짜에 등록된 일정이 없습니다.</div>
                 ) : (
                   <div className="schedule-list">
-                    {selectedMatches.map((item, index) => (
-                      <div
-                        key={item.id}
-                        style={{
-                          borderTop: index === 0 ? 'none' : '1px dashed var(--line-strong)',
-                          marginTop: index === 0 ? 0 : 8,
-                          paddingTop: index === 0 ? 0 : 8,
-                        }}
-                      >
+                    {selectedMatches.map((item) => (
+                      <article key={item.id} className="schedule-fixture">
                         <div className="section-heading schedule-item-heading">
                           <div>
                             <div style={{ fontWeight: 700 }}>{item.home_team} vs {item.away_team}</div>
@@ -1408,10 +1402,10 @@ export default function Dashboard() {
                             <button className="button-compact btn-danger" onClick={() => deleteScheduleEntry(item)}>삭제</button>
                           </div>
                         </div>
-                        <div className="muted">FLA: {item.fla_staff || '-'}</div>
+                        <div className="schedule-staff"><div className="muted">FLA: {item.fla_staff || '-'}</div>
                         <div className="muted">FPA 홈: {item.fpa_home_staff || '-'}</div>
-                        <div className="muted">FPA 어웨이: {item.fpa_away_staff || '-'}</div>
-                      </div>
+                        <div className="muted">FPA 어웨이: {item.fpa_away_staff || '-'}</div></div>
+                      </article>
                     ))}
                   </div>
                 )}

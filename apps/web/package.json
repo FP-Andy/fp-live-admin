@@ -8,7 +8,10 @@
     "dev": "NEXT_DIST_DIR=.next-dev next dev",
     "prebuild": "npm run copy:ffmpeg",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "preview:api": "node ../../scripts/preview-console.cjs",
+    "preview:ui": "NEXT_DIST_DIR=.next-dev NEXT_API_PROXY_TARGET=http://127.0.0.1:4319 npm run dev -- --hostname 127.0.0.1 --port 4318",
+    "preview:auth": "../../runtime/auth-venv/bin/python ../../scripts/preview_auth.py"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",

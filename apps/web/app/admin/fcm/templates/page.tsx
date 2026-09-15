@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { FcmWorkflow, ConsoleToolbar, ConsoleEmpty } from '../../../../components/ConsoleTools';
+import TeamLogoLibrary from '../../../../components/TeamLogoLibrary';
 import { API_BASE, apiJson } from '../../../../lib/api';
 
 const TEMPLATES_PER_PAGE = 5;
@@ -64,6 +66,8 @@ function templateClassLabel(template: FcmTemplate) {
 }
 
 export default function FcmTemplatesPage() {
+  const [query, setQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState('ALL');
   const [templates, setTemplates] = useState<FcmTemplate[]>([]);
   const [competitionClasses, setCompetitionClasses] = useState<CompetitionClass[]>([]);
   const [name, setName] = useState('');
@@ -153,11 +157,12 @@ export default function FcmTemplatesPage() {
     }) || null;
   }, [templates, testCardType, testCompetitionClass, testTeamName]);
 
-  const totalTemplatePages = Math.max(1, Math.ceil(templates.length / TEMPLATES_PER_PAGE));
+  const filteredTemplates = useMemo(() => templates.filter(template => [template.name, template.competition_class, template.match_regex].join(' ').toLowerCase().includes(query.trim().toLowerCase()) && (activeFilter === 'ALL' || template.active === (activeFilter === 'ACTIVE'))), [templates, query, activeFilter]);
+  const totalTemplatePages = Math.max(1, Math.ceil(filteredTemplates.length / TEMPLATES_PER_PAGE));
   const pagedTemplates = useMemo(() => {
     const start = (templatePage - 1) * TEMPLATES_PER_PAGE;
-    return templates.slice(start, start + TEMPLATES_PER_PAGE);
-  }, [templatePage, templates]);
+    return filteredTemplates.slice(start, start + TEMPLATES_PER_PAGE);
+  }, [templatePage, filteredTemplates]);
 
   useEffect(() => {
     if (templatePage > totalTemplatePages) {
@@ -265,19 +270,14 @@ export default function FcmTemplatesPage() {
   };
 
   return (
-    <div className="page-stack">
-      <section className="card card-hero page-hero">
-        <div className="section-heading">
-          <div>
-            <div className="sidebar-eyebrow">FinePlay Card Marker</div>
-            <h2 style={{ margin: '6px 0 0' }}>Templates</h2>
-          </div>
-          <span className="status-pill tech">FCM</span>
-        </div>
-      </section>
+    <div className="page-stack console-page templates-page">
+      <FcmWorkflow current="templates" />
+      <TeamLogoLibrary competitions={competitionClasses} />
 
+      {message ? <p className="console-feedback" role="status">{message}</p> : null}
+      {error ? <p className="console-feedback" role="alert">{error}</p> : null}
       <section className="fcm-template-grid">
-        <div className="card card-panel fcm-template-form">
+        <details className="card card-panel console-disclosure fcm-template-create"><summary>＋ 새 템플릿 등록</summary><div className="fcm-template-form">
           <div className="section-heading">
             <div>
               <div className="sidebar-eyebrow">Register</div>
@@ -351,13 +351,10 @@ export default function FcmTemplatesPage() {
             </div>
           ) : null}
 
-          {message ? <p className="field-help" style={{ color: 'var(--success)' }}>{message}</p> : null}
-          {error ? <p className="field-help" style={{ color: '#ff9c8f' }}>{error}</p> : null}
-
           <button className="btn-primary" disabled={saving} onClick={saveTemplate} type="button">
             {saving ? '저장 중' : '템플릿 등록'}
           </button>
-        </div>
+        </div></details>
 
         <div className="page-stack">
           <section className="card card-panel">
@@ -410,12 +407,14 @@ export default function FcmTemplatesPage() {
                 <div className="sidebar-eyebrow">Templates</div>
                 <h3 style={{ margin: '6px 0 0' }}>등록된 템플릿</h3>
               </div>
-              <span className="status-pill">{templates.length}</span>
+              <span className="status-pill">{filteredTemplates.length} / {templates.length}</span>
             </div>
 
             {loading ? <p className="field-help">템플릿 목록을 불러오는 중입니다.</p> : null}
             {!loading && templates.length === 0 ? <p className="field-help">등록된 Regex 템플릿이 없습니다.</p> : null}
 
+            <ConsoleToolbar><label className="field-stack console-search"><span className="field-label">템플릿 검색</span><input type="search" placeholder="이름, 대회, 호출식" value={query} onChange={event => { setQuery(event.target.value); setTemplatePage(1); }} /></label><label className="field-stack"><span className="field-label">사용 상태</span><select value={activeFilter} onChange={event => { setActiveFilter(event.target.value); setTemplatePage(1); }}><option value="ALL">전체</option><option value="ACTIVE">사용 중</option><option value="INACTIVE">미사용</option></select></label></ConsoleToolbar>
+            {!loading && templates.length > 0 && !filteredTemplates.length ? <ConsoleEmpty title="일치하는 템플릿이 없습니다."><button type="button" onClick={() => { setQuery(''); setActiveFilter('ALL'); setTemplatePage(1); }}>필터 초기화</button></ConsoleEmpty> : null}
             <div className="fcm-template-list">
               {pagedTemplates.map((template) => {
                 const isEditing = editingTemplateId === template.id;
@@ -529,7 +528,7 @@ export default function FcmTemplatesPage() {
                 );
               })}
             </div>
-            {templates.length > TEMPLATES_PER_PAGE ? (
+            {filteredTemplates.length > TEMPLATES_PER_PAGE ? (
               <div className="pagination-bar">
                 <span className="muted">
                   Page {templatePage} / {totalTemplatePages}

@@ -470,6 +470,7 @@ function actionLabel(row: Record<string, string>) {
 }
 
 export default function FpaReplayPage() {
+  const [query, setQuery] = useState('');
   const [matches, setMatches] = useState<ReplayMatch[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<ReplayMatch | null>(null);
   const [savedLogs, setSavedLogs] = useState<SavedLogsResponse | null>(null);
@@ -484,7 +485,7 @@ export default function FpaReplayPage() {
     let active = true;
     const loadReplayMatches = async () => {
       setBusy(true);
-        setStatus('듀얼모드 FPA 데이터가 있는 경기만 찾는 중');
+      setStatus('듀얼모드 FPA 데이터가 있는 경기만 찾는 중');
       try {
         // 서버에서 FPA 로그와 매치를 조인해 듀얼 장면이 있는 경기만 한 번에 받는다.
         // 이전에는 활성 경기 수만큼 로그 요청을 병렬로 보내 원거리 API 왕복이 누적됐다.
@@ -566,11 +567,9 @@ export default function FpaReplayPage() {
   };
 
   return (
-    <main className="fpa-replay-page">
+    <main className="fpa-replay-page console-page replay-page">
       <section className="card card-panel fpa-replay-hero">
         <div>
-          <div className="sidebar-eyebrow">FPA Scene Motion</div>
-          <h2>Scene Motion</h2>
           <p>저장된 듀얼 피치 장면을 Before에서 After로 이어지는 3초 모션으로 확인합니다.</p>
         </div>
         <span className="status-pill tech">{status}</span>
@@ -584,11 +583,13 @@ export default function FpaReplayPage() {
               <h3>경기 선택</h3>
             </div>
           </div>
+          <label className="field-stack"><span className="field-label">경기 검색</span><input type="search" placeholder="팀명 또는 대회" value={query} onChange={event => setQuery(event.target.value)} /></label>
           <div className="fpa-replay-match-list">
-            {matches.map((match) => {
+            {matches.filter(match => [match.name, match.competition_class, ...Object.values(parseMatchTeams(match))].join(' ').toLowerCase().includes(query.trim().toLowerCase())).map((match) => {
               const teams = parseMatchTeams(match);
               return (
                 <button
+                  aria-pressed={selectedMatch?.id === match.id}
                   className={selectedMatch?.id === match.id ? 'active' : ''}
                   disabled={busy}
                   key={match.id}
@@ -596,13 +597,13 @@ export default function FpaReplayPage() {
                   type="button"
                 >
                   <strong>{teams.home} vs {teams.away}</strong>
-                  <span>{match.id}</span>
+
                   <small>{match.competition_class} · R{match.round_number} · Scene {match.sceneCount}</small>
                 </button>
               );
             })}
-            {!busy && !matches.length ? (
-              <div className="fpa-replay-empty-list">듀얼모드 FPA 데이터가 있는 경기가 없습니다.</div>
+            {!busy && !matches.some(match => [match.name, match.competition_class, ...Object.values(parseMatchTeams(match))].join(' ').toLowerCase().includes(query.trim().toLowerCase())) ? (
+              <div className="fpa-replay-empty-list">{query ? '검색 결과가 없습니다.' : '듀얼모드 FPA 데이터가 있는 경기가 없습니다.'}{query ? <button type="button" onClick={() => setQuery('')}>검색 초기화</button> : null}</div>
             ) : null}
           </div>
         </aside>
@@ -612,7 +613,7 @@ export default function FpaReplayPage() {
             <div>
               <div className="sidebar-eyebrow">Motion Preview</div>
               <h3>{selectedMatch ? `${homeName} vs ${awayName}` : '경기를 선택하세요'}</h3>
-              <p>{selectedMatch?.id || '저장된 FPA 로그가 있는 경기를 누르면 장면 애니메이션이 표시됩니다.'}</p>
+              <p>{selectedMatch ? `${selectedMatch.competition_class} · ${selectedMatch.round_number}라운드 · 장면 ${selectedSceneIndex + 1} / ${scenes.length}` : '왼쪽 목록에서 경기를 선택하면 장면이 표시됩니다.'}</p>
             </div>
             <div className="fpa-replay-controls">
               <button disabled={!selectedScene || selectedSceneIndex <= 0} onClick={() => selectScene(selectedSceneIndex - 1)} type="button">이전</button>
@@ -623,9 +624,10 @@ export default function FpaReplayPage() {
 
           {selectedScene ? (
             <>
+              <label className="field-stack replay-scene-select"><span className="field-label">장면 바로 이동</span><select value={selectedSceneIndex} onChange={event => selectScene(Number(event.target.value))}>{scenes.map((scene, index) => <option key={scene.index} value={index}>장면 {index + 1} · {scene.rows.map(row => row.Action || '').filter(Boolean).join(' → ')}</option>)}</select></label>
               <div className="fpa-replay-scene-tabs">
                 {scenes.map((scene, index) => (
-                  <button className={index === selectedSceneIndex ? 'active' : ''} key={scene.index} onClick={() => selectScene(index)} type="button">
+                  <button aria-label={`장면 ${index + 1}`} aria-pressed={index === selectedSceneIndex} className={index === selectedSceneIndex ? 'active' : ''} key={scene.index} onClick={() => selectScene(index)} type="button">
                     {index + 1}
                   </button>
                 ))}

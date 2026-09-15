@@ -27,7 +27,8 @@ function isBrightComparisonColor(color: string) {
   const channels = [0, 2, 4].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255);
   const linear = channels.map((channel) => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4);
   const luminance = .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
-  return luminance >= .76;
+  // Light kits (including sky blue) need dark figures for readable contrast.
+  return 1.05 / (luminance + .05) < 3;
 }
 
 function team(snapshot: BroadcastSnapshot, side: 'HOME' | 'AWAY') {

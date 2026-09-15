@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { FcmWorkflow, ConsoleEmpty } from './ConsoleTools';
 import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../lib/api';
 import { RawMatchRecord, getEligibleFcmMatches } from '../lib/fcm';
@@ -110,18 +111,19 @@ export default function FcmMatchStatusPage() {
   }, [archivedMatches, classFilter, filteredMatches]);
 
   return (
-    <div className="page-stack">
-      <section className="grid" style={{ gridTemplateColumns: '1.05fr 1.95fr' }}>
+    <div className="page-stack console-page fcm-status-page">
+      <FcmWorkflow current="match-status" />
+      <section className="fcm-status-layout">
         <aside className="card card-panel fcm-filter-panel">
           <div className="section-heading">
             <div>
               <div className="sidebar-eyebrow">필터</div>
-              <h3 style={{ margin: '6px 0 0' }}>Archived Match Pool</h3>
+              <h3 style={{ margin: '6px 0 0' }}>경기 찾기</h3>
             </div>
           </div>
 
           <label className="field-stack">
-            <span className="field-label">매치 검색</span>
+            <span className="field-label">경기 검색</span>
             <input
               placeholder="팀명, 리그, 작업자"
               type="text"
@@ -155,6 +157,7 @@ export default function FcmMatchStatusPage() {
               </select>
             </label>
           </div>
+          {query || classFilter !== 'ALL' || roundFilter !== 'ALL' ? <button type="button" onClick={() => { setQuery(''); setClassFilter('ALL'); setRoundFilter('ALL'); }}>필터 초기화</button> : null}
         </aside>
 
         <div className="page-stack">
@@ -210,16 +213,14 @@ export default function FcmMatchStatusPage() {
                     {match.operatorId ? ` / operator ${match.operatorId}` : ''}
                   </p>
                   <div className="fcm-chip-list">
-                    <span className="fcm-chip">엑셀 업로드</span>
-                    <span className="fcm-chip">주요스탯 선택</span>
-                    <span className="fcm-chip">시트 제출</span>
+                    <span className="fcm-chip">데이터 확인 · 제출 →</span>
                   </div>
                 </Link>
               ))}
             </div>
 
             {!loading && !error && filteredMatches.length === 0 ? (
-              <p className="field-help">조건에 맞는 archived match가 없습니다.</p>
+              <ConsoleEmpty title="조건에 맞는 경기가 없습니다."><button type="button" onClick={() => { setQuery(''); setClassFilter('ALL'); setRoundFilter('ALL'); }}>필터 초기화</button></ConsoleEmpty>
             ) : null}
           </section>
         </div>

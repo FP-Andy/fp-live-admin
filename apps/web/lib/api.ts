@@ -44,7 +44,7 @@ export function displayRole(role: SessionUser['role'] | string | null | undefine
 }
 
 export async function apiFetch(input: string, init?: RequestInit) {
-  return fetch(`${API_BASE}${input}`, {
+  const response = await fetch(`${API_BASE}${input}`, {
     credentials: 'include',
     ...init,
     headers: {
@@ -52,6 +52,11 @@ export async function apiFetch(input: string, init?: RequestInit) {
       ...(init?.headers || {}),
     },
   });
+  if (response.status === 401 && !input.startsWith('/session/') && typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
+    clearCachedSessionUser();
+    window.location.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+  }
+  return response;
 }
 
 export async function apiJson<T>(input: string, init?: RequestInit): Promise<T> {

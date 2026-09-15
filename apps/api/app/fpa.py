@@ -3154,8 +3154,8 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         player_team = _clean_player_label(player_teams.get(raw_player, ""))
 
         # 실점과 기대 실점은 해당 골키퍼의 팀을 상대로 한 모든 슈팅에서 계산한다.
-        # Data 시트마다 Result 컬럼이 없는 경우도 있어 Action / Tags 양쪽을 함께
-        # 검사한다. 값이 없으면 0으로 안전하게 표시한다.
+        # 이전 엑셀의 Shot On Target / Blocked Shot도 일반 슈팅 집계와 같은
+        # 액션 목록으로 포함한다. Goal만 남으면 기대 실점이 일부 xG로 축소된다.
         opponent_events = analyzed.copy()
         if player_team:
             opponent_events = opponent_events.loc[
@@ -3166,13 +3166,13 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         opponent_results = opponent_events.get("Result", pd.Series("", index=opponent_events.index)).fillna("").astype(str).str.lower()
         conceded_mask = (
             opponent_action_labels.isin({"goal", "scored"})
-            | opponent_tags.str.contains(r"(?:^|[,|;/\\s])goal(?:$|[,|;/\\s])", regex=True)
-            | opponent_results.str.contains("goal", regex=False)
+            | opponent_tags.str.contains(r"(?:^|[,|;/\s])goal(?:$|[,|;/\s])", regex=True)
+            | opponent_results.str.fullmatch("goal|scored")
         )
         shot_mask = (
-            opponent_action_labels.isin({"shot", "shoot", "shooting", "goal", "scored"})
+            opponent_action_labels.isin({action.lower() for action in SHOT_ACTIONS_LEGACY} | {"shoot", "shooting", "scored"})
             | opponent_tags.str.contains("shot|goal", case=False, regex=True)
-            | opponent_results.str.contains("goal", regex=False)
+            | conceded_mask
         )
         conceded_goals = int(conceded_mask.sum())
         opponent_xg = pd.to_numeric(opponent_events.get("xG", pd.Series(0, index=opponent_events.index)), errors="coerce").fillna(0)

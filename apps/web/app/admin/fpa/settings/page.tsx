@@ -1,3 +1,7 @@
+'use client';
+
+import { useState } from 'react';
+import { ConsoleToolbar, ConsoleEmpty, ConsoleSectionNav } from '../../../../components/ConsoleTools';
 const actionGroups = [
   {
     title: '슈팅',
@@ -125,7 +129,7 @@ function GuideTable({
 }) {
   return (
     <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+      <table className="console-reference-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
         <thead>
           <tr>
             {headers.map((header) => (
@@ -149,6 +153,7 @@ function GuideTable({
             <tr key={row.join('-')}>
               {row.map((cell, index) => (
                 <td
+                  data-label={headers[index]}
                   key={`${row[0]}-${index}`}
                   style={{
                     padding: '10px 12px',
@@ -181,8 +186,12 @@ function GuideList({ items }: { items: string[] }) {
 }
 
 export default function FpaSettingsPage() {
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('ALL');
+  const filteredGroups = actionGroups.filter(group => category === 'ALL' || group.title === category).map(group => ({ ...group, rows: group.rows.filter(row => row.join(' ').toLowerCase().includes(query.trim().toLowerCase())) })).filter(group => group.rows.length);
+
   return (
-    <main className="page-stack">
+    <main className="page-stack console-page code-guide-page">
       <section className="card card-panel grid">
         <div className="section-heading">
           <div>
@@ -192,50 +201,64 @@ export default function FpaSettingsPage() {
           <span className="status-pill tech">Manual</span>
         </div>
         <div className="muted">
-          원본 FPA의 사용 설명서와 통계 산출 매뉴얼을 Fine Play Console 안에서 바로 참고할 수 있게 정리한 페이지입니다. 실시간 입력 규칙, 스탯 코드 문법, 자동 태그, 단축키, 주요 점수 산식까지 한 화면에서 확인할 수 있습니다.
+          액션 코드를 검색하거나 입력 규칙과 태그, 점수 산식을 확인하세요.
         </div>
       </section>
 
-      <section className="card card-utility grid">
-        <div className="section-heading">
-          <div>
-            <div className="sidebar-eyebrow">Quick Start</div>
-            <h3 style={{ margin: 0 }}>입력 전 체크</h3>
+      <ConsoleSectionNav items={[{ id: 'action-codes', label: '액션 코드' }, { id: 'code-examples', label: '입력 예시' }, { id: 'futsal-codes', label: '풋살' }, { id: 'code-scoring', label: '점수 산식' }]} />
+      <details className="console-disclosure">
+        <summary>입력 전 체크</summary>
+        <section className="card card-utility grid">
+          <div className="section-heading">
+            <div>
+              <div className="sidebar-eyebrow">Quick Start</div>
+              <h3 style={{ margin: 0 }}>입력 전 체크</h3>
+            </div>
           </div>
-        </div>
-        <GuideList
-          items={[
-            'Match ID, Home Team, Away Team을 먼저 입력합니다.',
-            'Half, Team, Direction을 현재 경기 상황에 맞게 확인합니다.',
-            '축구장 좌표는 105 x 68 기준이며 원점은 좌하단입니다.',
-            'Home/Away를 바꾸면 Direction도 같이 뒤집히는 현재 콘솔 동작을 전제로 입력합니다.',
-            '1점 액션은 좌표 1개, 패스/크로스/돌파/스로인/스프린트 계열은 좌표 2개가 필요합니다.',
-          ]}
-        />
-      </section>
+          <GuideList
+            items={[
+              'Match ID, Home Team, Away Team을 먼저 입력합니다.',
+              'Half, Team, Direction을 현재 경기 상황에 맞게 확인합니다.',
+              '축구장 좌표는 105 x 68 기준이며 원점은 좌하단입니다.',
+              'Home/Away를 바꾸면 Direction도 같이 뒤집히는 현재 콘솔 동작을 전제로 입력합니다.',
+              '1점 액션은 좌표 1개, 패스/크로스/돌파/스로인/스프린트 계열은 좌표 2개가 필요합니다.',
+            ]}
+          />
+        </section>
+      </details>
 
-      <section className="card card-utility grid">
-        <div className="section-heading">
-          <div>
-            <div className="sidebar-eyebrow">Input Grammar</div>
-            <h3 style={{ margin: 0 }}>스탯 코드 형식</h3>
+      <details className="console-disclosure">
+        <summary>스탯 코드 형식</summary>
+        <section className="card card-utility grid">
+          <div className="section-heading">
+            <div>
+              <div className="sidebar-eyebrow">Input Grammar</div>
+              <h3 style={{ margin: 0 }}>스탯 코드 형식</h3>
+            </div>
           </div>
-        </div>
-        <div className="muted">
-          기본 입력 형식은 `선수번호 + 액션코드 + 수신선수번호 + . + 태그코드1.태그코드2...` 입니다.
-        </div>
-        <GuideList
-          items={[
-            '`10ss8.k.f.w` → 10번 선수가 8번에게 약발 키패스 성공',
-            '`9dd.f.w` → 9번 선수가 약발로 유효 슈팅',
-            '`7d` → 7번 선수가 빗나간 슈팅',
-            '`4tt7.lt` → 4번 선수가 7번에게 롱 쓰로인으로 소유 유지',
-            '수신 선수가 없는 1점 액션은 선수번호와 액션코드만으로 입력 가능합니다.',
-          ]}
-        />
-      </section>
+          <div className="muted">
+            기본 입력 형식은 `선수번호 + 액션코드 + 수신선수번호 + . + 태그코드1.태그코드2...` 입니다.
+          </div>
+          <GuideList
+            items={[
+              '`10ss8.k.f.w` → 10번 선수가 8번에게 약발 키패스 성공',
+              '`9dd.f.w` → 9번 선수가 약발로 유효 슈팅',
+              '`7d` → 7번 선수가 빗나간 슈팅',
+              '`4tt7.lt` → 4번 선수가 7번에게 롱 쓰로인으로 소유 유지',
+              '수신 선수가 없는 1점 액션은 선수번호와 액션코드만으로 입력 가능합니다.',
+            ]}
+          />
+        </section>
+      </details>
 
-      {actionGroups.map((group) => (
+      <section className="card card-panel" id="action-codes"><h3>액션 코드 찾기</h3><ConsoleToolbar>
+        <label className="field-stack console-search"><span className="field-label">코드 · 액션 검색</span><input type="search" placeholder="예: 패스, 슈팅, ss" value={query} onChange={event => setQuery(event.target.value)} /></label>
+        <label className="field-stack"><span className="field-label">유형</span><select value={category} onChange={event => setCategory(event.target.value)}><option value="ALL">전체 유형</option>{actionGroups.map(group => <option key={group.title}>{group.title}</option>)}</select></label>
+        <span className="field-help" role="status">{filteredGroups.reduce((n, group) => n + group.rows.length, 0)}개 코드</span>
+        {query || category !== 'ALL' ? <button type="button" onClick={() => { setQuery(''); setCategory('ALL'); }}>초기화</button> : null}
+      </ConsoleToolbar></section>
+      {!filteredGroups.length ? <ConsoleEmpty title="일치하는 코드가 없습니다.">검색어나 유형을 바꿔보세요.</ConsoleEmpty> : null}
+      {filteredGroups.map((group) => (
         <section className="card card-utility grid" key={group.title}>
           <div className="section-heading">
             <div>
@@ -272,7 +295,7 @@ export default function FpaSettingsPage() {
         </article>
       </section>
 
-      <section className="card card-utility grid">
+      <section id="code-examples" className="card card-utility grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Examples</div>
@@ -282,7 +305,7 @@ export default function FpaSettingsPage() {
         <GuideTable headers={['입력', '의미', '메모']} rows={examples} />
       </section>
 
-      <section className="card card-utility grid">
+      <section id="futsal-codes" className="card card-utility grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Queen Cup</div>
@@ -330,34 +353,40 @@ export default function FpaSettingsPage() {
         </article>
       </section>
 
-      <section className="card card-panel grid">
-        <div className="section-heading">
-          <div>
-            <div className="sidebar-eyebrow">Scoring Logic</div>
-            <h3 style={{ margin: 0 }}>주요 점수 산식</h3>
+      <details className="console-disclosure" id="code-scoring">
+        <summary>주요 점수 산식</summary>
+        <section className="card card-panel grid">
+          <div className="section-heading">
+            <div>
+              <div className="sidebar-eyebrow">Scoring Logic</div>
+              <h3 style={{ margin: 0 }}>주요 점수 산식</h3>
+            </div>
           </div>
-        </div>
-        <div className="muted">
-          각 점수는 Raw Score 계산 후 시그모이드 기반으로 0~100 범위 점수로 변환됩니다. 데이터가 거의 없을 때도 중립값 근처에서 시작하도록 설계되어 있습니다.
-        </div>
-        <GuideTable headers={['항목', '핵심 공식']} rows={scoringRows} />
-      </section>
+          <div className="muted">
+            각 점수는 Raw Score 계산 후 시그모이드 기반으로 0~100 범위 점수로 변환됩니다. 데이터가 거의 없을 때도 중립값 근처에서 시작하도록 설계되어 있습니다.
+          </div>
+          <GuideTable headers={['항목', '핵심 공식']} rows={scoringRows} />
+        </section>
+      </details>
 
-      <section className="card card-utility grid">
-        <div className="section-heading">
-          <div>
-            <div className="sidebar-eyebrow">Advanced Scores</div>
-            <h3 style={{ margin: 0 }}>고급 지표</h3>
+      <details className="console-disclosure">
+        <summary>고급 지표</summary>
+        <section className="card card-utility grid">
+          <div className="section-heading">
+            <div>
+              <div className="sidebar-eyebrow">Advanced Scores</div>
+              <h3 style={{ margin: 0 }}>고급 지표</h3>
+            </div>
           </div>
-        </div>
-        <GuideList
-          items={[
-            'FST: 패스와 돌파 성공률 기반의 볼 키핑 안정성',
-            'OFF: 받은 패스, 찬스 창출, 오프사이드 등을 반영한 오프더볼 움직임',
-            'DEC: 원터치 플레이 성공률 기반의 판단 속도와 정확성',
-          ]}
-        />
-      </section>
+          <GuideList
+            items={[
+              'FST: 패스와 돌파 성공률 기반의 볼 키핑 안정성',
+              'OFF: 받은 패스, 찬스 창출, 오프사이드 등을 반영한 오프더볼 움직임',
+              'DEC: 원터치 플레이 성공률 기반의 판단 속도와 정확성',
+            ]}
+          />
+        </section>
+      </details>
     </main>
   );
 }

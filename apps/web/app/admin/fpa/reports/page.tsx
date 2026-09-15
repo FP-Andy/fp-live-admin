@@ -148,6 +148,8 @@ function notifyError(error: unknown, fallback: string) {
 }
 
 export default function FpaReportsPage() {
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
   const [room, setRoom] = useState<ModelRoomResponse | null>(null);
   const [selectedSlotKey, setSelectedSlotKey] = useState('xg');
   const [uploads, setUploads] = useState<Record<string, UploadState>>({});
@@ -155,6 +157,8 @@ export default function FpaReportsPage() {
   const [bootstrapping, setBootstrapping] = useState(false);
 
   const loadRoom = async () => {
+    setLoading(true);
+    setLoadError('');
     try {
       const data = await apiJson<ModelRoomResponse>('/fpa/model-room');
       setRoom(data);
@@ -162,8 +166,8 @@ export default function FpaReportsPage() {
         setSelectedSlotKey(data.slots[0].key);
       }
     } catch (error) {
-      console.error(error);
-    }
+      setLoadError(error instanceof Error ? error.message : '모델을 불러오지 못했습니다.');
+    } finally { setLoading(false); }
   };
 
   useEffect(() => {
@@ -290,7 +294,7 @@ export default function FpaReportsPage() {
   };
 
   return (
-    <div className="page-stack">
+    <div className="page-stack console-page models-page">
       <section className="card card-hero page-hero">
         <div className="section-heading">
           <div>
@@ -300,7 +304,7 @@ export default function FpaReportsPage() {
           <div className="fpa-model-hero-actions">
             <span className="status-pill tech">xG / xGOT / EPV / PC / xFP</span>
             <button className="btn-secondary" disabled={bootstrapping} type="button" onClick={() => void generateBaselines()}>
-              {bootstrapping ? 'Generating...' : 'Generate Baseline Models'}
+              {bootstrapping ? '생성 중…' : '기본 모델 생성'}
             </button>
           </div>
         </div>
@@ -309,6 +313,9 @@ export default function FpaReportsPage() {
         </p>
       </section>
 
+      {loading ? <p role="status">모델을 불러오는 중입니다.</p> : null}
+      {loadError ? <div className="console-feedback" role="alert">{loadError}<button type="button" onClick={() => void loadRoom()}>다시 불러오기</button></div> : null}
+      {slots.length ? <label className="field-stack model-slot-picker"><span className="field-label">확인할 모델</span><select value={selectedSlot?.key || ''} onChange={event => setSelectedSlotKey(event.target.value)}>{slots.map(slot => <option key={slot.key} value={slot.key}>{slot.label}</option>)}</select></label> : null}
       <section className="fpa-model-room-grid" aria-label="FPA model slots">
         {slots.map((slot) => {
           const upload = uploads[slot.key] || emptyUpload;
@@ -317,7 +324,7 @@ export default function FpaReportsPage() {
           return (
             <article className={`fpa-model-slot-card ${isSelected ? 'active' : ''}`} key={slot.key}>
               <div className="fpa-model-slot-head">
-                <button className="fpa-model-slot-select" type="button" onClick={() => setSelectedSlotKey(slot.key)}>
+                <button className="fpa-model-slot-select" aria-pressed={isSelected} type="button" onClick={() => setSelectedSlotKey(slot.key)}>
                   <span>{slot.label}</span>
                 </button>
                 <span className={`status-pill ${active ? 'running' : 'stopped'}`}>{active ? 'Active' : 'Empty'}</span>
@@ -335,11 +342,11 @@ export default function FpaReportsPage() {
                   download
                   href={`${API_BASE}/fpa/model-room/${slot.key}/download/${active.id}`}
                 >
-                  Download Active
+                  활성 파일 다운로드
                 </a>
               ) : null}
 
-              <div className="fpa-model-upload-grid">
+              <details className="console-inline-details"><summary>새 버전 업로드</summary><div className="fpa-model-upload-grid">
                 <label className="field-stack">
                   <span className="field-label">Model File</span>
                   <input
@@ -378,9 +385,9 @@ export default function FpaReportsPage() {
                   type="button"
                   onClick={() => void uploadModel(slot)}
                 >
-                  {busySlot === slot.key ? 'Uploading...' : 'Upload & Activate'}
+                  {busySlot === slot.key ? '업로드 중…' : '업로드 후 활성화'}
                 </button>
-              </div>
+              </div></details>
             </article>
           );
         })}
@@ -401,6 +408,7 @@ export default function FpaReportsPage() {
           <div className="fpa-model-preview-tabs">
             {slots.map((slot) => (
               <button
+                aria-pressed={selectedSlotKey === slot.key}
                 className={selectedSlotKey === slot.key ? 'active' : ''}
                 key={slot.key}
                 type="button"

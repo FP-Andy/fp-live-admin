@@ -1,3 +1,4 @@
+import { FcmWorkflow, ConsoleSectionNav } from '../../../../components/ConsoleTools';
 import type { ReactNode } from 'react';
 
 const workflowRows = [
@@ -8,8 +9,8 @@ const workflowRows = [
 ] as const;
 
 const statusRows = [
-  ['Pending', '아직 해당 팀의 카드 정보가 저장되지 않은 상태입니다.', 'Match Status 상세에서 FPA 데이터 분석 후 제출합니다.'],
-  ['Ready', '대표 선수, 선수 이름, 주요스탯이 저장된 상태입니다.', 'Workspace에서 개별 생성 또는 일괄 생성할 수 있습니다.'],
+  ['미제출 (Pending)', '아직 해당 팀의 카드 정보가 저장되지 않은 상태입니다.', 'Match Status 상세에서 FPA 데이터 분석 후 제출합니다.'],
+  ['제출 완료 (Ready)', '대표 선수, 선수 이름, 주요스탯이 저장된 상태입니다.', 'Workspace에서 개별 생성 또는 일괄 생성할 수 있습니다.'],
   ['Template Missing', '팀명에 매칭되는 배경 템플릿이 없습니다.', 'Templates에서 Regex와 이미지를 등록합니다.'],
   ['Generated', '생성 버튼으로 PNG 또는 ZIP 다운로드가 시작된 상태입니다.', '다운로드 파일을 확인하고 필요한 경우 Match Status에서 스탯을 다시 저장합니다.'],
 ] as const;
@@ -45,7 +46,7 @@ function GuideTable({
 }) {
   return (
     <div className="fcm-guide-table-wrap">
-      <table className="fcm-guide-table">
+      <table className="fcm-guide-table console-reference-table">
         <thead>
           <tr>
             {headers.map((header) => (
@@ -57,7 +58,7 @@ function GuideTable({
           {rows.map((row) => (
             <tr key={row.join('-')}>
               {row.map((cell, index) => (
-                <td key={`${row[0]}-${index}`}>
+                <td data-label={headers[index]} key={`${row[0]}-${index}`}>
                   {cell}
                 </td>
               ))}
@@ -85,7 +86,8 @@ function GuideList({ items, ordered = false }: { items: ReactNode[]; ordered?: b
 
 export default function FcmGuidePage() {
   return (
-    <main className="page-stack fcm-guide-page">
+    <main className="page-stack console-page fcm-guide-page">
+      <FcmWorkflow current="guide" />
       <section className="card card-hero page-hero fcm-guide-hero">
         <div className="section-heading">
           <div>
@@ -114,7 +116,8 @@ export default function FcmGuidePage() {
         </div>
       </section>
 
-      <section className="card card-utility fcm-guide-section">
+      <ConsoleSectionNav items={[{ id: 'guide-flow', label: '작업 흐름' }, { id: 'guide-submit', label: '데이터 제출' }, { id: 'guide-status', label: '상태' }, { id: 'guide-templates', label: '템플릿' }, { id: 'guide-stats', label: '스탯' }, { id: 'guide-download', label: '다운로드' }, { id: 'guide-help', label: '문제 해결' }]} />
+      <section id="guide-flow" className="card card-utility fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Quick Start</div>
@@ -132,7 +135,7 @@ export default function FcmGuidePage() {
         </div>
       </section>
 
-      <section className="card card-utility fcm-guide-section">
+      <section id="guide-submit" className="card card-utility fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Match Status</div>
@@ -142,7 +145,7 @@ export default function FcmGuidePage() {
         <GuideList
           ordered
           items={[
-            '대회와 라운드를 선택한 뒤 Archived Match Pool에서 경기를 엽니다.',
+            '대회와 라운드를 선택한 뒤 경기 목록에서 경기를 엽니다.',
             'HOME/AWAY 팀을 선택하고 FPA 엑셀 파일을 업로드합니다.',
             '매치 분석을 실행한 뒤 선수 번호와 선수 이름을 확인합니다.',
             '자동 후보 또는 커스텀 스탯으로 주요스탯 최대 5개를 구성합니다.',
@@ -151,7 +154,7 @@ export default function FcmGuidePage() {
         />
       </section>
 
-      <section className="card card-utility fcm-guide-section">
+      <section id="guide-status" className="card card-utility fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Status</div>
@@ -169,7 +172,7 @@ export default function FcmGuidePage() {
         </div>
       </section>
 
-      <section className="card card-utility fcm-guide-section">
+      <section id="guide-templates" className="card card-utility fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Templates</div>
@@ -182,7 +185,7 @@ export default function FcmGuidePage() {
         <GuideTable headers={['항목', '설명', '예시']} rows={templateRows} />
       </section>
 
-      <section className="card card-utility fcm-guide-section">
+      <section id="guide-regex" className="card card-utility fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Regex Tips</div>
@@ -200,7 +203,7 @@ export default function FcmGuidePage() {
         />
       </section>
 
-      <section className="card card-utility fcm-guide-section">
+      <section id="guide-stats" className="card card-utility fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Stats</div>
@@ -210,7 +213,7 @@ export default function FcmGuidePage() {
         <GuideTable headers={['방식', '설명', '메모']} rows={statRows} />
       </section>
 
-      <section className="card card-utility fcm-guide-section">
+      <section id="guide-download" className="card card-utility fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Workspace</div>
@@ -222,21 +225,21 @@ export default function FcmGuidePage() {
           items={[
             '대회 선택과 라운드 선택으로 생성 대상 pool을 좁힙니다.',
             'Ready row의 생성 버튼은 해당 팀 카드 1장만 PNG로 다운로드합니다.',
-            '카드 생성 + 다운로드 버튼은 현재 대회/라운드의 생성 가능한 카드들을 ZIP으로 다운로드합니다.',
+            '준비된 팀 일괄 다운로드 버튼은 현재 대회/라운드의 생성 가능한 카드들을 ZIP으로 다운로드합니다.',
             'ZIP 생성 시 템플릿이 없거나 생성에 실패한 팀은 제외될 수 있으므로 다운로드 후 파일 수를 확인합니다.',
             '스탯이나 선수명을 수정해야 하면 Match Status 상세로 돌아가 다시 제출한 뒤 생성합니다.',
           ]}
         />
       </section>
 
-      <section className="card card-panel fcm-guide-section">
+      <section id="guide-help" className="card card-panel fcm-guide-section">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Troubleshooting</div>
             <h3 style={{ margin: 0 }}>자주 막히는 상황</h3>
           </div>
         </div>
-        <GuideTable headers={['상황', '확인할 것']} rows={troubleshootingRows} />
+        <div className="console-faq">{troubleshootingRows.map(([question, answer]) => <details key={question} className="console-inline-details"><summary>{question}</summary><p>{answer}</p></details>)}</div>
       </section>
     </main>
   );

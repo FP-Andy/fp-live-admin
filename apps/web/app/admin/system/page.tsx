@@ -1,5 +1,7 @@
 'use client';
 
+import AccessManagement from '../../../components/AccessManagement';
+import { ConsoleSectionNav } from '../../../components/ConsoleTools';
 import { useEffect, useState } from 'react';
 import { apiFetch, apiJson, displayRole, type SessionUser } from '../../../lib/api';
 
@@ -288,17 +290,42 @@ export default function SystemPage() {
 
   if (error) {
     return (
-      <main className="page-stack">
+      <main className="page-stack console-page system-page">
         <section className="card card-panel grid">
-          <h2 style={{ margin: 0 }}>System</h2>
-          <div className="form-error">{error}</div>
-        </section>
+        <h2 style={{ margin: 0 }}>System</h2>
+        <div className="form-error" role="alert">{error}</div><button onClick={() => void load()} type="button">다시 불러오기</button>
+      </section>
+      <AccessManagement />
       </main>
     );
   }
 
   return (
-    <main className="page-stack">
+    <main className="page-stack console-page system-page">
+      <ConsoleSectionNav items={[{ id: "system-access", label: "계정 · 접근" }, { id: "system-health", label: "알림" }, { id: "system-resources", label: "서버 상태" }, { id: "system-media", label: "미디어 제어" }, { id: "system-worker", label: "GPU 제어" }, { id: "system-audit", label: "작업 이력" }]} />
+      <AccessManagement />
+      <section id="system-health" className="card card-utility grid">
+        <div className="section-heading">
+          <div>
+            <div className="sidebar-eyebrow">Health</div>
+            <h3 style={{ margin: 0 }}>시스템 알림</h3>
+          </div>
+        </div>
+        {(systemInfo?.alerts || []).length === 0 ? (
+          <div className="muted">{systemInfo ? '현재 즉시 조치가 필요한 위험 신호는 감지되지 않았습니다.' : '시스템 상태를 불러오는 중입니다.'}</div>
+        ) : (
+          (systemInfo?.alerts || []).map((alert) => (
+            <div
+              key={`${alert.severity}-${alert.title}`}
+              className={alert.severity === 'HIGH' ? 'form-error' : 'muted'}
+              style={alert.severity === 'MEDIUM' ? { color: 'var(--warning)' } : undefined}
+            >
+              [{alert.severity}] {alert.title}: {alert.message}
+            </div>
+          ))
+        )}
+      </section>
+
       <section className="card card-panel grid">
         <div className="section-heading">
           <div>
@@ -308,21 +335,10 @@ export default function SystemPage() {
           <span className="status-pill running">{displayRole(sessionUser?.role) || 'ROLE'}</span>
         </div>
         <div className="muted">
-          이 페이지는 슈퍼어드민 전용 시스템 관리 영역입니다. 실제 서버 on/off 같은 기능이 붙으면 운영 전체에 영향을 줄 수 있으므로, Media에서 먼저 상태를 확인한 뒤 마지막 단계에서만 사용하는 것을 권장합니다.
+          서버 자원, 송출 상태와 최근 작업 이력을 확인하고 미디어 서버와 GPU 작업자를 제어합니다.
         </div>
         <div className="metric-strip">
-          <div className="metric-tile">
-            <span className="muted">Gateway Linked</span>
-            <strong>{systemInfo?.streams_enabled ? 'Yes' : 'No'}</strong>
-          </div>
-          <div className="metric-tile tech">
-            <span className="muted">Gateway Base</span>
-            <strong>{systemInfo?.gateway_base || 'Not set'}</strong>
-          </div>
-          <div className="metric-tile tech">
-            <span className="muted">Public HLS Base</span>
-            <strong>{systemInfo?.public_hls_base || 'Not set'}</strong>
-          </div>
+
           <div className="metric-tile success">
             <span className="muted">Running Streams</span>
             <strong>{systemInfo?.health.running_streams ?? 0}</strong>
@@ -339,14 +355,7 @@ export default function SystemPage() {
             <span className="muted">Manual Matches</span>
             <strong>{systemInfo?.health.manual_matches ?? 0}</strong>
           </div>
-          <div className="metric-tile tech">
-            <span className="muted">Media EC2</span>
-            <strong>{systemInfo?.media_server?.state || 'unknown'}</strong>
-          </div>
-          <div className="metric-tile tech">
-            <span className="muted">FHL GPU</span>
-            <strong>{systemInfo?.highlight_worker?.state || 'unknown'}</strong>
-          </div>
+
           <div className="metric-tile">
             <span className="muted">FHL Jobs</span>
             <strong>{systemInfo?.health.active_highlight_jobs ?? 0}</strong>
@@ -354,11 +363,35 @@ export default function SystemPage() {
         </div>
       </section>
 
-      <section className="card card-panel grid">
+      <details className="console-disclosure"><summary>연결 주소 · 서버 구성</summary><div className="system-connection-info">
+          <div className="metric-tile">
+        <span className="muted">Gateway Linked</span>
+        <strong>{systemInfo?.streams_enabled ? 'Yes' : 'No'}</strong>
+      </div>
+          <div className="metric-tile tech">
+          <span className="muted">Gateway Base</span>
+          <strong>{systemInfo?.gateway_base || 'Not set'}</strong>
+        </div>
+          <div className="metric-tile tech">
+          <span className="muted">Public HLS Base</span>
+          <strong>{systemInfo?.public_hls_base || 'Not set'}</strong>
+        </div>
+          <div className="metric-tile tech">
+          <span className="muted">Media EC2</span>
+          <strong>{systemInfo?.media_server?.state || 'unknown'}</strong>
+        </div>
+          <div className="metric-tile tech">
+          <span className="muted">FHL GPU</span>
+          <strong>{systemInfo?.highlight_worker?.state || 'unknown'}</strong>
+        </div>
+        </div>
+      </details>
+
+      <section id="system-resources" className="card card-panel grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Live Resources</div>
-            <h3 style={{ margin: 0 }}>Server Load Dashboard</h3>
+            <h3 style={{ margin: 0 }}>서버 자원 현황</h3>
           </div>
           <span className="status-pill tech">15s refresh</span>
         </div>
@@ -383,7 +416,7 @@ export default function SystemPage() {
         </div>
       </section>
 
-      <section className="card card-panel grid">
+      <section id="system-media" className="card card-panel grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Infra</div>
@@ -407,7 +440,7 @@ export default function SystemPage() {
               안전 가드: RUNNING 스트림 또는 STREAM 경기 존재 시 stop 요청은 기본 차단되며, 슈퍼어드민 확인 후에만 강제 실행됩니다.
             </div>
             {actionMessage ? <div className="muted">{actionMessage}</div> : null}
-              {systemInfo?.media_server?.detail ? <div className="muted">detail: {systemInfo.media_server.detail}</div> : null}
+            {systemInfo?.media_server?.detail ? <div className="muted">detail: {systemInfo.media_server.detail}</div> : null}
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               <button type="button" className="btn-primary" onClick={() => runMediaAction('start')} disabled={Boolean(submittingAction)}>
                 {submittingAction === 'media-start' ? 'Working...' : 'Start Media Server'}
@@ -420,7 +453,7 @@ export default function SystemPage() {
         )}
       </section>
 
-      <section className="card card-panel grid">
+      <section id="system-worker" className="card card-panel grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Infra</div>
@@ -456,29 +489,7 @@ export default function SystemPage() {
         )}
       </section>
 
-      <section className="card card-utility grid">
-        <div className="section-heading">
-          <div>
-            <div className="sidebar-eyebrow">Health</div>
-            <h3 style={{ margin: 0 }}>Unified Health</h3>
-          </div>
-        </div>
-        {(systemInfo?.alerts || []).length === 0 ? (
-          <div className="muted">현재 즉시 조치가 필요한 위험 신호는 감지되지 않았습니다.</div>
-        ) : (
-          (systemInfo?.alerts || []).map((alert) => (
-            <div
-              key={`${alert.severity}-${alert.title}`}
-              className={alert.severity === 'HIGH' ? 'form-error' : 'muted'}
-              style={alert.severity === 'MEDIUM' ? { color: 'var(--warning)' } : undefined}
-            >
-              [{alert.severity}] {alert.title}: {alert.message}
-            </div>
-          ))
-        )}
-      </section>
-
-      <section className="card card-utility grid">
+      <details className="console-disclosure"><summary>시스템 운영 순서</summary><section className="card card-utility grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Guide</div>
@@ -490,9 +501,9 @@ export default function SystemPage() {
         <div className="muted">2. 경기 중이거나 운영자가 실제 입력 중이면 여기서 서버를 건드리지 않습니다. 이 탭은 경기 중 대응용보다 경기 전/후 정리용에 가깝습니다.</div>
         <div className="muted">3. `MANUAL` 경기만 남아 있고, 스트리밍 매치가 0개이며, Media에서 RUNNING 스트림도 0개일 때만 영상 서버 종료를 검토합니다.</div>
         <div className="muted">4. attach 문제는 먼저 `Media`에서 `Re-attach`나 `HLS probe` 확인으로 처리하고, 그 뒤에도 안 풀릴 때만 서버 레벨 조치를 고려합니다.</div>
-      </section>
+      </section></details>
 
-      <section className="card card-danger grid">
+      <details className="console-disclosure"><summary>서버 제어 전 확인 사항</summary><section className="card card-danger grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Safety</div>
@@ -504,13 +515,13 @@ export default function SystemPage() {
         <div className="muted">꺼도 될 가능성이 높은 상황: 모든 스트림이 STOPPED, Media에서 HLS probe가 의미 없거나 비활성, 오늘 운영이 끝난 뒤, MANUAL 경기만 남아 있는 상황</div>
         <div className="muted">가장 안전한 순서: `Stop Stream` 또는 `Stop All Streams` → 상태 재확인 → 그 다음에만 서버 종료</div>
         <div className="muted">향후 실제 서버 버튼을 붙일 때도, 바로 실행하지 않고 확인 문구와 조건 검사를 먼저 넣는 방향으로 확장하는 것이 안전합니다.</div>
-      </section>
+      </section></details>
 
-      <section className="card card-utility grid">
+      <section id="system-audit" className="card card-utility grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Audit</div>
-            <h3 style={{ margin: 0 }}>Recent Operator Actions</h3>
+            <h3 style={{ margin: 0 }}>최근 작업 이력</h3>
           </div>
         </div>
 
