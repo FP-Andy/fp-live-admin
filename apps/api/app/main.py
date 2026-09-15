@@ -29,6 +29,7 @@ import httpx
 import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
+from .branding_refresh import BrandingRefreshQueue
 from .team_branding import (create_team_logo_router, match_team_names, team_logo_urls, resolve_branding, mark_manual_branding, reset_branding)
 
 from .auth import (
@@ -208,8 +209,6 @@ BROADCAST_ASSET_REFRESH_SECONDS = max(10, int(os.getenv("BROADCAST_ASSET_REFRESH
 BROADCAST_ASSET_RENDER_CONCURRENCY = max(1, min(8, int(os.getenv("BROADCAST_ASSET_RENDER_CONCURRENCY", "1"))))
 BROADCAST_INGEST_KEY = os.getenv("BROADCAST_INGEST_KEY", "").strip()
 _broadcast_asset_render_lock = threading.BoundedSemaphore(BROADCAST_ASSET_RENDER_CONCURRENCY)
-_broadcast_branding_refresh_lock = threading.Lock()
-_broadcast_branding_refresh_timers: dict[str, threading.Timer] = {}
 
 FPA_MODEL_ROOM_SLOTS: dict[str, dict[str, str]] = {
     "xg": {
@@ -2662,35 +2661,27 @@ def seed_completed_broadcast_demo() -> str:
         db.close()
 
 
+def _render_latest_broadcast_branding(match_id: UUID) -> None:
+    # Open the connection only when the single branding worker takes this job.
+    # A team's historical matches must not exhaust the pool used by live APIs.
+    db = SessionLocal()
+    try:
+        match_obj = db.get(Match, match_id)
+        if match_obj:
+            _rebuild_broadcast_branding_assets(match_obj, db)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+_broadcast_branding_refresh_queue = BrandingRefreshQueue(_render_latest_broadcast_branding)
+
+
 def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
-    """Publish branding changes to every saved public PNG without waiting a minute."""
-    match_key = str(match_id)
-
-    def render_latest() -> None:
-        db = SessionLocal()
-        try:
-            match_obj = db.get(Match, match_id)
-            if match_obj:
-                _rebuild_broadcast_branding_assets(match_obj, db)
-        except Exception as exc:
-            db.rollback()
-            print(f"broadcast branding refresh failed for {match_key}: {exc}\n{traceback.format_exc()}")
-        finally:
-            db.close()
-            with _broadcast_branding_refresh_lock:
-                _broadcast_branding_refresh_timers.pop(match_key, None)
-
-    with _broadcast_branding_refresh_lock:
-        previous = _broadcast_branding_refresh_timers.get(match_key)
-        if previous and previous.is_alive():
-            previous.cancel()
-        # A showroom form may submit colours and the two crest files in quick
-        # succession.  Coalesce them into one historical rebuild rather than
-        # repeatedly launching Chromium for the same match.
-        timer = threading.Timer(2.0, render_latest)
-        timer.daemon = True
-        _broadcast_branding_refresh_timers[match_key] = timer
-        timer.start()
+    """Refresh saved PNGs in the background, coalescing repeated branding edits."""
+    _broadcast_branding_refresh_queue.submit(match_id)
 
 
 def _on_team_branding_changed(match_ids: list[UUID]) -> None:

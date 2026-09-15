@@ -161,16 +161,29 @@ html[data-console-theme="light"] .console-dashboard .metric-strip-overview .metr
 }
 
 /* Shared club crests and the original kit colours remain easy to inspect. */
-.app-shell .team-logo-library { padding: 28px; }
+.match-create-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.match-create-fields:disabled { opacity: .65; }
+.match-create-button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-width: 152px; }
+.match-create-spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: match-create-spin .8s linear infinite; }
+@keyframes match-create-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .match-create-spinner { animation: none; } }
+.match-create-success { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 20px; border: 1px solid var(--border-soft); border-left: 3px solid #2158e8; border-radius: 12px; background: var(--surface-card-strong); }
+.match-create-success > div { min-width: 0; }
+.match-create-success p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.match-create-success a { flex-shrink: 0; }
+.app-shell .team-logo-library { padding: 28px; container-type: inline-size; }
 .team-logo-library .section-heading { align-items: flex-start; gap: 20px; margin-bottom: 24px; }
 .team-logo-library h2 { margin: 8px 0; font-size: 22px; }
 .team-logo-library p { line-height: 1.65; }
-.team-logo-form { display: grid; grid-template-columns: minmax(130px,.65fr) minmax(180px,1fr) minmax(230px,1.4fr) auto; gap: 18px; align-items: end; }
+.team-logo-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; align-items: end; }
 .team-logo-form .field-stack { min-width: 0; }
+.app-shell .team-logo-form :is(select,input,button) { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; }
+.team-logo-form .team-logo-custom { grid-column: 1 / -1; }
+.team-logo-form > button { justify-self: end; }
 .team-logo-form input[type=file] { width: 100%; min-width: 0; font-size: 14px; padding: 10px; }
 .team-logo-form .field-label small { display: block; font-size: 12px; margin-top: 3px; }
 .team-logo-hint { margin: 18px 0 24px; font-size: 14px; }
-.team-logo-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); gap: 14px; }
+.team-logo-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,300px),1fr)); gap: 14px; }
 .team-logo-item { display: flex; gap: 12px; align-items: center; padding: 16px; border: 1px solid var(--border-soft); border-radius: 12px; min-width: 0; }
 .team-logo-item > div { flex: 1; min-width: 0; display: grid; gap: 6px; }
 .team-logo-item strong { font-size: 16px; overflow-wrap: anywhere; }
@@ -191,7 +204,7 @@ html[data-console-theme="light"] .console-dashboard .metric-strip-overview .metr
 .lineup-kit-part { display: flex; align-items: center; gap: 6px; }
 .lineup-kit-part i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #8893a855; flex-shrink: 0; }
 .lineup-uniforms > p { font-size: 13px; line-height: 1.6; margin: 16px 0 0; }
-@media (max-width: 1200px) { .team-logo-form { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@container (max-width: 560px) { .team-logo-form { grid-template-columns: minmax(0,1fr); gap: 20px; } }
 @media (max-width: 760px) {
   .app-shell .team-logo-library { padding: 20px; }
   .team-logo-library .section-heading { flex-wrap: wrap; }
