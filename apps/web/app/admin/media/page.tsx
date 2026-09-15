@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { ConsoleToolbar, ConsoleEmpty } from '../../../components/ConsoleTools';
 import { useEffect, useMemo, useState } from 'react';
 import { apiFetch, apiJson } from '../../../lib/api';
 
@@ -45,6 +46,8 @@ type MediaResponse = {
 
 export default function MediaPage() {
   const [data, setData] = useState<MediaResponse | null>(null);
+  const [query, setQuery] = useState('');
+  const [streamFilter, setStreamFilter] = useState('ALL');
   const [error, setError] = useState('');
   const [busyKey, setBusyKey] = useState<string>('');
 
@@ -77,6 +80,8 @@ export default function MediaPage() {
     () => (data?.matches || []).filter((match) => !match.archived && match.metadata?.stream_mode === 'MANUAL'),
     [data]
   );
+
+  const visibleStreams = streamMatches.filter(match => match.name.toLowerCase().includes(query.trim().toLowerCase()) && (streamFilter === 'ALL' || streamFilter === 'RUNNING' && runningIds.has(match.id) || streamFilter === 'ATTENTION' && (Boolean(match.metadata?.stream_attach_error) || match.metadata?.hls_probe?.ok === false)));
 
   const [allKeysCopied, setAllKeysCopied] = useState(false);
 
@@ -138,7 +143,7 @@ export default function MediaPage() {
   };
 
   return (
-    <main className="page-stack">
+    <main className="page-stack console-page media-page">
       <section className="card card-panel grid">
         <div className="section-heading">
           <div>
@@ -146,21 +151,11 @@ export default function MediaPage() {
             <h2 style={{ margin: 0 }}>Media Control</h2>
           </div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className={`status-pill ${data?.gateway.status_ok ? 'running' : 'stopped'}`}>
-              {data?.gateway.status_ok ? 'Gateway Online' : 'Gateway Offline'}
+            <span className={`status-pill ${!data ? 'warning' : data.gateway.status_ok ? 'running' : 'stopped'}`}>
+              {!data ? '상태 확인 중…' : data.gateway.status_ok ? 'Gateway Online' : 'Gateway Offline'}
             </span>
-            <button onClick={load} disabled={busyKey !== ''}>Refresh</button>
-            <button
-              className="btn-danger"
-              onClick={() => runDangerousAction(
-                'stop-all',
-                (confirmed) => apiFetch(`/admin/media/stop-all${confirmed ? '?confirm_live_action=true' : ''}`, { method: 'POST' }),
-                'Stop all failed'
-              )}
-              disabled={busyKey !== '' || runningIds.size === 0}
-            >
-              {busyKey === 'stop-all' ? 'Stopping...' : 'Stop All Streams'}
-            </button>
+            <button onClick={load} disabled={busyKey !== ''}>새로고침</button>
+
           </div>
         </div>
 
@@ -196,38 +191,56 @@ export default function MediaPage() {
           )}
         </div>
 
-        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <details className="console-inline-details"><summary>전체 송출 관리 · 예시 경기</summary><div className="grid" style={{ gap: 18 }}>
           <button
-            onClick={() => runAction('seed-demo', () => apiFetch('/admin/media/seed-demo', { method: 'POST' }))}
-            disabled={busyKey !== ''}
+            className="btn-danger"
+            onClick={() => runDangerousAction(
+              'stop-all',
+              (confirmed) => apiFetch(`/admin/media/stop-all${confirmed ? '?confirm_live_action=true' : ''}`, { method: 'POST' }),
+              'Stop all failed'
+            )}
+            disabled={busyKey !== '' || runningIds.size === 0}
           >
-            {busyKey === 'seed-demo' ? 'Creating...' : 'Create Demo Matches'}
+            {busyKey === 'stop-all' ? 'Stopping...' : '전체 송출 중지'}
           </button>
-          <div className="muted">
-            로컬에서 이해하기 쉽도록 STREAM 정상 예시, HLS 실패 예시, MANUAL 예시 매치를 자동으로 넣습니다.
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => runAction('seed-demo', () => apiFetch('/admin/media/seed-demo', { method: 'POST' }))}
+              disabled={busyKey !== ''}
+            >
+              {busyKey === 'seed-demo' ? 'Creating...' : '예시 경기 만들기'}
+            </button>
+            <div className="muted">
+              로컬에서 이해하기 쉽도록 STREAM 정상 예시, HLS 실패 예시, MANUAL 예시 매치를 자동으로 넣습니다.
+            </div>
           </div>
-        </div>
+        </div></details>
       </section>
 
       <section className="card card-utility grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Streaming Matches</div>
-            <h3 style={{ margin: 0 }}>Per-Match Control</h3>
+            <h3 style={{ margin: 0 }}>경기별 송출 제어</h3>
           </div>
           <button
             className="button-compact btn-secondary"
             onClick={copyAllKeys}
             disabled={streamMatches.length === 0}
           >
-            {allKeysCopied ? '복사됨 ✓' : 'All Copy Key'}
+            {allKeysCopied ? '복사됨 ✓' : '전체 스트림 키 복사'}
           </button>
         </div>
 
-        {streamMatches.length === 0 ? (
-          <div className="muted">현재 활성화된 스트림 매치가 없습니다. MANUAL 경기만 운영 중이면 영상 서버를 내릴 판단 근거로 볼 수 있습니다.</div>
+        <ConsoleToolbar>
+          <label className="field-stack console-search"><span className="field-label">경기 검색</span><input type="search" placeholder="팀명 또는 경기명" value={query} onChange={e => setQuery(e.target.value)} /></label>
+          <label className="field-stack"><span className="field-label">송출 상태</span><select value={streamFilter} onChange={e => setStreamFilter(e.target.value)}><option value="ALL">전체</option><option value="RUNNING">송출 중</option><option value="ATTENTION">점검 필요</option></select></label>
+          <span className="muted" role="status">{visibleStreams.length} / {streamMatches.length}개 경기</span>
+        </ConsoleToolbar>
+        {visibleStreams.length === 0 ? (
+          <ConsoleEmpty title={data ? "조건에 맞는 송출 경기가 없습니다" : "송출 상태를 불러오는 중…"}><button onClick={() => { setQuery(''); setStreamFilter('ALL'); }}>필터 초기화</button></ConsoleEmpty>
         ) : (
-          streamMatches.map((match) => {
+          visibleStreams.map((match) => {
             const running = runningIds.has(match.id);
             const stopKey = `stop:${match.id}`;
             const clearKey = `clear:${match.id}`;
@@ -263,15 +276,16 @@ export default function MediaPage() {
                         detail: {match.metadata.hls_probe.detail}
                       </div>
                     ) : null}
-                    <div className="muted text-tech">
+                    <details className="console-inline-details"><summary>연결 주소 · 스트림 키</summary>                    <div className="muted text-tech">
                       server: {match.metadata?.rtmp?.server_url || 'N/A'}
                     </div>
-                    <div className="muted text-tech">
-                      key: {match.metadata?.rtmp?.stream_key || match.id}
-                    </div>
-                    <div className="muted text-tech">
-                      hls: {match.hls_url || 'N/A'}
-                    </div>
+                      <div className="muted text-tech">
+                        key: {match.metadata?.rtmp?.stream_key || match.id}
+                      </div>
+                      <div className="muted text-tech">
+                        hls: {match.hls_url || 'N/A'}
+                      </div>
+                    </details>
                     {match.metadata?.stream_attach_error ? (
                       <div className="form-error">
                         attach error: {match.metadata.stream_attach_error}
@@ -280,27 +294,27 @@ export default function MediaPage() {
                   </div>
 
                   <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                    <Link className="button-link button-compact btn-primary" href={`/admin/match/${match.id}`}>Open Match</Link>
+                    <Link className="button-link button-compact btn-primary" href={`/admin/match/${match.id}`}>경기 제어</Link>
                     <button
                       className="btn-primary"
                       onClick={() => runAction(`reattach:${match.id}`, () => apiFetch(`/admin/media/${match.id}/reattach`, { method: 'POST' }))}
                       disabled={busyKey !== ''}
                     >
-                      {busyKey === `reattach:${match.id}` ? 'Re-attaching...' : 'Re-attach'}
+                      {busyKey === `reattach:${match.id}` ? 'Re-attaching...' : '다시 연결'}
                     </button>
                     <button
                       className="btn-danger"
                       onClick={() => runAction(stopKey, () => apiFetch(`/matches/${match.id}/stream/stop`, { method: 'POST' }))}
                       disabled={busyKey !== '' || !running}
                     >
-                      {busyKey === stopKey ? 'Stopping...' : 'Stop Stream'}
+                      {busyKey === stopKey ? 'Stopping...' : '송출 중지'}
                     </button>
                     <button
                       className="btn-secondary"
                       onClick={() => runAction(clearKey, () => apiFetch(`/matches/${match.id}/stream/clear`, { method: 'POST' }))}
                       disabled={busyKey !== '' || !running}
                     >
-                      {busyKey === clearKey ? 'Clearing...' : 'Clear HLS'}
+                      {busyKey === clearKey ? 'Clearing...' : 'HLS 정리'}
                     </button>
                   </div>
                 </div>
@@ -310,7 +324,7 @@ export default function MediaPage() {
         )}
       </section>
 
-      <section className="card grid">
+      <details className="console-disclosure"><summary>송출 상태 읽는 방법</summary><section className="card grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">Guide</div>
@@ -321,7 +335,7 @@ export default function MediaPage() {
         <div className="muted">`RUNNING인데 HLS probe FAIL/404/502`면 최근 말씀하신 “attach는 됐는데 HLS 200 OK가 안 뜨는 상태”로 볼 수 있습니다.</div>
         <div className="muted">이 경우 `Re-attach`를 눌러 저장된 ingest 정보로 다시 gateway attach를 시도할 수 있습니다.</div>
         <div className="muted">`MANUAL` 매치만 남아 있으면 영상 서버를 굳이 유지하지 않아도 되는 날인지 판단하는 데 도움이 됩니다.</div>
-      </section>
+      </section></details>
     </main>
   );
 }

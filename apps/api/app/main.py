@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID
-from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
@@ -28,8 +28,16 @@ import os
 import httpx
 import pandas as pd
 from PIL import Image
-from pypdf import PdfReader
+from .lineup_pdf import parse_lineup_pdf
+from .team_branding import (create_team_logo_router, match_team_names, team_logo_urls, resolve_branding, mark_manual_branding, reset_branding)
 
+from .auth import (
+    router as auth_router, bootstrap_admin_accounts,
+    get_session_user as _get_session_user,
+    require_session_user as _require_session_user,
+    require_admin as _require_superuser,
+    session_user_id as _get_authenticated_user_id,
+)
 from .db import Base, SessionLocal, engine, get_db
 from .fcm_cards import GOALKEEPER_TEMPLATE_PATH, TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
 from .fpa import (
@@ -112,7 +120,6 @@ from .schemas import (
     IngestProtocol,
     LineupManualPlayerDeleteRequest,
     LineupManualPlayerRequest,
-    LoginRequest,
     MatchResultResponse,
     MatchResponse,
     MatchMarkerRequest,
@@ -126,7 +133,6 @@ from .schemas import (
     ScheduleEntryRequest,
     ScheduleEntryResponse,
     ScheduleImportResponse,
-    SessionUserResponse,
     StateRequest,
     TimelineEditorListItem,
     TimelineEditorListResponse,
@@ -136,12 +142,12 @@ from .schemas import (
     XGEstimateRequest,
     XGEventRequest,
     XGOTEstimateRequest,
-    UserRole,
 )
 from .services import apply_attack_event, apply_possession_segment, apply_xg_event, backfill_attack_scores, enqueue_outbox, latest_outbox, outbox_worker, recompute_dominance
 from .xg import estimate_xg as shared_estimate_xg, is_in_penalty_area as shared_is_in_penalty_area, normalize_shot_x as shared_normalize_shot_x
 
 app = FastAPI(title="Live Match Admin API")
+app.include_router(auth_router)
 
 origins = [v.strip() for v in os.getenv("CORS_ORIGINS", "*").split(",") if v.strip()]
 app.add_middleware(
@@ -157,9 +163,6 @@ worker_task: asyncio.Task | None = None
 system_monitor_task: asyncio.Task | None = None
 schedule_slack_task: asyncio.Task | None = None
 broadcast_asset_task: asyncio.Task | None = None
-SESSION_COOKIE_NAME = "live_admin_session"
-SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-live-admin-session-secret")
-SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 14)))
 PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://console.fineludens.kr").rstrip("/")
 # Console 대시보드는 운영 화면을 열 때마다 gateway 상태를 확인한다. 미디어 서버가 꺼진
 # 상태에서는 이 확인이 전체 화면을 기다리게 해서는 안 된다.
@@ -1554,6 +1557,7 @@ async def startup() -> None:
     ensure_highlight_runtime_dirs()
     db = SessionLocal()
     try:
+        bootstrap_admin_accounts(db)
         _seed_competition_classes(db)
         _seed_existing_fcm_templates(db)
     finally:
@@ -1577,9 +1581,10 @@ async def shutdown() -> None:
         await broadcast_asset_task
 
 
-def _require_write_lock(match_obj: Match, user_id: str | None) -> None:
+def _require_write_lock(match_obj: Match, user_id: User | str | None) -> None:
     if _is_superuser(user_id):
         return
+    user_id = user_id.id if isinstance(user_id, User) else user_id
     if match_obj.operator_id and match_obj.operator_id != user_id:
         raise HTTPException(status_code=403, detail="Operator lock held by another user")
 
@@ -1596,85 +1601,6 @@ def _require_archived_editor_access(match_obj: Match, user: User) -> None:
         raise HTTPException(status_code=409, detail="Event editor is available for archived matches only")
 
 
-def _slugify_user_id(name: str) -> str:
-    normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in name.strip())
-    compact = "-".join(part for part in normalized.split("-") if part)
-    return compact[:40] or f"user-{uuid.uuid4().hex[:8]}"
-
-
-def _sign_session_value(user_id: str) -> str:
-    signature = hmac.new(SESSION_SECRET.encode("utf-8"), user_id.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{user_id}.{signature}"
-
-
-def _verify_session_value(raw_value: str | None) -> str | None:
-    if not raw_value or "." not in raw_value:
-        return None
-    user_id, signature = raw_value.rsplit(".", 1)
-    expected = hmac.new(SESSION_SECRET.encode("utf-8"), user_id.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        return None
-    return user_id
-
-
-def _shared_session_cookie_options(request: Request | None = None) -> dict:
-    """Share an authenticated FPC session with the broadcast subdomain.
-
-    Local development keeps a host-only, non-secure cookie.  On the production
-    FineLudens domain the shared secure cookie lets an operator who signed in
-    to FPC configure logos and colours directly inside Broadcast.
-    """
-    host = ""
-    if request:
-        host = (request.headers.get("x-forwarded-host") or request.url.hostname or "").split(":", 1)[0].lower()
-    if host == "fineludens.kr" or host.endswith(".fineludens.kr"):
-        return {"domain": ".fineludens.kr", "secure": True}
-    return {"secure": False}
-
-
-def _set_session_cookie(response: Response, user_id: str, request: Request | None = None) -> None:
-    response.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=_sign_session_value(user_id),
-        max_age=SESSION_MAX_AGE,
-        httponly=True,
-        samesite="lax",
-        **_shared_session_cookie_options(request),
-        path="/",
-    )
-
-
-def _clear_session_cookie(response: Response, request: Request | None = None) -> None:
-    # Clear both the old host-only cookie and the shared production cookie so
-    # sessions created before the showroom editor was added cannot linger.
-    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
-    options = _shared_session_cookie_options(request)
-    if options.get("domain"):
-        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", domain=str(options["domain"]))
-
-
-def _get_session_user(
-    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
-    db: Session = Depends(get_db),
-) -> User | None:
-    user_id = _verify_session_value(session_cookie)
-    if not user_id:
-        return None
-    return db.get(User, user_id)
-
-
-def _require_session_user(user: User | None = Depends(_get_session_user)) -> User:
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user
-
-
-def _require_superuser(user: User = Depends(_require_session_user)) -> User:
-    if not _is_superuser(user):
-        raise HTTPException(status_code=403, detail="Superadmin only")
-    return user
-
-
 def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) -> str | None:
     return explicit_user_id or (session_user.id if session_user else None)
 
@@ -1683,31 +1609,6 @@ def _is_superuser(user: User | str | None) -> bool:
     if isinstance(user, User):
         return (user.role or "OPERATOR") == "SUPERADMIN"
     return False
-
-
-def _sha256_hex(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _matches_configured_key(raw_value: str, plain_env: str, hash_env: str) -> bool:
-    plain = os.getenv(plain_env, "").strip()
-    hashed = os.getenv(hash_env, "").strip().lower()
-    if plain and hmac.compare_digest(raw_value, plain):
-        return True
-    if hashed and hmac.compare_digest(_sha256_hex(raw_value), hashed):
-        return True
-    return False
-
-
-def _resolve_login_role(access_key: str) -> UserRole:
-    key = access_key.strip()
-    if not key:
-        raise HTTPException(status_code=401, detail="Access key required")
-    if _matches_configured_key(key, "SUPERADMIN_ACCESS_KEY", "SUPERADMIN_ACCESS_KEY_HASH"):
-        return "SUPERADMIN"
-    if _matches_configured_key(key, "OPERATOR_ACCESS_KEY", "OPERATOR_ACCESS_KEY_HASH"):
-        return "OPERATOR"
-    raise HTTPException(status_code=401, detail="Invalid access key")
 
 
 def _normalize_competition_class(value: str | None) -> str:
@@ -1903,11 +1804,15 @@ def _default_broadcast_state(match_obj: Match) -> dict:
     }
 
 
-def _broadcast_state(match_obj: Match) -> dict:
+def _broadcast_state(match_obj: Match, *, include_branding_sources: bool = False) -> dict:
     metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
     state = metadata.get("broadcast") if isinstance(metadata.get("broadcast"), dict) else {}
     base = _default_broadcast_state(match_obj)
     base.update({k: v for k, v in state.items() if k in base or k in {"event_payload"}})
+    branding = resolve_branding(metadata, team_logo_urls(match_obj))
+    if not include_branding_sources:
+        branding.pop("branding_sources", None)
+    base.update(branding)
     base["match_id"] = str(match_obj.id)
     base["sport"] = _normalize_sport(getattr(match_obj, "sport", None))
     base["scoreboard_visible"] = bool(base.get("scoreboard_visible"))
@@ -1957,11 +1862,7 @@ def _broadcast_logo_path(filename: str) -> Path:
 
 
 def _team_names_from_match(match_obj: Match) -> dict:
-    metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
-    return {
-        "HOME": metadata.get("home_team") or "HOME",
-        "AWAY": metadata.get("away_team") or "AWAY",
-    }
+    return match_team_names(match_obj)
 
 
 def _broadcast_shots_comparison_baseline(match_obj: Match) -> dict:
@@ -2792,6 +2693,16 @@ def _queue_broadcast_branding_refresh(match_id: UUID) -> None:
         timer.start()
 
 
+def _on_team_branding_changed(match_ids: list[UUID]) -> None:
+    _match_response_cache.clear()
+    for match_id in match_ids:
+        _broadcast_snapshot_cache.pop(str(match_id), None)
+        _queue_broadcast_branding_refresh(match_id)
+
+
+app.include_router(create_team_logo_router(BROADCAST_LOGO_DIR, _on_team_branding_changed))
+
+
 def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
     metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
     teams = _team_names_from_match(match_obj)
@@ -2911,7 +2822,15 @@ def _require_basketball_match_for_partner(match_id: UUID, db: Session) -> Match:
     return row
 
 
-def _serialize_fcm_submission(row: FcmSubmission) -> dict:
+def _serialize_fcm_submission(row: FcmSubmission, db: Session) -> dict:
+    card_type = "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER"
+    selected_stats = list(row.selected_stats or [])
+    if card_type == "GOALKEEPER":
+        # Reopening an older submission must show the same current values as
+        # its PNG export, without rewriting the original submitted record.
+        selected_stats = _sync_goalkeeper_card_stats(
+            selected_stats, _goalkeeper_fla_shot_events(db, row.match_id, row.team_side)
+        )
     return {
         "id": row.id,
         "match_id": row.match_id,
@@ -2921,8 +2840,8 @@ def _serialize_fcm_submission(row: FcmSubmission) -> dict:
         "team_name": row.team_name or "",
         "player_id": row.player_id,
         "player_name": row.player_name or "",
-        "selected_stats": list(row.selected_stats or []),
-        "card_type": "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER",
+        "selected_stats": selected_stats,
+        "card_type": card_type,
         "penalty_shootout": [value for value in list(row.penalty_shootout or []) if str(value).upper() in {"O", "X"}][:10],
         "submitted_by": row.submitted_by,
         "created_at": row.created_at.isoformat(),
@@ -2958,8 +2877,8 @@ def _build_fpa_workbook_from_saved_log(row: FpaSavedLog) -> bytes:
     return build_analysis_workbook(df, scene_rows=list(row.rows or []))
 
 
-def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> list[dict[str, object]]:
-    """Return opponent XG events used as the sole source for goalkeeper saves."""
+def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> list[dict[str, object]] | None:
+    """Return all opponent shots, or None when the match has no FLA shot data."""
     opponent_side = "AWAY" if team_side == "HOME" else "HOME"
     events = (
         db.query(Event)
@@ -2967,6 +2886,10 @@ def _goalkeeper_fla_shot_events(db: Session, match_id: UUID, team_side: str) -> 
         .order_by(Event.clock_ms.asc(), Event.created_at.asc())
         .all()
     )
+    # An opponent with no attempts has real zero totals. A workbook-only match
+    # has no FLA source at all: retain its FPA totals and goalkeeper map.
+    if not events and db.query(Event.id).filter(Event.match_id == match_id, Event.type == "XG").first() is None:
+        return None
     return [
         {
             "is_goal": bool(event.is_goal),
@@ -2990,16 +2913,12 @@ def _goalkeeper_fla_conceded_values(events: list[dict[str, object]]) -> tuple[in
     )
 
 
-def _stat_value_after_colon(stat: str) -> float | None:
-    match = re.search(r":\s*(-?\d+(?:\.\d+)?)", stat)
-    return float(match.group(1)) if match else None
-
-
 def _sync_goalkeeper_card_stats(
-    selected_stats: list[str], events: list[dict[str, object]] | None
+    selected_stats: list[str], events: list[dict[str, object]] | None, *, include_save_candidate: bool = False
 ) -> list[str]:
-    """Align goalkeeper save text with FLA without discarding submitted detail."""
-    events = events or []
+    """Use Broadcast's FLA source for saves/goals/xGa, preserving stat selection."""
+    if events is None:
+        return list(selected_stats)
     save_count = _goalkeeper_fla_save_count(events)
     fla_goals, fla_xg = _goalkeeper_fla_conceded_values(events)
     synced: list[str] = []
@@ -3014,18 +2933,17 @@ def _sync_goalkeeper_card_stats(
             # but that user-entered context must remain one of the five stats.
             suffix_match = re.search(r"(\([^)]*\))\s*$", stat)
             suffix = f" {suffix_match.group(1)}" if suffix_match else ""
-            synced.append(f"{label} {save_count}회{suffix}")
+            synced.append(f"{label} : {save_count}회{suffix}")
             replaced_save = True
-        elif normalized.startswith("실점") and fla_goals > 0 and (_stat_value_after_colon(stat) or 0) == 0:
-            # FPA match logs sometimes contain only keeper actions and omit
-            # every opponent shot. In that case, avoid a false zero by using
-            # the persisted FLA XG goal record.
+        elif normalized.startswith("실점"):
             synced.append(f"실점 : {fla_goals}골")
-        elif normalized.startswith("기대실점") and fla_xg > 0 and (_stat_value_after_colon(stat) or 0) == 0:
+        elif normalized.startswith("기대실점"):
+            # A nonzero workbook value may still contain goals only. Always
+            # use every opponent FLA shot, just like Broadcast's xG comparison.
             synced.append(f"기대 실점(xG) : {fla_xg:.3f} ({fla_goals}골)")
         else:
             synced.append(stat)
-    if not replaced_save:
+    if include_save_candidate and not replaced_save:
         expected_index = next(
             (index for index, stat in enumerate(synced) if re.sub(r"\s+", "", stat).startswith("기대실점")),
             len(synced) - 1,
@@ -3064,11 +2982,12 @@ def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match |
         if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
             continue
 
-        # FLA defines saves. FPA retains the other metrics; if FPA has no
-        # opponent shots at all, its zero conceded values are safely filled
-        # from FLA's persisted goal/XG records.
+        # Candidate selection and final PNG generation share the same FLA
+        # totals. Workbook-only matches retain the FPA candidate values.
         opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
-        player["candidates"] = _sync_goalkeeper_card_stats(list(player.get("candidates") or []), opponent_xg_events)
+        player["candidates"] = _sync_goalkeeper_card_stats(
+            list(player.get("candidates") or []), opponent_xg_events, include_save_candidate=True
+        )
     return payload
 
 
@@ -4383,105 +4302,11 @@ def _event_player_payload(event: Event) -> dict:
     }
 
 
-def _parse_lineup_pdf(file_bytes: bytes, *, first_team_side: str = "HOME") -> dict:
+def _parse_lineup_pdf(file_bytes: bytes, *, first_team_side: str = "AUTO", expected_teams: dict | None = None) -> dict:
     try:
-        reader = PdfReader(io.BytesIO(file_bytes))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    except Exception as ex:
-        raise HTTPException(status_code=400, detail=f"Could not read lineup PDF: {ex}") from ex
-
-    sections = re.split(r"선발출전선수\(총경기시간:\d+분\)", text)
-    if len(sections) < 3:
-        raise HTTPException(status_code=400, detail="Could not find two lineup sections in PDF")
-
-    def normalize_player_line(line: str) -> dict | None:
-        line = re.sub(r"\s*\(주장\)\s*", " ", line).strip()
-        match = re.match(r"^(?P<number>\d{1,3})\s+(?P<position>GK|DF|MF|FW)\s+(?P<name>[가-힣A-Za-z.'· -]+?)(?:\s+\d.*)?$", line)
-        if not match:
-            return None
-        number = match.group("number").strip()
-        raw_name = match.group("name").strip()
-        name = raw_name.strip()
-        if not name:
-            return None
-        return {
-            "number": number,
-            "position": match.group("position"),
-            "name": name,
-            "label": f"No.{number} {name}",
-        }
-
-    def parse_starters(section: str) -> list[dict]:
-        players_by_number: dict[str, dict] = {}
-        in_player_table = False
-        collected = False
-        for raw_line in section.splitlines():
-            line = re.sub(r"\s+", " ", raw_line).strip()
-            if not line:
-                continue
-            if line.replace(" ", "").startswith("배번포지션선수이름"):
-                in_player_table = True
-                continue
-            if not in_player_table:
-                continue
-            player = normalize_player_line(line)
-            if player:
-                players_by_number[player["number"]] = player
-                collected = True
-            elif collected:
-                break
-        return sorted(players_by_number.values(), key=lambda item: int(item["number"]))
-
-    candidate_header_pattern = r"후보선수\s+배번\s*포지션\s*선수이름\s*득점\s*도움\s*경고\s*퇴장\s*PSO"
-
-    def parse_candidate_blocks(full_text: str) -> list[list[dict]]:
-        blocks: list[list[dict]] = []
-        for match in re.finditer(rf"{candidate_header_pattern}(?P<body>.*?)(?:교체선수|자책골|지도자/임원|$)", full_text, re.S):
-            players_by_number: dict[str, dict] = {}
-            for raw_line in match.group("body").splitlines():
-                line = re.sub(r"\s+", " ", raw_line).strip()
-                player = normalize_player_line(line)
-                if player:
-                    players_by_number[player["number"]] = player
-            blocks.append(sorted(players_by_number.values(), key=lambda item: int(item["number"])))
-        return blocks[:2]
-
-    def parse_continuation_blocks(full_text: str) -> list[list[dict]]:
-        blocks: list[list[dict]] = []
-        for match in re.finditer(candidate_header_pattern, full_text):
-            players: list[dict] = []
-            for raw_line in reversed(full_text[: match.start()].splitlines()):
-                line = re.sub(r"\s+", " ", raw_line).strip()
-                player = normalize_player_line(line)
-                if player:
-                    players.append(player)
-                    continue
-                if players:
-                    break
-            blocks.append(list(reversed(players)))
-        return blocks[:2]
-
-    first_side = first_team_side.strip().upper()
-    if first_side not in {"HOME", "AWAY"}:
-        first_side = "HOME"
-    second_side = "AWAY" if first_side == "HOME" else "HOME"
-    candidate_blocks = parse_candidate_blocks(text)
-    continuation_blocks = parse_continuation_blocks(text)
-    lineups = {
-        first_side: parse_starters(sections[1]) + (continuation_blocks[0] if len(continuation_blocks) > 0 else []) + (candidate_blocks[0] if len(candidate_blocks) > 0 else []),
-        second_side: parse_starters(sections[2]) + (continuation_blocks[1] if len(continuation_blocks) > 1 else []) + (candidate_blocks[1] if len(candidate_blocks) > 1 else []),
-    }
-    for side, players in lineups.items():
-        deduped = {player["number"]: player for player in players}
-        lineups[side] = sorted(deduped.values(), key=lambda item: int(item["number"]))
-    return {
-        "source": "match_record_pdf",
-        "first_team_side": first_side,
-        "teams": {
-            "HOME": lineups.get("HOME", []),
-            "AWAY": lineups.get("AWAY", []),
-        },
-    }
+        return parse_lineup_pdf(file_bytes, first_team_side=first_team_side, expected_teams=expected_teams)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def _empty_lineup(source: str = "manual") -> dict:
@@ -4573,6 +4398,14 @@ def _swap_lineup_sides(match_obj: Match) -> dict:
     teams["HOME"] = sorted(away_players, key=_lineup_sort_key)
     teams["AWAY"] = sorted(home_players, key=_lineup_sort_key)
     lineup["teams"] = teams
+    lineup["detected_by"] = "manual"
+    for key in ("team_names", "uniforms"):
+        if isinstance(lineup.get(key), dict):
+            values = lineup[key]
+            lineup[key] = {"HOME": values.get("AWAY"), "AWAY": values.get("HOME")}
+    if isinstance(metadata.get("lineup_team_info"), dict):
+        info = metadata["lineup_team_info"]
+        metadata["lineup_team_info"] = {"HOME": info.get("AWAY"), "AWAY": info.get("HOME")}
     first_side = str(lineup.get("first_team_side") or "").upper()
     if first_side in {"HOME", "AWAY"}:
         lineup["first_team_side"] = "AWAY" if first_side == "HOME" else "HOME"
@@ -4808,40 +4641,6 @@ def _require_partner_auth(x_api_key: str | None = Header(default=None, alias="X-
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "time": datetime.utcnow().isoformat()}
-
-
-@app.post("/api/session/login", response_model=SessionUserResponse)
-def login(body: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
-    user_name = body.name.strip()
-    user_id = _slugify_user_id(user_name)
-    role = _resolve_login_role(body.access_key)
-
-    existing = db.get(User, user_id)
-    if existing:
-        existing.name = user_name
-        existing.role = role
-        user = existing
-    else:
-        user = User(id=user_id, name=user_name, role=role)
-        db.add(user)
-
-    db.commit()
-    db.refresh(user)
-    _set_session_cookie(response, user.id, request)
-    _audit(db, "SESSION_LOGIN", "session", actor=user, target_id=user.id, severity="INFO")
-    db.commit()
-    return {"id": user.id, "name": user.name, "role": user.role}
-
-
-@app.post("/api/session/logout")
-def logout(response: Response, request: Request):
-    _clear_session_cookie(response, request)
-    return {"ok": True}
-
-
-@app.get("/api/session/me", response_model=SessionUserResponse)
-def current_session(user: User = Depends(_require_session_user)):
-    return {"id": user.id, "name": user.name, "role": user.role}
 
 
 @app.post("/api/xg/estimate")
@@ -5666,7 +5465,7 @@ def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db
 @app.get("/api/fcm/submissions", response_model=list[FcmSubmissionResponse])
 def list_fcm_submissions(db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
     rows = db.query(FcmSubmission).order_by(desc(FcmSubmission.updated_at)).all()
-    return [_serialize_fcm_submission(row) for row in rows]
+    return [_serialize_fcm_submission(row, db) for row in rows]
 
 
 @app.get("/api/fcm/templates", response_model=list[FcmTemplateResponse])
@@ -5844,7 +5643,7 @@ def get_fcm_submissions(match_id: UUID, db: Session = Depends(get_db), _user: Us
         .order_by(FcmSubmission.team_side.asc(), desc(FcmSubmission.updated_at))
         .all()
     )
-    return [_serialize_fcm_submission(row) for row in rows]
+    return [_serialize_fcm_submission(row, db) for row in rows]
 
 
 @app.get("/api/fcm/matches/{match_id}/submission", response_model=FcmSubmissionResponse)
@@ -5864,7 +5663,7 @@ def get_fcm_submission(
     )
     if not row:
         raise HTTPException(status_code=404, detail="FCM submission not found")
-    return _serialize_fcm_submission(row)
+    return _serialize_fcm_submission(row, db)
 
 
 @app.post("/api/fcm/matches/{match_id}/submission", response_model=FcmSubmissionResponse)
@@ -5943,7 +5742,7 @@ def upsert_fcm_submission(
         },
     )
     db.commit()
-    return _serialize_fcm_submission(row)
+    return _serialize_fcm_submission(row, db)
 
 
 @app.post("/api/fpa/analyze/visualize", response_model=FpaVisualizeResponse)
@@ -6839,7 +6638,7 @@ def put_broadcast_state(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     metadata = dict(match_obj.metadata_json or {})
-    previous = _broadcast_state(match_obj)
+    previous = _broadcast_state(match_obj, include_branding_sources=True)
     allowed_graphics = {None, "ATTACK_DIRECTION_HOME", "ATTACK_DIRECTION_AWAY", "XG"}
     allowed_events = {None, "GOAL", "YELLOW_CARD", "RED_CARD", "SUBSTITUTION"}
     allowed_fullscreen = {None, "LINEUP", "HALFTIME", "FULLTIME", "MATCH_DOMINANCE"}
@@ -6908,13 +6707,18 @@ def put_broadcast_state(
     for key in ("home_score", "away_score"):
         if next_state.get(key) is not None:
             next_state[key] = max(0, int(next_state.get(key) or 0))
+    next_state = mark_manual_branding(next_state, body)
     metadata["broadcast"] = next_state
+    if body.get("branding_reset") is True:
+        metadata = reset_branding(metadata)
+        next_state = {**metadata["broadcast"], **resolve_branding(metadata, team_logo_urls(match_obj, db))}
+        metadata["broadcast"] = next_state
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
-    if any(key in body for key in {"home_label", "away_label", "home_color", "away_color"}):
+    if any(key in body for key in {"home_label", "away_label", "home_color", "away_color", "home_logo_url", "away_logo_url", "branding_reset"}):
         _queue_broadcast_branding_refresh(match_id)
-    return next_state
+    return {key: value for key, value in next_state.items() if key != "branding_sources"}
 
 
 @app.post("/api/broadcast/matches/{match_id}/logo")
@@ -6949,19 +6753,20 @@ async def upload_broadcast_logo(
     path.write_bytes(payload)
 
     metadata = dict(match_obj.metadata_json or {})
-    previous = _broadcast_state(match_obj)
+    previous = _broadcast_state(match_obj, include_branding_sources=True)
     next_state = {
         **previous,
         f"{team_key.lower()}_logo_url": f"/api/broadcast/assets/logos/{filename}",
         "sequence": int(previous.get("sequence") or 0) + 1,
         "updated_at": datetime.utcnow().isoformat(),
     }
+    next_state = mark_manual_branding(next_state, {f"{team_key.lower()}_logo_url": next_state[f"{team_key.lower()}_logo_url"]})
     metadata["broadcast"] = next_state
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
     _queue_broadcast_branding_refresh(match_id)
-    return next_state
+    return {key: value for key, value in next_state.items() if key != "branding_sources"}
 
 
 @app.post("/api/broadcast/matches/{match_id}/fullscreen-image")
@@ -6996,7 +6801,7 @@ async def upload_broadcast_fullscreen_image(
     path.write_bytes(payload)
 
     metadata = dict(match_obj.metadata_json or {})
-    previous = _broadcast_state(match_obj)
+    previous = _broadcast_state(match_obj, include_branding_sources=True)
     fullscreen_image_urls = dict(previous.get("fullscreen_image_urls") or {})
     fullscreen_image_urls[scene_key] = f"/api/broadcast/assets/logos/{filename}"
     next_state = {
@@ -7009,7 +6814,7 @@ async def upload_broadcast_fullscreen_image(
     match_obj.metadata_json = metadata
     db.commit()
     _broadcast_snapshot_cache.pop(str(match_id), None)
-    return next_state
+    return {key: value for key, value in next_state.items() if key != "branding_sources"}
 
 
 @app.get("/api/broadcast/assets/logos/{filename}")
@@ -7708,26 +7513,28 @@ def get_match(match_id: UUID, db: Session = Depends(get_db)):
 async def upload_match_lineup_pdf(
     match_id: UUID,
     file: UploadFile = File(...),
-    first_team_side: str = Form(default="HOME"),
+    first_team_side: str = Form(default="AUTO"),
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Lineup upload must be a PDF")
 
-    lineup = _parse_lineup_pdf(await file.read(), first_team_side=first_team_side)
+    lineup = await run_in_threadpool(_parse_lineup_pdf, await file.read(20 * 1024 * 1024 + 1), first_team_side=first_team_side, expected_teams=_team_names_from_match(match_obj))
     metadata = dict(match_obj.metadata_json or {})
     metadata["lineups"] = lineup
+    metadata["lineup_team_info"] = {side: {"name": name} for side, name in lineup["team_names"].items()}
     metadata["lineup_pdf_filename"] = file.filename or ""
     metadata["lineup_pdf_uploaded_at"] = datetime.utcnow().isoformat()
     match_obj.metadata_json = metadata
     db.commit()
     db.refresh(match_obj)
+    _on_team_branding_changed([match_id])
     return {
         "ok": True,
         "lineups": lineup,
@@ -7887,17 +7694,18 @@ def delete_match_lineup_manual_player(
 def swap_match_lineup_sides(
     match_id: UUID,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     lineup = _swap_lineup_sides(match_obj)
     db.commit()
     db.refresh(match_obj)
+    _on_team_branding_changed([match_id])
     return {
         "ok": True,
         "lineups": lineup,
@@ -9061,7 +8869,7 @@ async def create_highlight_job(
     second_half_start_sec: float = Form(0.0),
     log_data_json: str = Form("[]"),
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user_id: str | None = Depends(_get_authenticated_user_id),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -13274,7 +13082,7 @@ def serve_player_video(
     job_id: str,
     request: Request,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user_id: str | None = Depends(_get_authenticated_user_id),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -13296,7 +13104,7 @@ def make_player_proxy(
     job_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user_id: str | None = Depends(_get_authenticated_user_id),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -13322,7 +13130,7 @@ def make_player_proxy(
 def serve_player_detections(
     job_id: str,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user_id: str | None = Depends(_get_authenticated_user_id),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -13355,7 +13163,7 @@ def serve_player_detections(
 def list_player_possession_events(
     job_id: str,
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user_id: str | None = Depends(_get_authenticated_user_id),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -13374,7 +13182,7 @@ def preview_player_job_clips(
     job_id: str,
     body: dict = Body(...),
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user_id: str | None = Depends(_get_authenticated_user_id),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -13412,7 +13220,7 @@ def extract_player_job_clips(
     job_id: str,
     body: dict = Body(...),
     db: Session = Depends(get_db),
-    user_id: str | None = Depends(lambda live_admin_session=Cookie(default=None): _verify_session_value(live_admin_session)),
+    user_id: str | None = Depends(_get_authenticated_user_id),
 ):
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")

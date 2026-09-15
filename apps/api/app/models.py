@@ -14,6 +14,43 @@ class User(Base):
     role: Mapped[str] = mapped_column(String, nullable=False, default="OPERATOR")
 
 
+class AdminAccount(Base):
+    __tablename__ = "admin_accounts"
+
+    login: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class OperatorAccessPolicy(Base):
+    __tablename__ = "operator_access_policy"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default="operator")
+    code_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[str] = mapped_column(String, nullable=False, default=lambda: uuid.uuid4().hex)
+    updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    credential_version: Mapped[str] = mapped_column(String, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+class LoginThrottle(Base):
+    __tablename__ = "login_throttles"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_start: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class Match(Base):
     __tablename__ = "matches"
 
@@ -109,6 +146,19 @@ class FcmTemplate(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+
+
+class TeamLogo(Base):
+    __tablename__ = "team_logos"
+    __table_args__ = (UniqueConstraint("competition_class", "team_key", name="uq_team_logos_competition_team"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    competition_class: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    team_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    team_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    filename: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class FpaSavedLog(Base):

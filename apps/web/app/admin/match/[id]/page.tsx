@@ -1,5 +1,8 @@
 'use client';
 
+import LineupUniforms from '../../../../components/LineupUniforms';
+import AttackDirectionPitch from '../../../../components/AttackDirectionPitch';
+import Link from 'next/link';
 import { Fragment, type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
@@ -74,7 +77,6 @@ type PossessionTeam = Team | 'NONE';
 type ClockSpeed = 1 | 2;
 type Lane = 'LEFT' | 'CENTER' | 'RIGHT';
 type AttackLR = 'L2R' | 'R2L';
-type ShotPaceBand = 'LOW' | 'MID' | 'HIGH';
 type LineupPlayer = { number: string; position?: string; name: string; label?: string };
 
 function fmt(ms: number) {
@@ -133,7 +135,7 @@ export default function MatchPage() {
   const [xgValue, setXgValue] = useState('0.10');
   const [xgotValue, setXgotValue] = useState('0.000');
   const [xgPlayerKey, setXgPlayerKey] = useState('');
-  const [lineupFirstSide, setLineupFirstSide] = useState<Team>('HOME');
+  const [lineupFirstSide, setLineupFirstSide] = useState<Team | 'AUTO'>('AUTO');
   const [isUploadingLineup, setIsUploadingLineup] = useState(false);
   const [isUploadingRecordSheet, setIsUploadingRecordSheet] = useState(false);
   const [isSwappingLineup, setIsSwappingLineup] = useState(false);
@@ -149,14 +151,19 @@ export default function MatchPage() {
   const [isOnTargetShot, setIsOnTargetShot] = useState(false);
   const [goalmouthPoint, setGoalmouthPoint] = useState<{ x: number; y: number } | null>(null);
   const [isHeaderShot, setIsHeaderShot] = useState(false);
-  const [isWeakFootShot, setIsWeakFootShot] = useState(false);
   const [isGoalShot, setIsGoalShot] = useState(false);
   const [isOwnGoal, setIsOwnGoal] = useState(false);
   const [isUnderPressureShot, setIsUnderPressureShot] = useState(false);
   const [isOneOnOneShot, setIsOneOnOneShot] = useState(false);
-  const [shotPaceBand, setShotPaceBand] = useState<ShotPaceBand>('MID');
   const [xgEstimateMeta, setXgEstimateMeta] = useState('');
   const [xgotEstimateMeta, setXgotEstimateMeta] = useState('');
+  const [mobileView, setMobileView] = useState<'control' | 'shots' | 'review' | 'settings'>('control');
+  const [controlNotice, setControlNotice] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [isSavingShot, setIsSavingShot] = useState(false);
+  const shotPendingRef = useRef(false);
+  const timerPendingRef = useRef(false);
+  const lanePendingRef = useRef(false);
   const [copyMessage, setCopyMessage] = useState('');
   const [isAttachingStream, setIsAttachingStream] = useState(false);
   const [isStoppingStream, setIsStoppingStream] = useState(false);
@@ -398,7 +405,6 @@ export default function MatchPage() {
       setIsGoalShot(false);
       setIsOnTargetShot(false);
       setIsHeaderShot(false);
-      setIsWeakFootShot(false);
       setIsUnderPressureShot(false);
       setIsOneOnOneShot(false);
     }
@@ -484,7 +490,7 @@ export default function MatchPage() {
       attack_lr: next?.attackLR ?? attackLR,
       allow_clock_rewind: Boolean(next?.allowClockRewind),
     };
-    await apiFetch(`/matches/${id}/state`, {
+    await apiJson(`/matches/${id}/state`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -498,6 +504,7 @@ export default function MatchPage() {
       apiJson<any>(`/matches/${id}/dominance?bin_seconds=180&split_halves=true`),
     ]);
     if (seq !== fetchSeqRef.current) return;
+    setLoadError('');
     setMatch(m);
     setSummary(s);
     setDominance(d.bins || []);
@@ -522,13 +529,14 @@ export default function MatchPage() {
   };
 
   useEffect(() => {
-    fetchAll();
-    const t = setInterval(fetchAll, 3000);
+    const refresh = () => fetchAll().catch(() => setLoadError('경기 데이터를 불러오지 못했습니다. 연결을 확인해 주세요.'));
+    refresh();
+    const t = setInterval(refresh, 3000);
     return () => clearInterval(t);
   }, [id]);
 
   useEffect(() => {
-    fetchOutbox();
+    fetchOutbox().catch(() => undefined);
     const t = setInterval(() => {
       fetchOutbox().catch(() => undefined);
     }, 5000);
@@ -582,20 +590,19 @@ export default function MatchPage() {
   }, [running, possessionTeam, selectedTeam, attackLR, canWrite]);
 
   const toggleRun = async () => {
-    if (!canWrite) return;
-    if (running) {
-      const finalClock = perfRef.current == null ? clockMs : Math.floor(baseRef.current + (performance.now() - perfRef.current) * clockSpeedRef.current);
-      setClockMs(finalClock);
-      baseRef.current = finalClock;
-      perfRef.current = null;
-      setRunning(false);
-      await saveState({ clockMs: finalClock, running: false });
-    } else {
-      perfRef.current = performance.now();
-      baseRef.current = clockMs;
-      setRunning(true);
-      await saveState({ running: true });
-    }
+    if (!canWrite || timerPendingRef.current) return;
+    timerPendingRef.current = true;
+    const wasRunning = runningRef.current;
+    const frozen = getCurrentClockMs();
+    try {
+      await saveState({clockMs: frozen, running: !wasRunning});
+      baseRef.current = frozen;
+      perfRef.current = wasRunning ? null : performance.now();
+      setClockMs(frozen);
+      setRunning(!wasRunning);
+      runningRef.current = !wasRunning;
+    } catch { setControlNotice('시간 변경을 저장하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.'); }
+    finally { timerPendingRef.current = false; }
   };
 
   const copyText = async (value: string, label: string) => {
@@ -690,6 +697,7 @@ export default function MatchPage() {
 
   const resetClock = async () => {
     if (!canWrite) return;
+    if (!window.confirm('타이머를 00:00으로 초기화할까요?')) return;
     setClockMs(0);
     baseRef.current = 0;
     perfRef.current = null;
@@ -778,14 +786,11 @@ export default function MatchPage() {
 
   const changePossession = async (team: PossessionTeam) => {
     if (!canWrite) return;
-    setPossessionTeam(team);
-    if (team === 'HOME' || team === 'AWAY') {
-      setSelectedTeam(team);
-      setXgTeam(team);
-      await saveState({ possessionTeam: team, selectedTeam: team });
-      return;
-    }
-    await saveState({ possessionTeam: team });
+    try {
+      await saveState(team === 'NONE' ? {possessionTeam: team} : {possessionTeam: team, selectedTeam: team});
+      setPossessionTeam(team);
+      if (team !== 'NONE') { setSelectedTeam(team); setXgTeam(team); }
+    } catch { setControlNotice('점유 팀을 저장하지 못했습니다. 다시 시도해 주세요.'); }
   };
 
   const selectEventTeam = async (team: Team) => {
@@ -871,11 +876,16 @@ export default function MatchPage() {
   };
 
   const sendLane = async (lane: Lane) => {
-    if (!canWrite) return;
-    await apiFetch(`/matches/${id}/events/attack_lane`, {
-      method: 'POST',
-      body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: clockMs }),
-    });
+    if (!canWrite || lanePendingRef.current) return;
+    lanePendingRef.current = true;
+    try {
+      await apiJson(`/matches/${id}/events/attack_lane`, {
+        method: 'POST', body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: clockMs }),
+      });
+      setControlNotice(`${selectedTeam === 'HOME' ? '홈' : '어웨이'} · ${{LEFT:'왼쪽',CENTER:'중앙',RIGHT:'오른쪽'}[lane]} 공격을 기록했습니다.`);
+      await fetchAll();
+    } catch { setControlNotice('공격 기록을 저장하지 못했습니다. 다시 시도해 주세요.'); }
+    finally { lanePendingRef.current = false; }
   };
 
   const uploadLineupPdf = async (file: File | null) => {
@@ -892,13 +902,14 @@ export default function MatchPage() {
         body: formData,
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || 'Lineup upload failed');
+        const problem = await response.json().catch(() => ({}));
+        throw new Error(typeof problem.detail === 'string' ? problem.detail : 'PDF 명단을 읽지 못했습니다.');
       }
       const data = await response.json();
       setMatch(data.match);
       const homeCount = data.lineups?.teams?.HOME?.length || 0;
       const awayCount = data.lineups?.teams?.AWAY?.length || 0;
-      setCopyMessage(`Lineup loaded: HOME ${homeCount}, AWAY ${awayCount}`);
+      setCopyMessage(`PDF 명단 반영: 홈 ${homeCount}명 · 어웨이 ${awayCount}명. 아래 유니폼 정보와 팀 방향을 확인하세요.`);
     } catch (error) {
       setCopyMessage(error instanceof Error ? error.message : 'Lineup upload failed');
     } finally {
@@ -915,7 +926,7 @@ export default function MatchPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('first_team_side', lineupFirstSide);
+      formData.append('first_team_side', lineupFirstSide === 'AUTO' ? 'HOME' : lineupFirstSide);
       const response = await fetch(`${API_BASE}/matches/${id}/lineup/record-sheet`, {
         method: 'POST',
         credentials: 'include',
@@ -1020,7 +1031,7 @@ export default function MatchPage() {
     }
   };
 
-  const submitXg = async () => {
+  const submitXgInternal = async () => {
     if (!canWrite) return;
     const shotCoordinates = getShotCoordinates();
 
@@ -1032,7 +1043,7 @@ export default function MatchPage() {
         setXgEstimateMeta('Click the pitch to set the own-goal location');
         return;
       }
-      await apiFetch(`/matches/${id}/events/xg`, {
+      await apiJson(`/matches/${id}/events/xg`, {
         method: 'POST',
         body: JSON.stringify({
           event_id: makeId(),
@@ -1052,7 +1063,7 @@ export default function MatchPage() {
           is_weak_foot: false,
           under_pressure: false,
           one_on_one: false,
-          shot_pace_band: shotPaceBand,
+          shot_pace_band: 'MID',
         }),
       });
       setShotPoint(null);
@@ -1064,7 +1075,7 @@ export default function MatchPage() {
     }
 
     const xg = Number(xgValue);
-    if (!Number.isFinite(xg) || xg < 0) return;
+    if (!Number.isFinite(xg) || xg < 0 || xg > 1) { setXgEstimateMeta('xG는 0~1 사이의 숫자로 입력해 주세요.'); return; }
     const goalmouthCoordinates = getGoalmouthCoordinates();
     if (isOnTargetShot && !goalmouthCoordinates) {
       setXgotEstimateMeta('Click the goalmouth map for an on-target shot');
@@ -1086,12 +1097,13 @@ export default function MatchPage() {
         goalmouth_x: goalmouthCoordinates?.goalmouth_x ?? null,
         goalmouth_y: goalmouthCoordinates?.goalmouth_y ?? null,
         is_header: isHeaderShot,
-        is_weak_foot: isWeakFootShot,
+        is_weak_foot: false,
         under_pressure: isUnderPressureShot,
         one_on_one: isOneOnOneShot,
-        shot_pace_band: shotPaceBand,
+        shot_pace_band: 'MID',
       }),
     });
+    if (!res.ok) throw new Error('Shot save failed');
     const data = await res.json().catch(() => null);
     setXgValue('0.10');
     setXgPlayerKey('');
@@ -1100,19 +1112,27 @@ export default function MatchPage() {
     setIsOnTargetShot(false);
     setGoalmouthPoint(null);
     setIsHeaderShot(false);
-    setIsWeakFootShot(false);
     setIsGoalShot(false);
     setIsOwnGoal(false);
     setIsUnderPressureShot(false);
     setIsOneOnOneShot(false);
-    setShotPaceBand('MID');
     setXgEstimateMeta('');
     setXgotEstimateMeta(
       data?.xgot_meta
         ? `xGOT=${data.xgot_meta.xgot} | delta=${data.xgot_meta.delta >= 0 ? '+' : ''}${data.xgot_meta.delta} | ${data.xgot_meta.label}`
         : ''
     );
+    setControlNotice('슈팅을 기록했습니다. 기록 탭에서 확인할 수 있습니다.');
     await fetchAll();
+  };
+
+  const submitXg = async () => {
+    if (shotPendingRef.current || !canWrite) return;
+    shotPendingRef.current = true;
+    setIsSavingShot(true);
+    try { await submitXgInternal(); }
+    catch { setControlNotice('슈팅 기록을 저장하지 못했습니다. 입력은 유지됩니다. 다시 시도해 주세요.'); }
+    finally { shotPendingRef.current = false; setIsSavingShot(false); }
   };
 
   const attachRtmp = async () => {
@@ -1212,7 +1232,7 @@ export default function MatchPage() {
         start_x: shotCoordinates.shot_x,
         start_y: shotCoordinates.shot_y,
         is_header: isHeaderShot,
-        is_weak_foot: isWeakFootShot,
+        is_weak_foot: false,
       }),
     });
     if (!res.ok) {
@@ -1248,10 +1268,10 @@ export default function MatchPage() {
         goalmouth_y: goalmouthCoordinates.goalmouth_y,
         is_goal: isGoalShot,
         is_header: isHeaderShot,
-        is_weak_foot: isWeakFootShot,
+        is_weak_foot: false,
         under_pressure: isUnderPressureShot,
         one_on_one: isOneOnOneShot,
-        shot_pace_band: shotPaceBand,
+        shot_pace_band: 'MID',
       }),
     });
     if (!res.ok) {
@@ -1296,7 +1316,7 @@ export default function MatchPage() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'SUMMARY' || tag === 'A' || (e.target as HTMLElement)?.isContentEditable) return;
 
       // Space 로 경기 시계를 켜고 끄던 단축키는 뺐다 (2026-08-14).
       // 방송 중 오타 한 번에 시계가 멈추는데, 그게 일어난 걸 화면 보기 전엔 모른다.
@@ -1330,7 +1350,7 @@ export default function MatchPage() {
   const pushUrl = streamMode === 'MANUAL' ? '' : match?.metadata?.rtmp?.push_url || (rtmpServer && streamKey ? `${rtmpServer}/${streamKey}` : '');
   const possessionLabel =
     possessionTeam === 'HOME' ? 'Home' : possessionTeam === 'AWAY' ? 'Away' : 'Loose Ball';
-  const matchTeams = useMemo(() => resolveMatchTeams(match?.name || ''), [match?.name]);
+  const matchTeams = useMemo(() => resolveMatchTeams((match?.name || '').replace(/^\[[^\]]+\]\s*/, '')), [match?.name]);
   const dominanceBaseData = useMemo(
     () =>
       dominance.map((d) => ({
@@ -1405,205 +1425,17 @@ export default function MatchPage() {
   }, [dominance, secondHalfStartAbsMs]);
 
   return (
-    <main className="page-stack">
-      {running ? <div className="live-neon-overlay" aria-hidden /> : null}
-      <div className="card card-hero row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div className="grid" style={{ gap: 6 }}>
-          <h2 style={{ margin: 0 }}>
-            {matchTeams
-              ? `(H) ${matchTeams.homeTeam} vs ${matchTeams.awayTeam} (A)`
-              : match?.name || 'Match'}
-          </h2>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="status-pill">{match?.competition_class || 'K3'}</span>
-            {isArchived ? <span className="status-pill archived">ARCHIVED</span> : null}
-            {!isArchived ? <span className={`status-pill ${running ? 'running' : 'stopped'}`}>{running ? 'RUNNING' : 'PAUSED'}</span> : null}
-          </div>
-          {matchTeams ? (
-            <div className="grid" style={{ gap: 2 }}>
-              <div className="muted">홈 : {matchTeams.homeTeam}</div>
-              <div className="muted">어웨이 : {matchTeams.awayTeam}</div>
-            </div>
-          ) : null}
-          {isArchived ? (
-            <div className="panel-note">
-              Archived at {formatDateTimeKst(match?.archived_at)}. This page is read-only; export is still available.
-            </div>
-          ) : null}
-          <div className="match-meta-group">
-            <span className="meta-chip">signed in: {sessionUser?.name || 'Loading...'} {userId ? `(@${userId})` : ''}</span>
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : 'warning'}`}>
-              mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}
-            </span>
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
-              RTMP Server: {streamMode === 'MANUAL' ? 'Disabled' : rtmpServer || 'N/A'}
-            </span>
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
-              Stream Key: {streamMode === 'MANUAL' ? 'Disabled' : streamKey || 'N/A'}
-            </span>
-          </div>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn-secondary" onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
-            <button className="btn-secondary" onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
-            <button className="btn-secondary" onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
-          </div>
-          {copyMessage ? <div className="muted">{copyMessage}</div> : null}
+    <main className="page-stack fla-match" data-mobile-view={mobileView}>
+      <header className="fla-match-heading">
+        <div><div className="row fla-match-context"><Link className="button-link button-compact btn-secondary fla-back-link" href="/admin/dashboard">← 대시보드</Link><span className="status-pill">{match?.competition_class || 'FLA'}</span>{match?.metadata?.design_preview ? <span className="status-pill tech">로컬 예시 경기</span> : null}<span className="muted">{isArchived ? '보관 경기 · 읽기 전용' : canWrite ? '기록 가능' : '읽기 전용'}</span></div><h2>{matchTeams ? `${matchTeams.homeTeam} vs ${matchTeams.awayTeam}` : match?.name || '경기 불러오는 중…'}</h2></div>
+      </header>
+      {loadError ? <div className="fla-feedback" role="alert">{loadError}</div> : null}
+      {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}</span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
+      <section className="card fla-clock" aria-label="경기 타이머">
+        <div className="fla-clock-main"><div><span className="muted">{running ? '진행 중' : '일시정지'}</span><strong className="fla-clock-value">{displayClockLabel(clockMs)}{clockSpeed === 2 ? ' ×2' : ''}</strong></div>
+          <button className={running ? 'btn-secondary' : 'btn-primary'} onClick={(e) => { e.currentTarget.blur(); toggleRun(); }} disabled={!canWrite}>{running ? '일시정지' : '경기 시작'}</button>
         </div>
-        <div className="match-hero-actions">
-          <div className="row" style={{ justifyContent: 'flex-end' }}>
-            <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
-              {isExportingMatchData ? 'Exporting...' : 'Export Match Data'}
-            </button>
-            {!isOperator
-              ? <button className="btn-secondary" onClick={acquire} disabled={isArchived}>Acquire Lock</button>
-              : <button className="btn-danger" onClick={release} disabled={isArchived}>Release Lock</button>}
-            <span className="muted">
-              operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
-            </span>
-          </div>
-          <div className="match-lineup-actions">
-            <div className="match-lineup-action-row">
-              <span className="muted">파일 첫 팀 → FLA</span>
-              <select value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team)} disabled={!canWrite || isUploadingLineup || isUploadingRecordSheet}>
-                <option value="HOME">HOME</option>
-                <option value="AWAY">AWAY</option>
-              </select>
-              <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
-                {isUploadingLineup ? '분석 중…' : 'PDF 명단 업로드'}
-              </button>
-              <input
-                ref={lineupInputRef}
-                type="file"
-                accept="application/pdf,.pdf"
-                style={{ display: 'none' }}
-                onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
-              />
-              <button className="btn-secondary" onClick={() => recordSheetInputRef.current?.click()} disabled={!canWrite || isUploadingRecordSheet}>
-                {isUploadingRecordSheet ? '반영 중…' : '815 엑셀 명단 업로드'}
-              </button>
-              <input
-                ref={recordSheetInputRef}
-                type="file"
-                accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
-                style={{ display: 'none' }}
-                onChange={(event) => uploadLineupRecordSheet(event.target.files?.[0] || null)}
-              />
-            </div>
-            <div className="match-lineup-action-row">
-              <span className="muted">
-                roster: H {(lineups.HOME || []).length} / A {(lineups.AWAY || []).length}
-              </span>
-              <button className="btn-secondary" onClick={swapLineupSides} disabled={!canWrite || isSwappingLineup || !hasLineupPlayers}>
-                {isSwappingLineup ? 'Swapping...' : 'Swap H/A'}
-              </button>
-              <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
-                Manual Lineup
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {isManualLineupOpen ? (
-        <div className="fcm-modal-backdrop" role="presentation" onClick={() => setIsManualLineupOpen(false)}>
-          <div
-            aria-modal="true"
-            className="card card-panel fcm-modal lineup-modal"
-            role="dialog"
-            aria-label="Manual lineup"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="section-heading">
-              <div>
-                <div className="sidebar-eyebrow">Lineup Fallback</div>
-                <h3>Manual Lineup</h3>
-              </div>
-              <button className="button-compact btn-secondary" onClick={() => setIsManualLineupOpen(false)}>Close</button>
-            </div>
-
-            <div className="lineup-entry-row">
-              <select value={manualLineupSide} onChange={(event) => setManualLineupSide(event.target.value as Team)} disabled={!canWrite || isSavingManualLineup}>
-                <option value="HOME">HOME</option>
-                <option value="AWAY">AWAY</option>
-              </select>
-              <input
-                value={manualLineupNumber}
-                onChange={(event) => setManualLineupNumber(event.target.value.replace(/\D/g, '').slice(0, 3))}
-                placeholder="No."
-                inputMode="numeric"
-                disabled={!canWrite || isSavingManualLineup}
-              />
-              <select value={manualLineupPosition} onChange={(event) => setManualLineupPosition(event.target.value)} disabled={!canWrite || isSavingManualLineup}>
-                <option value="">POS</option>
-                <option value="GK">GK</option>
-                <option value="DF">DF</option>
-                <option value="MF">MF</option>
-                <option value="FW">FW</option>
-              </select>
-              <input
-                value={manualLineupName}
-                onChange={(event) => setManualLineupName(event.target.value)}
-                placeholder="Player name"
-                disabled={!canWrite || isSavingManualLineup}
-              />
-              <button className="btn-secondary" onClick={saveManualLineupPlayer} disabled={!canWrite || isSavingManualLineup}>
-                {isSavingManualLineup ? 'Saving...' : 'Add Player'}
-              </button>
-            </div>
-
-            <div className="lineup-table-grid">
-              {(['HOME', 'AWAY'] as Team[]).map((side) => (
-                <div className="lineup-table-panel" key={side}>
-                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <strong>{side}</strong>
-                    <span className="muted">{(lineups[side] || []).length} players</span>
-                  </div>
-                  <div className="fcm-guide-table-wrap lineup-table-wrap">
-                    <table className="fcm-guide-table lineup-table">
-                      <thead>
-                        <tr>
-                          <th>No.</th>
-                          <th>POS</th>
-                          <th>Name</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(lineups[side] || []).length ? (
-                          (lineups[side] || []).map((player) => (
-                            <tr key={`${side}-${player.number}-${player.name}`}>
-                              <td>{player.number}</td>
-                              <td>{player.position || '-'}</td>
-                              <td>{player.name}</td>
-                              <td>
-                                <button
-                                  className="button-compact btn-danger"
-                                  onClick={() => deleteManualLineupPlayer(side, player.number)}
-                                  disabled={!canWrite || isSavingManualLineup}
-                                >
-                                  Remove
-                                </button>
-                              </td>
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td colSpan={4} className="muted">No players yet</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="split">
-        <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
-          <div className="card card-panel" style={clockSpeed === 2 ? { outline: '2px solid #ff7900' } : undefined}>
+        <details className="fla-clock-settings"><summary>시간 · 전후반 설정</summary><div className="grid">
             {canUseX2 ? (
               <div className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
                 <button className={clockSpeed === 1 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(1)} disabled={!canWrite}>
@@ -1619,38 +1451,22 @@ export default function MatchPage() {
                 ) : null}
               </div>
             ) : null}
-            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
-              <strong>Timer</strong>
-              <strong style={{ fontSize: 24, color: clockSpeed === 2 ? '#ff7900' : undefined }}>
-                {displayClockLabel(clockMs)}
-                {clockSpeed === 2 ? <span style={{ fontSize: 14, marginLeft: 6 }}>×2</span> : null}
-              </strong>
-              {/* Space 단축키를 뺐으므로 kbd 배지도 없앤다. 그리고 클릭 뒤 포커스를 놓는다 —
-                  버튼에 포커스가 남아 있으면 브라우저 기본 동작으로 Space 가 다시 이 버튼을
-                  누른다(단축키를 없앤 의미가 사라진다). */}
-              <button
-                className={running ? 'btn-active' : ''}
-                onClick={(e) => { e.currentTarget.blur(); toggleRun(); }}
-                disabled={!canWrite}
-              >
-                Start/Pause
-              </button>
-              <button className="btn-secondary" onClick={resetClock} disabled={!canWrite}>Reset</button>
-              <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>1H 00:00</button>
-              <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>
-                2H {regulationHalfMinutes(match?.competition_class, match?.first_half_minutes)}:00
-              </button>
-              <button className="btn-secondary" onClick={markThirdHalfStart} disabled={!canWrite}>
-                3H {extraHalfBaseMinutes(3)}:00
-              </button>
-              <button className="btn-secondary" onClick={markFourthHalfStart} disabled={!canWrite}>
-                4H {extraHalfBaseMinutes(4)}:00
-              </button>
-            </div>
+          <div className="row">
+            <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>전반 00:00</button>
+            <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>후반 시작</button>
+            <button className="btn-secondary" onClick={markThirdHalfStart} disabled={!canWrite}>연장 전반</button>
+            <button className="btn-secondary" onClick={markFourthHalfStart} disabled={!canWrite}>연장 후반</button>
+            <button className="btn-danger" onClick={resetClock} disabled={!canWrite}>타이머 초기화</button>
           </div>
-
+        </div></details>
+      </section>
+      <nav className="fla-mobile-nav" aria-label="경기 작업 선택">
+        {([{id:'control',label:'경기 제어'},{id:'shots',label:'슈팅'},{id:'review',label:'기록'},{id:'settings',label:'설정'}] as const).map((tab) => <button key={tab.id} aria-pressed={mobileView === tab.id} className={mobileView === tab.id ? 'btn-active' : ''} onClick={() => setMobileView(tab.id)}>{tab.label}</button>)}
+      </nav>
+      <div className="fla-workspace">
+        <section className="fla-controls grid" aria-label="점유와 공격 입력">
           {streamMode === 'STREAM' ? (
-            <div className="card card-utility grid">
+            <details className="card fla-stream"><summary>중계 영상 · 송출 제어</summary><div className="grid">
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <h3 style={{ margin: 0 }}>HLS Stream</h3>
                 <div className="row">
@@ -1666,105 +1482,97 @@ export default function MatchPage() {
                 </div>
               </div>
               {hasStreamPlayer ? <HlsPlayer src={hlsSrc} /> : <div className="muted">No HLS URL configured</div>}
-            </div>
+            </div></details>
           ) : null}
 
-          <div className="card card-utility grid" style={{ minHeight: 280 }}>
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ margin: 0 }}>Recent Events</h3>
-              <button className="btn-danger" onClick={resetEvents} disabled={!canWrite || isResettingEvents}>
-                {isResettingEvents ? 'Resetting...' : 'Reset Events'}
-              </button>
-            </div>
-            <div
-              className="grid"
-              style={{
-                height: 220,
-                overflowY: 'auto',
-                paddingRight: 4,
-              }}
-            >
-              {(summary?.events || []).slice(0, 40).map((e: any) => (
-                <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
-                  <span>
-                    {e.type} {e.team}{' '}
-                    {e.is_own_goal ? <strong style={{ color: '#f97316' }}>OG⚽</strong> : e.is_goal ? <strong style={{ color: '#22c55e' }}>GOAL⚽</strong> : ''}{' '}
-                    @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''}{' '}
-                    {e.is_own_goal ? '' : typeof e.xg === 'number' ? `xg=${e.xg}` : ''}{' '}
-                    {e.is_own_goal ? '' : typeof e.xgot === 'number' ? `xgot=${e.xgot}` : ''}{' '}
-                    {e.player_name ? `No.${e.player_number || '-'} ${e.player_name}` : ''}{' '}
-                    {e.is_own_goal ? '' : e.is_on_target ? 'on-target' : ''}
-                  </span>
-                  <span className="muted">{formatCreatedAtKst(e.created_at)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
 
-          {streamMode === 'MANUAL' ? (
-            <div className="card card-panel grid">
-              <h3>Attack Input</h3>
-              <div className="row">
-                <span>Home attack:</span>
-                <button className={attackLR === 'L2R' ? 'btn-active' : ''} onClick={() => changeAttackDirection('L2R')} disabled={!canWrite}>L2R</button>
-                <button className={attackLR === 'R2L' ? 'btn-active' : ''} onClick={() => changeAttackDirection('R2L')} disabled={!canWrite}>R2L</button>
-                <span className="muted">Away {attackLR === 'L2R' ? 'R2L' : 'L2R'}</span>
+            <div className="card card-panel grid" style={{ minHeight: 180, gap: 8 }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0 }}>점유 팀</h3>
+                <button className="btn-danger" onClick={resetPossession} disabled={!canWrite || isResettingPossession}>
+                  {isResettingPossession ? '초기화 중…' : '초기화'}
+                </button>
               </div>
               <div className="row">
-                <span>Team:</span>
-                <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>HOME</button>
-                <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>AWAY</button>
-                <span>{selectedTeam}</span>
+                <span>현재: {possessionTeam === 'HOME' ? matchTeams?.homeTeam || '홈' : possessionTeam === 'AWAY' ? matchTeams?.awayTeam || '어웨이' : '루즈볼'}</span>
+              </div>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <span>Home</span>
+                <strong>{summary?.possession?.home_pct?.toFixed(2) || '0.00'}% : {summary?.possession?.away_pct?.toFixed(2) || '0.00'}%</strong>
+                <span>Away</span>
+              </div>
+              <div className="fla-possession-buttons">
+                <button className={`fla-home ${possessionTeam === 'HOME' ? 'selected' : ''}`} aria-pressed={possessionTeam === 'HOME'} onClick={() => changePossession('HOME')} disabled={!canWrite}>{matchTeams?.homeTeam || '홈'} <span className="kbd">Q</span></button>
+                <button className={`fla-away ${possessionTeam === 'AWAY' ? 'selected' : ''}`} aria-pressed={possessionTeam === 'AWAY'} onClick={() => changePossession('AWAY')} disabled={!canWrite}>{matchTeams?.awayTeam || '어웨이'} <span className="kbd">W</span></button>
+                <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} aria-pressed={possessionTeam === 'NONE'} onClick={() => changePossession('NONE')} disabled={!canWrite}>루즈볼 <span className="kbd">E</span></button>
+              </div>
+            </div>
+
+            <div className="card card-panel grid fla-attack-card" role="group" aria-label="공격 방향 기록">
+              <h3>공격 방향 기록</h3>
+              <div className="fla-attack-layout">
+              <div className="fla-attack-controls">
+              <div className="row">
+                <span className="fla-control-label">홈 공격 방향</span>
+                <button className={attackLR === 'L2R' ? 'btn-active' : ''} aria-pressed={attackLR === 'L2R'} onClick={() => changeAttackDirection('L2R')} disabled={!canWrite}>오른쪽 →</button>
+                <button className={attackLR === 'R2L' ? 'btn-active' : ''} aria-pressed={attackLR === 'R2L'} onClick={() => changeAttackDirection('R2L')} disabled={!canWrite}>← 왼쪽</button>
               </div>
               <div className="row">
-                <span>Lane select:</span>
-                <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
-                <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
-                <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
-                <span>selected={pendingLane}</span>
+                <span className="fla-control-label">기록 팀</span>
+                <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} aria-pressed={selectedTeam === 'HOME'} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>{matchTeams?.homeTeam || '홈'}</button>
+                <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} aria-pressed={selectedTeam === 'AWAY'} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>{matchTeams?.awayTeam || '어웨이'}</button>
+
               </div>
               <div className="row">
-                <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
+                <span className="fla-control-label">공격 위치</span>
+                <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} aria-pressed={pendingLane === 'LEFT'} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>왼쪽 <span className="kbd">A</span></button>
+                <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} aria-pressed={pendingLane === 'CENTER'} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>중앙 <span className="kbd">S</span></button>
+                <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} aria-pressed={pendingLane === 'RIGHT'} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>오른쪽 <span className="kbd">D</span></button>
+
               </div>
-              <div className="muted">
+              <div className="row">
+                <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>공격 기록 <span className="kbd">Enter</span></button>
+              </div>
+              </div>
+              <AttackDirectionPitch homeDirection={attackLR} team={selectedTeam} lane={pendingLane} teamName={selectedTeam === 'HOME' ? matchTeams?.homeTeam || '홈' : matchTeams?.awayTeam || '어웨이'} />
+              </div>
+              <details className="fla-lane-stats"><summary>공격 방향별 통계</summary><div className="muted">
                 HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
                 <br />
                 AWAY Lane(events): L {summary?.lanes?.away?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.away?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.away?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.away?.total_count || 0})
-              </div>
+              </div></details>
             </div>
-          ) : null}
-        </div>
-
-        <div className="grid" style={{ gap: 12, alignContent: 'start' }}>
+        </section>
+        <section className="fla-shots" aria-label="슈팅 입력">
           <div className="card card-panel grid">
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <h3 style={{ margin: 0 }}>{isFutsal ? 'Shot Threat Input' : 'xG Input'}</h3>
-                <select value={xgTeam} onChange={(e) => setXgTeam(e.target.value as Team)}>
+                <h3 style={{ margin: 0 }}>{isFutsal ? '슈팅 위협도 기록' : '슈팅 기록'}</h3>
+                <select aria-label="슈팅 팀" value={xgTeam} onChange={(e) => setXgTeam(e.target.value as Team)}>
                   <option value="HOME">HOME</option>
                   <option value="AWAY">AWAY</option>
                 </select>
-                <select value={xgPlayerKey} onChange={(e) => setXgPlayerKey(e.target.value)} disabled={!xgPlayerOptions.length}>
-                  <option value="">{xgPlayerOptions.length ? 'Select player' : 'No lineup'}</option>
+                <select aria-label="슈팅 선수" value={xgPlayerKey} onChange={(e) => setXgPlayerKey(e.target.value)} disabled={!xgPlayerOptions.length}>
+                  <option value="">{xgPlayerOptions.length ? '선수 선택 (선택)' : '등록된 선수 없음'}</option>
                   {xgPlayerOptions.map((player) => (
                     <option key={`${player.number}|${player.name}`} value={`${player.number}|${player.name}`}>
                       No.{player.number} {player.name}
                     </option>
                   ))}
                 </select>
-                <button className="btn-primary" onClick={submitXg} disabled={!canWrite}>{isOwnGoal ? 'Record OG' : isFutsal ? 'Record Threat' : 'Record xG'}</button>
+
               </div>
             </div>
-            <div className="grid" style={{ gap: 10 }}>
-              <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                <span style={{ minWidth: isFutsal ? 118 : 40, fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>{isFutsal ? 'Shot Threat' : 'xG'}</span>
-                <input value={xgValue} onChange={(e) => setXgValue(e.target.value)} placeholder={isFutsal ? '0.000–0.800' : 'xG'} style={{ minWidth: 120 }} />
-                  <button className="btn-secondary" onClick={estimateXgFromPitch} disabled={!canWrite}>{isFutsal ? '위협도 추정' : 'Estimate xG'}</button>
+            <div className={`fla-shot-values ${isFutsal ? 'fla-shot-values-futsal' : ''}`}>
+              <div className="fla-shot-value-row">
+                <label htmlFor="fla-xg-value">{isFutsal ? 'Shot Threat' : 'xG'}</label>
+                <input id="fla-xg-value" aria-label="xG 값" inputMode="decimal" value={xgValue} onChange={(e) => setXgValue(e.target.value)} placeholder={isFutsal ? '0.000–0.800' : 'xG'} />
+                  <button className="btn-secondary" onClick={estimateXgFromPitch} disabled={!canWrite}>{isFutsal ? '위협도 추정' : 'xG 계산'}</button>
               </div>
-              {!isFutsal ? <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                <span style={{ minWidth: 62, fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>xGOT</span>
-                <input value={xgotValue} readOnly placeholder="xGOT" style={{ minWidth: 120, opacity: 0.95 }} />
-                <button className="btn-secondary" onClick={estimateXgotFromGoalmouth} disabled={!canWrite}>Estimate xGOT</button>
+              {!isFutsal ? <div className="fla-shot-value-row">
+                <label htmlFor="fla-xgot-value">xGOT</label>
+                <input id="fla-xgot-value" aria-label="xGOT 값" value={xgotValue} readOnly placeholder="xGOT" />
+                <button className="btn-secondary" onClick={estimateXgotFromGoalmouth} disabled={!canWrite}>xGOT 계산</button>
               </div> : null}
             </div>
             <div
@@ -1783,41 +1591,18 @@ export default function MatchPage() {
                     left: '50%',
                     top: -128,
                     transform: 'translateX(-50%)',
-                    width: 520,
-                    maxWidth: 'min(520px, 96vw)',
+                    width: '100%',
+                    maxWidth: 520,
                     zIndex: 2,
                   }}
                 >
-                  <div style={{ position: 'relative', width: '100%', minHeight: 108 }}>
-                    <div
-                      className="grid"
-                      style={{
-                        gap: 6,
-                        alignContent: 'end',
-                        position: 'absolute',
-                        left: 0,
-                        bottom: 0,
-                        width: 96,
-                      }}
-                    >
-                      <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>Shot Speed</span>
-                      <select
-                        value={shotPaceBand}
-                        onChange={(e) => setShotPaceBand(e.target.value as ShotPaceBand)}
-                        disabled={!canWrite}
-                        style={{ width: '100%' }}
-                      >
-                        <option value="LOW">Slow</option>
-                        <option value="MID">Normal</option>
-                        <option value="HIGH">Fast</option>
-                      </select>
-                    </div>
+                  <div className="fla-goalmouth-row" style={{ position: 'relative', width: '100%', minHeight: 108 }}>
                     <div
                       onClick={onGoalmouthClick}
                       style={{
                         position: 'relative',
                         width: 300,
-                        maxWidth: 'min(300px, 58vw)',
+                        maxWidth: '100%',
                         aspectRatio: '3.2 / 1.15',
                         cursor: 'crosshair',
                         margin: '0 auto',
@@ -1952,6 +1737,7 @@ export default function MatchPage() {
               ) : null}
               {isFutsal ? <FutsalShotPitch shotPoint={shotPoint} onClick={onPitchClick} isOnTarget={isOnTargetShot} /> : <>
               <div
+                className="fla-shot-pitch" aria-label="슈팅 위치 선택"
                 onClick={onPitchClick}
                 style={{
                   position: 'relative',
@@ -2007,19 +1793,18 @@ export default function MatchPage() {
                   }}
                 />
               ) : null}
-              <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>Goal Side</div>
+              <div style={{ position: 'absolute', left: 8, top: 6, color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: 600 }}>상대 골문</div>
               <div style={{ position: 'absolute', right: 8, top: 6, color: 'rgba(255,255,255,0.7)', fontSize: 10 }}>
-                {isOnTargetShot ? 'Goalmouth zoom active' : 'Turn on On Target to place shot'}
+                {isOnTargetShot ? '골문에서 도착 위치를 선택하세요' : '피치에서 슈팅 위치를 선택하세요'}
               </div>
               <div style={{ position: 'absolute', left: 8, bottom: 6, color: 'rgba(255,255,255,0.75)', fontSize: 10 }}>68m x 40m (rotated)</div>
             </div>
               </>}
             </div>
             <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
-              {!isFutsal ? <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>On Target</button> : null}
-              <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>Goal</button>
-              {!isFutsal ? <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>Header</button> : null}
-              <button className={isWeakFootShot ? 'btn-active' : ''} onClick={() => setIsWeakFootShot((prev) => !prev)} disabled={!canWrite}>Difficult</button>
+              {!isFutsal ? <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>유효슈팅</button> : null}
+              <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>골</button>
+              {!isFutsal ? <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>헤더</button> : null}
               <button
                 className={isOwnGoal ? 'btn-active' : ''}
                 onClick={() => setIsOwnGoal((prev) => !prev)}
@@ -2033,42 +1818,55 @@ export default function MatchPage() {
                   ? `Own goal → ${xgTeam} scores. Click pitch, then Record OG.`
                   : shotPoint
                   ? `shot=(${shotPoint.x}, ${shotPoint.y})`
-                  : 'Click pitch to set shot location'}
+                  : '피치에서 슈팅 위치를 선택하세요'}
               </span>
             </div>
-            <div className="muted">{isFutsal ? '풋살 20 × 20m 공격 하프의 골문 거리·각도로 Shot Threat(최대 0.800)를 추정합니다.' : 'Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.'}</div>
+            <div className="muted">{isFutsal ? '풋살 20 × 20m 공격 하프의 골문 거리·각도로 Shot Threat(최대 0.800)를 추정합니다.' : '위치를 선택한 뒤 xG를 계산하거나 직접 입력하고 기록하세요.'}</div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
             {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}</div> : null}
+            <button className="btn-primary fla-shot-submit" onClick={submitXg} disabled={!canWrite || isSavingShot}>{isSavingShot ? '저장 중…' : isOwnGoal ? '자책골 기록' : '슈팅 기록'}</button>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div className="card card-panel grid" style={{ minHeight: 180, gap: 8 }}>
-              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0 }}>Possession</h3>
-                <button className="btn-danger" onClick={resetPossession} disabled={!canWrite || isResettingPossession}>
-                  {isResettingPossession ? 'Resetting...' : 'Reset'}
-                </button>
-              </div>
-              <div className="row">
-                <span>Current: {possessionLabel}</span>
-              </div>
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <span>Home</span>
-                <strong>{summary?.possession?.home_pct?.toFixed(2) || '0.00'}% : {summary?.possession?.away_pct?.toFixed(2) || '0.00'}%</strong>
-                <span>Away</span>
-              </div>
-              <div className="row">
-                <button className={possessionTeam === 'HOME' ? 'btn-active' : ''} onClick={() => changePossession('HOME')} disabled={!canWrite}>Home <span className="kbd">Q</span></button>
-                <button className={possessionTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => changePossession('AWAY')} disabled={!canWrite}>Away <span className="kbd">W</span></button>
-                <button className={possessionTeam === 'NONE' ? 'btn-active' : ''} onClick={() => changePossession('NONE')} disabled={!canWrite}>Loose Ball <span className="kbd">E</span></button>
-              </div>
+
+        </section>
+        <section className="fla-review grid" aria-label="경기 기록">
+          <div className="card card-utility grid" style={{ minHeight: 280 }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0 }}>최근 기록</h3>
+              <button className="btn-danger" onClick={resetEvents} disabled={!canWrite || isResettingEvents}>
+                {isResettingEvents ? '초기화 중…' : '기록 초기화'}
+              </button>
             </div>
+            <div
+              className="grid"
+              style={{
+                height: 220,
+                overflowY: 'auto',
+                paddingRight: 4,
+              }}
+            >
+              {(summary?.events || []).slice(0, 40).map((e: any) => (
+                <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
+                  <span>
+                    {e.type} {e.team}{' '}
+                    {e.is_own_goal ? <strong style={{ color: '#f97316' }}>OG⚽</strong> : e.is_goal ? <strong style={{ color: '#22c55e' }}>GOAL⚽</strong> : ''}{' '}
+                    @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''}{' '}
+                    {e.is_own_goal ? '' : typeof e.xg === 'number' ? `xg=${e.xg}` : ''}{' '}
+                    {e.is_own_goal ? '' : typeof e.xgot === 'number' ? `xgot=${e.xgot}` : ''}{' '}
+                    {e.player_name ? `No.${e.player_number || '-'} ${e.player_name}` : ''}{' '}
+                    {e.is_own_goal ? '' : e.is_on_target ? 'on-target' : ''}
+                  </span>
+                  <span className="muted">{formatCreatedAtKst(e.created_at)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
 
             <div className="card card-utility grid" style={{ minHeight: 180, gap: 8 }}>
-              <h3>Possession Timeline Log</h3>
+              <h3>점유 타임라인</h3>
               <div className="row" style={{ marginBottom: 8 }}>
-                <button className="btn-success" onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>Download CSV</button>
-                <button className="btn-secondary" onClick={resetPossessionLogView} disabled={possessionLogs.length === 0}>Reset Log</button>
+                <button className="btn-success" onClick={downloadPossessionCsv} disabled={possessionLogs.length === 0}>CSV 다운로드</button>
+                <button className="btn-secondary" onClick={resetPossessionLogView} disabled={possessionLogs.length === 0}>표시 기록 비우기</button>
               </div>
               <div
                 className="grid"
@@ -2079,7 +1877,7 @@ export default function MatchPage() {
                 }}
               >
                 {possessionLogs.length === 0 ? (
-                  <span className="muted">No logs yet</span>
+                  <span className="muted">아직 기록이 없습니다</span>
                 ) : (
                   possessionLogs.map((line, idx) => (
                     <span key={`${idx}-${line}`} className="muted">{line}</span>
@@ -2087,46 +1885,8 @@ export default function MatchPage() {
                 )}
               </div>
             </div>
-          </div>
-
-          {streamMode === 'STREAM' ? (
-            <div className="card card-panel grid">
-              <h3>Attack Input</h3>
-              <div className="row">
-                <span>Home attack:</span>
-                <button className={attackLR === 'L2R' ? 'btn-active' : ''} onClick={() => changeAttackDirection('L2R')} disabled={!canWrite}>L2R</button>
-                <button className={attackLR === 'R2L' ? 'btn-active' : ''} onClick={() => changeAttackDirection('R2L')} disabled={!canWrite}>R2L</button>
-                <span className="muted">Away {attackLR === 'L2R' ? 'R2L' : 'L2R'}</span>
-              </div>
-              <div className="row">
-                <span>Team:</span>
-                <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>HOME</button>
-                <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>AWAY</button>
-                <span>{selectedTeam}</span>
-              </div>
-              <div className="row">
-                <span>Lane select:</span>
-                <button className={pendingLane === 'LEFT' ? 'btn-active' : ''} onClick={() => setPendingLane('LEFT')} disabled={!canWrite}>LEFT <span className="kbd">A</span></button>
-                <button className={pendingLane === 'CENTER' ? 'btn-active' : ''} onClick={() => setPendingLane('CENTER')} disabled={!canWrite}>CENTER <span className="kbd">S</span></button>
-                <button className={pendingLane === 'RIGHT' ? 'btn-active' : ''} onClick={() => setPendingLane('RIGHT')} disabled={!canWrite}>RIGHT <span className="kbd">D</span></button>
-                <span>selected={pendingLane}</span>
-              </div>
-              <div className="row">
-                <button className="btn-primary" onClick={() => sendLane(pendingLane)} disabled={!canWrite}>Record Lane <span className="kbd">Enter</span></button>
-              </div>
-              <div className="muted">
-                HOME Lane(events): L {summary?.lanes?.home?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.home?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.home?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.home?.total_count || 0})
-                <br />
-                AWAY Lane(events): L {summary?.lanes?.away?.left_pct?.toFixed(1) || '0'}% / C {summary?.lanes?.away?.center_pct?.toFixed(1) || '0'}% / R {summary?.lanes?.away?.right_pct?.toFixed(1) || '0'}% (n={summary?.lanes?.away?.total_count || 0})
-              </div>
-            </div>
-          ) : null}
-
-        </div>
-      </div>
-
       <div className="card card-utility">
-        <h3>Match Dominance (-1 ~ +1, 3-min bins)</h3>
+        <h3>경기 흐름 · 3분 단위</h3>
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
             <ComposedChart data={dominanceChartData}>
@@ -2253,8 +2013,96 @@ export default function MatchPage() {
         </div>
       </div>
 
+
+        </section>
+        <section className="fla-settings grid" aria-label="경기 설정">
+          <details className="card fla-setup"><summary>명단 · 운영권 · 데이터 내보내기</summary>
+      <div className="row fla-setup-content" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div className="grid" style={{ gap: 6 }}>
+          <div className="match-meta-group">
+
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : 'warning'}`}>
+              mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}
+            </span>
+            {streamMode === 'STREAM' ? <>
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+              RTMP 서버: {rtmpServer || '미설정'}
+            </span>
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+              스트림 키: {streamKey || '미설정'}
+            </span>
+            </> : null}
+          </div>
+          {streamMode === 'STREAM' ? (
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn-secondary" onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
+            <button className="btn-secondary" onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
+            <button className="btn-secondary" onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
+          </div>
+          ) : null}
+          {copyMessage ? <div className="muted">{copyMessage}</div> : null}
+        </div>
+        <div className="match-hero-actions">
+          <div className="row" style={{ justifyContent: 'flex-end' }}>
+            <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
+              {isExportingMatchData ? '내보내는 중…' : '경기 데이터 내보내기'}
+            </button>
+            {!isOperator
+              ? <button className="btn-secondary" onClick={acquire} disabled={isArchived}>운영권 가져오기</button>
+              : <button className="btn-danger" onClick={release} disabled={isArchived}>운영권 해제</button>}
+            <span className="muted">
+              operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
+            </span>
+          </div>
+          <div className="match-lineup-actions">
+            <div className="match-lineup-action-row">
+              <label className="muted" htmlFor="lineup-direction">명단 방향</label>
+              <select id="lineup-direction" value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team | 'AUTO')} disabled={!canWrite || isUploadingLineup || isUploadingRecordSheet}>
+                <option value="AUTO">자동 인식</option>
+                <option value="HOME">왼쪽·첫 팀 → 홈</option>
+                <option value="AWAY">왼쪽·첫 팀 → 어웨이</option>
+              </select>
+              <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
+                {isUploadingLineup ? '분석 중…' : 'PDF 명단 업로드'}
+              </button>
+              <input
+                ref={lineupInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                style={{ display: 'none' }}
+                onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
+              />
+              <button className="btn-secondary" onClick={() => recordSheetInputRef.current?.click()} disabled={!canWrite || isUploadingRecordSheet}>
+                {isUploadingRecordSheet ? '반영 중…' : '815 엑셀 명단 업로드'}
+              </button>
+              <input
+                ref={recordSheetInputRef}
+                type="file"
+                accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
+                style={{ display: 'none' }}
+                onChange={(event) => uploadLineupRecordSheet(event.target.files?.[0] || null)}
+              />
+            </div>
+            <div className="match-lineup-action-row">
+              <span className="muted">
+                명단 · 홈 {(lineups.HOME || []).length}명 / 어웨이 {(lineups.AWAY || []).length}명
+              </span>
+              <button className="btn-secondary" onClick={swapLineupSides} disabled={!canWrite || isSwappingLineup || !hasLineupPlayers}>
+                {isSwappingLineup ? '변경 중…' : '홈·어웨이 바꾸기'}
+              </button>
+              <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
+                명단 직접 입력
+              </button>
+            </div>
+            <p className="muted">PDF는 팀명과 좌우 배치를 기준으로 자동 인식합니다. 엑셀은 자동 선택 시 첫 팀을 홈으로 적용합니다.</p>
+          </div>
+        </div>
+      </div>
+      <LineupUniforms lineup={match?.metadata?.lineups} />
+
+          </details>
       <div className="card card-utility">
-        <h3>Outbox / Webhook Status</h3>
+        <h3>데이터 전송 상태</h3>
         <div className="grid">
           {outbox.slice(0, 20).map((o) => (
             <div key={o.id} className="row" style={{ justifyContent: 'space-between' }}>
@@ -2264,6 +2112,105 @@ export default function MatchPage() {
           ))}
         </div>
       </div>
+        </section>
+      </div>
+      {isManualLineupOpen ? (
+        <div className="fcm-modal-backdrop" role="presentation" onClick={() => setIsManualLineupOpen(false)}>
+          <div
+            aria-modal="true"
+            className="card card-panel fcm-modal lineup-modal"
+            role="dialog"
+            aria-label="Manual lineup"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="section-heading">
+              <div>
+                <div className="sidebar-eyebrow">Lineup Fallback</div>
+                <h3>Manual Lineup</h3>
+              </div>
+              <button className="button-compact btn-secondary" onClick={() => setIsManualLineupOpen(false)}>Close</button>
+            </div>
+
+            <div className="lineup-entry-row">
+              <select value={manualLineupSide} onChange={(event) => setManualLineupSide(event.target.value as Team)} disabled={!canWrite || isSavingManualLineup}>
+                <option value="HOME">HOME</option>
+                <option value="AWAY">AWAY</option>
+              </select>
+              <input
+                value={manualLineupNumber}
+                onChange={(event) => setManualLineupNumber(event.target.value.replace(/\D/g, '').slice(0, 3))}
+                placeholder="No."
+                inputMode="numeric"
+                disabled={!canWrite || isSavingManualLineup}
+              />
+              <select value={manualLineupPosition} onChange={(event) => setManualLineupPosition(event.target.value)} disabled={!canWrite || isSavingManualLineup}>
+                <option value="">POS</option>
+                <option value="GK">GK</option>
+                <option value="DF">DF</option>
+                <option value="MF">MF</option>
+                <option value="FW">FW</option>
+              </select>
+              <input
+                value={manualLineupName}
+                onChange={(event) => setManualLineupName(event.target.value)}
+                placeholder="Player name"
+                disabled={!canWrite || isSavingManualLineup}
+              />
+              <button className="btn-secondary" onClick={saveManualLineupPlayer} disabled={!canWrite || isSavingManualLineup}>
+                {isSavingManualLineup ? 'Saving...' : 'Add Player'}
+              </button>
+            </div>
+
+            <div className="lineup-table-grid">
+              {(['HOME', 'AWAY'] as Team[]).map((side) => (
+                <div className="lineup-table-panel" key={side}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong>{side}</strong>
+                    <span className="muted">{(lineups[side] || []).length} players</span>
+                  </div>
+                  <div className="fcm-guide-table-wrap lineup-table-wrap">
+                    <table className="fcm-guide-table lineup-table">
+                      <thead>
+                        <tr>
+                          <th>No.</th>
+                          <th>POS</th>
+                          <th>Name</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(lineups[side] || []).length ? (
+                          (lineups[side] || []).map((player) => (
+                            <tr key={`${side}-${player.number}-${player.name}`}>
+                              <td>{player.number}</td>
+                              <td>{player.position || '-'}</td>
+                              <td>{player.name}</td>
+                              <td>
+                                <button
+                                  className="button-compact btn-danger"
+                                  onClick={() => deleteManualLineupPlayer(side, player.number)}
+                                  disabled={!canWrite || isSavingManualLineup}
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={4} className="muted">No players yet</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </main>
   );
 }

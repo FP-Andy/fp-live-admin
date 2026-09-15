@@ -336,8 +336,9 @@ class WebhookSubscriptionCreateRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    name: str = Field(min_length=2, max_length=40)
-    access_key: str = Field(min_length=4, max_length=200)
+    name: str = Field(min_length=1, max_length=80)
+    access_key: str = Field(min_length=1, max_length=200, repr=False)
+    mode: Literal["ADMIN", "OPERATOR"] = "ADMIN"
 
 
 class SessionUserResponse(BaseModel):

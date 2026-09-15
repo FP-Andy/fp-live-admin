@@ -1,6 +1,10 @@
 import './globals.css';
+import './console-theme.css';
+import './console-workspaces.css';
+import './console-appearance.css';
 import type { Metadata } from 'next';
 import PwaRegistrar from '../components/PwaRegistrar';
+import { ConsoleThemeProvider } from '../components/ConsoleTheme';
 
 export const metadata: Metadata = {
   title: 'Fine Play Console',
@@ -23,8 +27,9 @@ export const viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="ko" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: `try{document.documentElement.dataset.consoleTheme=localStorage.getItem('fpc.theme')==='light'?'light':'dark'}catch(e){document.documentElement.dataset.consoleTheme='dark'}` }} />
         <link
           rel="stylesheet"
           href="https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard.css"
@@ -32,7 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <PwaRegistrar />
-        {children}
+        <ConsoleThemeProvider>{children}</ConsoleThemeProvider>
       </body>
     </html>
   );
