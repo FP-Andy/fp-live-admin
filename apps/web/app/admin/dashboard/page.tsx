@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../lib/api';
+import { responseError } from '../../../lib/response-error';
 import { useSportContext, type Sport } from '../../../components/SportContext';
 
 type Match = {
@@ -274,6 +275,10 @@ export default function Dashboard() {
   const PAGE_SIZE = 7;
   const { sport } = useSportContext();
   const [createOpen, setCreateOpen] = useState(false);
+  const [creatingMatch, setCreatingMatch] = useState(false);
+  const creatingMatchRef = useRef(false);
+  const [createError, setCreateError] = useState('');
+  const [createdMatch, setCreatedMatch] = useState<{ id?: string; name: string; sport: Sport } | null>(null);
   const [matches, setMatches] = useState<Match[]>([]);
   const [matchTotal, setMatchTotal] = useState(0);
   const [activeMatchTotal, setActiveMatchTotal] = useState(0);
@@ -463,68 +468,84 @@ export default function Dashboard() {
   }, [sport, competitionClass, roundNumber, homeTeam, awayTeam]);
 
   const createMatch = async () => {
+    if (creatingMatchRef.current) return;
+    setCreatedMatch(null);
     if (!homeTeam.trim() || !awayTeam.trim()) {
-      setError('홈팀과 어웨이팀을 모두 선택하거나 입력하세요.');
+      setCreateError('홈팀과 어웨이팀을 모두 선택하거나 입력하세요.');
       return;
     }
     if (homeTeam.trim() === awayTeam.trim()) {
-      setError('홈팀과 어웨이팀은 서로 달라야 합니다.');
+      setCreateError('홈팀과 어웨이팀은 서로 달라야 합니다.');
       return;
     }
-    setError('');
-
-    const response = await apiFetch('/matches', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: generatedMatchName,
-        sport,
-        competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : sport === 'FUTSAL' ? 'FUTSAL-QUEENCUP' : competitionClass,
-        round_number: roundNumber,
-        stream_mode: sport === 'FOOTBALL' ? streamMode : 'MANUAL',
-        assign_operator: assignOperator,
-        ingest_protocol: sport === 'FOOTBALL' && streamMode === 'STREAM' ? ingestProtocol : null,
-        first_half_minutes: sport === 'FUTSAL' ? futsalFirstHalfMinutes : undefined,
-        second_half_minutes: sport === 'FUTSAL' ? futsalSecondHalfMinutes : undefined,
-        metadata: sport === 'BASKETBALL'
-          ? {
-              period_count: basketballPeriodCount,
-              period_minutes: basketballPeriodMinutes,
-              shot_clock_seconds: 24,
-            }
-          : sport === 'FUTSAL'
+    setCreateError('');
+    creatingMatchRef.current = true;
+    setCreatingMatch(true);
+    try {
+      const response = await apiFetch('/matches', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: generatedMatchName,
+          sport,
+          competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : sport === 'FUTSAL' ? 'FUTSAL-QUEENCUP' : competitionClass,
+          round_number: roundNumber,
+          stream_mode: sport === 'FOOTBALL' ? streamMode : 'MANUAL',
+          assign_operator: assignOperator,
+          ingest_protocol: sport === 'FOOTBALL' && streamMode === 'STREAM' ? ingestProtocol : null,
+          first_half_minutes: sport === 'FUTSAL' ? futsalFirstHalfMinutes : undefined,
+          second_half_minutes: sport === 'FUTSAL' ? futsalSecondHalfMinutes : undefined,
+          metadata: sport === 'BASKETBALL'
             ? {
-                sport_profile: 'FUTSAL_QUEENCUP',
-                player_format: futsalPlayerFormat,
-                pitch_length_m: 40,
-                pitch_width_m: 20,
-                media_enabled: false,
-                live_coder_enabled: false,
+                period_count: basketballPeriodCount,
+                period_minutes: basketballPeriodMinutes,
+                shot_clock_seconds: 24,
               }
-          : {
-              broadcast_enabled: broadcastGraphicsEnabled,
-            },
-      }),
-    });
+            : sport === 'FUTSAL'
+              ? {
+                  sport_profile: 'FUTSAL_QUEENCUP',
+                  player_format: futsalPlayerFormat,
+                  pitch_length_m: 40,
+                  pitch_width_m: 20,
+                  media_enabled: false,
+                  live_coder_enabled: false,
+                }
+            : {
+                broadcast_enabled: broadcastGraphicsEnabled,
+              },
+        }),
+      });
 
-    if (!response.ok) {
-      setError((await response.text()) || 'Failed to create match');
-      return;
+      if (!response.ok) {
+        setCreateError(await responseError(response, '경기를 생성하지 못했습니다. 입력 내용을 확인해 주세요.'));
+        return;
+      }
+
+      // A successful POST remains successful even if the following list refresh fails.
+      const created: Partial<Match> | null = await response.json().catch(() => null);
+      setCreatedMatch({ id: typeof created?.id === 'string' ? created.id : undefined, name: generatedMatchName, sport });
+      setListMode('active');
+      setClassFilter('ALL');
+      setActivePage(1);
+      setHomeTeam('');
+      setAwayTeam('');
+      setCompetitionClass('K3');
+      setRoundNumber(1);
+      setStreamMode('STREAM');
+      setBasketballPeriodCount(4);
+      setBasketballPeriodMinutes(10);
+      setFutsalPlayerFormat(6);
+      setFutsalFirstHalfMinutes(15);
+      setFutsalSecondHalfMinutes(15);
+      setAssignOperator(false);
+      setBroadcastGraphicsEnabled(true);
+      setIngestProtocol('RTMP');
+      await load();
+    } catch {
+      setCreateError('서버 연결이 끊겼습니다. 경기 목록에서 생성 여부를 확인한 뒤 다시 시도해 주세요.');
+    } finally {
+      creatingMatchRef.current = false;
+      setCreatingMatch(false);
     }
-
-    setHomeTeam('');
-    setAwayTeam('');
-    setCompetitionClass('K3');
-    setRoundNumber(1);
-    setStreamMode('STREAM');
-    setBasketballPeriodCount(4);
-    setBasketballPeriodMinutes(10);
-    setFutsalPlayerFormat(6);
-    setFutsalFirstHalfMinutes(15);
-    setFutsalSecondHalfMinutes(15);
-    setAssignOperator(false);
-    setBroadcastGraphicsEnabled(true);
-    setIngestProtocol('RTMP');
-    await load();
   };
 
   const handleCompetitionClassChange = (nextClass: string) => {
@@ -1048,11 +1069,11 @@ export default function Dashboard() {
                   <div className="sidebar-eyebrow">Create Match</div>
                   <h3>{sport === 'BASKETBALL' ? '농구 경기 등록' : sport === 'FUTSAL' ? '퀸컵 풋살 경기 등록' : '새 경기 등록'}</h3>
                 </div>
-                {sport === 'FOOTBALL' ? <button className="button-compact btn-secondary" onClick={openCompetitionClassModal}>
+                {sport === 'FOOTBALL' ? <button className="button-compact btn-secondary" disabled={creatingMatch} onClick={openCompetitionClassModal}>
                   대회 관리
                 </button> : null}
               </div>
-              <div className={`hero-form-grid compact ${sport === 'BASKETBALL' ? 'basketball-create-form' : ''}`}>
+              <fieldset disabled={creatingMatch} aria-label="경기 생성 정보" className={`match-create-fields hero-form-grid compact ${sport === 'BASKETBALL' ? 'basketball-create-form' : ''}`}>
                 {sport === 'FOOTBALL' ? <div className="field-stack field-stack-short">
                   <div className="field-label">대회</div>
                   <select value={competitionClass} onChange={(e) => handleCompetitionClassChange(e.target.value)}>
@@ -1199,7 +1220,7 @@ export default function Dashboard() {
                     {generatedMatchName || (sport === 'BASKETBALL' ? `[BASKETBALL | ${roundNumber}R] 홈팀 vs 어웨이팀` : sport === 'FUTSAL' ? `[FUTSAL-QUEENCUP | ${roundNumber}R] 홈팀 vs 어웨이팀` : `[${competitionClass} | ${roundNumber}R] 홈팀 vs 어웨이팀`)}
                   </div>
                 </div>
-              </div>
+              </fieldset>
               {sport === 'FOOTBALL' ? <div className="muted dashboard-class-time">
                 경기 시간: 전반 {selectedCompetition?.first_half_minutes || 45}분 / 후반 {selectedCompetition?.second_half_minutes || 45}분
               </div> : sport === 'FUTSAL' ? (
@@ -1212,14 +1233,20 @@ export default function Dashboard() {
                 </div>
               )}
               <div className="row hero-actions-compact">
-                <button className="btn-primary" onClick={createMatch}>Create Match</button>
+                <button className="btn-primary match-create-button" disabled={creatingMatch} aria-busy={creatingMatch} onClick={createMatch}>{creatingMatch ? <><span className="match-create-spinner" aria-hidden="true" /> 경기 생성 중…</> : '경기 생성'}</button>
+                <span className="muted" role="status">{creatingMatch ? '경기를 등록하고 있습니다. 잠시 기다려주세요.' : ''}</span>
               </div>
-              {error ? <p className="form-error" style={{ margin: 0 }}>{error}</p> : null}
+              {createError ? <p role="alert" className="form-error" style={{ margin: 0 }}>{createError}</p> : null}
+              {createdMatch ? <div className="match-create-success" role="status">
+                <div><strong>경기가 생성되었습니다.</strong><p>{createdMatch.name}</p></div>
+                {createdMatch.id ? <Link className="button-link btn-primary" href={createdMatch.sport === 'BASKETBALL' ? `/admin/basketball/match/${createdMatch.id}` : `/admin/match/${createdMatch.id}`}>매치 컨트롤 열기 →</Link> : <a className="button-link btn-secondary" href="#dashboard-match-list">경기 목록 보기 ↓</a>}
+              </div> : null}
             </div></details>
           </div>
         </section>
 
-        <section className="dashboard-grid">
+        {error ? <p role="alert" className="form-error">{error}</p> : null}
+        <section className="dashboard-grid" id="dashboard-match-list">
           <div className="card card-panel">
             <div className="section-heading">
               <div>

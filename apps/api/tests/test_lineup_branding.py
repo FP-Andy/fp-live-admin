@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime
 from unittest.mock import patch
@@ -21,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from app.auth import require_session_user
+from app.branding_refresh import BrandingRefreshQueue
 from app.db import Base, get_db
 from app.lineup_pdf import parse_kfa_layout, parse_lineup_pdf
 from app.models import CompetitionClass, Match, TeamLogo, User
@@ -139,13 +141,14 @@ class BrandingTests(unittest.TestCase):
 class TeamLogoApiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.engine = create_engine('sqlite:///' + str(Path(self.temp.name) / 'db.sqlite3'))
+        self.engine = create_engine('sqlite:///' + str(Path(self.temp.name) / 'db.sqlite3'), pool_size=2, max_overflow=0, pool_timeout=.25)
         self.session = sessionmaker(self.engine)
         tables = [model.__table__ for model in (User, CompetitionClass, Match, TeamLogo)]
         Base.metadata.create_all(self.engine, tables=tables)
         self.changed = []
+        self.branding_changed = self.changed.extend
         self.app = FastAPI()
-        self.app.include_router(create_team_logo_router(Path(self.temp.name) / 'logos', lambda ids: self.changed.extend(ids)))
+        self.app.include_router(create_team_logo_router(Path(self.temp.name) / 'logos', lambda ids: self.branding_changed(ids)))
         def db_override():
             with self.session() as db:
                 yield db
@@ -202,6 +205,37 @@ class TeamLogoApiTests(unittest.TestCase):
         for response in (self.upload(payload=b'<svg/>'), self.upload(payload=b'x' * (5 * 1024 * 1024 + 1)), self.upload(competition='UNKNOWN'), self.upload(name='   ')):
             self.assertEqual(response.status_code, 400)
         self.assertEqual(self.client.get('/api/fcm/team-logos').json(), [])
+
+    def test_large_club_logo_upload_keeps_api_available_with_two_connections(self):
+        self.login()
+        with self.session() as db:
+            db.add_all([Match(id=uuid4(), name='홈구단 FC vs 원정구단', competition_class='K3', metadata_json={}) for _ in range(79)])
+            db.commit()
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def render(match_id):
+            with self.session() as db:
+                db.get(Match, match_id)
+                entered.set()
+                release.wait(5)
+            finished.set()
+
+        queue = BrandingRefreshQueue(render, debounce_seconds=0)
+        self.branding_changed = lambda ids: [queue.submit(mid) for mid in ids]
+        try:
+            self.assertEqual(self.upload().status_code, 200)
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(self.engine.pool.checkedout(), 1)
+            # Historical rendering is deliberately blocked, with just one spare
+            # connection for normal logo reads and subsequent uploads.
+            for _ in range(3):
+                self.assertEqual(self.client.get('/api/fcm/team-logos').status_code, 200)
+                self.assertEqual(self.upload().status_code, 200)
+            self.assertEqual(self.engine.pool.checkedout(), 1)
+        finally:
+            queue.close()
+            release.set()
+            self.assertTrue(finished.wait(2))
 
     def test_production_pdf_upload_and_broadcast_state_flow(self):
         from fastapi import Body, Depends, File, Form, UploadFile
