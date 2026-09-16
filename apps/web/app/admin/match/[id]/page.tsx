@@ -1692,29 +1692,12 @@ export default function MatchPage() {
             </div>
             <button className="btn-primary fla-shot-submit" onClick={submitXg} disabled={!canWrite || isSavingShot}>{isSavingShot ? '저장 중…' : isOwnGoal ? '자책골 기록' : '슈팅 기록'}</button>
             </div>
-            <div
-              style={{
-                position: 'relative',
-                width: '100%',
-                maxWidth: 520,
-                justifySelf: 'center',
-                marginTop: isOnTargetShot ? 132 : 4,
-              }}
-            >
+            <div className="fla-shot-surfaces">
               {isOnTargetShot && !isFutsal ? (
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: '50%',
-                    top: -128,
-                    transform: 'translateX(-50%)',
-                    width: '100%',
-                    maxWidth: 520,
-                    zIndex: 2,
-                  }}
-                >
+                <div className="fla-goalmouth">
                   <div className="fla-goalmouth-row" style={{ position: 'relative', width: '100%', minHeight: 108 }}>
                     <div
+                      aria-label="골문 도착 위치 선택"
                       onClick={onGoalmouthClick}
                       style={{
                         position: 'relative',
