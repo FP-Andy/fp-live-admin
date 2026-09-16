@@ -29,11 +29,21 @@ export type CutRequest = {
 
 export type CutClip = {
   index: number;
-  blob: Blob;
-  /** 요청한 구간 — 서버가 정밀 트림에 사용한다 */
+  /** 브라우저에서 자른 결과. 로컬 앱에서는 파일로 남으므로 없다. */
+  blob?: Blob;
+  /** 로컬 앱에서 자른 클립의 파일 경로 — 서버로 올리지 않고 그대로 합친다. */
+  localPath?: string;
+  /** blob 이 없을 때의 크기(바이트). 화면이 용량을 보여주는 데만 쓴다. */
+  byteSize?: number;
+  /** 요청한 구간 — 합칠 때 정밀 트림에 사용한다 */
   requestedStart: number;
   requestedEnd: number;
 };
+
+/** blob 이든 파일이든 클립 한 개의 크기. */
+export function clipSize(clip: CutClip): number {
+  return clip.blob ? clip.blob.size : (clip.byteSize ?? 0);
+}
 
 export type CutProgress = {
   done: number;

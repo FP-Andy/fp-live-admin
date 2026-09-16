@@ -7,6 +7,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { apiFetch, clearCachedSessionUser, displayRole, fetchSessionUser, readCachedSessionUser, type SessionUser } from '../lib/api';
 import { clearFpaDraft, FPA_DRAFT_WARNING_MESSAGE, hasFpaDraft } from './FpaDraftGuard';
+import { isLocalApp, LOCAL_USER } from '../lib/localApp';
 import { SportProvider, SPORTS, useSportContext, type Sport } from './SportContext';
 
 type NavItem = {
@@ -329,8 +330,16 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
     return { ...section, items };
   }).filter((section) => section.items.length > 0);
 
+  const [localApp, setLocalApp] = useState(false);
+
   useEffect(() => {
     let active = true;
+    // 로컬 앱에는 붙을 서버도 로그인도 없다. 여기서 막지 않으면 곧장 /login 으로 튕긴다.
+    if (isLocalApp()) {
+      setLocalApp(true);
+      setUser(LOCAL_USER as unknown as SessionUser);
+      return () => { active = false; };
+    }
     const cachedUser = readCachedSessionUser();
     if (cachedUser) setUser(cachedUser);
 
@@ -384,6 +393,25 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
       pendingSportChangeRef.current = null;
     }
   };
+
+  // 로컬 앱은 콘솔 껍데기를 쓰지 않는다 — 사이드바의 길 대부분이 서버로 뻗어 있어
+  // 앱 안에서는 눌러도 아무 데도 못 간다. 제목줄 하나만 두고 내용만 보여준다.
+  if (localApp) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <header
+          style={{
+            display: 'flex', alignItems: 'baseline', gap: 10, padding: '10px 18px',
+            borderBottom: '1px solid var(--border-ghost, #2c2c32)', WebkitAppRegion: 'drag',
+          } as React.CSSProperties}
+        >
+          <strong style={{ fontSize: 14 }}>FinePlay Highlight</strong>
+          <span className="muted" style={{ fontSize: 12 }}>하이라이트 제작 · 내 PC에서 처리합니다</span>
+        </header>
+        <main style={{ flex: 1, padding: '18px 22px' }}>{children}</main>
+      </div>
+    );
+  }
 
   return (
     <div className={`app-shell ${sidebarOpen ? 'expanded' : 'collapsed'}`}>

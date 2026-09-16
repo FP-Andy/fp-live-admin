@@ -1,0 +1,80 @@
+{
+  "name": "fineplay-highlight",
+  "productName": "FinePlay Highlight",
+  "version": "0.1.0",
+  "private": true,
+  "description": "경기 영상에서 하이라이트를 만드는 로컬 앱 — 서버 없이 내 PC에서 자른다",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "kr.fineludens.highlight",
+    "productName": "FinePlay Highlight",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "merge.js",
+      "runner.js",
+      "package.json",
+      "node_modules/**/*",
+      "!node_modules/ffprobe-static/bin/linux/**",
+      "!node_modules/ffprobe-static/bin/win32/**",
+      "!node_modules/ffprobe-static/bin/darwin/x64/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/.next-standalone-out",
+        "to": "web",
+        "filter": [
+          "**/*",
+          "!public/ffmpeg/**",
+          "!public/videos/**"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.video",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

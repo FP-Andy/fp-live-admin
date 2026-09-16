@@ -16,8 +16,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(url);
   }
 
+  // 로컬 앱(FinePlay Highlight)이 자기 안에서 이 서버를 띄울 때만 켜진다. 앱에는
+  // 붙을 API 도 로그인도 없어서, 여기서 막으면 화면 자체가 뜨지 않는다.
+  // 이 서버는 127.0.0.1 로만 듣고 앱과 함께 죽으므로 바깥에서 닿을 수 없다.
+  const localApp = process.env.FHL_LOCAL_APP === '1';
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE_NAME)?.value);
-  if (pathname.startsWith('/admin') && !hasSession) {
+  if (pathname.startsWith('/admin') && !hasSession && !localApp) {
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('next', pathname);
     return NextResponse.redirect(loginUrl);
