@@ -642,6 +642,42 @@ export default function FineplayJobsPage() {
     }
   };
 
+  // 사전 작업 통째로 삭제 — 잘못 만든 것을 되돌린다. **사전 작업에만 있는 버튼**이고,
+  // 서버도 standalone 이 아니면 409 로 막는다(클레임 잡은 FinePlay 가 만든 것이라
+  // 우리가 지우면 저쪽 신청이 짝을 잃는다).
+  //
+  // 목록에서만 빼려는 것이면 아카이브가 맞다 — 그쪽은 데이터가 남는다.
+  const deleteStandaloneJob = async (job: FpJob, force = false) => {
+    const name = job.job_metadata?.display_name || job.id;
+    if (!window.confirm(
+      `사전 작업 "${name}" 을 통째로 지울까요?\n\n`
+      + '클립·태깅 데이터·매치·원본 영상이 모두 사라집니다. 되돌릴 수 없습니다.\n'
+      + "목록에서만 빼려면 '아카이브' 를 쓰세요.",
+    )) return;
+    try {
+      const res = await apiJson<{ clips: number; match_deleted: boolean; s3_removed: number; s3_failed: number }>(
+        `/highlight/fineplay-jobs/${job.id}${force ? '?force=true' : ''}`,
+        { method: 'DELETE' },
+      );
+      setPollMsg(
+        `삭제 완료 — ${job.id} (클립 ${res.clips}개`
+        + `${res.match_deleted ? ', 매치 삭제' : ''}`
+        + `, S3 ${res.s3_removed}개 삭제${res.s3_failed ? ` · ${res.s3_failed}개 실패` : ''})`,
+      );
+      await loadJobs();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 신청이 연결돼 있으면 서버가 409 로 막는다 — 한 번 더 물어보고 강행할 수 있게.
+      if (!force && msg.includes('신청이 연결')) {
+        if (window.confirm(`${msg}\n\n그래도 삭제할까요? 앱 쪽에 고아 데이터가 남을 수 있습니다.`)) {
+          await deleteStandaloneJob(job, true);
+          return;
+        }
+      }
+      setPollMsg(msg);
+    }
+  };
+
   // 작업이 끝난 잡을 아카이브 룸으로 보낸다 — 이 목록과 '클립 결과' 양쪽에서 빠진다 (데이터는 그대로).
   const archiveJob = async (job: FpJob) => {
     try {
@@ -1490,6 +1526,15 @@ export default function FineplayJobsPage() {
                           : ''}
                       </button>
                     </span>
+                  ) : null}
+                  {meta.standalone ? (
+                    <button
+                      style={{ ...smallBtn, color: '#f87171', borderColor: '#f87171' }}
+                      title="사전 작업 삭제 — 클립·태깅·매치·원본이 모두 사라집니다. 목록에서만 빼려면 아카이브를 쓰세요"
+                      onClick={() => void deleteStandaloneJob(job)}
+                    >
+                      🗑 삭제
+                    </button>
                   ) : null}
                   {meta.standalone ? (
                     <button
