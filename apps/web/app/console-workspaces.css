@@ -29,6 +29,8 @@
   .fla-direction-pitch svg { max-height: 180px; }
 }
 .fla-shot-card { container-type: inline-size; }
+.fla-shot-surfaces { display: grid; gap: 20px; width: 100%; max-width: 520px; justify-self: center; margin-top: 4px; min-width: 0; }
+.fla-goalmouth { position: relative; width: 100%; min-width: 0; }
 .fla-shot-toolbar { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; align-items: center; }
 .fla-shot-values { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
 .fla-shot-value-row { display: grid; grid-template-columns: 48px minmax(60px,1fr) 92px; gap: 8px; align-items: center; min-width: 0; }
