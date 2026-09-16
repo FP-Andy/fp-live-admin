@@ -12044,6 +12044,47 @@ def clip_result_set_team(
     }
 
 
+def _carry_over_offsets(db: Session, clip_id: str, actions: list[dict]) -> int:
+    """이미 저장된 구간(start/end offset)을 새 액션 목록으로 옮긴다. 옮긴 개수를 돌려준다.
+
+    dual 에서 '클립에 저장' 하면 액션을 전부 지우고 다시 넣는다. 그때 구간은
+    equal_split_offsets 가 새로 계산하는데, **콘솔 클립 결과에서 손으로 맞춘 값이
+    그대로 날아갔다.** 재채점하려고 다시 찍어 저장할 때마다 구간을 다시 잡아야 했다.
+
+    같은 액션에만 옮긴다 — 키는 (seq, 액션명, 팀, 등번호)다. seq 만 보면 액션을
+    추가·삭제했을 때 남의 구간이 엉뚱한 액션에 붙는다. 넷이 다 같으면 '그 액션 그대로'
+    라고 보고 옮기고, 하나라도 다르면 새로 계산하게 둔다(빈 값으로 남긴다).
+
+    **화면이 보낸 값이 있으면 건드리지 않는다** — 구간 수정 요청이 그 경로다.
+    """
+    def key(seq, action, side, jersey):
+        return (
+            int(seq or 0),
+            str(action or "").strip(),
+            (str(side or "").strip().lower() or None),
+            (str(jersey or "").strip() or None),
+        )
+
+    old = {
+        key(r.seq, r.action_name, r.team_side, r.jersey): (r.start_offset, r.end_offset)
+        for r in db.query(HighlightClipAction)
+        .filter(HighlightClipAction.clip_id == clip_id).all()
+    }
+    if not old:
+        return 0
+    carried = 0
+    for i, a in enumerate(actions):
+        if a.get("startOffset") is not None:
+            continue
+        prev = old.get(key(a.get("seq") or i + 1, a.get("action"),
+                           a.get("teamSide"), a.get("jersey")))
+        if not prev or prev[0] is None:
+            continue
+        a["startOffset"], a["endOffset"] = prev
+        carried += 1
+    return carried
+
+
 @app.put("/api/highlight/clip-results/clips/{clip_id}/actions")
 def clip_result_put_actions(
     clip_id: str,
@@ -12066,6 +12107,8 @@ def clip_result_put_actions(
         rows = list(body["rows"])
         scene = FineplayFpaScene(index=0, rows=rows, primary_row=fineplay_pick_primary(rows))
         actions = fineplay_scene_action_rows(scene, our_side=our_side, lineup=lineup)
+        # 콘솔에서 맞춘 구간은 다시 찍어 저장해도 유지한다(_carry_over_offsets).
+        carried = _carry_over_offsets(db, clip_id, actions)
     else:
         actions = []
         for i, a in enumerate(body.get("actions") or []):
@@ -12097,7 +12140,11 @@ def clip_result_put_actions(
     if body.get("scenes") is not None:
         clip.fpa_scenes = body["scenes"]
 
+    else:
+        carried = 0
+
     duration = clip.duration_seconds or max(0.0, clip.end_sec - clip.start_sec)
+    # 남은(옮겨오지 못한) 액션만 채운다 — 이미 값이 있으면 건드리지 않는다.
     fineplay_equal_split_offsets(actions, duration)
 
     db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == clip_id).delete()
@@ -12131,6 +12178,8 @@ def clip_result_put_actions(
     )
     return {
         "clip_id": clip_id,
+        # 몇 개의 구간을 그대로 가져왔는지 — 화면이 안내에 쓴다.
+        "carriedOffsets": carried,
         "actions": fineplay_annotate_action_codes(
             [_serialize_clip_action(a) for a in saved]),
     }
