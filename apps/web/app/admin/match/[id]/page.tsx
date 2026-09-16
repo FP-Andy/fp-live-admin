@@ -145,6 +145,7 @@ export default function MatchPage() {
   const [manualLineupName, setManualLineupName] = useState('');
   const [isSavingManualLineup, setIsSavingManualLineup] = useState(false);
   const [isManualLineupOpen, setIsManualLineupOpen] = useState(false);
+  const setupRef = useRef<HTMLDetailsElement | null>(null);
   const lineupInputRef = useRef<HTMLInputElement | null>(null);
   const recordSheetInputRef = useRef<HTMLInputElement | null>(null);
   const [shotPoint, setShotPoint] = useState<{ x: number; y: number } | null>(null);
@@ -1429,13 +1430,102 @@ export default function MatchPage() {
       <header className="fla-match-heading">
         <div><div className="row fla-match-context"><Link className="button-link button-compact btn-secondary fla-back-link" href="/admin/dashboard">← 대시보드</Link><span className="status-pill">{match?.competition_class || 'FLA'}</span>{match?.metadata?.design_preview ? <span className="status-pill tech">로컬 예시 경기</span> : null}<span className="muted">{isArchived ? '보관 경기 · 읽기 전용' : canWrite ? '기록 가능' : '읽기 전용'}</span></div><h2>{matchTeams ? `${matchTeams.homeTeam} vs ${matchTeams.awayTeam}` : match?.name || '경기 불러오는 중…'}</h2></div>
       </header>
+          <details ref={setupRef} className="card fla-setup" id="match-setup"><summary>명단 · 운영권 · 데이터 내보내기</summary>
+      <div className="row fla-setup-content" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div className="grid" style={{ gap: 6 }}>
+          <div className="match-meta-group">
+
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : 'warning'}`}>
+              mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}
+            </span>
+            {streamMode === 'STREAM' ? <>
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+              RTMP 서버: {rtmpServer || '미설정'}
+            </span>
+            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+              스트림 키: {streamKey || '미설정'}
+            </span>
+            </> : null}
+          </div>
+          {streamMode === 'STREAM' ? (
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn-secondary" onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
+            <button className="btn-secondary" onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
+            <button className="btn-secondary" onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
+          </div>
+          ) : null}
+          {copyMessage ? <div className="muted">{copyMessage}</div> : null}
+        </div>
+        <div className="match-hero-actions">
+          <div className="row" style={{ justifyContent: 'flex-end' }}>
+            <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
+              {isExportingMatchData ? '내보내는 중…' : '경기 데이터 내보내기'}
+            </button>
+            {!isOperator
+              ? <button className="btn-secondary" onClick={acquire} disabled={isArchived}>운영권 가져오기</button>
+              : <button className="btn-danger" onClick={release} disabled={isArchived}>운영권 해제</button>}
+            <span className="muted">
+              operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
+            </span>
+          </div>
+          <div className="match-lineup-actions">
+            <div className="match-lineup-action-row">
+              <label className="muted" htmlFor="lineup-direction">명단 방향</label>
+              <select id="lineup-direction" value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team | 'AUTO')} disabled={!canWrite || isUploadingLineup || isUploadingRecordSheet}>
+                <option value="AUTO">자동 인식</option>
+                <option value="HOME">왼쪽·첫 팀 → 홈</option>
+                <option value="AWAY">왼쪽·첫 팀 → 어웨이</option>
+              </select>
+              <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
+                {isUploadingLineup ? '분석 중…' : 'PDF 명단 업로드'}
+              </button>
+              <input
+                ref={lineupInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                style={{ display: 'none' }}
+                onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
+              />
+              <button className="btn-secondary" onClick={() => recordSheetInputRef.current?.click()} disabled={!canWrite || isUploadingRecordSheet}>
+                {isUploadingRecordSheet ? '반영 중…' : '815 엑셀 명단 업로드'}
+              </button>
+              <input
+                ref={recordSheetInputRef}
+                type="file"
+                accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
+                style={{ display: 'none' }}
+                onChange={(event) => uploadLineupRecordSheet(event.target.files?.[0] || null)}
+              />
+            </div>
+            <div className="match-lineup-action-row">
+              <span className="muted">
+                명단 · 홈 {(lineups.HOME || []).length}명 / 어웨이 {(lineups.AWAY || []).length}명
+              </span>
+              <button className="btn-secondary" onClick={swapLineupSides} disabled={!canWrite || isSwappingLineup || !hasLineupPlayers}>
+                {isSwappingLineup ? '변경 중…' : '홈·어웨이 바꾸기'}
+              </button>
+              <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
+                명단 직접 입력
+              </button>
+            </div>
+            <p className="muted">PDF는 팀명과 좌우 배치를 기준으로 자동 인식합니다. 엑셀은 자동 선택 시 첫 팀을 홈으로 적용합니다.</p>
+          </div>
+        </div>
+      </div>
+      <LineupUniforms lineup={match?.metadata?.lineups} />
+
+          </details>
       {loadError ? <div className="fla-feedback" role="alert">{loadError}</div> : null}
       {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}</span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
       <section className="card fla-clock" aria-label="경기 타이머">
         <div className="fla-clock-main"><div><span className="muted">{running ? '진행 중' : '일시정지'}</span><strong className="fla-clock-value">{displayClockLabel(clockMs)}{clockSpeed === 2 ? ' ×2' : ''}</strong></div>
+          <div className="fla-period-controls" role="group" aria-label="전후반 선택">
+            <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>전반 00:00</button>
+            <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>후반 시작</button>
+          </div>
           <button className={running ? 'btn-secondary' : 'btn-primary'} onClick={(e) => { e.currentTarget.blur(); toggleRun(); }} disabled={!canWrite}>{running ? '일시정지' : '경기 시작'}</button>
         </div>
-        <details className="fla-clock-settings"><summary>시간 · 전후반 설정</summary><div className="grid">
+        <details className="fla-clock-settings"><summary>시간 보정 · 연장 설정</summary><div className="grid">
             {canUseX2 ? (
               <div className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
                 <button className={clockSpeed === 1 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(1)} disabled={!canWrite}>
@@ -1452,8 +1542,6 @@ export default function MatchPage() {
               </div>
             ) : null}
           <div className="row">
-            <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>전반 00:00</button>
-            <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>후반 시작</button>
             <button className="btn-secondary" onClick={markThirdHalfStart} disabled={!canWrite}>연장 전반</button>
             <button className="btn-secondary" onClick={markFourthHalfStart} disabled={!canWrite}>연장 후반</button>
             <button className="btn-danger" onClick={resetClock} disabled={!canWrite}>타이머 초기화</button>
@@ -1461,7 +1549,13 @@ export default function MatchPage() {
         </div></details>
       </section>
       <nav className="fla-mobile-nav" aria-label="경기 작업 선택">
-        {([{id:'control',label:'경기 제어'},{id:'shots',label:'슈팅'},{id:'review',label:'기록'},{id:'settings',label:'설정'}] as const).map((tab) => <button key={tab.id} aria-pressed={mobileView === tab.id} className={mobileView === tab.id ? 'btn-active' : ''} onClick={() => setMobileView(tab.id)}>{tab.label}</button>)}
+        {([{id:'control',label:'경기 제어'},{id:'shots',label:'슈팅'},{id:'review',label:'기록'},{id:'settings',label:'설정'}] as const).map((tab) => <button key={tab.id} aria-pressed={mobileView === tab.id} className={mobileView === tab.id ? 'btn-active' : ''} onClick={() => {
+          setMobileView(tab.id);
+          if (tab.id === 'settings' && setupRef.current) {
+            setupRef.current.open = true;
+            setupRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }}>{tab.label}</button>)}
       </nav>
       <div className="fla-workspace">
         <section className="fla-controls grid" aria-label="점유와 공격 입력">
@@ -1544,7 +1638,7 @@ export default function MatchPage() {
             </div>
         </section>
         <section className="fla-shots" aria-label="슈팅 입력">
-          <div className="card card-panel grid">
+          <div className="card card-panel grid fla-shot-card">
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <h3 style={{ margin: 0 }}>{isFutsal ? '슈팅 위협도 기록' : '슈팅 기록'}</h3>
@@ -1563,6 +1657,27 @@ export default function MatchPage() {
 
               </div>
             </div>
+            <div className="row fla-shot-flags" style={{ gap: 10, flexWrap: 'wrap' }}>
+              {!isFutsal ? <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>유효슈팅</button> : null}
+              <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>골</button>
+              {!isFutsal ? <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>헤더</button> : null}
+              <button
+                className={isOwnGoal ? 'btn-active' : ''}
+                onClick={() => setIsOwnGoal((prev) => !prev)}
+                disabled={!canWrite}
+                title="Own goal — counts on the scoreboard for the selected team"
+              >
+                OG
+              </button>
+              <span className="muted">
+                {isOwnGoal
+                  ? `Own goal → ${xgTeam} scores. Click pitch, then Record OG.`
+                  : shotPoint
+                  ? `shot=(${shotPoint.x}, ${shotPoint.y})`
+                  : '피치에서 슈팅 위치를 선택하세요'}
+              </span>
+            </div>
+            <div className="fla-shot-toolbar">
             <div className={`fla-shot-values ${isFutsal ? 'fla-shot-values-futsal' : ''}`}>
               <div className="fla-shot-value-row">
                 <label htmlFor="fla-xg-value">{isFutsal ? 'Shot Threat' : 'xG'}</label>
@@ -1574,6 +1689,8 @@ export default function MatchPage() {
                 <input id="fla-xgot-value" aria-label="xGOT 값" value={xgotValue} readOnly placeholder="xGOT" />
                 <button className="btn-secondary" onClick={estimateXgotFromGoalmouth} disabled={!canWrite}>xGOT 계산</button>
               </div> : null}
+            </div>
+            <button className="btn-primary fla-shot-submit" onClick={submitXg} disabled={!canWrite || isSavingShot}>{isSavingShot ? '저장 중…' : isOwnGoal ? '자책골 기록' : '슈팅 기록'}</button>
             </div>
             <div
               style={{
@@ -1801,30 +1918,11 @@ export default function MatchPage() {
             </div>
               </>}
             </div>
-            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
-              {!isFutsal ? <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>유효슈팅</button> : null}
-              <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>골</button>
-              {!isFutsal ? <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>헤더</button> : null}
-              <button
-                className={isOwnGoal ? 'btn-active' : ''}
-                onClick={() => setIsOwnGoal((prev) => !prev)}
-                disabled={!canWrite}
-                title="Own goal — counts on the scoreboard for the selected team"
-              >
-                OG
-              </button>
-              <span className="muted">
-                {isOwnGoal
-                  ? `Own goal → ${xgTeam} scores. Click pitch, then Record OG.`
-                  : shotPoint
-                  ? `shot=(${shotPoint.x}, ${shotPoint.y})`
-                  : '피치에서 슈팅 위치를 선택하세요'}
-              </span>
-            </div>
+
             <div className="muted">{isFutsal ? '풋살 20 × 20m 공격 하프의 골문 거리·각도로 Shot Threat(최대 0.800)를 추정합니다.' : '위치를 선택한 뒤 xG를 계산하거나 직접 입력하고 기록하세요.'}</div>
             {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
             {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}</div> : null}
-            <button className="btn-primary fla-shot-submit" onClick={submitXg} disabled={!canWrite || isSavingShot}>{isSavingShot ? '저장 중…' : isOwnGoal ? '자책골 기록' : '슈팅 기록'}</button>
+
           </div>
 
 
@@ -2016,91 +2114,7 @@ export default function MatchPage() {
 
         </section>
         <section className="fla-settings grid" aria-label="경기 설정">
-          <details className="card fla-setup"><summary>명단 · 운영권 · 데이터 내보내기</summary>
-      <div className="row fla-setup-content" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div className="grid" style={{ gap: 6 }}>
-          <div className="match-meta-group">
 
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : 'warning'}`}>
-              mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}
-            </span>
-            {streamMode === 'STREAM' ? <>
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
-              RTMP 서버: {rtmpServer || '미설정'}
-            </span>
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
-              스트림 키: {streamKey || '미설정'}
-            </span>
-            </> : null}
-          </div>
-          {streamMode === 'STREAM' ? (
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn-secondary" onClick={() => copyText(rtmpServer, 'Server URL')} disabled={!rtmpServer}>Copy Server</button>
-            <button className="btn-secondary" onClick={() => copyText(streamKey, 'Stream key')} disabled={!streamKey}>Copy Key</button>
-            <button className="btn-secondary" onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
-          </div>
-          ) : null}
-          {copyMessage ? <div className="muted">{copyMessage}</div> : null}
-        </div>
-        <div className="match-hero-actions">
-          <div className="row" style={{ justifyContent: 'flex-end' }}>
-            <button className="btn-success" onClick={exportMatchData} disabled={isExportingMatchData}>
-              {isExportingMatchData ? '내보내는 중…' : '경기 데이터 내보내기'}
-            </button>
-            {!isOperator
-              ? <button className="btn-secondary" onClick={acquire} disabled={isArchived}>운영권 가져오기</button>
-              : <button className="btn-danger" onClick={release} disabled={isArchived}>운영권 해제</button>}
-            <span className="muted">
-              operator: {match?.operator_id || 'none'} / me: {isArchived ? 'archived-read-only' : canWrite ? 'write' : 'read-only'}
-            </span>
-          </div>
-          <div className="match-lineup-actions">
-            <div className="match-lineup-action-row">
-              <label className="muted" htmlFor="lineup-direction">명단 방향</label>
-              <select id="lineup-direction" value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team | 'AUTO')} disabled={!canWrite || isUploadingLineup || isUploadingRecordSheet}>
-                <option value="AUTO">자동 인식</option>
-                <option value="HOME">왼쪽·첫 팀 → 홈</option>
-                <option value="AWAY">왼쪽·첫 팀 → 어웨이</option>
-              </select>
-              <button className="btn-secondary" onClick={() => lineupInputRef.current?.click()} disabled={!canWrite || isUploadingLineup}>
-                {isUploadingLineup ? '분석 중…' : 'PDF 명단 업로드'}
-              </button>
-              <input
-                ref={lineupInputRef}
-                type="file"
-                accept="application/pdf,.pdf"
-                style={{ display: 'none' }}
-                onChange={(event) => uploadLineupPdf(event.target.files?.[0] || null)}
-              />
-              <button className="btn-secondary" onClick={() => recordSheetInputRef.current?.click()} disabled={!canWrite || isUploadingRecordSheet}>
-                {isUploadingRecordSheet ? '반영 중…' : '815 엑셀 명단 업로드'}
-              </button>
-              <input
-                ref={recordSheetInputRef}
-                type="file"
-                accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
-                style={{ display: 'none' }}
-                onChange={(event) => uploadLineupRecordSheet(event.target.files?.[0] || null)}
-              />
-            </div>
-            <div className="match-lineup-action-row">
-              <span className="muted">
-                명단 · 홈 {(lineups.HOME || []).length}명 / 어웨이 {(lineups.AWAY || []).length}명
-              </span>
-              <button className="btn-secondary" onClick={swapLineupSides} disabled={!canWrite || isSwappingLineup || !hasLineupPlayers}>
-                {isSwappingLineup ? '변경 중…' : '홈·어웨이 바꾸기'}
-              </button>
-              <button className="btn-secondary" onClick={() => setIsManualLineupOpen(true)} disabled={!canWrite}>
-                명단 직접 입력
-              </button>
-            </div>
-            <p className="muted">PDF는 팀명과 좌우 배치를 기준으로 자동 인식합니다. 엑셀은 자동 선택 시 첫 팀을 홈으로 적용합니다.</p>
-          </div>
-        </div>
-      </div>
-      <LineupUniforms lineup={match?.metadata?.lineups} />
-
-          </details>
       <div className="card card-utility">
         <h3>데이터 전송 상태</h3>
         <div className="grid">
