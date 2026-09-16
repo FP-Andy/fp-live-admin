@@ -9,7 +9,10 @@ import {
   type PlacedItem, type Scoreboard, type Watermark,
 } from '../../../../components/HighlightOverlay';
 import { API_BASE, apiJson } from '../../../../lib/api';
-import type { CutClip, CutProgress } from '../../../../lib/localCut';
+import { clipSize, type CutClip, type CutProgress } from '../../../../lib/localCut';
+import {
+  isLocalApp, localBridge, type LocalBridge, type LocalClip,
+} from '../../../../lib/localApp';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 
 type JobStatus = {
@@ -32,6 +35,27 @@ type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal'
 type Tag = { id: string; t: number; before?: number; after?: number; kind?: TagKind };
 
 type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number; scoreboard?: Scoreboard };
+
+/** FLA 경기 화면이 내려주는 하이라이트 로그 한 줄.
+ *
+ *  경기 시계(clock_ms)는 0분부터 쭉 흐르고, 그 순간에 버튼을 누르면 한 줄이 남는다.
+ *  영상 시간이 아니라 **경기 시간**이므로, 영상에 앉히려면 앵커가 필요하다(clockToVideo).
+ */
+type FlaLogEntry = {
+  kind: 'goal' | 'on_target' | 'shot' | 'highlight';
+  clock_ms: number;
+  team: 'HOME' | 'AWAY' | null;
+  is_own_goal: boolean;
+  player_number: number | null;
+  player_name: string | null;
+};
+
+type FlaLog = {
+  match: { id: string; name: string; home_team: string; away_team: string; stream_mode: string };
+  /** 후반이 시작되는 경기 시계. 없으면 전반 앵커 하나로만 앉힌다. */
+  halftime_clock_ms: number | null;
+  entries: FlaLogEntry[];
+};
 
 /** 이어붙일 원본 하나. 길이·해상도는 파일을 고른 직후 메타데이터에서 읽어 채운다. */
 type Source = { file: File; url: string; duration: number; width: number; height: number };
@@ -165,6 +189,26 @@ export default function ManualHighlightPage() {
   // 클립 n 번이 tags 의 몇 번째였는지. '점수만 반영' 태그를 건너뛰므로 둘이 어긋난다.
   const [clipTagIndex, setClipTagIndex] = useState<number[]>([]);
   const [cutError, setCutError] = useState('');
+  // 로컬 앱 안에서 돌고 있나. 같은 빌드가 콘솔로도 뜨고 앱 안에서도 떠서 **실행 중에** 본다.
+  const [localApp, setLocalApp] = useState(false);
+  useEffect(() => { setLocalApp(isLocalApp()); }, []);
+  // 로컬 앱이 만든 작업 폴더와, 거기 잘려 있는 클립들. 서버로 올리지 않고 그대로 합친다.
+  const [localJobId, setLocalJobId] = useState('');
+  const [localClips, setLocalClips] = useState<LocalClip[]>([]);
+  const [localOutPath, setLocalOutPath] = useState('');
+
+  // ── FLA 하이라이트 로그 ─────────────────────────────────────────────────
+  // 경기 시계로 적힌 로그를 이 영상의 시간으로 옮겨 태그를 자동으로 찍는다.
+  // 옮기는 기준이 앵커다 — 영상에서 전반/후반이 시작되는 지점을 사람이 찍어 준다.
+  const [matchPickerOpen, setMatchPickerOpen] = useState(false);
+  const [matchList, setMatchList] = useState<{ id: string; name: string; home: string; away: string }[]>([]);
+  const [loadedMatch, setLoadedMatch] = useState<FlaLog | null>(null);
+  const [anchorFirst, setAnchorFirst] = useState<number | null>(null);
+  const [anchorSecond, setAnchorSecond] = useState<number | null>(null);
+  const [importMsg, setImportMsg] = useState('');
+  // 점수판을 그림으로 떠서 앱에 넘길 때 잠깐 그리는 자리(로컬 전용).
+  const [sbCapture, setSbCapture] = useState<{ key: string; home: number; away: number; width: number }[]>([]);
+  const sbCaptureRef = useRef<Record<string, HTMLDivElement | null>>({});
   const [previewBusy, setPreviewBusy] = useState<number | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [publishMsg, setPublishMsg] = useState('');
@@ -515,6 +559,146 @@ export default function ManualHighlightPage() {
   // 태그가 바뀌면 이미 뽑아둔 클립은 더 이상 맞지 않는다.
   useEffect(() => { setClips([]); setCutError(''); }, [tags, padBefore, padAfter]);
 
+  // ── FLA 하이라이트 로그 ─────────────────────────────────────────────────
+
+  /** 콘솔에서는 경기를 골라 API 로 받는다. 로컬 앱에는 이 길이 없다(파일로만). */
+  const openMatchPicker = async () => {
+    setMatchPickerOpen(true);
+    try {
+      const rows = await apiJson<Record<string, unknown>[]>('/matches?compact=true');
+      setMatchList(
+        (Array.isArray(rows) ? rows : [])
+          // 수동 경기만 — HL 버튼과 로그가 쌓이는 건 그쪽이다.
+          .filter((r) => (r?.metadata as Record<string, unknown>)?.stream_mode === 'MANUAL')
+          .map((r) => {
+            const meta = (r.metadata || {}) as Record<string, unknown>;
+            return {
+              id: String(r.id),
+              name: String(r.name || ''),
+              home: String(meta.home_team || ''),
+              away: String(meta.away_team || ''),
+            };
+          }),
+      );
+    } catch {
+      setMatchList([]);
+      setImportMsg('경기 목록을 불러오지 못했습니다');
+    }
+  };
+
+  /** 서버에서 받았든 파일에서 읽었든, 로그 한 묶음을 화면에 앉히는 공통 자리. */
+  const applyFlaLog = (data: FlaLog, via: string) => {
+    setLoadedMatch(data);
+    setMatchPickerOpen(false);
+    // 팀명이 비어 있으면 FLA 값으로 채운다 — 점수판에 그대로 쓰인다.
+    setScoreboard((p) => ({
+      ...p,
+      homeName: p.homeName || data.match.home_team,
+      awayName: p.awayName || data.match.away_team,
+    }));
+    const goals = data.entries.filter((e) => e.kind === 'goal').length;
+    setImportMsg(
+      `${data.match.name} — 로그 ${data.entries.length}건(골 ${goals})${via}. `
+      + '전반·후반 시작 지점을 찍으면 가져올 수 있습니다.',
+    );
+  };
+
+  const loadMatchLog = async (matchId: string) => {
+    try {
+      applyFlaLog(await apiJson<FlaLog>(`/matches/${matchId}/highlight-log`), '');
+    } catch {
+      setImportMsg('경기 로그를 불러오지 못했습니다');
+    }
+  };
+
+  /** 내려받아 둔 로그 파일을 읽는다. 로컬 앱은 서버에 못 붙으므로 이 길로만 들어온다.
+   *  파일에는 format 머리말이 얹혀 오지만 쓰는 건 match/halftime/entries 뿐이라,
+   *  API 응답을 그대로 저장한 파일도 똑같이 읽힌다. */
+  const loadLogFromFile = async (file: File) => {
+    try {
+      const data = JSON.parse(await file.text());
+      // 모양이 아니면 반쯤 불러오지 않고 여기서 막는다 — 태그가 엉뚱하게 생기는 게
+      // 안 생기는 것보다 나쁘다.
+      if (!data || typeof data !== 'object' || !Array.isArray(data.entries) || !data.match) {
+        setImportMsg('하이라이트 로그 파일이 아닙니다 (FLA 경기 화면에서 내려받은 .json)');
+        return;
+      }
+      applyFlaLog(
+        {
+          match: {
+            id: String(data.match.id || ''),
+            name: String(data.match.name || '(이름 없음)'),
+            home_team: String(data.match.home_team || ''),
+            away_team: String(data.match.away_team || ''),
+            stream_mode: String(data.match.stream_mode || ''),
+          },
+          halftime_clock_ms:
+            typeof data.halftime_clock_ms === 'number' ? data.halftime_clock_ms : null,
+          entries: (data.entries as Record<string, unknown>[]).map((e) => ({
+            kind: e?.kind as FlaLogEntry['kind'],
+            clock_ms: Number(e?.clock_ms) || 0,
+            team: (e?.team === 'HOME' || e?.team === 'AWAY'
+              ? e.team : null) as FlaLogEntry['team'],
+            is_own_goal: !!e?.is_own_goal,
+            player_number: (e?.player_number as number | null) ?? null,
+            player_name: (e?.player_name as string | null) ?? null,
+          })).filter((e) =>
+            e.kind === 'goal' || e.kind === 'on_target' || e.kind === 'shot' || e.kind === 'highlight'),
+        },
+        ' · 파일',
+      );
+    } catch {
+      setImportMsg('로그 파일을 읽지 못했습니다 (JSON 형식이 아닙니다)');
+    }
+  };
+
+  /** 로그 한 건의 경기 시계를 이 영상의 시간으로 옮긴다. 못 옮기면 null.
+   *  전반 안에서는 시계가 연속으로 돌므로 덧셈만으로 맞는다. */
+  const clockToVideo = (clockMs: number): number | null => {
+    if (anchorFirst == null) return null;
+    const half = loadedMatch?.halftime_clock_ms ?? null;
+    if (half != null && clockMs >= half) {
+      if (anchorSecond == null) return null;   // 후반 앵커가 없으면 후반 로그는 건너뛴다
+      return anchorSecond + (clockMs - half) / 1000;
+    }
+    return anchorFirst + clockMs / 1000;
+  };
+
+  const importFlaLog = () => {
+    if (!loadedMatch || anchorFirst == null) return;
+    const total = offsets[offsets.length - 1] ?? 0;
+    const limit = total + (sources[sources.length - 1]?.duration ?? 0);
+
+    // 넣을 태그를 **먼저 다 만든 뒤** state 를 바꾼다. setTags 안에서 세면 그 함수가
+    // 나중에 실행돼서, 개수를 밖에서 읽을 때는 아직 0 이다(실제로 그 버그가 났다).
+    const picked: Tag[] = [];
+    let skipped = 0;
+    for (const entry of loadedMatch.entries) {
+      const t = clockToVideo(entry.clock_ms);
+      if (t == null || t < 0 || t > limit) { skipped += 1; continue; }
+      // 이미 1초 안에 태그가 있으면 겹쳐 찍지 않는다 — 손으로 찍어둔 걸 보존한다.
+      // 이번에 넣는 것들끼리도 본다(같은 순간에 슛과 HL 이 함께 찍혀 있을 수 있다).
+      if (tags.some((q) => Math.abs(q.t - t) < 1)) { skipped += 1; continue; }
+      if (picked.some((q) => Math.abs(q.t - t) < 1)) { skipped += 1; continue; }
+      const kind: TagKind | undefined =
+        entry.kind === 'goal' ? (entry.team === 'AWAY' ? 'away_goal' : 'home_goal') : undefined;
+      picked.push({
+        id: `fla-${entry.kind}-${entry.clock_ms}-${Math.random().toString(36).slice(2, 6)}`,
+        t,
+        kind,
+      });
+    }
+
+    if (picked.length) {
+      setTags((prev) => [...prev, ...picked].sort((a, b) => a.t - b.t));
+    }
+    const goals = picked.filter((q) => q.kind).length;
+    setImportMsg(
+      `태그 ${picked.length}개를 가져왔습니다 (골 ${goals}).`
+      + (skipped ? ` ${skipped}개는 영상 범위 밖이거나 이미 태그가 있어 건너뛰었습니다.` : ''),
+    );
+  };
+
   const runCut = async () => {
     if (!sources.length || !tags.length || cutting) return;
     if (!clipTagCount) {
@@ -554,6 +738,40 @@ export default function ManualHighlightPage() {
       }
       setClipTagIndex(fromTag);
 
+      // 로컬 앱: 원본을 메모리로 읽지 않고 **파일 경로째로** 넘겨 내 PC 의 ffmpeg 이
+      // 자른다. 브라우저(wasm)보다 훨씬 빠르고, 오디오 코덱을 미리 보고 방식을 고르므로
+      // PCM 오디오 원본에서도 실패하지 않는다. 원본이 수 GB 라 메모리로 읽을 수도 없다.
+      const bridge = localBridge();
+      if (bridge) {
+        const { jobId } = await bridge.createJob();
+        setLocalJobId(jobId);
+        setLocalOutPath('');
+        const ranges = placement.map((at, n) => {
+          const tag = tags[fromTag[n]];
+          return {
+            sourceIndex: at.src,
+            start: perSource[at.src][at.pos].start,
+            end: perSource[at.src][at.pos].end,
+            kind: tag?.kind ?? null,
+            tagOffset: tag ? Math.max(0, tag.t - clipRange(tag)[0]) : null,
+          };
+        });
+        const paths = sources.map((src) => bridge.pathForFile(src.file));
+        const cut = await bridge.cut(jobId, paths, ranges);
+        setLocalClips(cut);
+        setClips(cut.map((c, n) => ({
+          index: n + 1,
+          localPath: c.path,
+          byteSize: c.size ?? 0,
+          requestedStart: c.requested_start,
+          requestedEnd: c.requested_end,
+        })));
+        if (clamped) {
+          setCutError(`알림: ${clamped}개 클립은 원본 경계에 걸려 그 영상 끝(또는 처음)까지만 잘랐습니다.`);
+        }
+        return;
+      }
+
       // 원본별로 순서대로 자른다. 진행률은 전체 태그 수 기준으로 이어 붙인다.
       const cutBySource: CutClip[][] = [];
       let doneSoFar = 0;
@@ -590,7 +808,100 @@ export default function ManualHighlightPage() {
     }
   };
 
-  const clipsTotalBytes = clips.reduce((sum, c) => sum + (c.blob?.size ?? 0), 0);
+  const clipsTotalBytes = clips.reduce((sum, c) => sum + clipSize(c), 0);
+
+  /** 로컬 앱의 합치기 — 올릴 곳이 없으니 그 자리에서 끝낸다.
+   *
+   *  점수판은 서버(scoreboard.py)가 그리던 것이라 앱에는 그 그림이 없다. 대신 화면이
+   *  **콘솔과 같은 컴포넌트**(HighlightOverlay.ScoreboardPreview)로 잠깐 그려 PNG 로 뜬 뒤
+   *  앱에 넘긴다. 서버 렌더러를 앱에 한 벌 더 두면 둘이 반드시 어긋난다.
+   *
+   *  점수는 클립마다 다르므로 나올 수 있는 조합을 미리 다 떠 둔다(0:0, 1:0, …).
+   */
+  const publishLocally = async (bridge: LocalBridge) => {
+    let sbImages: Record<string, string> = {};
+    if (scoreboard.enabled) {
+      setPublishMsg('점수판 그리는 중...');
+      const first = sources[tags.length ? locate(tags[0].t).index : 0];
+      const vw = first?.width || 1920;
+      const vh = first?.height || 1080;
+
+      // 이 경기에서 나올 수 있는 점수 조합 — 시작 점수부터 골마다 하나씩.
+      const wanted: { key: string; home: number; away: number }[] = [];
+      let h = scoreboard.startHome;
+      let a = scoreboard.startAway;
+      const push = () => {
+        const key = `${h}:${a}`;
+        if (!wanted.some((w) => w.key === key)) wanted.push({ key, home: h, away: a });
+      };
+      push();
+      for (const tag of tags) {
+        if (tag.kind === 'home_goal' || tag.kind === 'home_goal_only') h += 1;
+        else if (tag.kind === 'away_goal' || tag.kind === 'away_goal_only') a += 1;
+        push();
+      }
+
+      const boardW = boardPlacement(
+        vw, vh, scoreboard.sizePct, scoreboard.posX, scoreboard.posY, !!scoreboard.logoUrl,
+      ).w;
+      setSbCapture(wanted.map((w) => ({ ...w, width: boardW })));
+      // 글꼴이 준비되고 화면에 실제로 그려질 때까지 기다린다 — 그 전에 뜨면 판이 빈다.
+      await (document as unknown as { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const { toPng } = await import('html-to-image');
+      const shots: Record<string, string> = {};
+      for (const w of wanted) {
+        const node = sbCaptureRef.current[w.key];
+        if (!node) throw new Error('점수판을 그리지 못했습니다');
+        // eslint-disable-next-line no-await-in-loop -- 한 장씩 떠야 글꼴 로딩이 겹치지 않는다
+        shots[w.key] = await toPng(node, { pixelRatio: 1, cacheBust: true });
+      }
+      sbImages = await bridge.saveScoreboards(localJobId, shots);
+      setSbCapture([]);
+    }
+
+    let intro: { imagePath: string; duration: number } | null = null;
+    if (introFile) {
+      setPublishMsg('인트로 사진 넣는 중...');
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('인트로 사진을 읽지 못했습니다'));
+        reader.readAsDataURL(introFile);
+      });
+      intro = { imagePath: await bridge.saveIntro(localJobId, dataUrl), duration: introDuration };
+    }
+
+    setPublishPhase('merging');
+    const stop = bridge.onProgress((prog) => {
+      if (prog?.phase === 'merging') {
+        setPublishMsg(`${prog.message || '합치는 중'} · ${prog.percent ?? 0}%`);
+      }
+    });
+    try {
+      const { outPath } = await bridge.merge(localJobId, {
+        clips: localClips,
+        intro,
+        scoreboard: scoreboard.enabled ? {
+          enabled: true,
+          home_name: scoreboard.homeName,
+          away_name: scoreboard.awayName,
+          start_home: scoreboard.startHome,
+          start_away: scoreboard.startAway,
+          size_pct: scoreboard.sizePct,
+          pos_x: scoreboard.posX,
+          pos_y: scoreboard.posY,
+        } : null,
+        sbImages,
+        sbHasLogo: !!scoreboard.logoUrl,
+      });
+      setLocalOutPath(outPath);
+      setPublishPhase('done');
+      setPublishMsg('완료되었습니다.');
+    } finally {
+      stop();
+    }
+  };
 
   const publish = async () => {
     if (!sources.length || !clips.length || publishing) return;
@@ -600,6 +911,12 @@ export default function ManualHighlightPage() {
     setPublishPhase('uploading');
     setUploadProgress({ done: 0, total: clips.length });
     try {
+      // 로컬 앱에는 올릴 곳이 없다 — 잘라 둔 파일을 그 자리에서 합친다.
+      const bridge = localBridge();
+      if (bridge) {
+        await publishLocally(bridge);
+        return;
+      }
       const { job_id: jobId } = await apiJson<{ job_id: string }>('/highlight/manual-jobs', {
         method: 'POST',
         body: JSON.stringify({
@@ -735,6 +1052,13 @@ export default function ManualHighlightPage() {
   // 클릭한 순간에만 만들고 해제한다.
   const downloadClip = async (clip: CutClip) => {
     if (previewBusy !== null) return;
+    // 로컬 앱에서 자른 클립은 blob 이 아니라 파일로 있다. 내려받을 것이 아니라
+    // 이미 디스크에 있으므로 그 자리를 열어 준다.
+    if (clip.localPath) {
+      await localBridge()?.reveal(clip.localPath);
+      return;
+    }
+    if (!clip.blob) return;
     setPreviewBusy(clip.index);
     setCutError('');
     try {
@@ -998,6 +1322,102 @@ export default function ManualHighlightPage() {
               {' · '}
               <strong>Q</strong>(ㅂ) 홈 골 · <strong>W</strong>(ㅈ) 홈 장면 · <strong>E</strong>(ㄷ) 원정 장면 · <strong>R</strong>(ㄱ) 원정 골
             </p>
+          </div>
+
+          {/* FLA 하이라이트 로그 — 경기 시계로 적힌 줄들을 이 영상에 앉힌다.
+              콘솔에서는 경기를 골라 API 로 받고, 로컬 앱은 내려받아 둔 파일로만 읽는다. */}
+          <div style={card}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <h3 style={{ fontSize: 15, margin: 0 }}>하이라이트 로그 가져오기</h3>
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                FLA 경기 화면에서 찍어 둔 골·슛·HL 을 태그로 옮깁니다 (선택)
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
+              <label style={{ ...smallBtn, display: 'inline-flex', alignItems: 'center' }}>
+                로그 파일 열기
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void loadLogFromFile(f);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+              {/* 앱 안에는 붙을 서버가 없다 — 경기 목록을 부를 수 없으므로 감춘다. */}
+              {!localApp ? (
+                <button style={smallBtn} onClick={() => void openMatchPicker()}>
+                  경기에서 불러오기
+                </button>
+              ) : null}
+              {loadedMatch ? (
+                <button style={smallBtn} onClick={() => { setLoadedMatch(null); setImportMsg(''); }}>
+                  로그 비우기
+                </button>
+              ) : null}
+            </div>
+
+            {matchPickerOpen && !localApp ? (
+              <div style={{ marginTop: 10, maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {matchList.length ? matchList.map((m) => (
+                  <button
+                    key={m.id}
+                    style={{ ...smallBtn, textAlign: 'left' }}
+                    onClick={() => void loadMatchLog(m.id)}
+                  >
+                    {m.name}{m.home || m.away ? ` — ${m.home} vs ${m.away}` : ''}
+                  </button>
+                )) : (
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>수동 경기가 없습니다.</span>
+                )}
+              </div>
+            ) : null}
+
+            {loadedMatch ? (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* 앵커 — 경기 시계와 영상 시간을 잇는 두 점. 전반은 필수, 후반은
+                    하프타임 경계가 로그에 있을 때만 필요하다. */}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button style={smallBtn} onClick={() => setAnchorFirst(globalNow())}>
+                    전반 시작 = 지금
+                  </button>
+                  <span style={{ fontSize: 12, color: anchorFirst == null ? 'var(--muted, #999)' : 'var(--text, #eee)' }}>
+                    {anchorFirst == null ? '아직 안 찍음' : fmt(anchorFirst)}
+                  </span>
+                  {loadedMatch.halftime_clock_ms != null ? (
+                    <>
+                      <button style={smallBtn} onClick={() => setAnchorSecond(globalNow())}>
+                        후반 시작 = 지금
+                      </button>
+                      <span style={{ fontSize: 12, color: anchorSecond == null ? 'var(--muted, #999)' : 'var(--text, #eee)' }}>
+                        {anchorSecond == null ? '아직 안 찍음' : fmt(anchorSecond)}
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                      · 하프타임 경계가 로그에 없어 전반 앵커 하나로 앉힙니다
+                    </span>
+                  )}
+                </div>
+                <div>
+                  <button
+                    style={{ ...smallBtn, opacity: anchorFirst == null ? 0.45 : 1 }}
+                    disabled={anchorFirst == null}
+                    onClick={importFlaLog}
+                  >
+                    로그 가져오기
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {importMsg ? (
+              <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '10px 0 0' }}>{importMsg}</p>
+            ) : null}
           </div>
 
           <div style={card}>
@@ -1472,14 +1892,16 @@ export default function ManualHighlightPage() {
                       <span style={{ color: 'var(--muted, #999)', width: 28 }}>{clip.index}</span>
                       <span>{fmt(clip.requestedStart)} ~ {fmt(clip.requestedEnd)}</span>
                       <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
-                        {fmtBytes(clip.blob?.size ?? 0)}
+                        {fmtBytes(clipSize(clip))}
                       </span>
                       <button
                         style={{ ...smallBtn, marginLeft: 'auto' }}
                         onClick={() => downloadClip(clip)}
                         disabled={previewBusy !== null}
                       >
-                        {previewBusy === clip.index ? '준비 중...' : '확인용 다운로드'}
+                        {clip.localPath
+                          ? '폴더에서 보기'
+                          : (previewBusy === clip.index ? '준비 중...' : '확인용 다운로드')}
                       </button>
                     </div>
                   ))}
@@ -1559,21 +1981,28 @@ export default function ManualHighlightPage() {
                   {publishPhase === 'merging' ? (
                     <div style={stageBox}>
                       <div style={stageHead}>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>3. 서버에서 다듬고 합치는 중</span>
-                        <LeaveBadge canLeave />
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>
+                          3. {localApp ? '내 PC 에서' : '서버에서'} 다듬고 합치는 중
+                        </span>
+                        {localApp ? null : <LeaveBadge canLeave />}
                         <span style={stageCount}>{publishMsg}</span>
                       </div>
                       <ProgressBar indeterminate color="#22c55e" />
                       <p style={stageNote}>
-                        여기부턴 서버가 처리해요. <strong>탭을 닫아도 되고</strong>, 완료되면{' '}
-                        <strong>수동 결과물</strong> 탭에 자동으로 나타납니다.
+                        {localApp ? (
+                          <>이 컴퓨터가 처리합니다. <strong>창을 닫지 마세요</strong> — 닫으면 중단됩니다.</>
+                        ) : (
+                          <>여기부턴 서버가 처리해요. <strong>탭을 닫아도 되고</strong>, 완료되면{' '}
+                            <strong>수동 결과물</strong> 탭에 자동으로 나타납니다.</>
+                        )}
                       </p>
                     </div>
                   ) : null}
 
                   <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>
-                    원본은 올라가지 않습니다. 잘린 클립만 보내고, 서버가 요청 구간에 맞춰
-                    정확히 다듬어 하나로 이어붙입니다.
+                    {localApp
+                      ? '아무것도 올라가지 않습니다. 자르기·합치기·점수판까지 전부 이 컴퓨터에서 처리합니다.'
+                      : '원본은 올라가지 않습니다. 잘린 클립만 보내고, 서버가 요청 구간에 맞춰 정확히 다듬어 하나로 이어붙입니다.'}
                   </p>
 
                   {publishError ? (
@@ -1584,6 +2013,27 @@ export default function ManualHighlightPage() {
                       }}
                     >
                       실패: {publishError}
+                    </div>
+                  ) : null}
+
+                  {localOutPath ? (
+                    <div
+                      style={{
+                        marginTop: 12, padding: 12, borderRadius: 8, fontSize: 13,
+                        background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.4)',
+                        display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                      }}
+                    >
+                      <span>하이라이트가 만들어졌습니다.</span>
+                      <code style={{ fontSize: 11, color: 'var(--muted, #999)', wordBreak: 'break-all' }}>
+                        {localOutPath}
+                      </code>
+                      <button
+                        style={smallBtn}
+                        onClick={() => { void localBridge()?.reveal(localOutPath); }}
+                      >
+                        폴더에서 열기
+                      </button>
                     </div>
                   ) : null}
 
@@ -1609,6 +2059,28 @@ export default function ManualHighlightPage() {
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          ) : null}
+
+          {/* 점수판을 PNG 로 뜨기 위해 잠깐만 그리는 자리(로컬 앱 전용).
+              화면 밖에 두되 display:none 은 쓰지 않는다 — 안 그려진 노드는 뜰 수 없다.
+              콘솔과 **같은 컴포넌트**라 결과물의 점수판이 미리보기와 어긋나지 않는다. */}
+          {sbCapture.length ? (
+            <div style={{ position: 'fixed', left: -99999, top: 0, pointerEvents: 'none' }} aria-hidden>
+              {sbCapture.map((cap) => (
+                <div
+                  key={cap.key}
+                  ref={(node) => { sbCaptureRef.current[cap.key] = node; }}
+                  style={{ width: cap.width }}
+                >
+                  <ScoreboardPreview
+                    config={scoreboard}
+                    home={cap.home}
+                    away={cap.away}
+                    width={cap.width}
+                  />
+                </div>
+              ))}
             </div>
           ) : null}
         </>
