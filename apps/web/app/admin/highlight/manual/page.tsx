@@ -155,9 +155,9 @@ export default function ManualHighlightPage() {
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
-  // 기본 앞/뒤 패딩 — 실제 태깅에서 굳은 값(2026-09-09).
+  // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 신청 태깅과 통일).
   const [padBefore, setPadBefore] = useState(10);
-  const [padAfter, setPadAfter] = useState(2);
+  const [padAfter, setPadAfter] = useState(3);
   const [status, setStatus] = useState('');
   const [unsupported, setUnsupported] = useState(false);
   const [cutting, setCutting] = useState(false);
@@ -313,12 +313,12 @@ export default function ManualHighlightPage() {
       if (!saved?.tags?.length) return;
       setTags(saved.tags);
       setPadBefore(saved.padBefore ?? 10);
-      setPadAfter(saved.padAfter ?? 2);
+      setPadAfter(saved.padAfter ?? 3);
       // 팀명·색까지 같이 돌아와야 한다. 태그만 복원되고 점수판이 초기화되면
       // 같은 태그인데 결과물의 점수판이 조용히 달라진다.
       if (saved.scoreboard) setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
       setStatus(
-        `이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore ?? 10}초 / 뒤 ${saved.padAfter ?? 2}초`,
+        `이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore ?? 10}초 / 뒤 ${saved.padAfter ?? 3}초`,
       );
     } catch {
       /* 손상된 저장값은 무시하고 새로 시작한다 */
@@ -473,9 +473,8 @@ export default function ManualHighlightPage() {
 
   /** 클립 구간을 직접 옮긴다 — 앞/뒤를 거치지 않고 시작·끝을 그대로 받는다.
    *
-   *  태깅 시점(tag.t)은 **구간 안에서 같은 비율 자리**로 따라 움직인다. 앞/뒤가 그
-   *  비율을 정한다 — 앞 9 · 뒤 3 이면 12 초의 75% 지점이고, 구간을 2:36~2:48 에서
-   *  2:32~2:43 으로 옮기면 태깅 시점도 11 초의 75% 인 2:40 으로 간다.
+   *  태깅 시점(tag.t)은 **구간의 80% 자리**로 따라 움직인다(lib/tagRange.TAG_POINT_RATIO).
+   *  구간을 2:32~2:43 으로 옮기면 태깅 시점은 11 초의 80% 인 2:40.8 로 간다.
    *
    *  시점을 그대로 두고 앞/뒤만 늘리는 방식(기존 앞·뒤 칸)과 다르다. 그쪽은 '언제
    *  일어났나' 가 고정이고, 이쪽은 '어디를 보여줄까' 가 고정이다. 둘 다 남긴다.
@@ -491,7 +490,6 @@ export default function ManualHighlightPage() {
       const fit = fitTagRange(
         rawStart, rawEnd,
         { srcStart, srcEnd: srcStart + (sources[index]?.duration ?? 0) },
-        { before: effBefore(tag), after: effAfter(tag) },
       );
       if (!fit) return prev;
 
@@ -1428,7 +1426,7 @@ export default function ManualHighlightPage() {
                       </label>
 
                       {/* 클립 구간을 직접 고친다. 앞/뒤 칸이 '시점 고정, 길이 조절' 이라면
-                          이쪽은 '구간 고정, 시점은 같은 비율 자리로 따라감' 이다(setTagRange). */}
+                          이쪽은 '구간 고정, 시점은 80% 자리로 따라감' 이다(setTagRange). */}
                       {(() => {
                         const [clipStart, clipEnd] = clipRange(tag);
                         const timeCell: React.CSSProperties = {

@@ -416,8 +416,9 @@ export default function FineplayJobsPage() {
   const [speed, setSpeed] = useState(1);
 
   const [tags, setTags] = useState<Tag[]>([]);
-  const [padBefore, setPadBefore] = useState(9);
-  const [padAfter, setPadAfter] = useState(2);
+  // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 수동 하이라이트와 통일).
+  const [padBefore, setPadBefore] = useState(10);
+  const [padAfter, setPadAfter] = useState(3);
   // 전역 앞/뒤 초 기본값 유지 — 브라우저별 저장(서버 설정 아님), 태그별 오버라이드와 별개.
   // 키에 -v2 를 붙인 이유: 기본값을 7/4 → 9/2 로 바꿨는데, 옛 키를 그대로 두면
   // 이미 쓰던 브라우저는 저장된 7/4 를 계속 불러와 새 기본값이 적용되지 않는다.
@@ -934,7 +935,7 @@ export default function FineplayJobsPage() {
   }, [padBefore, padAfter, activeVideoIdx, duration]);
 
   /** 클립 구간을 직접 옮긴다 — 앞/뒤를 거치지 않고 시작·끝을 그대로 받는다.
-   *  태깅 시점은 구간 안에서 **같은 비율 자리**로 따라 움직인다(lib/tagRange 참조).
+   *  태깅 시점은 구간의 **80% 자리**로 따라 움직인다(lib/tagRange 참조).
    */
   const setTagRange = (id: string, rawStart: number, rawEnd: number) => {
     setTags((prev) => {
@@ -945,7 +946,6 @@ export default function FineplayJobsPage() {
       const fit = fitTagRange(
         rawStart, rawEnd,
         { srcStart: 0, srcEnd: cap || Math.max(rawEnd, tag.t + (tag.padAfter ?? padAfter)) },
-        { before: tag.padBefore ?? padBefore, after: tag.padAfter ?? padAfter },
       );
       if (!fit) return prev;
       const next = prev.map((x) => (
@@ -2083,7 +2083,7 @@ export default function FineplayJobsPage() {
                         />
                       </label>
                       {/* 구간을 직접 고친다. 앞/뒤 칸이 '시점 고정, 길이 조절' 이라면
-                          이쪽은 '구간 고정, 시점은 같은 비율 자리로 따라감' 이다. */}
+                          이쪽은 '구간 고정, 시점은 80% 자리로 따라감' 이다. */}
                       {(() => {
                         const range = clipRangeOf(tag);
                         const timeCell: React.CSSProperties = {
