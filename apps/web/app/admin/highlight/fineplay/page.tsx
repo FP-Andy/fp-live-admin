@@ -9,6 +9,7 @@ import {
   type Scoreboard, type Watermark,
 } from '../../../../components/HighlightOverlay';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
+import { fitTagRange, parseClock } from '../../../../lib/tagRange';
 
 // FinePlay 연동 태깅: claim 한 작업의 원본을 S3 스트리밍으로 재생하며 태깅하고,
 // 구간을 서버로 보내면 서버가 클립 렌더 → S3 업로드 → 결과 콜백까지 처리한다.
@@ -919,6 +920,9 @@ export default function FineplayJobsPage() {
 
   // 태그 하나가 실제로 잘려나갈 구간. produce 로 보내는 계산과 반드시 같아야 해서
   // 여기 한 곳에서만 만든다 — 미리보기와 결과물이 어긋나면 태거가 헛것을 보게 된다.
+  // 구간 칸을 고치는 동안의 입력값. 글자마다 반영하면 태그가 재정렬돼 줄이 튄다.
+  const [rangeDraft, setRangeDraft] = useState<{ key: string; text: string } | null>(null);
+
   const clipRangeOf = useCallback((tag: Tag) => {
     const before = tag.padBefore ?? padBefore;
     const after = tag.padAfter ?? padAfter;
@@ -928,6 +932,40 @@ export default function FineplayJobsPage() {
       end: Math.min(cap || tag.t + after, tag.t + after),
     };
   }, [padBefore, padAfter, activeVideoIdx, duration]);
+
+  /** 클립 구간을 직접 옮긴다 — 앞/뒤를 거치지 않고 시작·끝을 그대로 받는다.
+   *  태깅 시점은 구간 안에서 **같은 비율 자리**로 따라 움직인다(lib/tagRange 참조).
+   */
+  const setTagRange = (id: string, rawStart: number, rawEnd: number) => {
+    setTags((prev) => {
+      const tag = prev.find((x) => x.id === id);
+      if (!tag) return prev;
+      // 구간은 그 태그가 속한 원본 영상 안을 벗어날 수 없다.
+      const cap = tag.clampEnd || (tag.videoIdx === activeVideoIdx ? duration : 0);
+      const fit = fitTagRange(
+        rawStart, rawEnd,
+        { srcStart: 0, srcEnd: cap || Math.max(rawEnd, tag.t + (tag.padAfter ?? padAfter)) },
+        { before: tag.padBefore ?? padBefore, after: tag.padAfter ?? padAfter },
+      );
+      if (!fit) return prev;
+      const next = prev.map((x) => (
+        x.id === id ? { ...x, t: fit.t, padBefore: fit.before, padAfter: fit.after } : x
+      ));
+      next.sort((a, b) => (a.videoIdx - b.videoIdx) || (a.t - b.t));
+      return next;
+    });
+  };
+
+  /** 구간 칸 확정. 못 읽는 값이면 아무것도 바꾸지 않는다. */
+  const commitRange = (tag: Tag, field: 'start' | 'end') => {
+    const draft = rangeDraft;
+    setRangeDraft(null);
+    if (!draft || draft.key !== `${tag.id}:${field}`) return;
+    const sec = parseClock(draft.text);
+    if (sec === null) return;
+    const { start, end } = clipRangeOf(tag);
+    setTagRange(tag.id, field === 'start' ? sec : start, field === 'end' ? sec : end);
+  };
 
   // 태그를 누르면 태그 시각이 아니라 "클립 시작"으로 가서 끝까지 재생하고 멈춘다.
   const previewClip = (tag: Tag) => {
@@ -2044,9 +2082,42 @@ export default function FineplayJobsPage() {
                           style={numInput}
                         />
                       </label>
-                      <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
-                        클립 {fmt(Math.max(0, tag.t - (tag.padBefore ?? padBefore)))} ~ {fmt(tag.t + (tag.padAfter ?? padAfter))}
-                      </span>
+                      {/* 구간을 직접 고친다. 앞/뒤 칸이 '시점 고정, 길이 조절' 이라면
+                          이쪽은 '구간 고정, 시점은 같은 비율 자리로 따라감' 이다. */}
+                      {(() => {
+                        const range = clipRangeOf(tag);
+                        const timeCell: React.CSSProperties = {
+                          ...numInput, width: 58, textAlign: 'center',
+                          fontVariantNumeric: 'tabular-nums',
+                        };
+                        const box = (field: 'start' | 'end', value: number) => {
+                          const key = `${tag.id}:${field}`;
+                          return (
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              style={timeCell}
+                              title={field === 'start' ? '클립 시작 (m:ss)' : '클립 끝 (m:ss)'}
+                              value={rangeDraft?.key === key ? rangeDraft.text : fmt(value)}
+                              onChange={(e) => setRangeDraft({ key, text: e.target.value })}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onBlur={() => commitRange(tag, field)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+                                if (e.key === 'Escape') { setRangeDraft(null); e.currentTarget.blur(); }
+                              }}
+                            />
+                          );
+                        };
+                        return (
+                          <span style={{
+                            color: 'var(--muted, #999)', fontSize: 12,
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                          }}>
+                            클립 {box('start', range.start)} ~ {box('end', range.end)}
+                          </span>
+                        );
+                      })()}
                       <button
                         style={{ ...smallBtn, marginLeft: 'auto' }}
                         onClick={() => setTags((prev) => prev.filter((x) => x.id !== tag.id))}

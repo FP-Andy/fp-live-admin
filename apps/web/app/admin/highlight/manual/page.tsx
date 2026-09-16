@@ -11,6 +11,7 @@ import {
 import { API_BASE, apiJson } from '../../../../lib/api';
 import type { CutClip, CutProgress } from '../../../../lib/localCut';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
+import { fitTagRange, parseClock } from '../../../../lib/tagRange';
 
 type JobStatus = {
   id: string;
@@ -165,6 +166,9 @@ export default function ManualHighlightPage() {
   // 클립 n 번이 tags 의 몇 번째였는지. '점수만 반영' 태그를 건너뛰므로 둘이 어긋난다.
   const [clipTagIndex, setClipTagIndex] = useState<number[]>([]);
   const [cutError, setCutError] = useState('');
+  // 구간 칸을 고치는 동안의 입력값. 글자마다 반영하면 태그가 재정렬돼 줄이 튀므로
+  // 확정(Enter·포커스 아웃) 때만 적용한다.
+  const [rangeDraft, setRangeDraft] = useState<{ key: string; text: string } | null>(null);
   const [previewBusy, setPreviewBusy] = useState<number | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [publishMsg, setPublishMsg] = useState('');
@@ -466,6 +470,50 @@ export default function ManualHighlightPage() {
   // 이 태그에 실제로 적용되는 앞/뒤 초 (개별값 있으면 그것, 없으면 전역 기본값).
   const effBefore = (tag: Tag) => tag.before ?? padBefore;
   const effAfter = (tag: Tag) => tag.after ?? padAfter;
+
+  /** 클립 구간을 직접 옮긴다 — 앞/뒤를 거치지 않고 시작·끝을 그대로 받는다.
+   *
+   *  태깅 시점(tag.t)은 **구간 안에서 같은 비율 자리**로 따라 움직인다. 앞/뒤가 그
+   *  비율을 정한다 — 앞 9 · 뒤 3 이면 12 초의 75% 지점이고, 구간을 2:36~2:48 에서
+   *  2:32~2:43 으로 옮기면 태깅 시점도 11 초의 75% 인 2:40 으로 간다.
+   *
+   *  시점을 그대로 두고 앞/뒤만 늘리는 방식(기존 앞·뒤 칸)과 다르다. 그쪽은 '언제
+   *  일어났나' 가 고정이고, 이쪽은 '어디를 보여줄까' 가 고정이다. 둘 다 남긴다.
+   */
+  const setTagRange = (id: string, rawStart: number, rawEnd: number) => {
+    setTags((prev) => {
+      const tag = prev.find((p) => p.id === id);
+      if (!tag) return prev;
+      // 구간은 그 태그가 들어 있는 **원본 안**을 벗어날 수 없다 — 넘어가면 다른 파일의
+      // 장면이 섞인다.
+      const { index } = locate(tag.t);
+      const srcStart = offsets[index] ?? 0;
+      const fit = fitTagRange(
+        rawStart, rawEnd,
+        { srcStart, srcEnd: srcStart + (sources[index]?.duration ?? 0) },
+        { before: effBefore(tag), after: effAfter(tag) },
+      );
+      if (!fit) return prev;
+
+      const next = prev.map((p) => (
+        p.id === id ? { ...p, t: fit.t, before: fit.before, after: fit.after } : p
+      ));
+      // t 가 바뀌었으니 순서를 다시 맞춘다(addTag 와 같은 규칙).
+      next.sort((a, b) => a.t - b.t);
+      return next;
+    });
+  };
+
+  /** 구간 칸 확정. 못 읽는 값이면 아무것도 바꾸지 않는다. */
+  const commitRange = (tag: Tag, field: 'start' | 'end') => {
+    const draft = rangeDraft;
+    setRangeDraft(null);
+    if (!draft || draft.key !== `${tag.id}:${field}`) return;
+    const sec = parseClock(draft.text);
+    if (sec === null) return;
+    const [cs, ce] = clipRange(tag);
+    setTagRange(tag.id, field === 'start' ? sec : cs, field === 'end' ? sec : ce);
+  };
 
   // 단축키. 입력창에 포커스가 있을 때는 동작하지 않아야 한다.
   useEffect(() => {
@@ -1299,8 +1347,6 @@ export default function ManualHighlightPage() {
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {tags.map((tag, i) => {
-                  const before = effBefore(tag);
-                  const after = effAfter(tag);
                   const overridden = tag.before !== undefined || tag.after !== undefined;
                   const padCell: React.CSSProperties = {
                     ...numInput, width: 46, padding: '3px 5px', fontSize: 12,
@@ -1381,10 +1427,43 @@ export default function ManualHighlightPage() {
                         />
                       </label>
 
-                      <span style={{ color: overridden ? 'var(--accent, #3b82f6)' : 'var(--muted, #999)', fontSize: 12 }}>
-                        클립 {fmt(Math.max(0, tag.t - before))} ~ {fmt(tag.t + after)}
-                        {overridden ? ' ·개별' : ''}
-                      </span>
+                      {/* 클립 구간을 직접 고친다. 앞/뒤 칸이 '시점 고정, 길이 조절' 이라면
+                          이쪽은 '구간 고정, 시점은 같은 비율 자리로 따라감' 이다(setTagRange). */}
+                      {(() => {
+                        const [clipStart, clipEnd] = clipRange(tag);
+                        const timeCell: React.CSSProperties = {
+                          ...numInput, width: 58, padding: '3px 5px', fontSize: 12,
+                          textAlign: 'center', fontVariantNumeric: 'tabular-nums',
+                        };
+                        const box = (field: 'start' | 'end', value: number) => {
+                          const key = `${tag.id}:${field}`;
+                          return (
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              style={timeCell}
+                              title={field === 'start' ? '클립 시작 (m:ss)' : '클립 끝 (m:ss)'}
+                              value={rangeDraft?.key === key ? rangeDraft.text : fmt(value)}
+                              onChange={(e) => setRangeDraft({ key, text: e.target.value })}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onBlur={() => commitRange(tag, field)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+                                if (e.key === 'Escape') { setRangeDraft(null); e.currentTarget.blur(); }
+                              }}
+                            />
+                          );
+                        };
+                        return (
+                          <span style={{
+                            color: overridden ? 'var(--accent, #3b82f6)' : 'var(--muted, #999)',
+                            fontSize: 12, display: 'flex', alignItems: 'center', gap: 4,
+                          }}>
+                            클립 {box('start', clipStart)} ~ {box('end', clipEnd)}
+                            {overridden ? ' ·개별' : ''}
+                          </span>
+                        );
+                      })()}
 
                       {overridden ? (
                         <button
