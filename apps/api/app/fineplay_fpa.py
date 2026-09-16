@@ -23,6 +23,9 @@ from .xfp_score import (
     GK_CLAIM_CODE,
     PRESS_CODE,
     SAVE_CODE,
+    axis_scores,
+    chance_tag,
+    link_credit_score,
     prefer_progression,
     press_share_score,
     score_clip_actions,
@@ -248,18 +251,33 @@ def _significance(action: str) -> int:
 # 결과를 액션 이름으로 승격하는 규칙. dual 은 결과를 Action 이 아니라 Tags 에 찍는다
 # (슈팅은 d/dd/ddd/db 가 전부 Shot + result tag, 키패스·어시스트도 Pass 의 태그).
 # 그래서 승격하지 않으면 골도 유효슛도 전부 "슈팅" 한 덩어리로 앱에 나간다.
+_CHANCE_PROMOTIONS: tuple[tuple[str, str], ...] = (
+    # 골이 난 쪽이 우선 — 어시스트는 키패스이기도 하다.
+    ("Assist", "Assist"),
+    ("Key Pass", "Key Pass"),
+)
+
 _ACTION_PROMOTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     # 앞에 오는 태그가 우선 — 골은 유효슈팅이기도 하므로 순서가 곧 우선순위다.
     "Shot": (("Goal", "Goal"), ("On Target", "Shot On Target"), ("Blocked", "Blocked Shot")),
-    "Pass": (("Assist", "Assist"), ("Key Pass", "Key Pass")),
+    "Pass": _CHANCE_PROMOTIONS,
+    # 크로스도 같은 태그를 받는다 — 자동 태깅(fpa.auto_tag_key_pass_and_assist)이
+    # Pass 와 Cross 를 똑같이 훑고, 수동으로도 `c.a` 로 찍힌다. 그런데 승격 대상이
+    # 패스뿐이던 시절엔 어시스트 크로스가 이름 "Cross" 로 남아 어시스트로 안 보였다.
+    "Cross": _CHANCE_PROMOTIONS,
 }
 
 # 승격된 이름 → 원래 액션. 승격이 이름을 갈아치우기 때문에 이게 없으면 골이
 # 슈팅 집계에서 빠진다 — 골은 골이면서 슈팅이고, 어시스트는 어시스트면서 패스다.
 # 두 층을 다 실어 보내야 소비하는 쪽이 원하는 층으로 셀 수 있다.
+# **크로스는 뺀다.** "Assist" 한 키에 "Pass" 와 "Cross" 가 겹치기 때문이다. 이 역매핑은
+# 이미 승격된 이름만 저장돼 있는 옛 행의 폴백이고, 그 시절엔 크로스가 승격되지 않았으므로
+# 옛 "Assist" 행은 전부 패스다. 새 경로는 역추적하지 않고 **원본 Action 을 그대로** 쓴다
+# (base_action_name 주석 참조).
 _ACTION_BASE: dict[str, str] = {
     promoted: base
     for base, rules in _ACTION_PROMOTIONS.items()
+    if base != "Cross"
     for _tag, promoted in rules
 }
 
@@ -290,7 +308,10 @@ def canonical_action_name(action: Any, tags: Any) -> str:
 
 
 def base_action_name(action: Any) -> str:
-    """승격된 이름 → 원래 액션. "Goal"→"Shot", "Assist"→"Pass".
+    """집계용 상위 층 이름. **원본 Action 을 넣으면 그대로 돌려준다.**
+
+    새 경로는 승격 전 원본을 그대로 넘긴다("Cross" → "Cross"). 아래 역매핑은 승격된
+    이름만 저장돼 있는 **옛 행의 폴백**이다 — "Goal"→"Shot", "Assist"→"Pass".
 
     집계하는 쪽이 두 층을 다 셀 수 있게 payload 에 baseAction 으로 함께 싣는다.
     골은 골이면서 슈팅이고 어시스트는 어시스트면서 패스인데, 승격은 이름을
@@ -378,7 +399,9 @@ def scene_action_rows(
             "recordedTime": _parse_timeline_seconds(row.get("Time")),
             "action": action_name,
             # 집계용 상위 층 — 골도 슈팅으로, 어시스트도 패스로 세지게 한다.
-            "baseAction": base_action_name(action_name),
+            # 승격된 이름이 아니라 **원본** 을 넣는다 — "Assist" 하나로는 패스였는지
+            # 크로스였는지 되짚을 수 없다(_ACTION_BASE 주석).
+            "baseAction": base_action_name(row.get("Action")),
             "actionLabel": ACTION_LABELS_KO.get(action_name) or action_name,
             "teamSide": side or None,
             "jersey": jersey or None,
@@ -580,11 +603,7 @@ def analysis_from_actions(
         {k: v for k, v in a.items() if k not in ("sceneActionIndex", "extra", "recordedTime") and v is not None}
         for a in actions
     ]
-    shot_seqs = [
-        float(a.get("seq") or 0)
-        for a in actions
-        if str(a.get("action") or "") in _SHOT_ACTIONS
-    ]
+    shot_rows = [a for a in actions if str(a.get("action") or "") in _SHOT_ACTIONS]
     for a, pa in zip(actions, payload_actions):
         # 그룹(FPA 태깅 장면) 정보 — DB 재전송 경로는 extra 에만 있으므로 승격.
         ex = a.get("extra") or {}
@@ -604,7 +623,7 @@ def analysis_from_actions(
         # 24코드 표준 액션 ID — 표기(라벨)는 앱이 코드 매핑으로 책임진다.
         code = classify_action_code(
             a,
-            later_shot=any(sq > float(a.get("seq") or 0) for sq in shot_seqs),
+            linked_shot_xg=_linked_shot_xg(shot_rows, a),
         )
         if code:
             pa["actionCode"] = code
@@ -709,7 +728,12 @@ def analysis_from_actions(
                 **{k: best[k] for k in ("xg", "xgot", "receptionXg", "packing", "epv", "pc") if best.get(k) is not None},
             },
         }
-        role = ACTION_ROLE_MAP.get(str(best.get("action") or ""))
+        # 롤은 **baseAction** 으로 정한다 — 선수가 실제로 한 동작이 롤이고, 승격된
+        # 이름(골·어시스트)은 결과 라벨이다. 이렇게 해야 어시스트 크로스가 CROSSER 로
+        # 남는다. 슈팅·패스 계열은 승격 전후 롤이 같아 바뀌는 게 없다.
+        role = ACTION_ROLE_MAP.get(
+            str(best.get("baseAction") or best.get("action") or "")
+        )
         if role:
             player["contributionRole"] = role
         # 클립 점수 — 그 선수 유효 Effect Action xFP 의 최대값. 유효 액션이 없으면
@@ -838,7 +862,39 @@ def _is_failed_action(action_name: str, extra: dict[str, Any] | None) -> bool:
     return "Fail" in str((extra or {}).get("tags") or "")
 
 
-def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | None:
+def _same_side(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """두 액션이 같은 팀인가. 한쪽이라도 팀이 비어 있으면(옛 행) 같다고 본다 —
+    모르는 것을 근거로 연결을 끊으면 멀쩡한 어시스트가 조용히 점수를 잃는다."""
+    x = str(a.get("teamSide") or "").strip().lower()
+    y = str(b.get("teamSide") or "").strip().lower()
+    return not x or not y or x == y
+
+
+def _later_shots(shot_rows: list[dict[str, Any]], action: dict[str, Any]) -> list[dict[str, Any]]:
+    """그 액션 **뒤**에 오는 **같은 팀**의 슈팅, seq 순.
+
+    팀을 가리는 이유: 클립에는 두 팀의 액션이 섞여 있다. 안 가리면 우리 패스 뒤에
+    턴오버가 나서 **상대가** 슛한 것만으로 그 패스가 '득점 연결' 로 승격되고,
+    상대 슛의 xG 로 채점된다 — 실측으로 91점짜리 전진 패스가 상대의 xG 0.30 슛 때문에
+    94점이 됐다. 우리 선수가 한 일과 아무 상관이 없는 값이다.
+    """
+    seq = float(action.get("seq") or 0)
+    rows = [s for s in shot_rows if float(s.get("seq") or 0) > seq and _same_side(s, action)]
+    return sorted(rows, key=lambda s: float(s.get("seq") or 0))
+
+
+def _linked_shot_xg(shot_rows: list[dict[str, Any]], action: dict[str, Any]) -> float | None:
+    """그 액션 뒤 첫 슈팅(같은 팀)의 xG. xG 가 없는 슛은 건너뛴다."""
+    for s in _later_shots(shot_rows, action):
+        xg = float(s.get("xg") or 0)
+        if xg > 0:
+            return xg
+    return None
+
+
+def classify_action_code(
+    action: dict[str, Any], *, linked_shot_xg: float | None = None
+) -> str | None:
     """24개 표준 액션 코드(G1~S14) v0 판정 — 노션 'xFP 24개 액션 정의' 기준.
 
     1차 로직(2026-07-28 합의): 가장 높은 지표를 받은 기대효과로 군을 정한다 —
@@ -859,17 +915,56 @@ def classify_action_code(action: dict[str, Any], *, later_shot: bool) -> str | N
     def progression_wins(prog_code: str, poss_code: str) -> bool:
         return prefer_progression(action, progression_code=prog_code, possession_code=poss_code)
 
+    def link_wins(link_code: str, axis_code: str, prog_code: str, poss_code: str) -> str:
+        """득점 연결 승격이 점수를 **깎지 못하게** — 세 축 중 높은 쪽 코드.
+
+        승격은 원시값을 ΔEPV 에서 '받은 지점 xG'(태그) 또는 '뒤따른 슛의 xG × 0.7'
+        (연결 슛 폴백)로 갈아끼운다.
+        그래서 뒤에 약한 슛 하나만 있으면, 그 슛과 인과가 거의 없는 롱패스까지 그
+        슛의 낮은 xG 로 채점됐다 — 자기 진영에서 상대 박스 앞까지 65m 를 보낸 패스가
+        전진 축으론 91점인데, 뒤에 xG 0.01 짜리 중거리 슛이 있으면 **51점**이 됐다.
+        `axis_scores` 위 주석이 원값 비교를 버린 것과 같은 결함이다: 코드가 채점
+        재료를 정하는 구조에서, 한 축을 고르면 나머지 축의 측정이 통째로 버려진다.
+
+        그래서 여기서도 **최종 점수의 max** 를 쓴다. 연결 축이 이기면 G2/G3 로 남고,
+        아니면 원래의 전진/소유 코드로 돌아간다. 하방을 새로 깔지는 않는다 —
+        PASS_SCORE_BANDS 주석이 "약한 신호에 하방을 깔면 먼 패스가
+        과대평가된다" 고 한 판단은 그대로 유효하고, 여기서 바뀌는 건 '측정이 사라지지
+        않는다' 뿐이다.
+
+        어시스트·키패스에도 같이 건다. 연결 축은 **받은 지점**의 가치만 보므로, 패서가
+        볼을 얼마나 옮겼는지(ΔEPV)는 아예 안 들어간다 — 자기 진영에서 박스 앞까지
+        보내 준 패스나 박스 옆에서 툭 내준 패스나, 받은 자리가 같으면 같은 점수다.
+        밴드(74~95 · 70~92)가 하방을 깔아 주지만 **상방은 오히려 막는다**: 전진 축으로
+        91점인 패스가 받은 지점이 애매하다는 이유로 77점이 될 수 있다. 두 축을 맞대면
+        둘 중 잘한 쪽이 남는다. 밴드 하한은 그대로 지켜진다 — 축이 이기려면 하한보다
+        높아야 하므로, 이기든 지든 최종 점수가 하한 아래로 내려가지 않는다.
+        """
+        link = link_credit_score(action, code=link_code, linked_shot_xg=linked_shot_xg)
+        if link is None:
+            return axis_code
+        prog, poss = axis_scores(action, progression_code=prog_code, possession_code=poss_code)
+        axis = prog if axis_code == prog_code else poss
+        if axis is None:
+            return link_code
+        return link_code if link >= axis else axis_code
+
     if name in _SHOT_ACTIONS:
         return "G1"
     if name in _PASS_ACTIONS:
-        # 어시스트·키패스는 정의상 슈팅으로 이어진 패스라 later_shot 을 따지지 않는다
-        # (승격 근거가 태그이므로, 씬이 잘려 뒤 슈팅이 같은 클립에 없어도 득점 연결이다).
-        if later_shot or name in ("Assist", "Key Pass"):
-            return "G2"
         prog_code, poss_code = ("P1", "S1") if not opp else ("P2", "S2")
-        return prog_code if progression_wins(prog_code, poss_code) else poss_code
+        axis_code = prog_code if progression_wins(prog_code, poss_code) else poss_code
+        # 득점 연결 축은 **어시스트·키패스 태그가 있을 때만** 본다(xfp_score.chance_tag).
+        # 태그가 없으면 전진/소유만으로 잰다. 씬이 잘려 뒤 슈팅이 같은 클립에 없어도
+        # 태그만 있으면 연결이고, 반대로 뒤에 슛이 있어도 태그가 없으면 연결이 아니다.
+        # 연결 축으로만 잰다는 뜻은 아니다 — 전진/소유와 맞대 높은 쪽을 쓴다(link_wins).
+        if chance_tag(action):
+            return link_wins("G2", axis_code, prog_code, poss_code)
+        return axis_code
     if name == "Cross":
-        return "G3" if later_shot else "P3"
+        # 크로스는 소유 축이 없다(24코드에 짝이 없다) — 전진(P3)과만 맞댄다.
+        # 어시스트 크로스는 이름이 "Cross" 로 남으므로 chance_tag 가 태그를 본다.
+        return link_wins("G3", "P3", "P3", "S2") if chance_tag(action) else "P3"
     if name in ("Dribble", "Breakthrough"):
         prog_code, poss_code = ("P4", "S3") if not opp else ("P5", "S4")
         return prog_code if progression_wins(prog_code, poss_code) else poss_code
@@ -897,11 +992,7 @@ def annotate_action_codes(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
     정본 v0.1 Action xFP 채점(장면 규칙·유효 Effect Action 만 점수)까지 동일하게 돌린다 —
     콘솔에서 보는 점수 = 앱으로 나가는 점수.
     """
-    shot_seqs = [
-        float(a.get("seq") or 0)
-        for a in actions
-        if str(a.get("action") or "") in _SHOT_ACTIONS
-    ]
+    shot_rows = [a for a in actions if str(a.get("action") or "") in _SHOT_ACTIONS]
     for a in actions:
         ex = a.get("extra") or {}
         if a.get("x") is None and ex.get("x") is not None:
@@ -913,7 +1004,7 @@ def annotate_action_codes(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
             a["failed"] = True
         code = classify_action_code(
             a,
-            later_shot=any(sq > float(a.get("seq") or 0) for sq in shot_seqs),
+            linked_shot_xg=_linked_shot_xg(shot_rows, a),
         )
         if code:
             a["actionCode"] = code

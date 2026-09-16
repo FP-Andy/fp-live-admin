@@ -572,7 +572,8 @@ def pass_outcome_score(action: dict[str, Any], percentile: float) -> int | None:
     한 방에 넣어준 패스' 와 '박스 옆에서 툭 내준 패스' 를 가른다 — 받은 지점이 같아도.
     값이 없으면(프레임 없음·상대 점 부족) 가산 0 이라 기존 동작 그대로다.
     """
-    band = PASS_SCORE_BANDS.get(str(action.get("action") or ""))
+    # 이름이 아니라 chance_tag 로 찾는다 — 어시스트 크로스는 이름이 "Cross" 로 남는다.
+    band = PASS_SCORE_BANDS.get(chance_tag(action) or "")
     if band is None:
         return None
     lo, hi = band
@@ -807,6 +808,29 @@ def _has_tag(action: dict[str, Any], tag: str) -> bool:
     return False
 
 
+def chance_tag(action: dict[str, Any]) -> str | None:
+    """이 액션이 **찬스 창출 패스로 태깅됐나** — "Assist" | "Key Pass" | None.
+
+    득점 연결 축(G2/G3)으로 채점할 자격을 이 하나가 정한다. 예전엔 '같은 클립 뒤에
+    슛이 있음'(later_shot)만으로도 승격됐는데, 그건 사이에 드리블·패스가 몇 개 껴
+    있어도 참이라 인과가 거의 없었다 — 그래서 자기 진영 롱패스가 뒤따른 약한 슛의
+    xG 로 채점되는 일이 생겼다. 태그는 기준이 엄격하다(fpa 의 자동 태깅: **직전**
+    이벤트가 성공한 패스/크로스 · 같은 팀 · 다른 선수 · 바로 뒤가 슛).
+
+    이름과 태그를 **둘 다** 본다. dual 은 어시스트·키패스를 Tags 에 찍고
+    fineplay_fpa.canonical_action_name 이 이름으로 승격하는데, 승격 대상이
+    **패스뿐**이다(_ACTION_PROMOTIONS). 크로스는 같은 태그를 받아도 이름이 "Cross"
+    로 남아서, 이름만 보면 어시스트 크로스가 통째로 빠진다.
+    """
+    name = str(action.get("action") or "")
+    if name in PASS_SCORE_BANDS:
+        return name
+    for tag in ("Assist", "Key Pass"):   # 골이 난 쪽이 우선
+        if _has_tag(action, tag):
+            return tag
+    return None
+
+
 def save_outcome_score(action: dict[str, Any]) -> int | None:
     """세이브(S13)의 점수 — 두 축을 각각 줄세워 섞어 밴드에 얹는다.
 
@@ -873,7 +897,9 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
         # 연결 슛 xG 를 계승하면, 받은 뒤 드리블로 수비를 제치고 각을 만든 몫까지
         # 패서 점수에 섞인다 — 그건 슈터의 온전한 액션이다. 패서가 한 일은 '동료를
         # 그 자리에 세워준 것' 까지이고, 그 자리의 가치가 곧 어시스트의 값이다.
-        if str(action.get("action") or "") in RECEPTION_XG_ACTIONS:
+        # 태그로 판정한다 — 어시스트 크로스도 받은 지점 xG 를 쓴다(크로스도 xRC 가
+        # 채워진다: fpa.PASS_CHANCE_CODES 에 c·cc 가 들어 있다).
+        if chance_tag(action):
             received = action.get("receptionXg")
             if received is not None and float(received) > 0:
                 return float(received)
@@ -904,6 +930,29 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
     return None
 
 
+def _side_of(action: dict[str, Any]) -> str:
+    """액션의 팀(home/away). 없으면 빈 문자열 — '모른다' 는 뜻으로 쓴다."""
+    return str(action.get("teamSide") or "").strip().lower()
+
+
+def link_credit_score(
+    action: dict[str, Any], *, code: str, linked_shot_xg: float | None
+) -> int | None:
+    """득점 연결(G2/G3) 축으로 채점했을 때의 최종 점수. 근거가 없으면 None.
+
+    `axis_scores` 가 전진·소유를 위해 하는 일을 연결 축에 대해 한다 —
+    `classify_action_code` 가 세 축을 같은 눈금(최종 점수)에서 맞대게 하려는 것이다.
+    """
+    raw = _raw_effect(code, action, linked_shot_xg)
+    if raw is None:
+        return None
+    p = raw_to_percentile(code, raw, "goal")
+    if p is None:
+        return None
+    banded = pass_outcome_score(action, p)
+    return banded if banded is not None else percentile_to_score(p)
+
+
 def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
     """정본 규칙대로 유효 Effect Action 에 xfpScore·xfpPercentile 을 주석한다(제자리).
 
@@ -913,15 +962,18 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
     중복 제거는 **행위(event)** 단위다 — 아래 groups 주석 참조.
     """
     # 연결 슈팅(G1) 목록 — G2/G3 의 '연결 슈팅 xG' 는 그 액션 뒤 첫 슈팅의 xG.
+    # **같은 팀의 슛만** 센다(fineplay_fpa._later_shots 와 같은 규칙) — 클립에는 두 팀의
+    # 액션이 섞여 있어, 안 가리면 턴오버 뒤 상대 슛의 xG 가 우리 패스 점수가 된다.
+    # 팀이 비어 있는 행(옛 데이터)은 가리지 않는다.
     shots = sorted(
-        (float(pa.get("seq") or 0), float(pa.get("xg") or 0))
+        (float(pa.get("seq") or 0), float(pa.get("xg") or 0), _side_of(pa))
         for pa in payload_actions
         if pa.get("actionCode") == "G1" and float(pa.get("xg") or 0) > 0
     )
 
-    def linked_shot_xg(seq: float) -> float | None:
-        for s, x in shots:
-            if s > seq:
+    def linked_shot_xg(seq: float, side: str) -> float | None:
+        for s, x, shot_side in shots:
+            if s > seq and (not side or not shot_side or side == shot_side):
                 return x
         return None
 
@@ -971,7 +1023,7 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             fam = outcome_family(code)
             if not fam:
                 continue
-            raw = _raw_effect(code, pa, linked_shot_xg(float(pa.get("seq") or 0)))
+            raw = _raw_effect(code, pa, linked_shot_xg(float(pa.get("seq") or 0), _side_of(pa)))
             if raw is None:
                 continue
             # 중복 제거(fam)는 Outcome 군 기준 그대로, 백분위는 실제 측정 단위 기준으로.
@@ -1018,7 +1070,13 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
                 banded = duel_outcome_score(p)
             else:
                 # 어시스트·키패스 밴드가 먼저다 — 이들은 G2(goal 군)라 소유 압축과 겹치지 않는다.
-                banded = pass_outcome_score(pa, p)
+                #
+                # **goal 군일 때만** 건다. 밴드는 액션 이름으로 붙는데(PASS_SCORE_BANDS),
+                # 어시스트가 전진/소유 축으로 채점되는 경우가 생겼다 — classify_action_code
+                # 가 연결 축과 전진/소유 축을 맞대 높은 쪽을 쓰기 때문이다(link_wins).
+                # 그때 이름만 보고 밴드를 걸면 **전진 백분위를 어시스트 밴드에 얹는**
+                # 엉뚱한 값이 나오고, 비교에 쓴 점수와 최종 점수가 달라진다.
+                banded = pass_outcome_score(pa, p) if fam == "goal" else None
                 if banded is None:
                     banded = possession_outcome_score(code, pa, p)
             # 돌파 하한은 **맨 마지막**에 건다 — 어느 축·어느 밴드를 거쳤든 최종 점수를

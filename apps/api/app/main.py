@@ -11526,7 +11526,9 @@ def _serialize_clip_action(row: HighlightClipAction) -> dict:
         "seq": row.seq,
         "action": action_name,
         # 집계용 상위 층 — 골도 슈팅으로, 어시스트도 패스로 세지게 한다.
-        "baseAction": fineplay_base_action_name(action_name),
+        # 승격된 이름이 아니라 **저장된 원본** 에서 구한다 — "Assist" 하나로는 패스였는지
+        # 크로스였는지 되짚을 수 없다(fineplay_fpa._ACTION_BASE 주석).
+        "baseAction": fineplay_base_action_name(row.action_name),
         "actionLabel": fineplay_action_label(action_name),
         "teamSide": row.team_side,
         "jersey": row.jersey,
