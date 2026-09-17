@@ -250,6 +250,12 @@ class XGOTEstimateRequest(BaseModel):
     shot_pace_band: Literal["LOW", "MID", "HIGH"] = "MID"
 
 
+class MatchHighlightRequest(BaseModel):
+    # 비워 보내면 서버가 마지막 저장 상태의 시계를 쓴다(마커와 같은 규칙).
+    clock_ms: int | None = Field(default=None, ge=0)
+    user_id: str | None = None
+
+
 class MatchMarkerRequest(BaseModel):
     clock_ms: int | None = Field(default=None, ge=0)
     marker_type: MarkerType = "HALFTIME_START"

@@ -107,7 +107,7 @@ from .broadcast_assets import (
     render_live_coder_asset_pairs,
     store_asset_pair,
 )
-from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject
+from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, MatchHighlight, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -123,6 +123,7 @@ from .schemas import (
     LineupManualPlayerRequest,
     MatchResultResponse,
     MatchResponse,
+    MatchHighlightRequest,
     MatchMarkerRequest,
     EventsResetRequest,
     FcmTemplateResponse,
@@ -8022,6 +8023,228 @@ def post_match_marker(
         },
     }
 
+
+
+def _serialize_highlight(row: MatchHighlight) -> dict:
+    return {
+        "id": str(row.id),
+        "match_id": str(row.match_id),
+        "clock_ms": row.clock_ms,
+        "created_by": row.created_by,
+        "created_at": row.created_at.isoformat(),
+    }
+
+
+@app.post("/api/matches/{match_id}/highlights")
+def post_match_highlight(
+    match_id: UUID,
+    body: MatchHighlightRequest,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    """'지금이 하이라이트' 를 경기 시계와 함께 남긴다.
+
+    마커(post_match_marker)와 달리 **누를 때마다 새 행**이다 — 전반 종료처럼 한 번뿐인
+    경계가 아니라 경기 중 여러 번 쌓이는 기록이라서다.
+
+    clock_ms 를 안 주면 마지막 저장 상태의 시계를 쓴다(마커와 같은 규칙). 화면이 시계를
+    들고 있으므로 보통은 실어 보내지만, 그게 없을 때 400 으로 떨구는 것보다 낫다.
+    """
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+
+    clock_ms = body.clock_ms
+    if clock_ms is None:
+        last_state = _latest_state(match_id, db)
+        if not last_state:
+            raise HTTPException(status_code=400, detail="clock_ms missing and no state exists")
+        clock_ms = last_state.clock_ms
+
+    row = MatchHighlight(
+        match_id=match_id,
+        clock_ms=clock_ms,
+        created_by=_resolve_user_id(body.user_id, session_user),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    _audit(
+        db,
+        "MATCH_HIGHLIGHT_ADD",
+        "match",
+        actor=session_user,
+        target_id=str(match_id),
+        match_id=match_id,
+        severity="INFO",
+        details={"clock_ms": clock_ms},
+    )
+    db.commit()
+    return {"ok": True, "highlight": _serialize_highlight(row)}
+
+
+def _build_highlight_log(match_id: UUID, db: Session) -> dict:
+    """수동 하이라이트 태깅이 '경기 불러오기' 로 가져갈 로그 한 묶음.
+
+    태깅 화면은 영상 시간으로 일하고 FLA 로그는 **경기 시계**로 남는다. 둘을 잇는 건
+    화면이 찍는 앵커 두 개(전반·후반 킥오프가 영상 몇 초인지)이고, 그 계산에 필요한
+    하프타임 경계를 여기서 같이 내려준다:
+
+        전반: 영상시간 = V1 + clock_ms
+        후반: 영상시간 = V2 + (clock_ms − halftime_clock_ms)
+
+    kind 는 태깅 화면의 태그 종류로 이어진다 — goal 만 팀을 나눠 점수판을 올리고
+    (home_goal/away_goal), 나머지는 종류 없이 장면으로 들어간다.
+    """
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    halftime = (
+        db.query(MatchMarker)
+        .filter(MatchMarker.match_id == match_id, MatchMarker.marker_type == "HALFTIME_START")
+        .order_by(MatchMarker.created_at.asc())
+        .first()
+    )
+
+    entries: list[dict] = []
+    for e in (
+        db.query(Event)
+        .filter(Event.match_id == match_id, Event.type == "XG")
+        .order_by(Event.clock_ms.asc())
+        .all()
+    ):
+        # 골이면 골로만 잡는다 — 골은 정의상 유효슛이기도 해서, 이 순서라야 중복이 없다.
+        kind = "goal" if e.is_goal else ("on_target" if e.is_on_target else "shot")
+        entries.append({
+            "kind": kind,
+            "clock_ms": int(e.clock_ms or 0),
+            # 팀은 **점수를 얻는 팀**이다(자책골 포함). FLA 점수 계산과 같은 규칙이라
+            # 그대로 쓰면 점수판이 콘솔 점수와 어긋나지 않는다.
+            "team": e.team,
+            "is_own_goal": bool(e.is_own_goal),
+            "player_number": e.player_number,
+            "player_name": e.player_name,
+        })
+
+    for h in (
+        db.query(MatchHighlight)
+        .filter(MatchHighlight.match_id == match_id)
+        .order_by(MatchHighlight.clock_ms.asc())
+        .all()
+    ):
+        entries.append({
+            "kind": "highlight",
+            "clock_ms": int(h.clock_ms or 0),
+            "team": None,
+            "is_own_goal": False,
+            "player_number": None,
+            "player_name": None,
+        })
+
+    entries.sort(key=lambda item: item["clock_ms"])
+    meta = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
+    return {
+        "match": {
+            "id": str(match_obj.id),
+            "name": match_obj.name,
+            "home_team": meta.get("home_team") or "",
+            "away_team": meta.get("away_team") or "",
+            "stream_mode": meta.get("stream_mode") or "",
+        },
+        "halftime_clock_ms": int(halftime.clock_ms) if halftime else None,
+        "entries": entries,
+    }
+
+
+@app.get("/api/matches/{match_id}/highlight-log")
+def match_highlight_log(match_id: UUID, db: Session = Depends(get_db)):
+    return _build_highlight_log(match_id, db)
+
+
+@app.get("/api/matches/{match_id}/highlight-log.json")
+def download_match_highlight_log(match_id: UUID, db: Session = Depends(get_db)):
+    """같은 로그를 파일 한 장으로. 하이라이트 제작을 로컬 앱에서 하기 위한 통로다.
+
+    화면이 API 로 받아 가는 것과 **같은 함수**를 쓰므로 둘이 어긋날 수 없다. 파일에는
+    무엇인지 알아볼 수 있게 format 세 줄을 얹는데, 읽는 쪽은 match/halftime_clock_ms/
+    entries 만 보므로 API 응답을 그대로 저장한 파일도 그대로 읽힌다.
+
+    CSV 가 아니라 JSON 인 이유 — 이 로그는 표가 아니라 중첩 구조(경기 머리말 + 하프타임
+    경계 + 줄들)라, 표로 펴면 읽는 쪽에서 다시 조립해야 하고 그 과정에서 빠뜨릴 자리가
+    생긴다. 사람이 눈으로 볼 표가 필요하면 export.csv 가 따로 있다.
+    """
+    payload = {
+        "format": "fla-highlight-log",
+        "format_version": 1,
+        "exported_at": datetime.utcnow().isoformat(),
+        **_build_highlight_log(match_id, db),
+    }
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    # 경기 이름엔 한글·괄호가 섞여 파일 이름에 그대로 쓰기 어렵다. ASCII 이름을 기본으로
+    # 두고, 알아보기 좋은 이름은 RFC 5987 의 filename* 로 같이 보낸다.
+    ascii_name = f"fla_highlight_log_{match_id}_{stamp}.json"
+    pretty = f"{payload['match']['name'] or 'match'}_하이라이트로그_{stamp}.json".replace('"', '')
+    disposition = (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(pretty)}"
+    )
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": disposition},
+    )
+
+
+@app.get("/api/matches/{match_id}/highlights")
+def list_match_highlights(match_id: UUID, db: Session = Depends(get_db)):
+    rows = (
+        db.query(MatchHighlight)
+        .filter(MatchHighlight.match_id == match_id)
+        .order_by(MatchHighlight.clock_ms.asc(), MatchHighlight.created_at.asc())
+        .all()
+    )
+    return {"highlights": [_serialize_highlight(r) for r in rows]}
+
+
+@app.delete("/api/matches/{match_id}/highlights/{highlight_id}")
+def delete_match_highlight(
+    match_id: UUID,
+    highlight_id: UUID,
+    db: Session = Depends(get_db),
+    session_user: User | None = Depends(_get_session_user),
+):
+    """잘못 찍은 하이라이트를 지운다 — 단축키가 있어 오타가 나기 쉽다."""
+    match_obj = db.get(Match, match_id)
+    if not match_obj:
+        raise HTTPException(status_code=404, detail="Match not found")
+    _require_match_not_archived(match_obj)
+    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+
+    row = (
+        db.query(MatchHighlight)
+        .filter(MatchHighlight.id == highlight_id, MatchHighlight.match_id == match_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Highlight not found")
+    clock_ms = row.clock_ms
+    db.delete(row)
+    db.commit()
+    _audit(
+        db,
+        "MATCH_HIGHLIGHT_DELETE",
+        "match",
+        actor=session_user,
+        target_id=str(match_id),
+        match_id=match_id,
+        severity="INFO",
+        details={"clock_ms": clock_ms},
+    )
+    db.commit()
+    return {"ok": True}
 
 @app.post("/api/matches/{match_id}/events/attack_lane")
 def post_attack_lane(
