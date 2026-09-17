@@ -10274,13 +10274,129 @@ def delete_standalone_source(
     return {"deleted": deleted}
 
 
+# 사전 작업 매치에 딸릴 수 있는 테이블 — matches.id 를 FK 로 잡는 것 전부.
+# 하나라도 빠지면 Match 삭제가 FK 로 막힌다. 모델에 새 테이블이 생기면 여기도 늘려야 한다.
+_MATCH_CHILD_MODELS = (
+    HighlightClip, FpaSavedLog, State, PossessionSegment, LaneSegment,
+    Event, DominanceBin, MatchMarker, FcmSubmission, BroadcastOverlayProject,
+)
+
+
+@app.delete("/api/highlight/fineplay-jobs/{job_id}")
+def delete_standalone_job(
+    job_id: str,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """사전 작업을 통째로 지운다 — **사전 작업에 한해서만**.
+
+    왜 사전 작업만인가: 클레임(앱 신청) 잡은 FinePlay 가 만든 것이라 우리가 지우면
+    저쪽 신청이 짝을 잃는다. 사전 작업은 우리가 만든 것이고 신청이 없으므로 우리 것만
+    정리하면 끝난다. `standalone` 플래그가 아니면 409 로 막는다.
+
+    신청이 이미 연결된 사전 작업은 기본적으로 막는다 — 연결됐다는 건 앱으로 나갔거나
+    나갈 예정이라는 뜻이라, 지우면 저쪽에 고아 데이터가 남는다. `?force=true` 로만
+    넘어간다(운영자가 연결을 먼저 푸는 것이 정석).
+
+    지우는 것: 클립·액션·FPA 저장 로그·매치·잡, 그리고 S3 의 원본과 클립 파일.
+    되돌릴 수 없다. 목록에서만 빼고 싶으면 '아카이브' 를 쓴다.
+    """
+    job, metadata = _require_standalone_job(db, job_id)
+
+    links = metadata.get("links") or {}
+    linked = [
+        side for side in ("home", "away")
+        if isinstance(links.get(side), dict) and links[side].get("analysisRequestId")
+    ]
+    if linked and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=f"신청이 연결돼 있습니다({', '.join(linked)}). 연결을 먼저 해제하세요.",
+        )
+
+    clips = db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()
+    clip_ids = [c.id for c in clips]
+
+    # ── S3 먼저 훑어 키를 모은다. 삭제는 DB 커밋 뒤에 한다 — DB 가 실패하면 파일만
+    #    사라지는 상태가 제일 나쁘다.
+    keys: list[str] = []
+    for c in clips:
+        for key in (c.horizontal_s3_key, c.vertical_s3_key, c.thumbnail_s3_key):
+            if key:
+                keys.append(str(key))
+    if not metadata.get("source_deleted"):
+        for v in (metadata.get("manifest") or {}).get("videos") or []:
+            key = str(v.get("s3Key") or "").strip()
+            # 사전 작업 원본 prefix 밖의 키는 건드리지 않는다(delete-source 와 같은 안전장치).
+            if key.startswith("prelaunch/sources/"):
+                keys.append(key)
+
+    # ── DB ───────────────────────────────────────────────────────────────────
+    if clip_ids:
+        db.query(HighlightClipAction).filter(
+            HighlightClipAction.clip_id.in_(clip_ids)).delete(synchronize_session=False)
+
+    match_id = metadata.get("match_id")
+    match_obj = None
+    if match_id:
+        try:
+            match_obj = db.get(Match, uuid.UUID(str(match_id)))
+        except (ValueError, AttributeError):
+            match_obj = None
+    # 사전 작업이 만든 매치만 지운다. 수동으로 다른 매치를 물려 놨다면 그 매치는
+    # 우리 것이 아니므로 잡만 정리하고 매치는 남긴다.
+    own_match = bool(
+        match_obj is not None
+        and (match_obj.metadata_json or {}).get("source") == "prelaunch_standalone"
+    )
+
+    if own_match:
+        for model in _MATCH_CHILD_MODELS:
+            db.query(model).filter(model.match_id == match_obj.id).delete(
+                synchronize_session=False)
+    elif clip_ids:
+        # 매치를 안 지우면 클립은 여기서 따로 지운다(위 루프가 안 돌았으므로).
+        db.query(HighlightClip).filter(
+            HighlightClip.id.in_(clip_ids)).delete(synchronize_session=False)
+
+    db.delete(job)
+    if own_match:
+        db.delete(match_obj)
+    db.commit()
+    _match_response_cache.clear()
+
+    # ── S3 (best-effort) ─────────────────────────────────────────────────────
+    # 여기서 실패해도 DB 는 이미 정리됐다. 남은 파일은 보관비만 먹으므로 실패를
+    # 500 으로 올리지 않고 세어서 알려 준다.
+    storage = highlight_default_storage()
+    removed, failed = 0, 0
+    if storage.configured:
+        for key in keys:
+            try:
+                storage.delete_object(key)
+                removed += 1
+            except Exception:
+                failed += 1
+
+    return {
+        "deleted": True,
+        "job_id": job_id,
+        "match_deleted": own_match,
+        "clips": len(clip_ids),
+        "s3_removed": removed,
+        "s3_failed": failed,
+        "forced": bool(linked and force),
+    }
+
+
 def _require_standalone_job(db: Session, job_id: str) -> tuple[HighlightJob, dict]:
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
     metadata = dict(job.job_metadata or {})
     if not metadata.get("standalone"):
-        raise HTTPException(status_code=409, detail="사전 작업만 신청을 연결할 수 있습니다.")
+        raise HTTPException(status_code=409, detail="사전 작업에만 할 수 있는 동작입니다.")
     return job, metadata
 
 
