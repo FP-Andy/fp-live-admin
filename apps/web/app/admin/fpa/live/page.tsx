@@ -2007,6 +2007,33 @@ export default function FpaLivePage() {
     setStatus('Before 좌표와 패스 화살표를 After로 복사했습니다');
   };
 
+  /** 수정용 피치의 Before → After 복사.
+   *
+   *  라이브(copyBeforeToAfter)와 하는 일이 같다. 수정에서도 똑같이 찍을 수 있어야 하는데
+   *  이 버튼이 없어서, 불러온 장면을 고칠 때는 After 점을 하나하나 다시 찍어야 했다.
+   *
+   *  상태만 다르다 — 수정용 캔버스는 라이브와 **완전히 분리**돼 있다(유실 방지). 그래서
+   *  undo 도 걸지 않는다: dualUndoState 는 라이브 캔버스만 담고 있어서, 여기서 밀어 넣으면
+   *  되돌릴 때 라이브 쪽이 엉뚱하게 덮인다.
+   */
+  const copyEditBeforeToAfter = () => {
+    // 잔상은 넘기지 않는다 — After 는 '액션이 끝난 시점의 실제 위치' 프레임이다.
+    const beforeReal = realDots(editBeforeDots);
+    if (!beforeReal.length) {
+      setStatus('수정용 Before 에 활성화된 점이 없습니다');
+      return;
+    }
+    const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeReal);
+    const nextAfterArrows = mirroredBeforeArrowsForAfter(editPassArrows, idMap);
+    setEditAfterDots(nextAfterDots);
+    setEditPassArrows((prev) => [
+      ...prev.filter((arrow) => arrow.side !== 'after'),
+      ...nextAfterArrows,
+    ]);
+    setEditSelectedDot(null);
+    setStatus('수정용 Before 좌표와 패스 화살표를 After로 복사했습니다');
+  };
+
   // 현재 작업 캔버스+버퍼 비우기 (저장/새장면/불러오기 공용)
   const clearCurrentScene = () => {
     resetDualUndo();
@@ -4383,6 +4410,18 @@ export default function FpaLivePage() {
         <div className="fpa-scene-editor-grid">
           <div className="fpa-scene-editor-pitches">
             {renderEditPitch('before')}
+            {/* 라이브 피치와 같은 자리·같은 모양의 복사 버튼. 수정에서도 똑같이 찍을 수
+                있어야 한다(copyEditBeforeToAfter). */}
+            <div className="fpa-dual-copy">
+              <button
+                disabled={Boolean(pendingXgot) || realDots(editBeforeDots).length === 0}
+                onClick={copyEditBeforeToAfter}
+                title="Before 좌표와 패스 화살표를 After 로 복사"
+                type="button"
+              >
+                →
+              </button>
+            </div>
             {pendingXgot && pendingXgot.canvas === 'edit' ? (
               <div className="fpa-dual-pitch-card fpa-dual-xgot-card">
                 <div className="fpa-dual-pitch-head">
