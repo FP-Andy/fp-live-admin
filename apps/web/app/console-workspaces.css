@@ -28,16 +28,35 @@
   .fla-direction-pitch { border-top: 1px solid var(--border-soft); padding-top: 16px; }
   .fla-direction-pitch svg { max-height: 180px; }
 }
-.fla-shot-values { display: grid; gap: 12px; }
-.fla-shot-value-row { display: grid; grid-template-columns: 68px minmax(90px,150px) 118px; gap: 12px; align-items: center; }
-.fla-shot-value-row > label { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+.fla-shot-card { container-type: inline-size; }
+.fla-shot-surfaces { display: grid; gap: 20px; width: 100%; max-width: 520px; justify-self: center; margin-top: 4px; min-width: 0; }
+.fla-goalmouth { position: relative; width: 100%; min-width: 0; }
+.fla-shot-toolbar { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; align-items: center; }
+.fla-shot-values { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.fla-shot-value-row { display: grid; grid-template-columns: 48px minmax(60px,1fr) 92px; gap: 8px; align-items: center; min-width: 0; }
+.fla-shot-value-row > label { font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
 .fla-shots .fla-shot-value-row > input { width: 100%; min-height: 44px; font-variant-numeric: tabular-nums; }
 .fla-shot-value-row > button { min-height: 44px; padding-inline: 10px; white-space: nowrap; }
-.fla-shot-values-futsal .fla-shot-value-row { grid-template-columns: 118px minmax(80px,150px) 118px; }
-@media(max-width:760px) {
+.fla-shot-toolbar > .fla-shot-submit { min-width: 120px; min-height: 46px; white-space: nowrap; }
+.fla-shot-values-futsal { grid-template-columns: minmax(0,1fr); }
+.fla-shot-values-futsal .fla-shot-value-row { grid-template-columns: 104px minmax(60px,1fr) 104px; }
+@container (max-width: 660px) {
+  .fla-shot-toolbar { grid-template-columns: minmax(0,1fr); gap: 12px; }
+}
+@container (max-width: 460px) {
+  .fla-shot-values { grid-template-columns: minmax(0,1fr); gap: 10px; }
   .fla-shot-value-row { grid-template-columns: 60px minmax(0,1fr) 104px; gap: 8px; }
   .fla-shot-values-futsal .fla-shot-value-row { grid-template-columns: minmax(0,1fr) 104px; }
   .fla-shot-values-futsal .fla-shot-value-row > label { grid-column: 1/-1; font-size: 18px; }
+}
+.fla-clock-main { display: grid; grid-template-columns: minmax(0,1fr) auto auto; }
+.fla-clock-main > .fla-period-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.fla-period-controls button { white-space: nowrap; }
+.fla-match > .fla-setup { scroll-margin-top: 24px; }
+@media(max-width: 760px) {
+  .fla-clock-main { grid-template-columns: minmax(0,1fr) auto; gap: 12px; }
+  .fla-clock-main > .fla-period-controls { grid-row: 2; grid-column: 1/-1; display: grid; grid-template-columns: 1fr 1fr; }
+  .fla-clock-main > button { grid-row: 1; grid-column: 2; }
 }
 .app-shell .sidebar-legal { display: block; margin-top: auto; padding-top: 18px; border-top: 1px solid var(--border-soft); font-size: 11px; line-height: 1.7; }
 .app-shell .schedule-details { margin-top: 26px; padding-top: 24px; border-top: 1px solid var(--border-soft); }

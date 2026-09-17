@@ -3762,7 +3762,7 @@ export default function FpaLivePage() {
     if (!confirmRestoredDirection('저장')) return;
     setBusy(true);
     try {
-      const res = await apiJson<{ actions: unknown[] }>(
+      const res = await apiJson<{ actions: unknown[]; carriedOffsets?: number }>(
         `/highlight/clip-results/clips/${clipTarget.id}/actions`,
         {
           method: 'PUT',
@@ -3785,7 +3785,14 @@ export default function FpaLivePage() {
           }),
         },
       );
-      setStatus(`클립 ${clipTarget.id}에 액션 ${res.actions.length}개 저장 완료 — 결과 탭에서 구간을 조정하세요`);
+      // 콘솔에서 맞춘 구간은 다시 저장해도 유지된다 — 몇 개가 그대로 왔는지 알린다.
+      const carried = res.carriedOffsets ?? 0;
+      setStatus(
+        `클립 ${clipTarget.id}에 액션 ${res.actions.length}개 저장 완료`
+        + (carried
+          ? ` — 조정해 둔 구간 ${carried}개는 그대로 유지됩니다`
+          : ' — 결과 탭에서 구간을 조정하세요'),
+      );
       // iframe 모달(parent) 또는 분리 창(opener)으로 떠 있으면 클립 결과 탭에 알려 액션 목록을 즉시 갱신시킨다.
       const host = window.parent !== window ? window.parent : window.opener;
       if (host) {
