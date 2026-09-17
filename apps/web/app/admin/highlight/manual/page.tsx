@@ -169,6 +169,12 @@ export default function ManualHighlightPage() {
   // 구간 칸을 고치는 동안의 입력값. 글자마다 반영하면 태그가 재정렬돼 줄이 튀므로
   // 확정(Enter·포커스 아웃) 때만 적용한다.
   const [rangeDraft, setRangeDraft] = useState<{ key: string; text: string } | null>(null);
+  // 눌러서 재생한 태그. 영상으로 시선을 옮겼다가 목록으로 돌아오면 무엇을 눌렀는지
+  // 기억이 안 나서, 그 줄을 표시해 둔다.
+  //
+  // **재생이 끝나도 지우지 않는다.** 끝나는 순간 표시가 사라지면 정작 목록을 볼 때는
+  // 없다. 다른 데로 옮길 때(seekTo)만 지운다 — 그때는 더 이상 그 구간이 아니다.
+  const [previewTagId, setPreviewTagId] = useState<string | null>(null);
   const [previewBusy, setPreviewBusy] = useState<number | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [publishMsg, setPublishMsg] = useState('');
@@ -345,6 +351,7 @@ export default function ManualHighlightPage() {
     if (!sources.length) return;
     // 다른 데로 옮기면 태그 미리보기는 취소한다 — 그 구간을 벗어나기 때문.
     previewEndRef.current = null;
+    setPreviewTagId(null);
     const { index, local } = locate(Math.max(0, Math.min(duration, t)));
     if (index !== activeIndex) {
       // 다른 원본이면 src 가 바뀐 뒤에야 옮길 수 있다. 재생 중이었으면 이어서 재생한다.
@@ -455,8 +462,9 @@ export default function ManualHighlightPage() {
   const playTagClip = (tag: Tag) => {
     const [start, end] = clipRange(tag);
     seekTo(start, { play: true });
-    // seekTo 가 미리보기를 지우므로 그 뒤에 건다.
+    // seekTo 가 미리보기를 지우므로 그 뒤에 건다(표시도 마찬가지).
     previewEndRef.current = end;
+    setPreviewTagId(tag.id);
     videoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
@@ -1349,20 +1357,29 @@ export default function ManualHighlightPage() {
                   const padCell: React.CSSProperties = {
                     ...numInput, width: 46, padding: '3px 5px', fontSize: 12,
                   };
+                  const previewing = tag.id === previewTagId;
                   return (
                     <div
                       key={tag.id}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 8,
                         padding: '6px 10px', borderRadius: 6,
-                        background: 'var(--surface-input, #16161a)',
+                        // 눌러서 재생한 줄 — 영상을 보다 돌아왔을 때 어디였는지 알 수 있게.
+                        background: previewing
+                          ? 'rgba(59,130,246,0.14)'
+                          : 'var(--surface-input, #16161a)',
+                        boxShadow: previewing
+                          ? 'inset 3px 0 0 var(--accent, #3b82f6)'
+                          : undefined,
                         fontSize: 13, flexWrap: 'wrap',
                       }}
                     >
                       <span style={{ color: 'var(--muted, #999)', width: 28 }}>{i + 1}</span>
                       {/* 이 태그로 어떤 클립이 나오는지 그대로 보여준다 — 클립 시작부터 재생하고 끝에서 멈춘다. */}
                       <button
-                        style={smallBtn}
+                        style={previewing
+                          ? { ...smallBtn, color: 'var(--accent, #3b82f6)', borderColor: 'var(--accent, #3b82f6)' }
+                          : smallBtn}
                         title={`이 클립만 재생 (${fmt(clipRange(tag)[0])} ~ ${fmt(clipRange(tag)[1])}) — 태깅 시점은 ${fmt(tag.t)}`}
                         onClick={() => playTagClip(tag)}
                       >

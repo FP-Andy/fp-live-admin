@@ -923,6 +923,12 @@ export default function FineplayJobsPage() {
   // 여기 한 곳에서만 만든다 — 미리보기와 결과물이 어긋나면 태거가 헛것을 보게 된다.
   // 구간 칸을 고치는 동안의 입력값. 글자마다 반영하면 태그가 재정렬돼 줄이 튄다.
   const [rangeDraft, setRangeDraft] = useState<{ key: string; text: string } | null>(null);
+  // 눌러서 재생한 태그. 영상으로 시선을 옮겼다가 목록으로 돌아오면 무엇을 눌렀는지
+  // 기억이 안 나서, 그 줄을 표시해 둔다.
+  //
+  // **재생이 끝나도 지우지 않는다.** 끝나는 순간 표시가 사라지면 정작 목록을 볼 때는
+  // 없다. 사용자가 직접 스크럽해 그 구간을 벗어날 때만 지운다.
+  const [previewTagId, setPreviewTagId] = useState<string | null>(null);
 
   const clipRangeOf = useCallback((tag: Tag) => {
     const before = tag.padBefore ?? padBefore;
@@ -972,6 +978,7 @@ export default function FineplayJobsPage() {
     const { start, end } = clipRangeOf(tag);
     autoSeekRef.current = true;
     stopAtRef.current = end;
+    setPreviewTagId(tag.id);
     switchVideo(tag.videoIdx ?? 0, start);
     const v = videoRef.current;
     if (!v) return;
@@ -1943,6 +1950,8 @@ export default function FineplayJobsPage() {
                 onSeeking={() => {
                   if (autoSeekRef.current) { autoSeekRef.current = false; return; }
                   stopAtRef.current = null;
+                  // 다른 데로 옮겼으니 더는 그 태그 구간이 아니다.
+                  setPreviewTagId(null);
                 }}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
@@ -2016,7 +2025,14 @@ export default function FineplayJobsPage() {
                   {tags.map((tag, i) => (
                     <div key={tag.id} style={{
                       display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
-                      padding: '6px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
+                      padding: '6px 10px', borderRadius: 6,
+                      // 눌러서 재생한 줄 — 영상을 보다 돌아왔을 때 어디였는지 알 수 있게.
+                      background: tag.id === previewTagId
+                        ? 'rgba(59,130,246,0.14)'
+                        : 'var(--surface-input, #16161a)',
+                      boxShadow: tag.id === previewTagId
+                        ? 'inset 3px 0 0 var(--accent, #3b82f6)'
+                        : undefined,
                     }}>
                       <span style={{ color: 'var(--muted, #999)', width: 24 }}>{i + 1}</span>
                       {sourceVideos.length > 1 ? (
@@ -2050,7 +2066,9 @@ export default function FineplayJobsPage() {
                         {tag.scoreOnly ? '골·점수만' : tag.goal ? '골' : '장면'}
                       </button>
                       <button
-                        style={smallBtn}
+                        style={tag.id === previewTagId
+                          ? { ...smallBtn, color: 'var(--accent, #3b82f6)', borderColor: 'var(--accent, #3b82f6)' }
+                          : smallBtn}
                         title="클립 시작으로 이동해 끝까지 재생 — 실제 잘릴 구간을 그대로 확인"
                         onClick={() => previewClip(tag)}
                       >
