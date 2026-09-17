@@ -3,7 +3,7 @@
 import LineupUniforms from '../../../../components/LineupUniforms';
 import AttackDirectionPitch from '../../../../components/AttackDirectionPitch';
 import Link from 'next/link';
-import { Fragment, type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine, ResponsiveContainer } from 'recharts';
@@ -743,6 +743,58 @@ export default function MatchPage() {
     });
     await saveState({ running: false, possessionTeam: 'NONE' });
     await fetchAll();
+  };
+
+  // ── 하이라이트(HL) ─────────────────────────────────────────────────────
+  // '지금 장면이 하이라이트다' 를 **경기 시계**로 남긴다. 나중에 로컬앱이 이 시계를
+  // 영상 시간으로 옮겨(전·후반 앵커) 태그를 자동으로 찍는다.
+  //
+  // 마커와 다르다 — 마커는 타입당 한 줄이라 다시 찍으면 덮어쓰지만, 하이라이트는
+  // 누를 때마다 쌓인다(models.MatchHighlight).
+  const [highlights, setHighlights] = useState<{ id: string; clock_ms: number }[]>([]);
+  const [hlNotice, setHlNotice] = useState('');
+
+  const loadHighlights = useCallback(async () => {
+    try {
+      const res = await apiJson<{ highlights: { id: string; clock_ms: number }[] }>(
+        `/matches/${id}/highlights`,
+      );
+      setHighlights(res.highlights || []);
+    } catch { /* 목록을 못 읽어도 찍는 건 된다 */ }
+  }, [id]);
+
+  useEffect(() => { void loadHighlights(); }, [loadHighlights]);
+
+  const markHighlight = async () => {
+    if (!canWrite) return;
+    // 돌고 있는 시계를 그대로 쓴다 — 저장된 상태값이 아니라 지금 흐르는 값이어야
+    // 누른 순간과 맞는다.
+    const now = getCurrentClockMs();
+    try {
+      await apiFetch(`/matches/${id}/highlights`, {
+        method: 'POST',
+        body: JSON.stringify({ clock_ms: now }),
+      });
+      setHlNotice(`하이라이트 ${fmt(now)} 기록`);
+      await loadHighlights();
+    } catch {
+      setHlNotice('하이라이트를 기록하지 못했습니다.');
+    }
+  };
+
+  const removeHighlight = async (hid: string) => {
+    try {
+      await apiFetch(`/matches/${id}/highlights/${hid}`, { method: 'DELETE' });
+      await loadHighlights();
+    } catch {
+      setHlNotice('하이라이트를 지우지 못했습니다.');
+    }
+  };
+
+  /** 로컬앱(FinePlay Highlight)이 읽는 로그 파일. 골·유효슛·슛·HL·하프타임 경계가
+   *  경기 시계로 한 장에 담긴다 — 앱이 앵커 두 개로 영상 시간에 앉힌다. */
+  const downloadHighlightLog = () => {
+    window.open(`${API_BASE}/matches/${id}/highlight-log.json`, '_blank');
   };
 
   const extraHalfBaseMinutes = (period: 3 | 4) => {
@@ -1966,6 +2018,60 @@ export default function MatchPage() {
                 )}
               </div>
             </div>
+
+            {/* 하이라이트 — 점유 타임라인 옆. 운영자 전원에게 열지 않고 SUPERADMIN 에게만
+                보인다: 이 기록은 하이라이트 제작으로 곧장 이어지는 것이라, 경기 입력과
+                책임이 다르다. */}
+            {isSuperuser ? (
+              <div className="card card-utility grid" style={{ minHeight: 180, gap: 8 }}>
+                <h3>하이라이트</h3>
+                <div className="row" style={{ marginBottom: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn-primary"
+                    onClick={() => void markHighlight()}
+                    disabled={!canWrite}
+                    title="지금 장면을 하이라이트로 남긴다 — 경기 시계가 기록된다"
+                  >
+                    ⭐ 지금 하이라이트
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={downloadHighlightLog}
+                    title="로컬앱(FinePlay Highlight)에 넣을 로그 파일 — 골·유효슛·슛·HL·하프타임이 경기 시계로 담긴다"
+                  >
+                    로그 저장 (.json)
+                  </button>
+                </div>
+                {hlNotice ? <span className="muted">{hlNotice}</span> : null}
+                <div
+                  className="grid"
+                  style={{ height: 105, overflowY: 'auto', paddingRight: 4 }}
+                >
+                  {highlights.length === 0 ? (
+                    <span className="muted">아직 찍은 하이라이트가 없습니다</span>
+                  ) : (
+                    highlights.map((h) => (
+                      <div
+                        key={h.id}
+                        className="row"
+                        style={{ justifyContent: 'space-between', alignItems: 'center' }}
+                      >
+                        <span>⭐ {fmt(h.clock_ms)}</span>
+                        <button
+                          className="btn-secondary"
+                          style={{ padding: '1px 8px', fontSize: 12 }}
+                          onClick={() => void removeHighlight(h.id)}
+                          disabled={!canWrite}
+                          title="잘못 찍은 하이라이트 지우기"
+                        >
+                          지우기
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : null}
       <div className="card card-utility">
         <h3>경기 흐름 · 3분 단위</h3>
         <div style={{ width: '100%', height: 280 }}>

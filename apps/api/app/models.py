@@ -265,6 +265,25 @@ class MatchMarker(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
+class MatchHighlight(Base):
+    """운영 중 '지금 장면이 하이라이트다' 고 찍어 둔 시각.
+
+    MatchMarker 와 다르다 — 마커는 타입당 한 줄(전반 종료·연장 시작처럼 한 경기에 한 번뿐인
+    경계)이라 같은 타입을 다시 찍으면 **덮어쓴다**. 하이라이트는 한 경기에 여러 번 쌓여야
+    하므로 누를 때마다 새 행이 생기는 별도 테이블을 쓴다.
+    """
+
+    __tablename__ = "match_highlights"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("matches.id"), index=True)
+    # 경기 시계(ms). 영상 편집이 아니라 '경기 몇 분'을 기록하는 것이라 시계 기준이 맞다.
+    clock_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 누가 눌렀는지 — 여러 명이 붙는 경기에서 되짚을 때 필요하다. 세션이 없으면 비운다.
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class Outbox(Base):
     __tablename__ = "outbox"
 
