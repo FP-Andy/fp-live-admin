@@ -286,6 +286,9 @@ PASS_SCORE_BANDS: dict[str, tuple[int, int]] = {
     "Key Pass": (70, 92),
 }
 
+# 후방 전진 가산이 붙는 액션. 크로스도 자기 진영에서 올라오는 일이 드물게 있다.
+BUILDUP_PASS_ACTIONS = frozenset({"Pass", "Cross", "Assist", "Key Pass"})
+
 # 패킹 가산의 최대 비중(밴드 폭 대비). 74~95 밴드에서 최대 약 5점.
 # 받은 지점이 똑같이 좋아도 '수비를 몇 명 넘겨 넣어줬나' 로 갈리게 하는 항이다.
 #
@@ -930,6 +933,60 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
     return None
 
 
+# ── 후방 전진 가산 ──────────────────────────────────────────────────────────
+# 자기 진영에서 볼을 앞으로 보낸 패스에 최종 점수 +1~2.
+#
+# 왜 필요한가 — ΔEPV 는 **골문까지의 위치 가치**라 자기 진영 전진을 거의 안 쳐준다.
+# 같은 'Progressive'(끝x − 시작x ≥ 10m) 태그가 붙은 패스인데 점수가 이렇게 갈린다:
+#
+#     자기 진영 10 → 30m     65점 (바닥)
+#     중원      40 → 60m     73점
+#     70 → 90m 박스 진입     91점
+#
+# 격자 실측(10,788 표본)에서 **Progressive 패스의 34.7% 가 70점 미만**에 깔려 있었다.
+# 반대로 70점 이상 구간은 95~98% 가 이미 Progressive 다 — 상방은 점수가 이미 가르고
+# 있고, 못 잡는 것은 하방뿐이다. 그래서 하방만 살짝 들어올린다.
+#
+# 왜 하한(floor)이 아니라 가산인가 — 하한은 그 아래를 전부 한 점으로 뭉쳐 ΔEPV 가 만든
+# 서열을 지운다. 가산은 서열을 그대로 두고 평행이동만 한다.
+#
+# 왜 작은가 — 태그와 최종 점수의 점이연 상관이 r=+0.62 다. 태그가 붙는다는 것만으로
+# 이미 평균 9.8점 높다. 크게 주면 같은 것을 두 번 세는 셈이다.
+#
+# 계단식인 이유는 세이브 캐칭 가산과 같다(SAVE_CATCH_BONUS_TIERS) — 겨냥한 곳이 바닥이라
+# 낮을수록 더 준다. 위쪽은 이미 제 점수를 받고 있다.
+BUILDUP_TAG = "Progressive"
+# 자기 진영 판정 기준선. classify_action_code 의 진영 판정(x > 52.5)과 같은 자리라
+# P1/S1(우리 진영 코드)이 붙는 패스와 정확히 겹친다.
+BUILDUP_OWN_HALF_X = 52.5
+BUILDUP_BONUS_TIERS: tuple[tuple[int, int], ...] = ((70, 2),)
+BUILDUP_BONUS_TOP = 1
+
+
+def buildup_bonus(action: dict[str, Any], code: str, score: int) -> int:
+    """이 액션이 받을 후방 전진 가산(0·1·2).
+
+    조건 셋을 다 만족해야 한다:
+      1. 패스류다 — 드리블·수비·세트피스에는 붙지 않는다
+      2. 'Progressive' 태그가 있다 (fpa.is_progressive_pass 가 자동으로 단다)
+      3. **시작 지점이 자기 진영**이다 — 좌표가 없으면 주지 않는다(근거 없음)
+    """
+    if str(action.get("action") or "") not in BUILDUP_PASS_ACTIONS:
+        return 0
+    if not _has_tag(action, BUILDUP_TAG):
+        return 0
+    try:
+        x = float(action.get("x"))
+    except (TypeError, ValueError):
+        return 0
+    if x > BUILDUP_OWN_HALF_X:
+        return 0
+    for limit, bonus in BUILDUP_BONUS_TIERS:
+        if score < limit:
+            return bonus
+    return BUILDUP_BONUS_TOP
+
+
 def _side_of(action: dict[str, Any]) -> str:
     """액션의 팀(home/away). 없으면 빈 문자열 — '모른다' 는 뜻으로 쓴다."""
     return str(action.get("teamSide") or "").strip().lower()
@@ -1081,7 +1138,20 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
                     banded = possession_outcome_score(code, pa, p)
             # 돌파 하한은 **맨 마지막**에 건다 — 어느 축·어느 밴드를 거쳤든 최종 점수를
             # [70,100] 으로 옮긴다(BREAKTHROUGH_SCORE_BAND).
-            pa["xfpScore"] = breakthrough_band_score(
+            final = breakthrough_band_score(
                 pa, banded if banded is not None else percentile_to_score(p)
             )
+            # 후방 전진 가산 — 그 위에 얹는다(buildup_bonus 주석).
+            bonus = buildup_bonus(pa, code, final)
+            if bonus:
+                # 그 액션이 앉아 있던 밴드의 천장은 안 넘는다 — 소유 패스가 가산으로
+                # 소유 상한(80)을 넘으면 밴드를 둔 뜻이 사라진다.
+                ceiling = SCORE_RANGE[1]
+                if fam == "possession" and code not in DUEL_ACTION_CODES:
+                    ceiling = POSSESSION_SCORE_BAND[1]
+                band = PASS_SCORE_BANDS.get(chance_tag(pa) or "")
+                if band is not None:
+                    ceiling = band[1]
+                final = min(ceiling, final + bonus)
+            pa["xfpScore"] = final
             pa["xfpPercentile"] = round(p, 4)
