@@ -199,6 +199,9 @@ type PitchDot = {
   role?: string;     // field | gk (레이어)
   color?: string;    // 레이어 색
   number?: string;   // 등번호 — stat input 코드의 행위자 번호가 제출 시 그 점에 지정됨 (xFP/fpa)
+  // 화면 표시 번호(A3·O5 의 숫자). 점을 만들 때 한 번 정해 박는다 — 뒤에 누가 빠져도
+  // 안 바뀌게 하려는 것이다(nextDotSeq 주석). 채점·저장 계약에는 안 들어간다.
+  seq?: number;
   // 등번호 식별이 불확실함 — 영상으로 번호를 확정하지 못해 추측으로 찍었다는 표시.
   // 저장·전송에 함께 실려 앱이 "이 액션의 등번호는 확실하지 않다" 를 알 수 있게 한다.
   needsCheck?: boolean;
@@ -1160,6 +1163,30 @@ function generateMatchId() {
     (Number(char) ^ (Math.random() * 16) >> (Number(char) / 4)).toString(16));
 }
 
+/** 점에 고정으로 붙는 표시 번호(A3·O5 의 숫자).
+ *
+ *  예전에는 이 번호를 **그릴 때마다 배열을 훑어** 매겼다. 그러면 점 하나가 빠지거나
+ *  자리가 바뀔 때 **그 뒤의 점들이 전부 한 칸씩 당겨진다**:
+ *
+ *      지우기 전   O4  O5  O6  O7
+ *      O5 를 지우면 O4  O6→O5  O7→O6      ← 남의 번호가 바뀐다
+ *
+ *  그래서 태거가 "방금까지 O6 이던 사람이 O5 가 됐다" 를 겪었고, 그 라벨을 보고 수비
+ *  화살표를 걸다 보면 엉뚱한 점에 걸린다. 번호를 **만들 때 한 번 정해 점에 저장**하면
+ *  남이 빠져도 내 번호가 그대로다.
+ *
+ *  빈 번호(O5 가 빠진 자리)는 **그대로 둔다** — 채워 쓰면 새로 찍은 점이 방금 지운
+ *  사람의 번호를 물려받아 같은 혼동이 다시 생긴다.
+ */
+function nextDotSeq(dots: PitchDot[], team: DualDotTeam): number {
+  let max = 0;
+  for (const dot of dots) {
+    if ((dot.team || 'ally') !== team) continue;
+    if (typeof dot.seq === 'number' && dot.seq > max) max = dot.seq;
+  }
+  return max + 1;
+}
+
 function buildRenderPitchDots(sourceDots: PitchDot[], sport: FpaSport = 'FOOTBALL'): RenderPitchDot[] {
   let allyCount = 0;
   let opponentCount = 0;
@@ -1167,7 +1194,11 @@ function buildRenderPitchDots(sourceDots: PitchDot[], sport: FpaSport = 'FOOTBAL
     const dot = normalizePitchDot(sourceDot, undefined, sport) || sourceDot;
     const dotTeam = dot.team || 'ally';
     // 잔상은 A1·O2 같은 순번을 먹지 않는다 — 활성화 여부에 따라 실제 점의 라벨이 흔들리면 안 된다.
-    const teamIndex = dot.ghost ? 0 : dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
+    //
+    // 점에 번호가 저장돼 있으면 **그걸 그대로 쓴다**(nextDotSeq 주석). 없는 점은 예전
+    // 저장 장면이라 종전처럼 자리로 센다 — 옛 데이터의 보이는 모습이 바뀌지 않게.
+    const counted = dot.ghost ? 0 : dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
+    const teamIndex = typeof dot.seq === 'number' ? dot.seq : counted;
     return {
       ...dot,
       team: dotTeam,
@@ -1703,6 +1734,8 @@ export default function FpaLivePage() {
     };
   }, [afterDots, beforeDots]);
 
+  // 수정용 피치의 잔상 수 — 라이브와 같은 용도(버튼 활성화·라벨).
+  const editBeforeGhostCount = editBeforeDots.filter((dot) => dot.ghost).length;
   // 남은 잔상 수 — 라인업 컨트롤 라벨과 '잔상 지우기' 버튼 활성화에 쓴다.
   const beforeGhostCount = useMemo(() => beforeDots.filter((dot) => dot.ghost).length, [beforeDots]);
 
@@ -1824,14 +1857,17 @@ export default function FpaLivePage() {
       setStatus(`${arrowArmHint(pendingDefStart.code, 'end')} · Esc 취소`);
       return;
     }
+    const dotTeamRel = relationForTeamSide(currentLayer.teamSide, team);
     const nextDot: PitchDot = {
       id: newDotId(),
       ...dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport),
-      team: relationForTeamSide(currentLayer.teamSide, team),
+      team: dotTeamRel,
       teamSide: currentLayer.teamSide,
       layer: currentLayer.key,
       role: currentLayer.role,
       color: currentLayer.color,
+      // 표시 번호는 여기서 한 번 정해 박는다 — 뒤에 누가 빠져도 안 바뀐다.
+      seq: nextDotSeq(side === 'before' ? beforeDots : afterDots, dotTeamRel),
     };
     pushDualUndo();
     const place = (prev: PitchDot[]) => {
@@ -2005,6 +2041,33 @@ export default function FpaLivePage() {
     setPassArrows((prev) => [...prev.filter((arrow) => arrow.side !== 'after'), ...nextAfterArrows]);
     setSelectedDualDot(null);
     setStatus('Before 좌표와 패스 화살표를 After로 복사했습니다');
+  };
+
+  /** 수정용 피치의 Before → After 복사.
+   *
+   *  라이브(copyBeforeToAfter)와 하는 일이 같다. 수정에서도 똑같이 찍을 수 있어야 하는데
+   *  이 버튼이 없어서, 불러온 장면을 고칠 때는 After 점을 하나하나 다시 찍어야 했다.
+   *
+   *  상태만 다르다 — 수정용 캔버스는 라이브와 **완전히 분리**돼 있다(유실 방지). 그래서
+   *  undo 도 걸지 않는다: dualUndoState 는 라이브 캔버스만 담고 있어서, 여기서 밀어 넣으면
+   *  되돌릴 때 라이브 쪽이 엉뚱하게 덮인다.
+   */
+  const copyEditBeforeToAfter = () => {
+    // 잔상은 넘기지 않는다 — After 는 '액션이 끝난 시점의 실제 위치' 프레임이다.
+    const beforeReal = realDots(editBeforeDots);
+    if (!beforeReal.length) {
+      setStatus('수정용 Before 에 활성화된 점이 없습니다');
+      return;
+    }
+    const { dots: nextAfterDots, idMap } = clonePitchDotsWithIdMap(beforeReal);
+    const nextAfterArrows = mirroredBeforeArrowsForAfter(editPassArrows, idMap);
+    setEditAfterDots(nextAfterDots);
+    setEditPassArrows((prev) => [
+      ...prev.filter((arrow) => arrow.side !== 'after'),
+      ...nextAfterArrows,
+    ]);
+    setEditSelectedDot(null);
+    setStatus('수정용 Before 좌표와 패스 화살표를 After로 복사했습니다');
   };
 
   // 현재 작업 캔버스+버퍼 비우기 (저장/새장면/불러오기 공용)
@@ -2227,14 +2290,16 @@ export default function FpaLivePage() {
       setStatus(`수정용: ${arrowArmHint(editPendingDefStart.code, 'end')} · Esc 취소`);
       return;
     }
+    const dotTeamRel = relationForTeamSide(currentLayer.teamSide, editTeam);
     const nextDot: PitchDot = {
       id: newDotId(),
       ...dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport),
-      team: relationForTeamSide(currentLayer.teamSide, editTeam),
+      team: dotTeamRel,
       teamSide: currentLayer.teamSide,
       layer: currentLayer.key,
       role: currentLayer.role,
       color: currentLayer.color,
+      seq: nextDotSeq(side === 'before' ? editBeforeDots : editAfterDots, dotTeamRel),
     };
     const place = (prev: PitchDot[]) => {
       selectEditDot({ side, index: prev.length });
@@ -3508,7 +3573,22 @@ export default function FpaLivePage() {
   // 태거가 클릭한 선수만 실제 점이 되고, 안 건드린 잔상은 채점·저장·전송 어디에도 안 간다.
   //
   // 교체 선수(positionSlot='SUB')는 좌표가 없으므로 선발만 놓는다.
-  const placeLineupOnBefore = (targetSides: readonly TeamSide[] = ['home', 'away']) => {
+  /** before 프레임에 선발을 잔상으로 깐다.
+   *
+   *  `canvas` 로 라이브·수정 두 캔버스를 다 받는다. 수정에서도 라인업을 불러올 수 있어야
+   *  하는데, 예전에는 라이브 상태에만 묶여 있어서 수정용 피치에는 버튼조차 없었다.
+   *  복제하지 않고 인자로 가른 이유는 — 두 벌로 두면 배치 규칙(격자 판정·잔상 보존·
+   *  이미 활성화된 선수 건너뛰기)이 곧 갈라지기 때문이다.
+   */
+  const placeLineupOnBefore = (
+    targetSides: readonly TeamSide[] = ['home', 'away'],
+    canvas: 'live' | 'edit' = 'live',
+  ) => {
+    const isEdit = canvas === 'edit';
+    // 캔버스마다 자기 점·자기 팀·자기 공격방향을 쓴다. 나머지 규칙은 한 벌이다.
+    const srcDots = isEdit ? editBeforeDots : beforeDots;
+    const curTeam = isEdit ? editTeam : team;
+    const curDirection = isEdit ? editDirection : direction;
     // 신청 원본이 아니라 '교체 반영된' 명단을 쓴다 — 명단 탭에서 바꾼 결과가 그대로 나간다.
     const sidesWithLineup = (['home', 'away'] as const)
       .filter((side) => targetSides.includes(side))
@@ -3523,17 +3603,17 @@ export default function FpaLivePage() {
     // 다시 깔아도 지우는 건 '그 팀의 잔상' 뿐이다. 이미 클릭해 활성화하고 실제 위치로
     // 옮겨 둔 점은 그대로 남는다 — 배치 한 번에 작업을 날려버리지 않으려는 것이다.
     // 지우는 게 잔상뿐이라 확인 팝업도 필요 없다.
-    const keptDots = beforeDots.filter(
+    const keptDots = srcDots.filter(
       (dot) => !dot.ghost || !sidesWithLineup.includes(dot.teamSide as TeamSide),
     );
-    const clearedGhosts = beforeDots.length - keptDots.length;
+    const clearedGhosts = srcDots.length - keptDots.length;
     // 같은 팀·같은 등번호의 실제 점이 이미 있으면 그 선수의 잔상은 다시 깔지 않는다.
     const activeKeys = new Set(
       keptDots.filter((dot) => !dot.ghost).map(dotRosterKey).filter(Boolean) as string[],
     );
 
     // direction 은 '지금 선택된 팀(team)' 의 공격 방향이다. 홈 기준으로 환산해 둔다.
-    const homeAttacksRight = team === 'home' ? direction === 'right' : direction === 'left';
+    const homeAttacksRight = curTeam === 'home' ? curDirection === 'right' : curDirection === 'left';
 
     const nextDots: PitchDot[] = [];
     const placed: string[] = [];
@@ -3590,7 +3670,7 @@ export default function FpaLivePage() {
           id: newDotId(),
           ...meters,
           ...screenFromMeter(meters.meter_x, meters.meter_y, fpaSport),
-          team: relationForTeamSide(side, team),
+          team: relationForTeamSide(side, curTeam),
           teamSide: side,
           layer: layer.key,
           role: layer.role,
@@ -3614,11 +3694,18 @@ export default function FpaLivePage() {
       return;
     }
 
-    pushDualUndo();
+    // undo 는 라이브만 — dualUndoState 가 라이브 캔버스만 담고 있어서, 수정에서 밀어
+    // 넣으면 되돌릴 때 라이브 쪽이 엉뚱하게 덮인다(수정용 피치엔 원래 undo 가 없다).
+    if (!isEdit) pushDualUndo();
     // 걷어낸 건 잔상뿐이다. 잔상은 클릭해야 실제 점이 되므로 화살표가 걸려 있을 수 없어
     // 화살표는 손대지 않는다(실제 점을 지우던 예전 배치와 다른 점).
-    setBeforeDots([...keptDots, ...nextDots]);
-    setSelectedDualDot(null);
+    if (isEdit) {
+      setEditBeforeDots([...keptDots, ...nextDots]);
+      setEditSelectedDot(null);
+    } else {
+      setBeforeDots([...keptDots, ...nextDots]);
+      setSelectedDualDot(null);
+    }
     setStatus(
       `라인업 잔상 배치 — ${placed.join(' · ')} · 필요한 선수를 클릭하면 활성화됩니다`
       + (alreadyActive ? ` · 이미 활성화된 ${alreadyActive}명은 그대로 둠` : '')
@@ -3646,12 +3733,19 @@ export default function FpaLivePage() {
   };
 
   /** 남은 잔상을 전부 걷어낸다 — 액션에 안 쓰는 선수 자리를 치워 피치를 비운다. */
-  const clearGhostDots = () => {
-    if (!beforeGhostCount) return;
-    pushDualUndo();
-    setBeforeDots((prev) => prev.filter((dot) => !dot.ghost));
-    setSelectedDualDot(null);
-    setStatus(`잔상 ${beforeGhostCount}개를 지웠습니다`);
+  const clearGhostDots = (canvas: 'live' | 'edit' = 'live') => {
+    const isEdit = canvas === 'edit';
+    const count = isEdit ? editBeforeGhostCount : beforeGhostCount;
+    if (!count) return;
+    if (!isEdit) pushDualUndo();   // undo 는 라인업 배치와 같은 이유로 라이브만
+    if (isEdit) {
+      setEditBeforeDots((prev) => prev.filter((dot) => !dot.ghost));
+      setEditSelectedDot(null);
+    } else {
+      setBeforeDots((prev) => prev.filter((dot) => !dot.ghost));
+      setSelectedDualDot(null);
+    }
+    setStatus(`잔상 ${count}개를 지웠습니다`);
   };
 
   useEffect(() => {
@@ -4358,6 +4452,44 @@ export default function FpaLivePage() {
         </div>
         <div className="fpa-dual-input-bar">
           {renderPointTypeControl()}
+          {/* 라인업 — 라이브와 같은 컨트롤. 수정에서도 선발을 깔 수 있어야 한다.
+              점을 놓는 규칙은 placeLineupOnBefore 한 벌을 캔버스만 바꿔 쓴다. */}
+          <div className="fpa-live-control-group fpa-lineup-controls">
+            <span>라인업</span>
+            {(['home', 'away'] as const).map((side) => (
+              <button
+                key={side}
+                type="button"
+                className={editTeam === side ? 'active' : ''}
+                onClick={() => placeLineupOnBefore([side], 'edit')}
+                disabled={busy || !(lineupSides[side]?.players?.length ?? 0)}
+                title={(lineupSides[side]?.players?.length ?? 0)
+                  ? `${sideLabel(side)} 선발을 수정용 before 에 잔상으로 깝니다`
+                    + `${editTeam === side ? ' (지금 수정 중인 팀)' : ''}`
+                  : `${sideLabel(side)} 라인업이 없습니다`}
+              >
+                {sideLabel(side)} 배치
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => placeLineupOnBefore(['home', 'away'], 'edit')}
+              disabled={busy || !lineupSidesWithPlayers.length}
+              title={lineupSidesWithPlayers.length
+                ? '수정용 before 에 양 팀 선발을 포메이션대로 잔상으로 깝니다 (활성화된 점은 그대로)'
+                : '이 경기에 연결된 FinePlay 신청 라인업이 없습니다'}
+            >
+              양팀
+            </button>
+            <button
+              type="button"
+              onClick={() => clearGhostDots('edit')}
+              disabled={busy || !editBeforeGhostCount}
+              title="아직 활성화하지 않은 잔상을 전부 지웁니다"
+            >
+              잔상 지우기{editBeforeGhostCount ? ` (${editBeforeGhostCount})` : ''}
+            </button>
+          </div>
           <div className="fpa-live-control-group">
             <span>Direction</span>
             <div className="fpa-segmented">
@@ -4383,6 +4515,18 @@ export default function FpaLivePage() {
         <div className="fpa-scene-editor-grid">
           <div className="fpa-scene-editor-pitches">
             {renderEditPitch('before')}
+            {/* 라이브 피치와 같은 자리·같은 모양의 복사 버튼. 수정에서도 똑같이 찍을 수
+                있어야 한다(copyEditBeforeToAfter). */}
+            <div className="fpa-dual-copy">
+              <button
+                disabled={Boolean(pendingXgot) || realDots(editBeforeDots).length === 0}
+                onClick={copyEditBeforeToAfter}
+                title="Before 좌표와 패스 화살표를 After 로 복사"
+                type="button"
+              >
+                →
+              </button>
+            </div>
             {pendingXgot && pendingXgot.canvas === 'edit' ? (
               <div className="fpa-dual-pitch-card fpa-dual-xgot-card">
                 <div className="fpa-dual-pitch-head">
@@ -4801,7 +4945,7 @@ export default function FpaLivePage() {
           key={side}
           type="button"
           className={team === side ? 'active' : ''}
-          onClick={() => placeLineupOnBefore([side])}
+          onClick={() => placeLineupOnBefore([side], 'live')}
           disabled={busy || !(lineupSides[side]?.players?.length ?? 0)}
           title={(lineupSides[side]?.players?.length ?? 0)
             ? `${sideLabel(side)} 선발을 before 에 잔상으로 깝니다`
@@ -4813,7 +4957,7 @@ export default function FpaLivePage() {
       ))}
       <button
         type="button"
-        onClick={() => placeLineupOnBefore()}
+        onClick={() => placeLineupOnBefore(['home', 'away'], 'live')}
         disabled={busy || !lineupSidesWithPlayers.length}
         title={lineupSidesWithPlayers.length
           ? 'before 프레임에 양 팀 선발을 포메이션대로 잔상으로 깝니다 (활성화된 점은 그대로 둡니다)'
@@ -4823,7 +4967,7 @@ export default function FpaLivePage() {
       </button>
       <button
         type="button"
-        onClick={clearGhostDots}
+        onClick={() => clearGhostDots('live')}
         disabled={busy || !beforeGhostCount}
         title="아직 활성화하지 않은 잔상을 전부 지웁니다"
       >
