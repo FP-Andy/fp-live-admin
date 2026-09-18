@@ -1368,8 +1368,16 @@ export default function MatchPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'SUMMARY' || tag === 'A' || (e.target as HTMLElement)?.isContentEditable) return;
+      if (e.defaultPrevented || e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      // Keep letter shortcuts available after clicking recording controls.
+      // Editing fields and modal dialogs retain their own keyboard behavior.
+      if (target?.isContentEditable || target?.closest('input, textarea, select, [role="textbox"], [role="combobox"], [role="listbox"]')) return;
+      if (document.querySelector('dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')) return;
+      const isEnter = e.key === 'Enter';
+      if (isEnter && target?.closest('button, summary, a, [role="button"]')) return;
+      if (!canWrite || (!['KeyQ', 'KeyW', 'KeyE', 'KeyA', 'KeyS', 'KeyD'].includes(e.code) && !isEnter)) return;
+      e.preventDefault();
 
       // Space 로 경기 시계를 켜고 끄던 단축키는 뺐다 (2026-08-14).
       // 방송 중 오타 한 번에 시계가 멈추는데, 그게 일어난 걸 화면 보기 전엔 모른다.
@@ -1393,7 +1401,7 @@ export default function MatchPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [running, canWrite, possessionTeam, pendingLane]);
+  }, [running, canWrite, possessionTeam, pendingLane, selectedTeam, clockMs]);
 
   const hlsSrc = match?.hls_url || DEFAULT_HLS;
   const streamMode = match?.metadata?.stream_mode === 'MANUAL' ? 'MANUAL' : 'STREAM';
