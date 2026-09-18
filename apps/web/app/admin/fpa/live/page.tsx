@@ -199,6 +199,9 @@ type PitchDot = {
   role?: string;     // field | gk (레이어)
   color?: string;    // 레이어 색
   number?: string;   // 등번호 — stat input 코드의 행위자 번호가 제출 시 그 점에 지정됨 (xFP/fpa)
+  // 화면 표시 번호(A3·O5 의 숫자). 점을 만들 때 한 번 정해 박는다 — 뒤에 누가 빠져도
+  // 안 바뀌게 하려는 것이다(nextDotSeq 주석). 채점·저장 계약에는 안 들어간다.
+  seq?: number;
   // 등번호 식별이 불확실함 — 영상으로 번호를 확정하지 못해 추측으로 찍었다는 표시.
   // 저장·전송에 함께 실려 앱이 "이 액션의 등번호는 확실하지 않다" 를 알 수 있게 한다.
   needsCheck?: boolean;
@@ -1160,6 +1163,30 @@ function generateMatchId() {
     (Number(char) ^ (Math.random() * 16) >> (Number(char) / 4)).toString(16));
 }
 
+/** 점에 고정으로 붙는 표시 번호(A3·O5 의 숫자).
+ *
+ *  예전에는 이 번호를 **그릴 때마다 배열을 훑어** 매겼다. 그러면 점 하나가 빠지거나
+ *  자리가 바뀔 때 **그 뒤의 점들이 전부 한 칸씩 당겨진다**:
+ *
+ *      지우기 전   O4  O5  O6  O7
+ *      O5 를 지우면 O4  O6→O5  O7→O6      ← 남의 번호가 바뀐다
+ *
+ *  그래서 태거가 "방금까지 O6 이던 사람이 O5 가 됐다" 를 겪었고, 그 라벨을 보고 수비
+ *  화살표를 걸다 보면 엉뚱한 점에 걸린다. 번호를 **만들 때 한 번 정해 점에 저장**하면
+ *  남이 빠져도 내 번호가 그대로다.
+ *
+ *  빈 번호(O5 가 빠진 자리)는 **그대로 둔다** — 채워 쓰면 새로 찍은 점이 방금 지운
+ *  사람의 번호를 물려받아 같은 혼동이 다시 생긴다.
+ */
+function nextDotSeq(dots: PitchDot[], team: DualDotTeam): number {
+  let max = 0;
+  for (const dot of dots) {
+    if ((dot.team || 'ally') !== team) continue;
+    if (typeof dot.seq === 'number' && dot.seq > max) max = dot.seq;
+  }
+  return max + 1;
+}
+
 function buildRenderPitchDots(sourceDots: PitchDot[], sport: FpaSport = 'FOOTBALL'): RenderPitchDot[] {
   let allyCount = 0;
   let opponentCount = 0;
@@ -1167,7 +1194,11 @@ function buildRenderPitchDots(sourceDots: PitchDot[], sport: FpaSport = 'FOOTBAL
     const dot = normalizePitchDot(sourceDot, undefined, sport) || sourceDot;
     const dotTeam = dot.team || 'ally';
     // 잔상은 A1·O2 같은 순번을 먹지 않는다 — 활성화 여부에 따라 실제 점의 라벨이 흔들리면 안 된다.
-    const teamIndex = dot.ghost ? 0 : dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
+    //
+    // 점에 번호가 저장돼 있으면 **그걸 그대로 쓴다**(nextDotSeq 주석). 없는 점은 예전
+    // 저장 장면이라 종전처럼 자리로 센다 — 옛 데이터의 보이는 모습이 바뀌지 않게.
+    const counted = dot.ghost ? 0 : dotTeam === 'ally' ? (allyCount += 1) : (opponentCount += 1);
+    const teamIndex = typeof dot.seq === 'number' ? dot.seq : counted;
     return {
       ...dot,
       team: dotTeam,
@@ -1826,14 +1857,17 @@ export default function FpaLivePage() {
       setStatus(`${arrowArmHint(pendingDefStart.code, 'end')} · Esc 취소`);
       return;
     }
+    const dotTeamRel = relationForTeamSide(currentLayer.teamSide, team);
     const nextDot: PitchDot = {
       id: newDotId(),
       ...dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport),
-      team: relationForTeamSide(currentLayer.teamSide, team),
+      team: dotTeamRel,
       teamSide: currentLayer.teamSide,
       layer: currentLayer.key,
       role: currentLayer.role,
       color: currentLayer.color,
+      // 표시 번호는 여기서 한 번 정해 박는다 — 뒤에 누가 빠져도 안 바뀐다.
+      seq: nextDotSeq(side === 'before' ? beforeDots : afterDots, dotTeamRel),
     };
     pushDualUndo();
     const place = (prev: PitchDot[]) => {
@@ -2256,14 +2290,16 @@ export default function FpaLivePage() {
       setStatus(`수정용: ${arrowArmHint(editPendingDefStart.code, 'end')} · Esc 취소`);
       return;
     }
+    const dotTeamRel = relationForTeamSide(currentLayer.teamSide, editTeam);
     const nextDot: PitchDot = {
       id: newDotId(),
       ...dotFromClientPoint(event.clientX, event.clientY, rect, fpaSport),
-      team: relationForTeamSide(currentLayer.teamSide, editTeam),
+      team: dotTeamRel,
       teamSide: currentLayer.teamSide,
       layer: currentLayer.key,
       role: currentLayer.role,
       color: currentLayer.color,
+      seq: nextDotSeq(side === 'before' ? editBeforeDots : editAfterDots, dotTeamRel),
     };
     const place = (prev: PitchDot[]) => {
       selectEditDot({ side, index: prev.length });
