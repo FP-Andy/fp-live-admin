@@ -3497,8 +3497,48 @@ export default function FpaLivePage() {
   // 교체 반영 — 신청 시점 명단과 실제 출전이 다를 때 화면에서만 선발↔교체를 맞바꾼다.
   // 서버에 저장하지 않는다(신청 원본은 그대로 두고, 배치할 때만 이 결과를 쓴다).
   const [rosterOverride, setRosterOverride] = useState<Partial<Record<TeamSide, RosterPlayer[]>>>({});
-  // 라인업이 새로 로드되면(경기·클립 전환) 교체 반영을 버린다 — 다른 경기 명단이 섞이면 안 된다.
-  useEffect(() => { setRosterOverride({}); }, [lineupSides]);
+
+  /* 교체는 **경기 단위로 이어진다.**
+
+     한 하이라이트에 클립이 20개 있고 6번 클립에서 교체가 일어났으면, 7번부터도 그 교체가
+     적용돼 있어야 한다. 경기에서 실제로 일어난 일이 그렇기 때문이다. 그런데 클립마다 dual
+     을 새로 열면(클립 결과 탭이 클립별로 띄운다) 화면이 새로 뜨므로 메모리에 있던 교체가
+     사라졌다 — 클립 6부터 20까지 같은 교체를 열네 번 다시 해야 했다.
+
+     그래서 경기 id 를 키로 브라우저에 남긴다. sessionStorage 가 아니라 localStorage 인
+     이유는, 분리 창·탭으로 열어도 같은 교체를 봐야 하기 때문이다.
+
+     경기가 바뀌면 그 경기 키로 읽으므로 남의 명단이 섞일 일이 없다 — 예전에 라인업이
+     로드될 때마다 통째로 버리던 것이 이 걱정 때문이었는데, 키를 나누면 버릴 필요가 없다. */
+  const rosterOverrideKey = (id: string) => `fpa-roster-override:${id}`;
+  const rosterMatchIdRef = useRef<string>('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = matchId.trim();
+    if (!id || id === 'ID') { setRosterOverride({}); rosterMatchIdRef.current = ''; return; }
+    if (rosterMatchIdRef.current === id) return;   // 같은 경기면 다시 읽지 않는다
+    rosterMatchIdRef.current = id;
+    try {
+      const raw = window.localStorage.getItem(rosterOverrideKey(id));
+      setRosterOverride(raw ? JSON.parse(raw) : {});
+    } catch {
+      setRosterOverride({});
+    }
+  }, [matchId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = rosterMatchIdRef.current;
+    if (!id) return;
+    try {
+      if (Object.keys(rosterOverride).length) {
+        window.localStorage.setItem(rosterOverrideKey(id), JSON.stringify(rosterOverride));
+      } else {
+        window.localStorage.removeItem(rosterOverrideKey(id));
+      }
+    } catch { /* 저장 못 해도 이번 화면에서는 그대로 쓴다 */ }
+  }, [rosterOverride]);
 
   const effectiveRoster = useMemo(() => {
     const out: Partial<Record<TeamSide, RosterPlayer[]>> = {};
@@ -3520,6 +3560,17 @@ export default function FpaLivePage() {
     });
     return out;
   }, [lineupSides, rosterOverride]);
+
+  /** 이 팀의 교체 반영을 신청 원본으로 되돌린다.
+   *  경기 단위로 남으므로, 잘못 바꾼 채 두면 남은 클립 전부에 따라다닌다. */
+  const resetRosterOverride = (side: TeamSide) => {
+    setRosterOverride((prev) => {
+      const next = { ...prev };
+      delete next[side];
+      return next;
+    });
+    setStatus(`${sideLabel(side)} 명단을 신청 원본으로 되돌렸습니다`);
+  };
 
   // 선발 한 명과 교체 한 명을 맞바꾼다 — 들어온 선수가 나간 선수의 자리(positionSlot)를 그대로 받는다.
   const swapRosterPlayers = (side: TeamSide, dragJersey: string, dropJersey: string) => {
@@ -5094,6 +5145,23 @@ export default function FpaLivePage() {
         <div className="fpa-roster-meta">
           {info?.team_name || (side === 'home' ? '홈' : '어웨이')}
           {info?.formation ? <b>{info.formation}</b> : null}
+          {/* 교체는 경기 단위로 남는다 — 다음 클립에도 따라간다는 걸 알려 주고,
+              잘못 바꿨을 때 되돌릴 자리를 같이 둔다. */}
+          {rosterOverride[side] ? (
+            <>
+              <span className="fpa-roster-subbed" title="이 경기의 남은 클립에도 그대로 적용됩니다">
+                교체 반영됨
+              </span>
+              <button
+                type="button"
+                className="fpa-roster-reset"
+                onClick={() => resetRosterOverride(side)}
+                title="신청 원본 명단으로 되돌립니다"
+              >
+                되돌리기
+              </button>
+            </>
+          ) : null}
         </div>
         <div className="fpa-roster-list">
           <div className="fpa-roster-sec">선발 {starters.length}</div>
@@ -5103,6 +5171,7 @@ export default function FpaLivePage() {
         </div>
         <div className="fpa-roster-hint">
           교체가 있었다면 들어온 선수를 나간 선수 위로 끌어 놓으세요.
+          {' '}한 번 바꾸면 <b>이 경기의 다음 클립에도 그대로 적용</b>됩니다.
           그다음 <b>“before 에 배치”</b> 를 다시 누르면 바뀐 선발로 깔립니다.
         </div>
       </div>
