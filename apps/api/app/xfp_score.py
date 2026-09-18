@@ -939,7 +939,7 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
 # 왜 필요한가 — ΔEPV 는 **골문까지의 위치 가치**라 자기 진영 전진을 거의 안 쳐준다.
 # 같은 'Progressive'(끝x − 시작x ≥ 10m) 태그가 붙은 패스인데 점수가 이렇게 갈린다:
 #
-#     자기 진영 10 → 30m     65점 (바닥)
+#     자기 진영 10 → 30m     65점 (바닥)  ← 여기가 +4
 #     중원      40 → 60m     73점
 #     70 → 90m 박스 진입     91점
 #
@@ -955,11 +955,16 @@ def _raw_effect(code: str, action: dict[str, Any], linked_shot_xg: float | None)
 #
 # 계단식인 이유는 세이브 캐칭 가산과 같다(SAVE_CATCH_BONUS_TIERS) — 겨냥한 곳이 바닥이라
 # 낮을수록 더 준다. 위쪽은 이미 제 점수를 받고 있다.
+#
+# 네 칸으로 나눈 이유 — 자기 진영 Progressive 패스가 한쪽에 몰려 있지 않다. 격자 실측에서
+# ≤70 이 40.6% · 71~75 가 19.7% · 76~80 이 18.0% · 81+ 가 21.7% 로 고르게 퍼진다.
+# 두 칸(≤70/그 외)으로 두면 71~80 구간 38% 가 같은 +1 을 받아 서열이 뭉갠다.
 BUILDUP_TAG = "Progressive"
 # 자기 진영 판정 기준선. classify_action_code 의 진영 판정(x > 52.5)과 같은 자리라
 # P1/S1(우리 진영 코드)이 붙는 패스와 정확히 겹친다.
 BUILDUP_OWN_HALF_X = 52.5
-BUILDUP_BONUS_TIERS: tuple[tuple[int, int], ...] = ((70, 2),)
+# 경계는 **이하**(<=)다. 70·75·80 이 각 구간의 마지막 값이다.
+BUILDUP_BONUS_TIERS: tuple[tuple[int, int], ...] = ((70, 4), (75, 3), (80, 2))
 BUILDUP_BONUS_TOP = 1
 
 
@@ -982,7 +987,7 @@ def buildup_bonus(action: dict[str, Any], code: str, score: int) -> int:
     if x > BUILDUP_OWN_HALF_X:
         return 0
     for limit, bonus in BUILDUP_BONUS_TIERS:
-        if score < limit:
+        if score <= limit:
             return bonus
     return BUILDUP_BONUS_TOP
 
