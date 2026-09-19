@@ -805,10 +805,37 @@ export default function FineplayJobsPage() {
     setPolling(true);
     setPollMsg('');
     try {
-      const res = await apiJson<{ claimed: string[]; skipped: number }>(
-        '/highlight/fineplay-jobs/poll', { method: 'POST' },
+      const res = await apiJson<{
+        claimed: string[]; skipped: number;
+        queued?: number; existing?: number; taken?: number;
+        rejected?: number; failed?: number; invalid?: number; reasons?: string[];
+      }>('/highlight/fineplay-jobs/poll', { method: 'POST' });
+
+      // '새 작업 없음' 이 네 가지 상황에서 똑같이 떴다 — 대기열이 빈 것 · 이미 가져온 것뿐 ·
+      // 남이 선점 · claim 이 터진 것. 그래서 원인을 가리려면 서버에 들어가 대기열을 직접
+      // 찍어야 했다. 이제 서버가 내역을 주므로 그대로 펼친다.
+      const parts: string[] = [];
+      if (res.claimed.length) parts.push(`새로 가져옴 ${res.claimed.length}`);
+      if (res.existing) parts.push(`이미 있음 ${res.existing}`);
+      if (res.taken) parts.push(`다른 워커 선점 ${res.taken}`);
+      if (res.rejected) parts.push(`거절 ${res.rejected}`);
+      if (res.failed) parts.push(`claim 실패 ${res.failed}`);
+      if (res.invalid) parts.push(`형식 이상 ${res.invalid}`);
+
+      const queued = res.queued ?? 0;
+      const head = res.claimed.length
+        ? `새 작업 ${res.claimed.length}건 가져옴`
+        : queued
+          // 대기열에는 있는데 하나도 못 가져왔다 — 여기가 예전에 '새 작업 없음' 으로
+          // 뭉개지던 자리다.
+          ? `대기열 ${queued}건이 있지만 새로 가져온 것은 없습니다`
+          : 'FinePlay 대기열이 비어 있습니다 (신청이 아직 안 올라왔을 수 있습니다)';
+
+      setPollMsg(
+        head
+        + (parts.length ? ` — ${parts.join(' · ')}` : '')
+        + (res.reasons?.length ? `\n${res.reasons.join('\n')}` : ''),
       );
-      setPollMsg(res.claimed.length ? `새 작업 ${res.claimed.length}건 가져옴` : '새 작업 없음');
       await loadJobs();
     } catch (err) {
       setPollMsg(err instanceof Error ? err.message : String(err));
@@ -1377,7 +1404,15 @@ export default function FineplayJobsPage() {
           FinePlay 사용자가 신청한 분석 영상을 가져와(claim) 태깅하고, 서버가 클립을 만들어
           돌려보냅니다. 원본은 S3 스트리밍으로 재생되며 내려받지 않습니다.
         </p>
-        {pollMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '6px 0 0' }}>{pollMsg}</p> : null}
+        {/* 사유가 여러 줄로 올 수 있다 — 줄바꿈이 보여야 '왜 0건인지' 를 읽을 수 있다. */}
+        {pollMsg ? (
+          <p style={{
+            fontSize: 12, color: 'var(--muted, #999)', margin: '6px 0 0',
+            whiteSpace: 'pre-wrap',
+          }}>
+            {pollMsg}
+          </p>
+        ) : null}
         {listError ? <p style={{ fontSize: 12, color: '#ef4444', margin: '6px 0 0' }}>{listError}</p> : null}
       </div>
 
