@@ -809,6 +809,7 @@ export default function FineplayJobsPage() {
         claimed: string[]; skipped: number;
         queued?: number; existing?: number; taken?: number;
         rejected?: number; failed?: number; invalid?: number; reasons?: string[];
+        existing_visible?: number; existing_hidden?: number; existing_detail?: string[];
       }>('/highlight/fineplay-jobs/poll', { method: 'POST' });
 
       // '새 작업 없음' 이 네 가지 상황에서 똑같이 떴다 — 대기열이 빈 것 · 이미 가져온 것뿐 ·
@@ -816,7 +817,16 @@ export default function FineplayJobsPage() {
       // 찍어야 했다. 이제 서버가 내역을 주므로 그대로 펼친다.
       const parts: string[] = [];
       if (res.claimed.length) parts.push(`새로 가져옴 ${res.claimed.length}`);
-      if (res.existing) parts.push(`이미 있음 ${res.existing}`);
+      if (res.existing) {
+        // '이미 있음' 만으로는 화면에 왜 없는지 알 수 없다 — 목록에 보이는지까지 붙인다.
+        const seen = res.existing_visible ?? 0;
+        const hidden = res.existing_hidden ?? 0;
+        parts.push(
+          seen || hidden
+            ? `이미 있음 ${res.existing}(목록에 보임 ${seen} · 아카이브 ${hidden})`
+            : `이미 있음 ${res.existing}`,
+        );
+      }
       if (res.taken) parts.push(`다른 워커 선점 ${res.taken}`);
       if (res.rejected) parts.push(`거절 ${res.rejected}`);
       if (res.failed) parts.push(`claim 실패 ${res.failed}`);
@@ -834,7 +844,9 @@ export default function FineplayJobsPage() {
       setPollMsg(
         head
         + (parts.length ? ` — ${parts.join(' · ')}` : '')
-        + (res.reasons?.length ? `\n${res.reasons.join('\n')}` : ''),
+        + (res.reasons?.length ? `\n${res.reasons.join('\n')}` : '')
+        // 이미 있는 잡은 어디에 있는지 한 줄씩 — 이름·상태·분류·목록 노출 여부.
+        + (res.existing_detail?.length ? `\n${res.existing_detail.join('\n')}` : ''),
       );
       await loadJobs();
     } catch (err) {
