@@ -11389,6 +11389,14 @@ def poll_fineplay_jobs(
     failed = 0         # claim 호출 자체가 터짐
     invalid = 0        # analysisRequestId 가 없는 항목
     reasons: list[str] = []
+    # '이미 있음' 이 **작업 목록에 보이는지**까지 가른다.
+    #
+    # 폴링이 '대기열 6건 · 이미 있음 6' 을 돌려줬는데 화면에는 아무것도 없는 일이 있었다.
+    # claim 은 멀쩡했고, 가져온 잡이 아카이브로 빠져 목록에서 숨겨진 것이었다. 그런데
+    # 그걸 알아내려면 서버에 들어가 잡을 하나씩 들여다봐야 했다.
+    existing_visible = 0
+    existing_hidden = 0
+    existing_detail: list[str] = []
     # 새로 claim 한 것뿐 아니라, 이미 있는 잡 중 아직 못 받은 유튜브도 여기서 받기
     # 시작한다 — 이 기능이 생기기 전에 claim 된 신청은 그러지 않으면 영영 안 받는다.
     refetched: list[str] = []
@@ -11405,6 +11413,27 @@ def poll_fineplay_jobs(
         existing = db.get(HighlightJob, job_id)
         if existing:
             skipped += 1
+            # 화면의 작업 목록은 아카이브된 잡을 숨긴다(fineplay/page.tsx 의 loadJobs).
+            # 같은 규칙으로 판정해 '목록에 보이는지' 를 그대로 알려 준다.
+            md = existing.job_metadata or {}
+            archived = bool(md.get("clip_archived"))
+            if archived:
+                existing_hidden += 1
+            else:
+                existing_visible += 1
+            if len(existing_detail) < 10:
+                plan = md.get("plan") or {}
+                # 산출 지시 필터(하이라이트만·xFP·사전작업)도 목록에서 감출 수 있어 같이 준다.
+                kind = (
+                    "사전작업" if plan.get("source") == "standalone"
+                    else "하이라이트만" if plan.get("tier") == "basic"
+                    else "xFP"
+                )
+                existing_detail.append(
+                    f"{job_id} · {md.get('display_name') or '이름없음'}"
+                    f" · {existing.status} · {kind}"
+                    f" · {'아카이브(목록에 안 보임)' if archived else '목록에 보임'}"
+                )
             if _needs_youtube_fetch(existing):
                 background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
                 refetched.append(job_id)
@@ -11518,6 +11547,10 @@ def poll_fineplay_jobs(
         # 화면이 '왜 0건인지' 를 그대로 보여줄 수 있게 내역을 함께 준다.
         "queued": len(jobs),        # FinePlay 대기열이 돌려준 전체 건수
         "existing": len(jobs) - len(claimed) - taken - rejected - failed - invalid,
+        # 그중 목록에 보이는 것 / 아카이브로 숨은 것
+        "existing_visible": existing_visible,
+        "existing_hidden": existing_hidden,
+        "existing_detail": existing_detail,
         "taken": taken,
         "rejected": rejected,
         "failed": failed,
