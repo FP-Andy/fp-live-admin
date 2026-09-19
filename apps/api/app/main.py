@@ -11378,6 +11378,17 @@ def poll_fineplay_jobs(
 
     claimed: list[str] = []
     skipped = 0
+    # 왜 못 가져왔는지를 **숫자로** 남긴다.
+    #
+    # 그전에는 claim 이 터지면 조용히 `continue` 했고, 화면은 claimed 만 보고 '새 작업
+    # 없음' 을 띄웠다. 그래서 (1) 대기열이 진짜 빈 것 (2) 이미 가져온 것뿐 (3) 남이 선점
+    # (4) claim 호출이 터진 것이 **화면에 전부 똑같이** 보였다. 원인을 가리려면 매번
+    # 서버에 들어가 대기열을 직접 찍어봐야 했다.
+    taken = 0          # 409 — 다른 워커가 선점
+    rejected = 0       # 그 밖의 비-200 (400·410 등)
+    failed = 0         # claim 호출 자체가 터짐
+    invalid = 0        # analysisRequestId 가 없는 항목
+    reasons: list[str] = []
     # 새로 claim 한 것뿐 아니라, 이미 있는 잡 중 아직 못 받은 유튜브도 여기서 받기
     # 시작한다 — 이 기능이 생기기 전에 claim 된 신청은 그러지 않으면 영영 안 받는다.
     refetched: list[str] = []
@@ -11385,6 +11396,10 @@ def poll_fineplay_jobs(
     for m in jobs:
         rid = m.get("analysisRequestId")
         if rid is None:
+            # 필드 이름이 바뀌었거나 빈 항목이다. 조용히 넘기면 '대기열은 찼는데 0건' 이 된다.
+            invalid += 1
+            if len(reasons) < 5:
+                reasons.append(f"analysisRequestId 없음 (keys={sorted(m.keys())[:6]})")
             continue
         job_id = f"fp-{rid}"
         existing = db.get(HighlightJob, job_id)
@@ -11396,9 +11411,19 @@ def poll_fineplay_jobs(
             continue
         try:
             cr = client.claim(rid, pipeline_version=FINEPLAY_PIPELINE_VERSION)
-        except Exception:
+        except Exception as exc:
+            # 타임아웃·네트워크·응답 파싱 실패. 삼키면 '새 작업 없음' 과 구분이 안 된다.
+            failed += 1
+            if len(reasons) < 5:
+                reasons.append(f"{rid}: claim 호출 실패 ({type(exc).__name__})")
             continue
         if not cr.granted:
+            if cr.taken:
+                taken += 1
+            else:
+                rejected += 1
+                if len(reasons) < 5:
+                    reasons.append(f"{rid}: claim 거절 (HTTP {cr.status_code})")
             skipped += 1
             continue
         manifest = cr.manifest or m
@@ -11486,7 +11511,19 @@ def poll_fineplay_jobs(
     db.commit()
     if claimed:
         _match_response_cache.clear()
-    return {"claimed": claimed, "skipped": skipped, "refetched": refetched}
+    return {
+        "claimed": claimed,
+        "skipped": skipped,
+        "refetched": refetched,
+        # 화면이 '왜 0건인지' 를 그대로 보여줄 수 있게 내역을 함께 준다.
+        "queued": len(jobs),        # FinePlay 대기열이 돌려준 전체 건수
+        "existing": len(jobs) - len(claimed) - taken - rejected - failed - invalid,
+        "taken": taken,
+        "rejected": rejected,
+        "failed": failed,
+        "invalid": invalid,
+        "reasons": reasons,
+    }
 
 
 @app.get("/api/highlight/fineplay-jobs/{job_id}/source-url")
