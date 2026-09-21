@@ -31,12 +31,74 @@ type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal'
   | 'home_goal_only' | 'away_goal_only'
   // 농구 — 한 번에 1·2·3점이 오른다. 축구의 '골' 은 늘 1점이라 구분이 없었다.
   | 'bb_home_1' | 'bb_home_2' | 'bb_home_3'
-  | 'bb_away_1' | 'bb_away_2' | 'bb_away_3';
+  | 'bb_away_1' | 'bb_away_2' | 'bb_away_3'
+  // 구간 경계. 클립을 만들지 않고, 합본에서 그 자리에 전체화면 카드를 세운다.
+  | 'section';
 
 // before/after 는 이 태그만의 개별 앞/뒤 초. 없으면(undefined) 전역 padBefore/padAfter 를 따른다.
-type Tag = { id: string; t: number; before?: number; after?: number; kind?: TagKind };
+type Tag = {
+  id: string; t: number; before?: number; after?: number; kind?: TagKind;
+  /** 구간 태그일 때 카드에 찍힐 이름. 비어 있으면 순서대로 붙는 기본 이름을 쓴다. */
+  label?: string;
+};
 
-type SavedWork = { tags: Tag[]; padBefore: number; padAfter: number; scoreboard?: Scoreboard };
+/** 합본 사이에 끼는 전체화면 카드. 시작 카드는 맨 앞, 구간 카드는 T 자리마다. */
+/** 템플릿이 알려주는 '고칠 수 있는 항목' 하나. 좌표·글꼴은 서버만 알면 된다. */
+type CardFieldSpec = {
+  id: string;
+  label: string;
+  kind: 'text' | 'logo';
+  placeholder: string;
+  max_len: number;
+  ui_width: number;
+  /** 비었을 때 서버가 무엇으로 채우나 — '' / 'mark' / 'vs'. 안내에만 쓴다. */
+  empty: string;
+};
+
+type CardTemplateSpec = {
+  id: string;
+  name: string;
+  note: string;
+  start_fields: CardFieldSpec[];
+  section_fields: CardFieldSpec[];
+};
+
+type CardSettings = {
+  enabled: boolean;
+  /** 고른 템플릿. 대회마다 시안이 달라 여러 벌 중에서 고른다. */
+  template: string;
+  /** 시작 카드가 머무는 시간(초). */
+  introDurationSec: number;
+  /** 구간 카드가 머무는 시간(초). 읽을 거리가 달라 따로 잡는다. */
+  sectionDurationSec: number;
+  /** 템플릿별로 따로 보관한다 — 템플릿을 바꿨다 돌아와도 적어둔 게 남아 있어야 하고,
+   *  항목 id 가 겹쳐도 서로 섞이면 안 된다. {템플릿id: {항목id: 값}} */
+  values: Record<string, Record<string, string>>;
+  /** 자동으로 서는 첫 구간 카드의 이름. 비우면 종목 기본값(1쿼터·전반전). */
+  firstSectionLabel: string;
+  /** 합본 맨 끝에 파인플레이 로고 영상을 붙인다. 내장 자산이라 켜고 끄기만 한다. */
+  outro: boolean;
+};
+
+const CARD_SEC_DEFAULT = 3;
+
+/** 자동으로 서는 첫 구간 카드의 자리표. 태그가 아니므로 tags 에는 없다. */
+const AUTO_SECTION_ID = 'auto-first-section';
+
+const DEFAULT_CARDS: CardSettings = {
+  enabled: true,
+  template: 'fineplay',
+  introDurationSec: CARD_SEC_DEFAULT,
+  sectionDurationSec: CARD_SEC_DEFAULT,
+  values: {},
+  firstSectionLabel: '',
+  outro: true,
+};
+
+type SavedWork = {
+  tags: Tag[]; padBefore: number; padAfter: number;
+  scoreboard?: Scoreboard; cards?: CardSettings;
+};
 
 /** 이어붙일 원본 하나. 길이·해상도는 파일을 고른 직후 메타데이터에서 읽어 채운다. */
 type Source = { file: File; url: string; duration: number; width: number; height: number };
@@ -80,16 +142,41 @@ const BASKETBALL_TAG_KINDS: TagKindSpec[] = [
 ];
 
 /** 종류 없는 일반 태그를 찍는 키. 농구는 s 를 어웨이 2점이 쓰므로 z 로 옮겼다. */
-const PLAIN_TAG_HOTKEY: Record<'FOOTBALL' | 'BASKETBALL', { code: string; letters: string[]; label: string }> = {
-  FOOTBALL: { code: 'KeyS', letters: ['s', 'S', 'ㄴ'], label: 'S' },
-  BASKETBALL: { code: 'KeyZ', letters: ['z', 'Z', 'ㅋ'], label: 'Z' },
+// 득점 없는 장면을 찍는 키. 안내 문구와 버튼 라벨이 여기서 나온다 — 한 곳만 고치면 된다.
+// 농구가 S 를 못 쓰는 이유: 그 자리는 원정 2점이 쓴다.
+const PLAIN_TAG_HOTKEY: Record<'FOOTBALL' | 'BASKETBALL',
+  { code: string; letters: string[]; label: string; hangul: string }> = {
+  FOOTBALL: { code: 'KeyS', letters: ['s', 'S', 'ㄴ'], label: 'S', hangul: 'ㄴ' },
+  BASKETBALL: { code: 'KeyX', letters: ['x', 'X', 'ㅌ'], label: 'X', hangul: 'ㅌ' },
 };
 
-const kindsForSport = (sport: string): TagKindSpec[] =>
-  (sport === 'BASKETBALL' ? BASKETBALL_TAG_KINDS : FOOTBALL_TAG_KINDS);
+/** 구간 카드를 세우는 자리. 두 종목이 같은 키(T)를 쓴다 — 뜻이 같기 때문이다. */
+const SECTION_TAG_KIND: TagKindSpec = {
+  key: 'section', code: 'KeyT', letter: 't', hangul: 'ㅅ',
+  label: '구간 시작', badge: '구간', color: '#FF7400',
+  side: 'home', goal: false, clip: false,
+};
+
+/** N 번째 구간의 기본 이름. 그 뒤로는 연장으로 센다. 목록에서 고칠 수 있다. */
+const SECTION_NAMES: Record<'FOOTBALL' | 'BASKETBALL', string[]> = {
+  FOOTBALL: ['전반전', '후반전', '연장 전반', '연장 후반'],
+  BASKETBALL: ['1쿼터', '2쿼터', '3쿼터', '4쿼터'],
+};
+
+const sectionNameAt = (sport: string, n: number): string => {
+  const names = SECTION_NAMES[sport === 'BASKETBALL' ? 'BASKETBALL' : 'FOOTBALL'];
+  return names[n] ?? `연장 ${n - names.length + 1}`;
+};
+
+const kindsForSport = (sport: string): TagKindSpec[] => [
+  ...(sport === 'BASKETBALL' ? BASKETBALL_TAG_KINDS : FOOTBALL_TAG_KINDS),
+  SECTION_TAG_KIND,
+];
 
 /** 모든 스포츠의 종류를 합친 조회표 — 저장된 옛 태그도 읽을 수 있어야 한다. */
-const ALL_TAG_KINDS: TagKindSpec[] = [...FOOTBALL_TAG_KINDS, ...BASKETBALL_TAG_KINDS];
+const ALL_TAG_KINDS: TagKindSpec[] = [
+  ...FOOTBALL_TAG_KINDS, ...BASKETBALL_TAG_KINDS, SECTION_TAG_KIND,
+];
 
 /** 그 종류가 클립으로 만들어지는가. 점수만 반영하는 골은 아니다. */
 const makesClip = (kind?: TagKind) =>
@@ -200,6 +287,40 @@ export default function ManualHighlightPage() {
   const [speed, setSpeed] = useState(1);
   const [tags, setTags] = useState<Tag[]>([]);
   const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
+  const [cards, setCards] = useState<CardSettings>(DEFAULT_CARDS);
+  // 미리보기로 보고 있는 카드. 'start' 이거나 구간 태그의 id.
+  const [cardPreviewOf, setCardPreviewOf] = useState<string>('start');
+  const [cardPreviewUrl, setCardPreviewUrl] = useState('');
+  const [cardPreviewBusy, setCardPreviewBusy] = useState(false);
+  const [cardPreviewError, setCardPreviewError] = useState('');
+  const [cardTemplates, setCardTemplates] = useState<CardTemplateSpec[]>([]);
+
+  // 고를 수 있는 템플릿과 각 템플릿의 항목. 설정 칸을 여기서 만든다 — 항목을 화면에
+  // 박아 두면 템플릿을 하나 들일 때마다 화면을 고쳐야 한다.
+  useEffect(() => {
+    let alive = true;
+    apiJson<{ templates: CardTemplateSpec[]; default: string }>('/highlight/card-templates')
+      .then((data) => {
+        if (!alive) return;
+        setCardTemplates(data.templates);
+        // 저장된 템플릿이 사라졌으면(코드에서 뺐으면) 기본으로 돌린다.
+        setCards((prev) => (data.templates.some((t) => t.id === prev.template)
+          ? prev
+          : { ...prev, template: data.default || data.templates[0]?.id || prev.template }));
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const cardTemplate = cardTemplates.find((t) => t.id === cards.template) ?? null;
+  const cardValues = cards.values[cards.template] ?? {};
+  const setCardValue = (fieldId: string, value: string) => setCards((prev) => ({
+    ...prev,
+    values: {
+      ...prev.values,
+      [prev.template]: { ...(prev.values[prev.template] ?? {}), [fieldId]: value },
+    },
+  }));
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
   // 배치 화면에서 지금 만지고 있는 오버레이. 겹칠 때 원하는 걸 집으려면 하나만 잡혀야 한다.
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
@@ -383,6 +504,7 @@ export default function ManualHighlightPage() {
       // 팀명·색까지 같이 돌아와야 한다. 태그만 복원되고 점수판이 초기화되면
       // 같은 태그인데 결과물의 점수판이 조용히 달라진다.
       if (saved.scoreboard) setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
+      if (saved.cards) setCards({ ...DEFAULT_CARDS, ...saved.cards });
       setStatus(
         `이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore ?? 10}초 / 뒤 ${saved.padAfter ?? 3}초`,
       );
@@ -396,12 +518,12 @@ export default function ManualHighlightPage() {
     if (tags.length) {
       localStorage.setItem(
         storageKey,
-        JSON.stringify({ tags, padBefore, padAfter, scoreboard } satisfies SavedWork),
+        JSON.stringify({ tags, padBefore, padAfter, scoreboard, cards } satisfies SavedWork),
       );
     } else {
       localStorage.removeItem(storageKey);
     }
-  }, [tags, padBefore, padAfter, scoreboard, storageKey]);
+  }, [tags, padBefore, padAfter, scoreboard, cards, storageKey]);
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed;
@@ -480,10 +602,113 @@ export default function ManualHighlightPage() {
   const setTagKind = (id: string, kind?: TagKind) =>
     setTags((prev) => prev.map((p) => (p.id === id ? { ...p, kind } : p)));
 
+  const setTagLabel = (id: string, label: string) =>
+    setTags((prev) => prev.map((p) => (p.id === id ? { ...p, label } : p)));
+
+  // 구간 태그마다 '몇 번째 구간인가'와 '어느 클립 앞에 서는가'를 미리 셈해 둔다.
+  //
+  // 서버에는 초가 아니라 **클립 순번**으로 보낸다. 원본이 여러 개면 파일이 바뀔 때
+  // 초가 도로 작아져 초로는 자리를 못 정한다. 클립 번호는 업로드 때 시간순으로 1부터
+  // 매겨지므로(publish 의 index), 그 앞에 클립이 몇 개 있었는지만 세면 된다.
+  //
+  // 첫 구간(1쿼터·전반전)은 **T 없이도 자동으로** 선다. 합본은 늘
+  //
+  //     [시작 카드] [1쿼터] 클립 클립 … [2쿼터] 클립 …
+  //
+  // 이 모양이라, 첫 구간 카드는 시작 카드 바로 뒤 자리가 이미 정해져 있다. 그 한 장을
+  // 굳이 찍게 하면 빼먹었을 때 클립이 아무 구간에도 속하지 않은 채 시작된다.
+  // 그래서 4쿼터 경기는 T 를 세 번(2·3·4쿼터)만 찍으면 된다.
+  //
+  // 다만 첫 클립보다 앞에 T 를 찍었다면 그게 첫 구간이다 — 자동으로 한 장 더 세우면
+  // 같은 자리에 카드가 두 장 겹친다.
+  const sectionPlan = useMemo(() => {
+    const plan = new Map<string, { ordinal: number; label: string; beforeOrder: number }>();
+    // 첫 클립보다 앞에 찍은 T 가 있는가.
+    let taggedFirst = false;
+    for (const tag of tags) {
+      if (tag.kind === 'section') { taggedFirst = true; break; }
+      if (makesClip(tag.kind)) break;
+    }
+    const auto = !taggedFirst && tags.some((tag) => makesClip(tag.kind));
+    let clipsSoFar = 0;
+    let ordinal = auto ? 1 : 0;
+    if (auto) {
+      plan.set(AUTO_SECTION_ID, {
+        ordinal: 0,
+        label: (cards.firstSectionLabel || '').trim() || sectionNameAt(sport, 0),
+        beforeOrder: 1,
+      });
+    }
+    for (const tag of tags) {
+      if (tag.kind === 'section') {
+        plan.set(tag.id, {
+          ordinal,
+          label: (tag.label || '').trim() || sectionNameAt(sport, ordinal),
+          beforeOrder: clipsSoFar + 1,
+        });
+        ordinal += 1;
+      } else if (makesClip(tag.kind)) {
+        clipsSoFar += 1;
+      }
+    }
+    return plan;
+  }, [tags, sport, cards.firstSectionLabel]);
+
+  // 카드 미리보기는 **서버가 그린다**. 브라우저에 같은 그림을 한 벌 더 두면 시안이
+  // 바뀔 때 두 곳이 어긋나 '미리보기는 맞는데 결과물은 다른' 일이 생긴다. 합치기가
+  // 쓰는 그 함수를 그대로 호출하므로 어긋날 수가 없다.
+  //
+  // 글자를 한 자 칠 때마다 왕복하지 않도록 조금 기다렸다 부른다.
+  const previewLabel = cardPreviewOf === 'start'
+    ? ''
+    : (sectionPlan.get(cardPreviewOf)?.label ?? '');
+  useEffect(() => {
+    if (!cards.enabled) {
+      setCardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
+      return undefined;
+    }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      setCardPreviewBusy(true);
+      try {
+        const body = cardPreviewOf === 'start'
+          ? { template: cards.template, kind: 'start', width: 960, values: cardValues }
+          : { template: cards.template, kind: 'section', width: 960, label: previewLabel };
+        const res = await fetch(`${API_BASE}/highlight/card-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text() || '미리보기 실패');
+        const url = URL.createObjectURL(await res.blob());
+        if (!alive) { URL.revokeObjectURL(url); return; }
+        setCardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+        setCardPreviewError('');
+      } catch (err) {
+        if (alive) setCardPreviewError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (alive) setCardPreviewBusy(false);
+      }
+    }, 400);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [cards, cardPreviewOf, previewLabel]);
+
+  // 보고 있던 구간 태그가 지워지면 시작 카드로 돌아간다.
+  useEffect(() => {
+    if (cardPreviewOf !== 'start' && !sectionPlan.has(cardPreviewOf)) setCardPreviewOf('start');
+  }, [sectionPlan, cardPreviewOf]);
+
+  // 페이지를 떠날 때 마지막 그림을 놓아 준다.
+  useEffect(() => () => { if (cardPreviewUrl) URL.revokeObjectURL(cardPreviewUrl); },
+    [cardPreviewUrl]);
+
   // 태그마다 '그 클립이 끝난 시점'의 점수. 골 태그면 자기 자신을 포함해 올라간다 —
   // 서버가 새기는 점수와 같은 계산이라, 목록에서 미리 그대로 확인할 수 있다.
   // 실제로 클립이 되는 태그 수. '점수만 반영' 태그는 장면을 만들지 않으므로 빠진다.
   const clipTagCount = useMemo(() => tags.filter((t) => makesClip(t.kind)).length, [tags]);
+  // 실제로 들어갈 구간 카드 수 — 자동으로 서는 첫 장까지 포함한다.
+  const sectionCount = sectionPlan.size;
 
   const runningScores = useMemo(() => {
     let home = scoreboard.startHome;
@@ -723,6 +948,8 @@ export default function ManualHighlightPage() {
           source_filename: sources.length === 1
             ? sources[0].file.name
             : `${sources[0].file.name} 외 ${sources.length - 1}개`,
+          // 결과물 목록을 종목별로 가르는 근거. 만들 때 새겨두지 않으면 나중에 알 길이 없다.
+          sport,
         }),
       });
 
@@ -814,6 +1041,27 @@ export default function ManualHighlightPage() {
             pos_y: scoreboard.posY,
             // 대회 로고는 dataURL 그대로 보낸다 — 서버가 PNG 로 풀어 판 위에 얹는다.
             logo_url: scoreboard.logoUrl || '',
+          } : { enabled: false },
+          // 합본 사이에 끼는 전체화면 카드. 시작 카드는 맨 앞, 구간 카드는 T 자리마다.
+          // 카드에는 워터마크를 얹지 않는다 — 시안에 이미 로고가 들어 있어 서버가 뺀다.
+          cards: cards.enabled ? {
+            enabled: true,
+            intro_duration_sec: cards.introDurationSec,
+            section_duration_sec: cards.sectionDurationSec,
+            template: cards.template,
+            intro: {
+              // 아무것도 안 채웠으면 시작 카드를 넣지 않는다 — 배경만 몇 초 나오는 건
+              // 아무 뜻이 없다. 무엇이 '채운 것' 인지도 템플릿의 항목으로 센다.
+              enabled: (cardTemplate?.start_fields ?? [])
+                .some((spec) => (cardValues[spec.id] || '').trim()),
+              values: cardValues,
+            },
+            // 자동으로 선 첫 구간까지 포함해 자리 순서대로 보낸다.
+            outro: { enabled: cards.outro },
+            sections: [AUTO_SECTION_ID, ...tags.filter((tag) => tag.kind === 'section').map((tag) => tag.id)]
+              .map((id) => sectionPlan.get(id))
+              .filter((entry): entry is { ordinal: number; label: string; beforeOrder: number } => Boolean(entry))
+              .map((entry) => ({ before_order: entry.beforeOrder, label: entry.label })),
           } : { enabled: false },
           // 우리 로고 — 점수판과 따로 켜고 끈다. 영상 내내 같은 자리에 얹힌다.
           watermark: watermark.enabled ? {
@@ -1080,7 +1328,9 @@ export default function ManualHighlightPage() {
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
               <button style={btn} onClick={togglePlay}>{playing ? '⏸ 정지' : '▶ 재생'}</button>
               {/* onClick 에 addTag 를 그대로 물리면 MouseEvent 가 kind 로 넘어간다. 반드시 감싼다. */}
-              <button style={primaryBtn} onClick={() => addTag()}>＋ 태깅 (S / ㄴ)</button>
+              <button style={primaryBtn} onClick={() => addTag()}>
+                ＋ 태깅 ({plainHotkey.label} / {plainHotkey.hangul})
+              </button>
               {tagKinds.map((kind) => (
                 <button
                   key={kind.key}
@@ -1152,6 +1402,213 @@ export default function ManualHighlightPage() {
               ) : null}
               {tags.length ? (
                 <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => setTags([])}>전체 삭제</button>
+              ) : null}
+            </div>
+
+            {/* 카드 — 합본 사이에 끼는 전체화면 한 장.
+                [시작 카드] 클립들 [구간 카드] 클립들 … 순으로 나간다. 점수판·워터마크와
+                달리 영상 위에 얹는 게 아니라 영상 사이에 들어간다. */}
+            <div
+              style={{
+                marginBottom: 14, padding: 12, borderRadius: 8,
+                background: 'var(--surface-input, #16161a)',
+                border: '1px solid var(--border-ghost, #2c2c32)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={cards.enabled}
+                    onChange={(e) => setCards((p) => ({ ...p, enabled: e.target.checked }))}
+                  />
+                  카드 넣기
+                </label>
+                <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                  {cards.enabled
+                    ? `맨 앞에 시작 카드, T(ㅅ)로 찍은 자리마다 ${
+                      sectionCount ? `구간 카드 ${sectionCount}장` : '구간 카드'}가 들어갑니다.`
+                    : '영상 사이에 시작 정보·구간 카드를 넣습니다.'}
+                </span>
+                {cards.enabled && cardTemplates.length ? (
+                  <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    템플릿
+                    <select
+                      value={cards.template}
+                      onChange={(e) => setCards((p) => ({ ...p, template: e.target.value }))}
+                      style={{ ...smallBtn, padding: '3px 6px', fontSize: 12 }}
+                    >
+                      {cardTemplates.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {cards.enabled ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
+                    {([
+                      ['시작 카드', 'introDurationSec'],
+                      ['구간 카드', 'sectionDurationSec'],
+                    ] as const).map(([label, key]) => (
+                      <label
+                        key={key}
+                        style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 4 }}
+                      >
+                        {label}
+                        <input
+                          type="number" min={0.5} max={15} step={0.5} style={numInput}
+                          value={cards[key]}
+                          onChange={(e) => setCards((p) => ({
+                            ...p,
+                            [key]: Math.min(15, Math.max(0.5, Number(e.target.value) || CARD_SEC_DEFAULT)),
+                          }))}
+                        />
+                        초
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              {cards.enabled ? (
+                <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                  {/* 칸은 템플릿이 알려준 항목으로 만든다 — 대회마다 고칠 수 있는 게
+                      다르므로 여기 박아 두면 템플릿을 들일 때마다 화면을 고쳐야 한다. */}
+                  {(cardTemplate?.start_fields ?? []).map((spec) => (
+                    <label
+                      key={spec.id}
+                      style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}
+                    >
+                      {spec.label}
+                      {spec.kind === 'logo' ? (
+                        <>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            style={{ fontSize: 11, width: 150 }}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const reader = new FileReader();
+                              reader.onload = () => setCardValue(spec.id, String(reader.result || ''));
+                              reader.readAsDataURL(file);
+                            }}
+                          />
+                          {cardValues[spec.id] ? (
+                            <button
+                              style={{ ...smallBtn, padding: '2px 8px' }}
+                              onClick={() => setCardValue(spec.id, '')}
+                            >
+                              빼기
+                            </button>
+                          ) : null}
+                        </>
+                      ) : (
+                        <input
+                          value={cardValues[spec.id] ?? ''}
+                          placeholder={spec.placeholder}
+                          maxLength={spec.max_len}
+                          onChange={(e) => setCardValue(spec.id, e.target.value)}
+                          style={{
+                            ...numInput, width: spec.ui_width, padding: '4px 8px',
+                            fontSize: 12, textAlign: 'left',
+                          }}
+                        />
+                      )}
+                    </label>
+                  ))}
+
+                  {/* 첫 구간 이름만 템플릿 밖이다 — 카드에 그릴 값이 아니라 '몇 번째
+                      구간부터 세느냐' 라서, 템플릿이 바뀌어도 그대로 쓴다. */}
+                  {/* 마무리 카드 — 파인플레이 로고 영상. 내장이라 고를 게 없고 켜고 끄기만 한다. */}
+                  <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={cards.outro}
+                      onChange={(e) => setCards((p) => ({ ...p, outro: e.target.checked }))}
+                    />
+                    마무리 카드 (파인플레이 로고 2초)
+                  </label>
+
+                  <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    첫 구간
+                    <input
+                      value={cards.firstSectionLabel}
+                      placeholder={sectionNameAt(sport, 0)}
+                      maxLength={20}
+                      onChange={(e) => setCards((p) => ({ ...p, firstSectionLabel: e.target.value }))}
+                      style={{ ...numInput, width: 120, padding: '4px 8px', fontSize: 12, textAlign: 'left' }}
+                    />
+                  </label>
+
+                  <p style={{ width: '100%', margin: 0, fontSize: 12, color: 'var(--muted, #999)' }}>
+                    {cardTemplate?.note ? `${cardTemplate.note} ` : ''}
+                    첫 구간({sectionNameAt(sport, 0)}) 카드는 시작 카드 바로 뒤에 <strong>자동으로</strong> 들어가므로,
+                    T 는 그 다음 구간부터 찍으면 됩니다. 구간 이름은 아래 목록에서 바로 고칠 수 있습니다.
+                  </p>
+
+                  {/* 미리보기 — 서버가 합칠 때와 같은 코드로 그려 준다. */}
+                  <div style={{ width: '100%' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                      <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>미리보기</span>
+                      <button
+                        style={cardPreviewOf === 'start'
+                          ? { ...smallBtn, color: 'var(--text, #eee)', borderColor: SECTION_TAG_KIND.color }
+                          : smallBtn}
+                        onClick={() => setCardPreviewOf('start')}
+                      >
+                        시작 카드
+                      </button>
+                      {tags.filter((tag) => tag.kind === 'section').map((tag) => {
+                        const entry = sectionPlan.get(tag.id);
+                        if (!entry) return null;
+                        return (
+                          <button
+                            key={tag.id}
+                            style={cardPreviewOf === tag.id
+                              ? { ...smallBtn, color: 'var(--text, #eee)', borderColor: SECTION_TAG_KIND.color }
+                              : smallBtn}
+                            onClick={() => setCardPreviewOf(tag.id)}
+                          >
+                            {entry.label}
+                          </button>
+                        );
+                      })}
+                      {cardPreviewBusy ? (
+                        <span style={{ fontSize: 11, color: 'var(--muted, #999)' }}>그리는 중…</span>
+                      ) : null}
+                    </div>
+                    {cardPreviewError ? (
+                      <p style={{ margin: 0, fontSize: 12, color: '#f87171' }}>{cardPreviewError}</p>
+                    ) : null}
+                    {cardPreviewUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- 서버가 방금 그려 준 blob 이라 최적화 대상이 아니다
+                      <img
+                        src={cardPreviewUrl}
+                        alt="카드 미리보기"
+                        style={{
+                          width: '100%', maxWidth: 520, borderRadius: 8, display: 'block',
+                          border: '1px solid var(--border-ghost, #2c2c32)',
+                          opacity: cardPreviewBusy ? 0.6 : 1,
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: '100%', maxWidth: 520, aspectRatio: '16 / 9', borderRadius: 8,
+                          border: '1px dashed var(--border-ghost, #2c2c32)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 12, color: 'var(--muted, #999)',
+                        }}
+                      >
+                        {cardPreviewBusy ? '그리는 중…' : '미리보기를 불러오는 중'}
+                      </div>
+                    )}
+                    <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted, #999)' }}>
+                      합본에 들어갈 그림 그대로입니다 — 서버가 합칠 때 쓰는 코드로 그립니다.
+                    </p>
+                  </div>
+                </div>
               ) : null}
             </div>
 
@@ -1476,7 +1933,22 @@ export default function ManualHighlightPage() {
                           <option key={kind.key} value={kind.key}>{kind.label}</option>
                         ))}
                       </select>
-                      {scoreboard.enabled ? (
+                      {/* 구간 태그는 클립이 아니라 '카드 한 장'이다. 그 카드에 찍힐
+                          이름을 여기서 바로 고친다 — 비우면 순서대로 붙는 기본 이름. */}
+                      {tag.kind === 'section' ? (
+                        <input
+                          value={tag.label ?? ''}
+                          placeholder={sectionNameAt(sport, sectionPlan.get(tag.id)?.ordinal ?? 0)}
+                          onChange={(e) => setTagLabel(tag.id, e.target.value)}
+                          maxLength={20}
+                          title="이 자리에 세울 카드에 찍힐 이름"
+                          style={{
+                            ...numInput, width: 104, padding: '3px 6px', fontSize: 12,
+                            textAlign: 'center', borderColor: SECTION_TAG_KIND.color,
+                          }}
+                        />
+                      ) : null}
+                      {scoreboard.enabled && tag.kind !== 'section' ? (
                         <span
                           style={{
                             fontSize: 12, fontVariantNumeric: 'tabular-nums',

@@ -223,18 +223,32 @@ def render_scoreboard(
     draw.text((away_score_x, mid_y), str(max(0, int(away_score))),
               font=score_font, fill=white, anchor="mm")
 
-    # 팀명 — 점수와 겹치지 않게 남는 폭 안에서 줄인다.
+    # 팀명 — 컬러바와 점수 사이의 빈 자리 **한가운데**에 놓는다.
+    #
+    # 예전에는 홈은 왼쪽 끝(lm), 어웨이는 오른쪽 끝(rm)에 붙여 그렸다. 그래서 이름이
+    # 짧으면 점수 쪽으로만 공간이 크게 남아, 어웨이는 판 끝에 딱 붙고 점수와는 멀리
+    # 떨어져 보였다. 가운데로 놓으면 바 쪽·점수 쪽 여백이 같아진다.
+    # 폭이 모자라면 종전대로 글자를 줄여 넣는다.
+    #
+    # 좌표는 **세로 한가운데 줄 기준의 절대값**으로 잡는다. 판이 12° 기운
+    # 평행사변형이라 그 줄에서 왼쪽 끝은 off/2, 오른쪽 끝은 W - off/2 다. 기울기
+    # 보정은 바(판 가장자리) 쪽 경계에만 붙고, 점수 쪽 경계는 점수와 같은 절대
+    # 좌표라 그대로 둔다 — 양쪽에 다 더하면 이름이 점수 쪽으로 밀린다.
     name_min = round(d(TEXT_SIZE * 0.45))
-    home_zone = home_score_x - d(60) - (bar_w + d(24))
-    away_zone = (W - off - bar_w - d(24)) - (away_score_x + d(60))
+    home_left = off / 2 + bar_w + d(24)
+    home_right = home_score_x - d(60)
+    away_left = away_score_x + d(60)
+    away_right = W - off / 2 - bar_w - d(24)
+    home_zone = home_right - home_left
+    away_zone = away_right - away_left
     home_font = _fit_font(draw, home_name or "HOME", NAME_FONT,
                           text_px, name_min, max(round(d(80)), round(home_zone)))
     away_font = _fit_font(draw, away_name or "AWAY", NAME_FONT,
                           text_px, name_min, max(round(d(80)), round(away_zone)))
-    draw.text((bar_w + d(24) + off / 2, mid_y), home_name or "HOME",
-              font=home_font, fill=white, anchor="lm")
-    draw.text((W - off - bar_w - d(24) + off / 2, mid_y), away_name or "AWAY",
-              font=away_font, fill=white, anchor="rm")
+    draw.text(((home_left + home_right) / 2, mid_y), home_name or "HOME",
+              font=home_font, fill=white, anchor="mm")
+    draw.text(((away_left + away_right) / 2, mid_y), away_name or "AWAY",
+              font=away_font, fill=white, anchor="mm")
 
     canvas = Image.alpha_composite(canvas, layer)
 

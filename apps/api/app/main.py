@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import io
+import tempfile
 import json
 import math
 import re
@@ -21,7 +22,7 @@ from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header,
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import desc, inspect, text
+from sqlalchemy import desc, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 import os
@@ -54,7 +55,20 @@ from .fpa import (
 from .fpa_model_baselines import build_fpa_model_room_baseline_artifacts, canonicalize_xfp_weights_payload
 from . import record_sheet
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
+from .highlight_cards import (
+    DEFAULT_TEMPLATE_ID,
+    TEMPLATES,
+    describe as describe_card_template,
+    get_template,
+    render_card,
+)
 from .highlight_jobs import (
+    CARD_MAX_SEC,
+    CARD_MIN_SEC,
+    CARD_SEC,
+    DEFAULT_SPORT,
+    _card_logo,
+    normalize_sport,
     clips_dir,
     create_player_proxy_for_job,
     cut_clips_for_job,
@@ -9226,6 +9240,8 @@ def create_manual_job(
     clips_dir(job_id).mkdir(parents=True, exist_ok=True)
     metadata = {
         "display_name": display_name or None,
+        # 어느 종목에서 만든 결과물인가. 목록을 종목별로 가르는 유일한 근거다.
+        "sport": normalize_sport(body.get("sport")),
         "clips": [],
         "clip_info": [],
         "progress": {
@@ -9365,6 +9381,133 @@ async def upload_manual_intro(
     return {"intro_image": name, "duration": round(dur, 3)}
 
 
+@app.get("/api/highlight/card-templates")
+def list_highlight_card_templates(user: User = Depends(_require_superuser)):
+    """고를 수 있는 카드 템플릿과, 각 템플릿에서 **고칠 수 있는 항목** 목록.
+
+    설정 화면은 이 응답으로 칸을 만든다. 새 템플릿을 들여도 화면을 다시 짤 일이 없다.
+    """
+    return {
+        "templates": [describe_card_template(template) for template in TEMPLATES],
+        "default": DEFAULT_TEMPLATE_ID,
+    }
+
+
+@app.post("/api/highlight/card-preview")
+def preview_highlight_card(
+    body: dict = Body(default={}),
+    user: User = Depends(_require_superuser),
+):
+    """카드 한 장을 PNG 로 그려 돌려준다.
+
+    화면에서 다시 그리지 않고 서버가 그린다 — 브라우저에 같은 그림을 한 벌 더 두면
+    시안이 바뀔 때 두 곳이 어긋나고, 미리보기는 맞는데 결과물은 다른 일이 생긴다.
+    합치기가 쓰는 함수를 그대로 호출하므로 어긋날 수가 없다.
+    """
+    template = get_template(body.get("template"))
+    kind = "section" if str(body.get("kind") or "start") == "section" else "start"
+    try:
+        width = int(body.get("width") or 960)
+    except (TypeError, ValueError):
+        width = 960
+    # 미리보기는 화면에 작게 들어가므로 크게 그릴 이유가 없다(그릴 때마다 왕복한다).
+    width = max(320, min(1920, width))
+    design_w, design_h = template.design
+    height = max(1, round(width * design_h / design_w))
+
+    # 합치기와 같은 손질을 거친 값으로 그린다 — 미리보기만 관대하면 결과물과 달라진다.
+    cleaned = _card_settings({
+        "enabled": True, "template": template.id, "intro": {"values": body.get("values") or {}},
+    })["intro"]["values"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        if kind == "section":
+            text_fields = [f for f in template.fields("section") if f.kind == "text"]
+            values = {text_fields[0].id: str(body.get("label") or "")} if text_fields else {}
+            image = render_card(template, "section", width, height, values=values)
+        else:
+            logos = {
+                spec.id: _card_logo(workdir, spec.id, cleaned.get(spec.id))
+                for spec in template.fields("start") if spec.kind == "logo"
+            }
+            image = render_card(template, "start", width, height,
+                                values=cleaned, logos=logos)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _card_settings(cards: dict) -> dict:
+    """화면이 보낸 카드 설정을 다듬는다. 잡 메타에 통째로 들어가므로 길이를 못 박는다."""
+
+    def _logo(value: Any) -> str:
+        # dataURL 을 그대로 싣는다(점수판 로고와 같은 방식). 2.8MB 를 넘으면 버린다 —
+        # 로고 셋이 다 실릴 수 있으므로 한 장씩 제한한다.
+        text = str(value or "")
+        return text if text.startswith("data:") and len(text) <= 2_800_000 else ""
+
+    # 무엇을 받을지는 템플릿이 정한다 — 항목을 여기 박으면 템플릿을 들일 때마다 고쳐야
+    # 한다. 템플릿에 없는 값은 버린다(옛 저장본에 남은 값이 조용히 흘러들지 않게).
+    template = get_template(cards.get("template"))
+    intro_raw = cards.get("intro") if isinstance(cards.get("intro"), dict) else {}
+    raw_values = intro_raw.get("values") if isinstance(intro_raw.get("values"), dict) else intro_raw
+    values: dict[str, str] = {}
+    for spec in template.fields("start"):
+        raw = raw_values.get(spec.id)
+        values[spec.id] = (_logo(raw) if spec.kind == "logo"
+                           else str(raw or "").strip()[:spec.max_len])
+    intro = {"enabled": bool(intro_raw.get("enabled")), "values": values}
+
+    outro_raw = cards.get("outro") if isinstance(cards.get("outro"), dict) else {}
+    section_text = next((f for f in template.fields("section") if f.kind == "text"), None)
+    label_max = section_text.max_len if section_text else 20
+    sections: list[dict] = []
+    seen: set[int] = set()
+    for entry in (cards.get("sections") or [])[:20]:
+        if not isinstance(entry, dict):
+            continue
+        label = str(entry.get("label") or "").strip()[:label_max]
+        if not label:
+            continue
+        try:
+            before = int(entry.get("before_order"))
+        except (TypeError, ValueError):
+            continue
+        if before in seen:
+            continue
+        seen.add(before)
+        sections.append({"before_order": before, "label": label})
+    sections.sort(key=lambda item: item["before_order"])
+
+    def _duration(key: str) -> float:
+        # 시작 카드와 구간 카드를 따로 잡는다. 한 값만 온 옛 요청은 그 값으로 떨어진다.
+        for candidate in (cards.get(key), cards.get("duration_sec")):
+            try:
+                return max(CARD_MIN_SEC, min(CARD_MAX_SEC, float(candidate)))
+            except (TypeError, ValueError):
+                continue
+        return CARD_SEC
+
+    return {
+        "enabled": True,
+        # 어느 템플릿으로 만든 결과물인지 잡에 남긴다.
+        "template": template.id,
+        # 합본 맨 끝의 파인플레이 로고 영상. 레포에 든 고정 자산이라 켜고 끄는 것뿐이다.
+        # dict 가 아닌 값이 와도 죽지 않는다 — 잡 메타에 들어가는 값이라 관대해야 한다.
+        "outro": {"enabled": bool(outro_raw.get("enabled"))},
+        "intro_duration_sec": _duration("intro_duration_sec"),
+        "section_duration_sec": _duration("section_duration_sec"),
+        "intro": intro,
+        "sections": sections,
+    }
+
+
 @app.post("/api/highlight/manual-jobs/{job_id}/merge")
 def merge_manual_job(
     job_id: str,
@@ -9439,6 +9582,13 @@ def merge_manual_job(
             "pos_x": _wm("pos_x", 100.0, 0.0, 100.0),
             "pos_y": _wm("pos_y", 0.0, 0.0, 100.0),
         }
+        update_job(db, job_id, job_metadata=metadata)
+
+    # 합본 사이에 끼는 전체화면 카드 — 시작 카드(맨 앞) + 구간 카드(T 로 찍은 자리).
+    cards = body.get("cards") if isinstance(body, dict) else None
+    if isinstance(cards, dict) and cards.get("enabled"):
+        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        metadata["cards"] = _card_settings(cards)
         update_job(db, job_id, job_metadata=metadata)
 
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
@@ -13768,6 +13918,8 @@ def _serve_file_with_range(path: Path, request: Request, media_type: str, header
 def list_highlight_jobs(
     limit: int = Query(20, ge=1, le=100),
     mode: str | None = Query(None),
+    # 종목이 오면 그 종목 것만 준다. 농구 탭에서 축구 결과물이 보이면 안 된다.
+    sport: str | None = Query(None),
     # brief=1 이면 무거운 메타데이터(result_payload·clips)를 빼고 개수만 준다.
     # 목록 화면은 그 내용을 안 쓰는데 job 하나가 최대 22KB 라 조회가 초 단위로
     # 늘어졌다. 기존 호출부를 깨지 않으려고 옵트인으로 둔다.
@@ -13778,6 +13930,13 @@ def list_highlight_jobs(
     query = db.query(HighlightJob)
     if mode:
         query = query.filter(HighlightJob.mode == mode)
+    if sport:
+        wanted = normalize_sport(sport)
+        column = HighlightJob.job_metadata["sport"].astext
+        # 거르기는 limit 앞에서 해야 한다. 뒤에서 걸러내면 100건을 읽어 농구 3건만
+        # 남는 식으로 목록이 잘린다.
+        query = (query.filter(or_(column.is_(None), column == DEFAULT_SPORT))
+                 if wanted == DEFAULT_SPORT else query.filter(column == wanted))
     rows = query.order_by(desc(HighlightJob.created_at)).limit(limit).all()
     return [serialize_job(row, brief=brief) for row in rows]
 

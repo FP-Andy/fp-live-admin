@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { apiJson, type SessionUser } from '../../../lib/api';
+import { useSportContext } from '../../../components/SportContext';
 
 type SubTab = { href: string; label: string; roles?: SessionUser['role'][] };
 
@@ -20,7 +21,12 @@ const SUB_TABS: SubTab[] = [
   { href: '/admin/highlight/editroom', label: '편집룸', roles: ['SUPERADMIN'] },
 ];
 
+// 농구에서 여는 두 화면. 사이드바(AdminShell 의 BASKETBALL_FHL_ITEMS)와 같은 목록이어야
+// 한다 — 메뉴에는 없는 탭이 상단에 뜨면 축구 전용 화면으로 새어 들어간다.
+const BASKETBALL_SUB_TABS = new Set(['/admin/highlight/manual', '/admin/highlight/results']);
+
 export default function HighlightSubTabs() {
+  const { sport } = useSportContext();
   const pathname = usePathname() || '';
   // 세션 로드 전에는 역할 제한 없는 탭만 보여서 OPERATOR 에게 관리자 탭이 깜빡이지 않게 한다.
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
@@ -35,7 +41,9 @@ export default function HighlightSubTabs() {
       active = false;
     };
   }, []);
-  const tabs = SUB_TABS.filter((tab) => !tab.roles || (role && tab.roles.includes(role)));
+  const tabs = SUB_TABS
+    .filter((tab) => sport !== 'BASKETBALL' || BASKETBALL_SUB_TABS.has(tab.href))
+    .filter((tab) => !tab.roles || (role && tab.roles.includes(role)));
   return (
     <div
       style={{

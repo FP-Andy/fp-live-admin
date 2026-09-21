@@ -117,10 +117,17 @@ export function ScoreboardPreview(
   // 위쪽 변이 오른쪽으로 off 만큼 밀린 평행사변형.
   const slant = (x0: number, w: number) =>
     `polygon(${x0 + off}px 0, ${x0 + off + w}px 0, ${x0 + w}px 100%, ${x0}px 100%)`;
+  // 팀명 자리 — 컬러바와 점수 사이의 빈 곳 **한가운데**. 서버(scoreboard.py)가
+  // 새기는 위치와 같은 계산이라 미리보기와 결과물이 어긋나지 않는다.
+  // 판이 12° 기울어 있어 바 쪽 경계에만 off/2 를 더한다(점수 쪽은 절대 좌표).
+  const padIn = W * (24 / 928.75);     // 바에서 띄우는 여백
+  const padScore = W * (60 / 928.75);  // 점수에서 띄우는 여백
+  const homeZone: [number, number] = [off / 2 + barW + padIn, W * 0.398 - padScore];
+  const awayZone: [number, number] = [W * 0.560 + padScore, W - off / 2 - barW - padIn];
   const nameStyle: React.CSSProperties = {
-    position: 'absolute', top: '50%', transform: 'translateY(-50%)',
+    position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)',
     fontSize: `${H * 0.38}px`, fontWeight: 800, whiteSpace: 'nowrap',
-    overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: `${W * 0.26}px`,
+    overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'center',
     fontFamily: 'Paperlogy, sans-serif',
   };
   const scoreStyle: React.CSSProperties = {
@@ -152,13 +159,20 @@ export function ScoreboardPreview(
       />
       {/* 팀명 — 컬러바 안쪽으로 */}
       <div style={{ position: 'absolute', left: 0, top: rise, width: W, height: H }}>
-        <span style={{ ...nameStyle, left: `${barW + off * 0.5 + W * 0.026}px` }}>
+        <span
+          style={{
+            ...nameStyle,
+            left: `${(homeZone[0] + homeZone[1]) / 2}px`,
+            maxWidth: `${homeZone[1] - homeZone[0]}px`,
+          }}
+        >
           {config.homeName || 'HOME'}
         </span>
         <span
           style={{
             ...nameStyle,
-            right: `${barW + off * 0.5 + W * 0.026}px`, textAlign: 'right',
+            left: `${(awayZone[0] + awayZone[1]) / 2}px`,
+            maxWidth: `${awayZone[1] - awayZone[0]}px`,
           }}
         >
           {config.awayName || 'AWAY'}
@@ -202,8 +216,10 @@ export const DEFAULT_WATERMARK: Watermark = {
   // 중계 화면의 방송사 로고가 보통 이 정도다 — 경기를 가리지 않으면서 눈에는 들어오는 선.
   sizePct: 5,
   opacity: 0.55,
-  posX: 100,   // 우상단
-  posY: 0,
+  // 1920x1080 에서 로고 왼쪽 위가 (1740, 80). 서버(watermark.py)와 같은 값이라
+  // 미리보기 자리가 결과물의 자리다.
+  posX: 97.4771,
+  posY: 4.4494,
 };
 
 /** 로고 크기·자리. 서버(watermark.mark_placement)와 같은 식이라 여기 보이는 자리가 결과물의 자리다. */

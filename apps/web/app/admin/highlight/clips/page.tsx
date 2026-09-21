@@ -219,6 +219,9 @@ function PlanBadge({ plan }: { plan?: MatchRow['plan'] }) {
 export default function ClipResultsPage() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<MatchRow | null>(null);
+  // 방금 상세로 열어 본 클립. 상세는 목록을 덮으므로, 돌아왔을 때 어디까지 봤는지
+  // 표시해 둔다 — 같은 줄을 또 열거나 엉뚱한 줄을 지우는 걸 줄인다.
+  const [lastOpenedId, setLastOpenedId] = useState<string>('');
   const [clips, setClips] = useState<ClipRow[]>([]);
   const [detail, setDetail] = useState<ClipDetail | null>(null);
   // 영상 src 는 클립이 바뀔 때만 갈아끼운다 — 아래 effect 참고.
@@ -591,8 +594,12 @@ export default function ClipResultsPage() {
   // 잘못 만든 클립 되돌리기. 영상(S3)은 남긴다 — 같은 키로 다시 만들면 덮어쓰이고,
   // 안 만들면 보관비 정리('원본 삭제')가 따로 있다.
   const deleteClip = async (clip: ClipRow) => {
+    // 몇 번인지만 묻지 않는다 — 제목과 구간까지 보여 줘야 '아랫줄을 누른' 실수를
+    // 이 단계에서 알아챌 수 있다.
     if (!window.confirm(
-      `클립 ${clip.order_index + 1}번을 지울까요?\n`
+      `${clip.order_index + 1}번 클립을 지울까요?\n\n`
+      + `  ${clip.title || '(제목 없음)'}\n`
+      + `  ${fmt(clip.start_sec)} ~ ${fmt(clip.end_sec)}\n\n`
       + `태깅한 액션 ${clip.action_count}개도 같이 지워집니다. 되돌릴 수 없습니다.`,
     )) return;
     setBusy(true);
@@ -1036,10 +1043,10 @@ export default function ClipResultsPage() {
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {clips.map((c) => (
-              <div key={c.id} style={{
-                display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
-                padding: '8px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
-              }}>
+              <div
+                key={c.id}
+                className={`hl-clip-row${c.id === lastOpenedId ? ' is-opened' : ''}`}
+              >
                 <span style={{ color: 'var(--muted, #999)', width: 24 }}>{c.order_index + 1}</span>
                 {c.thumbnail_url ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -1062,9 +1069,13 @@ export default function ClipResultsPage() {
                   {fmt(c.start_sec)}~{fmt(c.end_sec)}
                 </span>
                 <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>액션 {c.action_count}개</span>
-                <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => { void openClip(c.id); void loadMotions(c.id); }}>상세</button>
+                <button
+                  style={{ ...smallBtn, marginLeft: 'auto' }}
+                  onClick={() => { setLastOpenedId(c.id); void openClip(c.id); void loadMotions(c.id); }}
+                >상세</button>
                 {role === 'SUPERADMIN' ? (
                   <button
+                    className="hl-clip-delete"
                     style={{ ...smallBtn, padding: '1px 6px', fontSize: 10, color: '#f87171', borderColor: '#f87171' }}
                     disabled={busy}
                     onClick={(e) => { e.stopPropagation(); void deleteClip(c); }}
