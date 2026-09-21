@@ -97,8 +97,14 @@ const makesClip = (kind?: TagKind) =>
 const KIND_BY_KEY = new Map(ALL_TAG_KINDS.map((k) => [k.key, k]));
 
 /** 이 태그가 점수판을 몇 점 올리나. 득점 태그가 아니면 0. */
-const pointsOf = (kind?: TagKind): { side: 'home' | 'away'; points: number } | null => {
-  const spec = KIND_BY_KEY.get(kind as TagKind);
+const pointsOf = (
+  kind: TagKind | undefined,
+  allowed: TagKindSpec[] = ALL_TAG_KINDS,
+): { side: 'home' | 'away'; points: number } | null => {
+  // **지금 스포츠의 종류만 점수를 올린다.** 옛 저장본이나 키가 섞인 경우에 다른
+  // 스포츠의 태그가 들어와도 점수판을 흔들지 않는다 — 배지는 KIND_BY_KEY 로 그려
+  // 주되(무엇이었는지 보여야 고칠 수 있다), 점수에는 안 넣는다.
+  const spec = allowed.find((k) => k.key === kind);
   if (!spec?.goal) return null;
   return { side: spec.side, points: spec.points ?? 1 };
 };
@@ -269,11 +275,15 @@ export default function ManualHighlightPage() {
 
   // 자동저장 키는 고른 원본 전체를 특정한다 (이름+크기, 순서 포함).
   // 순서가 다르면 태그 좌표의 의미가 달라지므로 다른 작업으로 봐야 한다.
+  //
+  // **스포츠도 키에 넣는다.** 같은 영상으로 축구와 농구를 오가면 태그가 섞인다 —
+  // 농구로 찍은 3점 태그가 축구 화면에 남아 점수판이 한 번에 3점씩 오른다. 종류
+  // 선택칸에는 없는 값이라 화면으로는 고칠 수도 없다. 키를 나누면 애초에 안 섞인다.
   const storageKey = useMemo(
     () => (sources.length
-      ? `${AUTOSAVE_PREFIX}${sources.map((src) => `${src.file.name}:${src.file.size}`).join('|')}`
+      ? `${AUTOSAVE_PREFIX}${sport}:${sources.map((src) => `${src.file.name}:${src.file.size}`).join('|')}`
       : ''),
-    [sources],
+    [sources, sport],
   );
 
   const revoke = useCallback(() => {
@@ -481,12 +491,12 @@ export default function ManualHighlightPage() {
     return tags.map((tag) => {
       // 클립을 만들지 않는 골도 점수는 올린다 — 그게 이 태그의 존재 이유다.
       // 올리는 폭은 태그가 들고 있다(농구 1·2·3점). 축구의 골은 1 이다.
-      const scored = pointsOf(tag.kind);
+      const scored = pointsOf(tag.kind, tagKinds);
       if (scored?.side === 'home') home += scored.points;
       else if (scored?.side === 'away') away += scored.points;
       return [home, away] as [number, number];
     });
-  }, [tags, scoreboard.startHome, scoreboard.startAway]);
+  }, [tags, scoreboard.startHome, scoreboard.startAway, tagKinds]);
 
   // 합치기는 '첫 클립'의 규격에 모든 조각을 맞춘다(highlight_jobs 의 norm_v). 첫 클립은
   // 가장 이른 태그가 있는 원본에서 나오므로, 미리보기도 그 원본의 해상도로 그려야 맞다.
