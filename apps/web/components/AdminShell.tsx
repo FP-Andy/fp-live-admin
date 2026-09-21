@@ -129,6 +129,25 @@ const FHL_ITEMS: NavItem[] = [
   },
 ];
 
+// 농구 하이라이트는 수동 태깅으로만 만든다. AI+Log·FinePlay 연동·중계 오버레이는
+// 축구 경기 데이터(이벤트·선수단·클립 작업)를 전제로 하므로 농구에서는 열지 않는다.
+const BASKETBALL_FHL_ITEMS: NavItem[] = [
+  {
+    href: '/admin/highlight/manual',
+    label: '수동 태깅',
+    icon: '▶',
+    match: (pathname) => pathname.startsWith('/admin/highlight/manual'),
+    roles: ['SUPERADMIN'],
+  },
+  {
+    href: '/admin/highlight/results',
+    label: '수동 결과물',
+    icon: '✓',
+    match: (pathname) => pathname.startsWith('/admin/highlight/results'),
+    roles: ['SUPERADMIN'],
+  },
+];
+
 const FPA_ITEMS: NavItem[] = [
   {
     href: '/admin/fpa/live',
@@ -243,6 +262,12 @@ function getPageMeta(pathname: string) {
     if (pathname.startsWith('/admin/highlight/completed')) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Completed' };
     }
+    if (pathname.startsWith('/admin/highlight/manual')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '수동 태깅' };
+    }
+    if (pathname.startsWith('/admin/highlight/results')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '수동 결과물' };
+    }
     if (pathname.startsWith('/admin/highlight/clips')) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '클립 결과' };
     }
@@ -318,7 +343,11 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
   const visibleSections = NAV_SECTIONS.map((section) => {
     let items = section.items;
     if (sport === 'BASKETBALL') {
-      items = section.id === 'FLA' ? BASKETBALL_FLA_ITEMS : [];
+      items = section.id === 'FLA'
+        ? BASKETBALL_FLA_ITEMS
+        : section.id === 'FHL'
+          ? BASKETBALL_FHL_ITEMS.filter((item) => !item.roles || (user?.role && item.roles.includes(user.role)))
+          : [];
     } else if (sport === 'FUTSAL') {
       items = section.id === 'FLA' ? FUTSAL_FLA_ITEMS : section.id === 'FPA' ? FPA_ITEMS : section.id === 'FCM' ? FUTSAL_FCM_ITEMS : [];
     } else if (section.id === 'FLA' && user?.role !== 'SUPERADMIN') {

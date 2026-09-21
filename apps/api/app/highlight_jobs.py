@@ -29,6 +29,7 @@ from .highlight_produce_job import ProduceSpec, run_produce
 from .highlight_storage import default_storage
 from .highlight_storage import output_prefix as storage_output_prefix
 from .scene_motion import attach_scene_motions
+from .highlight_cards import get_template, render_card, render_card_file
 from .scoreboard import board_placement, render_scoreboard_file
 from .watermark import (
     DEFAULT_OPACITY as WM_DEFAULT_OPACITY,
@@ -45,9 +46,37 @@ DELETE_UPLOAD_AFTER_SUCCESS = os.getenv("HIGHLIGHT_DELETE_UPLOAD_AFTER_SUCCESS",
 # 인트로 사진을 앞에 보여주는 기본 길이(초)와 인트로 앞뒤 페이드 길이(초).
 INTRO_SEC = float(os.getenv("HIGHLIGHT_INTRO_SEC", "1.8"))
 INTRO_FADE_SEC = float(os.getenv("HIGHLIGHT_INTRO_FADE_SEC", "0.3"))
-# 클립과 클립 사이 크로스페이드(디졸브) 길이. 겹치는 만큼 전체 길이가 줄고,
-# 이보다 짧은 클립이 있는 경계에서는 그 경계만 페이드를 자동으로 줄이거나 하드컷한다.
-XFADE_SEC = float(os.getenv("HIGHLIGHT_XFADE_SEC", "0.4"))
+# 시작·구간 카드 한 장이 머무는 시간. 화면에서 고칠 수 있고, 이 값이 기본이다.
+CARD_SEC = float(os.getenv("HIGHLIGHT_CARD_SEC", "3.0"))
+CARD_MIN_SEC = 0.5
+CARD_MAX_SEC = 15.0
+# 클립과 클립 사이 크로스페이드(디졸브) 길이.
+#
+# **0 = 하드컷**(지금 기본값). 장면이 바로바로 넘어가는 편이 낫다는 판단이다.
+# 되살리려면 env `HIGHLIGHT_XFADE_SEC` 에 초를 넣으면 된다 — 0.4 가 종전 값이다.
+# 그때는 겹치는 만큼 전체 길이가 줄고, 짧은 클립이 있는 경계는 그 경계만 페이드를
+# 자동으로 줄이거나 하드컷한다(양쪽 클립의 1/3 을 넘지 않게).
+XFADE_SEC = float(os.getenv("HIGHLIGHT_XFADE_SEC", "0"))
+# 카드가 맞닿는 이음매의 디졸브 길이. 클립끼리는 하드컷이어도 카드는 부드럽게
+# 들어오고 나간다 — 장면이 아니라 '구간이 바뀐다'는 신호라서 툭 끊기면 어색하다.
+#   시작카드 —페이드— 1쿼터 —페이드— 클립 클립 … —페이드— 2쿼터 —페이드— 클립 …
+CARD_FADE_SEC = float(os.getenv("HIGHLIGHT_CARD_FADE_SEC", "0.4"))
+# 합본 맨 끝에 붙는 마무리 영상(파인플레이 로고). 레포에 들어 있는 고정 자산이라
+# 화면에서 고를 것은 켜고 끄는 것뿐이다.
+OUTRO_ASSET = "outro-fineplay.mp4"
+
+
+def brand_asset(name: str) -> Path | None:
+    """도커(/app/assets/brand)와 로컬 실행(<repo>/assets/brand) 양쪽을 본다."""
+    mounted = Path("/app/assets/brand") / name
+    if mounted.exists():
+        return mounted
+    module_path = Path(__file__).resolve()
+    if len(module_path.parents) > 3:
+        local = module_path.parents[3] / "assets" / "brand" / name
+        if local.exists():
+            return local
+    return None
 # 합치기 재인코딩 x264 프리셋. 앱 서버(t3.medium, 2vCPU 버스터블)가 약해서
 # ultrafast 로 CPU 부담을 줄여 크레딧 소진 전에 끝낸다. 화질은 crf 로 고정되고
 # 파일만 조금 커진다. veryfast 로 되돌리려면 env 로 바꾼다.
@@ -123,6 +152,20 @@ def update_job(db: Session, job_id: str, **kwargs: object) -> HighlightJob | Non
 HEAVY_METADATA_KEYS = ("result_payload", "clips")
 
 
+SPORTS = ("FOOTBALL", "BASKETBALL", "FUTSAL")
+DEFAULT_SPORT = "FOOTBALL"
+
+
+def normalize_sport(value: Any) -> str:
+    """모르는 값은 축구로 본다.
+
+    sport 를 붙이기 전에 만든 잡에는 이 칸이 아예 없는데, 그때는 축구밖에 없었다.
+    그러니 '없음'과 'FOOTBALL' 은 같은 뜻이고, 목록에서 조용히 사라지면 안 된다.
+    """
+    text = str(value or "").strip().upper()
+    return text if text in SPORTS else DEFAULT_SPORT
+
+
 def serialize_job(job: HighlightJob, brief: bool = False) -> dict[str, Any]:
     metadata = job.job_metadata if isinstance(job.job_metadata, dict) else {}
     progress = metadata.get("progress")
@@ -158,6 +201,8 @@ def serialize_job(job: HighlightJob, brief: bool = False) -> dict[str, Any]:
         "player_name": metadata.get("player_name"),
         "uniform_color": metadata.get("uniform_color"),
         "has_reference_image": bool(metadata.get("reference_image_path")),
+        # 이 결과물이 어느 종목에서 나왔나. 옛 잡은 값이 없어 축구로 읽힌다.
+        "sport": normalize_sport(metadata.get("sport")),
         "source_type": metadata.get("source_type"),
         "source_url": metadata.get("source_url"),
         "export_path": job.export_path,
@@ -846,7 +891,7 @@ def _ffmpeg_failure_detail(ex: subprocess.CalledProcessError) -> str:
     return (" / ".join((picked or lines)[-3:]) or detail)[-300:]
 
 
-def _decode_logo(data_url: Any, out_dir: Path) -> Path | None:
+def _decode_logo(data_url: Any, out_dir: Path, name: str = "logo.png") -> Path | None:
     """점수판 대회 로고 dataURL → PNG 파일. 없거나 못 읽으면 None(로고 없이 그린다).
 
     화면에서 파일을 골라 dataURL 로 실어 보내므로 서버에 따로 업로드 API 를 두지
@@ -862,7 +907,7 @@ def _decode_logo(data_url: Any, out_dir: Path) -> Path | None:
     if not payload:
         return None
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "logo.png"
+    path = out_dir / name
     try:
         # 어떤 형식으로 올렸든 PNG(알파 보존)로 통일해 둔다.
         with Image.open(io.BytesIO(payload)) as img:
@@ -870,6 +915,14 @@ def _decode_logo(data_url: Any, out_dir: Path) -> Path | None:
     except Exception:
         return None
     return path
+
+
+def _card_logo(out_dir: Path, slot: str, data_url: Any) -> Path | None:
+    """시작 카드에 들어가는 로고 한 장(홈·원정·가운데). 자리마다 파일을 따로 둔다.
+
+    배경 제거(누끼)는 하지 않는다 — 시안 작업 때 피그마에서 직접 따는 쪽이 정확하다.
+    """
+    return _decode_logo(data_url, out_dir, f"logo_{slot}.png")
 
 
 def _scoreboard_plan(
@@ -985,6 +1038,55 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             update_job(db, job_id, status="error", error_message="유효한 클립이 없습니다.")
             return
 
+        # ── 카드 ─────────────────────────────────────────────────────────
+        # 합본은 [시작 카드] → 클립들 → [구간 카드] → 클립들 … 순으로 나간다.
+        # 구간 카드는 화면에서 T 로 찍은 자리마다 하나씩, '그 다음에 올 클립' 앞에
+        # 들어간다. 어느 클립 앞인지는 업로드 순번(order)으로 온다 — 초 단위로 다시
+        # 계산하면 원본이 여러 개일 때(파일이 바뀌면 초가 도로 작아진다) 어긋난다.
+        cards_cfg = metadata.get("cards") if isinstance(metadata.get("cards"), dict) else {}
+        cards_on = bool(cards_cfg.get("enabled"))
+
+        def _card_dur(key: str) -> float:
+            # 시작 카드와 구간 카드는 머무는 시간을 따로 잡는다 — 읽을 거리가 다르다.
+            # 옛 잡은 한 값(duration_sec)만 들고 있어 그걸로 떨어진다.
+            for candidate in (cards_cfg.get(key), cards_cfg.get("duration_sec")):
+                try:
+                    return max(CARD_MIN_SEC, min(CARD_MAX_SEC, float(candidate)))
+                except (TypeError, ValueError):
+                    continue
+            return CARD_SEC
+
+        intro_card_dur = _card_dur("intro_duration_sec")
+        section_card_dur = _card_dur("section_duration_sec")
+
+        clip_orders = [m.get("order") for m in used_meta]
+
+        def _slot_for(before_order) -> int | None:
+            """그 순번보다 앞서지 않는 첫 클립의 자리. 뒤에 클립이 없으면 None."""
+            try:
+                want = int(before_order)
+            except (TypeError, ValueError):
+                return None
+            for i, order in enumerate(clip_orders):
+                if order is None or int(order) >= want:
+                    return i
+            return None
+
+        # 자리 → 거기 들어갈 구간 카드 이름. 한 자리에 둘이 몰리면 앞엣것만 쓴다
+        # (같은 클립 앞에 카드를 두 장 세울 이유가 없다).
+        section_at: dict[int, str] = {}
+        if cards_on:
+            for entry in (cards_cfg.get("sections") or []):
+                if not isinstance(entry, dict):
+                    continue
+                label = str(entry.get("label") or "").strip()
+                if not label:
+                    continue
+                slot = _slot_for(entry.get("before_order"))
+                if slot is None or slot in section_at:
+                    continue
+                section_at[slot] = label
+
         # 인트로 이미지가 있으면 클립 앞에 정지영상(무음) 세그먼트로 붙인다.
         intro_name = str(metadata.get("intro_image") or "").strip()
         intro_path = clips_dir(job_id) / intro_name if intro_name else None
@@ -1035,18 +1137,9 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         lengths = [c[2] for c in clips_to_use]
         has_sound = [_has_audio(c[0]) for c in clips_to_use]
 
-        # 경계마다 걸 크로스페이드 길이. 양쪽 클립의 1/3 을 넘지 않게 두면 어떤 클립도
-        # 앞뒤 페이드를 뺀 본체가 반드시 남는다(본체 >= 길이/3). 너무 짧으면 하드컷.
-        fades: list[float] = []
-        for k in range(used - 1):
-            d = min(XFADE_SEC, lengths[k] / 3.0, lengths[k + 1] / 3.0)
-            fades.append(0.0 if d <= 0.02 else d)
-
-        def head_fade(k: int) -> float:
-            return fades[k - 1] if k > 0 else 0.0
-
-        def tail_fade(k: int) -> float:
-            return fades[k] if k < used - 1 else 0.0
+        # 이음매마다 걸 페이드 길이는 조각을 다 늘어놓은 뒤에 정한다(아래 joins).
+        # 카드도 클립과 같은 조각이라, 페이드를 '클립 k 와 k+1 사이' 로 못 박으면
+        # 카드가 끼어들 자리가 없기 때문이다.
 
         # ── 점수판 ────────────────────────────────────────────────────────
         # 골 태그는 '태깅한 그 순간' 점수를 올린다. 조각(본체/전환)마다 그 안에서
@@ -1099,14 +1192,18 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 logger.warning("워터마크를 그리지 못했습니다 (job %s)", job_id)
                 wm_path = None
 
-        def mark_args(base: str, idx: int) -> tuple[list[str], list[str], str, int]:
-            """로고 한 겹. 점수판 위에 얹는다(점수판을 가리지 않는 자리에 두는 게 전제)."""
+        def mark_args(base: str, idx: int, tag: str = "wm") -> tuple[list[str], list[str], str, int]:
+            """로고 한 겹. 점수판 위에 얹는다(점수판을 가리지 않는 자리에 두는 게 전제).
+
+            tag 는 필터 그래프 안에서 쓸 이름이다. 전환 조각은 양쪽을 각각 꾸민 뒤
+            섞으므로 한 그래프에서 두 번 부를 수 있고, 그때 이름이 겹치면 안 된다.
+            """
             if wm_path is None:
                 return [], [], base, idx
             return (
                 ["-i", str(wm_path)],
-                [f"[{base}][{idx}:v]overlay={wm_x}:{wm_y}[wm]"],
-                "wm",
+                [f"[{base}][{idx}:v]overlay={wm_x}:{wm_y}[{tag}]"],
+                tag,
                 idx + 1,
             )
 
@@ -1147,6 +1244,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
 
         def overlay_args(
             base: str, segs: list[tuple[tuple[int, int], float, float]], idx: int,
+            tag: str = "sb",
         ) -> tuple[list[str], list[str], str, int]:
             """점수판 입력·필터 체인. (추가 입력, 추가 체인, 최종 영상 라벨, 다음 입력번호)
 
@@ -1162,7 +1260,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             last = len(segs) - 1
             for i, (score, a, b) in enumerate(segs):
                 ins += ["-i", str(sb_image(score))]
-                label = f"sb{i}"
+                label = f"{tag}{i}"
                 if last == 0:
                     enable = ""
                 elif i == 0:
@@ -1188,9 +1286,98 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             return ["-f", "lavfi", "-t", f"{dur + 1.0:.3f}",
                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
 
+        # 카드 PNG 는 미리 한 번에 굽는다. 같은 이름의 구간이 여러 번 나와도 파일은
+        # 하나만 만들면 된다.
+        card_dir = job_dir(job_id) / "cards"
+        intro_card: Path | None = None
+        section_card: dict[int, Path] = {}
+        if cards_on:
+            # 어떤 항목을 어디에 그릴지는 템플릿이 들고 있다. 여기서는 값만 건넨다.
+            # 모르는 템플릿 id 는 내장으로 떨어진다 — 결과물은 나와야 한다.
+            template = get_template(cards_cfg.get("template"))
+            intro_cfg = cards_cfg.get("intro")
+            if isinstance(intro_cfg, dict) and intro_cfg.get("enabled"):
+                values = intro_cfg.get("values") if isinstance(intro_cfg.get("values"), dict) else {}
+                logos = {
+                    spec.id: _card_logo(card_dir, spec.id, values.get(spec.id))
+                    for spec in template.fields("start") if spec.kind == "logo"
+                }
+                intro_card = render_card_file(card_dir / "start.png", render_card(
+                    template, "start", iw, ih, values=values, logos=logos,
+                ))
+            for slot, label in section_at.items():
+                # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
+                text_fields = [f for f in template.fields("section") if f.kind == "text"]
+                values = {text_fields[0].id: label} if text_fields else {}
+                section_card[slot] = render_card_file(
+                    card_dir / f"section_{slot:03d}.png",
+                    render_card(template, "section", iw, ih, values=values),
+                )
+
+        # ── 합본에 놓일 조각들을 먼저 늘어놓는다 ─────────────────────────
+        # 카드(정지화면)와 클립을 **같은 종류의 조각**으로 본다. 그래야 이음매마다
+        # 페이드를 따로 정할 수 있다 — 클립끼리는 하드컷, 카드가 맞닿는 곳은 디졸브.
+        #
+        #   ("still", PNG, 길이, 워터마크여부, 이름)  또는  ("clip", 클립번호)
+        timeline: list[tuple] = []
+        if intro_card is not None:
+            # 카드에는 워터마크를 얹지 않는다 — 시안에 이미 'Fine Play' 가 들어 있다.
+            timeline.append(("still", intro_card, intro_card_dur, False, "start"))
+        if has_intro:
+            timeline.append(("still", intro_path, intro_dur, True, "intro"))
+        for k in range(used):
+            card = section_card.get(k)
+            if card is not None:
+                timeline.append(("still", card, section_card_dur, False, f"sec{k:03d}"))
+            timeline.append(("clip", k))
+
+        # 마무리 영상 — 켜져 있고 파일이 있을 때만. 길이는 파일이 정한다(설정 없음).
+        outro: tuple[Path, float, bool] | None = None
+        if cards_on and (cards_cfg.get("outro") or {}).get("enabled"):
+            path = brand_asset(OUTRO_ASSET)
+            if path is None:
+                logger.warning("마무리 영상 자산을 찾지 못했습니다 (%s)", OUTRO_ASSET)
+            else:
+                try:
+                    length = float(subprocess.run(
+                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                         "-of", "csv=p=0", str(path)],
+                        check=True, capture_output=True, text=True,
+                    ).stdout.strip())
+                except (subprocess.CalledProcessError, ValueError):
+                    logger.warning("마무리 영상 길이를 읽지 못했습니다 (%s)", path)
+                else:
+                    if length > 0:
+                        outro = (path, length, _has_audio(path))
+        if outro is not None:
+            timeline.append(("video", outro[0], outro[1], outro[2]))
+
+        def seg_len(item: tuple) -> float:
+            # 정지화면·영상은 자기 길이를 들고 있고, 클립은 잘린 구간 길이를 쓴다.
+            return lengths[item[1]] if item[0] == "clip" else item[2]
+
+        # 이음매마다 페이드 길이. 양쪽 조각의 1/3 을 넘지 않게 둬서, 어떤 조각도
+        # 앞뒤 페이드를 뺀 본체가 반드시 남게 한다.
+        joins: list[float] = []
+        for i in range(len(timeline) - 1):
+            left, right = timeline[i], timeline[i + 1]
+            # 클립끼리만 하드컷. 한쪽이라도 카드·마무리 영상이면 디졸브로 잇는다.
+            both_clips = left[0] == "clip" and right[0] == "clip"
+            want = XFADE_SEC if both_clips else CARD_FADE_SEC
+            d = min(want, seg_len(left) / 3.0, seg_len(right) / 3.0)
+            joins.append(0.0 if d <= 0.02 else d)
+
+        def head_d(i: int) -> float:
+            return joins[i - 1] if i > 0 else 0.0
+
+        def tail_d(i: int) -> float:
+            return joins[i] if i < len(timeline) - 1 else 0.0
+
         pieces: list[Path] = []
         rendered = 0
-        total_pieces = used + len(fades) + (1 if has_intro else 0)
+        # 페이드가 0 인 이음매는 전환 조각을 만들지 않는다 — 실제로 구울 조각만 센다.
+        # (이음매 수를 그대로 쓰면 하드컷일 때 진행률이 절반에서 멈춘 것처럼 보인다.)
+        total_pieces = len(timeline) + sum(1 for d in joins if d > 0)
 
         def bump_progress() -> None:
             nonlocal rendered
@@ -1203,126 +1390,183 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 ),
             }))
 
-        try:
-            # 인트로 사진 — 종전처럼 하드컷으로 맨 앞에 붙는다(크로스페이드는 클립끼리만).
-            if has_intro:
-                out = work / "p000_intro.mp4"
-                intro_wm_ins, intro_wm_chains, intro_label, _ = mark_args("v", 2)
-                subprocess.run([
-                    "ffmpeg", "-y", "-nostats",
-                    "-loop", "1", "-t", f"{intro_dur:.3f}", "-i", str(intro_path),
-                    *silence(intro_dur),
-                    *intro_wm_ins,
-                    "-filter_complex",
-                    ";".join([
-                        f"[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
-                        f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p,"
-                        f"fade=t=in:st=0:d={INTRO_FADE_SEC:.3f}[v]",
-                        *intro_wm_chains,
-                    ]),
-                    "-map", f"[{intro_label}]", "-map", "1:a", "-shortest", *encode, str(out),
-                ], check=True, capture_output=True, text=True)
-                pieces.append(out)
-                bump_progress()
+        def still_input(path: Path, dur: float) -> list[str]:
+            return ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(path)]
 
-            for k in range(used):
-                _, offset, length = clips_to_use[k]
-                goal_ref = sb_goal[k] if sb else 0.0
+        norm_still = (f"scale={iw}:{ih}:force_original_aspect_ratio=decrease,"
+                      f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={ifps},format=yuv420p")
+
+        def clip_overlays(k: int, base: str, at: float, dur: float, idx: int, tag: str):
+            """클립 한 쪽에 점수판·로고를 얹는다. at 은 그 조각이 클립 안 어디서 시작하나.
+
+            전환 조각에서도 이걸 **섞기 전에** 각 클립 쪽에만 건다. 그래야 카드와
+            디졸브될 때 점수판이 카드 위에 뜨지 않고 클립과 함께 스며든다.
+            """
+            segs = make_segments(
+                [0.0, dur, sb_goal[k] - at],
+                lambda tau: score_at(k, tau + at),
+            ) if sb else []
+            sb_ins, sb_chains, label, idx = overlay_args(base, segs, idx, tag=f"sb{tag}")
+            wm_ins, wm_chains, label, idx = mark_args(label, idx, tag=f"wm{tag}")
+            return sb_ins + wm_ins, sb_chains + wm_chains, label, idx
+
+        AFMT = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+
+        try:
+            for i, item in enumerate(timeline):
+                head, tail = head_d(i), tail_d(i)
+
                 # ── 본체: 앞뒤 페이드 몫을 뺀 구간 ──
-                body_start = offset + head_fade(k)
-                body_dur = length - head_fade(k) - tail_fade(k)
-                out = work / f"p{len(pieces):03d}_body{k:03d}.mp4"
-                args = ["ffmpeg", "-y", "-nostats", *clip_input(k, body_start, body_dur)]
-                next_input = 1
-                if has_sound[k]:
-                    audio_map = "0:a"
+                if item[0] == "still":
+                    _, png, full, watermark, name = item
+                    dur = full - head - tail
+                    out = work / f"p{len(pieces):03d}_card_{name}.mp4"
+                    args = ["ffmpeg", "-y", "-nostats", *still_input(png, dur), *silence(dur)]
+                    idx = 2
+                    # 맨 앞 조각만 검은 화면에서 밝아진다. 뒤쪽 카드는 앞 조각과
+                    # 디졸브로 이어지므로 여기서 또 페이드하면 두 번 겹친다.
+                    fade_in = f",fade=t=in:st=0:d={INTRO_FADE_SEC:.3f}" if i == 0 else ""
+                    chains = [f"[0:v]{norm_still}{fade_in}[v0]"]
+                    if watermark:
+                        wm_ins, wm_chains, vlabel, idx = mark_args("v0", idx)
+                        args += wm_ins
+                        chains += wm_chains
+                    else:
+                        vlabel = "v0"
+                    args += [
+                        "-filter_complex", ";".join(chains),
+                        "-map", f"[{vlabel}]", "-map", "1:a", "-shortest", *encode, str(out),
+                    ]
+                elif item[0] == "video":
+                    # 마무리 영상 — 점수판도 워터마크도 얹지 않는다(카드와 같다).
+                    _, src, full, snd = item
+                    dur = full - head - tail
+                    out = work / f"p{len(pieces):03d}_outro.mp4"
+                    args = ["ffmpeg", "-y", "-nostats",
+                            "-ss", f"{head:.3f}", "-t", f"{dur:.3f}", "-i", str(src)]
+                    idx = 1
+                    if snd:
+                        audio_map = "0:a"
+                    else:
+                        args += silence(dur)
+                        audio_map = f"{idx}:a"
+                        idx += 1
+                    args += [
+                        "-filter_complex", f"[0:v]{norm_v}[v0]",
+                        "-map", "[v0]", "-map", audio_map,
+                        *([] if snd else ["-shortest"]),
+                        *encode, str(out),
+                    ]
                 else:
-                    args += silence(body_dur)
-                    audio_map = f"{next_input}:a"
-                    next_input += 1
-                # 본체는 클립 안 [head_fade, length-tail_fade] 구간. 조각 시간 0 이
-                # 클립 시간 head_fade 에 해당하므로 골 시점도 그만큼 당겨서 본다.
-                chains = [f"[0:v]{norm_v}[v0]"]
-                segs = make_segments(
-                    [0.0, body_dur, goal_ref - head_fade(k)],
-                    lambda tau: score_at(k, tau + head_fade(k)),
-                ) if sb else []
-                sb_ins, sb_chains, vlabel, next_input = overlay_args("v0", segs, next_input)
-                wm_ins, wm_chains, vlabel, next_input = mark_args(vlabel, next_input)
-                args += sb_ins + wm_ins
-                args += [
-                    "-filter_complex", ";".join(chains + sb_chains + wm_chains),
-                    "-map", f"[{vlabel}]", "-map", audio_map,
-                    *([] if has_sound[k] else ["-shortest"]),
-                    *encode, str(out),
-                ]
+                    k = item[1]
+                    _, offset, length = clips_to_use[k]
+                    dur = length - head - tail
+                    out = work / f"p{len(pieces):03d}_body{k:03d}.mp4"
+                    args = ["ffmpeg", "-y", "-nostats", *clip_input(k, offset + head, dur)]
+                    idx = 1
+                    if has_sound[k]:
+                        audio_map = "0:a"
+                    else:
+                        args += silence(dur)
+                        audio_map = f"{idx}:a"
+                        idx += 1
+                    chains = [f"[0:v]{norm_v}[v0]"]
+                    # 본체는 클립 안 [head, length-tail] 구간이므로 골 시점도 그만큼 당겨 본다.
+                    ins, over, vlabel, idx = clip_overlays(k, "v0", head, dur, idx, "b")
+                    args += ins
+                    chains += over
+                    args += [
+                        "-filter_complex", ";".join(chains),
+                        "-map", f"[{vlabel}]", "-map", audio_map,
+                        *([] if has_sound[k] else ["-shortest"]),
+                        *encode, str(out),
+                    ]
                 subprocess.run(args, check=True, capture_output=True, text=True)
                 pieces.append(out)
                 bump_progress()
 
-                # ── 전환: 이 클립 꼬리 + 다음 클립 머리 ──
-                d = tail_fade(k)
+                # ── 전환: 이 조각 꼬리 + 다음 조각 머리를 디졸브 ──
+                d = tail
                 if d <= 0:
                     continue
-                nxt = k + 1
-                out = work / f"p{len(pieces):03d}_x{k:03d}.mp4"
-                args = [
-                    "ffmpeg", "-y", "-nostats",
-                    *clip_input(k, offset + length - d, d),
-                    *clip_input(nxt, clips_to_use[nxt][1], d),
-                ]
-                chains = [
-                    f"[0:v]{norm_v}[xa]",
-                    f"[1:v]{norm_v}[xb]",
-                    f"[xa][xb]xfade=transition=fade:duration={d:.3f}:offset=0[v0]",
-                ]
-                # 무음 클립이 섞이면 acrossfade 를 걸 스트림이 없다. 그쪽만 무음을 만들어 준다.
-                a_left, a_right = "0:a", "1:a"
-                extra = 2
-                if not has_sound[k]:
-                    args += silence(d)
-                    a_left = f"{extra}:a"
-                    extra += 1
-                if not has_sound[nxt]:
-                    args += silence(d)
-                    a_right = f"{extra}:a"
-                    extra += 1
+                nxt = timeline[i + 1]
+                out = work / f"p{len(pieces):03d}_x{i:03d}.mp4"
+                args = ["ffmpeg", "-y", "-nostats"]
+                chains: list[str] = []
+                idx = 0
+                sides = []
+                for side, seg, tag in (("L", item, "l"), ("R", nxt, "r")):
+                    if seg[0] == "still":
+                        args += still_input(seg[1], d)
+                        chains.append(f"[{idx}:v]{norm_still}[x{tag}]")
+                        sides.append({"v": f"x{tag}", "v_in": idx, "audio": None, "tag": tag})
+                        idx += 1
+                    elif seg[0] == "video":
+                        _, src, full, snd = seg
+                        at = (full - d) if side == "L" else 0.0
+                        args += ["-ss", f"{at:.3f}", "-t", f"{d:.3f}", "-i", str(src)]
+                        chains.append(f"[{idx}:v]{norm_v}[x{tag}]")
+                        sides.append({
+                            "v": f"x{tag}", "v_in": idx, "tag": tag,
+                            "audio": f"{idx}:a" if snd else None,
+                        })
+                        idx += 1
+                    else:
+                        k = seg[1]
+                        _, offset, length = clips_to_use[k]
+                        # 왼쪽은 꼬리 d 초, 오른쪽은 머리 d 초.
+                        at = (length - d) if side == "L" else 0.0
+                        args += clip_input(k, offset + at, d)
+                        chains.append(f"[{idx}:v]{norm_v}[x{tag}]")
+                        sides.append({
+                            "v": f"x{tag}", "v_in": idx, "tag": tag,
+                            "audio": f"{idx}:a" if has_sound[k] else None,
+                            "clip": k, "at": at,
+                        })
+                        idx += 1
 
-                # 전환 조각의 조각시간 τ 는 왼쪽 클립의 (length-d+τ) 이자 오른쪽 클립의 τ 다.
-                # 보통은 두 클립의 점수가 같아(왼쪽 골 반영 후 = 오른쪽 시작 전) 한 장으로
-                # 끝나지만, 뒤 패딩이 아주 짧아 골 순간이 전환 구간에 걸리면 여기서 바뀐다.
-                trans_segs = make_segments(
-                    [0.0, d, sb_goal[k] - (length - d), sb_goal[nxt]],
-                    lambda tau: max(
-                        score_at(k, length - d + tau), score_at(nxt, tau),
-                        key=lambda sc: sc[0] + sc[1],
-                    ),
-                ) if sb else []
-                sb_ins, sb_chains, vlabel, extra = overlay_args("v0", trans_segs, extra)
-                wm_ins, wm_chains, vlabel, extra = mark_args(vlabel, extra)
-                args += sb_ins + wm_ins
-                # acrossfade 는 첫 입력의 길이가 페이드 길이와 '같으면' 한 프레임도 내지 못하고
-                # 죽는다(Could not open encoder before EOF). 전환 조각은 정확히 d 초만 잘라
-                # 쓰므로 항상 그 조건에 걸린다. 같은 결과를 내는 페이드아웃+페이드인 합성으로
-                # 바꾼다 — acrossfade 의 기본 곡선(tri)도 afade 기본과 같은 선형이다.
-                # apad→atrim 으로 양쪽을 정확히 d 초로 맞춰, 오디오가 짧거나 없어도 견딘다.
-                afmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+                # 점수판·로고는 **섞기 전에** 클립 쪽에만 건다.
+                for sidespec in sides:
+                    if "clip" not in sidespec:
+                        continue
+                    ins, over, label, idx = clip_overlays(
+                        sidespec["clip"], sidespec["v"], sidespec["at"], d, idx, sidespec["tag"],
+                    )
+                    args += ins
+                    chains += over
+                    sidespec["v"] = label
+
                 chains.append(
-                    f"[{a_left}]{afmt},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
+                    f"[{sides[0]['v']}][{sides[1]['v']}]"
+                    f"xfade=transition=fade:duration={d:.3f}:offset=0[vout]"
+                )
+
+                # 소리가 없는 쪽(카드·무음 클립)은 무음을 만들어 준다.
+                for sidespec in sides:
+                    if sidespec["audio"] is None:
+                        args += silence(d)
+                        sidespec["audio"] = f"{idx}:a"
+                        idx += 1
+
+                # acrossfade 는 첫 입력 길이가 페이드 길이와 같으면 한 프레임도 못 내고
+                # 죽는다(Could not open encoder before EOF). 전환 조각은 정확히 d 초만
+                # 쓰므로 늘 그 조건에 걸린다. 같은 결과를 내는 페이드아웃+페이드인
+                # 합성으로 바꾼다 — acrossfade 의 기본 곡선(tri)도 afade 기본과 같다.
+                # apad→atrim 으로 양쪽을 정확히 d 초로 맞춰 소리가 짧거나 없어도 견딘다.
+                chains.append(
+                    f"[{sides[0]['audio']}]{AFMT},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
                     f"afade=t=out:st=0:d={d:.3f}[la]"
                 )
                 chains.append(
-                    f"[{a_right}]{afmt},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
+                    f"[{sides[1]['audio']}]{AFMT},apad,atrim=duration={d:.3f},asetpts=N/SR/TB,"
                     f"afade=t=in:st=0:d={d:.3f}[ra]"
                 )
                 chains.append(
                     "[la][ra]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]"
                 )
                 args += [
-                    "-filter_complex", ";".join(chains + sb_chains + wm_chains),
-                    "-map", f"[{vlabel}]", "-map", "[a]",
-                    *([] if (has_sound[k] and has_sound[nxt]) else ["-shortest"]),
-                    *encode, str(out),
+                    "-filter_complex", ";".join(chains),
+                    "-map", "[vout]", "-map", "[a]", "-shortest", *encode, str(out),
                 ]
                 subprocess.run(args, check=True, capture_output=True, text=True)
                 pieces.append(out)

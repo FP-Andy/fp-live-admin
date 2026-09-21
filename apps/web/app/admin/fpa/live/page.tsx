@@ -1224,6 +1224,18 @@ type DualUndoSnapshot = {
 export default function FpaLivePage() {
   const { sport: selectedSport } = useSportContext();
   const didHydrateRef = useRef(false);
+  // 액션 저장이 클립 저장까지 해도 되는 상황인가.
+  //
+  // 창을 열 때 서버의 기존 장면을 **제대로 불러왔을 때만** 켠다. 못 불러온 채로
+  // 자동 저장하면, 손에 든 일부만으로 서버의 기존 액션을 덮어버린다.
+  //   · 저장된 장면을 불러왔다 → 켬
+  //   · 원래 아무것도 없던 새 클립 → 켬
+  //   · 초안이 남아 있어 복원을 건너뜀 → 끔
+  //   · 액션은 있는데 태깅 원본이 없어 못 되살림 → 끔
+  const [autoSaveToClip, setAutoSaveToClip] = useState(false);
+  // 자동 저장이 실패했다 — 버튼을 꺼내 다시 시도하게 한다(조용히 넘어가면 안 된다).
+  const [clipSaveFailed, setClipSaveFailed] = useState(false);
+
   // 세션 초안에 실제 작업물이 들어 있었나 — 클립 복원이 그걸 덮어쓰지 않게 하는 잠금.
   const draftHadContentRef = useRef(false);
   const pitchRef = useRef<HTMLDivElement | null>(null);
@@ -1286,6 +1298,8 @@ export default function FpaLivePage() {
   passArrowsRef.current = passArrows;
   const editPassArrowsRef = useRef<PassArrow[]>(editPassArrows);
   editPassArrowsRef.current = editPassArrows;
+  // 클릭으로 골라 둔 화살표 — 이때만 지우는 ✕ 가 뜬다.
+  const [pickedArrow, setPickedArrow] = useState<{ canvas: 'live' | 'edit'; index: number } | null>(null);
   // undo 스냅샷용 최신 상태 미러 (이벤트 리스너의 stale closure 회피 — render마다 동기 갱신)
   const dualUndoStateRef = useRef<DualUndoSnapshot>({ beforeDots, afterDots, passArrows, rows, logs, primaryRowIndex, selectedRowIndex });
   dualUndoStateRef.current = { beforeDots, afterDots, passArrows, rows, logs, primaryRowIndex, selectedRowIndex };
@@ -1347,6 +1361,31 @@ export default function FpaLivePage() {
   }, [armedLive, armedEdit]);
 
   // 라이브·수정용 피치가 공유하는 화살표 오버레이 (기존 화살표 + 그리는 중 미리보기)
+  // 화살표를 클릭하면 골라지고, 그때만 ✕ 가 뜬다. 한 번에 지우게 두면 선을 짚어
+  // 보려다 실수로 지우게 된다.
+  // 화살표 한 개 지우기.
+  //
+  // 지우는 것은 **그림뿐**이다. 그 코드로 이미 매겨진 점수(행)는 그대로 둔다.
+  // 상대 패스 경로처럼 잘못 그린 선을 치우는 게 목적이고, 행까지 건드리면
+  // 되돌릴 수 없는 일이 되기 때문이다. 행을 지우려면 로그에서 지운다.
+  const clearArrowPick = () => setPickedArrow(null);
+
+  const removeArrowAt = (canvas: 'live' | 'edit', index: number) => {
+    const arrows = canvas === 'edit' ? editPassArrowsRef.current : passArrowsRef.current;
+    const gone = arrows[index];
+    if (!gone) return;
+    if (canvas === 'edit') {
+      setEditPassArrows((prev) => prev.filter((_, i) => i !== index));
+    } else {
+      // 라이브 캔버스만 실행취소가 있다 — 지우기 전 상태를 쌓아 둔다.
+      pushDualUndo();
+      setPassArrows((prev) => prev.filter((_, i) => i !== index));
+    }
+    draggingArrowRef.current = null;
+    setPickedArrow(null);
+    setStatus(`화살표 삭제${gone.code ? ` (${gone.code})` : ''} — 매겨진 점수는 그대로입니다`);
+  };
+
   const renderArrowOverlay = (canvas: 'live' | 'edit', side: PitchSide, arrows: PassArrow[], arm: ArrowArm | null) => {
     const armedHere = arm?.side === side;
     const previewHere = arrowPreview?.canvas === canvas && arrowPreview.side === side ? arrowPreview : null;
@@ -1396,11 +1435,23 @@ export default function FpaLivePage() {
           const kind = arrowKind(arrow.code);
           const color = ARROW_COLORS[kind];
           const defense = kind === 'defense';
+          const picked = pickedArrow?.canvas === canvas && pickedArrow.index === index;
           return (
             <g key={`${canvas}-arrow-${side}-${index}`}>
+              {/* 보이지 않는 두꺼운 선 — 클릭 과녁. 4px 짜리 선을 정확히 겨냥하게
+                  만들면 고르기가 고역이 된다. 그리는 순서상 실선 아래에 둔다. */}
+              <line
+                className="fpa-arrow-hit"
+                stroke="transparent" strokeWidth={22} strokeLinecap="round"
+                x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPickedArrow({ canvas, index });
+                }} />
               <line
                 markerEnd={defense ? undefined : `url(#${markerId(kind)})`}
-                stroke={color} strokeDasharray={defense ? '14 7' : undefined} strokeWidth={4}
+                stroke={color} strokeDasharray={defense ? '14 7' : undefined}
+                strokeWidth={picked ? 6 : 4}
                 x1={arrow.x1} y1={arrow.y1} x2={arrow.x2} y2={arrow.y2} />
               {defense ? (
                 // 상대 볼이 어디서 출발해(○) 어디서 끊겼는지(✕). 방향이 드러나므로 화살촉은 생략
@@ -1412,6 +1463,25 @@ export default function FpaLivePage() {
               ) : null}
               {handle(index, 'start', arrow.x1, arrow.y1, color, arrow)}
               {handle(index, 'end', arrow.x2, arrow.y2, color, arrow)}
+              {picked ? (() => {
+                // ✕ 는 화살표의 **오른쪽 위**. 선과 겹치지 않게 바깥으로 빼고,
+                // 피치 밖으로 나가지 않게 가둔다.
+                const bx = Math.min(1050 - 20, Math.max(arrow.x1, arrow.x2) + 26);
+                const by = Math.max(20, Math.min(arrow.y1, arrow.y2) - 26);
+                return (
+                  <g
+                    className="fpa-arrow-remove"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeArrowAt(canvas, index);
+                    }}
+                  >
+                    <title>이 화살표를 지웁니다 (매겨진 점수는 그대로)</title>
+                    <circle cx={bx} cy={by} r={15} />
+                    <path d={`M${bx - 6},${by - 6} L${bx + 6},${by + 6} M${bx + 6},${by - 6} L${bx - 6},${by + 6}`} />
+                  </g>
+                );
+              })() : null}
             </g>
           );
         })}
@@ -1420,7 +1490,7 @@ export default function FpaLivePage() {
   };
 
   // 화살표 중점의 코드 칩 — SVG는 preserveAspectRatio="none" 이라 글자가 늘어나므로 HTML 오버레이로 그린다
-  const renderArrowChips = (side: PitchSide, arrows: PassArrow[]) =>
+  const renderArrowChips = (canvas: 'live' | 'edit', side: PitchSide, arrows: PassArrow[]) =>
     arrows.map((arrow, index) => (arrow.side === side && arrow.code ? (
       <div
         className={`fpa-arrow-chip ${arrowKind(arrow.code)}`}
@@ -1429,6 +1499,7 @@ export default function FpaLivePage() {
           left: `${((arrow.x1 + arrow.x2) / 2 / 1050) * 100}%`,
           top: `${((arrow.y1 + arrow.y2) / 2 / 680) * 100}%`,
         }}
+        title={arrow.code}
       >
         {arrow.code}
       </div>
@@ -1484,7 +1555,9 @@ export default function FpaLivePage() {
 
   // 저장 대상 장면 = 이미 저장된 장면들 + 아직 버퍼에 있는 현재 장면.
   // 버퍼를 빼면 "장면 저장" 을 누르지 않고 클립 저장한 경우 마지막 장면이 통째로 날아간다.
-  const collectScenesForPersistence = (): SavedScene[] => [
+  // override 를 주면 그걸 그대로 쓴다 — 방금 만든 장면까지 포함해 올릴 때 쓴다.
+  // (setState 는 즉시 반영되지 않아서 저장 직후의 savedScenes 를 읽으면 한 박자 늦는다.)
+  const collectScenesForPersistence = (override?: SavedScene[]): SavedScene[] => (override ?? [
     ...savedScenes,
     ...(rows.length
       ? [{
@@ -1499,11 +1572,11 @@ export default function FpaLivePage() {
         clipIndex: currentClipIndex,
       }]
       : []),
-  ];
+  ]);
 
-  const buildRowsForPersistence = () => {
+  const buildRowsForPersistence = (override?: SavedScene[]) => {
     if (inputMode !== 'dual') return allRows.map((row) => ({ ...row, Sport: row.Sport || fpaSport }));
-    const scenesToPersist = collectScenesForPersistence();
+    const scenesToPersist = collectScenesForPersistence(override);
     // match–clip–action: SceneIndex = 클립 번호, SceneActionIndex = 클립 안 연번.
     // 같은 클립의 여러 액션(장면)이 한 SceneIndex 로 묶여 다운스트림(클립 매칭)에 클립 단위로 전달된다.
     const actionCounters = new Map<number, number>();
@@ -1829,6 +1902,9 @@ export default function FpaLivePage() {
   };
 
   const handleDualPitchClick = (side: PitchSide, event: React.MouseEvent<HTMLDivElement>) => {
+    // 피치 빈 곳을 누르면 골라 둔 화살표가 풀린다 — ✕ 가 계속 떠 있으면
+    // 다음에 엉뚱한 화살표를 지우게 된다.
+    clearArrowPick();
     const rect = (side === 'before' ? beforePitchRef.current : afterPitchRef.current)?.getBoundingClientRect();
     if (!rect) return;
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점
@@ -2133,7 +2209,8 @@ export default function FpaLivePage() {
     // 저장으로 행이 확정되면 남은 xGOT 대기는 갱신할 행이 없다 — 해제 안 하면 다음 장면 입력이 잠김
     if (pendingXgot?.canvas === 'live') resetXgotState();
     resetDualUndo();
-    setSavedScenes((prev) => [...prev, snapshot]);
+    const nextScenes = [...savedScenes, snapshot];
+    setSavedScenes(nextScenes);
     setRows([]);
     setLogs([]);
     setPrimaryRowIndex(null);
@@ -2148,6 +2225,16 @@ export default function FpaLivePage() {
     setStatus(`클립 ${currentClipIndex}에 액션 저장됨 · 최종 좌표로 재채점 완료 — After 좌표를 다음 Before로 복사했습니다`);
     // 저장 버튼 클릭으로 포커스가 버튼에 남는다 — 바로 다음 코드 타이핑이 되도록 입력창으로 복귀
     requestAnimationFrame(() => statInputRef.current?.focus());
+
+    // **서버에도 올린다.** 여기까지가 '액션 저장' 이다 — 창을 닫아도 남아야 한다.
+    // 방금 만든 장면은 아직 state 에 반영 전이라 직접 넘긴다. 서버 PUT 은 통째로
+    // 교체하므로 매번 전부 보내도 중복이 쌓이지 않는다.
+    if (clipTarget && autoSaveToClip) {
+      const ok = await saveRowsToClip(nextScenes);
+      if (ok) {
+        setStatus(`클립 ${currentClipIndex} 액션 저장 · 클립에 반영됨 (장면 ${nextScenes.length}개)`);
+      }
+    }
   };
 
   // 새 액션: 저장 안 한 현재 액션을 버리고 새로 시작
@@ -2268,6 +2355,9 @@ export default function FpaLivePage() {
   };
 
   const handleEditPitchClick = (side: PitchSide, event: React.MouseEvent<HTMLDivElement>) => {
+    // 피치 빈 곳을 누르면 골라 둔 화살표가 풀린다 — ✕ 가 계속 떠 있으면
+    // 다음에 엉뚱한 화살표를 지우게 된다.
+    clearArrowPick();
     const rect = (side === 'before' ? editBeforePitchRef.current : editAfterPitchRef.current)?.getBoundingClientRect();
     if (!rect) return;
     // 패스 도착점 대기 중 + 같은 프레임이면 → 새 점이 아니라 화살표 끝점 + [시작,도착] 2점으로 채점 (라이브와 동일)
@@ -2816,6 +2906,15 @@ export default function FpaLivePage() {
     setSavedScenes(next);
     setBusy(false);
     const total = next.reduce((sum, scene) => sum + scene.rows.length, 0);
+
+    // 자동 저장이 켜져 있으면 여기서 바로 올린다 — 안 그러면 올릴 버튼이 없다.
+    if (clipTarget && autoSaveToClip && changed) {
+      const ok = await saveRowsToClip(next);
+      setStatus(ok
+        ? `재채점 완료 — ${total}건 중 ${changed}건이 바뀌어 클립에 반영했습니다`
+        : `재채점은 됐지만 클립 반영에 실패했습니다 — "클립에 저장" 으로 다시 시도하세요`);
+      return;
+    }
     setStatus(
       changed
         ? `재채점 완료 — ${total}건 중 ${changed}건의 지표가 바뀌었습니다. "클립에 저장" 을 눌러야 반영됩니다`
@@ -3497,8 +3596,48 @@ export default function FpaLivePage() {
   // 교체 반영 — 신청 시점 명단과 실제 출전이 다를 때 화면에서만 선발↔교체를 맞바꾼다.
   // 서버에 저장하지 않는다(신청 원본은 그대로 두고, 배치할 때만 이 결과를 쓴다).
   const [rosterOverride, setRosterOverride] = useState<Partial<Record<TeamSide, RosterPlayer[]>>>({});
-  // 라인업이 새로 로드되면(경기·클립 전환) 교체 반영을 버린다 — 다른 경기 명단이 섞이면 안 된다.
-  useEffect(() => { setRosterOverride({}); }, [lineupSides]);
+
+  /* 교체는 **경기 단위로 이어진다.**
+
+     한 하이라이트에 클립이 20개 있고 6번 클립에서 교체가 일어났으면, 7번부터도 그 교체가
+     적용돼 있어야 한다. 경기에서 실제로 일어난 일이 그렇기 때문이다. 그런데 클립마다 dual
+     을 새로 열면(클립 결과 탭이 클립별로 띄운다) 화면이 새로 뜨므로 메모리에 있던 교체가
+     사라졌다 — 클립 6부터 20까지 같은 교체를 열네 번 다시 해야 했다.
+
+     그래서 경기 id 를 키로 브라우저에 남긴다. sessionStorage 가 아니라 localStorage 인
+     이유는, 분리 창·탭으로 열어도 같은 교체를 봐야 하기 때문이다.
+
+     경기가 바뀌면 그 경기 키로 읽으므로 남의 명단이 섞일 일이 없다 — 예전에 라인업이
+     로드될 때마다 통째로 버리던 것이 이 걱정 때문이었는데, 키를 나누면 버릴 필요가 없다. */
+  const rosterOverrideKey = (id: string) => `fpa-roster-override:${id}`;
+  const rosterMatchIdRef = useRef<string>('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = matchId.trim();
+    if (!id || id === 'ID') { setRosterOverride({}); rosterMatchIdRef.current = ''; return; }
+    if (rosterMatchIdRef.current === id) return;   // 같은 경기면 다시 읽지 않는다
+    rosterMatchIdRef.current = id;
+    try {
+      const raw = window.localStorage.getItem(rosterOverrideKey(id));
+      setRosterOverride(raw ? JSON.parse(raw) : {});
+    } catch {
+      setRosterOverride({});
+    }
+  }, [matchId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = rosterMatchIdRef.current;
+    if (!id) return;
+    try {
+      if (Object.keys(rosterOverride).length) {
+        window.localStorage.setItem(rosterOverrideKey(id), JSON.stringify(rosterOverride));
+      } else {
+        window.localStorage.removeItem(rosterOverrideKey(id));
+      }
+    } catch { /* 저장 못 해도 이번 화면에서는 그대로 쓴다 */ }
+  }, [rosterOverride]);
 
   const effectiveRoster = useMemo(() => {
     const out: Partial<Record<TeamSide, RosterPlayer[]>> = {};
@@ -3520,6 +3659,17 @@ export default function FpaLivePage() {
     });
     return out;
   }, [lineupSides, rosterOverride]);
+
+  /** 이 팀의 교체 반영을 신청 원본으로 되돌린다.
+   *  경기 단위로 남으므로, 잘못 바꾼 채 두면 남은 클립 전부에 따라다닌다. */
+  const resetRosterOverride = (side: TeamSide) => {
+    setRosterOverride((prev) => {
+      const next = { ...prev };
+      delete next[side];
+      return next;
+    });
+    setStatus(`${sideLabel(side)} 명단을 신청 원본으로 되돌렸습니다`);
+  };
 
   // 선발 한 명과 교체 한 명을 맞바꾼다 — 들어온 선수가 나간 선수의 자리(positionSlot)를 그대로 받는다.
   const swapRosterPlayers = (side: TeamSide, dragJersey: string, dropJersey: string) => {
@@ -3801,7 +3951,9 @@ export default function FpaLivePage() {
         const restored = d.fpa_scenes?.scenes;
         if (draftHadContentRef.current) {
           // 이 창에 아직 저장 안 한 작업이 남아 있다. 서버본으로 덮으면 그게 날아간다.
-          setStatus(`클립 귀속 모드: ${clipId} — 저장 안 한 작업이 있어 복원을 건너뛰었습니다`);
+          // 손에 든 게 전부가 아니므로 자동 저장도 켜지 않는다.
+          setStatus(`클립 귀속 모드: ${clipId} — 저장 안 한 작업이 있어 복원을 건너뛰었습니다`
+            + ' (자동 저장 끔 — "클립에 저장" 으로 직접 올리세요)');
         } else if (restored?.length) {
           setSavedScenes(restored);
           setCurrentClipIndex(Math.max(1, ...restored.map((s) => s.clipIndex ?? 1)));
@@ -3815,26 +3967,33 @@ export default function FpaLivePage() {
           const actionCount = restored.reduce((sum, s) => sum + s.rows.length, 0);
           if (d.fpa_scenes?.reconstructed) {
             // 옛 액션에서 되살린 것 — 하프·공격방향은 그 시절 저장에 없어 못 되짚는다.
+            // 저장 전에 사람이 방향을 확인해야 하므로 자동 저장은 켜지 않는다
+            // (켜면 액션을 저장할 때마다 확인창이 뜬다).
             setNeedsDirectionConfirm(true);
             setStatus(
               `클립 귀속 모드: ${clipId} — 옛 기록에서 장면 ${restored.length}개(액션 ${actionCount}개)를 되살렸습니다.`
               + ' ⚠ 하프·공격방향은 복원할 수 없으니 저장 전에 반드시 확인하세요',
             );
           } else {
+            setAutoSaveToClip(true);
             setStatus(`클립 귀속 모드: ${clipId} — 저장된 장면 ${restored.length}개(액션 ${actionCount}개)를 불러왔습니다`);
           }
         } else if (d.action_count || d.actions?.length) {
+          // 되살릴 게 없다 = 서버에 덮어쓸 것도 없다. 자동 저장을 켜도 안전하다.
+          // (아래 두 갈래는 '액션이 남아 있는데 못 되살린' 경우라 켜지 않는다.)
           // 액션은 있는데 태깅 원본이 없다 = fpa_scenes 가 생기기 전에 저장됐고
           // scripts/backfill_clip_fpa_scenes.py 도 아직 안 돌았거나, 돌렸는데 그림·스탯
           // 코드가 모자라 복원 대상에서 빠진 클립이다.
           setStatus(`클립 귀속 모드: ${clipId} — 이 클립은 태깅 원본이 남아 있지 않습니다(복원 백필 대상이 아니거나 미실행)`);
         } else if (clipSide === 'home' || clipSide === 'away') {
+          setAutoSaveToClip(true);
           // 새로 찍는 클립 — 팀이 자동으로 맞춰졌다는 걸 알려준다. 틀리면 바꾸면 된다.
           const sideName = clipSide === 'away'
             ? `어웨이${d.team_labels?.away ? `(${d.team_labels.away})` : ''}`
             : `홈${d.team_labels?.home ? `(${d.team_labels.home})` : ''}`;
           setStatus(`클립 귀속 모드: ${clipId} — 팀을 ${sideName} 로 맞췄습니다 (필요하면 바꾸세요)`);
         } else {
+          setAutoSaveToClip(true);
           setStatus(`클립 귀속 모드: ${clipId}`);
         }
       } catch {
@@ -3844,16 +4003,16 @@ export default function FpaLivePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const saveRowsToClip = async () => {
-    if (!clipTarget) return;
+  const saveRowsToClip = async (override?: SavedScene[]) => {
+    if (!clipTarget) return false;
     // 이 창에서 찍은 전부 — 저장된 장면들 + 현재 버퍼(flatten, 장면별 SceneState/주인공 포함).
     // 버퍼만 보내면 "장면 저장" 후 rows 가 비어 마지막 행만 남는 문제가 있었다.
-    const sourceRows = buildRowsForPersistence();
+    const sourceRows = buildRowsForPersistence(override);
     if (!sourceRows.length) {
       setStatus('클립에 저장할 액션이 없습니다');
-      return;
+      return false;
     }
-    if (!confirmRestoredDirection('저장')) return;
+    if (!confirmRestoredDirection('저장')) return false;
     setBusy(true);
     try {
       const res = await apiJson<{ actions: unknown[]; carriedOffsets?: number }>(
@@ -3874,7 +4033,7 @@ export default function FpaLivePage() {
               direction,
               teamIdH,
               teamIdA,
-              scenes: collectScenesForPersistence(),
+              scenes: collectScenesForPersistence(override),
             },
           }),
         },
@@ -3892,8 +4051,14 @@ export default function FpaLivePage() {
       if (host) {
         host.postMessage({ type: 'fpa-clip-saved', clipId: clipTarget.id }, window.location.origin);
       }
+      setClipSaveFailed(false);
+      return true;
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '클립 저장 실패');
+      // 쌓아 둔 장면은 그대로 남는다 — 버튼을 꺼내 다시 올릴 수 있게 한다.
+      setClipSaveFailed(true);
+      setStatus((error instanceof Error ? error.message : '클립 저장 실패')
+        + ' — 찍은 것은 그대로 있습니다. "클립에 저장" 으로 다시 시도하세요');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -4335,7 +4500,7 @@ export default function FpaLivePage() {
             );
           })}
           {renderArrowOverlay('live', side, passArrows, liveArrowArm)}
-          {renderArrowChips(side, passArrows)}
+          {renderArrowChips('live', side, passArrows)}
         </div>
       </div>
     );
@@ -4432,7 +4597,7 @@ export default function FpaLivePage() {
             );
           })}
           {renderArrowOverlay('edit', side, editPassArrows, editArrowArm)}
-          {renderArrowChips(side, editPassArrows)}
+          {renderArrowChips('edit', side, editPassArrows)}
         </div>
       </div>
     );
@@ -4705,14 +4870,26 @@ export default function FpaLivePage() {
               <button
                 disabled={busy || !savedScenes.length}
                 onClick={() => void rescoreAllScenes()}
-                title="저장된 장면 전부를 현재 채점 로직으로 다시 계산합니다 (저장은 따로 눌러야 반영)"
+                title="저장된 장면 전부를 현재 채점 로직으로 다시 계산합니다 (다음 액션 저장 때 클립에 반영)"
                 type="button"
               >
                 🔄 현재 로직으로 재채점
               </button>
-              <button className="primary" disabled={busy} onClick={saveRowsToClip} type="button">
-                클립에 저장
-              </button>
+              {/* 자동 저장이 켜져 있으면 이 버튼은 없다 — '액션 저장' 이 클립까지 올린다.
+                  꺼진 경우(복원을 못 한 상태)와 올리다 실패한 경우에만 꺼내 준다. */}
+              {!autoSaveToClip || clipSaveFailed ? (
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => void saveRowsToClip()}
+                  title={clipSaveFailed
+                    ? '자동 저장이 실패했습니다 — 다시 올립니다'
+                    : '서버의 기존 장면을 못 불러온 상태라 자동 저장이 꺼져 있습니다. 이 버튼이 기존 액션을 통째로 덮어씁니다'}
+                  type="button"
+                >
+                  {clipSaveFailed ? '클립에 저장 (다시 시도)' : '클립에 저장'}
+                </button>
+              ) : null}
             </>
           ) : null}
           <input
@@ -5094,6 +5271,23 @@ export default function FpaLivePage() {
         <div className="fpa-roster-meta">
           {info?.team_name || (side === 'home' ? '홈' : '어웨이')}
           {info?.formation ? <b>{info.formation}</b> : null}
+          {/* 교체는 경기 단위로 남는다 — 다음 클립에도 따라간다는 걸 알려 주고,
+              잘못 바꿨을 때 되돌릴 자리를 같이 둔다. */}
+          {rosterOverride[side] ? (
+            <>
+              <span className="fpa-roster-subbed" title="이 경기의 남은 클립에도 그대로 적용됩니다">
+                교체 반영됨
+              </span>
+              <button
+                type="button"
+                className="fpa-roster-reset"
+                onClick={() => resetRosterOverride(side)}
+                title="신청 원본 명단으로 되돌립니다"
+              >
+                되돌리기
+              </button>
+            </>
+          ) : null}
         </div>
         <div className="fpa-roster-list">
           <div className="fpa-roster-sec">선발 {starters.length}</div>
@@ -5103,6 +5297,7 @@ export default function FpaLivePage() {
         </div>
         <div className="fpa-roster-hint">
           교체가 있었다면 들어온 선수를 나간 선수 위로 끌어 놓으세요.
+          {' '}한 번 바꾸면 <b>이 경기의 다음 클립에도 그대로 적용</b>됩니다.
           그다음 <b>“before 에 배치”</b> 를 다시 누르면 바뀐 선발로 깔립니다.
         </div>
       </div>

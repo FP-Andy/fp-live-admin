@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
 import HighlightSubTabs from '../HighlightSubTabs';
+import { useSportContext } from '../../../../components/SportContext';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 
 // 수동 태깅으로 만든 하이라이트 목록. 전원 SUPERADMIN 이라 누가 만들었든 모두 조회·다운로드한다.
@@ -62,6 +63,8 @@ function fmtWhen(iso: string): string {
 }
 
 export default function ManualResultsPage() {
+  // 지금 보고 있는 종목의 결과물만 부른다 — 농구 탭에 축구 하이라이트가 섞이지 않는다.
+  const { sport } = useSportContext();
   const [jobs, setJobs] = useState<ManualJob[]>([]);
   const [expanded, setExpanded] = useState<string>('');
   const [error, setError] = useState('');
@@ -70,7 +73,9 @@ export default function ManualResultsPage() {
 
   const load = useCallback(async () => {
     try {
-      const rows = await apiJson<ManualJob[]>('/highlight/jobs?mode=manual&limit=100');
+      const rows = await apiJson<ManualJob[]>(
+        `/highlight/jobs?mode=manual&sport=${encodeURIComponent(sport)}&limit=100`,
+      );
       setJobs(rows);
       setError('');
     } catch (err) {
@@ -78,7 +83,7 @@ export default function ManualResultsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sport]);
 
   useEffect(() => { void load(); }, [load]);
 

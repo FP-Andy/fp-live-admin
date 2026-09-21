@@ -5325,6 +5325,32 @@ a:focus-visible {
   color: rgba(255, 255, 255, 0.55);
 }
 
+/* 교체가 반영된 팀 표시 — 경기 단위로 남아 다음 클립에도 따라간다는 신호. */
+.fpa-roster-subbed {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 138, 1, 0.16);
+  border: 1px solid rgba(255, 138, 1, 0.4);
+  color: #ffb768;
+  font-size: 10px;
+}
+
+.fpa-roster-reset {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.fpa-roster-reset:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #fff;
+}
+
 .fpa-roster-meta b {
   padding: 1px 6px;
   border-radius: 4px;
@@ -5811,6 +5837,40 @@ a:focus-visible {
   height: 100%;
   pointer-events: none;
   z-index: 2;
+}
+
+/* 화살표를 고르는 과녁 — 보이지 않는 두꺼운 선. SVG 가 pointer-events:none 이라
+   여기만 auto 로 열어 준다. 4px 실선을 정확히 겨냥하게 두면 고르기가 고역이다. */
+.fpa-arrow-hit {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* 고른 화살표에 뜨는 ✕ — 눌러야 지워진다. 클릭 한 번에 지우면 선을 짚어 보려다
+   실수로 지우게 된다. */
+.fpa-arrow-remove {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.fpa-arrow-remove circle {
+  fill: #1b1b1f;
+  stroke: #f87171;
+  stroke-width: 2;
+}
+
+.fpa-arrow-remove path {
+  stroke: #f87171;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.fpa-arrow-remove:hover circle {
+  fill: #f87171;
+}
+
+.fpa-arrow-remove:hover path {
+  stroke: #1b1b1f;
 }
 
 /* 화살표 양끝 드래그 핸들 — SVG는 pointer-events:none 이므로 핸들만 auto 로 잡히게.
@@ -8356,3 +8416,63 @@ html.fpa-embed .topbar {
   .queen-card-workspace { grid-template-columns: 1fr; }
   .queen-card-preview { min-width: 0; }
 }
+
+/* ── 클립 결과 목록 ───────────────────────────────────────────────────────
+   줄이 다 똑같이 생겨서 삭제 버튼을 누를 때 아랫줄로 착각하는 일이 있었다.
+   테두리로 한 장씩 떼어 놓고, 손이 올라간 줄을 통째로 밝혀 **지금 건드리는 줄**을
+   눈으로 확인하게 한다. */
+.hl-clip-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 14px;
+  border: 1px solid var(--border-ghost, #2c2c32);
+  border-radius: 8px;
+  background: var(--surface-input, #16161a);
+  font-size: 13px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+/* 왼쪽 띠 — 평소엔 없는 듯 있다가 손이 올라가면 켜진다. */
+.hl-clip-row::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.hl-clip-row:hover {
+  border-color: var(--border-strong, #4a4a55);
+  background: var(--surface-card, #1f1f24);
+}
+
+.hl-clip-row:hover::before {
+  background: var(--accent, #3b82f6);
+}
+
+/* 삭제 버튼에 손이 올라가면 줄 전체가 붉어진다 — 무엇을 지우는지 못 보고 누를 수 없게. */
+.hl-clip-row:has(.hl-clip-delete:hover) {
+  border-color: rgba(248, 113, 113, 0.75);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.hl-clip-row:has(.hl-clip-delete:hover)::before {
+  background: #f87171;
+}
+
+/* 방금 상세로 열어 본 클립 — 목록으로 돌아왔을 때 어디까지 봤는지 알려 준다. */
+.hl-clip-row.is-opened {
+  border-color: var(--accent, #3b82f6);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.hl-clip-row.is-opened::before {
+  background: var(--accent, #3b82f6);
+}
+
