@@ -12,6 +12,7 @@ import { API_BASE, apiJson } from '../../../../lib/api';
 import type { CutClip, CutProgress } from '../../../../lib/localCut';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 import { fitTagRange, parseClock } from '../../../../lib/tagRange';
+import { useSportContext } from '../../../../components/SportContext';
 
 type JobStatus = {
   id: string;
@@ -27,7 +28,10 @@ type JobStatus = {
 // 없으면(undefined) 팀 구분 없는 일반 태그 — 점수판에는 영향을 주지 않는다.
 type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal'
   // 장면은 넣지 않고 점수판만 올리는 골. 신청팀 하이라이트에서 상대 골이 이것이다.
-  | 'home_goal_only' | 'away_goal_only';
+  | 'home_goal_only' | 'away_goal_only'
+  // 농구 — 한 번에 1·2·3점이 오른다. 축구의 '골' 은 늘 1점이라 구분이 없었다.
+  | 'bb_home_1' | 'bb_home_2' | 'bb_home_3'
+  | 'bb_away_1' | 'bb_away_2' | 'bb_away_3';
 
 // before/after 는 이 태그만의 개별 앞/뒤 초. 없으면(undefined) 전역 padBefore/padAfter 를 따른다.
 type Tag = { id: string; t: number; before?: number; after?: number; kind?: TagKind };
@@ -39,12 +43,16 @@ type Source = { file: File; url: string; duration: number; width: number; height
 
 // 태깅 단축키. code 는 물리 키라 한글 입력 상태와 무관하게 잡히고, hangul/letter 는
 // code 가 오지 않는 브라우저를 위한 보루다.
-const TAG_KINDS: {
+type TagKindSpec = {
   key: TagKind; code: string; letter: string; hangul: string;
   label: string; badge: string; color: string; side: 'home' | 'away'; goal: boolean;
   /** 클립으로 만들지 여부. 생략하면 만든다. */
   clip?: boolean;
-}[] = [
+  /** 이 태그가 올리는 점수. 생략하면 1 — 축구의 골이 그렇다. */
+  points?: number;
+};
+
+const FOOTBALL_TAG_KINDS: TagKindSpec[] = [
   { key: 'home_goal', code: 'KeyQ', letter: 'q', hangul: 'ㅂ', label: '홈 골', badge: '홈 골', color: '#2F6FED', side: 'home', goal: true },
   { key: 'home', code: 'KeyW', letter: 'w', hangul: 'ㅈ', label: '홈 장면', badge: '홈', color: '#2F6FED', side: 'home', goal: false },
   { key: 'away', code: 'KeyE', letter: 'e', hangul: 'ㄷ', label: '원정 장면', badge: '원정', color: '#E8452F', side: 'away', goal: false },
@@ -54,10 +62,46 @@ const TAG_KINDS: {
   { key: 'away_goal_only', code: 'KeyF', letter: 'f', hangul: 'ㄹ', label: '원정 골(점수만)', badge: '원정 골·점수만', color: '#E8452F', side: 'away', goal: true, clip: false },
 ];
 
+/** 농구 — 득점이 1·2·3점으로 갈린다. 찍는 순간 점수판이 그만큼 오른다.
+ *
+ *  홈 q·w·e / 어웨이 a·s·d 로 **손이 좌우로 갈린다**(2026-09-19 합의). 축구처럼
+ *  q·w·e·r 한 줄로 두면 홈/어웨이를 헷갈린다.
+ *
+ *  장면(득점 없는 하이라이트)은 **z** 다. 축구의 s 자리를 여기서는 어웨이 2점이 쓴다.
+ *  '점수만 반영'(클립 없이 점수판만)은 두지 않았다 — 필요해지면 그때 넣는다.
+ */
+const BASKETBALL_TAG_KINDS: TagKindSpec[] = [
+  { key: 'bb_home_1', code: 'KeyQ', letter: 'q', hangul: 'ㅂ', label: '홈 1점', badge: '홈 +1', color: '#2F6FED', side: 'home', goal: true, points: 1 },
+  { key: 'bb_home_2', code: 'KeyW', letter: 'w', hangul: 'ㅈ', label: '홈 2점', badge: '홈 +2', color: '#2F6FED', side: 'home', goal: true, points: 2 },
+  { key: 'bb_home_3', code: 'KeyE', letter: 'e', hangul: 'ㄷ', label: '홈 3점', badge: '홈 +3', color: '#2F6FED', side: 'home', goal: true, points: 3 },
+  { key: 'bb_away_1', code: 'KeyA', letter: 'a', hangul: 'ㅁ', label: '원정 1점', badge: '원정 +1', color: '#E8452F', side: 'away', goal: true, points: 1 },
+  { key: 'bb_away_2', code: 'KeyS', letter: 's', hangul: 'ㄴ', label: '원정 2점', badge: '원정 +2', color: '#E8452F', side: 'away', goal: true, points: 2 },
+  { key: 'bb_away_3', code: 'KeyD', letter: 'd', hangul: 'ㅇ', label: '원정 3점', badge: '원정 +3', color: '#E8452F', side: 'away', goal: true, points: 3 },
+];
+
+/** 종류 없는 일반 태그를 찍는 키. 농구는 s 를 어웨이 2점이 쓰므로 z 로 옮겼다. */
+const PLAIN_TAG_HOTKEY: Record<'FOOTBALL' | 'BASKETBALL', { code: string; letters: string[]; label: string }> = {
+  FOOTBALL: { code: 'KeyS', letters: ['s', 'S', 'ㄴ'], label: 'S' },
+  BASKETBALL: { code: 'KeyZ', letters: ['z', 'Z', 'ㅋ'], label: 'Z' },
+};
+
+const kindsForSport = (sport: string): TagKindSpec[] =>
+  (sport === 'BASKETBALL' ? BASKETBALL_TAG_KINDS : FOOTBALL_TAG_KINDS);
+
+/** 모든 스포츠의 종류를 합친 조회표 — 저장된 옛 태그도 읽을 수 있어야 한다. */
+const ALL_TAG_KINDS: TagKindSpec[] = [...FOOTBALL_TAG_KINDS, ...BASKETBALL_TAG_KINDS];
+
 /** 그 종류가 클립으로 만들어지는가. 점수만 반영하는 골은 아니다. */
 const makesClip = (kind?: TagKind) =>
-  (TAG_KINDS.find((k) => k.key === kind)?.clip ?? true);
-const KIND_BY_KEY = new Map(TAG_KINDS.map((k) => [k.key, k]));
+  (ALL_TAG_KINDS.find((k) => k.key === kind)?.clip ?? true);
+const KIND_BY_KEY = new Map(ALL_TAG_KINDS.map((k) => [k.key, k]));
+
+/** 이 태그가 점수판을 몇 점 올리나. 득점 태그가 아니면 0. */
+const pointsOf = (kind?: TagKind): { side: 'home' | 'away'; points: number } | null => {
+  const spec = KIND_BY_KEY.get(kind as TagKind);
+  if (!spec?.goal) return null;
+  return { side: spec.side, points: spec.points ?? 1 };
+};
 
 
 const SPEEDS = [1, 1.5, 2, 3, 4];
@@ -156,6 +200,12 @@ export default function ManualHighlightPage() {
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
   // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 신청 태깅과 통일).
+  // 지금 고른 스포츠. 태그 종류·단축키·점수 반영이 여기서 갈린다(FPA dual 과 같은 방식).
+  const { sport } = useSportContext();
+  const isBasketball = sport === 'BASKETBALL';
+  const tagKinds = kindsForSport(sport);
+  const plainHotkey = PLAIN_TAG_HOTKEY[isBasketball ? 'BASKETBALL' : 'FOOTBALL'];
+
   const [padBefore, setPadBefore] = useState(10);
   const [padAfter, setPadAfter] = useState(3);
   const [status, setStatus] = useState('');
@@ -430,8 +480,10 @@ export default function ManualHighlightPage() {
     let away = scoreboard.startAway;
     return tags.map((tag) => {
       // 클립을 만들지 않는 골도 점수는 올린다 — 그게 이 태그의 존재 이유다.
-      if (tag.kind === 'home_goal' || tag.kind === 'home_goal_only') home += 1;
-      else if (tag.kind === 'away_goal' || tag.kind === 'away_goal_only') away += 1;
+      // 올리는 폭은 태그가 들고 있다(농구 1·2·3점). 축구의 골은 1 이다.
+      const scored = pointsOf(tag.kind);
+      if (scored?.side === 'home') home += scored.points;
+      else if (scored?.side === 'away') away += scored.points;
       return [home, away] as [number, number];
     });
   }, [tags, scoreboard.startHome, scoreboard.startAway]);
@@ -534,13 +586,14 @@ export default function ManualHighlightPage() {
       if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(now + SEEK_STEP); return; }
       // 한글 입력 상태(ㄴ)에서도 찍혀야 한다 — e.key 는 IME 를 타서 'ㄴ'·'Process' 로 오지만
       // e.code 는 물리 키라 자판 상태와 무관하다. key 비교는 code 가 안 오는 경우의 보루.
-      if (e.code === 'KeyS' || e.key === 's' || e.key === 'S' || e.key === 'ㄴ') {
+      if (e.code === plainHotkey.code || plainHotkey.letters.includes(e.key)) {
         e.preventDefault();
         addTag();
         return;
       }
-      // Q/W/E/R — 홈 골·홈 장면·원정 장면·원정 골. 한글 자판(ㅂㅈㄷㄱ)에서도 같다.
-      const kind = TAG_KINDS.find((k) => (
+      // 축구 Q/W/E/R — 홈 골·홈 장면·원정 장면·원정 골.
+      // 농구 Q/W/E(홈 1·2·3점) · A/S/D(원정 1·2·3점). 한글 자판에서도 같다.
+      const kind = tagKinds.find((k) => (
         e.code === k.code || e.key === k.letter || e.key === k.letter.toUpperCase() || e.key === k.hangul
       ));
       if (kind) {
@@ -550,7 +603,7 @@ export default function ManualHighlightPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay, seekTo, addTag, offsets, activeIndex]);
+  }, [togglePlay, seekTo, addTag, offsets, activeIndex, tagKinds, plainHotkey]);
 
   // 추출이나 업로드 도중에 창을 닫으면 작업이 끊기고, 업로드 중이었다면 서버에
   // 클립이 일부만 올라간 잡이 남는다. 최소한 경고는 띄운다.
@@ -1018,7 +1071,7 @@ export default function ManualHighlightPage() {
               <button style={btn} onClick={togglePlay}>{playing ? '⏸ 정지' : '▶ 재생'}</button>
               {/* onClick 에 addTag 를 그대로 물리면 MouseEvent 가 kind 로 넘어간다. 반드시 감싼다. */}
               <button style={primaryBtn} onClick={() => addTag()}>＋ 태깅 (S / ㄴ)</button>
-              {TAG_KINDS.map((kind) => (
+              {tagKinds.map((kind) => (
                 <button
                   key={kind.key}
                   style={{ ...smallBtn, padding: '8px 12px', borderColor: kind.color }}
@@ -1048,9 +1101,16 @@ export default function ManualHighlightPage() {
             </div>
 
             <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '10px 0 0' }}>
-              단축키 — <strong>Space</strong> 재생·정지 · <strong>←/→</strong> {SEEK_STEP}초 이동 · <strong>S</strong>(<strong>ㄴ</strong>) 일반 태깅
+              단축키 — <strong>Space</strong> 재생·정지 · <strong>←/→</strong> {SEEK_STEP}초 이동
               {' · '}
-              <strong>Q</strong>(ㅂ) 홈 골 · <strong>W</strong>(ㅈ) 홈 장면 · <strong>E</strong>(ㄷ) 원정 장면 · <strong>R</strong>(ㄱ) 원정 골
+              <strong>{plainHotkey.label}</strong> 일반 태깅
+              {/* 종류 키는 지금 스포츠의 세트를 그대로 읽는다 — 목록과 안내가 어긋날 수 없다. */}
+              {tagKinds.map((kind) => (
+                <span key={kind.key}>
+                  {' · '}
+                  <strong>{kind.letter.toUpperCase()}</strong>({kind.hangul}) {kind.label}
+                </span>
+              ))}
             </p>
           </div>
 
@@ -1402,7 +1462,7 @@ export default function ManualHighlightPage() {
                         }}
                       >
                         <option value="">일반</option>
-                        {TAG_KINDS.map((kind) => (
+                        {tagKinds.map((kind) => (
                           <option key={kind.key} value={kind.key}>{kind.label}</option>
                         ))}
                       </select>
