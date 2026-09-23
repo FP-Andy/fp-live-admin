@@ -52,7 +52,7 @@ export function marginGraphic(events: GraphicEvent[], periodMinutes: number, per
   for (const e of scoring) { line.push(`${x(e.elapsed)},${last}`, `${x(e.elapsed)},${y(e.marginAfter)}`); last = y(e.marginAfter); }
   line.push(`1770,${last}`);
   const points = line.join(' '), area = `${points} 1770,${zero} 170,${zero}`;
-  return svg(1921, 1139, `<defs><clipPath id="pos"><rect width="1921" height="${zero}"/></clipPath><clipPath id="neg"><rect y="${zero}" width="1921" height="1139"/></clipPath></defs><polygon points="${area}" fill="#ff7400" fill-opacity="0.5" clip-path="url(#pos)"/><polygon points="${area}" fill="#2158e8" fill-opacity="0.5" clip-path="url(#neg)"/><polyline points="${points}" fill="none" stroke="white" stroke-width="8"/>${scoring.map(e => `<circle cx="${x(e.elapsed)}" cy="${y(e.marginAfter)}" r="14" fill="${e.team === 'HOME' ? '#ff7400' : '#2158e8'}" fill-opacity="0.5" stroke="white" stroke-width="3"/>`).join('')}`);
+  return svg(1921, 1139, `<defs><clipPath id="pos"><rect width="1921" height="${zero}"/></clipPath><clipPath id="neg"><rect y="${zero}" width="1921" height="1139"/></clipPath></defs><polygon points="${area}" fill="#ff7400" fill-opacity="0.5" clip-path="url(#pos)"/><polygon points="${area}" fill="#2158e8" fill-opacity="0.5" clip-path="url(#neg)"/><polyline points="${points}" fill="none" stroke="white" stroke-width="8"/>${scoring.map(e => `<circle cx="${x(e.elapsed)}" cy="${y(e.marginAfter)}" r="14" fill="${e.team === 'HOME' ? '#ff7400' : '#2158e8'}" stroke="white" stroke-width="3"/>`).join('')}`);
 }
 export function reboundGraphic(data: { ar: number; dr: number; ra: number }) {
   const values = [data.ar, data.dr, data.ra], colors = ['#ff7400', '#2158e8', '#d94043'];
