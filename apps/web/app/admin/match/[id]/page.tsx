@@ -1135,7 +1135,8 @@ export default function MatchPage() {
     if (!Number.isFinite(xg) || xg < 0 || xg > 1) { setXgEstimateMeta('xG는 0~1 사이의 숫자로 입력해 주세요.'); return; }
     const goalmouthCoordinates = getGoalmouthCoordinates();
     if (isOnTargetShot && !goalmouthCoordinates) {
-      setXgotEstimateMeta('Click the goalmouth map for an on-target shot');
+      setXgotEstimateMeta('골문에서 슈팅 도착 위치를 선택해 주세요.');
+      setControlNotice('골문에서 슈팅 도착 위치를 선택한 뒤 기록해 주세요.');
       return;
     }
     const res = await apiFetch(`/matches/${id}/events/xg`, {
@@ -1729,7 +1730,12 @@ export default function MatchPage() {
             </div>
             <div className="row fla-shot-flags" style={{ gap: 10, flexWrap: 'wrap' }}>
               {!isFutsal ? <button className={isOnTargetShot ? 'btn-active' : ''} onClick={() => setIsOnTargetShot((prev) => !prev)} disabled={!canWrite}>유효슈팅</button> : null}
-              <button className={isGoalShot ? 'btn-active' : ''} onClick={() => setIsGoalShot((prev) => !prev)} disabled={!canWrite}>골</button>
+              <button className={isGoalShot ? 'btn-active' : ''} onClick={() => {
+                const next = !isGoalShot;
+                setIsGoalShot(next);
+                // Futsal has no separate on-target toggle: keep it in sync with goals.
+                if (isFutsal) setIsOnTargetShot(next);
+              }} disabled={!canWrite}>골</button>
               {!isFutsal ? <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>헤더</button> : null}
               <button
                 className={isOwnGoal ? 'btn-active' : ''}
@@ -1763,8 +1769,9 @@ export default function MatchPage() {
             <button className="btn-primary fla-shot-submit" onClick={submitXg} disabled={!canWrite || isSavingShot}>{isSavingShot ? '저장 중…' : isOwnGoal ? '자책골 기록' : '슈팅 기록'}</button>
             </div>
             <div className="fla-shot-surfaces">
-              {isOnTargetShot && !isFutsal ? (
+              {isOnTargetShot ? (
                 <div className="fla-goalmouth">
+                  {isFutsal ? <p className="muted" style={{ margin: '0 0 10px' }}>골문을 눌러 골이 들어간 위치를 선택하세요.</p> : null}
                   <div className="fla-goalmouth-row" style={{ position: 'relative', width: '100%', minHeight: 108 }}>
                     <div
                       aria-label="골문 도착 위치 선택"
@@ -1773,7 +1780,7 @@ export default function MatchPage() {
                         position: 'relative',
                         width: 300,
                         maxWidth: '100%',
-                        aspectRatio: '3.2 / 1.15',
+                        aspectRatio: isFutsal ? '3 / 2' : '3.2 / 1.15',
                         cursor: 'crosshair',
                         margin: '0 auto',
                       }}
