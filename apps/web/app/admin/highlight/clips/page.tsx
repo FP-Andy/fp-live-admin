@@ -15,6 +15,15 @@ import { apiJson, type SessionUser } from '../../../../lib/api';
  *  거절·실패·취소는 **끝난 것**이므로 잠그면 안 된다. 다시 보낼 길이 막힌다. */
 const COMP_PENDING = ['queued', 'sending'];
 
+/** 진행률 한 줄. 없으면 빈 문자열 — 부르는 쪽이 그때 기본 문구를 쓴다. */
+const compProgressText = (m?: MatchRow | null) => {
+  const p = m?.competition_progress;
+  if (!p || typeof p.percent !== 'number') return '';
+  // 보내는 단계는 한 번에 끝나므로 %로 쪼갤 게 없다 — 그대로 알린다.
+  if (p.phase === 'sending') return p.label || '보내는 중';
+  return `${p.label || '처리 중'} · ${p.percent}%`;
+};
+
 const COMPETITIONS = [
   { grade: 'S', id: 'sufa-2026-S', name: '2026 SUFA SUPREME' },
   { grade: 'A', id: 'sufa-2026-A', name: '2026 SUFA ADVANCE' },
@@ -46,6 +55,11 @@ type MatchRow = {
    *  그 밖의 값(sent·contract-ok·rejected…·failed…·canceled…)은 전부 끝난 상태라,
    *  다시 보낼 수 있어야 한다. */
   competition_callback_status?: string | null;
+  /** 전송이 어디까지 갔는지. **서버에 남는 값**이라 탭을 옮겼다 와도, 새로고침해도,
+   *  다른 사람이 봐도 같은 값이 보인다. 안 돌고 있으면 없다. */
+  competition_progress?: {
+    phase?: string; done?: number; total?: number; percent?: number; label?: string;
+  } | null;
   record_sheet?: RecordSheetMeta | null;
   analysis_request_id?: number | string;
   // 아카이브된 잡은 기본 목록에서 빠진다 — '아카이브 포함' 토글이나 아카이브 룸 딥링크로만 보인다.
@@ -917,7 +931,13 @@ export default function ClipResultsPage() {
         setMatches(rows);
         const row = rows.find((m) => m.job_id === jobId);
         const status = row?.competition_callback_status || '';
-        if (!status || status === 'queued' || status === 'sending') continue;
+        if (!status || status === 'queued' || status === 'sending') {
+          // 아직 도는 중 — 어디까지 갔는지 알려 준다. 몇 분씩 걸려서 아무 소식이 없으면
+          // 멈춘 줄 안다.
+          const moving = compProgressText(row);
+          if (moving) setMsg(`대회 인입 — ${moving}`);
+          continue;
+        }
         setMsg(status.startsWith('failed') || status.startsWith('rejected')
           ? `대회 인입 실패 — ${status}`
           : `대회 인입 — ${status}`);
@@ -1014,7 +1034,8 @@ export default function ClipResultsPage() {
                       title="분석 신청 없이 대회 클립으로 앱에 보냅니다 — 팀·선수 매칭은 FinePlay 스테이징에서 확정합니다"
                     >
                       {selectedMatch.competition_callback_status === 'queued' ? '대회 전송 대기 중'
-                        : selectedMatch.competition_callback_status === 'sending' ? '대회 전송 처리 중'
+                        : selectedMatch.competition_callback_status === 'sending'
+                          ? (compProgressText(selectedMatch) || '대회 전송 처리 중')
                           : (selectedMatch.competition_callback_status || '').startsWith('rejected')
                             || (selectedMatch.competition_callback_status || '').startsWith('failed')
                             || (selectedMatch.competition_callback_status || '').startsWith('canceled')
@@ -1190,7 +1211,10 @@ export default function ClipResultsPage() {
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>클립 {m.clip_count}개</span>
                   {m.competition_callback_status ? (
                     <span style={{ fontSize: 12, color: '#f59e0b' }}>
-                      대회 전송 {m.competition_callback_status === 'queued' ? '대기 중' : m.competition_callback_status === 'sending' ? '처리 중' : m.competition_callback_status}
+                      대회 전송 {m.competition_callback_status === 'queued' ? '대기 중'
+                        : m.competition_callback_status === 'sending'
+                          ? (compProgressText(m) || '처리 중')
+                          : m.competition_callback_status}
                     </span>
                   ) : null}
                   {m.callback_status ? (
