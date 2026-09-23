@@ -7,6 +7,20 @@ export type GraphicEvent = {
   timestamp: number; marginAfter: number;
 };
 export type GraphicPlayer = { number: string; name: string };
+export type ShotThresholds = { red: number; yellow: number; green: number };
+export const DEFAULT_SHOT_THRESHOLDS: ShotThresholds = { red: 0, yellow: 1, green: 5 };
+export function validShotThresholds(value: unknown): value is ShotThresholds {
+  if (!value || typeof value !== 'object') return false;
+  const { red, yellow, green } = value as ShotThresholds;
+  return [red, yellow, green].every(v => Number.isSafeInteger(v) && v >= 0)
+    && red < yellow && yellow < green;
+}
+export function shotBand(points: number, attempts: number, thresholds: ShotThresholds = DEFAULT_SHOT_THRESHOLDS) {
+  if (!attempts || points < thresholds.red) return 'gray';
+  if (points >= thresholds.green) return 'green';
+  if (points >= thresholds.yellow) return 'yellow';
+  return 'red';
+}
 export const GRAPHIC_SIZES = { player: [1017, 936], teams: [1721, 857], margin: [1921, 1139], rebound: [886, 815] } as const;
 export function safeFilename(value: string) {
   return value.normalize('NFC').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').trim() || '이름없음';
@@ -26,18 +40,18 @@ export function playersForExport(lineups: Partial<Record<Team, GraphicPlayer[]>>
   });
 }
 const svg = (width: number, height: number, content: string) => `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${content}</svg>`;
-function court(events: GraphicEvent[], team: Team) {
+function court(events: GraphicEvent[], team: Team, thresholds: ShotThresholds) {
   return ZONES.map(zone => {
     const shots = events.filter(e => e.type === 'SHOT' && e.team === team && e.zoneId === zone.id);
     const points = shots.reduce((s, e) => s + (e.shotResult === 'MADE' ? Number(e.points || 0) : 0), 0);
-    // Preserve the template's points thresholds; distinguish unattempted zones.
-    const color = !shots.length ? '#e7e7ed' : points >= 5 ? '#20c35b' : points > 0 ? '#facc15' : '#ef4043';
+    const color = { gray: '#e7e7ed', red: '#ef4043', yellow: '#facc15', green: '#20c35b' }[shotBand(points, shots.length, thresholds)];
     return `<path d="${zone.d}" fill="${color}" fill-opacity="0.5" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>`;
   }).join('');
 }
-export function shotGraphic(events: GraphicEvent[], team?: Team) {
-  if (team) return svg(1017, 936, `<svg x="80" y="76" width="856" height="804" viewBox="0 0 722 678">${court(events, team)}</svg>`);
-  return svg(1721, 857, `<svg x="20" y="68" width="784" height="736" viewBox="0 0 722 678">${court(events, 'HOME')}</svg><svg x="899" y="68" width="784" height="736" viewBox="0 0 722 678">${court(events, 'AWAY')}</svg>`);
+export function shotGraphic(events: GraphicEvent[], team?: Team, thresholds: ShotThresholds = DEFAULT_SHOT_THRESHOLDS) {
+  if (!validShotThresholds(thresholds)) throw new Error('샷맵 득점 기준을 확인해주세요.');
+  if (team) return svg(1017, 936, `<svg x="80" y="76" width="856" height="804" viewBox="0 0 722 678">${court(events, team, thresholds)}</svg>`);
+  return svg(1721, 857, `<svg x="20" y="68" width="784" height="736" viewBox="0 0 722 678">${court(events, 'HOME', thresholds)}</svg><svg x="899" y="68" width="784" height="736" viewBox="0 0 722 678">${court(events, 'AWAY', thresholds)}</svg>`);
 }
 export function marginGraphic(events: GraphicEvent[], periodMinutes: number, periodCount: number) {
   const scoring = events.filter(e => e.type === 'SHOT' && e.shotResult === 'MADE').map(e => {
