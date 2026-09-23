@@ -2449,9 +2449,22 @@ export default function FpaLivePage() {
       passArrows: editPassArrows,
       primary: editPrimary,
     };
-    setSavedScenes((prev) => prev.map((scene, index) => (index === savedIndex ? snapshot : scene)));
-    setBusy(false);
+    // 방금 고친 것을 반영한 목록. state 는 아직 옛것이라 직접 만든다 —
+    // 아래 서버 PUT 에 이 값을 그대로 넘겨야 고친 내용이 올라간다.
+    const nextScenes = savedScenes.map((scene, index) => (index === savedIndex ? snapshot : scene));
+    setSavedScenes(nextScenes);
     setStatus(`액션 ${savedIndex + 1} 수정 저장됨 · 최종 좌표로 재채점 완료`);
+
+    // **서버에도 올린다.** 라이브 액션 저장(saveScene)은 올리는데 여기만 빠져 있었다.
+    // 그래서 고쳐 놓고 창을 닫으면 화면에만 남고, 다음 액션을 저장할 때에야 딸려
+    // 올라갔다 — 그 사이에 검수하면 고치기 전 것이 보인다.
+    if (clipTarget && autoSaveToClip) {
+      const ok = await saveRowsToClip(nextScenes);
+      if (ok) {
+        setStatus(`액션 ${savedIndex + 1} 수정 저장 · 클립에 반영됨 (장면 ${nextScenes.length}개)`);
+      }
+    }
+    setBusy(false);
     closeSceneEditor();
   };
 
