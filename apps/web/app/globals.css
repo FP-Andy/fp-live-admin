@@ -8476,3 +8476,23 @@ html.fpa-embed .topbar {
   background: var(--accent, #3b82f6);
 }
 
+
+/* Futsal graphics: fixed export canvas, responsive preview. */
+.futsal-viz { display: grid; gap: 24px; min-width: 0; }
+.futsal-viz-header, .futsal-viz-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.futsal-viz-header h1 { margin: 8px 0; font-size: clamp(28px, 4vw, 42px); }
+.futsal-viz-header small { color: #ff7400; font-weight: 700; letter-spacing: .12em; }
+.futsal-viz-header p, .futsal-viz-note { opacity: .7; margin: 0; }
+.futsal-viz-toolbar { display: flex; align-items: end; gap: 20px; flex-wrap: wrap; padding: 24px; border: 1px solid var(--line-strong); border-radius: 16px; }
+.futsal-viz-toolbar label { display: grid; gap: 10px; font-size: 14px; min-width: 0; }
+.futsal-viz-match { flex: 1 1 380px; }
+.futsal-viz-toolbar select { width: 100%; min-width: 0; height: 44px; padding: 0 12px; }
+.futsal-viz-toolbar input[type=color] { width: 62px; height: 44px; padding: 4px; cursor: pointer; }
+.futsal-viz-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.futsal-viz-card { min-width: 0; padding: 20px; border: 1px solid var(--line-strong); border-radius: 16px; }
+.futsal-viz-card-heading { margin-bottom: 20px; }
+.futsal-viz-card h2 { margin: 0; font-size: 19px; }
+.futsal-viz-card img { display: block; width: 100%; height: auto; border-radius: 10px; background: #283140; }
+.futsal-viz-error { color: #e35c4e; }
+@media (max-width: 1100px) { .futsal-viz-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .futsal-viz-toolbar, .futsal-viz-card { padding: 16px; } .futsal-viz-header .btn { width: 100%; } }

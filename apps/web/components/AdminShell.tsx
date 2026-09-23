@@ -62,7 +62,10 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
 ];
 
 // 퀸컵은 수동 FLA/FPA 기록만 사용한다. 미디어·라이브 코더 메뉴를 노출하지 않는다.
-const FUTSAL_FLA_ITEMS: NavItem[] = [FLA_ITEMS[0]];
+const FUTSAL_FLA_ITEMS: NavItem[] = [FLA_ITEMS[0], {
+  href: '/admin/futsal/visualization', label: 'Visualization', icon: '◌',
+  match: pathname => pathname.startsWith('/admin/futsal/visualization'),
+}];
 
 const FHL_ITEMS: NavItem[] = [
   // FinePlay 연동 프로세스에서 쓰지 않는 기존 업로드→완료 흐름은 메뉴에서 숨긴다 (페이지는 살아있음).
@@ -231,6 +234,9 @@ function getPageMeta(pathname: string) {
   if (pathname.startsWith('/admin/match/')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Match Control' };
   }
+  if (pathname.startsWith('/admin/futsal/visualization')) {
+    return { product: 'FLA', eyebrow: 'Futsal FLA', title: 'Visualization' };
+  }
   if (pathname.startsWith('/admin/basketball/visualization')) {
     return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Visualization' };
   }
@@ -381,6 +387,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (pendingSportChangeRef.current) return;
+    if (currentPath.startsWith('/admin/futsal') && sport !== 'FUTSAL') setSport('FUTSAL');
     if (currentPath.startsWith('/admin/basketball') && sport !== 'BASKETBALL') {
       setSport('BASKETBALL');
     }
