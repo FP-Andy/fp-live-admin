@@ -14,7 +14,29 @@ let zones;
 for (const stmt of ast.statements) if (ts.isVariableStatement(stmt)) {
   for (const decl of stmt.declarationList.declarations) if (decl.name.getText(ast) === 'ZONES') zones = Function(`return (${decl.initializer.getText(ast)})`)();
 }
-const api = Function('ZONES', compile('apps/web/components/basketball/graphicExports.ts') + '\n' + compile('apps/web/lib/pngArchive.ts') + ';return {playersForExport,safeFilename,shotGraphic,marginGraphic,reboundGraphic,pngArchive};')(zones);
+const api = Function('ZONES', compile('apps/web/components/basketball/graphicExports.ts') + '\n' + compile('apps/web/lib/pngArchive.ts') + ';return {shotBand,validShotThresholds,DEFAULT_SHOT_THRESHOLDS,playersForExport,safeFilename,shotGraphic,marginGraphic,reboundGraphic,pngArchive};')(zones);
+const custom = { red: 2, yellow: 6, green: 10 };
+for (const invalid of [null, {}, {red:0,yellow:0,green:5}, {red:-1,yellow:2,green:5}, {red:0,yellow:6,green:5}, {red:0,yellow:1.5,green:5}, {red:0,yellow:1,green:Infinity}, {red:'0',yellow:1,green:5}]) {
+  assert.equal(api.validShotThresholds(invalid), false);
+  assert.throws(() => api.shotGraphic([], 'HOME', invalid));
+}
+assert(api.validShotThresholds(custom));
+for (const [points,band] of [[0,'gray'],[1,'gray'],[2,'red'],[5,'red'],[6,'yellow'],[9,'yellow'],[10,'green'],[20,'green']]) {
+  assert.equal(api.shotBand(points, 1, custom), band);
+  assert.equal(api.shotBand(points, 0, custom), 'gray');
+}
+for (const [points,band] of [[0,'red'],[1,'yellow'],[4,'yellow'],[5,'green']]) assert.equal(api.shotBand(points, 1), band);
+const zone = zones[0].id;
+const shots = Array.from({length:3}, (_,i) => ({id:String(i),type:'SHOT',team:'HOME',zoneId:zone,shotResult:'MADE',points:2,period:1,clock:'10:00',timestamp:i,marginAfter:(i+1)*2}));
+for (const team of [undefined, 'HOME']) {
+  const defaultGraphic = api.shotGraphic(shots, team);
+  const customGraphic = api.shotGraphic(shots, team, custom);
+  assert(defaultGraphic.includes('fill="#20c35b"'));
+  assert(customGraphic.includes('fill="#facc15"'));
+  assert(!customGraphic.includes('fill="#20c35b"'));
+  assert(customGraphic.includes('fill="#e7e7ed" fill-opacity="0.5"'));
+}
+assert(!api.shotGraphic([{...shots[0],shotResult:'MISSED'}], 'HOME').includes('fill="#20c35b"'));
 const players = api.playersForExport({ HOME: [{number:'7',name:'홈'}, {number:'8',name:'무기록'}, {number:'',name:'미배정1'}, {number:'',name:'미배정2'}], AWAY: [{number:'7',name:'원정'}] }, [{team:'HOME',playerNumber:'9'}]);
 assert.equal(players.length, 6);
 assert.equal(players.filter(p => p.number === '7').length, 2);

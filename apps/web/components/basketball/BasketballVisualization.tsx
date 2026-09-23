@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ZONES, type ZoneId } from './BasketballMatchControl';
 import { apiJson } from '../../lib/api';
 import { pngArchive } from '../../lib/pngArchive';
-import { downloadBlob, marginGraphic, playersForExport, reboundGraphic, safeFilename, shotGraphic, svgPng, type GraphicPlayer } from './graphicExports';
+import { DEFAULT_SHOT_THRESHOLDS, shotBand, validShotThresholds, type ShotThresholds, downloadBlob, marginGraphic, playersForExport, reboundGraphic, safeFilename, shotGraphic, svgPng, type GraphicPlayer } from './graphicExports';
 
 type Team = 'HOME' | 'AWAY';
 
@@ -74,11 +74,14 @@ function parseClockSeconds(clock: string | undefined) {
   return Math.max(0, minutes * 60 + seconds);
 }
 
-function zoneFill(points: number) {
-  if (points >= 5) return '#177c40';
-  if (points > 0) return '#9d7d09';
-  return '#94272b';
+function zoneFill(points: number, attempts: number, thresholds: ShotThresholds) {
+  return { gray: '#72727b', red: '#94272b', yellow: '#9d7d09', green: '#177c40' }[shotBand(points, attempts, thresholds)];
 }
+
+function scoreRange(min: number, max: number) {
+  return min === max ? `${min}점` : `${min}–${max}점`;
+}
+const SHOT_THRESHOLD_KEY = 'fpc-basketball-shot-thresholds-v1';
 
 function percentage(value: number, total: number) {
   if (!total) return '0.0%';
@@ -193,7 +196,7 @@ function getZoneBandSummary(events: GameEvent[], team: Team, minimum: number, ma
   const stats = getZoneStats(events, team);
   return Array.from(stats.values()).reduce(
     (result, zone) => {
-      if (zone.points < minimum || zone.points > maximum) return result;
+      if (!zone.attempts || zone.points < minimum || zone.points > maximum) return result;
       result.zones += 1;
       result.points += zone.points;
       return result;
@@ -202,13 +205,13 @@ function getZoneBandSummary(events: GameEvent[], team: Team, minimum: number, ma
   );
 }
 
-function buildShotInsight(events: GameEvent[], labels: Record<Team, string>): Insight {
+function buildShotInsight(events: GameEvent[], labels: Record<Team, string>, thresholds: ShotThresholds): Insight {
   const home = getShotAggregate(events, 'HOME');
   const away = getShotAggregate(events, 'AWAY');
   if (home.attempts + away.attempts === 0) {
     return {
       lead: '기록된 샷 이벤트가 없어 구역별 성공률과 득점 효율을 비교할 수 없습니다.',
-      items: ['전체 성공률, 5점 이상 초록 구간, 3점 구간과 페인트존 효율을 기준으로 분석합니다.'],
+      items: [`전체 성공률, ${thresholds.green}점 이상 초록 구간, 3점 구간과 페인트존 효율을 기준으로 분석합니다.`],
       tone: 'neutral',
     };
   }
@@ -216,10 +219,10 @@ function buildShotInsight(events: GameEvent[], labels: Record<Team, string>): In
   const homeRate = rate(home);
   const awayRate = rate(away);
   const rateLeader = winnerFromDifference(homeRate, awayRate, 0.04);
-  const greenHome = getZoneBandSummary(events, 'HOME', 5, Number.POSITIVE_INFINITY);
-  const greenAway = getZoneBandSummary(events, 'AWAY', 5, Number.POSITIVE_INFINITY);
-  const yellowHome = getZoneBandSummary(events, 'HOME', 1, 4);
-  const yellowAway = getZoneBandSummary(events, 'AWAY', 1, 4);
+  const greenHome = getZoneBandSummary(events, 'HOME', thresholds.green, Number.POSITIVE_INFINITY);
+  const greenAway = getZoneBandSummary(events, 'AWAY', thresholds.green, Number.POSITIVE_INFINITY);
+  const yellowHome = getZoneBandSummary(events, 'HOME', thresholds.yellow, thresholds.green - 1);
+  const yellowAway = getZoneBandSummary(events, 'AWAY', thresholds.yellow, thresholds.green - 1);
   const homeThree = getShotAggregate(events, 'HOME', (event) => Boolean(event.zoneId && THREE_POINT_ZONE_IDS.has(event.zoneId)));
   const awayThree = getShotAggregate(events, 'AWAY', (event) => Boolean(event.zoneId && THREE_POINT_ZONE_IDS.has(event.zoneId)));
   const homePaint = getShotAggregate(events, 'HOME', (event) => Boolean(event.zoneId && PAINT_ZONE_IDS.has(event.zoneId)));
@@ -384,7 +387,7 @@ function elapsedSeconds(event: GameEvent, periodMinutes: number, periodCount: nu
   return Math.min(periodCount * periodSeconds, (period - 1) * periodSeconds + Math.max(0, periodSeconds - parseClockSeconds(event.clock)));
 }
 
-function ShotMap({ team, events }: { team: Team; events: GameEvent[] }) {
+function ShotMap({ team, events, thresholds }: { team: Team; events: GameEvent[]; thresholds: ShotThresholds }) {
   const stats = useMemo(() => getZoneStats(events, team), [events, team]);
   const totals = useMemo(() => {
     return Array.from(stats.values()).reduce(
@@ -411,7 +414,7 @@ function ShotMap({ team, events }: { team: Team; events: GameEvent[] }) {
           const summary = stats.get(zone.id) || { attempts: 0, made: 0, points: 0 };
           return (
             <g key={zone.id}>
-              <path d={zone.d} fill={zoneFill(summary.points)} stroke="rgba(255, 255, 255, 0.76)" strokeWidth="1.5" strokeLinejoin="round" className="basketball-viz-zone" />
+              <path d={zone.d} fill={zoneFill(summary.points, summary.attempts, thresholds)} stroke="rgba(255, 255, 255, 0.76)" strokeWidth="1.5" strokeLinejoin="round" className="basketball-viz-zone" />
             </g>
           );
         })}
@@ -580,6 +583,34 @@ export default function BasketballVisualization() {
   const [exportError, setExportError] = useState('');
   const [stateMatchId, setStateMatchId] = useState('');
   const [exportProgress, setExportProgress] = useState('');
+  const [thresholds, setThresholds] = useState<ShotThresholds>(DEFAULT_SHOT_THRESHOLDS);
+  const [thresholdDraft, setThresholdDraft] = useState({ red: '0', yellow: '1', green: '5' });
+  const [thresholdError, setThresholdError] = useState('');
+  const [thresholdStatus, setThresholdStatus] = useState('');
+  useEffect(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(SHOT_THRESHOLD_KEY) || 'null');
+      if (validShotThresholds(saved)) {
+        setThresholds(saved);
+        setThresholdDraft({ red: String(saved.red), yellow: String(saved.yellow), green: String(saved.green) });
+      }
+    } catch { /* Unavailable storage keeps the defaults. */ }
+  }, []);
+  const applyThresholds = (next: ShotThresholds) => {
+    if (exporting !== null) return;
+    if (!validShotThresholds(next)) {
+      setThresholdError('0 이상의 정수로, 빨강 < 노랑 < 초록 순서로 입력해주세요.');
+      setThresholdStatus('');
+      return;
+    }
+    setThresholds(next);
+    setThresholdDraft({ red: String(next.red), yellow: String(next.yellow), green: String(next.green) });
+    setThresholdError('');
+    try {
+      localStorage.setItem(SHOT_THRESHOLD_KEY, JSON.stringify(next));
+      setThresholdStatus('적용했습니다. 이 브라우저에 기준이 저장됩니다.');
+    } catch { setThresholdStatus('현재 화면에 적용했습니다. 브라우저 저장은 사용할 수 없습니다.'); }
+  };
   const shotExportRef = useRef<HTMLElement | null>(null);
   const marginExportRef = useRef<HTMLDivElement | null>(null);
   const reboundExportRef = useRef<HTMLElement | null>(null);
@@ -624,7 +655,7 @@ export default function BasketballVisualization() {
     HOME: teamName(selectedMatch, 'HOME'),
     AWAY: teamName(selectedMatch, 'AWAY'),
   };
-  const shotInsight = useMemo(() => buildShotInsight(events, labels), [events, labels]);
+  const shotInsight = useMemo(() => buildShotInsight(events, labels, thresholds), [events, labels, thresholds]);
   const reboundInsight = useMemo(() => buildReboundInsight(rebounds, labels), [labels, rebounds]);
   const downloadVisualization = async (kind: 'shot-map' | 'margin-flow' | 'rebounds') => {
     const element = kind === 'shot-map'
@@ -651,7 +682,7 @@ export default function BasketballVisualization() {
     try {
       const prefix = safeFilename(selectedMatch.name);
       if (kind === 'teams' || kind === 'margin') {
-        const source = kind === 'teams' ? shotGraphic(events) : marginGraphic(events, periodMinutes, periodCount);
+        const source = kind === 'teams' ? shotGraphic(events, undefined, thresholds) : marginGraphic(events, periodMinutes, periodCount);
         downloadBlob(await svgPng(source), `${prefix}-${kind === 'teams' ? 'team-shotmap' : 'margin-flow'}.png`);
       } else {
         const files: { name: string; blob: Blob }[] = [];
@@ -670,7 +701,7 @@ export default function BasketballVisualization() {
             while (used.has(name)) name = `${base}-${suffix++}.png`;
             used.add(name);
             const personal = player.number ? events.filter(e => e.team === player.team && String(e.playerNumber ?? '').trim() === player.number) : [];
-            files.push({ name, blob: await svgPng(shotGraphic(personal, player.team)) });
+            files.push({ name, blob: await svgPng(shotGraphic(personal, player.team, thresholds)) });
           }
         }
         downloadBlob(await pngArchive(files), `${prefix}-${kind === 'players' ? 'player-shotmaps' : 'rebounds'}.zip`);
@@ -709,7 +740,7 @@ export default function BasketballVisualization() {
 
       <section className="card card-panel" aria-label="투명 그래픽 다운로드">
         <h3>투명 그래픽 PNG</h3>
-        <p className="muted">제목·해설 없는 그래픽입니다. 샷맵 색상은 구역별 득점 기준이며, 회색은 시도 없음입니다. 참고 이미지와 같은 고정 크기로 저장됩니다.</p>
+        <p className="muted">제목·해설 없는 그래픽입니다. 샷맵 색상에는 아래에서 적용한 구역별 득점 기준이 반영됩니다. 참고 이미지와 같은 고정 크기로 저장됩니다.</p>
         <div className="basketball-viz-export-actions" style={{ flexWrap: 'wrap', gap: 10 }}>
           <button onClick={() => void downloadGraphics('teams')} disabled={!exportReady}>팀 샷맵 · 1721×857</button>
           <button onClick={() => void downloadGraphics('margin')} disabled={!exportReady}>마진 플로우 · 1921×1139</button>
@@ -718,6 +749,32 @@ export default function BasketballVisualization() {
         </div>
         <p className="muted">선수별 파일명: 팀명-번호-이름-shotmap.png · 명단에 등록된 선수는 슛 기록이 없어도 포함됩니다.</p>
         {exportProgress ? <p role="status">{exportProgress}</p> : null}
+      </section>
+
+      <section className="card card-panel" aria-label="샷맵 색상 기준">
+        <h3>샷맵 색상 기준</h3>
+        <p className="muted">리그 수준에 맞게 각 색상이 시작되는 구역별 누적 득점을 설정하세요. 화면·해설·팀 PNG·선수별 PNG에 같은 기준을 적용하며, 이 브라우저에 저장됩니다.</p>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          applyThresholds({ red: thresholdDraft.red.trim() ? Number(thresholdDraft.red) : NaN, yellow: thresholdDraft.yellow.trim() ? Number(thresholdDraft.yellow) : NaN, green: thresholdDraft.green.trim() ? Number(thresholdDraft.green) : NaN });
+        }} style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'end', marginTop: 16 }}>
+          {([{ key: 'red', label: '빨강', color: '#ef4043' }, { key: 'yellow', label: '노랑', color: '#facc15' }, { key: 'green', label: '초록', color: '#20c35b' }] as const).map(({ key, label, color }) => (
+            <label key={key} style={{ display: 'grid', gap: 8, flex: '1 1 150px', minWidth: 0 }}>
+              <span><span aria-hidden="true" style={{ color }}>●</span> {label} 시작 점수</span>
+              <input type="number" min={0} step={1} required value={thresholdDraft[key]} disabled={exporting !== null} onChange={(event) => {
+                setThresholdDraft(current => ({ ...current, [key]: event.target.value }));
+                setThresholdError(''); setThresholdStatus('');
+              }} aria-describedby="shot-threshold-help" style={{ width: '100%', minWidth: 0 }} />
+            </label>
+          ))}
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button type="submit" disabled={exporting !== null}>적용</button>
+            <button type="button" className="btn-secondary" disabled={exporting !== null} onClick={() => applyThresholds(DEFAULT_SHOT_THRESHOLDS)}>기본값</button>
+          </div>
+        </form>
+        <p id="shot-threshold-help" className="muted" style={{ marginTop: 12 }}>빨강 &lt; 노랑 &lt; 초록 순서로 입력하세요. 슛 시도가 없는 구역은 항상 회색이며, 빨강 시작 점수 미만도 회색입니다.</p>
+        {thresholdError ? <p role="alert" className="basketball-viz-error">{thresholdError}</p> : null}
+        {thresholdStatus ? <p role="status">{thresholdStatus}</p> : null}
       </section>
 
       {error ? <p className="basketball-viz-error">{error}</p> : null}
@@ -743,11 +800,16 @@ export default function BasketballVisualization() {
           <section ref={shotExportRef} className="basketball-viz-shotmaps">
             <div className="basketball-viz-section-title">
               <div><span>SHOT ZONE VISUALIZATION</span><strong>홈/어웨이 샷맵</strong></div>
-              <div className="basketball-viz-zone-legend"><i className="zero" /> 0점 <i className="low" /> 1–4점 <i className="high" /> 5점 이상</div>
+              <div className="basketball-viz-zone-legend" style={{ flexWrap: 'wrap' }}>
+                <span><i style={{ background: '#72727b', display: 'inline-block' }} /> {thresholds.red ? `시도 없음 / ${thresholds.red}점 미만` : '시도 없음'}</span>
+                <span><i className="zero" style={{ display: 'inline-block' }} /> {scoreRange(thresholds.red, thresholds.yellow - 1)}</span>
+                <span><i className="low" style={{ display: 'inline-block' }} /> {scoreRange(thresholds.yellow, thresholds.green - 1)}</span>
+                <span><i className="high" style={{ display: 'inline-block' }} /> {thresholds.green}점 이상</span>
+              </div>
             </div>
             <div className="basketball-viz-map-grid">
-              <ShotMap team="HOME" events={events} />
-              <ShotMap team="AWAY" events={events} />
+              <ShotMap team="HOME" events={events} thresholds={thresholds} />
+              <ShotMap team="AWAY" events={events} thresholds={thresholds} />
             </div>
             <InsightCard title="샷맵" insight={shotInsight} />
           </section>
