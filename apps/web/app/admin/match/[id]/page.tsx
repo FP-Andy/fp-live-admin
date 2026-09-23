@@ -189,6 +189,7 @@ export default function MatchPage() {
   const lineups = (match?.metadata?.lineups?.teams || {}) as Partial<Record<Team, LineupPlayer[]>>;
   const hasLineupPlayers = Boolean((lineups.HOME || []).length || (lineups.AWAY || []).length);
   const isFutsal = match?.sport === 'FUTSAL';
+  const isSinglePeriod = isFutsal && match?.metadata?.period_mode === 'SINGLE';
   const xgPlayerOptions = useMemo(() => lineups[xgTeam] || [], [lineups, xgTeam]);
   const selectedXgPlayer = useMemo(
     () => xgPlayerOptions.find((player) => `${player.number}|${player.name}` === xgPlayerKey) || null,
@@ -196,6 +197,7 @@ export default function MatchPage() {
   );
 
   const displayClockLabel = (ms: number) => {
+    if (isSinglePeriod) return fmt(ms);
     const totalSec = Math.floor(ms / 1000);
     const firstHalfMin = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
     const secondHalfMin = Number(match?.second_half_minutes) > 0 ? Number(match?.second_half_minutes) : firstHalfMin;
@@ -274,6 +276,7 @@ export default function MatchPage() {
 
   const formatDominanceTick = (minuteVal: number) => {
     const ms = Math.round(Number(minuteVal) * 60000);
+    if (isSinglePeriod) return String(Math.floor(ms / 60000));
     const layout = buildDominancePeriodLayout();
     if (layout) {
       for (const seg of layout) {
@@ -499,11 +502,11 @@ export default function MatchPage() {
 
   const fetchAll = async () => {
     const seq = ++fetchSeqRef.current;
-    const [m, s, d] = await Promise.all([
+    const [m, s] = await Promise.all([
       apiJson<any>(`/matches/${id}`),
       apiJson<any>(`/matches/${id}/summary`),
-      apiJson<any>(`/matches/${id}/dominance?bin_seconds=180&split_halves=true`),
     ]);
+    const d = await apiJson<any>(`/matches/${id}/dominance?bin_seconds=${m.sport === 'FUTSAL' ? 60 : 180}&split_halves=true`);
     if (seq !== fetchSeqRef.current) return;
     setLoadError('');
     setMatch(m);
@@ -711,7 +714,7 @@ export default function MatchPage() {
 
   const startFirstHalf = async () => {
     if (!canWrite) return;
-    if (!window.confirm('타이머를 1H 00:00으로 설정할까요?')) return;
+    if (!window.confirm(isSinglePeriod ? '경기 타이머를 00:00으로 설정할까요?' : '타이머를 1H 00:00으로 설정할까요?')) return;
     setClockMs(0);
     baseRef.current = 0;
     perfRef.current = null;
@@ -1579,13 +1582,13 @@ export default function MatchPage() {
       {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}</span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
       <section className="card fla-clock" aria-label="경기 타이머">
         <div className="fla-clock-main"><div><span className="muted">{running ? '진행 중' : '일시정지'}</span><strong className="fla-clock-value">{displayClockLabel(clockMs)}{clockSpeed === 2 ? ' ×2' : ''}</strong></div>
-          <div className="fla-period-controls" role="group" aria-label="전후반 선택">
-            <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>전반 00:00</button>
-            <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>후반 시작</button>
+          <div className="fla-period-controls" role="group" aria-label={isSinglePeriod ? "단일 경기" : "전후반 선택"}>
+            <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>{isSinglePeriod ? '경기 00:00' : '전반 00:00'}</button>
+            {!isSinglePeriod ? <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>후반 시작</button> : <span className="muted">전후반 없음 · {match?.first_half_minutes}분</span>}
           </div>
           <button className={running ? 'btn-secondary' : 'btn-primary'} onClick={(e) => { e.currentTarget.blur(); toggleRun(); }} disabled={!canWrite}>{running ? '일시정지' : '경기 시작'}</button>
         </div>
-        <details className="fla-clock-settings"><summary>시간 보정 · 연장 설정</summary><div className="grid">
+        <details className="fla-clock-settings"><summary>{isSinglePeriod ? '시간 보정' : '시간 보정 · 연장 설정'}</summary><div className="grid">
             {canUseX2 ? (
               <div className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
                 <button className={clockSpeed === 1 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(1)} disabled={!canWrite}>
@@ -1602,8 +1605,8 @@ export default function MatchPage() {
               </div>
             ) : null}
           <div className="row">
-            <button className="btn-secondary" onClick={markThirdHalfStart} disabled={!canWrite}>연장 전반</button>
-            <button className="btn-secondary" onClick={markFourthHalfStart} disabled={!canWrite}>연장 후반</button>
+            {!isSinglePeriod ? <><button className="btn-secondary" onClick={markThirdHalfStart} disabled={!canWrite}>연장 전반</button>
+            <button className="btn-secondary" onClick={markFourthHalfStart} disabled={!canWrite}>연장 후반</button></> : null}
             <button className="btn-danger" onClick={resetClock} disabled={!canWrite}>타이머 초기화</button>
           </div>
         </div></details>
@@ -2081,7 +2084,7 @@ export default function MatchPage() {
               </div>
             ) : null}
       <div className="card card-utility">
-        <h3>경기 흐름 · 3분 단위</h3>
+        <h3>경기 흐름 · {isFutsal ? '1분' : '3분'} 단위</h3>
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
             <ComposedChart data={dominanceChartData}>

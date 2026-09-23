@@ -3781,8 +3781,11 @@ def _compute_dominance_value(
 
 
 def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session) -> dict:
-    if bin_seconds != 180:
-        raise HTTPException(status_code=400, detail="Only 180-second bins are supported in MVP")
+    match_obj = db.get(Match, match_id)
+    is_futsal = getattr(match_obj, "sport", None) == "FUTSAL"
+    single_period = is_futsal and (match_obj.metadata_json or {}).get("period_mode") == "SINGLE"
+    if bin_seconds != 180 and not (is_futsal and bin_seconds == 60):
+        raise HTTPException(status_code=400, detail="Supported bins: 180 seconds; futsal also supports 60 seconds")
 
     bin_size_ms = bin_seconds * 1000
     last_state = _latest_state(match_id, db)
@@ -3812,6 +3815,9 @@ def _build_split_halves_dominance(match_id: UUID, bin_seconds: int, db: Session)
         .order_by(MatchMarker.clock_ms.asc(), MatchMarker.created_at.asc(), MatchMarker.id.asc())
         .all()
     )
+
+    if single_period:
+        marker_rows = []
 
     max_clock_ms = max(
         [
@@ -6163,6 +6169,10 @@ def create_match(body: CreateMatchRequest, db: Session = Depends(get_db), user: 
     extra_first_half_minutes = int(getattr(competition, "extra_first_half_minutes", None) or 15) if competition else 15
     extra_second_half_minutes = int(getattr(competition, "extra_second_half_minutes", None) or 15) if competition else 15
     metadata = dict(body.metadata or {})
+    if sport == "FUTSAL" and metadata.get("period_mode") == "SINGLE":
+        # Use existing metadata and response fields; no broadcast schema change.
+        second_half_minutes = 0
+        metadata["match_minutes"] = first_half_minutes
     metadata["sport"] = sport
     if sport == "FOOTBALL":
         # New football matches opt in by default; an explicit false is the

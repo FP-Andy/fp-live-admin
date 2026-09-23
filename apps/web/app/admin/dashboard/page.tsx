@@ -296,6 +296,7 @@ export default function Dashboard() {
   const [basketballPeriodCount, setBasketballPeriodCount] = useState(4);
   const [basketballPeriodMinutes, setBasketballPeriodMinutes] = useState(10);
   const [futsalPlayerFormat, setFutsalPlayerFormat] = useState<5 | 6 | 7>(6);
+  const [futsalPeriodMode, setFutsalPeriodMode] = useState<'HALVES' | 'SINGLE'>('HALVES');
   const [futsalFirstHalfMinutes, setFutsalFirstHalfMinutes] = useState(15);
   const [futsalSecondHalfMinutes, setFutsalSecondHalfMinutes] = useState(15);
   const [assignOperator, setAssignOperator] = useState(false);
@@ -503,6 +504,8 @@ export default function Dashboard() {
             : sport === 'FUTSAL'
               ? {
                   sport_profile: 'FUTSAL_QUEENCUP',
+                  period_mode: futsalPeriodMode,
+                  match_minutes: futsalFirstHalfMinutes,
                   player_format: futsalPlayerFormat,
                   pitch_length_m: 40,
                   pitch_width_m: 20,
@@ -1180,13 +1183,20 @@ export default function Dashboard() {
                       </select>
                     </div>
                     <div className="field-stack field-stack-short">
-                      <div className="field-label">전반 시간</div>
-                      <input min={1} max={60} step={1} type="number" value={futsalFirstHalfMinutes} onChange={(e) => setFutsalFirstHalfMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 15)))} />
+                      <label className="field-label" htmlFor="futsal-period-mode">진행 방식</label>
+                      <select id="futsal-period-mode" value={futsalPeriodMode} onChange={(e) => setFutsalPeriodMode(e.target.value as 'HALVES' | 'SINGLE')}>
+                        <option value="HALVES">전반 / 후반</option>
+                        <option value="SINGLE">단일 경기 · 전후반 없음</option>
+                      </select>
                     </div>
                     <div className="field-stack field-stack-short">
+                      <div className="field-label">{futsalPeriodMode === 'SINGLE' ? '전체 경기 시간(분)' : '전반 시간'}</div>
+                      <input min={1} max={60} step={1} type="number" value={futsalFirstHalfMinutes} onChange={(e) => setFutsalFirstHalfMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 15)))} />
+                    </div>
+                    {futsalPeriodMode === 'HALVES' ? <div className="field-stack field-stack-short">
                       <div className="field-label">후반 시간</div>
                       <input min={1} max={60} step={1} type="number" value={futsalSecondHalfMinutes} onChange={(e) => setFutsalSecondHalfMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 15)))} />
-                    </div>
+                    </div> : null}
                   </>
                 ) : null}
 
@@ -1225,7 +1235,7 @@ export default function Dashboard() {
                 경기 시간: 전반 {selectedCompetition?.first_half_minutes || 45}분 / 후반 {selectedCompetition?.second_half_minutes || 45}분
               </div> : sport === 'FUTSAL' ? (
                 <div className="muted dashboard-class-time">
-                  퀸컵 풋살 · {futsalPlayerFormat} vs {futsalPlayerFormat} · 전반 {futsalFirstHalfMinutes}분 / 후반 {futsalSecondHalfMinutes}분 · 수동 FLA/FPA
+                  퀸컵 풋살 · {futsalPlayerFormat} vs {futsalPlayerFormat} · {futsalPeriodMode === 'SINGLE' ? `단일 경기 ${futsalFirstHalfMinutes}분` : `전반 ${futsalFirstHalfMinutes}분 / 후반 ${futsalSecondHalfMinutes}분`} · 수동 FLA/FPA
                 </div>
               ) : (
                 <div className="muted dashboard-class-time">
