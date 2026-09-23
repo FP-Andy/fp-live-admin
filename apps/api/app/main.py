@@ -13523,9 +13523,25 @@ def _run_competition_send(
                 return f"계약 위반 — {rbody.get('errors')}"
             return str(rbody or "사유 없음")
 
-        if rbody.get("accepted") is False:
-            # 200 으로 와도 accepted=false 면 받아 준 것이 아니다 — 성공으로 적으면 안 된다.
+        # 수신부가 알려 준 응답 세 가지를 **몸통으로** 가른다. 상태코드만 보면
+        # 200 에 담겨 온 거절을 성공으로 적는다.
+        #   {"code":"VF"}                    형식 오류 — 본문 파싱에서 떨어졌다
+        #   {"accepted":false,"errors":[…]}  계약 위반 — 값이 규칙에 안 맞는다
+        #   {"accepted":true,"stored":{…}}   정상 저장
+        rejected = (str(rbody.get("code") or "").upper() == "VF"
+                    or rbody.get("accepted") is False)
+        if rejected:
             status_label = f"rejected({code}): {_rejection()}"
+        elif rbody.get("accepted") is True:
+            # 무엇이 저장됐는지 같이 남긴다 — 형식 오류는 수신부에 기록도 로그도
+            # 안 남으므로, '보냈는데 없다' 를 가릴 근거가 우리 쪽에만 있다.
+            stored = rbody.get("stored")
+            detail = ""
+            if isinstance(stored, dict) and stored:
+                detail = " · 저장 " + ", ".join(
+                    f"{key}={value}" for key, value in list(stored.items())[:4]
+                )
+            status_label = f"sent{detail}"
         elif code == 200:
             status_label = "sent"
         elif code == 501:
