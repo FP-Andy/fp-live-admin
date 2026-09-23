@@ -427,6 +427,62 @@ def _parse_column_side(ws, side: str) -> dict:
     return {"team": team, "formation": formation, "coach": coach, "players": players}
 
 
+# ── 머리글에서 대회 인입에 쓸 값 뽑기 ──────────────────────────────────────
+# 기록지 서식은 사람이 채워 넣어서 흔들린다. 실물 24개 시트에서 본 것만 적어 두면:
+#
+#   경기 번호(B7)  'S-1R-1' · 'A-2R-2' · 'A-2 R-2'(공백 오타)
+#   일시(E7)      '2026. 03. 22 (일)' · '2026.03.22(일)' · '2026. 3. 29. (일)'
+#                 · '2026.4.26.(일)' · '2026.03.22(일요일)'
+#   경기장(E8)     끝에 공백이 붙기도 한다
+#
+# 그래서 **모양을 맞추려 하지 않고 숫자만 집어낸다.** 시간은 기록지에 없다 — 전송
+# 화면에서 사람이 직접 넣는다.
+_SHEET_CODE_RE = re.compile(r"([SABL])\s*-\s*(\d+)\s*R\s*-\s*(\d+)", re.IGNORECASE)
+_DATE_RE = re.compile(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})")
+
+
+def _match_code(*candidates: str) -> tuple[str, str, str]:
+    """'S-1R-3' 같은 코드에서 (등급, 라운드, 경기번호). 못 읽으면 빈 문자열.
+
+    경기 번호 칸과 시트 이름을 차례로 본다 — 칸에 오타가 있거나 시트 이름이
+    '고' 처럼 엉뚱한 경우가 실제로 있었다.
+    """
+    for raw in candidates:
+        found = _SHEET_CODE_RE.search(_nfc(raw))
+        if found:
+            return found.group(1).upper(), f"{int(found.group(2))}R", found.group(3)
+    return "", "", ""
+
+
+def _played_date(raw: str) -> str:
+    """'2026. 3. 29. (일)' → '2026-03-29'. 못 읽으면 빈 문자열."""
+    found = _DATE_RE.search(_nfc(raw))
+    if not found:
+        return ""
+    year, month, day = (int(g) for g in found.groups())
+    if not (2000 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
+        return ""
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def sheet_meta(parsed: dict, sheet_name: str = "") -> dict:
+    """파싱된 시트 → 대회 인입 화면이 미리 채울 값.
+
+    grade 는 SUFA 등급 한 글자(S/A/B/L)다 — 대회 ID·이름을 그걸로 고를 수 있다.
+    """
+    grade, round_label, match_no = _match_code(
+        str(parsed.get("matchNo") or ""), sheet_name,
+    )
+    return {
+        "grade": grade,
+        "round": round_label,
+        "match_no": match_no,
+        # 날짜만이다. 시간은 기록지에 없어 사람이 넣는다.
+        "played_date": _played_date(str(parsed.get("date") or "")),
+        "venue": _nfc(str(parsed.get("venue") or "")).strip(),
+    }
+
+
 def parse_sheet(ws) -> dict:
     is_column_layout = _is_column_layout(ws)
     return {
