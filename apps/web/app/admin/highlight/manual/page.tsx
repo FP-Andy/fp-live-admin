@@ -1235,6 +1235,8 @@ export default function ManualHighlightPage() {
             logo_url: scoreboard.logoUrl || '',
             // 판 위 로고의 크기(%). 100 이 시안 원본이다.
             logo_size_pct: scoreboard.logoSizePct,
+            // 팀명 글자 크기(%). 점수는 그대로다.
+            name_size_pct: scoreboard.nameSizePct,
             // 적어 넣은 픽셀 좌표. 없으면 null 이고 그때는 비율을 쓴다.
             pos_px_x: scoreboard.posPxX ?? null,
             pos_px_y: scoreboard.posPxY ?? null,
@@ -2066,6 +2068,29 @@ export default function ManualHighlightPage() {
                         style={{ width: 140 }}
                       />
                       화면 가로의 {scoreboard.sizePct}%
+                    </label>
+                    {/* 팀명만 줄인다 — 점수는 그대로다. 긴 학교 이름이 자동 축소에 걸려
+                        경기마다 크기가 들쭉날쭉할 때, 아예 한 단계 낮춰 고정한다. */}
+                    <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      팀명 크기
+                      <input
+                        type="range"
+                        min={40}
+                        max={100}
+                        step={5}
+                        value={scoreboard.nameSizePct}
+                        onChange={(e) => setScoreboard((p) => ({ ...p, nameSizePct: Number(e.target.value) }))}
+                        style={{ width: 110 }}
+                      />
+                      {scoreboard.nameSizePct}%
+                      {scoreboard.nameSizePct !== 100 ? (
+                        <button
+                          style={{ ...smallBtn, padding: '2px 8px' }}
+                          onClick={() => setScoreboard((p) => ({ ...p, nameSizePct: 100 }))}
+                        >
+                          기본
+                        </button>
+                      ) : null}
                     </label>
                     {/* 대회 로고 — 판 위쪽 가운데에 절반 걸쳐 올라간다. 안 넣으면 안 그린다.
                         dataURL 로 들고 있다가 합치기 요청에 그대로 실어 보낸다. */}

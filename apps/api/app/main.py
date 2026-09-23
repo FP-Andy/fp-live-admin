@@ -9696,6 +9696,8 @@ def merge_manual_job(
             "pos_y": _pct("pos_y", 4.42, 0.0, 100.0),
             # 판 위 로고의 크기(%). 100 이 시안 원본이고, 판 폭에 비례한다.
             "logo_size_pct": _pct("logo_size_pct", 100.0, 40.0, 220.0),
+            # 팀명 글자 크기(%). 점수는 그대로 두고 이름만 **줄인다**(100 이 최대).
+            "name_size_pct": _pct("name_size_pct", 100.0, 40.0, 100.0),
             # 영상 픽셀 좌표. 적어 넣었으면 비율 대신 이것을 쓴다.
             "pos_px_x": _board_px("pos_px_x"),
             "pos_px_y": _board_px("pos_px_y"),

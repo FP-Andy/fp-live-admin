@@ -185,6 +185,7 @@ def render_scoreboard(
     away_color: str | None = None,
     logo_path: Path | str | None = None,
     logo_size: float = 1.0,
+    name_size: float = 1.0,
 ) -> Image.Image:
     """점수판 한 장을 RGBA 이미지로 그린다. board_width 는 판의 최종 픽셀 폭.
 
@@ -272,6 +273,18 @@ def render_scoreboard(
     # 평행사변형이라 그 줄에서 왼쪽 끝은 off/2, 오른쪽 끝은 W - off/2 다. 기울기
     # 보정은 바(판 가장자리) 쪽 경계에만 붙고, 점수 쪽 경계는 점수와 같은 절대
     # 좌표라 그대로 둔다 — 양쪽에 다 더하면 이름이 점수 쪽으로 밀린다.
+    # 팀명 크기 — 점수는 그대로 두고 이름만 줄인다.
+    #
+    # 배율은 **자동 축소가 정한 크기에** 건다. 최대 크기에 걸면 긴 이름에서는 아무
+    # 효과가 없다 — 어차피 폭에 맞춰 더 줄어들기 때문이다. 이렇게 해야 100% 가 지금
+    # 보이는 모습이고 60% 가 정확히 그 0.6 배가 된다.
+    #
+    # 키우는 쪽은 열어 두지 않았다. 폭을 넘으면 점수와 겹치는데, 여기서 넘치게 하면
+    # 자동 축소를 둔 이유가 없어진다.
+    try:
+        name_scale = max(0.4, min(1.0, float(name_size)))
+    except (TypeError, ValueError):
+        name_scale = 1.0
     name_min = round(d(TEXT_SIZE * 0.45))
     home_left = off / 2 + bar_w + d(24)
     home_right = home_score_x - d(60)
@@ -283,6 +296,9 @@ def render_scoreboard(
                           text_px, name_min, max(round(d(80)), round(home_zone)))
     away_font = _fit_font(draw, away_name or "AWAY", NAME_FONT,
                           text_px, name_min, max(round(d(80)), round(away_zone)))
+    if name_scale < 1.0:
+        home_font = _font(NAME_FONT, max(1, round(home_font.size * name_scale)))
+        away_font = _font(NAME_FONT, max(1, round(away_font.size * name_scale)))
     draw.text(((home_left + home_right) / 2, mid_y), home_name or "HOME",
               font=home_font, fill=white, anchor="mm")
     draw.text(((away_left + away_right) / 2, mid_y), away_name or "AWAY",
@@ -378,11 +394,12 @@ def render_scoreboard_file(
     away_color: str | None = None,
     logo_path: Path | str | None = None,
     logo_size: float = 1.0,
+    name_size: float = 1.0,
 ) -> Path:
     """점수판을 PNG 파일로 저장하고 그 경로를 돌려준다(ffmpeg overlay 입력용)."""
     image = render_scoreboard(
         home_name, away_name, home_score, away_score,
-        board_width, home_color, away_color, logo_path, logo_size,
+        board_width, home_color, away_color, logo_path, logo_size, name_size,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, format="PNG")

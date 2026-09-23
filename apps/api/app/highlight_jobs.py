@@ -1287,6 +1287,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     score[0], score[1], sb_board_w,
                     sb_cfg.get("home_color"), sb_cfg.get("away_color"),
                     sb_logo, sb_logo_scale,
+                    float(sb_cfg.get("name_size_pct") or 100) / 100.0,
                 )
                 sb_cache[score] = path
             return path

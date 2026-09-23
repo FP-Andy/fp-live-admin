@@ -38,6 +38,8 @@ export type Scoreboard = {
   logoUrl: string;
   /** 판 위 로고의 크기(%). 100 이 시안 원본이고 판 폭에 비례한다. */
   logoSizePct: number;
+  /** 팀명 글자 크기(%). 점수는 그대로 두고 이름만 줄인다. */
+  nameSizePct: number;
   /** 영상 픽셀 좌표. 적어 넣었으면 비율(posX/posY) 대신 이것을 쓴다.
    *  끌거나 9칸을 누르면 비워진다 — 그것들은 비율로 잡는 몸짓이다. */
   posPxX?: number | null;
@@ -139,6 +141,7 @@ export const DEFAULT_SCOREBOARD: Scoreboard = {
   posY: 4.42,
   logoUrl: '',
   logoSizePct: 100,
+  nameSizePct: 100,
   posPxX: null,
   posPxY: null,
 };
@@ -219,9 +222,11 @@ export function ScoreboardPreview(
   const padScore = W * (60 / 928.75);  // 점수에서 띄우는 여백
   const homeZone: [number, number] = [off / 2 + barW + padIn, W * 0.398 - padScore];
   const awayZone: [number, number] = [W * 0.560 + padScore, W - off / 2 - barW - padIn];
+  // 팀명만 줄인다 — 점수(scoreStyle)는 그대로 둔다.
+  const nameScale = Math.max(0.4, Math.min(1, (config.nameSizePct || 100) / 100));
   const nameStyle: React.CSSProperties = {
     position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)',
-    fontSize: `${H * 0.38}px`, fontWeight: 800, whiteSpace: 'nowrap',
+    fontSize: `${H * 0.38 * nameScale}px`, fontWeight: 800, whiteSpace: 'nowrap',
     overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'center',
     fontFamily: 'Paperlogy, sans-serif',
   };
