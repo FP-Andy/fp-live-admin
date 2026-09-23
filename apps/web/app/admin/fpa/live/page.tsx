@@ -2128,6 +2128,107 @@ export default function FpaLivePage() {
    *  undo 도 걸지 않는다: dualUndoState 는 라이브 캔버스만 담고 있어서, 여기서 밀어 넣으면
    *  되돌릴 때 라이브 쪽이 엉뚱하게 덮인다.
    */
+  /** 수정용 피치에서 고른 좌표의 **편(홈↔어웨이)** 을 바꾼다.
+   *
+   *  찍을 때 편을 잘못 고른 것을 고치는 길이다. 예전에는 지우고 다시 찍는 수밖에
+   *  없었는데, 그러면 그 점에 물린 화살표까지 같이 날아간다.
+   *
+   *  점은 편을 두 가지로 들고 있다.
+   *    teamSide — 절대(홈/어웨이)
+   *    team     — **행위 팀 기준**(아군/상대)
+   *  둘이 어긋나면 라벨(A3·O5)과 채점이 서로 다른 말을 한다. 그래서 같이 뒤집는다.
+   *
+   *  같은 등번호가 Before·After 양쪽에 있으면 **둘 다** 바꾼다. 한쪽만 바뀌면 같은
+   *  선수가 프레임마다 편이 달라진다. 번호가 없는 점은 짝을 알 수 없어 고른 것만 바꾼다
+   *  (Before/After 점은 id 가 서로 달라 번호 말고는 묶을 길이 없다).
+   */
+  const flipEditSelectedDotSide = () => {
+    const sel = editSelectedDot;
+    if (!sel) {
+      setStatus('수정용 피치에서 편을 바꿀 좌표를 먼저 선택하세요');
+      return;
+    }
+    const list = sel.side === 'before' ? editBeforeDots : editAfterDots;
+    const target = list[sel.index];
+    if (!target) {
+      setStatus('수정용 피치의 선택된 좌표를 찾을 수 없습니다');
+      return;
+    }
+    const other: (side: TeamSide) => TeamSide = (side) => (side === 'home' ? 'away' : 'home');
+    // 옛 점에는 teamSide 가 없다 — 그때는 아군/상대와 행위 팀으로 되살린다.
+    const currentSide: TeamSide = target.teamSide
+      ?? (isAllyDot(target) ? editTeam : other(editTeam));
+    const nextSide = other(currentSide);
+    const number = (target.number || '').trim();
+
+    const flip = (dot: PitchDot): PitchDot => ({
+      ...dot,
+      teamSide: nextSide,
+      team: nextSide === editTeam ? 'ally' : 'opponent',
+      // A3·O5 순번은 편마다 따로 센다 — 편을 옮겼으면 그 자리 번호는 더 이상 맞지 않는다.
+      seq: undefined,
+    });
+
+    const sideOf = (dot: PitchDot): TeamSide =>
+      dot.teamSide ?? (isAllyDot(dot) ? editTeam : other(editTeam));
+
+    let changed = 0;
+    const apply = (prev: PitchDot[], isSelected: boolean) =>
+      prev.map((dot, index) => {
+        const picked = isSelected && index === sel.index;
+        // 같은 번호·같은 편의 점은 같은 선수다. 번호가 없으면 짝을 못 찾는다.
+        const paired = !picked && !!number && !dot.ghost
+          && (dot.number || '').trim() === number && sideOf(dot) === currentSide;
+        if (!picked && !paired) return dot;
+        changed += 1;
+        return flip(dot);
+      });
+
+    setEditBeforeDots((prev) => apply(prev, sel.side === 'before'));
+    setEditAfterDots((prev) => apply(prev, sel.side === 'after'));
+
+    // '홈' 은 받침이 있어 '으로', '어웨이' 는 없어서 '로' 다.
+    const label = nextSide === 'home' ? '홈으로' : '어웨이로';
+    setStatus(number
+      ? `${number}번 좌표를 ${label} 바꿨습니다 (${changed}곳)`
+      : `선택한 좌표를 ${label} 바꿨습니다 — 번호가 없어 이 점만 바꿉니다`);
+  };
+
+  /** 수정용 피치의 **모든** 좌표를 홈↔어웨이로 뒤집는다.
+   *
+   *  장면 전체를 반대 편으로 찍은 경우가 있다. 하나씩 고치면 열 번 넘게 눌러야 한다.
+   *
+   *  잔상은 건드리지 않는다 — 포메이션 자리에 서 있을 뿐 찍은 점이 아니다.
+   *  행위 팀(editTeam)은 그대로 둔다. 편을 뒤집는 것과 '누가 한 액션인가' 는 다른
+   *  이야기라, 같이 바꾸면 되돌릴 방법이 없어진다.
+   */
+  const flipAllEditDotSides = () => {
+    const real = [...editBeforeDots, ...editAfterDots].filter((dot) => !dot.ghost);
+    if (!real.length) {
+      setStatus('수정용 피치에 뒤집을 좌표가 없습니다');
+      return;
+    }
+    const other: (side: TeamSide) => TeamSide = (side) => (side === 'home' ? 'away' : 'home');
+    const flipAll = (prev: PitchDot[]) =>
+      prev.map((dot) => {
+        if (dot.ghost) return dot;
+        const current: TeamSide = dot.teamSide
+          ?? (isAllyDot(dot) ? editTeam : other(editTeam));
+        const next = other(current);
+        return {
+          ...dot,
+          teamSide: next,
+          team: next === editTeam ? 'ally' : 'opponent',
+          // A3·O5 순번은 편마다 따로 센다 — 편이 바뀌면 다시 세야 한다.
+          seq: undefined,
+        } as PitchDot;
+      });
+    setEditBeforeDots(flipAll);
+    setEditAfterDots(flipAll);
+    setEditSelectedDot(null);
+    setStatus(`좌표 ${real.length}개의 홈↔어웨이를 모두 뒤집었습니다`);
+  };
+
   const copyEditBeforeToAfter = () => {
     // 잔상은 넘기지 않는다 — After 는 '액션이 끝난 시점의 실제 위치' 프레임이다.
     const beforeReal = realDots(editBeforeDots);
@@ -2348,9 +2449,22 @@ export default function FpaLivePage() {
       passArrows: editPassArrows,
       primary: editPrimary,
     };
-    setSavedScenes((prev) => prev.map((scene, index) => (index === savedIndex ? snapshot : scene)));
-    setBusy(false);
+    // 방금 고친 것을 반영한 목록. state 는 아직 옛것이라 직접 만든다 —
+    // 아래 서버 PUT 에 이 값을 그대로 넘겨야 고친 내용이 올라간다.
+    const nextScenes = savedScenes.map((scene, index) => (index === savedIndex ? snapshot : scene));
+    setSavedScenes(nextScenes);
     setStatus(`액션 ${savedIndex + 1} 수정 저장됨 · 최종 좌표로 재채점 완료`);
+
+    // **서버에도 올린다.** 라이브 액션 저장(saveScene)은 올리는데 여기만 빠져 있었다.
+    // 그래서 고쳐 놓고 창을 닫으면 화면에만 남고, 다음 액션을 저장할 때에야 딸려
+    // 올라갔다 — 그 사이에 검수하면 고치기 전 것이 보인다.
+    if (clipTarget && autoSaveToClip) {
+      const ok = await saveRowsToClip(nextScenes);
+      if (ok) {
+        setStatus(`액션 ${savedIndex + 1} 수정 저장 · 클립에 반영됨 (장면 ${nextScenes.length}개)`);
+      }
+    }
+    setBusy(false);
     closeSceneEditor();
   };
 
@@ -4690,6 +4804,26 @@ export default function FpaLivePage() {
                 type="button"
               >
                 →
+              </button>
+              {/* 찍을 때 편을 잘못 고른 것을 고친다. 지우고 다시 찍으면 그 점에
+                  물린 화살표까지 날아간다. */}
+              <button
+                disabled={Boolean(pendingXgot) || !editSelectedDot}
+                onClick={flipEditSelectedDotSide}
+                title="선택한 좌표의 홈↔어웨이를 바꿉니다 (같은 번호가 Before·After 에 있으면 둘 다)"
+                type="button"
+              >
+                ⇄
+              </button>
+              {/* 장면을 통째로 반대 편으로 찍은 경우 — 하나씩 고치면 열 번 넘게 눌러야 한다. */}
+              <button
+                disabled={Boolean(pendingXgot)
+                  || [...editBeforeDots, ...editAfterDots].every((dot) => dot.ghost)}
+                onClick={flipAllEditDotSides}
+                title="찍힌 좌표 전체의 홈↔어웨이를 뒤집습니다"
+                type="button"
+              >
+                ⇄ 전체
               </button>
             </div>
             {pendingXgot && pendingXgot.canvas === 'edit' ? (

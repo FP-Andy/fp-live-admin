@@ -12723,7 +12723,10 @@ def clip_result_scene_motions(
     for action in actions:
         if not action.get("sceneData"):
             continue
-        key = scene_motion_key(motion_prefix, clip.id, action.get("seq"))
+        # 좌표 지문까지 같아야 그 좌표의 mp4 다 — 좌표를 고치면 키가 달라져
+        # 옛 mp4 가 딸려오지 않는다(예전에는 고치기 전 모션이 그대로 나왔다).
+        key = scene_motion_key(motion_prefix, clip.id, action.get("seq"),
+                               action.get("sceneData"))
         motions.append({
             "seq": action.get("seq"),
             "url": storage.presigned_get(key, expires=3600) if storage.exists(key) else None,

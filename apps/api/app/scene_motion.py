@@ -9,6 +9,8 @@ SceneState(fineplay.fpa.scene_state.v0.1: beforeDots/afterDots)를 받아
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import subprocess
@@ -1256,13 +1258,35 @@ def _row_has_tag(row: dict[str, Any], tag: str) -> bool:
     return False
 
 
-def scene_motion_key(prefix: str, clip_key: str, seq: Any) -> str:
+def scene_motion_stamp(scene_data: Any) -> str:
+    """그 장면 좌표의 지문. 좌표가 바뀌면 값이 바뀐다.
+
+    키에 섞어 **옛 mp4 가 새 좌표에 딸려오지 않게** 한다. 예전에는 키가 (클립, seq)
+    뿐이라, 좌표를 고쳐도 같은 키를 가리켜 **고치기 전 모션이 그대로 나왔다.**
+    (뒤에서 덮어쓰기는 했지만, 그 화면에는 이미 옛 링크가 나간 뒤였다.)
+    """
+    if scene_data is None:
+        return ""
+    try:
+        canonical = json.dumps(scene_data, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        canonical = repr(scene_data)
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:10]
+
+
+def scene_motion_key(prefix: str, clip_key: str, seq: Any, scene_data: Any = None) -> str:
     """장면 모션 mp4 의 S3 키.
 
     렌더(attach_scene_motions)와 조회(검수 화면)가 **같은 값**을 만들어야 해서 함수로
     둔다 — 한쪽만 고치면 이미 올라간 mp4 를 못 찾고 매번 다시 렌더한다.
+
+    좌표 지문이 뒤에 붙는다. 좌표를 고치면 키가 달라져 옛 mp4 를 가리키지 않는다.
+    지문이 없으면(옛 호출) 예전 모양 그대로다.
     """
-    return f"{prefix.rstrip('/')}/scene-motion/{clip_key}-a{seq}.mp4"
+    stamp = scene_motion_stamp(scene_data)
+    tail = f"-{stamp}" if stamp else ""
+    return f"{prefix.rstrip('/')}/scene-motion/{clip_key}-a{seq}{tail}.mp4"
 
 
 def attach_scene_motions(
@@ -1364,7 +1388,8 @@ def attach_scene_motions(
                 target["sceneData"] = data
         if not storage_ok:
             continue
-        key = scene_motion_key(prefix, clip_key, seq)
+        # 좌표 지문을 섞는다 — 조회 쪽(main.py)도 같은 sceneData 로 같은 키를 만든다.
+        key = scene_motion_key(prefix, clip_key, seq, rep.get("sceneData"))
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp) / "motion.mp4"
