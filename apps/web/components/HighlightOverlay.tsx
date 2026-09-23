@@ -38,6 +38,10 @@ export type Scoreboard = {
   logoUrl: string;
   /** 판 위 로고의 크기(%). 100 이 시안 원본이고 판 폭에 비례한다. */
   logoSizePct: number;
+  /** 영상 픽셀 좌표. 적어 넣었으면 비율(posX/posY) 대신 이것을 쓴다.
+   *  끌거나 9칸을 누르면 비워진다 — 그것들은 비율로 잡는 몸짓이다. */
+  posPxX?: number | null;
+  posPxY?: number | null;
 };
 
 /** 고른 그림을 dataURL 로 읽되, 큰 원본은 줄여서 읽는다.
@@ -135,6 +139,8 @@ export const DEFAULT_SCOREBOARD: Scoreboard = {
   posY: 4.42,
   logoUrl: '',
   logoSizePct: 100,
+  posPxX: null,
+  posPxY: null,
 };
 
 /** 위치 프리셋 3x3. 값은 posX/posY 비율이다. */
@@ -157,6 +163,7 @@ export const BAR_W_RATIO = 0.0623;                    // 컬러바 수평 두께
 export function boardPlacement(
   videoW: number, videoH: number, sizePct: number, posX: number, posY: number,
   withLogo = false, logoSizePct = 100,
+  posPxX?: number | null, posPxY?: number | null,
 ) {
   const pct = Math.max(10, Math.min(60, sizePct)) / 100;
   const w = Math.max(160, Math.round(Math.min(videoW * pct, videoH * 0.18 * BOARD_ASPECT)));
@@ -172,10 +179,16 @@ export function boardPlacement(
   const freeX = Math.max(0, videoW - w - 2 * margin);
   const freeY = Math.max(0, videoH - h - margin - top);
   const clamp = (v: number) => Math.max(0, Math.min(100, v)) / 100;
+  // 적어 넣은 픽셀이 있으면 그것이 이긴다(서버 board_placement 와 같다).
+  const px = (value: number | null | undefined, span: number) => (
+    value === null || value === undefined || Number.isNaN(Number(value))
+      ? null
+      : Math.max(0, Math.min(span, Math.round(Number(value))))
+  );
   return {
     w, h, plateH, margin,
-    x: margin + Math.round(freeX * clamp(posX)),
-    y: top + Math.round(freeY * clamp(posY)),
+    x: px(posPxX, Math.max(0, videoW - w)) ?? margin + Math.round(freeX * clamp(posX)),
+    y: px(posPxY, Math.max(0, videoH - h)) ?? top + Math.round(freeY * clamp(posY)),
     freeX, freeY,
   };
 }
@@ -259,8 +272,10 @@ export function ScoreboardPreview(
         >
           {config.awayName || 'AWAY'}
         </span>
-        {/* 점수 — 원본 기준 가로 39.8% / 56.0% 자리 */}
+        {/* 점수 — 원본 기준 가로 39.8% / 56.0% 자리. 사이의 콜론은 그 한가운데다
+            (서버 scoreboard.py 와 같은 자리라 미리보기와 결과물이 어긋나지 않는다). */}
         <span style={{ ...scoreStyle, left: `${W * 0.398}px` }}>{home}</span>
+        <span style={{ ...scoreStyle, left: `${W * ((0.398 + 0.560) / 2)}px` }}>:</span>
         <span style={{ ...scoreStyle, left: `${W * 0.560}px` }}>{away}</span>
       </div>
       {/* 대회 로고 — 판 위쪽 가운데, 절반 걸침. 없으면 안 그린다 */}

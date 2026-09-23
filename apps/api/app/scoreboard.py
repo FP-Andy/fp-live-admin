@@ -256,6 +256,10 @@ def render_scoreboard(
               font=score_font, fill=white, anchor="mm")
     draw.text((away_score_x, mid_y), str(max(0, int(away_score))),
               font=score_font, fill=white, anchor="mm")
+    # 두 점수 사이의 콜론 — 15:22 처럼 읽히게. 자리는 두 숫자의 **한가운데**다.
+    # 로고가 있어도 겹치지 않는다: 로고는 판 위쪽에 걸치고 콜론은 판 한가운데에 있다.
+    draw.text(((home_score_x + away_score_x) / 2, mid_y), ":",
+              font=score_font, fill=white, anchor="mm")
 
     # 팀명 — 컬러바와 점수 사이의 빈 자리 **한가운데**에 놓는다.
     #
@@ -316,6 +320,7 @@ def board_placement(
     video_w: int, video_h: int,
     size_pct: float = 24.33, pos_x: float = 2.18, pos_y: float = 4.42,
     with_logo: bool = False, logo_size: float = 1.0,
+    pos_px_x: float | None = None, pos_px_y: float | None = None,
 ) -> tuple[int, int, int, int]:
     """점수판 크기와 놓일 자리. (폭, **이미지 전체 높이**, 왼쪽 x, 위쪽 y)
 
@@ -344,7 +349,22 @@ def board_placement(
         except (TypeError, ValueError):
             return 0.0
 
-    return w, h, margin + r(free_x * _frac(pos_x)), top + r(free_y * _frac(pos_y))
+    def _px(value, span: int) -> int | None:
+        """사람이 적어 넣은 픽셀 좌표. 화면 밖으로만 안 나가게 묶는다."""
+        try:
+            return max(0, min(span, r(float(value))))
+        except (TypeError, ValueError):
+            return None
+
+    # 픽셀이 있으면 픽셀이 이긴다. 비율은 '여백 뺀 범위 안' 이라 숫자로 감이 안 오고,
+    # 영상 규격이 달라지면 자리도 밀린다 — 숫자를 적은 사람은 그 자리를 기대한다.
+    x = _px(pos_px_x, max(0, video_w - w))
+    y = _px(pos_px_y, max(0, video_h - h))
+    if x is None:
+        x = margin + r(free_x * _frac(pos_x))
+    if y is None:
+        y = top + r(free_y * _frac(pos_y))
+    return w, h, x, y
 
 
 def render_scoreboard_file(

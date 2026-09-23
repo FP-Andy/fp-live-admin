@@ -1226,6 +1226,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 float(sb_cfg.get("pos_y") or 0),
                 with_logo=sb_logo is not None,
                 logo_size=sb_logo_scale,
+                # 사람이 적어 넣은 픽셀 좌표. 있으면 이것이 이긴다.
+                pos_px_x=sb_cfg.get("pos_px_x"), pos_px_y=sb_cfg.get("pos_px_y"),
             )
 
         # ── 우리 로고(워터마크) ───────────────────────────────────────────
