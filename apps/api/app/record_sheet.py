@@ -483,6 +483,28 @@ def sheet_meta(parsed: dict, sheet_name: str = "") -> dict:
     }
 
 
+def fill_missing(stored: dict) -> dict:
+    """예전에 저장된 머리글을 있는 것만으로 채운다.
+
+    일괄 업로드가 한동안 머리글을 남기지 않았다 — 그 작업들은 경기 번호(`A-2R-2`)만
+    들고 있다. 거기서 **등급과 라운드는 되살아난다.** 날짜·장소는 저장된 적이 없어
+    못 살린다 — 기록지를 다시 올리거나 사람이 넣는다.
+
+    이미 채워진 값은 건드리지 않는다.
+    """
+    out = dict(stored or {})
+    if not (out.get("grade") and out.get("round")):
+        grade, round_label, match_no = _match_code(
+            str(out.get("match_no") or ""), str(out.get("sheet") or ""),
+        )
+        out["grade"] = out.get("grade") or grade
+        out["round"] = out.get("round") or round_label
+        out["match_no"] = out.get("match_no") or match_no
+    out.setdefault("played_date", "")
+    out.setdefault("venue", "")
+    return out
+
+
 def parse_sheet(ws) -> dict:
     is_column_layout = _is_column_layout(ws)
     return {
