@@ -16,6 +16,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID
@@ -12351,6 +12352,8 @@ def clip_result_matches(
             "callback_status": metadata.get("callback_status"),
             # 대회 인입은 뒤에서 도는 작업이라, 화면이 이 값을 보고 끝난 것을 안다.
             "competition_callback_status": metadata.get("competition_callback_status"),
+            # 어디까지 갔는지. 서버에 남는 값이라 탭을 옮겼다 와도 그대로 보인다.
+            "competition_progress": metadata.get("competition_progress"),
             # 기록지에서 읽은 머리글 — 전송 화면이 대회·라운드·날짜·장소를 미리 채운다.
             # 머리글을 남기기 전에 올라간 작업은 경기 번호밖에 없다 — 거기서 등급·라운드는
             # 되살린다. 다시 올리라고 하면 그때 손본 라인업까지 덮어쓰게 된다.
@@ -13001,6 +13004,7 @@ def _build_clip_result_payload(
     lineup: list[dict] | None = None,
     side_filter: str | None = None,
     include_analysis: bool = True,
+    on_clip: Callable[[str], None] | None = None,
 ) -> dict:
     """DB의 clip·action 으로 FinePlay 결과 페이로드를 조립한다.
 
@@ -13068,6 +13072,10 @@ def _build_clip_result_payload(
             storage=highlight_default_storage(),
             prefix=motion_prefix,
         )
+        # 무거운 일은 여기까지다(클립마다 씬모션 렌더·업로드). 한 장 끝낼 때마다
+        # 알려야 화면이 '몇 개 중 몇 개' 를 보여 줄 수 있다.
+        if on_clip is not None:
+            on_clip(c.id)
         main_action, team_view, involved = fineplay_analysis_from_actions(
             actions,
             clip_team=c.team_side,
@@ -13292,6 +13300,7 @@ def _build_competition_payload(
     competition: dict,
     match: dict,
     labels: dict[str, str],
+    on_clip: Callable[[str], None] | None = None,
 ) -> tuple[dict, dict]:
     """사전 작업 매치 → 대회 인입(competition-results) payload (핸드오프 스펙 §2-2).
 
@@ -13374,6 +13383,7 @@ def _build_competition_payload(
             lineup=injected_lineup,
             side_filter=side,
             include_analysis=True,
+            on_clip=on_clip,
         )
         for clip in side_payload.get("clips") or []:
             key = str(clip.get("clipKey") or clip.get("fpcClipId") or "")
@@ -13470,6 +13480,8 @@ def _run_competition_send(
             current_job = db.query(HighlightJob).filter_by(id=job_id).populate_existing().with_for_update().one()
             meta = dict(current_job.job_metadata or {})
             meta["competition_callback_status"] = status
+            # 끝났으면 진행률은 치운다 — 남아 있으면 끝난 뒤에도 '처리 중' 으로 보인다.
+            meta.pop("competition_progress", None)
             meta.update(extra)
             update_job(db, job_id, job_metadata=meta)
 
@@ -13483,9 +13495,37 @@ def _run_competition_send(
             return
         _job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
 
+        # 진행률은 **잡 메타에 남긴다.** 화면 상태로만 들고 있으면 탭을 옮기거나
+        # 새로고침하는 순간 사라지고, 다른 사람이 보면 아무것도 안 보인다.
+        total = len(clips)
+        seen: set[str] = set()
+
+        def progress(phase: str, label: str, done: int) -> None:
+            current = db.query(HighlightJob).filter_by(id=job_id).populate_existing().one()
+            meta = dict(current.job_metadata or {})
+            meta["competition_progress"] = {
+                "phase": phase,
+                "done": done,
+                "total": total,
+                # 무거운 일은 클립마다 씬모션을 굽는 것이라 그게 곧 진행률이다.
+                "percent": 0 if total <= 0 else min(100, round(done * 100 / total)),
+                "label": label,
+                "at": datetime.utcnow().isoformat(),
+            }
+            update_job(db, job_id, job_metadata=meta)
+
+        def on_clip(clip_id: str) -> None:
+            # 팀 사이드가 없는 옛 클립은 홈·어웨이 양쪽 조립에 다 걸린다 — 두 번 세지 않는다.
+            if clip_id in seen:
+                return
+            seen.add(clip_id)
+            progress("payload", f"클립 {len(seen)}/{total} 처리 중", len(seen))
+
+        progress("payload", f"클립 {total}개 준비 중", 0)
         try:
             payload, summary = _build_competition_payload(
                 db, clips, job, competition=competition, match=match_body, labels=labels,
+                on_clip=on_clip,
             )
         except Exception as exc:  # noqa: BLE001 - 어떤 실패든 화면에 사유가 남아야 한다
             logger.exception("대회 인입 페이로드 생성 실패 %s", job_id)
@@ -13502,6 +13542,7 @@ def _run_competition_send(
                    competition_payload=payload, competition_summary=summary)
             return
 
+        progress("sending", "FinePlay 로 보내는 중", total)
         try:
             result = client.post_competition_results(payload)
         except Exception as exc:  # noqa: BLE001
