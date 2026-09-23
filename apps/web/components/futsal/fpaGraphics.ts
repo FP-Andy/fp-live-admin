@@ -1,0 +1,90 @@
+import { escapeXml, teamName, type Match, type Options } from './graphics';
+export type SavedFpa = {
+    logs: string[];
+    rows: Record<string, string>[];
+    updated_at?: string | null;
+};
+export type Point = {
+    x: number;
+    y: number;
+};
+export type FpaEvent = {
+    index: number;
+    team: string;
+    player: string;
+    receiver: string;
+    action: string;
+    tags: string[];
+    time: string;
+    half: string;
+    direction: string;
+    points: Point[];
+    goal: boolean;
+    outcome: 'success' | 'fail' | 'unknown';
+};
+export type MapMode = 'pass' | 'event' | 'shot' | 'sequence';
+export const mapNames: Record<MapMode, string> = { pass: '패스맵', event: '이벤트맵', shot: '샷맵', sequence: '시퀀스맵' };
+const labels: Record<string, string> = { Pass: '패스', 'Kick-in': '킥인', Cross: '크로스', Shot: '슈팅', Goal: '골', 'Shot On Target': '유효슈팅', 'Blocked Shot': '블록된 슈팅', Dribble: '드리블', Breakthrough: '돌파', Intercept: '인터셉트', Acquisition: '볼 획득', Block: '블록', Save: '선방', Tackle: '태클', Cutout: '차단', Duel: '경합', Foul: '파울' };
+export const actionName = (action: string) => labels[action] || action;
+const number = (value: unknown) => typeof value === 'string' && value.trim() === '' ? NaN : Number(value);
+function point(x: unknown, y: unknown): Point | null { const a = number(x), b = number(y); return Number.isFinite(a) && Number.isFinite(b) && a >= 0 && a <= 40 && b >= 0 && b <= 20 ? { x: a, y: b } : null; }
+function positions(text: string) { return [...text.matchAll(/Pos\(\s*([^,()]+),\s*([^()]+)\)/g)].map(m => point(m[1], m[2])); }
+export function parseFpa(saved: SavedFpa): FpaEvent[] {
+    return Array.from({ length: Math.max(saved.logs?.length || 0, saved.rows?.length || 0) }, (_, index) => {
+        const row = saved.rows?.[index] || {}, log = saved.logs?.[index] || '', parts = log.split(/\s*\|\s*/);
+        const action = parts[5]?.match(/^(\S+)\s+(.+?)(?:\s+to\s+(\S+))?$/);
+        const team = (row.Team || parts[1] || 'unknown').toLowerCase();
+        const tags = (row.Tags || parts.find(p => p.startsWith('Tags:'))?.slice(5) || '').split(',').map(t => t.trim()).filter(Boolean);
+        const starts = positions(row.Coord || parts[4] || '');
+        const start = starts[0] || (row.StartX !== undefined ? point(row.StartX, row.StartY) : null);
+        const end = row.EndX?.trim() ? point(row.EndX, row.EndY) : positions(parts[6] || '')[0];
+        const pathText = row.PathPoints || parts.find(p => p.startsWith('Path('))?.slice(5, -1) || '';
+        const path = pathText ? pathText.split(';').map(p => { const [x, y] = p.split(','); return point(x, y); }) : [];
+        // Invalid intermediate positions must not be bridged into invented routes.
+        const points = path.length > 1 && path.every(p => p !== null) ? path as Point[] : start ? [start, ...(!path.length && end ? [end] : [])] : [];
+        const eventAction = row.Action || action?.[2] || '기타';
+        return { index, team, player: row.Player || action?.[1] || '', receiver: row.Receiver || action?.[3] || '', action: eventAction, tags, time: row.Time || parts[3] || '', half: row.Half || parts[0] || '', direction: row.Direction || parts[2] || '', points, goal: tags.includes('Goal') || eventAction === 'Goal', outcome: tags.includes('Fail') ? 'fail' : tags.includes('Success') ? 'success' : 'unknown' };
+    });
+}
+export const isPass = (e: FpaEvent) => /pass|cross|kick-in|throw-in/i.test(e.action);
+export const isShot = (e: FpaEvent) => /^(shot|shot on target|blocked shot|goal)$/i.test(e.action);
+export function filterEvents(events: FpaEvent[], start: number, end: number, team: string, player: string) {
+    return events.filter(e => e.index >= start && e.index <= end && (team === 'all' || e.team === team) && (player === 'all' || `${e.team}:${e.player}` === player));
+}
+export function mapEvents(events: FpaEvent[], mode: MapMode, selected: Set<number>) {
+    return events.filter(e => mode === 'pass' ? isPass(e) : mode === 'shot' ? isShot(e) : mode === 'sequence' ? selected.has(e.index) : true);
+}
+export function displayPoint(p: Point, direction: string, normalize: boolean): Point {
+    const q = normalize && direction === 'left' ? { x: 40 - p.x, y: 20 - p.y } : p;
+    return { x: 160 + q.x * 32, y: 250 + (20 - q.y) * 32 };
+}
+function eventColor(e: FpaEvent) { if (isShot(e))
+    return '#ff7400'; if (isPass(e))
+    return '#3c8cff'; if (/dribble|breakthrough/i.test(e.action))
+    return '#20bd92'; if (/intercept|block|save|tackle|cutout|acquisition|duel/i.test(e.action))
+    return '#b58bff'; return '#a5acb8'; }
+export function fpaGraphic(match: Match, events: FpaEvent[], mode: MapMode, options: Options, normalize: boolean, scope: string) {
+    const ink = options.background === 'light' ? '#172536' : '#f5f7fc', muted = options.background === 'light' ? '#546476' : '#a6b3c9';
+    const text = (x: number, y: number, value: string, size = 24, color = ink, anchor = 'start') => `<text x="${x}" y="${y}" font-size="${size}" fill="${color}" text-anchor="${anchor}">${escapeXml(value)}</text>`;
+    let defs = '', marks = '';
+    events.forEach((e, i) => {
+        if (!e.points.length)
+            return;
+        const pts = e.points.map(p => displayPoint(p, e.direction, normalize));
+        const color = mode === 'pass' ? (e.outcome === 'fail' ? '#ee6161' : e.outcome === 'success' ? '#3c8cff' : '#a5acb8') : mode === 'shot' ? (e.goal ? '#ff7400' : e.tags.includes('On Target') ? '#20bd92' : '#a5acb8') : eventColor(e);
+        const id = `fpa-${e.index}`, start = pts[0];
+        defs += `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="${color}"/></marker>`;
+        if (pts.length > 1 && mode !== 'shot')
+            marks += `<path data-event="${e.index + 1}" d="${pts.map((p, j) => `${j ? 'L' : 'M'}${p.x} ${p.y}`).join(' ')}" fill="none" stroke="${color}" stroke-width="${mode === 'sequence' ? 4 : 2.8}" stroke-opacity="${mode === 'sequence' ? 1 : .7}" ${e.outcome === 'fail' ? 'stroke-dasharray="8 6"' : ''} marker-end="url(#${id})"/>`;
+        const radius = mode === 'shot' ? (e.goal ? 12 : 8) : 5;
+        marks += `<circle cx="${start.x}" cy="${start.y}" r="${radius}" fill="${color}" fill-opacity="${e.goal ? 1 : .85}" stroke="${ink}" stroke-width="${e.goal ? 2 : 1}"/>`;
+        if (mode === 'sequence') {
+            const ly = start.y + (i % 2 ? -20 : 25), lx = Math.min(1430, Math.max(170, start.x + 16));
+            marks += `<rect x="${lx - 3}" y="${ly - 19}" width="${String(e.index + 1).length * 12 + 16}" height="26" rx="6" fill="${options.background === 'light' ? '#ffffff' : '#101723'}" stroke="${color}"/>` + text(lx + 4, ly, `${e.index + 1}`, 19, color);
+        }
+    });
+    const legends = mode === 'pass' ? '파랑: 성공 · 빨강 점선: 실패 · 회색: 결과 미기록 · 킥인·크로스 포함' : mode === 'shot' ? '주황: 골 · 초록: 유효슈팅 · 회색: 기타 슈팅' : mode === 'sequence' ? '번호: 원본 이벤트 순서 · 각 이벤트의 실제 경로만 표시' : '파랑: 패스 · 주황: 슈팅 · 초록: 운반 · 보라: 수비 · 회색: 기타';
+    const lines = `<g fill="none" stroke="${muted}" stroke-width="2" opacity=".65"><rect x="160" y="250" width="1280" height="640"/><path d="M800 250V890M160 522H128V618H160M1440 522H1472V618H1440M160 330A192 192 0 0 1 352 522V618A192 192 0 0 1 160 810M1440 330A192 192 0 0 0 1248 522V618A192 192 0 0 0 1440 810"/><circle cx="800" cy="570" r="96"/><circle cx="352" cy="570" r="3"/><circle cx="1248" cy="570" r="3"/><circle cx="800" cy="570" r="3"/></g>`;
+    const missing = events.filter(e => !e.points.length).length;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000"><defs>${defs}</defs><g font-family="Arial, 'Noto Sans KR', sans-serif" font-weight="600">${options.background === 'transparent' ? '' : `<rect width="1600" height="1000" fill="${options.background === 'light' ? '#f5f7fa' : '#101723'}"/>`}${text(64, 58, 'FINE PLAY / FUTSAL FPA', 21, muted)}${text(64, 117, mapNames[mode], 40)}${text(64, 160, match.name, 25, muted)}${text(64, 202, scope, 23)}${text(64, 232, legends, 20, muted)}<rect x="160" y="250" width="1280" height="640" fill="${options.background === 'light' ? '#e3ebe9' : '#173239'}"/>${lines}${marks}${events.length ? '' : text(800, 580, mode === 'sequence' ? '아래 목록에서 이벤트를 선택하세요' : '이 범위에 해당하는 기록이 없습니다', 30, muted, 'middle')}${text(64, 947, `${events.length}개 이벤트 · 좌표 없는 기록 ${missing}개 제외 · ${normalize ? '공격방향 오른쪽으로 정렬' : '기록된 실제 좌표'} · 40 × 20m`, 21, muted)}</g></svg>`;
+}

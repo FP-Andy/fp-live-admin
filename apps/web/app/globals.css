@@ -8496,3 +8496,29 @@ html.fpa-embed .topbar {
 .futsal-viz-error { color: #e35c4e; }
 @media (max-width: 1100px) { .futsal-viz-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 600px) { .futsal-viz-toolbar, .futsal-viz-card { padding: 16px; } .futsal-viz-header .btn { width: 100%; } }
+
+.fpa-viz { display: grid; gap: 24px; }
+.fpa-viz h2, .fpa-viz h3 { margin: 0; }
+.fpa-viz p { line-height: 1.6; }
+.fpa-viz-tabs { display:flex; gap:10px; flex-wrap:wrap; margin:20px 0; }
+.fpa-viz-tabs [aria-selected=true] { background:#2158e8; color:#fff; border-color:#2158e8; }
+.fpa-viz-controls { display:flex; gap:20px; flex-wrap:wrap; align-items:end; }
+.fpa-viz-controls label { display:grid; gap:8px; min-width:180px; flex:1; }
+.fpa-viz-controls select { width:100%; min-height:44px; }
+.fpa-viz-range { padding:24px; border:1px solid var(--line-strong); border-radius:16px; display:grid; gap:18px; }
+.fpa-viz-range strong span { color:var(--muted); font-weight:400; }
+.fpa-viz-range label { display:grid; grid-template-columns:40px minmax(80px,1fr) 80px 110px; gap:16px; align-items:center; }
+.fpa-viz-range input[type=range] { width:100%; min-width:0; accent-color:#ff7400; padding:0; }
+.fpa-viz-range input[type=number] { width:100%; min-width:0; }
+.fpa-viz-range small { color:var(--muted); }
+.fpa-viz-notice { padding:16px 20px; border-left:3px solid #ff7400; background:rgba(255,116,0,.08); border-radius:8px; }
+.fpa-viz-selection { display:grid; gap:18px; }
+.fpa-viz-selection-tools { display:flex; flex-wrap:wrap; gap:12px; }
+.fpa-viz-selection-tools input { flex:1 1 240px; min-width:0; }
+.fpa-viz-table { max-height:420px; overflow:auto; border:1px solid var(--line-strong); border-radius:12px; }
+.fpa-viz-table table { width:100%; border-collapse:collapse; }
+.fpa-viz-table th { position:sticky; top:0; background:var(--surface-card); z-index:1; }
+.fpa-viz-table th,.fpa-viz-table td { padding:14px 16px; text-align:left; white-space:nowrap; border-bottom:1px solid var(--line); }
+.fpa-viz-table tr[data-selected=true] { background:rgba(33,88,232,.12); }
+.fpa-viz-table input[type=checkbox] { width:22px; height:22px; accent-color:#2158e8; }
+@media(max-width:600px) { .fpa-viz-range { padding:16px; } .fpa-viz-range label { grid-template-columns:32px minmax(60px,1fr) 60px; gap:10px; } .fpa-viz-range small { grid-column:2 / 4; } .fpa-viz-controls label { min-width:140px; } }
