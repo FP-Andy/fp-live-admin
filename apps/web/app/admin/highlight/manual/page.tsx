@@ -32,6 +32,9 @@ type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal'
   // 농구 — 한 번에 1·2·3점이 오른다. 축구의 '골' 은 늘 1점이라 구분이 없었다.
   | 'bb_home_1' | 'bb_home_2' | 'bb_home_3'
   | 'bb_away_1' | 'bb_away_2' | 'bb_away_3'
+  // 클립 없이 점수판만 올린다. 경기 내내 점수를 따라가되 하이라이트로는 안 쓰는 득점.
+  | 'bb_home_1_only' | 'bb_home_2_only' | 'bb_home_3_only'
+  | 'bb_away_1_only' | 'bb_away_2_only' | 'bb_away_3_only'
   // 구간 경계. 클립을 만들지 않고, 합본에서 그 자리에 전체화면 카드를 세운다.
   | 'section';
 
@@ -97,6 +100,12 @@ type CardSettings = {
 
 const CARD_SEC_DEFAULT = 3;
 
+/** 마무리 카드(파인플레이 로고 영상)의 길이. 레포에 든 고정 자산이라 바뀌지 않는다. */
+const OUTRO_SEC = 2;
+
+/** 배경음악 미리 듣기 길이. 크기만 가늠하면 되므로 길 이유가 없다. */
+const MUSIC_PREVIEW_SEC = 8;
+
 /** 자동으로 서는 첫 구간 카드의 자리표. 태그가 아니므로 tags 에는 없다. */
 const AUTO_SECTION_ID = 'auto-first-section';
 
@@ -147,7 +156,9 @@ const FOOTBALL_TAG_KINDS: TagKindSpec[] = [
  *  q·w·e·r 한 줄로 두면 홈/어웨이를 헷갈린다.
  *
  *  장면(득점 없는 하이라이트)은 **z** 다. 축구의 s 자리를 여기서는 어웨이 2점이 쓴다.
- *  '점수만 반영'(클립 없이 점수판만)은 두지 않았다 — 필요해지면 그때 넣는다.
+ *
+ *  '점수만'(클립 없이 점수판만)은 오른손 u·i·o / j·k·l 이다. 득점이 잦은 종목이라
+ *  전부 클립으로 만들면 합본이 쓸모없이 길어지는데, 점수판은 그것까지 따라가야 한다.
  */
 const BASKETBALL_TAG_KINDS: TagKindSpec[] = [
   { key: 'bb_home_1', code: 'KeyQ', letter: 'q', hangul: 'ㅂ', label: '홈 1점', badge: '홈 +1', color: '#2F6FED', side: 'home', goal: true, points: 1 },
@@ -156,6 +167,17 @@ const BASKETBALL_TAG_KINDS: TagKindSpec[] = [
   { key: 'bb_away_1', code: 'KeyA', letter: 'a', hangul: 'ㅁ', label: '원정 1점', badge: '원정 +1', color: '#E8452F', side: 'away', goal: true, points: 1 },
   { key: 'bb_away_2', code: 'KeyS', letter: 's', hangul: 'ㄴ', label: '원정 2점', badge: '원정 +2', color: '#E8452F', side: 'away', goal: true, points: 2 },
   { key: 'bb_away_3', code: 'KeyD', letter: 'd', hangul: 'ㅇ', label: '원정 3점', badge: '원정 +3', color: '#E8452F', side: 'away', goal: true, points: 3 },
+  // 점수만 — 클립을 만들지 않는다. 농구는 득점이 잦아 전부 클립으로 만들면 합본이
+  // 쓸모없이 길어지는데, 점수판은 그 득점까지 따라가야 맞다.
+  //
+  // 홈 u·i·o / 어웨이 j·k·l — 오른손 한 줄 안에서 **위가 홈, 아래가 어웨이**다.
+  // 왼손(q·w·e / a·s·d)이 '클립까지', 오른손이 '점수만' 이라 손으로 갈린다.
+  { key: 'bb_home_1_only', code: 'KeyU', letter: 'u', hangul: 'ㅕ', label: '홈 1점(점수만)', badge: '홈 +1·점수만', color: '#2F6FED', side: 'home', goal: true, points: 1, clip: false },
+  { key: 'bb_home_2_only', code: 'KeyI', letter: 'i', hangul: 'ㅑ', label: '홈 2점(점수만)', badge: '홈 +2·점수만', color: '#2F6FED', side: 'home', goal: true, points: 2, clip: false },
+  { key: 'bb_home_3_only', code: 'KeyO', letter: 'o', hangul: 'ㅐ', label: '홈 3점(점수만)', badge: '홈 +3·점수만', color: '#2F6FED', side: 'home', goal: true, points: 3, clip: false },
+  { key: 'bb_away_1_only', code: 'KeyJ', letter: 'j', hangul: 'ㅓ', label: '원정 1점(점수만)', badge: '원정 +1·점수만', color: '#E8452F', side: 'away', goal: true, points: 1, clip: false },
+  { key: 'bb_away_2_only', code: 'KeyK', letter: 'k', hangul: 'ㅏ', label: '원정 2점(점수만)', badge: '원정 +2·점수만', color: '#E8452F', side: 'away', goal: true, points: 2, clip: false },
+  { key: 'bb_away_3_only', code: 'KeyL', letter: 'l', hangul: 'ㅣ', label: '원정 3점(점수만)', badge: '원정 +3·점수만', color: '#E8452F', side: 'away', goal: true, points: 3, clip: false },
 ];
 
 /** 종류 없는 일반 태그를 찍는 키. 농구는 s 를 어웨이 2점이 쓰므로 z 로 옮겼다. */
@@ -382,6 +404,59 @@ export default function ManualHighlightPage() {
   const [musicVolume, setMusicVolume] = useState(80);
   /** 경기장 소리. 0 으로 내리면 음악만 남는다. */
   const [originalVolume, setOriginalVolume] = useState(20);
+
+  /** 볼륨을 **귀로** 확인한다 — 80%가 얼마나 큰지는 숫자만 보고 알 수 없다.
+   *  서버와 같은 곱셈(volume · original_volume)을 걸어 잠깐 들려준다. */
+  const [musicPreviewing, setMusicPreviewing] = useState(false);
+  const [musicError, setMusicError] = useState('');
+  const musicPreviewRef = useRef<AudioContext | null>(null);
+
+  const stopMusicPreview = useCallback(() => {
+    const ctx = musicPreviewRef.current;
+    musicPreviewRef.current = null;
+    setMusicPreviewing(false);
+    if (ctx) void ctx.close().catch(() => undefined);
+  }, []);
+
+  // 페이지를 떠날 때 소리를 끊는다 — 안 그러면 다른 화면에서 계속 들린다.
+  useEffect(() => stopMusicPreview, [stopMusicPreview]);
+
+  const playMusicPreview = async () => {
+    if (!musicFile) return;
+    stopMusicPreview();
+    setMusicError('');
+    try {
+      const ctx = new AudioContext();
+      musicPreviewRef.current = ctx;
+      setMusicPreviewing(true);
+
+      const decode = async (blob: Blob) => ctx.decodeAudioData(await blob.arrayBuffer());
+      const play = (buffer: AudioBuffer, gain: number) => {
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        const node = ctx.createGain();
+        node.gain.value = gain;
+        source.connect(node).connect(ctx.destination);
+        source.start();
+      };
+
+      play(await decode(musicFile), musicVolume / 100);
+
+      // 경기장 소리도 같이 들어야 **얼마나 묻히는지**를 안다. 첫 클립으로 들려준다.
+      if (clips.length && originalVolume > 0) {
+        try {
+          play(await decode(clips[0].blob), originalVolume / 100);
+        } catch {
+          // 이 브라우저가 그 클립 코덱을 못 읽는다 — 음악만 들려준다.
+          setMusicError('경기장 소리는 미리 듣지 못했습니다(브라우저가 못 읽는 형식) — 음악만 들려드립니다.');
+        }
+      }
+      window.setTimeout(stopMusicPreview, MUSIC_PREVIEW_SEC * 1000);
+    } catch (err) {
+      stopMusicPreview();
+      setMusicError(err instanceof Error ? err.message : '미리 듣기에 실패했습니다.');
+    }
+  };
 
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
   // 배치 화면에서 지금 만지고 있는 오버레이. 겹칠 때 원하는 걸 집으려면 하나만 잡혀야 한다.
@@ -941,7 +1016,22 @@ export default function ManualHighlightPage() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [cutting, publishing]);
 
-  const totalClipSeconds = tags.reduce((sum, tag) => sum + effBefore(tag) + effAfter(tag), 0);
+  // 클립이 되는 태그만 센다. **점수만 올리는 태그와 구간 표시는 장면을 만들지 않으므로
+  // 길이에 들어가지 않는다** — 전부 세면 농구처럼 점수 태그가 잦은 경기에서 실제보다
+  // 한참 길게 나온다.
+  const totalClipSeconds = tags.reduce(
+    (sum, tag) => (makesClip(tag.kind) ? sum + effBefore(tag) + effAfter(tag) : sum), 0);
+
+  /** 카드가 차지하는 시간. 클립과 달리 길이가 정해져 있어 따로 센다.
+   *  시작 카드는 **뭔가 채웠을 때만** 선다(합치기 요청과 같은 조건). */
+  const totalCardSeconds = (() => {
+    if (!cards.enabled) return 0;
+    const introFilled = (cardTemplate?.start_fields ?? [])
+      .some((spec) => (cardValues[spec.id] || '').trim());
+    return (introFilled ? cards.introDurationSec : 0)
+      + sectionCount * cards.sectionDurationSec
+      + (cards.outro ? OUTRO_SEC : 0);
+  })();
 
   // 태그가 바뀌면 이미 뽑아둔 클립은 더 이상 맞지 않는다.
   useEffect(() => { setClips([]); setCutError(''); }, [tags, padBefore, padAfter]);
@@ -1145,6 +1235,11 @@ export default function ManualHighlightPage() {
             logo_url: scoreboard.logoUrl || '',
             // 판 위 로고의 크기(%). 100 이 시안 원본이다.
             logo_size_pct: scoreboard.logoSizePct,
+            // 팀명 글자 크기(%). 점수는 그대로다.
+            name_size_pct: scoreboard.nameSizePct,
+            // 적어 넣은 픽셀 좌표. 없으면 null 이고 그때는 비율을 쓴다.
+            pos_px_x: scoreboard.posPxX ?? null,
+            pos_px_y: scoreboard.posPxY ?? null,
           } : { enabled: false },
           // 합본 사이에 끼는 전체화면 카드. 시작 카드는 맨 앞, 구간 카드는 T 자리마다.
           // 카드에는 워터마크를 얹지 않는다 — 시안에 이미 로고가 들어 있어 서버가 뺀다.
@@ -1514,7 +1609,10 @@ export default function ManualHighlightPage() {
               </label>
               {tags.length ? (
                 <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
-                  예상 합본 길이 약 {fmt(totalClipSeconds)}
+                  예상 합본 길이 약 {fmt(totalClipSeconds + totalCardSeconds)}
+                  {totalCardSeconds
+                    ? ` (클립 ${fmt(totalClipSeconds)} + 카드 ${fmt(totalCardSeconds)})`
+                    : ''}
                 </span>
               ) : null}
               {tags.length ? (
@@ -1971,6 +2069,29 @@ export default function ManualHighlightPage() {
                       />
                       화면 가로의 {scoreboard.sizePct}%
                     </label>
+                    {/* 팀명만 줄인다 — 점수는 그대로다. 긴 학교 이름이 자동 축소에 걸려
+                        경기마다 크기가 들쭉날쭉할 때, 아예 한 단계 낮춰 고정한다. */}
+                    <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      팀명 크기
+                      <input
+                        type="range"
+                        min={40}
+                        max={100}
+                        step={5}
+                        value={scoreboard.nameSizePct}
+                        onChange={(e) => setScoreboard((p) => ({ ...p, nameSizePct: Number(e.target.value) }))}
+                        style={{ width: 110 }}
+                      />
+                      {scoreboard.nameSizePct}%
+                      {scoreboard.nameSizePct !== 100 ? (
+                        <button
+                          style={{ ...smallBtn, padding: '2px 8px' }}
+                          onClick={() => setScoreboard((p) => ({ ...p, nameSizePct: 100 }))}
+                        >
+                          기본
+                        </button>
+                      ) : null}
+                    </label>
                     {/* 대회 로고 — 판 위쪽 가운데에 절반 걸쳐 올라간다. 안 넣으면 안 그린다.
                         dataURL 로 들고 있다가 합치기 요청에 그대로 실어 보낸다. */}
                     <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2043,6 +2164,7 @@ export default function ManualHighlightPage() {
                             boardVideo.w, boardVideo.h,
                             scoreboard.sizePct, scoreboard.posX, scoreboard.posY,
                             Boolean(scoreboard.logoUrl), scoreboard.logoSizePct,
+                            scoreboard.posPxX, scoreboard.posPxY,
                           ),
                           recompute: (pct: number) => boardPlacement(
                             boardVideo.w, boardVideo.h, pct, 0, 0,
@@ -2050,9 +2172,12 @@ export default function ManualHighlightPage() {
                           ),
                           sizePct: scoreboard.sizePct,
                           sizeRange: [10, 60] as [number, number],
-                          onMove: (posX: number, posY: number) => setScoreboard((p) => ({ ...p, posX, posY })),
+                          // 끄는 것은 비율로 잡는 몸짓이다 — 적어 둔 픽셀은 푼다.
+                          // 안 그러면 끌어도 판이 제자리에 붙어 있어 고장으로 보인다.
+                          onMove: (posX: number, posY: number) =>
+                            setScoreboard((p) => ({ ...p, posX, posY, posPxX: null, posPxY: null })),
                           onResize: (sizePct: number, posX: number, posY: number) =>
-                            setScoreboard((p) => ({ ...p, sizePct, posX, posY })),
+                            setScoreboard((p) => ({ ...p, sizePct, posX, posY, posPxX: null, posPxY: null })),
                           render: (width: number) => (
                             <ScoreboardPreview
                               config={scoreboard}
@@ -2095,12 +2220,15 @@ export default function ManualHighlightPage() {
                       {/* 9칸 프리셋 — 모서리·가운데는 끌지 않고 한 번에 맞춘다. */}
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 22px)', gap: 3 }}>
                         {POS_PRESETS.map((preset) => {
-                          const on = scoreboard.posX === preset.x && scoreboard.posY === preset.y;
+                          const on = scoreboard.posPxX == null && scoreboard.posPxY == null
+                            && scoreboard.posX === preset.x && scoreboard.posY === preset.y;
                           return (
                             <button
                               key={preset.label}
                               title={preset.label}
-                              onClick={() => setScoreboard((p) => ({ ...p, posX: preset.x, posY: preset.y }))}
+                              onClick={() => setScoreboard((p) => ({
+                                ...p, posX: preset.x, posY: preset.y, posPxX: null, posPxY: null,
+                              }))}
                               style={{
                                 width: 22, height: 16, padding: 0, cursor: 'pointer',
                                 borderRadius: 3,
@@ -2114,7 +2242,54 @@ export default function ManualHighlightPage() {
                       <div style={{ fontSize: 11, color: 'var(--muted, #999)', flex: 1, minWidth: 180 }}>
                         점수판을 <strong>끌어서</strong> 옮기거나 왼쪽 9칸으로 맞추세요.
                         모서리·정중앙 근처에서는 딱 붙습니다. 최종 점수 기준으로 그려집니다.
-                        <div style={{ marginTop: 4 }}>가로 {scoreboard.posX}% · 세로 {scoreboard.posY}%</div>
+                        {/* 자리를 숫자로 — 끌어서 맞추기 어려운 값을 그대로 적는다.
+                            칸에는 늘 **지금 자리의 픽셀**이 보이고, 고치면 그 자리에 박힌다.
+                            끌거나 9칸을 누르면 다시 비율로 돌아간다. */}
+                        {(() => {
+                          const at = boardPlacement(
+                            boardVideo.w, boardVideo.h,
+                            scoreboard.sizePct, scoreboard.posX, scoreboard.posY,
+                            Boolean(scoreboard.logoUrl), scoreboard.logoSizePct,
+                            scoreboard.posPxX, scoreboard.posPxY,
+                          );
+                          const pinned = scoreboard.posPxX != null || scoreboard.posPxY != null;
+                          return (
+                            <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                              <span>자리</span>
+                              <span style={{ fontSize: 11 }}>X</span>
+                              <input
+                                type="number"
+                                step={1}
+                                value={at.x}
+                                onChange={(e) => setScoreboard((p) => ({
+                                  ...p, posPxX: Number(e.target.value), posPxY: p.posPxY ?? at.y,
+                                }))}
+                                style={{ ...numInput, width: 64 }}
+                              />
+                              <span style={{ fontSize: 11 }}>Y</span>
+                              <input
+                                type="number"
+                                step={1}
+                                value={at.y}
+                                onChange={(e) => setScoreboard((p) => ({
+                                  ...p, posPxY: Number(e.target.value), posPxX: p.posPxX ?? at.x,
+                                }))}
+                                style={{ ...numInput, width: 64 }}
+                              />
+                              <span style={{ fontSize: 11, color: 'var(--muted, #777)' }}>
+                                {boardVideo.w}x{boardVideo.h} 기준{pinned ? ' · 고정됨' : ''}
+                              </span>
+                              {pinned ? (
+                                <button
+                                  style={{ ...smallBtn, padding: '2px 8px' }}
+                                  onClick={() => setScoreboard((p) => ({ ...p, posPxX: null, posPxY: null }))}
+                                >
+                                  풀기
+                                </button>
+                              ) : null}
+                            </div>
+                          );
+                        })()}
                       </div>
                       <button style={smallBtn} onClick={captureFrame} title="지금 보이는 장면을 배경으로 담습니다">
                         현재 화면 담기
@@ -2472,7 +2647,21 @@ export default function ManualHighlightPage() {
                           />
                           <span style={{ width: 34 }}>{originalVolume}%</span>
                         </label>
-                        <button style={smallBtn} onClick={() => setMusicFile(null)} disabled={publishing}>
+                        <button
+                          style={smallBtn}
+                          onClick={() => (musicPreviewing ? stopMusicPreview() : void playMusicPreview())}
+                          disabled={publishing}
+                          title={clips.length
+                            ? `음악과 경기장 소리를 지금 볼륨으로 섞어 ${MUSIC_PREVIEW_SEC}초 들려줍니다`
+                            : `음악만 지금 볼륨으로 ${MUSIC_PREVIEW_SEC}초 들려줍니다 (클립을 자르면 경기장 소리도 같이 들립니다)`}
+                        >
+                          {musicPreviewing ? '■ 정지' : '▶ 미리 듣기'}
+                        </button>
+                        <button
+                          style={smallBtn}
+                          onClick={() => { stopMusicPreview(); setMusicFile(null); }}
+                          disabled={publishing}
+                        >
                           제거
                         </button>
                       </>
@@ -2482,6 +2671,9 @@ export default function ManualHighlightPage() {
                       </span>
                     )}
                   </div>
+                  {musicError ? (
+                    <p style={{ fontSize: 12, color: '#f59e0b', margin: '-8px 0 14px' }}>{musicError}</p>
+                  ) : null}
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button style={primaryBtn} onClick={publish} disabled={publishing}>
                       {publishing ? '처리 중...' : `⬆ 업로드하고 하나로 합치기 (${fmtBytes(clipsTotalBytes)})`}

@@ -9670,6 +9670,16 @@ def merge_manual_job(
             except (TypeError, ValueError):
                 return fallback
 
+        def _board_px(key: str) -> float | None:
+            """사람이 적어 넣은 픽셀 좌표. 안 적었으면 None — 그때는 비율을 쓴다."""
+            raw = scoreboard.get(key)
+            if raw is None or raw == "":
+                return None
+            try:
+                return max(0.0, min(20000.0, float(raw)))
+            except (TypeError, ValueError):
+                return None
+
         size_pct = _pct("size_pct", 24.33, 10.0, 60.0)
         metadata = dict(job.job_metadata or {})
         metadata["scoreboard"] = {
@@ -9686,6 +9696,11 @@ def merge_manual_job(
             "pos_y": _pct("pos_y", 4.42, 0.0, 100.0),
             # 판 위 로고의 크기(%). 100 이 시안 원본이고, 판 폭에 비례한다.
             "logo_size_pct": _pct("logo_size_pct", 100.0, 40.0, 220.0),
+            # 팀명 글자 크기(%). 점수는 그대로 두고 이름만 **줄인다**(100 이 최대).
+            "name_size_pct": _pct("name_size_pct", 100.0, 40.0, 100.0),
+            # 영상 픽셀 좌표. 적어 넣었으면 비율 대신 이것을 쓴다.
+            "pos_px_x": _board_px("pos_px_x"),
+            "pos_px_y": _board_px("pos_px_y"),
             # 대회 로고(dataURL). 합치기 때 PNG 로 풀어 판 위에 얹는다. 없으면 빈 문자열이고
             # 그때는 로고 없이 판만 그린다. 2MB 를 넘으면 버린다 — 잡 메타에 통째로 들어가는
             # 값이라 무한정 키우면 안 된다.

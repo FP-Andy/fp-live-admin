@@ -185,6 +185,7 @@ def render_scoreboard(
     away_color: str | None = None,
     logo_path: Path | str | None = None,
     logo_size: float = 1.0,
+    name_size: float = 1.0,
 ) -> Image.Image:
     """점수판 한 장을 RGBA 이미지로 그린다. board_width 는 판의 최종 픽셀 폭.
 
@@ -256,6 +257,10 @@ def render_scoreboard(
               font=score_font, fill=white, anchor="mm")
     draw.text((away_score_x, mid_y), str(max(0, int(away_score))),
               font=score_font, fill=white, anchor="mm")
+    # 두 점수 사이의 콜론 — 15:22 처럼 읽히게. 자리는 두 숫자의 **한가운데**다.
+    # 로고가 있어도 겹치지 않는다: 로고는 판 위쪽에 걸치고 콜론은 판 한가운데에 있다.
+    draw.text(((home_score_x + away_score_x) / 2, mid_y), ":",
+              font=score_font, fill=white, anchor="mm")
 
     # 팀명 — 컬러바와 점수 사이의 빈 자리 **한가운데**에 놓는다.
     #
@@ -268,6 +273,18 @@ def render_scoreboard(
     # 평행사변형이라 그 줄에서 왼쪽 끝은 off/2, 오른쪽 끝은 W - off/2 다. 기울기
     # 보정은 바(판 가장자리) 쪽 경계에만 붙고, 점수 쪽 경계는 점수와 같은 절대
     # 좌표라 그대로 둔다 — 양쪽에 다 더하면 이름이 점수 쪽으로 밀린다.
+    # 팀명 크기 — 점수는 그대로 두고 이름만 줄인다.
+    #
+    # 배율은 **자동 축소가 정한 크기에** 건다. 최대 크기에 걸면 긴 이름에서는 아무
+    # 효과가 없다 — 어차피 폭에 맞춰 더 줄어들기 때문이다. 이렇게 해야 100% 가 지금
+    # 보이는 모습이고 60% 가 정확히 그 0.6 배가 된다.
+    #
+    # 키우는 쪽은 열어 두지 않았다. 폭을 넘으면 점수와 겹치는데, 여기서 넘치게 하면
+    # 자동 축소를 둔 이유가 없어진다.
+    try:
+        name_scale = max(0.4, min(1.0, float(name_size)))
+    except (TypeError, ValueError):
+        name_scale = 1.0
     name_min = round(d(TEXT_SIZE * 0.45))
     home_left = off / 2 + bar_w + d(24)
     home_right = home_score_x - d(60)
@@ -279,6 +296,9 @@ def render_scoreboard(
                           text_px, name_min, max(round(d(80)), round(home_zone)))
     away_font = _fit_font(draw, away_name or "AWAY", NAME_FONT,
                           text_px, name_min, max(round(d(80)), round(away_zone)))
+    if name_scale < 1.0:
+        home_font = _font(NAME_FONT, max(1, round(home_font.size * name_scale)))
+        away_font = _font(NAME_FONT, max(1, round(away_font.size * name_scale)))
     draw.text(((home_left + home_right) / 2, mid_y), home_name or "HOME",
               font=home_font, fill=white, anchor="mm")
     draw.text(((away_left + away_right) / 2, mid_y), away_name or "AWAY",
@@ -316,6 +336,7 @@ def board_placement(
     video_w: int, video_h: int,
     size_pct: float = 24.33, pos_x: float = 2.18, pos_y: float = 4.42,
     with_logo: bool = False, logo_size: float = 1.0,
+    pos_px_x: float | None = None, pos_px_y: float | None = None,
 ) -> tuple[int, int, int, int]:
     """점수판 크기와 놓일 자리. (폭, **이미지 전체 높이**, 왼쪽 x, 위쪽 y)
 
@@ -344,7 +365,22 @@ def board_placement(
         except (TypeError, ValueError):
             return 0.0
 
-    return w, h, margin + r(free_x * _frac(pos_x)), top + r(free_y * _frac(pos_y))
+    def _px(value, span: int) -> int | None:
+        """사람이 적어 넣은 픽셀 좌표. 화면 밖으로만 안 나가게 묶는다."""
+        try:
+            return max(0, min(span, r(float(value))))
+        except (TypeError, ValueError):
+            return None
+
+    # 픽셀이 있으면 픽셀이 이긴다. 비율은 '여백 뺀 범위 안' 이라 숫자로 감이 안 오고,
+    # 영상 규격이 달라지면 자리도 밀린다 — 숫자를 적은 사람은 그 자리를 기대한다.
+    x = _px(pos_px_x, max(0, video_w - w))
+    y = _px(pos_px_y, max(0, video_h - h))
+    if x is None:
+        x = margin + r(free_x * _frac(pos_x))
+    if y is None:
+        y = top + r(free_y * _frac(pos_y))
+    return w, h, x, y
 
 
 def render_scoreboard_file(
@@ -358,11 +394,12 @@ def render_scoreboard_file(
     away_color: str | None = None,
     logo_path: Path | str | None = None,
     logo_size: float = 1.0,
+    name_size: float = 1.0,
 ) -> Path:
     """점수판을 PNG 파일로 저장하고 그 경로를 돌려준다(ffmpeg overlay 입력용)."""
     image = render_scoreboard(
         home_name, away_name, home_score, away_score,
-        board_width, home_color, away_color, logo_path, logo_size,
+        board_width, home_color, away_color, logo_path, logo_size, name_size,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, format="PNG")
