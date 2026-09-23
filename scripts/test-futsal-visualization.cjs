@@ -22,3 +22,16 @@ const empty=graphics(match,[],{lanes:{home:{...lanes,total_count:0,left_count:0,
 assert(empty.every(c=>!c.svg.includes('NaN')&&!c.svg.includes('width="1600" height="1000" fill=')));
 assert(!safeName('a/b:c|d').match(/[/:|]/));
 console.log('Futsal visualization: coordinate bounds, complete >50 event data, empty data, possession/lane ratios, XML escaping, single-period charts and filenames passed.');
+const { continuousPath, arrowSize }=mod.exports;
+assert.equal(arrowSize(0),null);assert.equal(arrowSize(-1),null);
+for(const dimension of ['length','shaft','head']) assert(arrowSize(75)[dimension]>arrowSize(25)[dimension]);
+assert.deepEqual(arrowSize(101),arrowSize(100));
+const path=continuousPath([{x:0,y:10},{x:90,y:100},{x:180,y:30}]);
+assert.equal(path,'M0 10C30 10 60 100 90 100C120 100 150 30 180 30');
+// Bezier controls stay within each interval, preventing fabricated peaks.
+for(let n=0;n<=100;n++){const t=n/100,y=(1-t)**3*10+3*(1-t)**2*t*10+3*(1-t)*t*t*100+t**3*100;assert(y>=10-1e-9&&y<=100+1e-9);}
+const separated=graphics(match,[],summary,{bins:[{start_ms:0,end_ms:60000,period:1,dominance:.5},{start_ms:60000,end_ms:120000,chart_start_ms:120000,chart_end_ms:180000,period:2,dominance:-.5}],breaks:[{chart_ms:90000,label:'HT'}]},{home:'#ff7400',away:'#2158e8',background:'dark'});
+assert.equal((separated[2].svg.match(/data-dominance-curve/g)||[]).length,2);
+assert(!cards[3].svg.includes('data-lane-arrow="0"'));
+assert.equal((cards[2].svg.match(/data-dominance-curve/g)||[]).length,1);
+console.log('Continuous chart: bounded interpolation, half-time gaps, proportional arrow length/width/head, and zero-percent suppression passed.');
