@@ -9,6 +9,25 @@ import { apiJson, type SessionUser } from '../../../../lib/api';
 // 클립 상세에서 [FPA dual] 새 창으로 씬을 찍어 클립에 귀속시키고,
 // 액션별 클립 내 구간(초)을 다듬은 뒤 매치 단위로 FinePlay에 재전송한다.
 
+/** SUFA 2026 네 등급. 기록지 시트 코드의 첫 글자(S/A/B/L)가 그대로 등급이다 —
+ *  'A-2R-2' 를 읽으면 대회가 정해진다. 새 시즌이 오면 여기만 고치면 된다. */
+const COMPETITIONS = [
+  { grade: 'S', id: 'sufa-2026-S', name: '2026 SUFA SUPREME' },
+  { grade: 'A', id: 'sufa-2026-A', name: '2026 SUFA ADVANCE' },
+  { grade: 'B', id: 'sufa-2026-B', name: '2026 SUFA BASIC' },
+  { grade: 'L', id: 'sufa-2026-L', name: '2026 SUFA LADIES' },
+] as const;
+
+/** 기록지에서 읽은 머리글. 전송 양식을 미리 채우는 데 쓴다. */
+type RecordSheetMeta = {
+  sheet?: string;
+  grade?: string;
+  round?: string;
+  /** YYYY-MM-DD. 기록지에 시간은 없다 — 사람이 직접 넣는다. */
+  played_date?: string;
+  venue?: string;
+};
+
 type MatchRow = {
   match_id: string | null;
   job_id: string;
@@ -19,6 +38,9 @@ type MatchRow = {
   away_team: string;
   clip_count: number;
   callback_status?: string | null;
+  /** 대회 인입 전송 상태. 'sending' 이면 뒤에서 도는 중이다. */
+  competition_callback_status?: string | null;
+  record_sheet?: RecordSheetMeta | null;
   analysis_request_id?: number | string;
   // 아카이브된 잡은 기본 목록에서 빠진다 — '아카이브 포함' 토글이나 아카이브 룸 딥링크로만 보인다.
   archived?: boolean;
@@ -242,7 +264,13 @@ export default function ClipResultsPage() {
   const [showArchived, setShowArchived] = useState(false);
   // 대회 인입(competition-results) 전송 폼 — 사전 작업 매치를 신청 없이 앱으로 보낸다.
   const [compForm, setCompForm] = useState<
-    { fpcCompetitionId: string; name: string; round: string; playedAt: string; venue: string } | null
+    {
+      fpcCompetitionId: string; name: string; round: string;
+      /** 날짜와 시간을 따로 든다 — 날짜는 기록지에서 오고, 시간은 거기 없어 직접 넣는다.
+       *  둘 다 브라우저 기본 입력기를 쓴다(날짜는 달력, 시간은 시계). 값은 ISO 다. */
+      playedDate: string; playedTime: string;
+      venue: string;
+    } | null
   >(null);
   // 제목 편집 중인 클립. null 이면 편집 중 아님. 비워서 저장하면 오버라이드 해제.
   const [titleEdit, setTitleEdit] = useState<{ id: string; value: string } | null>(null);
@@ -795,10 +823,15 @@ export default function ClipResultsPage() {
     setMsg('');
     try {
       const match: Record<string, string> = {};
-      if (compForm.playedAt.trim()) match.playedAt = compForm.playedAt.trim();
+      // 날짜만 넣어도 보낸다 — 시간을 모를 때가 있다. 둘 다 있으면 합쳐 보낸다.
+      const date = compForm.playedDate.trim();
+      const time = compForm.playedTime.trim();
+      if (date) match.playedAt = time ? `${date}T${time}` : date;
       if (compForm.venue.trim()) match.venue = compForm.venue.trim();
       const res = await apiJson<{
         callback_status?: string; http_status?: number; sent?: boolean;
+        // 전송은 뒤에서 돈다 — 접수 응답은 '몇 개를 처리하는지' 만 알려 준다.
+        queued?: boolean; clips?: number;
         summary?: { teams_with_lineup?: number; players?: number; clips?: number; profiles?: number; warnings?: string[] };
       }>(
         `/highlight/clip-results/matches/${selectedMatch.match_id}/send-competition`,
@@ -814,21 +847,61 @@ export default function ClipResultsPage() {
           }),
         },
       );
-      const s = res.summary;
-      const summaryTxt = s
-        ? ` (팀 ${s.teams_with_lineup ?? 0} · 선수 ${s.players ?? 0} · 클립 ${s.clips ?? 0} · 프로필 ${s.profiles ?? 0}${s.warnings?.length ? ` · ⚠ ${s.warnings.join(' / ')}` : ''})`
-        : '';
-      // 수신부가 아직 검증전용이면 sent=false·501("계약 통과·저장 대기")로 온다 — 실패 아님.
-      const head = res.sent ? '대회 인입 전송 완료' : `대회 인입 — ${res.callback_status ?? ''}`;
-      setMsg(`${head}${summaryTxt}`);
+      // 전송은 **뒤에서** 돈다 — 클립마다 씬모션을 렌더·업로드하느라 몇 분이 걸리고,
+      // 요청 안에서 기다리면 게이트웨이가 60초에 끊어 아무것도 안 간다.
+      // 여기서는 접수만 확인하고, 끝날 때까지 상태를 지켜본다.
       setCompForm(null);
+      setMsg(`대회 인입 전송 시작 — 클립 ${res.clips ?? ''}개 처리 중입니다. 끝나면 여기 알려 드립니다.`);
       await loadMatches();
+      void watchCompetitionSend(selectedMatch.job_id);
     } catch (err) {
       // 수신부 400(계약 위반)은 errors 를 담아 던진다 — 본문을 그대로 보여준다.
       setMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
+  };
+
+  /** 기록지에서 읽은 값으로 전송 양식을 미리 채운다.
+   *
+   *  라운드·날짜·장소는 라인업을 넣을 때 쓴 기록지에 이미 다 있다. 같은 값을 사람이
+   *  다시 타이핑하게 두면 오타가 난다. 대회는 시트 코드의 첫 글자(S/A/B/L)로 정해진다.
+   *  **시간만 비워 둔다** — 기록지에 없어서 직접 넣어야 한다. */
+  const competitionFormFrom = (match: MatchRow) => {
+    const sheet = match.record_sheet || {};
+    const picked = COMPETITIONS.find((c) => c.grade === String(sheet.grade || '').toUpperCase());
+    return {
+      fpcCompetitionId: picked?.id ?? '',
+      name: picked?.name ?? '',
+      round: sheet.round ?? '',
+      playedDate: sheet.played_date ?? '',
+      playedTime: '',
+      venue: sheet.venue ?? '',
+    };
+  };
+
+  /** 대회 인입이 끝날 때까지 상태를 지켜본다. 뒤에서 도는 작업이라 응답만으로는 모른다. */
+  const watchCompetitionSend = async (jobId: string) => {
+    // 클립이 많으면 몇 분 걸린다. 넉넉히 기다리되, 영원히 붙잡지는 않는다.
+    for (let i = 0; i < 120; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- 상태가 바뀔 때까지 차례로 확인한다
+      await new Promise((resolve) => { setTimeout(resolve, 5000); });
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const rows = await apiJson<MatchRow[]>('/highlight/clip-results/matches');
+        setMatches(rows);
+        const row = rows.find((m) => m.job_id === jobId);
+        const status = row?.competition_callback_status || '';
+        if (!status || status === 'sending') continue;
+        setMsg(status.startsWith('failed') || status.startsWith('rejected')
+          ? `대회 인입 실패 — ${status}`
+          : `대회 인입 — ${status}`);
+        return;
+      } catch {
+        // 한 번 못 읽었다고 멈추지 않는다 — 다음 차례에 다시 본다.
+      }
+    }
+    setMsg('대회 인입 — 아직 처리 중입니다. 잠시 뒤 목록을 새로고침해 확인하세요.');
   };
 
   // 딥링크 진입 땐 아카이브 잡까지 받아오므로, 목록 표시는 토글 기준으로 다시 거른다.
@@ -911,7 +984,7 @@ export default function ClipResultsPage() {
                   {selectedMatch.plan?.source === 'standalone' ? (
                     <button
                       style={primaryBtn}
-                      onClick={() => setCompForm({ fpcCompetitionId: '', name: '', round: '', playedAt: '', venue: '' })}
+                      onClick={() => setCompForm(competitionFormFrom(selectedMatch))}
                       disabled={busy}
                       title="분석 신청 없이 대회 클립으로 앱에 보냅니다 — 팀·선수 매칭은 FinePlay 스테이징에서 확정합니다"
                     >
@@ -954,29 +1027,79 @@ export default function ClipResultsPage() {
             <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>🏆 대회 인입 전송</h3>
             <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--muted, #999)' }}>
               분석 신청 없이 이 사전 작업 매치를 앱으로 보냅니다. 팀·선수 매칭은 FinePlay 스테이징에서 확정합니다.
+              {selectedMatch?.record_sheet?.sheet ? (
+                <>
+                  {' '}대회·라운드·날짜·장소는 기록지(<strong>{selectedMatch.record_sheet.sheet}</strong>)에서
+                  가져왔습니다 — <strong>시간만</strong> 직접 넣으세요.
+                </>
+              ) : (
+                ' 기록지를 넣지 않아 미리 채우지 못했습니다 — 직접 고르세요.'
+              )}
             </p>
-            {([
-              ['fpcCompetitionId', '대회 ID *', '예: cup-2026-fine', 'text'],
-              ['name', '대회 이름', '예: 2026 파인컵', 'text'],
-              ['round', '라운드', '예: 8강', 'text'],
-              ['playedAt', '경기 일시', '', 'datetime-local'],
-              ['venue', '장소', '예: 상암 보조구장', 'text'],
-            ] as const).map(([key, label, ph, inputType]) => (
-              <label key={key} style={{ display: 'block', marginBottom: 10 }}>
-                <span style={{ display: 'block', fontSize: 12, marginBottom: 4, color: 'var(--muted, #bbb)' }}>{label}</span>
-                <input
-                  type={inputType}
-                  value={compForm[key]}
-                  placeholder={ph}
-                  onChange={(e) => setCompForm((f) => (f ? { ...f, [key]: e.target.value } : f))}
-                  style={{
-                    width: '100%', padding: '7px 9px', borderRadius: 6, boxSizing: 'border-box',
-                    border: '1px solid var(--border-ghost, #3a3a42)',
-                    background: 'var(--surface-input, #1b1b1f)', color: 'var(--text, #eee)',
-                  }}
-                />
-              </label>
-            ))}
+            {(() => {
+              const field: React.CSSProperties = {
+                width: '100%', padding: '7px 9px', borderRadius: 6, boxSizing: 'border-box',
+                border: '1px solid var(--border-ghost, #3a3a42)',
+                background: 'var(--surface-input, #1b1b1f)', color: 'var(--text, #eee)',
+              };
+              const labelStyle: React.CSSProperties = {
+                display: 'block', fontSize: 12, marginBottom: 4, color: 'var(--muted, #bbb)',
+              };
+              // 대회는 ID 와 이름이 한 쌍이다 — 어느 쪽을 고르든 나머지가 따라온다.
+              // 따로 두면 'sufa-2026-S' 에 'LADIES' 를 붙이는 사고가 난다.
+              const pickCompetition = (id: string) => setCompForm((f) => (f ? {
+                ...f,
+                fpcCompetitionId: id,
+                name: COMPETITIONS.find((c) => c.id === id)?.name ?? '',
+              } : f));
+              const set = (key: 'round' | 'playedDate' | 'playedTime' | 'venue') =>
+                (e: React.ChangeEvent<HTMLInputElement>) =>
+                  setCompForm((f) => (f ? { ...f, [key]: e.target.value } : f));
+              return (
+                <>
+                  <label style={{ display: 'block', marginBottom: 10 }}>
+                    <span style={labelStyle}>대회 *</span>
+                    <select
+                      value={compForm.fpcCompetitionId}
+                      onChange={(e) => pickCompetition(e.target.value)}
+                      style={field}
+                    >
+                      <option value="">— 고르세요 —</option>
+                      {COMPETITIONS.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name} ({c.id})</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                    <label style={{ flex: 1 }}>
+                      <span style={labelStyle}>라운드</span>
+                      <input type="text" value={compForm.round} placeholder="예: 2R"
+                             onChange={set('round')} style={field} />
+                    </label>
+                    <label style={{ flex: 1 }}>
+                      {/* 브라우저 기본 날짜 입력기 — 년·월·일 칸이 고정돼 있고 누르면
+                          달력이 뜬다. 기록지에서 읽은 값이 여기 미리 들어가 있다. */}
+                      <span style={labelStyle}>경기 날짜</span>
+                      <input type="date" value={compForm.playedDate}
+                             onChange={set('playedDate')} style={field} />
+                    </label>
+                    <label style={{ flex: 1 }}>
+                      {/* 기록지에 시간은 없다 — 여기만 사람이 채운다. */}
+                      <span style={labelStyle}>경기 시간</span>
+                      <input type="time" value={compForm.playedTime}
+                             onChange={set('playedTime')} style={field} />
+                    </label>
+                  </div>
+
+                  <label style={{ display: 'block', marginBottom: 10 }}>
+                    <span style={labelStyle}>장소</span>
+                    <input type="text" value={compForm.venue} placeholder="예: 서울과학기술대학교 잔디구장"
+                           onChange={set('venue')} style={field} />
+                  </label>
+                </>
+              );
+            })()}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
               <button style={smallBtn} onClick={() => setCompForm(null)} disabled={busy}>취소</button>
               <button

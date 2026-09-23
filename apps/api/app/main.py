@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import io
+import logging
 import tempfile
 import json
 import math
@@ -11005,12 +11006,21 @@ async def lineup_from_record_sheet(
         raise HTTPException(status_code=400, detail="넣을 라인업이 없습니다.")
 
     metadata["links"] = links
+    # 머리글(등급·라운드·날짜·장소)도 같이 남긴다 — 대회 인입 전송 화면이 이걸로
+    # 칸을 미리 채운다. 같은 값을 사람이 다시 타이핑하면 오타가 난다.
+    # 시간은 기록지에 없다(실물 24개 시트 확인) — 전송 화면에서 직접 넣는다.
+    meta = record_sheet.sheet_meta(target, target["sheet"])
     metadata["record_sheet"] = {
         "filename": file.filename or "",
         "sheet": target["sheet"],
         "match_no": target.get("matchNo", ""),
         "swap": bool(swap),
         "uploaded_at": datetime.utcnow().isoformat(),
+        # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
+        "grade": meta["grade"],
+        "round": meta["round"],
+        "played_date": meta["played_date"],
+        "venue": meta["venue"],
     }
     update_job(db, job_id, job_metadata=metadata)
     _audit(
@@ -12250,6 +12260,10 @@ def clip_result_matches(
             "away_team": away,
             "clip_count": g["clip_count"],
             "callback_status": metadata.get("callback_status"),
+            # 대회 인입은 뒤에서 도는 작업이라, 화면이 이 값을 보고 끝난 것을 안다.
+            "competition_callback_status": metadata.get("competition_callback_status"),
+            # 기록지에서 읽은 머리글 — 전송 화면이 대회·라운드·날짜·장소를 미리 채운다.
+            "record_sheet": metadata.get("record_sheet"),
             "analysis_request_id": metadata.get("analysis_request_id"),
             "archived": archived,
             "archived_at": metadata.get("clip_archived_at"),
@@ -12671,13 +12685,33 @@ def clip_result_put_actions(
         # 콘솔에서 맞춘 구간은 다시 찍어 저장해도 유지한다(_carry_over_offsets).
         carried = _carry_over_offsets(db, clip_id, actions)
     else:
+        # 구간 수정 경로. 화면이 보낸 것만으로 행을 다시 만든다.
+        #
+        # **채점 근거는 화면이 고치는 값이 아니다.** 빠져 있으면 기존 행에서 가져온다 —
+        # 예전에는 그대로 버려서, 구간만 고쳤는데 키패스 보정이 사라졌다(80 → 74).
+        # 어시스트·키패스는 '받은 지점 기대득점(receptionXg)' 으로 채점하므로 그게
+        # 없으면 연결 축(G2)이 성립하지 않고, 패킹 가산도 같이 날아간다.
+        previous = {
+            int(row.seq): row
+            for row in db.query(HighlightClipAction)
+            .filter(HighlightClipAction.clip_id == clip_id)
+            .all()
+        }
         actions = []
         for i, a in enumerate(body.get("actions") or []):
             action_name = str(a.get("action") or "").strip()
             if not action_name:
                 continue
+            seq = int(a.get("seq") or i + 1)
+            kept = previous.get(seq)
+
+            def carried(key: str, column: str, sent=a, row=kept):
+                """화면이 보낸 값 우선, 없으면 기존 행 값."""
+                value = sent.get(key)
+                return value if value is not None else (getattr(row, column, None) if row else None)
+
             actions.append({
-                "seq": int(a.get("seq") or i + 1),
+                "seq": seq,
                 "action": action_name,
                 "actionLabel": fineplay_action_label(action_name),
                 "teamSide": (str(a.get("teamSide") or "").strip().lower() or None),
@@ -12685,13 +12719,17 @@ def clip_result_put_actions(
                 "playerId": a.get("playerId"),
                 "playerName": a.get("playerName"),
                 "userId": a.get("userId"),
-                "xg": a.get("xg"),
-                "xgot": a.get("xgot"),
-                "epv": a.get("epv"),
-                "pc": a.get("pc"),
+                "xg": carried("xg", "xg"),
+                "xgot": carried("xgot", "xgot"),
+                # ↓ 예전에 빠져 있던 셋. 구간만 고쳐도 점수가 바뀌던 원인이다.
+                "receptionXg": carried("receptionXg", "reception_xg"),
+                "packing": carried("packing", "packing"),
+                "sceneActionIndex": carried("sceneActionIndex", "fpa_scene_action_index"),
+                "epv": carried("epv", "epv"),
+                "pc": carried("pc", "pc"),
                 "startOffset": a.get("startOffset"),
                 "endOffset": a.get("endOffset"),
-                "extra": a.get("extra"),
+                "extra": a.get("extra") if a.get("extra") is not None else (kept.extra if kept else None),
             })
 
     # dual 태깅 원본 보관 — 클립을 다시 열었을 때 찍은 그대로 되살리기 위한 것이다.
@@ -13259,9 +13297,93 @@ def _build_competition_payload(
     return payload, summary
 
 
+# 백그라운드 작업의 실패는 화면에 사유만 남는다 — 스택은 서버 로그에 남겨야
+# 나중에 원인을 짚을 수 있다.
+logger = logging.getLogger(__name__)
+
+
+def _run_competition_send(
+    match_id: UUID, job_id: str, competition: dict, match_body: dict, actor_id: str | None,
+) -> None:
+    """실제 전송 — 페이로드를 만들고 FinePlay 로 보낸다. 백그라운드에서 돈다.
+
+    페이로드를 만드는 동안 클립마다 씬모션 mp4 를 렌더·업로드한다. 클립이 스무 개면
+    몇 분이 걸려 요청 안에서는 게이트웨이가 끊는다 — 그래서 여기로 뺐다.
+    결과는 잡 메타(competition_callback_status)에 남기고, 화면이 그걸 읽는다.
+    """
+    db = SessionLocal()
+    try:
+        clips = (
+            db.query(HighlightClip)
+            .filter(HighlightClip.match_id == match_id)
+            .order_by(HighlightClip.order_index)
+            .all()
+        )
+        job = db.get(HighlightJob, job_id)
+        if not clips or not job:
+            return
+        _job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
+
+        def finish(status: str, **extra) -> None:
+            meta = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+            meta["competition_callback_status"] = status
+            meta.update(extra)
+            update_job(db, job_id, job_metadata=meta)
+
+        try:
+            payload, summary = _build_competition_payload(
+                db, clips, job, competition=competition, match=match_body, labels=labels,
+            )
+        except Exception as exc:  # noqa: BLE001 - 어떤 실패든 화면에 사유가 남아야 한다
+            logger.exception("대회 인입 페이로드 생성 실패 %s", job_id)
+            finish(f"failed: 페이로드 생성 실패 — {exc}")
+            return
+
+        if not payload["clips"]:
+            finish("failed: 보낼 클립이 없습니다 (클립 팀 사이드 태깅 확인)")
+            return
+
+        client = fineplay_default_client()
+        if not client.configured:
+            finish("skipped (FINEPLAY_API_TOKEN 미설정)",
+                   competition_payload=payload, competition_summary=summary)
+            return
+
+        try:
+            result = client.post_competition_results(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("대회 인입 전송 실패 %s", job_id)
+            finish(f"failed: {exc}", competition_payload=payload, competition_summary=summary)
+            return
+
+        code = int(result.get("status_code") or 0)
+        rbody = result.get("body") if isinstance(result.get("body"), dict) else {}
+        if code == 200:
+            status_label = "sent"
+        elif code == 501:
+            # 수신부가 계약 검증은 통과했으나 아직 저장 미구현 — 실패 아님(핸드오프 상태).
+            status_label = "contract-ok (수신부 저장 준비 중 · 501)"
+        elif code == 400:
+            status_label = f"rejected(400): {rbody.get('errors')}"
+        else:
+            status_label = f"failed: HTTP {code} {rbody}"
+        finish(status_label, competition_payload=payload, competition_summary=summary)
+
+        if code in (200, 501):
+            actor = db.get(User, actor_id) if actor_id else None
+            _audit(
+                db, "COMPETITION_RESULT_SENT", "highlight_job",
+                actor=actor, target_id=job_id,
+                details={"fpcMatchId": match_body.get("fpcMatchId"), "http_status": code, **summary},
+            )
+    finally:
+        db.close()
+
+
 @app.post("/api/highlight/clip-results/matches/{match_id}/send-competition")
 def clip_result_send_competition(
     match_id: UUID,
+    background_tasks: BackgroundTasks,
     body: dict = Body(default={}),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
@@ -13297,51 +13419,21 @@ def clip_result_send_competition(
     if not str(match_body.get("fpcMatchId") or "").strip():
         match_body["fpcMatchId"] = str(metadata.get("analysis_request_id") or f"match:{match_id}")
 
-    payload, summary = _build_competition_payload(
-        db, clips, job, competition=competition, match=match_body, labels=labels,
-    )
-    if not payload["clips"]:
-        raise HTTPException(status_code=409, detail="보낼 클립이 없습니다 (클립 팀 사이드 태깅 확인).")
-
-    client = fineplay_default_client()
-    metadata["competition_payload"] = payload
-    metadata["competition_summary"] = summary
-    if not client.configured:
-        metadata["competition_callback_status"] = "skipped (FINEPLAY_API_TOKEN 미설정)"
-        update_job(db, job.id, job_metadata=metadata)
-        return {"callback_status": metadata["competition_callback_status"], "summary": summary, "sent": False}
-    try:
-        result = client.post_competition_results(payload)
-    except Exception as exc:
-        metadata["competition_callback_status"] = f"failed: {exc}"
-        update_job(db, job.id, job_metadata=metadata)
-        raise HTTPException(status_code=502, detail=f"대회 인입 전송 실패: {exc}")
-
-    code = int(result.get("status_code") or 0)
-    rbody = result.get("body") if isinstance(result.get("body"), dict) else {}
-    if code == 200:
-        status_label = "sent"
-    elif code == 501:
-        # 수신부가 계약 검증은 통과했으나 아직 저장 미구현 — 실패 아님(핸드오프 상태).
-        status_label = "contract-ok (수신부 저장 준비 중 · 501)"
-    elif code == 400:
-        errs = rbody.get("errors")
-        metadata["competition_callback_status"] = f"rejected(400): {errs}"
-        update_job(db, job.id, job_metadata=metadata)
-        raise HTTPException(status_code=422, detail={"message": "대회 인입 계약 위반(수신부 400)", "errors": errs})
-    else:
-        metadata["competition_callback_status"] = f"failed: HTTP {code} {rbody}"
-        update_job(db, job.id, job_metadata=metadata)
-        raise HTTPException(status_code=502, detail=f"대회 인입 실패: HTTP {code}")
-
-    metadata["competition_callback_status"] = status_label
+    # 여기서부터는 **뒤에서** 한다. 페이로드를 만드는 동안 클립마다 씬모션 mp4 를
+    # 렌더·업로드하는데, 클립이 스무 개면 몇 분이 걸려 게이트웨이(60초)가 끊는다.
+    # 끊기면 우리가 FinePlay 를 부르기도 전에 죽어 아무것도 안 간다 — 실제로 그랬다.
+    metadata["competition_callback_status"] = "sending"
     update_job(db, job.id, job_metadata=metadata)
-    _audit(
-        db, "COMPETITION_RESULT_SENT", "highlight_job",
-        actor=user, target_id=job.id,
-        details={"fpcMatchId": match_body["fpcMatchId"], "http_status": code, **summary},
+    background_tasks.add_task(
+        _run_competition_send, match_id, job.id, competition, match_body,
+        getattr(user, "id", None),
     )
-    return {"callback_status": status_label, "http_status": code, "summary": summary, "response": rbody, "sent": code == 200}
+    return {
+        "callback_status": "sending",
+        "sent": False,
+        "queued": True,
+        "clips": len(clips),
+    }
 
 
 def _require_operator_job(db: Session, job_id: str, user: User) -> HighlightJob:
