@@ -9423,9 +9423,11 @@ def preview_highlight_card(
     height = max(1, round(width * design_h / design_w))
 
     # 합치기와 같은 손질을 거친 값으로 그린다 — 미리보기만 관대하면 결과물과 달라진다.
-    cleaned = _card_settings({
-        "enabled": True, "template": template.id, "intro": {"values": body.get("values") or {}},
-    })["intro"]["values"]
+    intro_clean = _card_settings({
+        "enabled": True, "template": template.id,
+        "intro": {"values": body.get("values") or {}, "boxes": body.get("boxes") or {}},
+    })["intro"]
+    cleaned, boxes = intro_clean["values"], intro_clean["boxes"]
 
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
@@ -9439,7 +9441,7 @@ def preview_highlight_card(
                 for spec in template.fields("start") if spec.kind == "logo"
             }
             image = render_card(template, "start", width, height,
-                                values=cleaned, logos=logos)
+                                values=cleaned, logos=logos, boxes=boxes)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
 
@@ -9469,7 +9471,39 @@ def _card_settings(cards: dict) -> dict:
         raw = raw_values.get(spec.id)
         values[spec.id] = (_logo(raw) if spec.kind == "logo"
                            else str(raw or "").strip()[:spec.max_len])
-    intro = {"enabled": bool(intro_raw.get("enabled")), "values": values}
+
+    # 항목을 옮긴 자리(시안 좌표). **옮긴 것만** 남긴다 — 전부 적어 두면 나중에 시안을
+    # 고쳐도 옛 좌표가 그대로 덮어써서 템플릿 수정이 먹히지 않는다.
+    design_w, design_h = template.design
+    raw_boxes = intro_raw.get("boxes") if isinstance(intro_raw.get("boxes"), dict) else {}
+    boxes: dict[str, dict] = {}
+    for spec in template.fields("start"):
+        raw = raw_boxes.get(spec.id)
+        if not isinstance(raw, dict):
+            continue
+        left, top, width, height = spec.box
+        moved: dict[str, float] = {}
+        for key, default, span, size in (("x", left, design_w, width),
+                                         ("y", top, design_h, height)):
+            try:
+                value = float(raw.get(key))
+            except (TypeError, ValueError):
+                continue
+            # 시안 밖으로 통째로 내보내지는 못하게 묶는다 — 안 보이는 항목은 사고다.
+            value = max(-size, min(span, value))
+            if abs(value - default) >= 0.5:
+                moved[key] = round(value, 2)
+        # 크기는 로고만이다(%). 글자는 상자가 아니라 글꼴이 크기를 정한다.
+        if spec.kind == "logo":
+            try:
+                scale = max(20.0, min(300.0, float(raw.get("scale"))))
+            except (TypeError, ValueError):
+                scale = 100.0
+            if abs(scale - 100.0) >= 0.5:
+                moved["scale"] = round(scale, 1)
+        if moved:
+            boxes[spec.id] = moved
+    intro = {"enabled": bool(intro_raw.get("enabled")), "values": values, "boxes": boxes}
 
     outro_raw = cards.get("outro") if isinstance(cards.get("outro"), dict) else {}
     section_text = next((f for f in template.fields("section") if f.kind == "text"), None)
@@ -9560,6 +9594,8 @@ def merge_manual_job(
             # 여백을 뺀 놓을 수 있는 범위 안에서의 비율. (0,0) 왼쪽 위 · (100,100) 오른쪽 아래.
             "pos_x": _pct("pos_x", 2.18, 0.0, 100.0),
             "pos_y": _pct("pos_y", 4.42, 0.0, 100.0),
+            # 판 위 로고의 크기(%). 100 이 시안 원본이고, 판 폭에 비례한다.
+            "logo_size_pct": _pct("logo_size_pct", 100.0, 40.0, 220.0),
             # 대회 로고(dataURL). 합치기 때 PNG 로 풀어 판 위에 얹는다. 없으면 빈 문자열이고
             # 그때는 로고 없이 판만 그린다. 2MB 를 넘으면 버린다 — 잡 메타에 통째로 들어가는
             # 값이라 무한정 키우면 안 된다.
@@ -10931,6 +10967,28 @@ def set_standalone_lineup(
     }
 
 
+def _record_sheet_header(filename: str, sheet: dict, swap: bool) -> dict:
+    """작업에 남길 기록지 머리글 — 전송 화면이 이걸로 대회·라운드·날짜·장소를 채운다.
+
+    **단건·일괄·머리글만** 세 경로가 모두 이걸 쓴다. 예전엔 경로마다 dict 를 따로
+    적었는데, 한쪽에만 필드를 더하는 바람에 일괄로 올린 경기는 양식이 통째로 비었다.
+    같은 것을 남겨야 하는 값은 같은 곳에서 만든다.
+    """
+    meta = record_sheet.sheet_meta(sheet, str(sheet.get("sheet") or ""))
+    return {
+        "filename": filename,
+        "sheet": sheet.get("sheet", ""),
+        "match_no": sheet.get("matchNo", ""),
+        "swap": bool(swap),
+        "uploaded_at": datetime.utcnow().isoformat(),
+        # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
+        "grade": meta["grade"],
+        "round": meta["round"],
+        "played_date": meta["played_date"],
+        "venue": meta["venue"],
+    }
+
+
 @app.post("/api/highlight/fineplay-jobs/{job_id}/lineup/from-record-sheet")
 async def lineup_from_record_sheet(
     job_id: str,
@@ -11015,19 +11073,7 @@ async def lineup_from_record_sheet(
     # 머리글(등급·라운드·날짜·장소)도 같이 남긴다 — 대회 인입 전송 화면이 이걸로
     # 칸을 미리 채운다. 같은 값을 사람이 다시 타이핑하면 오타가 난다.
     # 시간은 기록지에 없다(실물 24개 시트 확인) — 전송 화면에서 직접 넣는다.
-    meta = record_sheet.sheet_meta(target, target["sheet"])
-    metadata["record_sheet"] = {
-        "filename": file.filename or "",
-        "sheet": target["sheet"],
-        "match_no": target.get("matchNo", ""),
-        "swap": bool(swap),
-        "uploaded_at": datetime.utcnow().isoformat(),
-        # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
-        "grade": meta["grade"],
-        "round": meta["round"],
-        "played_date": meta["played_date"],
-        "venue": meta["venue"],
-    }
+    metadata["record_sheet"] = _record_sheet_header(file.filename or "", target, swap)
     update_job(db, job_id, job_metadata=metadata)
     _audit(
         db, "STANDALONE_LINEUP_FROM_SHEET", "highlight_job",
@@ -11325,6 +11371,7 @@ async def lineup_from_record_sheet_bulk(
     file: UploadFile = File(...),
     apply: bool = Form(default=False),
     assignments: str = Form(default=""),
+    meta_only: bool = Form(default=False),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -11336,6 +11383,10 @@ async def lineup_from_record_sheet_bulk(
     apply=false 면 아무것도 저장하지 않고 매칭 결과만 돌려준다 — 어디에 들어갈지 보고
     확인한 뒤에 넣게 하려는 것이다.
     assignments 는 {"시트명": "job_id"} JSON — 자동 매칭을 덮어쓴다(수동 지정/오매칭 교정).
+
+    meta_only=true 면 **라인업은 건드리지 않고 머리글만** 새로 쓴다. 머리글을 남기기
+    전에 올린 경기의 날짜·장소를 채우려는 것이다 — 그것 때문에 기록지를 통째로 다시
+    적용하면, 그 사이에 손본 라인업까지 같이 덮어쓴다.
     """
     name = (file.filename or "").lower()
     if not name.endswith((".xlsx", ".xlsm")):
@@ -11397,6 +11448,18 @@ async def lineup_from_record_sheet_bulk(
         job, metadata = _require_standalone_job(db, job_id)
         links = dict(metadata.get("links") or {})
         applied: dict[str, dict] = {}
+
+        if meta_only:
+            # 라인업(links)에는 손대지 않는다 — 머리글만 새로 쓴다.
+            metadata["record_sheet"] = _record_sheet_header(file.filename or "", sheet, swap)
+            update_job(db, job_id, job_metadata=metadata)
+            _audit(
+                db, "STANDALONE_RECORD_SHEET_META", "highlight_job",
+                actor=user, target_id=job_id, details={"sheet": sheet["sheet"]},
+            )
+            results.append({**entry, "status": "applied", "meta_only": True, "sides": {}})
+            continue
+
         for side in ("home", "away"):
             src_side = ("away" if side == "home" else "home") if swap else side
             parsed = sheet[src_side]
@@ -11445,22 +11508,7 @@ async def lineup_from_record_sheet_bulk(
             continue
 
         metadata["links"] = links
-        # 머리글도 같이 남긴다 — 단건 경로와 같은 모양이어야 한다. 전송 화면은 이걸로
-        # 대회·라운드·날짜·장소를 미리 채우는데, 여기서 빠뜨리면 일괄로 올린 경기만
-        # 칸이 전부 비어 "매칭이 안 된다"로 보인다.
-        meta = record_sheet.sheet_meta(sheet, sheet["sheet"])
-        metadata["record_sheet"] = {
-            "filename": file.filename or "",
-            "sheet": sheet["sheet"],
-            "match_no": sheet.get("matchNo", ""),
-            "swap": bool(swap),
-            "uploaded_at": datetime.utcnow().isoformat(),
-            # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
-            "grade": meta["grade"],
-            "round": meta["round"],
-            "played_date": meta["played_date"],
-            "venue": meta["venue"],
-        }
+        metadata["record_sheet"] = _record_sheet_header(file.filename or "", sheet, swap)
         update_job(db, job_id, job_metadata=metadata)
         _audit(
             db, "STANDALONE_LINEUP_FROM_SHEET_BULK", "highlight_job",

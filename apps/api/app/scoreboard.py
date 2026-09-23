@@ -53,6 +53,38 @@ DEFAULT_AWAY_COLOR = "#0000FF"
 # 로고 — 원본 122.02 정사각, 판 위로 61.01 튀어나온다(정확히 절반).
 LOGO_SIZE = 122.02
 LOGO_RISE = 61.01
+# 사용자가 키우고 줄일 수 있는 범위. 100% 가 위 원본 크기다.
+# 너무 키우면 판보다 로고가 커져 점수를 덮으므로 위를 막아 둔다.
+LOGO_SCALE_MIN = 0.4
+LOGO_SCALE_MAX = 2.2
+
+
+def logo_scale(value: float | None) -> float:
+    """로고 배율. 화면은 %로 주고받지만 여기서는 배수로 다룬다."""
+    try:
+        return max(LOGO_SCALE_MIN, min(LOGO_SCALE_MAX, float(value)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def r(value: float) -> int:
+    """.5 를 늘 위로 올리는 반올림 — **화면(JS Math.round)과 같은 규칙**이다.
+
+    파이썬 round 는 .5 에서 짝수 쪽으로 내려간다(210.5 → 210, JS 는 211). 자리 계산이
+    양쪽에서 1px 어긋나면 "미리보기는 맞는데 결과물은 다르다" 가 된다. 눈에 안 보일
+    만큼이라도, 두 곳이 같은 답을 내야 고칠 때 헷갈리지 않는다.
+    """
+    return math.floor(value + 0.5)
+
+
+def logo_rise_ratio(scale: float) -> float:
+    """판 높이 대비, 로고가 판 위로 튀어나오는 비율.
+
+    로고는 늘 **정확히 절반**이 판 위로 올라간다 — 키워도 그 모양을 지킨다.
+    키운 만큼 이미지가 세로로 길어지므로, 자리를 잡는 쪽(board_placement)과
+    그리는 쪽(render_scoreboard)이 **같은 식**을 써야 로고가 잘리지 않는다.
+    """
+    return (LOGO_RISE * logo_scale(scale)) / DESIGN_H
 
 # 글자 — 팀명·점수 모두 Paperlogy 900(=8ExtraBold), 69.3816px.
 TEXT_SIZE = 69.3816
@@ -152,6 +184,7 @@ def render_scoreboard(
     home_color: str | None = None,
     away_color: str | None = None,
     logo_path: Path | str | None = None,
+    logo_size: float = 1.0,
 ) -> Image.Image:
     """점수판 한 장을 RGBA 이미지로 그린다. board_width 는 판의 최종 픽셀 폭.
 
@@ -159,10 +192,11 @@ def render_scoreboard(
     board_placement 가 돌려주는 높이를 그대로 쓰면 된다.
     """
     w = max(160, int(board_width))
-    plate_h = max(24, round(w / BOARD_ASPECT))
+    plate_h = max(24, r(w / BOARD_ASPECT))
 
     logo = _load_logo(logo_path)
-    rise = round(plate_h * (LOGO_RISE / DESIGN_H)) if logo is not None else 0
+    scale = logo_scale(logo_size)
+    rise = r(plate_h * logo_rise_ratio(scale)) if logo is not None else 0
 
     s = SUPERSAMPLE
     W = w * s
@@ -254,7 +288,7 @@ def render_scoreboard(
 
     # ── 로고 — 판 위쪽 가운데에 절반 걸친다 ────────────────────────────────
     if logo is not None:
-        size = max(1, round(d(LOGO_SIZE)))
+        size = max(1, round(d(LOGO_SIZE * scale)))
         fitted = logo.resize((size, size), Image.LANCZOS)
         # 원본 기준 중심 x = 383.07 + 61.01 = 444.08 (폭의 47.8%)
         cx = round(d(444.08))
@@ -274,14 +308,14 @@ def board_size_for_video(
     pct = max(10.0, min(60.0, float(size_pct))) / 100.0
     by_width = video_w * pct
     by_height = video_h * 0.18 * BOARD_ASPECT
-    w = max(160, round(min(by_width, by_height)))
-    return w, max(30, round(w / BOARD_ASPECT))
+    w = max(160, r(min(by_width, by_height)))
+    return w, max(30, r(w / BOARD_ASPECT))
 
 
 def board_placement(
     video_w: int, video_h: int,
     size_pct: float = 24.33, pos_x: float = 2.18, pos_y: float = 4.42,
-    with_logo: bool = False,
+    with_logo: bool = False, logo_size: float = 1.0,
 ) -> tuple[int, int, int, int]:
     """점수판 크기와 놓일 자리. (폭, **이미지 전체 높이**, 왼쪽 x, 위쪽 y)
 
@@ -294,10 +328,15 @@ def board_placement(
     잘리지 않는다.
     """
     w, plate_h = board_size_for_video(video_w, video_h, size_pct)
-    h = plate_h + (round(plate_h * (LOGO_RISE / DESIGN_H)) if with_logo else 0)
-    margin = max(16, round(video_w * 0.021))
+    rise = r(plate_h * logo_rise_ratio(logo_size)) if with_logo else 0
+    h = plate_h + rise
+    margin = max(16, r(video_w * 0.021))
+    # 로고는 판 위로 튀어나온 장식이다. 그것까지 여백을 지키게 하면 로고를 넣는 순간
+    # 판이 로고 높이만큼 통째로 내려앉아 **위로 올릴 수가 없다** — 실제로 그랬다.
+    # 여백은 **판**이 지키고, 로고는 그 위 여백을 파고든다. 다만 화면 밖으로는 안 나간다.
+    top = max(0, margin - rise)
     free_x = max(0, video_w - w - 2 * margin)
-    free_y = max(0, video_h - h - 2 * margin)
+    free_y = max(0, video_h - h - margin - top)
 
     def _frac(value: float) -> float:
         try:
@@ -305,7 +344,7 @@ def board_placement(
         except (TypeError, ValueError):
             return 0.0
 
-    return w, h, margin + round(free_x * _frac(pos_x)), margin + round(free_y * _frac(pos_y))
+    return w, h, margin + r(free_x * _frac(pos_x)), top + r(free_y * _frac(pos_y))
 
 
 def render_scoreboard_file(
@@ -318,11 +357,12 @@ def render_scoreboard_file(
     home_color: str | None = None,
     away_color: str | None = None,
     logo_path: Path | str | None = None,
+    logo_size: float = 1.0,
 ) -> Path:
     """점수판을 PNG 파일로 저장하고 그 경로를 돌려준다(ffmpeg overlay 입력용)."""
     image = render_scoreboard(
         home_name, away_name, home_score, away_score,
-        board_width, home_color, away_color, logo_path,
+        board_width, home_color, away_color, logo_path, logo_size,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, format="PNG")

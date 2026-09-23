@@ -162,9 +162,14 @@ def get_template(template_id: str | None) -> CardTemplate:
 
 
 def describe(template: CardTemplate) -> dict:
-    """설정 화면이 칸을 만들 수 있을 만큼만 추린다. 좌표·글꼴은 화면이 쓰지 않는다."""
+    """설정 화면이 칸을 만들 수 있을 만큼만 추린다.
+
+    자리(box)까지 같이 보낸다 — 화면이 **지금 값을 기본값으로** 띄우고 거기서 옮기게
+    하려는 것이다. 시안 좌표계(design) 안의 절대값이라 화면도 같은 기준으로 다룬다.
+    """
 
     def one(field_: CardField) -> dict:
+        left, top, width, height = field_.box
         return {
             "id": field_.id,
             "label": field_.label,
@@ -173,12 +178,17 @@ def describe(template: CardTemplate) -> dict:
             "max_len": field_.max_len,
             "ui_width": field_.ui_width,
             "empty": field_.empty,
+            # 시안 좌표. 화면은 이걸 기본값으로 두고 자리를 고치게 한다.
+            "box": [left, top, width, height],
+            # 크기까지 고칠 수 있는가 — 로고만이다(글자는 글꼴이 크기를 정한다).
+            "scalable": field_.kind == "logo",
         }
 
     return {
         "id": template.id,
         "name": template.name,
         "note": template.note,
+        "design": list(template.design),
         "start_fields": [one(f) for f in template.start_fields],
         "section_fields": [one(f) for f in template.section_fields],
     }

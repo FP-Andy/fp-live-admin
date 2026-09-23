@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import {
-  BOARD_ASPECT, DEFAULT_SCOREBOARD, DEFAULT_WATERMARK, MARK_RATIO, MARK_SRC,
-  OverlayPlacer, POS_PRESETS, ScoreboardPreview, boardPlacement, markPlacement,
+  BOARD_ASPECT, DEFAULT_SCOREBOARD, DEFAULT_WATERMARK, LOGO_SIZE_RANGE, MARK_RATIO, MARK_SRC,
+  OverlayPlacer, POS_PRESETS, ScoreboardPreview, boardPlacement, markPlacement, readLogoDataUrl,
   type PlacedItem, type Scoreboard, type Watermark,
 } from '../../../../components/HighlightOverlay';
 import { API_BASE, apiJson } from '../../../../lib/api';
@@ -53,12 +53,18 @@ type CardFieldSpec = {
   ui_width: number;
   /** 비었을 때 서버가 무엇으로 채우나 — '' / 'mark' / 'vs'. 안내에만 쓴다. */
   empty: string;
+  /** 시안 좌표 [왼쪽, 위, 가로, 세로]. 위치 칸의 **기본값**이 된다. */
+  box: [number, number, number, number];
+  /** 크기까지 고칠 수 있는가 — 로고만이다(글자는 글꼴이 크기를 정한다). */
+  scalable?: boolean;
 };
 
 type CardTemplateSpec = {
   id: string;
   name: string;
   note: string;
+  /** 시안 규격 [가로, 세로]. 위치 값이 이 좌표계 안의 절대값이다. */
+  design: [number, number];
   start_fields: CardFieldSpec[];
   section_fields: CardFieldSpec[];
 };
@@ -74,6 +80,10 @@ type CardSettings = {
   /** 템플릿별로 따로 보관한다 — 템플릿을 바꿨다 돌아와도 적어둔 게 남아 있어야 하고,
    *  항목 id 가 겹쳐도 서로 섞이면 안 된다. {템플릿id: {항목id: 값}} */
   values: Record<string, Record<string, string>>;
+  /** 항목을 옮긴 자리와 크기. 값과 같은 이유로 템플릿별로 나눠 둔다.
+   *  {템플릿id: {항목id: {x, y, scale}}} — x·y 는 시안 좌표, scale 은 % 다.
+   *  안 건드린 항목은 아예 없다. */
+  boxes: Record<string, Record<string, { x: number; y: number; scale?: number }>>;
   /** 자동으로 서는 첫 구간 카드의 이름. 비우면 종목 기본값(1쿼터·전반전). */
   firstSectionLabel: string;
   /** 합본 맨 끝에 파인플레이 로고 영상을 붙인다. 내장 자산이라 켜고 끄기만 한다. */
@@ -91,6 +101,7 @@ const DEFAULT_CARDS: CardSettings = {
   introDurationSec: CARD_SEC_DEFAULT,
   sectionDurationSec: CARD_SEC_DEFAULT,
   values: {},
+  boxes: {},
   firstSectionLabel: '',
   outro: true,
 };
@@ -321,6 +332,32 @@ export default function ManualHighlightPage() {
       [prev.template]: { ...(prev.values[prev.template] ?? {}), [fieldId]: value },
     },
   }));
+  const cardBoxes = cards.boxes[cards.template] ?? {};
+  /** 시안이 정한 자리. 옛 응답에 box 가 없어도 화면이 죽지 않게 받쳐 둔다. */
+  const designBox = (spec: CardFieldSpec) => spec.box ?? [0, 0, 0, 0];
+  /** 항목이 지금 놓인 자리. 안 건드렸으면 시안 그대로다 — 칸에 그 값이 뜬다. */
+  const boxOf = (spec: CardFieldSpec) => {
+    const moved = cardBoxes[spec.id];
+    const [left, top] = designBox(spec);
+    return { x: moved?.x ?? left, y: moved?.y ?? top };
+  };
+  const setCardBox = (spec: CardFieldSpec, axis: 'x' | 'y' | 'scale', value: number) => setCards((prev) => {
+    const forTemplate = { ...(prev.boxes[prev.template] ?? {}) };
+    const [left, top] = designBox(spec);
+    const now = forTemplate[spec.id] ?? { x: left, y: top };
+    forTemplate[spec.id] = { ...now, [axis]: value };
+    return { ...prev, boxes: { ...prev.boxes, [prev.template]: forTemplate } };
+  });
+  /** 로고 크기(%). 안 건드렸으면 100 이다. */
+  const scaleOf = (spec: CardFieldSpec) => cardBoxes[spec.id]?.scale ?? 100;
+  /** 이 템플릿에서 옮긴 자리를 모두 시안으로 되돌린다. */
+  const resetCardBoxes = () => setCards((prev) => {
+    const next = { ...prev.boxes };
+    delete next[prev.template];
+    return { ...prev, boxes: next };
+  });
+  const cardBoxesMoved = Object.keys(cardBoxes).length > 0;
+
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
   // 배치 화면에서 지금 만지고 있는 오버레이. 겹칠 때 원하는 걸 집으려면 하나만 잡혀야 한다.
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
@@ -515,13 +552,34 @@ export default function ManualHighlightPage() {
 
   useEffect(() => {
     if (!storageKey) return;
-    if (tags.length) {
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify({ tags, padBefore, padAfter, scoreboard, cards } satisfies SavedWork),
-      );
-    } else {
-      localStorage.removeItem(storageKey);
+    if (!tags.length) { localStorage.removeItem(storageKey); return; }
+
+    const work: SavedWork = { tags, padBefore, padAfter, scoreboard, cards };
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(work));
+      return;
+    } catch {
+      /* 저장 칸이 넘쳤다. 아래에서 그림만 빼고 다시 해 본다. */
+    }
+    // 브라우저 저장 칸은 5MB 남짓인데 로고는 dataURL 이라 한 장에 몇 MB 가 된다.
+    // **여기서 터지면 화면이 통째로 죽는다** — 태깅한 것까지 날아간다.
+    // 그림을 뺀 나머지(태그·구간·설정)라도 남기는 편이 훨씬 낫다.
+    const drop = (value: string) => (String(value).startsWith('data:') ? '' : value);
+    const lean: SavedWork = {
+      ...work,
+      scoreboard: { ...scoreboard, logoUrl: '' },
+      cards: {
+        ...cards,
+        values: Object.fromEntries(Object.entries(cards.values).map(([tid, fields]) => [
+          tid, Object.fromEntries(Object.entries(fields).map(([id, v]) => [id, drop(v)])),
+        ])),
+      },
+    };
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(lean));
+      setStatus('로고가 커서 작업 저장에는 로고를 뺐습니다 — 새로 고치면 로고만 다시 넣으세요.');
+    } catch {
+      /* 그래도 안 들어가면 저장을 포기한다. 태깅은 계속할 수 있어야 한다. */
     }
   }, [tags, padBefore, padAfter, scoreboard, cards, storageKey]);
 
@@ -672,7 +730,7 @@ export default function ManualHighlightPage() {
       setCardPreviewBusy(true);
       try {
         const body = cardPreviewOf === 'start'
-          ? { template: cards.template, kind: 'start', width: 960, values: cardValues }
+          ? { template: cards.template, kind: 'start', width: 960, values: cardValues, boxes: cardBoxes }
           : { template: cards.template, kind: 'section', width: 960, label: previewLabel };
         const res = await fetch(`${API_BASE}/highlight/card-preview`, {
           method: 'POST',
@@ -1041,6 +1099,8 @@ export default function ManualHighlightPage() {
             pos_y: scoreboard.posY,
             // 대회 로고는 dataURL 그대로 보낸다 — 서버가 PNG 로 풀어 판 위에 얹는다.
             logo_url: scoreboard.logoUrl || '',
+            // 판 위 로고의 크기(%). 100 이 시안 원본이다.
+            logo_size_pct: scoreboard.logoSizePct,
           } : { enabled: false },
           // 합본 사이에 끼는 전체화면 카드. 시작 카드는 맨 앞, 구간 카드는 T 자리마다.
           // 카드에는 워터마크를 얹지 않는다 — 시안에 이미 로고가 들어 있어 서버가 뺀다.
@@ -1055,6 +1115,8 @@ export default function ManualHighlightPage() {
               enabled: (cardTemplate?.start_fields ?? [])
                 .some((spec) => (cardValues[spec.id] || '').trim()),
               values: cardValues,
+              // 옮긴 자리만 실린다 — 서버가 시안 기본값과 비교해 한 번 더 거른다.
+              boxes: cardBoxes,
             },
             // 자동으로 선 첫 구간까지 포함해 자리 순서대로 보낸다.
             outro: { enabled: cards.outro },
@@ -1489,9 +1551,9 @@ export default function ManualHighlightPage() {
                             onChange={(e) => {
                               const file = e.target.files?.[0];
                               if (!file) return;
-                              const reader = new FileReader();
-                              reader.onload = () => setCardValue(spec.id, String(reader.result || ''));
-                              reader.readAsDataURL(file);
+                              void readLogoDataUrl(file)
+                                .then((url) => setCardValue(spec.id, url))
+                                .catch(() => setStatus('로고를 읽지 못했습니다.'));
                             }}
                           />
                           {cardValues[spec.id] ? (
@@ -1515,8 +1577,55 @@ export default function ManualHighlightPage() {
                           }}
                         />
                       )}
+                      {/* 자리 — 시안 좌표(왼쪽 위 모서리). 지금 값이 기본으로 들어가
+                          있고, 고치면 미리보기가 바로 따라온다. 크기는 템플릿이
+                          정한 대로 둔다(글자 크기·줄바꿈 폭이 거기 매여 있다). */}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, opacity: 0.85 }}>
+                        <span style={{ fontSize: 11 }}>X</span>
+                        <input
+                          type="number"
+                          step={1}
+                          value={Math.round(boxOf(spec).x)}
+                          onChange={(e) => setCardBox(spec, 'x', Number(e.target.value))}
+                          style={{ ...numInput, width: 62, padding: '4px 6px', fontSize: 12 }}
+                        />
+                        <span style={{ fontSize: 11 }}>Y</span>
+                        <input
+                          type="number"
+                          step={1}
+                          value={Math.round(boxOf(spec).y)}
+                          onChange={(e) => setCardBox(spec, 'y', Number(e.target.value))}
+                          style={{ ...numInput, width: 62, padding: '4px 6px', fontSize: 12 }}
+                        />
+                        {/* 로고만 크기를 준다. 글자는 글꼴이 크기를 정해서, 상자만
+                            늘리면 줄바꿈 폭만 바뀌고 글자는 그대로다.
+                            크기는 **가운데를 붙잡고** 늘어난다 — 키울 때마다 오른쪽
+                            아래로 흘러내리면 자리를 매번 다시 잡아야 한다. */}
+                        {spec.scalable ? (
+                          <>
+                            <span style={{ fontSize: 11 }}>크기</span>
+                            <input
+                              type="number"
+                              step={5}
+                              min={20}
+                              max={300}
+                              value={Math.round(scaleOf(spec))}
+                              onChange={(e) => setCardBox(spec, 'scale', Number(e.target.value))}
+                              style={{ ...numInput, width: 58, padding: '4px 6px', fontSize: 12 }}
+                            />
+                            <span style={{ fontSize: 11 }}>%</span>
+                          </>
+                        ) : null}
+                      </span>
                     </label>
                   ))}
+
+                  {/* 옮긴 게 있을 때만 되돌리기를 띄운다 — 늘 있으면 눈에 걸린다. */}
+                  {cardBoxesMoved ? (
+                    <button style={{ ...smallBtn, alignSelf: 'center' }} onClick={resetCardBoxes}>
+                      위치 되돌리기
+                    </button>
+                  ) : null}
 
                   {/* 첫 구간 이름만 템플릿 밖이다 — 카드에 그릴 값이 아니라 '몇 번째
                       구간부터 세느냐' 라서, 템플릿이 바뀌어도 그대로 쓴다. */}
@@ -1754,9 +1863,9 @@ export default function ManualHighlightPage() {
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (!file) return;
-                          const reader = new FileReader();
-                          reader.onload = () => setScoreboard((p) => ({ ...p, logoUrl: String(reader.result || '') }));
-                          reader.readAsDataURL(file);
+                          void readLogoDataUrl(file)
+                            .then((url) => setScoreboard((p) => ({ ...p, logoUrl: url })))
+                            .catch(() => setStatus('로고를 읽지 못했습니다.'));
                         }}
                       />
                       {scoreboard.logoUrl ? (
@@ -1768,6 +1877,31 @@ export default function ManualHighlightPage() {
                         </button>
                       ) : null}
                     </label>
+                    {/* 로고 크기 — 판 폭에 비례한다. 100% 가 시안 원본이고, 키우면
+                        판 위로 더 올라간다(늘 절반이 걸친 모양은 그대로). */}
+                    {scoreboard.logoUrl ? (
+                      <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        로고 크기
+                        <input
+                          type="range"
+                          min={LOGO_SIZE_RANGE[0]}
+                          max={LOGO_SIZE_RANGE[1]}
+                          step={5}
+                          value={scoreboard.logoSizePct}
+                          onChange={(e) => setScoreboard((p) => ({ ...p, logoSizePct: Number(e.target.value) }))}
+                          style={{ width: 120 }}
+                        />
+                        {scoreboard.logoSizePct}%
+                        {scoreboard.logoSizePct !== 100 ? (
+                          <button
+                            style={{ ...smallBtn, padding: '2px 8px' }}
+                            onClick={() => setScoreboard((p) => ({ ...p, logoSizePct: 100 }))}
+                          >
+                            기본
+                          </button>
+                        ) : null}
+                      </label>
+                    ) : null}
                   </div>
 
                   <div>
@@ -1789,10 +1923,11 @@ export default function ManualHighlightPage() {
                           place: boardPlacement(
                             boardVideo.w, boardVideo.h,
                             scoreboard.sizePct, scoreboard.posX, scoreboard.posY,
-                            Boolean(scoreboard.logoUrl),
+                            Boolean(scoreboard.logoUrl), scoreboard.logoSizePct,
                           ),
                           recompute: (pct: number) => boardPlacement(
-                            boardVideo.w, boardVideo.h, pct, 0, 0, Boolean(scoreboard.logoUrl),
+                            boardVideo.w, boardVideo.h, pct, 0, 0,
+                            Boolean(scoreboard.logoUrl), scoreboard.logoSizePct,
                           ),
                           sizePct: scoreboard.sizePct,
                           sizeRange: [10, 60] as [number, number],

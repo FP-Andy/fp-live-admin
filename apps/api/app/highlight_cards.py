@@ -161,30 +161,81 @@ def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: s
 
 
 def _paste_contained(layer: Image.Image, box: tuple[float, float, float, float],
-                     logo: Image.Image) -> None:
-    """상자 안에 비율을 지켜 넣고 가운데 맞춘다."""
+                     logo: Image.Image, factor: float = 1.0) -> None:
+    """상자 안에 비율을 지켜 넣고 가운데 맞춘다. factor 로 그보다 키우거나 줄인다.
+
+    상자에 맞추는 단계는 **원본보다 크게 늘리지 않는다**(지금까지의 동작). 사용자가
+    준 배율은 그 위에 곱한다 — 그래야 100% 가 예전 그대로이고, 150% 는 눈에 보이는
+    지금 크기의 1.5배가 된다. 여기서 늘리기까지 막으면 작은 원본은 배율을 올려도
+    꿈쩍하지 않는다(thumbnail 이 줄이기만 해서 실제로 그랬다).
+
+    키울 때는 **상자 가운데를 붙잡는다.** 오른쪽 아래로 흘러내리면 자리를 매번 다시
+    잡아야 한다.
+    """
     left, top, width, height = box
-    art = logo.copy()
-    art.thumbnail((max(1, round(width)), max(1, round(height))), Image.LANCZOS)
+    # 상자에 맞춘 크기는 thumbnail 에 맡긴다 — 비율 반올림이 미묘해서, 직접 계산하면
+    # 배율을 안 건드린 카드까지 1px 씩 달라진다.
+    fitted = logo.copy()
+    fitted.thumbnail((max(1, round(width)), max(1, round(height))), Image.LANCZOS)
+
+    target = (max(1, round(fitted.width * factor)), max(1, round(fitted.height * factor)))
+    # 배율이 1 이면 예전 그대로다. 키울 때는 줄인 것을 다시 늘리지 않고 **원본에서
+    # 한 번에** 뽑는다 — 두 번 거치면 로고가 뭉갠 채로 커진다.
+    art = fitted if target == fitted.size else logo.resize(target, Image.LANCZOS)
+
     layer.paste(art, (round(left + (width - art.width) / 2),
                       round(top + (height - art.height) / 2)), art)
 
 
+def _moved(spec: CardField, boxes: dict | None
+           ) -> tuple[tuple[float, float, float, float], float]:
+    """이 항목이 놓일 (자리, 크기배율). 안 건드렸으면 시안 그대로 · 배율 1.0.
+
+    x·y 는 **왼쪽 위 모서리**다. scale 은 로고에만 준다(%) — 글자는 상자가 아니라
+    글꼴 크기가 크기를 정하므로, 상자만 늘려 봐야 줄바꿈 폭만 바뀌고 글자는 그대로다.
+    """
+    left, top, width, height = spec.box
+    factor = 1.0
+    moved = (boxes or {}).get(spec.id)
+    if not isinstance(moved, dict):
+        return (left, top, width, height), factor
+
+    def _num(key):
+        try:
+            return float(moved[key])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    x, y = _num("x"), _num("y")
+    if x is not None:
+        left = x
+    if y is not None:
+        top = y
+
+    scale = _num("scale")
+    if spec.kind == "logo" and scale is not None:
+        factor = max(0.2, min(3.0, scale / 100.0))
+    return (left, top, width, height), factor
+
+
 def _draw_field(layer: Image.Image, spec: CardField, value: str,
-                logo_path: Path | str | None) -> None:
+                logo_path: Path | str | None, boxes: dict | None = None) -> None:
     """항목 하나. 비었을 때 무엇으로 채울지는 항목이 들고 있다(spec.empty)."""
+    box, factor = _moved(spec, boxes)
     if spec.kind == "logo":
         logo = _open_logo(logo_path)
         if logo is None and spec.empty == "mark":
             logo = _white_mark()
         if logo is not None:
-            _paste_contained(layer, spec.box, logo)
+            _paste_contained(layer, box, logo, factor)
         elif spec.empty == "vs":
-            # 그 자리를 빈 구멍으로 두지 않는다.
-            _text_in(layer, spec.box, "VS", spec.font,
-                     spec.empty_size or spec.size, spec.box[2], shadow=10.0)
+            # 그 자리를 빈 구멍으로 두지 않는다. 로고 자리의 크기를 줄였으면 VS 도
+            # 같이 줄어야 한다 — 로고를 뺐다고 글자만 커다랗게 남으면 이상하다.
+            _text_in(layer, box, "VS", spec.font,
+                     max(1, round((spec.empty_size or spec.size) * factor)),
+                     box[2] * factor, shadow=10.0)
         return
-    _text_in(layer, spec.box, value, spec.font, spec.size, spec.max_width, spec.shadow)
+    _text_in(layer, box, value, spec.font, spec.size, spec.max_width, spec.shadow)
 
 
 def _compose(template: CardTemplate, kind: str, layer: Image.Image,
@@ -230,19 +281,23 @@ def render_card(
     height: int,
     values: dict | None = None,
     logos: dict | None = None,
+    boxes: dict | None = None,
 ) -> Image.Image:
     """카드 한 장.
 
     kind 는 'start' 또는 'section'. values 는 {항목 id: 글자}, logos 는
     {항목 id: 로고 파일 경로}. 템플릿에 없는 항목은 조용히 무시한다 — 템플릿을 바꾸면
     옛 값이 남아 있을 수 있고, 그때 그림이 깨지는 것보다 안 그리는 게 낫다.
+
+    boxes 는 {항목 id: {"x": 시안좌표, "y": 시안좌표}} — 사용자가 옮긴 자리다.
+    없거나 모양이 아니면 시안 그대로 그린다.
     """
     spec_owner = template if isinstance(template, CardTemplate) else get_template(template)
     values = values or {}
     logos = logos or {}
     layer = Image.new("RGBA", spec_owner.design, (0, 0, 0, 0))
     for spec in spec_owner.fields(kind):
-        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id))
+        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), boxes)
     return _compose(spec_owner, kind, layer, width, height)
 
 
