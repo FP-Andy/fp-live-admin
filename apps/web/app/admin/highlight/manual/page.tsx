@@ -55,7 +55,7 @@ type CardFieldSpec = {
   empty: string;
   /** 시안 좌표 [왼쪽, 위, 가로, 세로]. 위치 칸의 **기본값**이 된다. */
   box: [number, number, number, number];
-  /** 크기까지 고칠 수 있는가 — 로고만이다(글자는 글꼴이 크기를 정한다). */
+  /** 크기까지 고칠 수 있는가. 로고는 그린 크기, 글자는 글꼴 크기다. */
   scalable?: boolean;
 };
 
@@ -65,6 +65,8 @@ type CardTemplateSpec = {
   note: string;
   /** 시안 규격 [가로, 세로]. 위치 값이 이 좌표계 안의 절대값이다. */
   design: [number, number];
+  /** 배경 그림의 바탕색. 색 고르개가 여기서 시작한다. */
+  base_color: string;
   start_fields: CardFieldSpec[];
   section_fields: CardFieldSpec[];
 };
@@ -84,6 +86,9 @@ type CardSettings = {
    *  {템플릿id: {항목id: {x, y, scale}}} — x·y 는 시안 좌표, scale 은 % 다.
    *  안 건드린 항목은 아예 없다. */
   boxes: Record<string, Record<string, { x: number; y: number; scale?: number }>>;
+  /** 배경 색(#RRGGBB). 비우면 시안 색 그대로. 템플릿별로 따로 둔다 —
+   *  시안이 다르면 어울리는 색도 다르다. {템플릿id: 색} */
+  colors: Record<string, string>;
   /** 자동으로 서는 첫 구간 카드의 이름. 비우면 종목 기본값(1쿼터·전반전). */
   firstSectionLabel: string;
   /** 합본 맨 끝에 파인플레이 로고 영상을 붙인다. 내장 자산이라 켜고 끄기만 한다. */
@@ -102,6 +107,7 @@ const DEFAULT_CARDS: CardSettings = {
   sectionDurationSec: CARD_SEC_DEFAULT,
   values: {},
   boxes: {},
+  colors: {},
   firstSectionLabel: '',
   outro: true,
 };
@@ -348,7 +354,19 @@ export default function ManualHighlightPage() {
     forTemplate[spec.id] = { ...now, [axis]: value };
     return { ...prev, boxes: { ...prev.boxes, [prev.template]: forTemplate } };
   });
-  /** 로고 크기(%). 안 건드렸으면 100 이다. */
+  /** 지금 고른 배경 색. 안 건드렸으면 시안 색이다. */
+  const cardColor = cards.colors[cards.template] || cardTemplate?.base_color || '#FF7400';
+  const cardColorChanged = Boolean(cards.colors[cards.template]);
+  const setCardColor = (value: string) => setCards((prev) => ({
+    ...prev, colors: { ...prev.colors, [prev.template]: value },
+  }));
+  const resetCardColor = () => setCards((prev) => {
+    const next = { ...prev.colors };
+    delete next[prev.template];
+    return { ...prev, colors: next };
+  });
+
+  /** 항목 크기(%). 안 건드렸으면 100 이다. */
   const scaleOf = (spec: CardFieldSpec) => cardBoxes[spec.id]?.scale ?? 100;
   /** 이 템플릿에서 옮긴 자리를 모두 시안으로 되돌린다. */
   const resetCardBoxes = () => setCards((prev) => {
@@ -730,8 +748,14 @@ export default function ManualHighlightPage() {
       setCardPreviewBusy(true);
       try {
         const body = cardPreviewOf === 'start'
-          ? { template: cards.template, kind: 'start', width: 960, values: cardValues, boxes: cardBoxes }
-          : { template: cards.template, kind: 'section', width: 960, label: previewLabel };
+          ? {
+            template: cards.template, kind: 'start', width: 960,
+            values: cardValues, boxes: cardBoxes, color: cardColor,
+          }
+          : {
+            template: cards.template, kind: 'section', width: 960,
+            label: previewLabel, color: cardColor,
+          };
         const res = await fetch(`${API_BASE}/highlight/card-preview`, {
           method: 'POST',
           credentials: 'include',
@@ -1109,6 +1133,8 @@ export default function ManualHighlightPage() {
             intro_duration_sec: cards.introDurationSec,
             section_duration_sec: cards.sectionDurationSec,
             template: cards.template,
+            // 배경 색. 시안 색 그대로면 서버가 알아서 안 남긴다.
+            color: cardColor,
             intro: {
               // 아무것도 안 채웠으면 시작 카드를 넣지 않는다 — 배경만 몇 초 나오는 건
               // 아무 뜻이 없다. 무엇이 '채운 것' 인지도 템플릿의 항목으로 센다.
@@ -1132,6 +1158,9 @@ export default function ManualHighlightPage() {
             opacity: watermark.opacity,
             pos_x: watermark.posX,
             pos_y: watermark.posY,
+            // 적어 넣은 픽셀 좌표. 없으면 null 이고 그때는 비율을 쓴다.
+            pos_px_x: watermark.posPxX ?? null,
+            pos_px_y: watermark.posPxY ?? null,
           } : { enabled: false },
         }),
       });
@@ -1597,10 +1626,9 @@ export default function ManualHighlightPage() {
                           onChange={(e) => setCardBox(spec, 'y', Number(e.target.value))}
                           style={{ ...numInput, width: 62, padding: '4px 6px', fontSize: 12 }}
                         />
-                        {/* 로고만 크기를 준다. 글자는 글꼴이 크기를 정해서, 상자만
-                            늘리면 줄바꿈 폭만 바뀌고 글자는 그대로다.
-                            크기는 **가운데를 붙잡고** 늘어난다 — 키울 때마다 오른쪽
-                            아래로 흘러내리면 자리를 매번 다시 잡아야 한다. */}
+                        {/* 크기(%) — 로고는 그린 크기에, 글자는 글꼴 크기에 곱한다.
+                            둘 다 **가운데를 붙잡고** 커진다. 키울 때마다 오른쪽 아래로
+                            흘러내리면 자리를 매번 다시 잡아야 한다. */}
                         {spec.scalable ? (
                           <>
                             <span style={{ fontSize: 11 }}>크기</span>
@@ -1619,6 +1647,24 @@ export default function ManualHighlightPage() {
                       </span>
                     </label>
                   ))}
+
+                  {/* 배경 색 — 시안(그라데이션·도형·명암)은 그대로 두고 색만 돈다.
+                      배경이 한 가지 색의 그라데이션이라 색상만 돌리면 무늬가 산다. */}
+                  <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    배경 색
+                    <input
+                      type="color"
+                      value={cardColor}
+                      onChange={(e) => setCardColor(e.target.value)}
+                      style={{ width: 38, height: 24, padding: 0, border: 'none', background: 'none' }}
+                    />
+                    <span style={{ fontSize: 11, fontFamily: 'monospace' }}>{cardColor.toUpperCase()}</span>
+                    {cardColorChanged ? (
+                      <button style={{ ...smallBtn, padding: '2px 8px' }} onClick={resetCardColor}>
+                        원래 색
+                      </button>
+                    ) : null}
+                  </label>
 
                   {/* 옮긴 게 있을 때만 되돌리기를 띄운다 — 늘 있으면 눈에 걸린다. */}
                   {cardBoxesMoved ? (
@@ -1787,6 +1833,53 @@ export default function ManualHighlightPage() {
                       />
                       <span style={{ color: 'var(--muted, #999)' }}>%</span>
                     </label>
+                    {/* 자리를 숫자로 — 끌어서 맞추기 어려운 값을 그대로 적는다.
+                        칸에는 늘 **지금 자리의 픽셀**이 보이고, 고치면 그 자리에 박힌다.
+                        끌면 다시 비율로 돌아간다(아래 onMove 에서 푼다). */}
+                    {(() => {
+                      const at = markPlacement(
+                        boardVideo.w, boardVideo.h,
+                        watermark.sizePct, watermark.posX, watermark.posY,
+                        watermark.posPxX, watermark.posPxY,
+                      );
+                      const pinned = watermark.posPxX != null || watermark.posPxY != null;
+                      return (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                          <span style={{ color: 'var(--muted, #999)' }}>자리</span>
+                          <span style={{ color: 'var(--muted, #999)', fontSize: 11 }}>X</span>
+                          <input
+                            type="number"
+                            step={1}
+                            value={at.x}
+                            onChange={(e) => setWatermark((p) => ({
+                              ...p, posPxX: Number(e.target.value), posPxY: p.posPxY ?? at.y,
+                            }))}
+                            style={{ ...numInput, width: 64 }}
+                          />
+                          <span style={{ color: 'var(--muted, #999)', fontSize: 11 }}>Y</span>
+                          <input
+                            type="number"
+                            step={1}
+                            value={at.y}
+                            onChange={(e) => setWatermark((p) => ({
+                              ...p, posPxY: Number(e.target.value), posPxX: p.posPxX ?? at.x,
+                            }))}
+                            style={{ ...numInput, width: 64 }}
+                          />
+                          <span style={{ color: 'var(--muted, #777)', fontSize: 11 }}>
+                            {boardVideo.w}x{boardVideo.h} 기준{pinned ? ' · 고정됨' : ''}
+                          </span>
+                          {pinned ? (
+                            <button
+                              style={{ ...smallBtn, padding: '2px 8px' }}
+                              onClick={() => setWatermark((p) => ({ ...p, posPxX: null, posPxY: null }))}
+                            >
+                              풀기
+                            </button>
+                          ) : null}
+                        </label>
+                      );
+                    })()}
                   </>
                 ) : (
                   <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
@@ -1949,13 +2042,17 @@ export default function ManualHighlightPage() {
                           place: markPlacement(
                             boardVideo.w, boardVideo.h,
                             watermark.sizePct, watermark.posX, watermark.posY,
+                            watermark.posPxX, watermark.posPxY,
                           ),
                           recompute: (pct: number) => markPlacement(boardVideo.w, boardVideo.h, pct, 0, 0),
                           sizePct: watermark.sizePct,
                           sizeRange: [1, 25] as [number, number],
-                          onMove: (posX: number, posY: number) => setWatermark((p) => ({ ...p, posX, posY })),
+                          // 끄는 것은 비율로 잡는 몸짓이다 — 적어 둔 픽셀은 푼다.
+                          // 안 그러면 끌어도 로고가 제자리에 붙어 있어 고장으로 보인다.
+                          onMove: (posX: number, posY: number) =>
+                            setWatermark((p) => ({ ...p, posX, posY, posPxX: null, posPxY: null })),
                           onResize: (sizePct: number, posX: number, posY: number) =>
-                            setWatermark((p) => ({ ...p, sizePct, posX, posY })),
+                            setWatermark((p) => ({ ...p, sizePct, posX, posY, posPxX: null, posPxY: null })),
                           render: (width: number) => (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img

@@ -9423,25 +9423,26 @@ def preview_highlight_card(
     height = max(1, round(width * design_h / design_w))
 
     # 합치기와 같은 손질을 거친 값으로 그린다 — 미리보기만 관대하면 결과물과 달라진다.
-    intro_clean = _card_settings({
-        "enabled": True, "template": template.id,
+    settings = _card_settings({
+        "enabled": True, "template": template.id, "color": body.get("color"),
         "intro": {"values": body.get("values") or {}, "boxes": body.get("boxes") or {}},
-    })["intro"]
-    cleaned, boxes = intro_clean["values"], intro_clean["boxes"]
+    })
+    intro_clean = settings["intro"]
+    cleaned, boxes, color = intro_clean["values"], intro_clean["boxes"], settings["color"]
 
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         if kind == "section":
             text_fields = [f for f in template.fields("section") if f.kind == "text"]
             values = {text_fields[0].id: str(body.get("label") or "")} if text_fields else {}
-            image = render_card(template, "section", width, height, values=values)
+            image = render_card(template, "section", width, height, values=values, color=color)
         else:
             logos = {
                 spec.id: _card_logo(workdir, spec.id, cleaned.get(spec.id))
                 for spec in template.fields("start") if spec.kind == "logo"
             }
             image = render_card(template, "start", width, height,
-                                values=cleaned, logos=logos, boxes=boxes)
+                                values=cleaned, logos=logos, boxes=boxes, color=color)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
 
@@ -9493,14 +9494,13 @@ def _card_settings(cards: dict) -> dict:
             value = max(-size, min(span, value))
             if abs(value - default) >= 0.5:
                 moved[key] = round(value, 2)
-        # 크기는 로고만이다(%). 글자는 상자가 아니라 글꼴이 크기를 정한다.
-        if spec.kind == "logo":
-            try:
-                scale = max(20.0, min(300.0, float(raw.get("scale"))))
-            except (TypeError, ValueError):
-                scale = 100.0
-            if abs(scale - 100.0) >= 0.5:
-                moved["scale"] = round(scale, 1)
+        # 크기(%) — 로고는 그린 크기에, 글자는 글꼴 크기에 곱한다.
+        try:
+            scale = max(20.0, min(300.0, float(raw.get("scale"))))
+        except (TypeError, ValueError):
+            scale = 100.0
+        if abs(scale - 100.0) >= 0.5:
+            moved["scale"] = round(scale, 1)
         if moved:
             boxes[spec.id] = moved
     intro = {"enabled": bool(intro_raw.get("enabled")), "values": values, "boxes": boxes}
@@ -9535,10 +9535,18 @@ def _card_settings(cards: dict) -> dict:
                 continue
         return CARD_SEC
 
+    # 배경을 갈아입힐 색. 시안 색 그대로면 안 남긴다 — 나중에 시안 색을 바꿔도
+    # 옛 값이 덮어쓰지 않게(항목 자리와 같은 이유다).
+    color = str(cards.get("color") or "").strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color) or color.upper() == template.base_color.upper():
+        color = ""
+
     return {
         "enabled": True,
         # 어느 템플릿으로 만든 결과물인지 잡에 남긴다.
         "template": template.id,
+        # 배경 색(#RRGGBB). 빈 문자열이면 시안 색 그대로다.
+        "color": color,
         # 합본 맨 끝의 파인플레이 로고 영상. 레포에 든 고정 자산이라 켜고 끄는 것뿐이다.
         # dict 가 아닌 값이 와도 죽지 않는다 — 잡 메타에 들어가는 값이라 관대해야 한다.
         "outro": {"enabled": bool(outro_raw.get("enabled"))},
@@ -9617,6 +9625,16 @@ def merge_manual_job(
                 return fallback
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        def _wm_px(key: str) -> float | None:
+            """사람이 적어 넣은 픽셀 좌표. 안 적었으면 None — 그때는 비율을 쓴다."""
+            raw = watermark.get(key)
+            if raw is None or raw == "":
+                return None
+            try:
+                return max(0.0, min(20000.0, float(raw)))
+            except (TypeError, ValueError):
+                return None
+
         metadata["watermark"] = {
             "enabled": True,
             "size_pct": _wm("size_pct", 5.0, 1.0, 25.0),
@@ -9624,6 +9642,10 @@ def merge_manual_job(
             # 여백을 뺀 범위 안에서의 비율. 기본은 우상단(100, 0).
             "pos_x": _wm("pos_x", 100.0, 0.0, 100.0),
             "pos_y": _wm("pos_y", 0.0, 0.0, 100.0),
+            # 영상 픽셀 좌표. 적어 넣었으면 비율 대신 이것을 쓴다 — 규격이 달라져도
+            # 적은 숫자가 그대로 지켜진다.
+            "pos_px_x": _wm_px("pos_px_x"),
+            "pos_px_y": _wm_px("pos_px_y"),
         }
         update_job(db, job_id, job_metadata=metadata)
 

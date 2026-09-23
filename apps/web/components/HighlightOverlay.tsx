@@ -285,6 +285,10 @@ export type Watermark = {
   enabled: boolean;
   sizePct: number;
   opacity: number;
+  /** 영상 픽셀 좌표. 적어 넣었으면 비율(posX/posY) 대신 이것을 쓴다.
+   *  끌어서 옮기면 비워진다 — 끄는 것은 비율로 잡는 몸짓이다. */
+  posPxX?: number | null;
+  posPxY?: number | null;
   posX: number;
   posY: number;
 };
@@ -298,6 +302,8 @@ export const DEFAULT_WATERMARK: Watermark = {
   enabled: true,
   // 중계 화면의 방송사 로고가 보통 이 정도다 — 경기를 가리지 않으면서 눈에는 들어오는 선.
   sizePct: 5,
+  posPxX: null,
+  posPxY: null,
   opacity: 0.55,
   // 1920x1080 에서 로고 왼쪽 위가 (1740, 80). 서버(watermark.py)와 같은 값이라
   // 미리보기 자리가 결과물의 자리다.
@@ -306,7 +312,10 @@ export const DEFAULT_WATERMARK: Watermark = {
 };
 
 /** 로고 크기·자리. 서버(watermark.mark_placement)와 같은 식이라 여기 보이는 자리가 결과물의 자리다. */
-export function markPlacement(videoW: number, videoH: number, sizePct: number, posX: number, posY: number) {
+export function markPlacement(
+  videoW: number, videoH: number, sizePct: number, posX: number, posY: number,
+  posPxX?: number | null, posPxY?: number | null,
+) {
   const pct = Math.max(1, Math.min(25, sizePct)) / 100;
   let raw = videoW * pct;
   // 파노라마(3840x800)처럼 납작한 원본에서 세로를 다 먹지 않게 한 번 더 묶는다.
@@ -317,10 +326,16 @@ export function markPlacement(videoW: number, videoH: number, sizePct: number, p
   const freeX = Math.max(0, videoW - w - 2 * margin);
   const freeY = Math.max(0, videoH - h - 2 * margin);
   const clamp = (v: number) => Math.max(0, Math.min(100, v)) / 100;
+  // 사람이 적어 넣은 픽셀 좌표가 있으면 그것이 이긴다(서버 mark_placement 와 같다).
+  const px = (value: number | null | undefined, span: number) => (
+    value === null || value === undefined || Number.isNaN(Number(value))
+      ? null
+      : Math.max(0, Math.min(span, Math.round(Number(value))))
+  );
   return {
     w, h, margin, freeX, freeY,
-    x: margin + Math.round(freeX * clamp(posX)),
-    y: margin + Math.round(freeY * clamp(posY)),
+    x: px(posPxX, Math.max(0, videoW - w)) ?? margin + Math.round(freeX * clamp(posX)),
+    y: px(posPxY, Math.max(0, videoH - h)) ?? margin + Math.round(freeY * clamp(posY)),
   };
 }
 

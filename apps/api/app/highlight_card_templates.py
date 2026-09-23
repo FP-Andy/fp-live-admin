@@ -85,6 +85,14 @@ class CardTemplate:
     note: str = ""
     """설정 화면에 띄울 한 줄 안내."""
 
+    base_color: str = "#FF7400"
+    """배경 그림의 바탕색. **색만 바꾸기**의 기준점이다.
+
+    배경은 한 가지 색의 그라데이션이라(실측: 색상 27~39도, 무채색 0%) 색상만 돌리면
+    그라데이션·도형·명암이 전부 그대로 남는다. 이 값이 '지금 색' 이고, 사용자가 고른
+    색과의 **차이만큼** 돌린다.
+    """
+
     def fields(self, kind: str) -> tuple[CardField, ...]:
         return self.section_fields if kind == "section" else self.start_fields
 
@@ -98,6 +106,7 @@ FINEPLAY = CardTemplate(
     id="fineplay",
     name="파인플레이 기본",
     design=(1920, 1080),
+    base_color="#FF7400",
     start_bg="card-bg-start.png",
     section_bg="card-bg-section.png",
     note="대회 로고를 안 넣으면 그 자리에 VS 가, 팀 로고를 안 넣으면 흰 파인플레이 마크가 들어갑니다.",
@@ -180,8 +189,9 @@ def describe(template: CardTemplate) -> dict:
             "empty": field_.empty,
             # 시안 좌표. 화면은 이걸 기본값으로 두고 자리를 고치게 한다.
             "box": [left, top, width, height],
-            # 크기까지 고칠 수 있는가 — 로고만이다(글자는 글꼴이 크기를 정한다).
-            "scalable": field_.kind == "logo",
+            # 크기 조정은 로고·글자 모두 된다. 로고는 그린 크기에, 글자는 글꼴
+            # 크기에 곱한다.
+            "scalable": True,
         }
 
     return {
@@ -189,6 +199,8 @@ def describe(template: CardTemplate) -> dict:
         "name": template.name,
         "note": template.note,
         "design": list(template.design),
+        # 배경 바탕색 — 설정 화면의 색 고르개가 이 값에서 시작한다.
+        "base_color": template.base_color,
         "start_fields": [one(f) for f in template.start_fields],
         "section_fields": [one(f) for f in template.section_fields],
     }

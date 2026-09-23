@@ -1184,6 +1184,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 _wm_num("size_pct", WM_DEFAULT_SIZE_PCT),
                 _wm_num("pos_x", WM_DEFAULT_POS_X),
                 _wm_num("pos_y", WM_DEFAULT_POS_Y),
+                # 사람이 적어 넣은 픽셀 좌표. 있으면 이것이 이긴다.
+                wm_cfg.get("pos_px_x"), wm_cfg.get("pos_px_y"),
             )
             try:
                 wm_path = render_watermark_file(
@@ -1298,6 +1300,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 어떤 항목을 어디에 그릴지는 템플릿이 들고 있다. 여기서는 값만 건넨다.
             # 모르는 템플릿 id 는 내장으로 떨어진다 — 결과물은 나와야 한다.
             template = get_template(cards_cfg.get("template"))
+            # 배경을 갈아입힐 색. 비어 있으면 시안 색 그대로다.
+            card_color = str(cards_cfg.get("color") or "")
             intro_cfg = cards_cfg.get("intro")
             if isinstance(intro_cfg, dict) and intro_cfg.get("enabled"):
                 values = intro_cfg.get("values") if isinstance(intro_cfg.get("values"), dict) else {}
@@ -1309,6 +1313,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 boxes = intro_cfg.get("boxes") if isinstance(intro_cfg.get("boxes"), dict) else {}
                 intro_card = render_card_file(card_dir / "start.png", render_card(
                     template, "start", iw, ih, values=values, logos=logos, boxes=boxes,
+                    color=card_color,
                 ))
             for slot, label in section_at.items():
                 # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
@@ -1316,7 +1321,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 values = {text_fields[0].id: label} if text_fields else {}
                 section_card[slot] = render_card_file(
                     card_dir / f"section_{slot:03d}.png",
-                    render_card(template, "section", iw, ih, values=values),
+                    render_card(template, "section", iw, ih, values=values, color=card_color),
                 )
 
         # ── 합본에 놓일 조각들을 먼저 늘어놓는다 ─────────────────────────
