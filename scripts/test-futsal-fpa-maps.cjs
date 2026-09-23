@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('../apps/web/node_modules/typescript');
 function load(file){const module={exports:{}};Function('exports','require',ts.transpile(fs.readFileSync(file,'utf8'),{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}))(module.exports,()=>load('apps/web/components/futsal/graphics.ts'));return module.exports;}
-const {parseFpa,filterEvents,mapEvents,displayPoint,fpaGraphic,filteredMapEvents,defaultMapFilters,distanceBand,isDefense}=load('apps/web/components/futsal/fpaGraphics.ts');
+const {parseFpa,filterEvents,mapEvents,displayPoint,fpaGraphic,filteredMapEvents,defaultMapFilters,distanceBand,isDefense,defenseStyle,defenseActions}=load('apps/web/components/futsal/fpaGraphics.ts');
 const logs=['1H | away | left | 00:00 | Pos(0, 20) | 1 Pass to 2 | Pos(40, 0) | Tags: Success | Sport: FUTSAL','1H | home | right | 00:00 | Pos(10, 5) | 1 Shot | Tags: Goal, Success','1H | away | left | 00:00 | Pos(1, 2) | 2 Dribble | Pos(3, 4) | Path(1,2;2,3;3,4) | Tags: Fail'];
 const events=parseFpa({logs,rows:[]});
 assert.equal(events.length,3);assert.equal(events[0].receiver,'2');assert.deepEqual(events[0].points,[{x:0,y:20},{x:40,y:0}]);assert(events[1].goal);assert.equal(events[2].points.length,3);
@@ -28,3 +28,17 @@ assert.equal(filteredMapEvents([base],'pass',new Set(),{...defaultMapFilters,dis
 assert.equal(filteredMapEvents([{...base,action:'Kick-in'}],'pass',new Set(),defaultMapFilters).length,0);
 if(process.argv[2]){const all=parseFpa(JSON.parse(fs.readFileSync(process.argv[2],'utf8'))[0]);assert.equal(mapEvents(all,'kickin',new Set()).length,15);assert.equal(mapEvents(all,'defense',new Set()).length,31);assert.equal(mapEvents(all,'pass',new Set()).length,51);}
 console.log('Detailed defense, outcome and tag combinations, kick-in isolation, pass boundaries and missing distance passed.');
+
+const identities=defenseActions.filter(a=>a!=='Gain').map(a=>defenseStyle(a));
+assert.equal(new Set(identities.map(s=>s.shape)).size,identities.length);
+assert.equal(new Set(identities.map(s=>s.color)).size,identities.length);
+assert.deepEqual(defenseStyle('Gain'),defenseStyle('Acquisition'));
+assert.deepEqual(defenseStyle('tackle'),defenseStyle('Tackle'));
+assert.equal(defenseStyle('Pass'),null);
+assert.notEqual(defenseStyle('Tackle',true).color,defenseStyle('Tackle').color);
+for(const background of ['dark','light','transparent']) {
+ const ds=fpaGraphic({id:'test',name:'Defense'},defense,'defense',{home:'#ff7400',away:'#2158e8',background},false,'All');
+ for(const action of ['Tackle','Save','Intercept']) {assert(ds.includes(`data-defense="${action}"`));assert(ds.includes(defenseStyle(action,background==='light').color));}
+ assert(ds.includes('data-shape="star"'));assert(ds.includes('y="983"'));assert(!ds.includes('NaN'));
+}
+console.log('Defense marker identities, legacy alias, case matching, theme colors and exported legend passed.');
