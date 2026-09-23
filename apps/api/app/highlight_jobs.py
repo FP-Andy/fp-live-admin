@@ -802,6 +802,68 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
         return 1280, 720, "30"
 
 
+def _music_plan(metadata: dict, job_id: str) -> tuple[Path, float, float] | None:
+    """깔 음악과 볼륨. 안 깔면 None.
+
+    파일은 업로드 때 잡 폴더에 들어가 있다 — 화면이 들고 있을 수 없는 크기라서다.
+    """
+    config = metadata.get("music")
+    if not isinstance(config, dict) or not config.get("enabled"):
+        return None
+    name = str(config.get("file") or "").strip()
+    if not name:
+        return None
+    path = clips_dir(job_id) / name
+    if not path.exists():
+        return None
+
+    def _vol(key: str, fallback: float) -> float:
+        try:
+            return max(0.0, min(2.0, float(config.get(key))))
+        except (TypeError, ValueError):
+            return fallback
+
+    return path, _vol("volume", 0.8), _vol("original_volume", 0.2)
+
+
+def _mix_music(video: Path, music: Path, volume: float, original: float, out: Path) -> Path:
+    """합본 위에 음악을 깐다. **영상이 더 길면 음악을 반복**해 끝까지 채운다.
+
+    다 만들어진 합본에 한 번 더 입힌다 — 조각마다 깔면 이음매에서 음악이 끊기고,
+    조각별 필터 그래프도 한층 더 복잡해진다.
+
+    `-stream_loop -1` 이 음악을 무한 반복하고, amix 의 duration=first 가 **영상 길이에서**
+    끝낸다. 그래서 음악이 짧아도 빈 구간이 없고, 길어도 잘려서 영상보다 길어지지 않는다.
+
+    영상은 다시 인코딩하지 않는다(-c:v copy) — 소리만 얹는 일이다.
+    """
+    has_original = _has_audio(video) and original > 0
+    if has_original:
+        graph = (
+            f"[1:a]volume={volume:.3f},aresample=async=1[bg];"
+            f"[0:a]volume={original:.3f}[og];"
+            "[og][bg]amix=inputs=2:duration=first:dropout_transition=0,"
+            "alimiter=limit=0.95[a]"
+        )
+        maps = ["-map", "0:v", "-map", "[a]"]
+    else:
+        # 원본 소리를 껐거나 아예 없다 — 음악만 깐다. 이때도 영상 길이에서 끝내야 한다.
+        graph = f"[1:a]volume={volume:.3f},aresample=async=1[a]"
+        maps = ["-map", "0:v", "-map", "[a]", "-shortest"]
+
+    subprocess.run([
+        "ffmpeg", "-y", "-nostats",
+        "-i", str(video),
+        "-stream_loop", "-1", "-i", str(music),
+        "-filter_complex", graph,
+        *maps,
+        "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        str(out),
+    ], check=True, capture_output=True, text=True)
+    return out
+
+
 def _has_audio(path: Path) -> bool:
     """클립에 오디오 트랙이 있는가. 없으면 무음을 만들어 붙여야 조각 규격이 맞는다."""
     try:
@@ -1599,6 +1661,17 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 "-movflags", "+faststart",
                 str(export_path),
             ], check=True, capture_output=True, text=True)
+
+            music = _music_plan(metadata, job_id)
+            if music is not None:
+                metadata["progress"] = _progress_payload("merging", 96, "배경음악 입히는 중")
+                update_job(db, job_id, job_metadata=_json_safe(metadata))
+                music_path, volume, original = music
+                mixed = exports_dir() / f"{job_id}_export_music.mp4"
+                _mix_music(export_path, music_path, volume, original, mixed)
+                # 갈아끼운다 — 결과물 경로는 하나여야 내려받기·전송이 헷갈리지 않는다.
+                export_path.unlink(missing_ok=True)
+                mixed.replace(export_path)
         except subprocess.CalledProcessError as ex:
             update_job(
                 db, job_id, status="error",

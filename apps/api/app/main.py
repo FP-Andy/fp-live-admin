@@ -9392,6 +9392,73 @@ async def upload_manual_intro(
     return {"intro_image": name, "duration": round(dur, 3)}
 
 
+# 배경음악 — 수동 하이라이트 전용(축구·농구 공통). 신청 태깅에는 걸지 않는다.
+MUSIC_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".ogg"}
+MUSIC_MAX_BYTES = 40 * 1024 * 1024
+
+
+@app.post("/api/highlight/manual-jobs/{job_id}/music")
+async def upload_manual_music(
+    job_id: str,
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """합본에 깔 배경음악을 받는다.
+
+    음악은 몇 MB 라 화면이 들고 있을 수 없다(작업 저장이 브라우저 5MB 에서 터진다).
+    파일로 받아 잡 폴더에 두고, 합칠 때 그 파일을 쓴다.
+    """
+    job = _require_manual_job(db, job_id, user)
+
+    ext = Path(audio.filename or "").suffix.lower()
+    if ext not in MUSIC_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"음악 파일만 넣을 수 있습니다 ({', '.join(sorted(MUSIC_EXTS))}).",
+        )
+
+    name = f"music{ext}"
+    target = clips_dir(job_id) / name
+    size = 0
+    try:
+        with target.open("wb") as out_file:
+            while chunk := await audio.read(1024 * 1024):
+                size += len(chunk)
+                if size > MUSIC_MAX_BYTES:
+                    out_file.close()
+                    target.unlink(missing_ok=True)
+                    raise HTTPException(status_code=400, detail="음악 파일은 40MB 까지입니다.")
+                out_file.write(chunk)
+    finally:
+        await audio.close()
+
+    metadata = dict(job.job_metadata or {})
+    metadata["music"] = {
+        "file": name,
+        "filename": audio.filename or name,
+        "size": size,
+    }
+    update_job(db, job_id, job_metadata=metadata)
+    return {"file": name, "filename": audio.filename or name, "size": size}
+
+
+@app.post("/api/highlight/manual-jobs/{job_id}/music/remove")
+def remove_manual_music(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """배경음악을 뺀다."""
+    job = _require_manual_job(db, job_id, user)
+    metadata = dict(job.job_metadata or {})
+    existing = metadata.pop("music", None)
+    if isinstance(existing, dict) and existing.get("file"):
+        (clips_dir(job_id) / str(existing["file"])).unlink(missing_ok=True)
+    update_job(db, job_id, job_metadata=metadata)
+    return {"removed": bool(existing)}
+
+
 @app.get("/api/highlight/card-templates")
 def list_highlight_card_templates(user: User = Depends(_require_superuser)):
     """고를 수 있는 카드 템플릿과, 각 템플릿에서 **고칠 수 있는 항목** 목록.
@@ -9652,6 +9719,28 @@ def merge_manual_job(
             "pos_px_y": _wm_px("pos_px_y"),
         }
         update_job(db, job_id, job_metadata=metadata)
+
+    # 배경음악 볼륨. 파일은 따로 올라와 있고 여기서는 크기만 정한다.
+    music = body.get("music") if isinstance(body, dict) else None
+    if isinstance(music, dict):
+        def _vol(key: str, fallback: float) -> float:
+            try:
+                return max(0.0, min(2.0, float(music.get(key))))
+            except (TypeError, ValueError):
+                return fallback
+
+        current = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        existing = current.get("music") if isinstance(current.get("music"), dict) else None
+        if existing:
+            current["music"] = {
+                **existing,
+                "enabled": bool(music.get("enabled")),
+                # 음악은 '깔리는' 것이라 원본보다 작게 두는 게 기본이다.
+                "volume": _vol("volume", 0.8),
+                # 0 으로 내리면 음악만 남는다 — 경기장 소리가 방해될 때 쓴다.
+                "original_volume": _vol("original_volume", 0.2),
+            }
+            update_job(db, job_id, job_metadata=current)
 
     # 합본 사이에 끼는 전체화면 카드 — 시작 카드(맨 앞) + 구간 카드(T 로 찍은 자리).
     cards = body.get("cards") if isinstance(body, dict) else None
