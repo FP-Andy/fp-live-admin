@@ -1,7 +1,7 @@
 import asyncio
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
 import io
@@ -13230,6 +13230,56 @@ def _competition_player_id(team_id: str, jersey: str) -> str:
     return f"{team_id}:{jersey}"
 
 
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _iso_datetime(value: Any) -> str:
+    """'2026-05-31 15:00:00' → '2026-05-31T15:00:00'.
+
+    수신부는 **요청 본문 파싱 단계**에서 형식을 본다 — 날짜와 시각 사이가 공백이면
+    거기서 400(code=VF)으로 떨어진다. 화면이 무엇을 보내든 **나가는 모양은 우리가
+    정한다** — 계약을 지키는 건 보내는 쪽 일이고, 한 곳에서 막아야 또 안 샌다.
+
+    시각이 없는 날짜만(`2026-05-31`)은 그대로 둔다. 없는 시각을 자정으로 지어내면
+    "15시 경기" 가 조용히 "0시 경기" 가 된다.
+    """
+    text = str(value or "").strip()
+    if not text or _DATE_ONLY_RE.fullmatch(text):
+        return text
+    # 날짜 뒤의 공백만 T 로 바꾼다. 뒤쪽(타임존 등)은 건드리지 않는다.
+    candidate = re.sub(r"^(\d{4}-\d{2}-\d{2})[ \t]+", r"\1T", text)
+    try:
+        return datetime.fromisoformat(candidate).isoformat()
+    except ValueError:
+        # 시각이 아니다(예: "2026-05-31 경기 하이라이트"). **원본 그대로** 돌려준다 —
+        # 반쯤 바꿔 놓으면 제목 한가운데 T 가 박힌다.
+        return text
+
+
+def _iso_times(value: Any) -> Any:
+    """payload 안의 **모든 시각**을 ISO-8601 로 맞춘다.
+
+    수신부 규칙은 playedAt 하나가 아니라 시각 필드 전부에 걸린다. 필드 이름을 하나씩
+    적어 두면 나중에 필드가 늘 때 또 샌다 — **나가기 직전에 통째로 훑는다.**
+
+    datetime/date 객체도 여기서 잡는다. json 직렬화가 str() 로 떨어지면 날짜와 시각
+    사이에 공백이 들어가고, 그게 정확히 수신부가 400 을 내는 모양이다.
+
+    시각이 아닌 글자는 건드리지 않는다 — 날짜로 시작하는 제목이 있을 수 있다.
+    """
+    if isinstance(value, dict):
+        return {key: _iso_times(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_iso_times(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        return _iso_datetime(value)
+    return value
+
+
 def _build_competition_payload(
     db: Session,
     clips: list[HighlightClip],
@@ -13371,7 +13421,7 @@ def _build_competition_payload(
     if competition.get("round"):
         payload["competition"]["round"] = str(competition["round"]).strip()
     if match.get("playedAt"):
-        payload["match"]["playedAt"] = str(match["playedAt"]).strip()
+        payload["match"]["playedAt"] = match["playedAt"]
     if match.get("venue"):
         payload["match"]["venue"] = str(match["venue"]).strip()
 
@@ -13382,7 +13432,9 @@ def _build_competition_payload(
         "profiles": len(profiles_by_id),
         "warnings": warnings,
     }
-    return payload, summary
+    # 나가기 직전에 시각을 전부 ISO-8601 로 맞춘다. 화면이 무엇을 보내든,
+    # 조립 과정에서 datetime 이 섞여 들어오든, 나가는 모양은 여기서 정해진다.
+    return _iso_times(payload), summary
 
 
 # 백그라운드 작업의 실패는 화면에 사유만 남는다 — 스택은 서버 로그에 남겨야
@@ -13448,13 +13500,28 @@ def _run_competition_send(
 
         code = int(result.get("status_code") or 0)
         rbody = result.get("body") if isinstance(result.get("body"), dict) else {}
-        if code == 200:
+        # 거절은 두 가지이고 **원인이 다르다.** 형식 오류는 본문 파싱에서 떨어진 것이라
+        # 보낸 모양이 잘못된 것이고(예: 시각에 T 가 없음), 계약 위반은 파싱은 됐는데
+        # 값이 규칙에 안 맞는 것이다(errors 에 위치가 찍힌다). 둘을 한 줄로 뭉뚱그리면
+        # 화면만 보고는 어디를 고쳐야 할지 알 수 없다.
+        def _rejection() -> str:
+            if str(rbody.get("code") or "").upper() == "VF":
+                return (f"형식 오류(본문 파싱) — {rbody.get('message') or 'Validation failed.'}"
+                        " · 날짜·시각은 ISO-8601(2026-05-31T15:00:00)")
+            if rbody.get("errors"):
+                return f"계약 위반 — {rbody.get('errors')}"
+            return str(rbody or "사유 없음")
+
+        if rbody.get("accepted") is False:
+            # 200 으로 와도 accepted=false 면 받아 준 것이 아니다 — 성공으로 적으면 안 된다.
+            status_label = f"rejected({code}): {_rejection()}"
+        elif code == 200:
             status_label = "sent"
         elif code == 501:
             # 수신부가 계약 검증은 통과했으나 아직 저장 미구현 — 실패 아님(핸드오프 상태).
             status_label = "contract-ok (수신부 저장 준비 중 · 501)"
         elif code == 400:
-            status_label = f"rejected(400): {rbody.get('errors')}"
+            status_label = f"rejected(400): {_rejection()}"
         else:
             status_label = f"failed: HTTP {code} {rbody}"
         finish(status_label, competition_payload=payload, competition_summary=summary)
