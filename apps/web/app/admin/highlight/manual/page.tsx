@@ -376,6 +376,13 @@ export default function ManualHighlightPage() {
   });
   const cardBoxesMoved = Object.keys(cardBoxes).length > 0;
 
+  /** 배경음악 — 파일은 합치기 직전에 올린다(몇 MB 라 작업 저장에 실을 수 없다).
+   *  영상이 음악보다 길면 서버가 음악을 **반복**해 끝까지 채운다. */
+  const [musicFile, setMusicFile] = useState<File | null>(null);
+  const [musicVolume, setMusicVolume] = useState(80);
+  /** 경기장 소리. 0 으로 내리면 음악만 남는다. */
+  const [originalVolume, setOriginalVolume] = useState(20);
+
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
   // 배치 화면에서 지금 만지고 있는 오버레이. 겹칠 때 원하는 걸 집으려면 하나만 잡혀야 한다.
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
@@ -1104,6 +1111,19 @@ export default function ManualHighlightPage() {
         if (!introRes.ok) throw new Error(await introRes.text() || '인트로 사진 업로드 실패');
       }
 
+      // 배경음악도 같은 자리에서 올린다. 클립보다 먼저 올릴 이유가 없다.
+      if (musicFile) {
+        setPublishMsg('배경음악 업로드 중...');
+        const musicForm = new FormData();
+        musicForm.append('audio', musicFile, musicFile.name);
+        const musicRes = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/music`, {
+          method: 'POST',
+          credentials: 'include',
+          body: musicForm,
+        });
+        if (!musicRes.ok) throw new Error(await musicRes.text() || '배경음악 업로드 실패');
+      }
+
       // 여기서부터는 서버 몫 — 탭을 닫아도 합치기는 끝나고 "수동 결과물"에 뜬다.
       setPublishPhase('merging');
       setPublishMsg('서버에서 다듬고 합치는 중...');
@@ -1151,6 +1171,12 @@ export default function ManualHighlightPage() {
               .filter((entry): entry is { ordinal: number; label: string; beforeOrder: number } => Boolean(entry))
               .map((entry) => ({ before_order: entry.beforeOrder, label: entry.label })),
           } : { enabled: false },
+          // 배경음악 — 파일은 위에서 올렸고 여기서는 크기만 정한다.
+          music: {
+            enabled: Boolean(musicFile),
+            volume: musicVolume / 100,
+            original_volume: originalVolume / 100,
+          },
           // 우리 로고 — 점수판과 따로 켜고 끈다. 영상 내내 같은 자리에 얹힌다.
           watermark: watermark.enabled ? {
             enabled: true,
@@ -2396,6 +2422,63 @@ export default function ManualHighlightPage() {
                     ) : (
                       <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                         하이라이트 맨 앞에 사진을 잠깐 보여줍니다.
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 배경음악 — 축구·농구 공통. 영상이 음악보다 길면 서버가 음악을
+                      **반복**해 끝까지 채운다(중간에 소리가 끊기지 않는다). */}
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+                    <label style={{ ...smallBtn, display: 'inline-flex', alignItems: 'center' }}>
+                      {musicFile ? '배경음악 변경' : '♪ 배경음악 (선택)'}
+                      <input
+                        type="file"
+                        accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg"
+                        style={{ display: 'none' }}
+                        onChange={(e) => setMusicFile(e.target.files?.[0] ?? null)}
+                        disabled={publishing}
+                      />
+                    </label>
+                    {musicFile ? (
+                      <>
+                        <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                          {musicFile.name} ({fmtBytes(musicFile.size)})
+                        </span>
+                        <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          음악
+                          <input
+                            type="range"
+                            min={0}
+                            max={150}
+                            step={5}
+                            value={musicVolume}
+                            onChange={(e) => setMusicVolume(Number(e.target.value))}
+                            style={{ width: 100 }}
+                            disabled={publishing}
+                          />
+                          <span style={{ width: 34 }}>{musicVolume}%</span>
+                        </label>
+                        <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          경기장 소리
+                          <input
+                            type="range"
+                            min={0}
+                            max={150}
+                            step={5}
+                            value={originalVolume}
+                            onChange={(e) => setOriginalVolume(Number(e.target.value))}
+                            style={{ width: 100 }}
+                            disabled={publishing}
+                          />
+                          <span style={{ width: 34 }}>{originalVolume}%</span>
+                        </label>
+                        <button style={smallBtn} onClick={() => setMusicFile(null)} disabled={publishing}>
+                          제거
+                        </button>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                        하이라이트 전체에 음악을 깝니다. 영상이 더 길면 음악을 반복합니다.
                       </span>
                     )}
                   </div>
