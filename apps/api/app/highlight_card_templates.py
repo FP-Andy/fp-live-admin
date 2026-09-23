@@ -109,44 +109,55 @@ FINEPLAY = CardTemplate(
     base_color="#FF7400",
     start_bg="card-bg-start.png",
     section_bg="card-bg-section.png",
-    note="대회 로고를 안 넣으면 그 자리에 VS 가, 팀 로고를 안 넣으면 흰 파인플레이 마크가 들어갑니다.",
+    note="대회 로고를 안 넣으면 그 자리에 VS 가, 팀 로고를 안 넣으면 흰 파인플레이 마크가,"
+         " 협력사 로고를 안 넣으면 파인플레이 로고가 들어갑니다.",
+    # 자리·크기는 전부 **시안(시작.png)에서 직접 잰 값**이다. 글자는 같은 글을 우리
+    # 글꼴로 그려 보며 높이가 맞는 크기를 찾았다 — 상자만 맞추면 글자 크기가 안 맞는다.
     start_fields=(
         CardField(
             id="round_label", label="라운드", kind="text",
-            box=(866.13, 111.47, 181.0, 56.0),
-            font=GIANTS, size=40, max_width=289.6, shadow=5.4,
+            box=(847.0, 123.0, 228.0, 33.0),
+            font=GIANTS, size=40, max_width=420.0, shadow=5.4,
             placeholder="1 ROUND", max_len=20, ui_width=120,
         ),
         CardField(
             id="competition", label="대회 이름", kind="text",
-            box=(716.63, 164.97, 505.0, 181.0),
-            font=GIANTS, size=128, max_width=757.5, shadow=3.9,
-            placeholder="8.15 컵", max_len=40, ui_width=190,
+            box=(290.0, 219.0, 1339.0, 77.0),
+            font=GIANTS, size=93, max_width=1440.0, shadow=3.9,
+            placeholder="2026 HYU-LEAGUE AUTUMN", max_len=40, ui_width=190,
         ),
         CardField(
             id="home_logo", label="홈 로고", kind="logo",
-            box=(284.25, 373.29, 357.41, 357.41), empty="mark",
+            box=(286.0, 375.0, 354.0, 354.0), empty="mark",
         ),
         CardField(
             id="away_logo", label="원정 로고", kind="logo",
-            box=(1274.28, 371.26, 361.48, 361.48), empty="mark",
+            box=(1276.0, 373.0, 358.0, 358.0), empty="mark",
         ),
         CardField(
             id="center_logo", label="대회 로고", kind="logo",
-            box=(834.39, 509.01, 249.08, 249.08),
-            font=GIANTS, empty="vs", empty_size=132,
+            # 로고를 안 넣으면 이 자리에 VS 가 들어간다. 그래서 상자 가운데를
+            # 시안의 VS 글자 가운데에 맞춰 뒀다 — 둘이 같은 자리에 와야 한다.
+            box=(834.0, 486.0, 249.0, 249.0),
+            font=GIANTS, empty="vs", empty_size=179,
         ),
         CardField(
             id="home_name", label="홈 팀", kind="text",
-            box=(338.45, 745.71, 249.0, 105.0),
-            font=WANTED, size=88, max_width=600.0,
+            box=(345.0, 759.0, 240.0, 79.0),
+            font=WANTED, size=86, max_width=600.0,
             placeholder="홈팀 이름", max_len=20, ui_width=150,
         ),
         CardField(
             id="away_name", label="원정 팀", kind="text",
-            box=(1330.52, 747.74, 249.0, 105.0),
-            font=WANTED, size=88, max_width=600.0,
+            box=(1337.0, 761.0, 241.0, 79.0),
+            font=WANTED, size=86, max_width=600.0,
             placeholder="원정팀 이름", max_len=20, ui_width=150,
+        ),
+        CardField(
+            id="partner_logo", label="협력사 로고", kind="logo",
+            # 시안에서 [대회 로고] × [Fine Play] 가 앉는 자리. 아무것도 안 넣으면
+            # 파인플레이 로고가 들어간다 — 배경에 박혀 있던 그 글자를 오려내 쓴다.
+            box=(688.0, 913.0, 548.0, 63.0), empty="wordmark",
         ),
     ),
     section_fields=(
