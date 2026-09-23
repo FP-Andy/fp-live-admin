@@ -1,5 +1,6 @@
 'use client';
 
+import { futsalPitchPoint, futsalPitchMarker } from '../../../../lib/futsal-pitch';
 import LineupUniforms from '../../../../components/LineupUniforms';
 import AttackDirectionPitch from '../../../../components/AttackDirectionPitch';
 import Link from 'next/link';
@@ -50,12 +51,12 @@ function FutsalShotPitch({
         <rect x="0" y="0" width="20" height="20" fill="#007ac0" />
         <g fill="none" stroke="#fff" strokeWidth="0.14">
           <rect x="0" y="0" width="20" height="20" />
-          <path d="M8.5 0V-1.2H11.5V0M2.17 0A6 6 0 0 1 8.17 6H11.83A6 6 0 0 1 17.83 0" />
+          <path d="M8.5 0V-1.2H11.5V0M2.5 0A6 6 0 0 0 8.5 6H11.5A6 6 0 0 0 17.5 0" />
           <path d="M0 20H20M0 0H20" />
         </g>
         <g fill="#fff"><circle cx="10" cy="6" r=".12" /><circle cx="10" cy="10" r=".12" /></g>
       </svg>
-      {shotPoint ? <span className="futsal-shot-marker" style={{ left: `${(shotPoint.y / FUTSAL_PITCH_WIDTH) * 100}%`, top: `${(1 - shotPoint.x / FUTSAL_HALF_PITCH_LENGTH) * 100}%` }} /> : null}
+      {shotPoint ? <span className="futsal-shot-marker" style={futsalPitchMarker(shotPoint)} /> : null}
       <span className="futsal-shot-pitch-label top">상대 골문</span>
       <span className="futsal-shot-pitch-label bottom">20m × 20m · 공격 하프</span>
       <span className="futsal-shot-pitch-label state">{isOnTarget ? '골문 좌표 입력 활성화' : '피치를 눌러 슛 위치 입력'}</span>
@@ -1251,9 +1252,15 @@ export default function MatchPage() {
     const py = e.clientY - rect.top;
     // In both layouts top is the attacking goal. Queen Cup uses a 20 × 20 m
     // attacking half, while football keeps the existing 40 × 68 m zone.
-    const y = (px / rect.width) * (isFutsal ? FUTSAL_PITCH_WIDTH : PITCH_WIDTH);
-    const x = (1 - py / rect.height) * (isFutsal ? FUTSAL_HALF_PITCH_LENGTH : XG_VISIBLE_LENGTH);
-    setShotPoint({ x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) });
+    if (isFutsal) {
+      const point = futsalPitchPoint(px / rect.width, py / rect.height);
+      if (!point) return; // The red surround is outside the playing area.
+      setShotPoint(point);
+    } else {
+      const y = (px / rect.width) * PITCH_WIDTH;
+      const x = (1 - py / rect.height) * XG_VISIBLE_LENGTH;
+      setShotPoint({ x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) });
+    }
     setXgEstimateMeta('');
   };
 
