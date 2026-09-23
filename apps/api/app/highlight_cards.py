@@ -157,6 +157,18 @@ def _open_logo(path: Path | str | None) -> Image.Image | None:
         return None
 
 
+def _wordmark() -> Image.Image | None:
+    """협력사 자리의 기본값 — 파인플레이 로고(글자).
+
+    원래 배경 그림에 박혀 있던 것을 오려낸 것이다. 박혀 있으면 갈아끼울 수 없어서
+    배경에서는 지우고 여기로 옮겼다. 아무것도 안 넣으면 예전과 같은 그림이 나온다.
+    """
+    key = "fineplay-wordmark.png"
+    if key not in _MARK_CACHE:
+        _MARK_CACHE[key] = _open_logo(_brand_dir() / key)
+    return _MARK_CACHE[key]
+
+
 def _white_mark() -> Image.Image | None:
     if DEFAULT_TEAM_MARK in _MARK_CACHE:
         return _MARK_CACHE[DEFAULT_TEAM_MARK]
@@ -275,6 +287,8 @@ def _draw_field(layer: Image.Image, spec: CardField, value: str,
         logo = _open_logo(logo_path)
         if logo is None and spec.empty == "mark":
             logo = _white_mark()
+        if logo is None and spec.empty == "wordmark":
+            logo = _wordmark()
         if logo is not None:
             _paste_contained(layer, box, logo, factor)
         elif spec.empty == "vs":
