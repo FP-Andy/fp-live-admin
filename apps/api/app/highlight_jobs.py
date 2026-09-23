@@ -1155,12 +1155,15 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             sb_logo = _decode_logo(sb_cfg.get("logo_url"), sb_dir)
             # 로고가 있으면 판보다 세로가 길다 — 그 높이로 자리를 잡아야 위쪽에 붙였을 때
             # 로고가 화면 밖으로 잘리지 않는다.
+            # 로고 크기는 화면에서 %로 온다(100 = 시안 원본).
+            sb_logo_scale = float(sb_cfg.get("logo_size_pct") or 100) / 100.0
             sb_board_w, _sb_h, sb_x, sb_y = board_placement(
                 vw, vh,
                 float(sb_cfg.get("size_pct") or 28),
                 float(sb_cfg.get("pos_x") or 0),
                 float(sb_cfg.get("pos_y") or 0),
                 with_logo=sb_logo is not None,
+                logo_size=sb_logo_scale,
             )
 
         # ── 우리 로고(워터마크) ───────────────────────────────────────────
@@ -1181,6 +1184,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 _wm_num("size_pct", WM_DEFAULT_SIZE_PCT),
                 _wm_num("pos_x", WM_DEFAULT_POS_X),
                 _wm_num("pos_y", WM_DEFAULT_POS_Y),
+                # 사람이 적어 넣은 픽셀 좌표. 있으면 이것이 이긴다.
+                wm_cfg.get("pos_px_x"), wm_cfg.get("pos_px_y"),
             )
             try:
                 wm_path = render_watermark_file(
@@ -1217,7 +1222,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     str(sb_cfg.get("away_name") or ""),
                     score[0], score[1], sb_board_w,
                     sb_cfg.get("home_color"), sb_cfg.get("away_color"),
-                    sb_logo,
+                    sb_logo, sb_logo_scale,
                 )
                 sb_cache[score] = path
             return path
@@ -1295,6 +1300,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 어떤 항목을 어디에 그릴지는 템플릿이 들고 있다. 여기서는 값만 건넨다.
             # 모르는 템플릿 id 는 내장으로 떨어진다 — 결과물은 나와야 한다.
             template = get_template(cards_cfg.get("template"))
+            # 배경을 갈아입힐 색. 비어 있으면 시안 색 그대로다.
+            card_color = str(cards_cfg.get("color") or "")
             intro_cfg = cards_cfg.get("intro")
             if isinstance(intro_cfg, dict) and intro_cfg.get("enabled"):
                 values = intro_cfg.get("values") if isinstance(intro_cfg.get("values"), dict) else {}
@@ -1302,8 +1309,11 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     spec.id: _card_logo(card_dir, spec.id, values.get(spec.id))
                     for spec in template.fields("start") if spec.kind == "logo"
                 }
+                # 사용자가 옮긴 자리. 없으면 시안 그대로다.
+                boxes = intro_cfg.get("boxes") if isinstance(intro_cfg.get("boxes"), dict) else {}
                 intro_card = render_card_file(card_dir / "start.png", render_card(
-                    template, "start", iw, ih, values=values, logos=logos,
+                    template, "start", iw, ih, values=values, logos=logos, boxes=boxes,
+                    color=card_color,
                 ))
             for slot, label in section_at.items():
                 # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
@@ -1311,7 +1321,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 values = {text_fields[0].id: label} if text_fields else {}
                 section_card[slot] = render_card_file(
                     card_dir / f"section_{slot:03d}.png",
-                    render_card(template, "section", iw, ih, values=values),
+                    render_card(template, "section", iw, ih, values=values, color=card_color),
                 )
 
         # ── 합본에 놓일 조각들을 먼저 늘어놓는다 ─────────────────────────

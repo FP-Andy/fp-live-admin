@@ -1264,13 +1264,17 @@ export default function FineplayJobsPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMsg, setBulkMsg] = useState('');
 
-  const runBulkSheet = async (file: File, apply: boolean) => {
+  /** metaOnly 면 라인업은 그대로 두고 대회·라운드·날짜·장소만 새로 읽는다.
+   *  머리글을 남기기 전에 올린 경기의 날짜·장소를 채우려는 것이다 — 그걸 채우자고
+   *  기록지를 통째로 다시 적용하면 그 사이에 손본 라인업까지 덮어쓴다. */
+  const runBulkSheet = async (file: File, apply: boolean, metaOnly = false) => {
     setBulkBusy(true);
-    setBulkMsg(apply ? '기록지 적용 중…' : '기록지 읽는 중…');
+    setBulkMsg(apply ? (metaOnly ? '머리글 갱신 중…' : '기록지 적용 중…') : '기록지 읽는 중…');
     try {
       const form = new FormData();
       form.append('file', file);
       form.append('apply', apply ? 'true' : 'false');
+      if (metaOnly) form.append('meta_only', 'true');
       // 자동 매칭이 실패했거나 잘못 붙은 시트만 수동 지정으로 덮어쓴다.
       const picks = Object.fromEntries(Object.entries(bulkPicks).filter(([, v]) => v));
       if (Object.keys(picks).length) form.append('assignments', JSON.stringify(picks));
@@ -1285,7 +1289,9 @@ export default function FineplayJobsPage() {
       setBulkResult(data);
       const applied = data.results.filter((r) => r.status === 'applied').length;
       setBulkMsg(apply
-        ? `적용 완료 — 시트 ${data.total}장 중 ${applied}건 등록${data.unmatched ? ` · 미매칭 ${data.unmatched}건` : ''}`
+        ? (metaOnly
+          ? `머리글 갱신 완료 — ${applied}건 (라인업은 그대로)${data.unmatched ? ` · 미매칭 ${data.unmatched}건` : ''}`
+          : `적용 완료 — 시트 ${data.total}장 중 ${applied}건 등록${data.unmatched ? ` · 미매칭 ${data.unmatched}건` : ''}`)
         : `미리보기 — 시트 ${data.total}장 중 ${data.matched}건 자동 매칭${data.unmatched ? ` · ${data.unmatched}건은 작업을 직접 고르세요` : ''}`);
       if (apply) void loadJobs();
     } catch (err) {
@@ -1401,6 +1407,12 @@ export default function FineplayJobsPage() {
                   onClick={() => bulkFile && void runBulkSheet(bulkFile, true)}
                   title="매칭된 시트의 라인업을 각 사전 작업에 저장합니다"
                 >매칭된 것 모두 등록</button>
+                <button
+                  style={smallBtn}
+                  disabled={bulkBusy || !bulkFile || !bulkResult.results.some((r) => r.status === 'matched')}
+                  onClick={() => bulkFile && void runBulkSheet(bulkFile, true, true)}
+                  title="라인업은 그대로 두고 대회·라운드·날짜·장소만 다시 읽습니다"
+                >머리글만 갱신 (라인업 유지)</button>
               </div>
             </div>
           ) : null}
@@ -1408,6 +1420,8 @@ export default function FineplayJobsPage() {
           {bulkMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{bulkMsg}</p> : null}
           <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
             홈/어웨이 팀명 두 개로 사전 작업을 찾습니다. 제목은 바뀔 수 있어 쓰지 않습니다.
+            이미 등록한 경기의 대회 인입 양식이 비어 있으면 <strong>머리글만 갱신</strong>을 쓰세요 —
+            라인업은 건드리지 않고 대회·라운드·날짜·장소만 다시 읽습니다.
             기록지의 포지션(LCB·RDM 등)이 그대로 저장돼 dual 태깅의 “before 에 배치”가 그 자리에 깝니다.
           </p>
         </div>

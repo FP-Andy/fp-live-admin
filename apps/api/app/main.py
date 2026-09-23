@@ -1,7 +1,7 @@
 import asyncio
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
 import io
@@ -31,7 +31,11 @@ import httpx
 import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
-from .competition_queue import CompetitionSendWorker, enqueue as enqueue_competition_send
+from .competition_queue import (
+    CompetitionSendWorker,
+    cancel as cancel_competition_send,
+    enqueue as enqueue_competition_send,
+)
 from .branding_refresh import BrandingRefreshQueue
 from .team_branding import (create_team_logo_router, match_team_names, team_logo_urls, resolve_branding, mark_manual_branding, reset_branding)
 
@@ -9423,23 +9427,26 @@ def preview_highlight_card(
     height = max(1, round(width * design_h / design_w))
 
     # 합치기와 같은 손질을 거친 값으로 그린다 — 미리보기만 관대하면 결과물과 달라진다.
-    cleaned = _card_settings({
-        "enabled": True, "template": template.id, "intro": {"values": body.get("values") or {}},
-    })["intro"]["values"]
+    settings = _card_settings({
+        "enabled": True, "template": template.id, "color": body.get("color"),
+        "intro": {"values": body.get("values") or {}, "boxes": body.get("boxes") or {}},
+    })
+    intro_clean = settings["intro"]
+    cleaned, boxes, color = intro_clean["values"], intro_clean["boxes"], settings["color"]
 
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         if kind == "section":
             text_fields = [f for f in template.fields("section") if f.kind == "text"]
             values = {text_fields[0].id: str(body.get("label") or "")} if text_fields else {}
-            image = render_card(template, "section", width, height, values=values)
+            image = render_card(template, "section", width, height, values=values, color=color)
         else:
             logos = {
                 spec.id: _card_logo(workdir, spec.id, cleaned.get(spec.id))
                 for spec in template.fields("start") if spec.kind == "logo"
             }
             image = render_card(template, "start", width, height,
-                                values=cleaned, logos=logos)
+                                values=cleaned, logos=logos, boxes=boxes, color=color)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
 
@@ -9469,7 +9476,38 @@ def _card_settings(cards: dict) -> dict:
         raw = raw_values.get(spec.id)
         values[spec.id] = (_logo(raw) if spec.kind == "logo"
                            else str(raw or "").strip()[:spec.max_len])
-    intro = {"enabled": bool(intro_raw.get("enabled")), "values": values}
+
+    # 항목을 옮긴 자리(시안 좌표). **옮긴 것만** 남긴다 — 전부 적어 두면 나중에 시안을
+    # 고쳐도 옛 좌표가 그대로 덮어써서 템플릿 수정이 먹히지 않는다.
+    design_w, design_h = template.design
+    raw_boxes = intro_raw.get("boxes") if isinstance(intro_raw.get("boxes"), dict) else {}
+    boxes: dict[str, dict] = {}
+    for spec in template.fields("start"):
+        raw = raw_boxes.get(spec.id)
+        if not isinstance(raw, dict):
+            continue
+        left, top, width, height = spec.box
+        moved: dict[str, float] = {}
+        for key, default, span, size in (("x", left, design_w, width),
+                                         ("y", top, design_h, height)):
+            try:
+                value = float(raw.get(key))
+            except (TypeError, ValueError):
+                continue
+            # 시안 밖으로 통째로 내보내지는 못하게 묶는다 — 안 보이는 항목은 사고다.
+            value = max(-size, min(span, value))
+            if abs(value - default) >= 0.5:
+                moved[key] = round(value, 2)
+        # 크기(%) — 로고는 그린 크기에, 글자는 글꼴 크기에 곱한다.
+        try:
+            scale = max(20.0, min(300.0, float(raw.get("scale"))))
+        except (TypeError, ValueError):
+            scale = 100.0
+        if abs(scale - 100.0) >= 0.5:
+            moved["scale"] = round(scale, 1)
+        if moved:
+            boxes[spec.id] = moved
+    intro = {"enabled": bool(intro_raw.get("enabled")), "values": values, "boxes": boxes}
 
     outro_raw = cards.get("outro") if isinstance(cards.get("outro"), dict) else {}
     section_text = next((f for f in template.fields("section") if f.kind == "text"), None)
@@ -9501,10 +9539,18 @@ def _card_settings(cards: dict) -> dict:
                 continue
         return CARD_SEC
 
+    # 배경을 갈아입힐 색. 시안 색 그대로면 안 남긴다 — 나중에 시안 색을 바꿔도
+    # 옛 값이 덮어쓰지 않게(항목 자리와 같은 이유다).
+    color = str(cards.get("color") or "").strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color) or color.upper() == template.base_color.upper():
+        color = ""
+
     return {
         "enabled": True,
         # 어느 템플릿으로 만든 결과물인지 잡에 남긴다.
         "template": template.id,
+        # 배경 색(#RRGGBB). 빈 문자열이면 시안 색 그대로다.
+        "color": color,
         # 합본 맨 끝의 파인플레이 로고 영상. 레포에 든 고정 자산이라 켜고 끄는 것뿐이다.
         # dict 가 아닌 값이 와도 죽지 않는다 — 잡 메타에 들어가는 값이라 관대해야 한다.
         "outro": {"enabled": bool(outro_raw.get("enabled"))},
@@ -9560,6 +9606,8 @@ def merge_manual_job(
             # 여백을 뺀 놓을 수 있는 범위 안에서의 비율. (0,0) 왼쪽 위 · (100,100) 오른쪽 아래.
             "pos_x": _pct("pos_x", 2.18, 0.0, 100.0),
             "pos_y": _pct("pos_y", 4.42, 0.0, 100.0),
+            # 판 위 로고의 크기(%). 100 이 시안 원본이고, 판 폭에 비례한다.
+            "logo_size_pct": _pct("logo_size_pct", 100.0, 40.0, 220.0),
             # 대회 로고(dataURL). 합치기 때 PNG 로 풀어 판 위에 얹는다. 없으면 빈 문자열이고
             # 그때는 로고 없이 판만 그린다. 2MB 를 넘으면 버린다 — 잡 메타에 통째로 들어가는
             # 값이라 무한정 키우면 안 된다.
@@ -9581,6 +9629,16 @@ def merge_manual_job(
                 return fallback
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        def _wm_px(key: str) -> float | None:
+            """사람이 적어 넣은 픽셀 좌표. 안 적었으면 None — 그때는 비율을 쓴다."""
+            raw = watermark.get(key)
+            if raw is None or raw == "":
+                return None
+            try:
+                return max(0.0, min(20000.0, float(raw)))
+            except (TypeError, ValueError):
+                return None
+
         metadata["watermark"] = {
             "enabled": True,
             "size_pct": _wm("size_pct", 5.0, 1.0, 25.0),
@@ -9588,6 +9646,10 @@ def merge_manual_job(
             # 여백을 뺀 범위 안에서의 비율. 기본은 우상단(100, 0).
             "pos_x": _wm("pos_x", 100.0, 0.0, 100.0),
             "pos_y": _wm("pos_y", 0.0, 0.0, 100.0),
+            # 영상 픽셀 좌표. 적어 넣었으면 비율 대신 이것을 쓴다 — 규격이 달라져도
+            # 적은 숫자가 그대로 지켜진다.
+            "pos_px_x": _wm_px("pos_px_x"),
+            "pos_px_y": _wm_px("pos_px_y"),
         }
         update_job(db, job_id, job_metadata=metadata)
 
@@ -10931,6 +10993,28 @@ def set_standalone_lineup(
     }
 
 
+def _record_sheet_header(filename: str, sheet: dict, swap: bool) -> dict:
+    """작업에 남길 기록지 머리글 — 전송 화면이 이걸로 대회·라운드·날짜·장소를 채운다.
+
+    **단건·일괄·머리글만** 세 경로가 모두 이걸 쓴다. 예전엔 경로마다 dict 를 따로
+    적었는데, 한쪽에만 필드를 더하는 바람에 일괄로 올린 경기는 양식이 통째로 비었다.
+    같은 것을 남겨야 하는 값은 같은 곳에서 만든다.
+    """
+    meta = record_sheet.sheet_meta(sheet, str(sheet.get("sheet") or ""))
+    return {
+        "filename": filename,
+        "sheet": sheet.get("sheet", ""),
+        "match_no": sheet.get("matchNo", ""),
+        "swap": bool(swap),
+        "uploaded_at": datetime.utcnow().isoformat(),
+        # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
+        "grade": meta["grade"],
+        "round": meta["round"],
+        "played_date": meta["played_date"],
+        "venue": meta["venue"],
+    }
+
+
 @app.post("/api/highlight/fineplay-jobs/{job_id}/lineup/from-record-sheet")
 async def lineup_from_record_sheet(
     job_id: str,
@@ -11015,19 +11099,7 @@ async def lineup_from_record_sheet(
     # 머리글(등급·라운드·날짜·장소)도 같이 남긴다 — 대회 인입 전송 화면이 이걸로
     # 칸을 미리 채운다. 같은 값을 사람이 다시 타이핑하면 오타가 난다.
     # 시간은 기록지에 없다(실물 24개 시트 확인) — 전송 화면에서 직접 넣는다.
-    meta = record_sheet.sheet_meta(target, target["sheet"])
-    metadata["record_sheet"] = {
-        "filename": file.filename or "",
-        "sheet": target["sheet"],
-        "match_no": target.get("matchNo", ""),
-        "swap": bool(swap),
-        "uploaded_at": datetime.utcnow().isoformat(),
-        # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
-        "grade": meta["grade"],
-        "round": meta["round"],
-        "played_date": meta["played_date"],
-        "venue": meta["venue"],
-    }
+    metadata["record_sheet"] = _record_sheet_header(file.filename or "", target, swap)
     update_job(db, job_id, job_metadata=metadata)
     _audit(
         db, "STANDALONE_LINEUP_FROM_SHEET", "highlight_job",
@@ -11325,6 +11397,7 @@ async def lineup_from_record_sheet_bulk(
     file: UploadFile = File(...),
     apply: bool = Form(default=False),
     assignments: str = Form(default=""),
+    meta_only: bool = Form(default=False),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -11336,6 +11409,10 @@ async def lineup_from_record_sheet_bulk(
     apply=false 면 아무것도 저장하지 않고 매칭 결과만 돌려준다 — 어디에 들어갈지 보고
     확인한 뒤에 넣게 하려는 것이다.
     assignments 는 {"시트명": "job_id"} JSON — 자동 매칭을 덮어쓴다(수동 지정/오매칭 교정).
+
+    meta_only=true 면 **라인업은 건드리지 않고 머리글만** 새로 쓴다. 머리글을 남기기
+    전에 올린 경기의 날짜·장소를 채우려는 것이다 — 그것 때문에 기록지를 통째로 다시
+    적용하면, 그 사이에 손본 라인업까지 같이 덮어쓴다.
     """
     name = (file.filename or "").lower()
     if not name.endswith((".xlsx", ".xlsm")):
@@ -11397,6 +11474,18 @@ async def lineup_from_record_sheet_bulk(
         job, metadata = _require_standalone_job(db, job_id)
         links = dict(metadata.get("links") or {})
         applied: dict[str, dict] = {}
+
+        if meta_only:
+            # 라인업(links)에는 손대지 않는다 — 머리글만 새로 쓴다.
+            metadata["record_sheet"] = _record_sheet_header(file.filename or "", sheet, swap)
+            update_job(db, job_id, job_metadata=metadata)
+            _audit(
+                db, "STANDALONE_RECORD_SHEET_META", "highlight_job",
+                actor=user, target_id=job_id, details={"sheet": sheet["sheet"]},
+            )
+            results.append({**entry, "status": "applied", "meta_only": True, "sides": {}})
+            continue
+
         for side in ("home", "away"):
             src_side = ("away" if side == "home" else "home") if swap else side
             parsed = sheet[src_side]
@@ -11445,22 +11534,7 @@ async def lineup_from_record_sheet_bulk(
             continue
 
         metadata["links"] = links
-        # 머리글도 같이 남긴다 — 단건 경로와 같은 모양이어야 한다. 전송 화면은 이걸로
-        # 대회·라운드·날짜·장소를 미리 채우는데, 여기서 빠뜨리면 일괄로 올린 경기만
-        # 칸이 전부 비어 "매칭이 안 된다"로 보인다.
-        meta = record_sheet.sheet_meta(sheet, sheet["sheet"])
-        metadata["record_sheet"] = {
-            "filename": file.filename or "",
-            "sheet": sheet["sheet"],
-            "match_no": sheet.get("matchNo", ""),
-            "swap": bool(swap),
-            "uploaded_at": datetime.utcnow().isoformat(),
-            # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
-            "grade": meta["grade"],
-            "round": meta["round"],
-            "played_date": meta["played_date"],
-            "venue": meta["venue"],
-        }
+        metadata["record_sheet"] = _record_sheet_header(file.filename or "", sheet, swap)
         update_job(db, job_id, job_metadata=metadata)
         _audit(
             db, "STANDALONE_LINEUP_FROM_SHEET_BULK", "highlight_job",
@@ -13160,6 +13234,56 @@ def _competition_player_id(team_id: str, jersey: str) -> str:
     return f"{team_id}:{jersey}"
 
 
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _iso_datetime(value: Any) -> str:
+    """'2026-05-31 15:00:00' → '2026-05-31T15:00:00'.
+
+    수신부는 **요청 본문 파싱 단계**에서 형식을 본다 — 날짜와 시각 사이가 공백이면
+    거기서 400(code=VF)으로 떨어진다. 화면이 무엇을 보내든 **나가는 모양은 우리가
+    정한다** — 계약을 지키는 건 보내는 쪽 일이고, 한 곳에서 막아야 또 안 샌다.
+
+    시각이 없는 날짜만(`2026-05-31`)은 그대로 둔다. 없는 시각을 자정으로 지어내면
+    "15시 경기" 가 조용히 "0시 경기" 가 된다.
+    """
+    text = str(value or "").strip()
+    if not text or _DATE_ONLY_RE.fullmatch(text):
+        return text
+    # 날짜 뒤의 공백만 T 로 바꾼다. 뒤쪽(타임존 등)은 건드리지 않는다.
+    candidate = re.sub(r"^(\d{4}-\d{2}-\d{2})[ \t]+", r"\1T", text)
+    try:
+        return datetime.fromisoformat(candidate).isoformat()
+    except ValueError:
+        # 시각이 아니다(예: "2026-05-31 경기 하이라이트"). **원본 그대로** 돌려준다 —
+        # 반쯤 바꿔 놓으면 제목 한가운데 T 가 박힌다.
+        return text
+
+
+def _iso_times(value: Any) -> Any:
+    """payload 안의 **모든 시각**을 ISO-8601 로 맞춘다.
+
+    수신부 규칙은 playedAt 하나가 아니라 시각 필드 전부에 걸린다. 필드 이름을 하나씩
+    적어 두면 나중에 필드가 늘 때 또 샌다 — **나가기 직전에 통째로 훑는다.**
+
+    datetime/date 객체도 여기서 잡는다. json 직렬화가 str() 로 떨어지면 날짜와 시각
+    사이에 공백이 들어가고, 그게 정확히 수신부가 400 을 내는 모양이다.
+
+    시각이 아닌 글자는 건드리지 않는다 — 날짜로 시작하는 제목이 있을 수 있다.
+    """
+    if isinstance(value, dict):
+        return {key: _iso_times(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_iso_times(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        return _iso_datetime(value)
+    return value
+
+
 def _build_competition_payload(
     db: Session,
     clips: list[HighlightClip],
@@ -13301,7 +13425,7 @@ def _build_competition_payload(
     if competition.get("round"):
         payload["competition"]["round"] = str(competition["round"]).strip()
     if match.get("playedAt"):
-        payload["match"]["playedAt"] = str(match["playedAt"]).strip()
+        payload["match"]["playedAt"] = match["playedAt"]
     if match.get("venue"):
         payload["match"]["venue"] = str(match["venue"]).strip()
 
@@ -13312,7 +13436,9 @@ def _build_competition_payload(
         "profiles": len(profiles_by_id),
         "warnings": warnings,
     }
-    return payload, summary
+    # 나가기 직전에 시각을 전부 ISO-8601 로 맞춘다. 화면이 무엇을 보내든,
+    # 조립 과정에서 datetime 이 섞여 들어오든, 나가는 모양은 여기서 정해진다.
+    return _iso_times(payload), summary
 
 
 # 백그라운드 작업의 실패는 화면에 사유만 남는다 — 스택은 서버 로그에 남겨야
@@ -13339,9 +13465,6 @@ def _run_competition_send(
             .all()
         )
         job = db.get(HighlightJob, job_id)
-        if not clips or not job:
-            return
-        _job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
 
         def finish(status: str, **extra) -> None:
             current_job = db.query(HighlightJob).filter_by(id=job_id).populate_existing().with_for_update().one()
@@ -13349,6 +13472,16 @@ def _run_competition_send(
             meta["competition_callback_status"] = status
             meta.update(extra)
             update_job(db, job_id, job_metadata=meta)
+
+        # 여기서 그냥 return 하면 상태가 'sending' 에 박히고, 화면의 전송 버튼이
+        # 영영 잠긴다 — 끝나지 않는 '대기 중' 이 된다. **모든 출구는 상태를 남긴다.**
+        if job is None:
+            logger.warning("대회 인입 — 잡이 없어 중단합니다 (job %s)", job_id)
+            return
+        if not clips:
+            finish("failed: 보낼 클립이 없습니다 — 클립이 지워졌는지 확인하세요")
+            return
+        _job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
 
         try:
             payload, summary = _build_competition_payload(
@@ -13378,13 +13511,28 @@ def _run_competition_send(
 
         code = int(result.get("status_code") or 0)
         rbody = result.get("body") if isinstance(result.get("body"), dict) else {}
-        if code == 200:
+        # 거절은 두 가지이고 **원인이 다르다.** 형식 오류는 본문 파싱에서 떨어진 것이라
+        # 보낸 모양이 잘못된 것이고(예: 시각에 T 가 없음), 계약 위반은 파싱은 됐는데
+        # 값이 규칙에 안 맞는 것이다(errors 에 위치가 찍힌다). 둘을 한 줄로 뭉뚱그리면
+        # 화면만 보고는 어디를 고쳐야 할지 알 수 없다.
+        def _rejection() -> str:
+            if str(rbody.get("code") or "").upper() == "VF":
+                return (f"형식 오류(본문 파싱) — {rbody.get('message') or 'Validation failed.'}"
+                        " · 날짜·시각은 ISO-8601(2026-05-31T15:00:00)")
+            if rbody.get("errors"):
+                return f"계약 위반 — {rbody.get('errors')}"
+            return str(rbody or "사유 없음")
+
+        if rbody.get("accepted") is False:
+            # 200 으로 와도 accepted=false 면 받아 준 것이 아니다 — 성공으로 적으면 안 된다.
+            status_label = f"rejected({code}): {_rejection()}"
+        elif code == 200:
             status_label = "sent"
         elif code == 501:
             # 수신부가 계약 검증은 통과했으나 아직 저장 미구현 — 실패 아님(핸드오프 상태).
             status_label = "contract-ok (수신부 저장 준비 중 · 501)"
         elif code == 400:
-            status_label = f"rejected(400): {rbody.get('errors')}"
+            status_label = f"rejected(400): {_rejection()}"
         else:
             status_label = f"failed: HTTP {code} {rbody}"
         finish(status_label, competition_payload=payload, competition_summary=summary)
@@ -13398,6 +13546,39 @@ def _run_competition_send(
             )
     finally:
         db.close()
+
+
+@app.post("/api/highlight/clip-results/matches/{match_id}/cancel-competition")
+def clip_result_cancel_competition(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """대기·진행 중인 대회 인입 전송을 취소한다.
+
+    전송이 거절되거나 서버가 도중에 죽으면 상태가 'sending' 에 박히고, 그러면 화면의
+    전송 버튼이 **영영 잠긴다.** 다시 보낼 방법이 없어지므로 손으로 풀 수 있어야 한다.
+
+    이미 끝난 전송은 건드리지 않는다 — 취소는 '아직 안 끝난 것' 에만 걸린다.
+    """
+    clips = (
+        db.query(HighlightClip)
+        .filter(HighlightClip.match_id == match_id)
+        .order_by(HighlightClip.order_index)
+        .all()
+    )
+    if not clips:
+        raise HTTPException(status_code=404, detail="이 매치에 클립이 없습니다.")
+    job, _our_side, _labels, _lineup = _clip_job_context(db, clips[0])
+    if not job:
+        raise HTTPException(status_code=409, detail="클립의 원본 잡이 없습니다.")
+
+    canceled = cancel_competition_send(db, job.id)
+    _audit(
+        db, "COMPETITION_SEND_CANCELED", "highlight_job",
+        actor=user, target_id=job.id, details={"queued_rows": canceled},
+    )
+    return {"canceled": canceled}
 
 
 @app.post("/api/highlight/clip-results/matches/{match_id}/send-competition")

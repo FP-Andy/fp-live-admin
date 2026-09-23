@@ -11,6 +11,10 @@ import { apiJson, type SessionUser } from '../../../../lib/api';
 
 /** SUFA 2026 네 등급. 기록지 시트 코드의 첫 글자(S/A/B/L)가 그대로 등급이다 —
  *  'A-2R-2' 를 읽으면 대회가 정해진다. 새 시즌이 오면 여기만 고치면 된다. */
+/** 아직 안 끝난 전송 상태 — 이때만 전송 버튼을 잠근다.
+ *  거절·실패·취소는 **끝난 것**이므로 잠그면 안 된다. 다시 보낼 길이 막힌다. */
+const COMP_PENDING = ['queued', 'sending'];
+
 const COMPETITIONS = [
   { grade: 'S', id: 'sufa-2026-S', name: '2026 SUFA SUPREME' },
   { grade: 'A', id: 'sufa-2026-A', name: '2026 SUFA ADVANCE' },
@@ -38,7 +42,9 @@ type MatchRow = {
   away_team: string;
   clip_count: number;
   callback_status?: string | null;
-  /** 대회 인입 전송 상태. 'sending' 이면 뒤에서 도는 중이다. */
+  /** 대회 인입 전송 상태. 'queued'·'sending' 이면 아직 안 끝난 것이다.
+   *  그 밖의 값(sent·contract-ok·rejected…·failed…·canceled…)은 전부 끝난 상태라,
+   *  다시 보낼 수 있어야 한다. */
   competition_callback_status?: string | null;
   record_sheet?: RecordSheetMeta | null;
   analysis_request_id?: number | string;
@@ -880,6 +886,25 @@ export default function ClipResultsPage() {
     };
   };
 
+  /** 막힌 전송을 푼다.
+   *
+   *  전송이 거절되거나 서버가 도중에 죽으면 상태가 'sending' 에 박히고, 그러면 전송
+   *  버튼이 영영 잠긴다 — 끝나지 않는 '처리 중' 이 된다. 손으로 풀 수 있어야 한다. */
+  const cancelCompetition = async () => {
+    if (!selectedMatch?.match_id) return;
+    setBusy(true);
+    try {
+      await apiJson(`/highlight/clip-results/matches/${selectedMatch.match_id}/cancel-competition`,
+        { method: 'POST' });
+      setMsg('대회 전송을 취소했습니다 — 다시 보낼 수 있습니다.');
+      await loadMatches();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** 대회 인입이 끝날 때까지 상태를 지켜본다. 뒤에서 도는 작업이라 응답만으로는 모른다. */
   const watchCompetitionSend = async (jobId: string) => {
     // 클립이 많으면 몇 분 걸린다. 넉넉히 기다리되, 영원히 붙잡지는 않는다.
@@ -985,12 +1010,31 @@ export default function ClipResultsPage() {
                     <button
                       style={primaryBtn}
                       onClick={() => setCompForm(competitionFormFrom(selectedMatch))}
-                      disabled={busy || ['queued', 'sending'].includes(selectedMatch.competition_callback_status || '')}
+                      disabled={busy || COMP_PENDING.includes(selectedMatch.competition_callback_status || '')}
                       title="분석 신청 없이 대회 클립으로 앱에 보냅니다 — 팀·선수 매칭은 FinePlay 스테이징에서 확정합니다"
                     >
-                      {selectedMatch.competition_callback_status === 'queued' ? '대회 전송 대기 중' : selectedMatch.competition_callback_status === 'sending' ? '대회 전송 처리 중' : '🏆 대회 인입 전송'}
+                      {selectedMatch.competition_callback_status === 'queued' ? '대회 전송 대기 중'
+                        : selectedMatch.competition_callback_status === 'sending' ? '대회 전송 처리 중'
+                          : (selectedMatch.competition_callback_status || '').startsWith('rejected')
+                            || (selectedMatch.competition_callback_status || '').startsWith('failed')
+                            || (selectedMatch.competition_callback_status || '').startsWith('canceled')
+                            ? '🏆 대회 인입 다시 보내기'
+                            : '🏆 대회 인입 전송'}
                     </button>
                   ) : null}
+                  {/* 막힌 전송을 푸는 길. 서버가 도중에 죽으면 상태가 '처리 중' 에
+                      박히고, 그러면 전송 버튼이 영영 잠긴다 — 그때 이걸로 푼다. */}
+                  {selectedMatch.plan?.source === 'standalone'
+                    && COMP_PENDING.includes(selectedMatch.competition_callback_status || '') ? (
+                      <button
+                        style={smallBtn}
+                        onClick={() => void cancelCompetition()}
+                        disabled={busy}
+                        title="대기·진행 중인 대회 전송을 취소합니다 — 다시 보낼 수 있게 됩니다"
+                      >
+                        전송 취소
+                      </button>
+                    ) : null}
                 </>
               ) : null}
             </>

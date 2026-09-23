@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import colorsys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -102,6 +103,48 @@ def _base(template: CardTemplate, kind: str) -> Image.Image:
     return _gradient(design[0], design[1], template.gradient)
 
 
+def _hex_rgb(value: str) -> tuple[int, int, int] | None:
+    text = str(value or "").strip().lstrip("#")
+    if len(text) != 6:
+        return None
+    try:
+        return tuple(int(text[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError:
+        return None
+
+
+def _recolor(image: Image.Image, base: str, target: str) -> Image.Image:
+    """디자인은 그대로 두고 **색만** 바꾼다.
+
+    배경은 한 가지 색의 그라데이션이다(실측: 색상 27~39도에 몰려 있고 무채색 0%).
+    그래서 HSV 로 옮겨 **색상(H)만 돌리고 채도·명도는 건드리지 않으면**, 그라데이션도
+    도형도 명암도 전부 그대로 남고 색만 갈린다. 색을 통째로 칠하면 그림이 뭉개진다.
+
+    채도는 원본 대비 **비율로** 맞춘다 — 회색을 고르면 전체가 바래고, 쨍한 색을 고르면
+    같은 만큼 올라간다. 원본이 흐린 자리는 흐린 채로 남는다.
+    """
+    base_rgb, target_rgb = _hex_rgb(base), _hex_rgb(target)
+    if base_rgb is None or target_rgb is None or base_rgb == target_rgb:
+        return image
+    base_h, base_s, _base_v = colorsys.rgb_to_hsv(*[c / 255 for c in base_rgb])
+    tgt_h, tgt_s, _tgt_v = colorsys.rgb_to_hsv(*[c / 255 for c in target_rgb])
+
+    alpha = image.getchannel("A") if image.mode == "RGBA" else None
+    hsv = image.convert("RGB").convert("HSV")
+    h, s, v = hsv.split()
+
+    shift = round((tgt_h - base_h) * 255) % 256
+    h = h.point(lambda value: (value + shift) % 256)
+    if base_s > 0.01:
+        ratio = tgt_s / base_s
+        s = s.point(lambda value: max(0, min(255, round(value * ratio))))
+
+    out = Image.merge("HSV", (h, s, v)).convert("RGB").convert("RGBA")
+    if alpha is not None:
+        out.putalpha(alpha)
+    return out
+
+
 def _open_logo(path: Path | str | None) -> Image.Image | None:
     if not path:
         return None
@@ -128,14 +171,20 @@ def _white_mark() -> Image.Image | None:
 
 
 def _fit_font(text: str, filename: str, size: int, max_width: float):
-    """배정된 폭에 들어갈 때까지 글자 크기를 줄인다."""
+    """배정된 폭에 들어갈 때까지 글자 크기를 줄인다.
+
+    12 아래로는 줄이지 않는다(읽을 수 없다). 다만 **처음부터 그보다 작게 달라고**
+    한 것이면 그 크기를 그대로 쓴다 — 바닥을 핑계로 사용자가 정한 크기를 키우면
+    "줄였는데 안 줄어든다" 가 된다.
+    """
+    floor = min(12, size)
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    while size > 12:
+    while size > floor:
         font = _font(filename, size)
         if probe.textlength(text, font=font) <= max_width:
             return font
         size -= 2
-    return _font(filename, 12)
+    return _font(filename, floor)
 
 
 def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: str,
@@ -161,34 +210,90 @@ def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: s
 
 
 def _paste_contained(layer: Image.Image, box: tuple[float, float, float, float],
-                     logo: Image.Image) -> None:
-    """상자 안에 비율을 지켜 넣고 가운데 맞춘다."""
+                     logo: Image.Image, factor: float = 1.0) -> None:
+    """상자 안에 비율을 지켜 넣고 가운데 맞춘다. factor 로 그보다 키우거나 줄인다.
+
+    상자에 맞추는 단계는 **원본보다 크게 늘리지 않는다**(지금까지의 동작). 사용자가
+    준 배율은 그 위에 곱한다 — 그래야 100% 가 예전 그대로이고, 150% 는 눈에 보이는
+    지금 크기의 1.5배가 된다. 여기서 늘리기까지 막으면 작은 원본은 배율을 올려도
+    꿈쩍하지 않는다(thumbnail 이 줄이기만 해서 실제로 그랬다).
+
+    키울 때는 **상자 가운데를 붙잡는다.** 오른쪽 아래로 흘러내리면 자리를 매번 다시
+    잡아야 한다.
+    """
     left, top, width, height = box
-    art = logo.copy()
-    art.thumbnail((max(1, round(width)), max(1, round(height))), Image.LANCZOS)
+    # 상자에 맞춘 크기는 thumbnail 에 맡긴다 — 비율 반올림이 미묘해서, 직접 계산하면
+    # 배율을 안 건드린 카드까지 1px 씩 달라진다.
+    fitted = logo.copy()
+    fitted.thumbnail((max(1, round(width)), max(1, round(height))), Image.LANCZOS)
+
+    target = (max(1, round(fitted.width * factor)), max(1, round(fitted.height * factor)))
+    # 배율이 1 이면 예전 그대로다. 키울 때는 줄인 것을 다시 늘리지 않고 **원본에서
+    # 한 번에** 뽑는다 — 두 번 거치면 로고가 뭉갠 채로 커진다.
+    art = fitted if target == fitted.size else logo.resize(target, Image.LANCZOS)
+
     layer.paste(art, (round(left + (width - art.width) / 2),
                       round(top + (height - art.height) / 2)), art)
 
 
+def _moved(spec: CardField, boxes: dict | None
+           ) -> tuple[tuple[float, float, float, float], float]:
+    """이 항목이 놓일 (자리, 크기배율). 안 건드렸으면 시안 그대로 · 배율 1.0.
+
+    x·y 는 **왼쪽 위 모서리**이고 scale 은 크기(%)다. 로고는 그린 크기에, 글자는
+    글꼴 크기에 곱한다 — 글자는 상자가 아니라 글꼴이 크기를 정하기 때문이다.
+    """
+    left, top, width, height = spec.box
+    factor = 1.0
+    moved = (boxes or {}).get(spec.id)
+    if not isinstance(moved, dict):
+        return (left, top, width, height), factor
+
+    def _num(key):
+        try:
+            return float(moved[key])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    x, y = _num("x"), _num("y")
+    if x is not None:
+        left = x
+    if y is not None:
+        top = y
+
+    scale = _num("scale")
+    if scale is not None:
+        factor = max(0.2, min(3.0, scale / 100.0))
+    return (left, top, width, height), factor
+
+
 def _draw_field(layer: Image.Image, spec: CardField, value: str,
-                logo_path: Path | str | None) -> None:
+                logo_path: Path | str | None, boxes: dict | None = None) -> None:
     """항목 하나. 비었을 때 무엇으로 채울지는 항목이 들고 있다(spec.empty)."""
+    box, factor = _moved(spec, boxes)
     if spec.kind == "logo":
         logo = _open_logo(logo_path)
         if logo is None and spec.empty == "mark":
             logo = _white_mark()
         if logo is not None:
-            _paste_contained(layer, spec.box, logo)
+            _paste_contained(layer, box, logo, factor)
         elif spec.empty == "vs":
-            # 그 자리를 빈 구멍으로 두지 않는다.
-            _text_in(layer, spec.box, "VS", spec.font,
-                     spec.empty_size or spec.size, spec.box[2], shadow=10.0)
+            # 그 자리를 빈 구멍으로 두지 않는다. 로고 자리의 크기를 줄였으면 VS 도
+            # 같이 줄어야 한다 — 로고를 뺐다고 글자만 커다랗게 남으면 이상하다.
+            _text_in(layer, box, "VS", spec.font,
+                     max(1, round((spec.empty_size or spec.size) * factor)),
+                     box[2] * factor, shadow=10.0)
         return
-    _text_in(layer, spec.box, value, spec.font, spec.size, spec.max_width, spec.shadow)
+    # 글꼴 크기와 **들어갈 폭**을 같이 키운다. 폭을 그대로 두면 _fit_font 가 도로
+    # 줄여 놓아 크기를 올려도 꿈쩍하지 않는다.
+    _text_in(layer, box, value, spec.font,
+             max(1, round(spec.size * factor)),
+             (spec.max_width if spec.max_width else box[2]) * factor,
+             spec.shadow)
 
 
 def _compose(template: CardTemplate, kind: str, layer: Image.Image,
-             width: int, height: int) -> Image.Image:
+             width: int, height: int, color: str = "") -> Image.Image:
     """배경은 화면을 **덮고**, 내용은 **줄여 넣는다**.
 
     비율이 시안과 같으면 둘 다 단순 축소라 시안 그대로다. 다를 때(합본이 3840x800
@@ -204,6 +309,8 @@ def _compose(template: CardTemplate, kind: str, layer: Image.Image,
     width, height = max(1, width), max(1, height)
     design_w, design_h = template.design
     base = _base(template, kind)
+    if color:
+        base = _recolor(base, template.base_color, color)
 
     cover = max(width / design_w, height / design_h)
     grown = base.resize(
@@ -230,20 +337,27 @@ def render_card(
     height: int,
     values: dict | None = None,
     logos: dict | None = None,
+    boxes: dict | None = None,
+    color: str = "",
 ) -> Image.Image:
     """카드 한 장.
 
     kind 는 'start' 또는 'section'. values 는 {항목 id: 글자}, logos 는
     {항목 id: 로고 파일 경로}. 템플릿에 없는 항목은 조용히 무시한다 — 템플릿을 바꾸면
     옛 값이 남아 있을 수 있고, 그때 그림이 깨지는 것보다 안 그리는 게 낫다.
+
+    boxes 는 {항목 id: {"x": 시안좌표, "y": 시안좌표, "scale": %}} — 사용자가 옮기고
+    키운 값이다. 없거나 모양이 아니면 시안 그대로 그린다.
+
+    color 는 배경을 갈아입힐 색(#RRGGBB). 비어 있으면 시안 색 그대로다.
     """
     spec_owner = template if isinstance(template, CardTemplate) else get_template(template)
     values = values or {}
     logos = logos or {}
     layer = Image.new("RGBA", spec_owner.design, (0, 0, 0, 0))
     for spec in spec_owner.fields(kind):
-        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id))
-    return _compose(spec_owner, kind, layer, width, height)
+        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), boxes)
+    return _compose(spec_owner, kind, layer, width, height, color)
 
 
 def render_card_file(path: Path, image: Image.Image) -> Path:

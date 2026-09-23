@@ -70,11 +70,21 @@ def mark_placement(
     size_pct: float = DEFAULT_SIZE_PCT,
     pos_x: float = DEFAULT_POS_X,
     pos_y: float = DEFAULT_POS_Y,
+    pos_px_x: float | None = None,
+    pos_px_y: float | None = None,
 ) -> tuple[int, int, int, int]:
     """로고 크기와 놓일 자리. (폭, 높이, 왼쪽 x, 위쪽 y)
 
-    pos_x/pos_y 는 여백을 뺀 '놓을 수 있는 범위' 안에서의 비율(0~100)이고, 여백 규칙은
-    점수판과 같다 — 둘이 같은 안쪽 격자 위에 앉아야 화면이 정돈돼 보인다.
+    자리는 두 가지로 줄 수 있다.
+
+      · pos_px_x/pos_px_y — **영상 픽셀 좌표**. 사람이 적어 넣은 값이라 그대로 쓴다.
+        화면 밖으로만 안 나가게 묶는다.
+      · pos_x/pos_y — 여백을 뺀 '놓을 수 있는 범위' 안에서의 비율(0~100). 끌어서
+        옮길 때 쓴다. 여백 규칙은 점수판과 같다 — 둘이 같은 안쪽 격자 위에 앉아야
+        화면이 정돈돼 보인다.
+
+    픽셀이 있으면 픽셀이 이긴다. 비율은 **영상 규격이 달라지면 px 자리가 달라지는데**,
+    "1740, 80 에 두라" 고 적은 사람은 그 숫자가 그대로 지켜지길 기대한다.
     """
     w, h = mark_size_for_video(video_w, video_h, size_pct)
     margin = max(16, round(video_w * 0.021))
@@ -87,7 +97,19 @@ def mark_placement(
         except (TypeError, ValueError):
             return 0.0
 
-    return w, h, margin + round(free_x * _frac(pos_x)), margin + round(free_y * _frac(pos_y))
+    def _px(value, span: int) -> int | None:
+        try:
+            return max(0, min(span, round(float(value))))
+        except (TypeError, ValueError):
+            return None
+
+    x = _px(pos_px_x, max(0, video_w - w))
+    y = _px(pos_px_y, max(0, video_h - h))
+    if x is None:
+        x = margin + round(free_x * _frac(pos_x))
+    if y is None:
+        y = margin + round(free_y * _frac(pos_y))
+    return w, h, x, y
 
 
 def render_watermark(width: int, opacity: float = DEFAULT_OPACITY) -> Image.Image:

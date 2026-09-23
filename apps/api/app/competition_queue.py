@@ -40,6 +40,31 @@ def enqueue(db, job_id, payload):
     return 'queued'
 
 
+def cancel(db, job_id):
+    """이 잡의 대기·진행 중 전송을 취소한다.
+
+    거절당하거나 서버가 죽어 상태가 'sending' 에 박히면 화면의 전송 버튼이 영영
+    잠긴다 — 사람이 손으로 풀 수 있어야 한다. 이미 끝난 것은 건드리지 않는다.
+
+    진행 중인 것을 취소해도 돌고 있는 일 자체는 멈추지 않는다. 다만 그 결과가
+    **취소한 상태를 덮어쓰지는 않는다**(run_one 이 취소된 행을 보고 비켜선다).
+    """
+    job = db.query(HighlightJob).filter_by(id=job_id).populate_existing().with_for_update().one()
+    rows = db.query(CompetitionSend).filter(
+        CompetitionSend.job_id == job_id,
+        CompetitionSend.status.in_(['queued', 'running']),
+    ).all()
+    for row in rows:
+        row.status = 'canceled'
+        row.finished_at = datetime.utcnow()
+    job.job_metadata = {
+        **(job.job_metadata or {}),
+        'competition_callback_status': 'canceled: 전송을 취소했습니다 — 다시 보낼 수 있습니다',
+    }
+    db.commit()
+    return len(rows)
+
+
 @contextmanager
 def exclusive_worker(engine):
     # Session lock survives commits, but is released on process/connection loss.
@@ -111,6 +136,12 @@ class CompetitionSendWorker:
                 logger.exception('Competition export failed for queue item %s', queue_id)
             with self.sessions() as db:
                 row = db.get(CompetitionSend, queue_id)
+                if row.status == 'canceled':
+                    # 도중에 사람이 취소했다. 결과로 그 상태를 덮어쓰지 않는다 —
+                    # 취소해 놓고 화면이 다시 '처리 중' 으로 돌아가면 풀 방법이 없다.
+                    row.finished_at = datetime.utcnow()
+                    db.commit()
+                    return True
                 row.status = 'failed' if failed else 'completed'
                 row.finished_at = datetime.utcnow()
                 if failed:

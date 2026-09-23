@@ -36,6 +36,82 @@ export type Scoreboard = {
   posY: number;
   /** 대회 로고(dataURL). 비어 있으면 로고 없이 판만 그린다. */
   logoUrl: string;
+  /** 판 위 로고의 크기(%). 100 이 시안 원본이고 판 폭에 비례한다. */
+  logoSizePct: number;
+};
+
+/** 고른 그림을 dataURL 로 읽되, 큰 원본은 줄여서 읽는다.
+ *
+ *  로고는 작업 저장(localStorage)에 통째로 실린다. 브라우저 저장 칸은 **5MB 남짓**이라
+ *  3MB 짜리 PNG 하나면 넘치고, 그때 화면이 통째로 죽는다(실제로 그랬다).
+ *
+ *  1024px 이면 넉넉하다 — 카드에서 가장 큰 로고 자리가 시안 357px 이고, 합본이 4K 로
+ *  나와도 714px 이다. 이미 작고 가벼운 그림은 다시 굽지 않는다(공연히 뭉갠다).
+ */
+export async function readLogoDataUrl(
+  file: File, maxSide = 1024, maxBytes = 700_000,
+): Promise<string> {
+  const raw = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error ?? new Error('그림을 읽지 못했습니다'));
+    reader.readAsDataURL(file);
+  });
+  let img: HTMLImageElement;
+  try {
+    img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('그림이 아닙니다'));
+      el.src = raw;
+    });
+  } catch {
+    return raw;   // 우리가 못 읽어도 서버는 읽을 수 있다 — 막지 않는다.
+  }
+  const side = Math.max(img.naturalWidth, img.naturalHeight);
+  if (side <= maxSide && raw.length <= maxBytes) return raw;
+
+  /** 긴 변을 이만큼으로 줄여 다시 구운 dataURL. 못 구우면 빈 문자열. */
+  const bake = (target: number): string => {
+    const k = Math.min(1, target / Math.max(1, side));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * k));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * k));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    // 투명 배경을 살려야 한다 — 로고는 배경 위에 얹힌다.
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    try {
+      return canvas.toDataURL('image/png');
+    } catch {
+      return '';   // 다른 출처의 그림이면 canvas 가 막힌다.
+    }
+  };
+
+  // 크기만 맞춰서는 부족하다. 같은 1024px 이라도 무늬가 잘면 PNG 가 안 줄어들어
+  // 몇 MB 로 남는다(잡음 그림으로 재 보니 3.8MB 였다). 저장 칸 5MB 에 로고가 넷까지
+  // 들어가므로, **용량이 들어갈 때까지** 한 단계씩 더 줄인다.
+  let target = Math.min(side, maxSide);
+  let best = '';
+  for (let i = 0; i < 5; i += 1) {
+    const baked = bake(target);
+    if (!baked) break;
+    best = baked;
+    if (baked.length <= maxBytes) return baked;
+    target = Math.round(target / 1.6);
+    if (target < 192) break;   // 이보다 작으면 로고로 못 쓴다 — 그냥 제일 작은 것을 준다.
+  }
+  return best || raw;
+}
+
+/** 로고 크기 범위 — 서버(app/scoreboard.py)와 같은 값이어야 한다. */
+export const LOGO_SIZE_RANGE: [number, number] = [40, 220];
+
+/** 판 높이 대비 로고가 판 위로 튀어나오는 비율. 늘 정확히 절반이 올라간다. */
+export const logoRiseRatio = (logoSizePct: number) => {
+  const [lo, hi] = LOGO_SIZE_RANGE;
+  const scale = Math.max(lo, Math.min(hi, logoSizePct || 100)) / 100;
+  return (61.01 * scale) / 182;
 };
 
 export const DEFAULT_SCOREBOARD: Scoreboard = {
@@ -58,6 +134,7 @@ export const DEFAULT_SCOREBOARD: Scoreboard = {
   posX: 2.18,
   posY: 4.42,
   logoUrl: '',
+  logoSizePct: 100,
 };
 
 /** 위치 프리셋 3x3. 값은 posX/posY 비율이다. */
@@ -79,21 +156,26 @@ export const BAR_W_RATIO = 0.0623;                    // 컬러바 수평 두께
  *  좌표는 전부 '영상 픽셀' 기준이고, 미리보기는 이 값을 비율로 줄여 그린다. */
 export function boardPlacement(
   videoW: number, videoH: number, sizePct: number, posX: number, posY: number,
-  withLogo = false,
+  withLogo = false, logoSizePct = 100,
 ) {
   const pct = Math.max(10, Math.min(60, sizePct)) / 100;
   const w = Math.max(160, Math.round(Math.min(videoW * pct, videoH * 0.18 * BOARD_ASPECT)));
   const plateH = Math.max(30, Math.round(w / BOARD_ASPECT));
   // 로고는 판 위로 튀어나오므로 차지하는 높이가 더 크다(서버 board_placement 와 동일).
-  const h = plateH + (withLogo ? Math.round(plateH * (61.01 / 182)) : 0);
+  const rise = withLogo ? Math.round(plateH * logoRiseRatio(logoSizePct)) : 0;
+  const h = plateH + rise;
   const margin = Math.max(16, Math.round(videoW * 0.021));
+  // 로고까지 여백을 지키게 하면, 로고를 넣는 순간 판이 로고 높이만큼 통째로 내려앉아
+  // 위로 올릴 수가 없다. 여백은 **판**이 지키고 로고는 그 위 여백을 파고든다.
+  // 화면 밖으로는 내보내지 않는다. (서버 board_placement 와 같은 식)
+  const top = Math.max(0, margin - rise);
   const freeX = Math.max(0, videoW - w - 2 * margin);
-  const freeY = Math.max(0, videoH - h - 2 * margin);
+  const freeY = Math.max(0, videoH - h - margin - top);
   const clamp = (v: number) => Math.max(0, Math.min(100, v)) / 100;
   return {
     w, h, plateH, margin,
     x: margin + Math.round(freeX * clamp(posX)),
-    y: margin + Math.round(freeY * clamp(posY)),
+    y: top + Math.round(freeY * clamp(posY)),
     freeX, freeY,
   };
 }
@@ -112,7 +194,7 @@ export function ScoreboardPreview(
   const W = width;
   const H = Math.round(W / BOARD_ASPECT);
   const off = H * SKEW;                       // 기울기로 밀리는 가로량
-  const rise = config.logoUrl ? H * (61.01 / 182) : 0;
+  const rise = config.logoUrl ? H * logoRiseRatio(config.logoSizePct) : 0;
   const barW = W * BAR_W_RATIO;
   // 위쪽 변이 오른쪽으로 off 만큼 밀린 평행사변형.
   const slant = (x0: number, w: number) =>
@@ -188,7 +270,8 @@ export function ScoreboardPreview(
           alt=""
           style={{
             position: 'absolute', top: 0, left: `${W * 0.478}px`,
-            width: `${H * (122.02 / 182)}px`, height: `${H * (122.02 / 182)}px`,
+            // 로고는 늘 절반이 판 위로 올라간다 — 크기를 키워도 그 모양을 지킨다.
+            width: `${rise * 2}px`, height: `${rise * 2}px`,
             transform: 'translateX(-50%)', objectFit: 'contain',
           }}
         />
@@ -202,6 +285,10 @@ export type Watermark = {
   enabled: boolean;
   sizePct: number;
   opacity: number;
+  /** 영상 픽셀 좌표. 적어 넣었으면 비율(posX/posY) 대신 이것을 쓴다.
+   *  끌어서 옮기면 비워진다 — 끄는 것은 비율로 잡는 몸짓이다. */
+  posPxX?: number | null;
+  posPxY?: number | null;
   posX: number;
   posY: number;
 };
@@ -215,6 +302,8 @@ export const DEFAULT_WATERMARK: Watermark = {
   enabled: true,
   // 중계 화면의 방송사 로고가 보통 이 정도다 — 경기를 가리지 않으면서 눈에는 들어오는 선.
   sizePct: 5,
+  posPxX: null,
+  posPxY: null,
   opacity: 0.55,
   // 1920x1080 에서 로고 왼쪽 위가 (1740, 80). 서버(watermark.py)와 같은 값이라
   // 미리보기 자리가 결과물의 자리다.
@@ -223,7 +312,10 @@ export const DEFAULT_WATERMARK: Watermark = {
 };
 
 /** 로고 크기·자리. 서버(watermark.mark_placement)와 같은 식이라 여기 보이는 자리가 결과물의 자리다. */
-export function markPlacement(videoW: number, videoH: number, sizePct: number, posX: number, posY: number) {
+export function markPlacement(
+  videoW: number, videoH: number, sizePct: number, posX: number, posY: number,
+  posPxX?: number | null, posPxY?: number | null,
+) {
   const pct = Math.max(1, Math.min(25, sizePct)) / 100;
   let raw = videoW * pct;
   // 파노라마(3840x800)처럼 납작한 원본에서 세로를 다 먹지 않게 한 번 더 묶는다.
@@ -234,10 +326,16 @@ export function markPlacement(videoW: number, videoH: number, sizePct: number, p
   const freeX = Math.max(0, videoW - w - 2 * margin);
   const freeY = Math.max(0, videoH - h - 2 * margin);
   const clamp = (v: number) => Math.max(0, Math.min(100, v)) / 100;
+  // 사람이 적어 넣은 픽셀 좌표가 있으면 그것이 이긴다(서버 mark_placement 와 같다).
+  const px = (value: number | null | undefined, span: number) => (
+    value === null || value === undefined || Number.isNaN(Number(value))
+      ? null
+      : Math.max(0, Math.min(span, Math.round(Number(value))))
+  );
   return {
     w, h, margin, freeX, freeY,
-    x: margin + Math.round(freeX * clamp(posX)),
-    y: margin + Math.round(freeY * clamp(posY)),
+    x: px(posPxX, Math.max(0, videoW - w)) ?? margin + Math.round(freeX * clamp(posX)),
+    y: px(posPxY, Math.max(0, videoH - h)) ?? margin + Math.round(freeY * clamp(posY)),
   };
 }
 
