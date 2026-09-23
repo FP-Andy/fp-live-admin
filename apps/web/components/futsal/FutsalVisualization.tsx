@@ -1,9 +1,11 @@
 'use client';
+import FpaVisualization from './FpaVisualization';
 import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../../lib/api';
 import { pngArchive } from '../../lib/pngArchive';
 import { download, graphics, safeName, svgPng, type Match, type Shot, type Summary, type Dominance, type Options, type Graphic } from './graphics';
 export default function FutsalVisualization() {
+    const [view, setView] = useState<'fla'|'fpa'>('fla');
     const [matches, setMatches] = useState<Match[]>([]), [selected, setSelected] = useState('');
     const [data, setData] = useState<{
         id: string;
@@ -32,6 +34,7 @@ export default function FutsalVisualization() {
             }
             setMatches(all);
             const requested = new URLSearchParams(window.location.search).get('match');
+            if (new URLSearchParams(window.location.search).get('view') === 'fpa') setView('fpa');
             setSelected(all.find(m => m.id === requested)?.id || all[0]?.id || '');
             if (!all.length)
                 setLoading(false);
@@ -81,7 +84,7 @@ export default function FutsalVisualization() {
         }
     }
     return <div className="futsal-viz">
-    <header className="futsal-viz-header"><div><small>FUTSAL · MATCH GRAPHICS</small><h1>Visualization</h1><p>경기 기록을 샷맵, 흐름, 공격방향 이미지로 다운로드하세요.</p></div><button className="btn btn-primary" disabled={loading || exporting || !cards.length} onClick={() => save()}>{exporting ? '이미지 만드는 중…' : '전체 PNG 다운로드 · ZIP'}</button></header>
+    <header className="futsal-viz-header"><div><small>FUTSAL · MATCH GRAPHICS</small><h1>Visualization</h1><p>경기 기록을 샷맵, 흐름, 공격방향 이미지로 다운로드하세요.</p></div>{view==='fla'&&<button className="btn btn-primary" disabled={loading || exporting || !cards.length} onClick={() => save()}>{exporting ? '이미지 만드는 중…' : '전체 PNG 다운로드 · ZIP'}</button>}</header>
     <section className="futsal-viz-toolbar" aria-label="시각화 설정">
       <label className="futsal-viz-match">경기<select value={selected} disabled={exporting || !matches.length} onChange={e => setSelected(e.target.value)}>{!matches.length && <option value="">경기 없음</option>}{matches.map(m => <option key={m.id} value={m.id}>{m.name}{m.archived ? ' · 종료' : ' · 진행 중'}</option>)}</select></label>
       <label>배경<select value={options.background} disabled={exporting} onChange={e => setOptions({ ...options, background: e.target.value as Options['background'] })}><option value="dark">다크</option><option value="light">화이트</option><option value="transparent">투명</option></select></label>
@@ -89,8 +92,12 @@ export default function FutsalVisualization() {
       <label>어웨이 색상<input aria-label="어웨이 색상" type="color" value={options.away} disabled={exporting} onChange={e => setOptions({ ...options, away: e.target.value })}/></label>
       <button className="btn" disabled={loading || exporting || !selected} onClick={() => setRevision(r => r + 1)}>기록 새로고침</button>
     </section>
+    <div className="fpa-viz-tabs" role="tablist" aria-label="기록 종류"><button className={`btn ${view==='fla'?'btn-active':''}`} role="tab" aria-selected={view==='fla'} onClick={()=>setView('fla')}>FLA 경기 요약</button><button className={`btn ${view==='fpa'?'btn-active':''}`} role="tab" aria-selected={view==='fpa'} onClick={()=>setView('fpa')}>FPA 이벤트 분석</button></div>
+    <div hidden={view!=='fla'}>
     <p className="futsal-viz-note">PNG 1600 × 1000 · 매치 도미넌스 1분 단위 · 다운로드 시점에 불러온 기록 기준</p>
     {error && <p role="alert" className="futsal-viz-error">{error}</p>}
     {loading ? <p role="status">경기 기록을 불러오는 중…</p> : !matches.length ? <p>등록된 풋살 경기가 없습니다.</p> : <div className="futsal-viz-grid">{cards.map(card => <article key={card.key} className="futsal-viz-card"><div className="futsal-viz-card-heading"><h2>{card.title}</h2><button className="btn" disabled={exporting} onClick={() => save(card)}>PNG 다운로드</button></div><img alt={card.title} width={1600} height={1000} src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(card.svg)}`}/></article>)}</div>}
+    </div>
+    <div hidden={view!=='fpa'}>{match&&<FpaVisualization key={match.id} match={match} options={options} revision={revision}/>}</div>
   </div>;
 }
