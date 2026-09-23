@@ -31,6 +31,7 @@ import httpx
 import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
+from .competition_queue import CompetitionSendWorker, enqueue as enqueue_competition_send
 from .branding_refresh import BrandingRefreshQueue
 from .team_branding import (create_team_logo_router, match_team_names, team_logo_urls, resolve_branding, mark_manual_branding, reset_branding)
 
@@ -177,6 +178,7 @@ app.add_middleware(
 
 worker_stop_event = asyncio.Event()
 worker_task: asyncio.Task | None = None
+competition_send_worker: CompetitionSendWorker | None = None
 system_monitor_task: asyncio.Task | None = None
 schedule_slack_task: asyncio.Task | None = None
 broadcast_asset_task: asyncio.Task | None = None
@@ -1566,7 +1568,7 @@ def _probe_hls_url(hls_url: str | None) -> dict:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global worker_task, system_monitor_task, schedule_slack_task, broadcast_asset_task
+    global worker_task, system_monitor_task, schedule_slack_task, broadcast_asset_task, competition_send_worker
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
     ensure_highlight_runtime_dirs()
@@ -1577,6 +1579,8 @@ async def startup() -> None:
         _seed_existing_fcm_templates(db)
     finally:
         db.close()
+    competition_send_worker = CompetitionSendWorker(SessionLocal, engine, _run_competition_send)
+    competition_send_worker.start()
     worker_task = asyncio.create_task(outbox_worker(worker_stop_event))
     system_monitor_task = asyncio.create_task(system_monitor_worker(worker_stop_event))
     schedule_slack_task = asyncio.create_task(schedule_slack_worker(worker_stop_event))
@@ -1585,6 +1589,8 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    if competition_send_worker:
+        competition_send_worker.close()
     worker_stop_event.set()
     if worker_task:
         await worker_task
@@ -13323,6 +13329,7 @@ def _run_competition_send(
     몇 분이 걸려 요청 안에서는 게이트웨이가 끊는다 — 그래서 여기로 뺐다.
     결과는 잡 메타(competition_callback_status)에 남기고, 화면이 그걸 읽는다.
     """
+    match_id = UUID(str(match_id))
     db = SessionLocal()
     try:
         clips = (
@@ -13337,7 +13344,8 @@ def _run_competition_send(
         _job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
 
         def finish(status: str, **extra) -> None:
-            meta = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+            current_job = db.query(HighlightJob).filter_by(id=job_id).populate_existing().with_for_update().one()
+            meta = dict(current_job.job_metadata or {})
             meta["competition_callback_status"] = status
             meta.update(extra)
             update_job(db, job_id, job_metadata=meta)
@@ -13395,7 +13403,6 @@ def _run_competition_send(
 @app.post("/api/highlight/clip-results/matches/{match_id}/send-competition")
 def clip_result_send_competition(
     match_id: UUID,
-    background_tasks: BackgroundTasks,
     body: dict = Body(default={}),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
@@ -13431,17 +13438,13 @@ def clip_result_send_competition(
     if not str(match_body.get("fpcMatchId") or "").strip():
         match_body["fpcMatchId"] = str(metadata.get("analysis_request_id") or f"match:{match_id}")
 
-    # 여기서부터는 **뒤에서** 한다. 페이로드를 만드는 동안 클립마다 씬모션 mp4 를
-    # 렌더·업로드하는데, 클립이 스무 개면 몇 분이 걸려 게이트웨이(60초)가 끊는다.
-    # 끊기면 우리가 FinePlay 를 부르기도 전에 죽어 아무것도 안 간다 — 실제로 그랬다.
-    metadata["competition_callback_status"] = "sending"
-    update_job(db, job.id, job_metadata=metadata)
-    background_tasks.add_task(
-        _run_competition_send, match_id, job.id, competition, match_body,
-        getattr(user, "id", None),
-    )
+    status = enqueue_competition_send(db, job.id, {
+        "match_id": str(match_id), "job_id": job.id,
+        "competition": competition, "match_body": match_body,
+        "actor_id": getattr(user, "id", None),
+    })
     return {
-        "callback_status": "sending",
+        "callback_status": status,
         "sent": False,
         "queued": True,
         "clips": len(clips),
