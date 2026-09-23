@@ -11439,12 +11439,21 @@ async def lineup_from_record_sheet_bulk(
             continue
 
         metadata["links"] = links
+        # 머리글도 같이 남긴다 — 단건 경로와 같은 모양이어야 한다. 전송 화면은 이걸로
+        # 대회·라운드·날짜·장소를 미리 채우는데, 여기서 빠뜨리면 일괄로 올린 경기만
+        # 칸이 전부 비어 "매칭이 안 된다"로 보인다.
+        meta = record_sheet.sheet_meta(sheet, sheet["sheet"])
         metadata["record_sheet"] = {
             "filename": file.filename or "",
             "sheet": sheet["sheet"],
             "match_no": sheet.get("matchNo", ""),
             "swap": bool(swap),
             "uploaded_at": datetime.utcnow().isoformat(),
+            # SUFA 등급 한 글자(S/A/B/L) — 대회 ID·이름을 이걸로 고른다.
+            "grade": meta["grade"],
+            "round": meta["round"],
+            "played_date": meta["played_date"],
+            "venue": meta["venue"],
         }
         update_job(db, job_id, job_metadata=metadata)
         _audit(
@@ -12263,7 +12272,10 @@ def clip_result_matches(
             # 대회 인입은 뒤에서 도는 작업이라, 화면이 이 값을 보고 끝난 것을 안다.
             "competition_callback_status": metadata.get("competition_callback_status"),
             # 기록지에서 읽은 머리글 — 전송 화면이 대회·라운드·날짜·장소를 미리 채운다.
-            "record_sheet": metadata.get("record_sheet"),
+            # 머리글을 남기기 전에 올라간 작업은 경기 번호밖에 없다 — 거기서 등급·라운드는
+            # 되살린다. 다시 올리라고 하면 그때 손본 라인업까지 덮어쓰게 된다.
+            "record_sheet": (record_sheet.fill_missing(metadata["record_sheet"])
+                             if metadata.get("record_sheet") else None),
             "analysis_request_id": metadata.get("analysis_request_id"),
             "archived": archived,
             "archived_at": metadata.get("clip_archived_at"),
