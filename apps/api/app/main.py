@@ -31,7 +31,11 @@ import httpx
 import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
-from .competition_queue import CompetitionSendWorker, enqueue as enqueue_competition_send
+from .competition_queue import (
+    CompetitionSendWorker,
+    cancel as cancel_competition_send,
+    enqueue as enqueue_competition_send,
+)
 from .branding_refresh import BrandingRefreshQueue
 from .team_branding import (create_team_logo_router, match_team_names, team_logo_urls, resolve_branding, mark_manual_branding, reset_branding)
 
@@ -13461,9 +13465,6 @@ def _run_competition_send(
             .all()
         )
         job = db.get(HighlightJob, job_id)
-        if not clips or not job:
-            return
-        _job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
 
         def finish(status: str, **extra) -> None:
             current_job = db.query(HighlightJob).filter_by(id=job_id).populate_existing().with_for_update().one()
@@ -13471,6 +13472,16 @@ def _run_competition_send(
             meta["competition_callback_status"] = status
             meta.update(extra)
             update_job(db, job_id, job_metadata=meta)
+
+        # 여기서 그냥 return 하면 상태가 'sending' 에 박히고, 화면의 전송 버튼이
+        # 영영 잠긴다 — 끝나지 않는 '대기 중' 이 된다. **모든 출구는 상태를 남긴다.**
+        if job is None:
+            logger.warning("대회 인입 — 잡이 없어 중단합니다 (job %s)", job_id)
+            return
+        if not clips:
+            finish("failed: 보낼 클립이 없습니다 — 클립이 지워졌는지 확인하세요")
+            return
+        _job, _our_side, labels, _lineup = _clip_job_context(db, clips[0])
 
         try:
             payload, summary = _build_competition_payload(
@@ -13535,6 +13546,39 @@ def _run_competition_send(
             )
     finally:
         db.close()
+
+
+@app.post("/api/highlight/clip-results/matches/{match_id}/cancel-competition")
+def clip_result_cancel_competition(
+    match_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """대기·진행 중인 대회 인입 전송을 취소한다.
+
+    전송이 거절되거나 서버가 도중에 죽으면 상태가 'sending' 에 박히고, 그러면 화면의
+    전송 버튼이 **영영 잠긴다.** 다시 보낼 방법이 없어지므로 손으로 풀 수 있어야 한다.
+
+    이미 끝난 전송은 건드리지 않는다 — 취소는 '아직 안 끝난 것' 에만 걸린다.
+    """
+    clips = (
+        db.query(HighlightClip)
+        .filter(HighlightClip.match_id == match_id)
+        .order_by(HighlightClip.order_index)
+        .all()
+    )
+    if not clips:
+        raise HTTPException(status_code=404, detail="이 매치에 클립이 없습니다.")
+    job, _our_side, _labels, _lineup = _clip_job_context(db, clips[0])
+    if not job:
+        raise HTTPException(status_code=409, detail="클립의 원본 잡이 없습니다.")
+
+    canceled = cancel_competition_send(db, job.id)
+    _audit(
+        db, "COMPETITION_SEND_CANCELED", "highlight_job",
+        actor=user, target_id=job.id, details={"queued_rows": canceled},
+    )
+    return {"canceled": canceled}
 
 
 @app.post("/api/highlight/clip-results/matches/{match_id}/send-competition")
