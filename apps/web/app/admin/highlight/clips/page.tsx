@@ -851,7 +851,7 @@ export default function ClipResultsPage() {
       // 요청 안에서 기다리면 게이트웨이가 60초에 끊어 아무것도 안 간다.
       // 여기서는 접수만 확인하고, 끝날 때까지 상태를 지켜본다.
       setCompForm(null);
-      setMsg(`대회 인입 전송 시작 — 클립 ${res.clips ?? ''}개 처리 중입니다. 끝나면 여기 알려 드립니다.`);
+      setMsg(res.callback_status === 'sending' ? '이미 처리 중인 전송입니다. 완료되면 알려 드립니다.' : `대회 전송 대기열에 등록됐습니다 — 클립 ${res.clips ?? ''}개를 접수 순서대로 처리합니다.`);
       await loadMatches();
       void watchCompetitionSend(selectedMatch.job_id);
     } catch (err) {
@@ -892,7 +892,7 @@ export default function ClipResultsPage() {
         setMatches(rows);
         const row = rows.find((m) => m.job_id === jobId);
         const status = row?.competition_callback_status || '';
-        if (!status || status === 'sending') continue;
+        if (!status || status === 'queued' || status === 'sending') continue;
         setMsg(status.startsWith('failed') || status.startsWith('rejected')
           ? `대회 인입 실패 — ${status}`
           : `대회 인입 — ${status}`);
@@ -985,10 +985,10 @@ export default function ClipResultsPage() {
                     <button
                       style={primaryBtn}
                       onClick={() => setCompForm(competitionFormFrom(selectedMatch))}
-                      disabled={busy}
+                      disabled={busy || ['queued', 'sending'].includes(selectedMatch.competition_callback_status || '')}
                       title="분석 신청 없이 대회 클립으로 앱에 보냅니다 — 팀·선수 매칭은 FinePlay 스테이징에서 확정합니다"
                     >
-                      🏆 대회 인입 전송
+                      {selectedMatch.competition_callback_status === 'queued' ? '대회 전송 대기 중' : selectedMatch.competition_callback_status === 'sending' ? '대회 전송 처리 중' : '🏆 대회 인입 전송'}
                     </button>
                   ) : null}
                 </>
@@ -1144,6 +1144,11 @@ export default function ClipResultsPage() {
                   ) : null}
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span>
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>클립 {m.clip_count}개</span>
+                  {m.competition_callback_status ? (
+                    <span style={{ fontSize: 12, color: '#f59e0b' }}>
+                      대회 전송 {m.competition_callback_status === 'queued' ? '대기 중' : m.competition_callback_status === 'sending' ? '처리 중' : m.competition_callback_status}
+                    </span>
+                  ) : null}
                   {m.callback_status ? (
                     <span style={{ fontSize: 12, color: m.callback_status === 'sent' ? '#22c55e' : '#f59e0b' }}>
                       콜백 {m.callback_status}
