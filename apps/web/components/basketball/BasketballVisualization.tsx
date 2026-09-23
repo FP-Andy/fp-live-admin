@@ -5,6 +5,8 @@ import { toPng } from 'html-to-image';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ZONES, type ZoneId } from './BasketballMatchControl';
 import { apiJson } from '../../lib/api';
+import { pngArchive } from '../../lib/pngArchive';
+import { downloadBlob, marginGraphic, playersForExport, reboundGraphic, safeFilename, shotGraphic, svgPng, type GraphicPlayer } from './graphicExports';
 
 type Team = 'HOME' | 'AWAY';
 
@@ -34,6 +36,7 @@ type BasketballMatch = {
   metadata?: {
     home_team?: string;
     away_team?: string;
+    lineups?: { teams?: Partial<Record<Team, GraphicPlayer[]>> };
     period_count?: number;
     period_minutes?: number;
   } | null;
@@ -41,6 +44,7 @@ type BasketballMatch = {
 type BasketballMatchPage = { items: BasketballMatch[]; total: number };
 
 type BasketballState = {
+  lineups?: Partial<Record<Team, GraphicPlayer[]>> | null;
   events?: GameEvent[];
   timer?: {
     period?: number;
@@ -572,8 +576,10 @@ export default function BasketballVisualization() {
   const [state, setState] = useState<BasketballState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [exporting, setExporting] = useState<'shot-map' | 'margin-flow' | 'rebounds' | null>(null);
+  const [exporting, setExporting] = useState<'shot-map' | 'margin-flow' | 'rebounds' | 'graphic-teams' | 'graphic-margin' | 'graphic-rebounds' | 'graphic-players' | null>(null);
   const [exportError, setExportError] = useState('');
+  const [stateMatchId, setStateMatchId] = useState('');
+  const [exportProgress, setExportProgress] = useState('');
   const shotExportRef = useRef<HTMLElement | null>(null);
   const marginExportRef = useRef<HTMLDivElement | null>(null);
   const reboundExportRef = useRef<HTMLElement | null>(null);
@@ -598,8 +604,9 @@ export default function BasketballVisualization() {
       return;
     }
     let mounted = true;
+    setState(null); setStateMatchId(''); setError('');
     const loadState = () => apiJson<BasketballState>(`/matches/${selectedId}/basketball-state`)
-      .then((next) => mounted && setState(next))
+      .then((next) => { if (mounted) { setState(next); setStateMatchId(selectedId); } })
       .catch(() => mounted && setError('경기 시각화 데이터를 불러오지 못했습니다.'));
     loadState();
     return () => {
@@ -637,6 +644,42 @@ export default function BasketballVisualization() {
     }
   };
 
+  const exportReady = !!selectedMatch && stateMatchId === selectedId && exporting === null;
+  const downloadGraphics = async (kind: 'teams' | 'margin' | 'rebounds' | 'players') => {
+    if (!exportReady || !selectedMatch) return;
+    setExporting(`graphic-${kind}`); setExportError(''); setExportProgress('이미지 생성 중…');
+    try {
+      const prefix = safeFilename(selectedMatch.name);
+      if (kind === 'teams' || kind === 'margin') {
+        const source = kind === 'teams' ? shotGraphic(events) : marginGraphic(events, periodMinutes, periodCount);
+        downloadBlob(await svgPng(source), `${prefix}-${kind === 'teams' ? 'team-shotmap' : 'margin-flow'}.png`);
+      } else {
+        const files: { name: string; blob: Blob }[] = [];
+        if (kind === 'rebounds') {
+          for (const team of ['HOME', 'AWAY'] as Team[]) files.push({ name: `${safeFilename(labels[team])}-${team}-rebounds.png`, blob: await svgPng(reboundGraphic(rebounds[team])) });
+        } else {
+          const fallback = selectedMatch.metadata?.lineups?.teams || {};
+          const roster = { HOME: state?.lineups?.HOME ?? fallback.HOME, AWAY: state?.lineups?.AWAY ?? fallback.AWAY };
+          const players = playersForExport(roster, events);
+          if (!players.length) throw new Error('선수 명단이나 선수 번호가 있는 기록이 없습니다.');
+          const used = new Set<string>();
+          for (const [index, player] of players.entries()) {
+            setExportProgress(`선수 샷맵 ${index + 1}/${players.length} 생성 중…`);
+            const base = `${safeFilename(labels[player.team])}-${safeFilename(player.number || '번호없음')}-${safeFilename(player.name)}-shotmap`;
+            let name = `${base}.png`, suffix = 2;
+            while (used.has(name)) name = `${base}-${suffix++}.png`;
+            used.add(name);
+            const personal = player.number ? events.filter(e => e.team === player.team && String(e.playerNumber ?? '').trim() === player.number) : [];
+            files.push({ name, blob: await svgPng(shotGraphic(personal, player.team)) });
+          }
+        }
+        downloadBlob(await pngArchive(files), `${prefix}-${kind === 'players' ? 'player-shotmaps' : 'rebounds'}.zip`);
+      }
+      setExportProgress('다운로드를 준비했습니다.');
+    } catch (err) { setExportError(err instanceof Error ? err.message : '이미지를 생성하지 못했습니다.'); setExportProgress(''); }
+    finally { setExporting(null); }
+  };
+
   if (loading) {
     return <main className="page-stack"><section className="card card-panel"><p className="muted">농구 시각화를 준비하고 있습니다.</p></section></main>;
   }
@@ -650,18 +693,31 @@ export default function BasketballVisualization() {
         </div>
         <label>
           <span>완료 경기 선택</span>
-          <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} disabled={matches.length === 0}>
+          <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} disabled={matches.length === 0 || exporting !== null}>
             {matches.length === 0 ? <option>완료·아카이브된 농구 경기가 없습니다</option> : null}
             {matches.map((match) => <option key={match.id} value={match.id}>{match.name} · ARCHIVED</option>)}
           </select>
         </label>
         <div className="basketball-viz-export-actions" aria-label="시각화 PNG 다운로드">
           <span>PNG 다운로드</span>
-          <button type="button" onClick={() => void downloadVisualization('shot-map')} disabled={!selectedMatch || exporting !== null}>{exporting === 'shot-map' ? '생성 중…' : '샷맵'}</button>
-          <button type="button" onClick={() => void downloadVisualization('margin-flow')} disabled={!selectedMatch || exporting !== null}>{exporting === 'margin-flow' ? '생성 중…' : '마진 플로우'}</button>
-          <button type="button" onClick={() => void downloadVisualization('rebounds')} disabled={!selectedMatch || exporting !== null}>{exporting === 'rebounds' ? '생성 중…' : '리바운드'}</button>
+          <button type="button" onClick={() => void downloadVisualization('shot-map')} disabled={!exportReady}>{exporting === 'shot-map' ? '생성 중…' : '샷맵'}</button>
+          <button type="button" onClick={() => void downloadVisualization('margin-flow')} disabled={!exportReady}>{exporting === 'margin-flow' ? '생성 중…' : '마진 플로우'}</button>
+          <button type="button" onClick={() => void downloadVisualization('rebounds')} disabled={!exportReady}>{exporting === 'rebounds' ? '생성 중…' : '리바운드'}</button>
         </div>
         {selectedMatch ? <Link className="button-link button-compact btn-secondary" href={`/admin/basketball/match/${selectedMatch.id}`}>FLA 기록 열기</Link> : null}
+      </section>
+
+      <section className="card card-panel" aria-label="투명 그래픽 다운로드">
+        <h3>투명 그래픽 PNG</h3>
+        <p className="muted">제목·해설 없는 그래픽입니다. 샷맵 색상은 구역별 득점 기준이며, 회색은 시도 없음입니다. 참고 이미지와 같은 고정 크기로 저장됩니다.</p>
+        <div className="basketball-viz-export-actions" style={{ flexWrap: 'wrap', gap: 10 }}>
+          <button onClick={() => void downloadGraphics('teams')} disabled={!exportReady}>팀 샷맵 · 1721×857</button>
+          <button onClick={() => void downloadGraphics('margin')} disabled={!exportReady}>마진 플로우 · 1921×1139</button>
+          <button onClick={() => void downloadGraphics('rebounds')} disabled={!exportReady}>팀별 리바운드 ZIP · 886×815</button>
+          <button onClick={() => void downloadGraphics('players')} disabled={!exportReady}>전체 선수 샷맵 ZIP · 1017×936</button>
+        </div>
+        <p className="muted">선수별 파일명: 팀명-번호-이름-shotmap.png · 명단에 등록된 선수는 슛 기록이 없어도 포함됩니다.</p>
+        {exportProgress ? <p role="status">{exportProgress}</p> : null}
       </section>
 
       {error ? <p className="basketball-viz-error">{error}</p> : null}
