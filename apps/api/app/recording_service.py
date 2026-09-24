@@ -42,7 +42,9 @@ def match_access(match_id: UUID, request: Request, db: Session, user: User):
         origin = request.headers.get('origin')
         if origin:
             from urllib.parse import urlsplit
-            if urlsplit(origin).netloc != request.headers.get('host'):
+            trusted = {value.strip().rstrip('/') for value in os.getenv(
+                'RECORDING_ALLOWED_ORIGINS', 'https://console.fineludens.kr').split(',') if value.strip()}
+            if origin.rstrip('/') not in trusted and urlsplit(origin).netloc != request.headers.get('host'):
                 raise HTTPException(403, '허용되지 않은 요청입니다.')
         if match.archived and not request.url.path.endswith('/stop'):
             raise HTTPException(409, '보관된 경기에서는 녹화를 변경할 수 없습니다.')
