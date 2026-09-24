@@ -1,5 +1,6 @@
 'use client';
 
+import BasketballRecording from '../../../components/basketball/BasketballRecording';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../lib/api';
@@ -490,13 +491,14 @@ export default function Dashboard() {
           sport,
           competition_class: sport === 'BASKETBALL' ? 'BASKETBALL' : sport === 'FUTSAL' ? 'FUTSAL-QUEENCUP' : competitionClass,
           round_number: roundNumber,
-          stream_mode: sport === 'FOOTBALL' ? streamMode : 'MANUAL',
+          stream_mode: sport !== 'FUTSAL' ? streamMode : 'MANUAL',
           assign_operator: assignOperator,
-          ingest_protocol: sport === 'FOOTBALL' && streamMode === 'STREAM' ? ingestProtocol : null,
+          ingest_protocol: sport !== 'FUTSAL' && streamMode === 'STREAM' ? (sport === 'BASKETBALL' ? 'RTMP' : ingestProtocol) : null,
           first_half_minutes: sport === 'FUTSAL' ? futsalFirstHalfMinutes : undefined,
           second_half_minutes: sport === 'FUTSAL' ? futsalSecondHalfMinutes : undefined,
           metadata: sport === 'BASKETBALL'
             ? {
+                recording_enabled: streamMode === 'STREAM',
                 period_count: basketballPeriodCount,
                 period_minutes: basketballPeriodMinutes,
                 shot_clock_seconds: 24,
@@ -526,6 +528,12 @@ export default function Dashboard() {
       // A successful POST remains successful even if the following list refresh fails.
       const created: Partial<Match> | null = await response.json().catch(() => null);
       setCreatedMatch({ id: typeof created?.id === 'string' ? created.id : undefined, name: generatedMatchName, sport });
+      if (sport === 'BASKETBALL' && streamMode === 'STREAM' && typeof created?.id === 'string') {
+        try {
+          const recording = await apiFetch(`/recordings/matches/${created.id}/start`, { method: 'POST' });
+          if (!recording.ok) setCreateError('경기는 생성됐지만 녹화 준비를 완료하지 못했습니다. 아래 경기 영상 영역에서 다시 준비해 주세요.');
+        } catch { setCreateError('경기는 생성됐습니다. 아래 경기 영상 영역에서 녹화 준비를 다시 시도해 주세요.'); }
+      }
       setListMode('active');
       setClassFilter('ALL');
       setActivePage(1);
@@ -1129,11 +1137,11 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {sport === 'FOOTBALL' ? <div className="field-stack field-stack-short">
+                {sport !== 'FUTSAL' ? <div className="field-stack field-stack-short">
                   <div className="field-label">운영모드</div>
                   <select value={streamMode} onChange={(e) => setStreamMode(e.target.value as 'STREAM' | 'MANUAL')}>
-                    <option value="STREAM">STREAM</option>
-                    <option value="MANUAL">MANUAL</option>
+                    <option value="STREAM">{sport === 'BASKETBALL' ? '스트리밍 녹화 + 경기 기록' : 'STREAM'}</option>
+                    <option value="MANUAL">{sport === 'BASKETBALL' ? '경기 기록만' : 'MANUAL'}</option>
                   </select>
                 </div> : null}
 
@@ -1239,7 +1247,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="muted dashboard-class-time">
-                  경기 시간: {basketballPeriodCount}Q × {basketballPeriodMinutes}분 · 수동 기록 MVP
+                  경기 시간: {basketballPeriodCount}Q × {basketballPeriodMinutes}분 · {streamMode === 'STREAM' ? 'RTMP 수신 · 원본 영상 자동 저장' : '수동 경기 기록'}
                 </div>
               )}
               <div className="row hero-actions-compact">
@@ -1251,6 +1259,7 @@ export default function Dashboard() {
                 <div><strong>경기가 생성되었습니다.</strong><p>{createdMatch.name}</p></div>
                 {createdMatch.id ? <Link className="button-link btn-primary" href={createdMatch.sport === 'BASKETBALL' ? `/admin/basketball/match/${createdMatch.id}` : `/admin/match/${createdMatch.id}`}>매치 컨트롤 열기 →</Link> : <a className="button-link btn-secondary" href="#dashboard-match-list">경기 목록 보기 ↓</a>}
               </div> : null}
+              {createdMatch?.sport === 'BASKETBALL' && createdMatch.id ? <BasketballRecording matchId={createdMatch.id} /> : null}
             </div></details>
           </div>
         </section>

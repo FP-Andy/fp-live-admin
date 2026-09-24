@@ -102,6 +102,37 @@ services:
       postgres:
         condition: service_healthy
 
+  recording:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile.recording
+    container_name: app-recording
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 90s
+    cpus: 1.5
+    mem_limit: 768m
+    volumes:
+      - recording_data:/recordings
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/live_admin
+      DB_POOL_SIZE: 3
+      DB_MAX_OVERFLOW: 2
+      RECORDING_ROOT: /recordings
+      RECORDING_RTMP_PULL_BASE: ${RECORDING_RTMP_PULL_BASE:-rtmp://172.31.95.167:1935/live}
+      RECORDING_RTMP_PUBLIC_BASE: ${RECORDING_RTMP_PUBLIC_BASE:-rtmp://stream.fineludens.kr:1935/live}
+      HIGHLIGHT_S3_BUCKET: ${HIGHLIGHT_S3_BUCKET:-}
+      HIGHLIGHT_S3_REGION: ${HIGHLIGHT_S3_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      MEDIA_CONTROL_URL: ${MEDIA_CONTROL_URL:-}
+      MEDIA_CONTROL_TOKEN: ${MEDIA_CONTROL_TOKEN:-}
+      MEDIA_INSTANCE_ID: ${MEDIA_INSTANCE_ID:-}
+      MEDIA_INSTANCE_NAME: ${MEDIA_INSTANCE_NAME:-live-admin-media}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   web:
     build:
       context: ../../apps/web
@@ -132,4 +163,5 @@ services:
       - web
 
 volumes:
+  recording_data:
   pg_data:
