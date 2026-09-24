@@ -8557,3 +8557,20 @@ html.fpa-embed .topbar {
 @media(max-width:900px) { .fpa-viz-workspace { grid-template-columns:minmax(0,1fr); } .fpa-viz-map-column { position:static; } .fpa-viz-sidebar { max-height:none; overflow:visible; padding:0; } }
 
 .fpa-viz-sidebar .fpa-viz-range input[type=number] { padding:10px 8px; }
+
+.basketball-recording { display:grid; gap:20px; }
+.basketball-recording h3,.basketball-recording p { margin:0; }
+.basketball-recording .section-heading { gap:16px; flex-wrap:wrap; }
+.basketball-recording p { line-height:1.65; }
+.recording-connection { display:grid; gap:16px; padding:20px; border:1px solid var(--line-strong); border-radius:12px; }
+.recording-connection label { display:grid; gap:8px; }
+.recording-connection input { flex:1; min-width:150px; }
+.basketball-recording .row { flex-wrap:wrap; gap:12px; }
+.recording-list { display:grid; gap:16px; }
+.recording-session { display:grid; gap:16px; padding:20px; border:1px solid var(--line-strong); border-radius:12px; }
+.recording-session figure { margin:0; max-width:640px; }
+.recording-session img,.recording-player video { width:100%; height:auto; border-radius:10px; background:#101723; }
+.recording-player { max-width:960px; display:grid; gap:12px; }
+.recording-session figcaption { color:var(--muted); font-size:13px; margin-top:8px; }
+.recording-parts { display:grid; gap:10px; max-height:320px; overflow:auto; margin-top:16px; }
+@media(max-width:600px) { .recording-session,.recording-connection { padding:14px; } }
