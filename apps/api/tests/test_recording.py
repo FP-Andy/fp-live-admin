@@ -131,6 +131,7 @@ class RecordingTests(unittest.TestCase):
             sid=started.json()['id']
             self.assertEqual(client.get(f'/api/recordings/matches/{uuid.uuid4()}/{sid}/files/full').status_code,404)
             self.assertEqual(client.post(f'/api/recordings/matches/{self.mid}/{sid}/stop',headers={'Origin':'https://evil.example'}).status_code,403)
+            self.assertEqual(client.post(f'/api/recordings/matches/{self.mid}/{sid}/stop',headers={'Origin':'https://console.fineludens.kr','Host':'recording:8010'}).status_code,200)
             self.assertEqual(client.post(f'/api/recordings/matches/{self.mid}/{sid}/stop').status_code,200)
         finally:
             service.app.dependency_overrides.clear()
