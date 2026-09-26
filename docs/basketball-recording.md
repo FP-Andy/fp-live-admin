@@ -1,7 +1,8 @@
 # Basketball stream recordings
 
 - Create a basketball match using `스트리밍 녹화 + 경기 기록`, then copy the RTMP server/key from its recording panel.
-- Each recording gets a private random stream key. OBS: H.264 + AAC, 2-second keyframes. Each game has an independent key and archive.
+- Each match gets a private random stream key, reused when recording is re-armed. Existing linked CUSTOM keys are preserved. OBS: H.264 + AAC, 2-second keyframes. Each game has an independent key and archive.
+- Basketball match control exposes server/key and a TCP receiver readiness check directly. Its dashboard does not use the football HLS worker's STOPPED status for basketball recording. Re-preparing a waiting session re-requests media startup without replacing the session or key.
 - Recording is independent of the match clock. End explicitly with `녹화 종료·저장`. Continuous sessions are limited to 12 hours; up to three captures are admitted, with two-stream validation as the deployment acceptance check.
 - Closed ~30-second MP4 parts upload to private S3 `prelaunch/recordings/{match}/{session}/`. Local files are removed only after remote byte-size verification and an fsynced manifest.
 - The latest saved frame is extracted from closed video, not by a second live decoder. UI polls every 10 seconds; first preview normally appears after the first ~30-second part closes.

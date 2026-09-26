@@ -1068,8 +1068,8 @@ export default function Dashboard() {
                   <strong>{assignedMatchTotal}</strong>
                 </div>
                 <div className="metric-tile">
-                  <span className="muted">RTMP 파이프라인 <span className="metric-index">04</span></span>
-                  <strong>{sport === 'FOOTBALL' ? rtmpMatchTotal : 0}</strong>
+                  <span className="muted">{sport === 'BASKETBALL' ? '영상 수신 방식' : 'RTMP 파이프라인'} <span className="metric-index">04</span></span>
+                  <strong>{sport === 'BASKETBALL' ? 'RTMP' : sport === 'FOOTBALL' ? rtmpMatchTotal : 0}</strong>
                 </div>
               </div>
             </div>
@@ -1300,7 +1300,7 @@ export default function Dashboard() {
                       <div className="row" style={{ flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: 18 }}>{match.name}</strong>
                         <span className={`status-pill ${match.archived ? 'archived' : isRunning ? 'running' : 'stopped'}`}>
-                          {match.archived ? 'ARCHIVED' : isRunning ? 'RUNNING' : 'STOPPED'}
+                          {match.archived ? 'ARCHIVED' : match.sport === 'BASKETBALL' ? '농구 · 녹화 화면에서 수신 확인' : isRunning ? 'RUNNING' : 'STOPPED'}
                         </span>
                       </div>
                       <div className="muted">
@@ -1311,6 +1311,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <div className="match-actions">
+                      {match.sport === 'BASKETBALL' && <Link className="button-link button-compact btn-secondary" href={`/admin/basketball/match/${match.id}#stream-recording`}>서버·스트림키 / 녹화</Link>}
                       <Link className="button-link button-compact btn-primary" href={match.sport === 'BASKETBALL' ? `/admin/basketball/match/${match.id}` : `/admin/match/${match.id}`}>
                         {match.archived ? '기록 보기' : '경기 제어'}
                       </Link>

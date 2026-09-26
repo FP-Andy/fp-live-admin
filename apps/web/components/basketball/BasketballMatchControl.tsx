@@ -620,7 +620,7 @@ export default function BasketballMatchPage({ params }: { params: { id: string }
         </div>
       </section>
 
-      <details className="card card-panel"><summary>경기 영상 · 스트리밍 녹화 / 다시보기</summary><BasketballRecording matchId={params.id} /></details>
+      <BasketballRecording matchId={params.id} />
 
       {error ? <p className="form-error">{error}</p> : null}
 

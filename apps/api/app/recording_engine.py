@@ -167,7 +167,8 @@ class Recorder:
 
     def start(self, match_id):
         with self.lock:
-            existing = next((s for s in self.states(match_id) if s['desired']), None)
+            history = self.states(match_id)
+            existing = next((s for s in history if s['desired']), None)
             if existing:
                 self.launch(existing['id'])
                 return existing
@@ -177,7 +178,9 @@ class Recorder:
                 raise ValueError('녹화 임시 저장 공간이 부족합니다.')
             self.store.probe()
             sid = str(uuid.uuid4())
-            state = dict(id=sid, match_id=match_id, stream_key='basketball-' + secrets.token_hex(24),
+            # Re-arming the same match must not invalidate an OBS key already shared.
+            key = history[0]['stream_key'] if history else 'basketball-' + secrets.token_hex(24)
+            state = dict(id=sid, match_id=match_id, stream_key=key,
                          desired=True, status='waiting', created_at=now(), updated_at=now(),
                          stopped_at=None, parts=[], full_key=None, full_bytes=0, preview_at=None,
                          error=None, attempts=0, interruptions=0)
