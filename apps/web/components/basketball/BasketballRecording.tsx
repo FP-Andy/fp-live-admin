@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { rtmpServerAddress } from '../../lib/rtmp';
 
 type Recording = {
   id: string; status: string; desired: boolean; created_at: string; preview_at: string | null;
@@ -25,6 +26,7 @@ export default function BasketballRecording({matchId}:{matchId:string}) {
   async function action(path:string){if(busy)return;setBusy(true);setError('');try{await request(base+path,'POST');await load();}catch(ex){setError(ex instanceof Error?ex.message:'요청 실패');}finally{setBusy(false);}}
   async function copy(value:string){try{await navigator.clipboard.writeText(value);setNotice('복사했습니다.');}catch{setNotice('복사하지 못했습니다. 주소를 직접 선택해 복사해 주세요.');}}
   const active=items.find(item=>item.desired);
+  const serverAddress=active?rtmpServerAddress(active.server_url):'';
   return <section id="stream-recording" className="card card-panel basketball-recording" aria-label="농구 스트리밍 녹화">
     <div className="section-heading"><div><div className="sidebar-eyebrow">STREAM ARCHIVE</div><h3>경기 영상 · 스트리밍 녹화</h3><p className="muted">원본 화질로 저장합니다. 경기 기록 타이머와 녹화는 별도로 동작합니다.</p></div>
       <button className="btn btn-primary" disabled={busy||loading||active?.status==='recording'} onClick={()=>void action('/start')}>{busy?'수신 서버 준비 중…':active?.status==='recording'?'수신 · 녹화 중':active?'수신 서버 다시 준비':'스트리밍 녹화 준비'}</button></div>
@@ -35,7 +37,7 @@ export default function BasketballRecording({matchId}:{matchId:string}) {
     {active&&<div className="recording-connection">
       <p role="status"><strong>{active.status==='recording'?'영상 수신 중':receiverReady===true?'수신 서버 연결됨 · 송출을 기다리고 있습니다':receiverReady===false?'수신 서버 연결 대기 · 기동에 1–2분 걸릴 수 있습니다':'수신 서버 상태 확인 중'}</strong></p>
       <p>OBS 등 송출 프로그램에서 아래 주소와 키를 입력한 뒤 방송을 시작하세요. <strong>H.264 영상 + AAC 오디오, 키프레임 2초</strong>를 권장합니다.</p>
-      <label>RTMP 서버<div className="row"><input readOnly value={active.server_url} aria-label="RTMP 서버 주소"/><button className="btn" onClick={()=>void copy(active.server_url)}>주소 복사</button></div></label>
+      <label>RTMP 서버<div className="row"><input readOnly value={serverAddress} aria-label="RTMP 서버 주소"/><button className="btn" onClick={()=>void copy(serverAddress)}>주소 복사</button></div></label>
       <label>스트림 키<div className="row"><input readOnly value={active.stream_key||''} type={showKey?'text':'password'} aria-label="스트림 키"/><button className="btn" onClick={()=>setShowKey(!showKey)}>{showKey?'키 숨기기':'키 보기'}</button><button className="btn" onClick={()=>void copy(active.stream_key||'')}>키 복사</button></div></label>
       <p className="muted">이 농구 경기의 전용 키입니다. 축구 경기를 따로 만들 필요가 없습니다. 같은 경기에서 녹화를 다시 준비해도 키는 유지됩니다.</p>
       <p className="muted">서버가 꺼져 있으면 준비에 1–2분 걸릴 수 있습니다. 약 30초마다 저장된 구간의 최근 프레임을 갱신합니다. 송출이 끊기면 자동으로 다시 기다립니다. 최대 12시간 녹화되며, 방송이 끝나면 아래 ‘녹화 종료·저장’을 눌러 주세요.</p>
