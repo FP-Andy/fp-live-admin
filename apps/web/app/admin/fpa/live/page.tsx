@@ -2392,10 +2392,13 @@ export default function FpaLivePage() {
     if (pendingXgot?.canvas === 'edit') resetXgotState();
   };
 
-  const deleteSelectedScene = () => {
+  const deleteSelectedScene = async () => {
     if (selectedSceneIndex == null) return;
     const removedIndex = selectedSceneIndex;
-    setSavedScenes((prev) => prev.filter((_, index) => index !== removedIndex));
+    // 지운 뒤의 목록. state 는 아직 옛것이라 직접 만든다 — 아래 서버 PUT 에 이 값을
+    // 넘겨야 지운 것이 반영된다.
+    const nextScenes = savedScenes.filter((_, index) => index !== removedIndex);
+    setSavedScenes(nextScenes);
     setSelectedSceneIndex(null);
     if (editingSceneIndex === removedIndex) {
       closeSceneEditor();
@@ -2403,6 +2406,19 @@ export default function FpaLivePage() {
       setEditingSceneIndex(editingSceneIndex - 1);
     }
     setStatus(`액션 ${removedIndex + 1} 삭제됨`);
+
+    // **서버에서도 지운다.** 저장·수정과 달리 여기만 화면 상태로 끝나서, 지워 놓고
+    // 창을 닫으면 클립에는 그대로 남아 있었다.
+    //
+    // 마지막 하나를 지우면 보낼 행이 없다 — 그때도 보내야 서버가 비워진다(allowEmpty).
+    if (clipTarget && autoSaveToClip) {
+      const ok = await saveRowsToClip(nextScenes, { allowEmpty: true });
+      if (ok) {
+        setStatus(nextScenes.length
+          ? `액션 ${removedIndex + 1} 삭제 · 클립에 반영됨 (장면 ${nextScenes.length}개)`
+          : '액션 삭제 · 클립의 액션이 모두 비워졌습니다');
+      }
+    }
   };
 
   // 기록된 로그 전체 삭제 — 저장된 장면 + 현재 작업 장면(캔버스 포함) 모두 비움. 서버에 저장된 데이터는 안 건드림.
@@ -4117,12 +4133,18 @@ export default function FpaLivePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const saveRowsToClip = async (override?: SavedScene[]) => {
+  /** 찍은 것을 클립에 올린다.
+   *
+   *  allowEmpty 는 **마지막 액션을 지웠을 때**만 쓴다. 평소에는 빈 목록을 막아야 한다 —
+   *  클립을 막 열어 버퍼가 빈 상태에서 저장이 눌리면 서버 액션이 통째로 날아간다.
+   *  하지만 지우는 것이 뜻인 경우에는 그 빈 상태가 곧 결과다.
+   */
+  const saveRowsToClip = async (override?: SavedScene[], opts?: { allowEmpty?: boolean }) => {
     if (!clipTarget) return false;
     // 이 창에서 찍은 전부 — 저장된 장면들 + 현재 버퍼(flatten, 장면별 SceneState/주인공 포함).
     // 버퍼만 보내면 "장면 저장" 후 rows 가 비어 마지막 행만 남는 문제가 있었다.
     const sourceRows = buildRowsForPersistence(override);
-    if (!sourceRows.length) {
+    if (!sourceRows.length && !opts?.allowEmpty) {
       setStatus('클립에 저장할 액션이 없습니다');
       return false;
     }
