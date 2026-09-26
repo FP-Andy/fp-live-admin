@@ -54,6 +54,10 @@ const FLA_ITEMS: NavItem[] = [
 const BASKETBALL_FLA_ITEMS: NavItem[] = [
   FLA_ITEMS[0],
   {
+    href: '/admin/basketball/media', label: 'Media', icon: '◉',
+    match: (pathname) => pathname.startsWith('/admin/basketball/media'),
+  },
+  {
     href: '/admin/basketball/visualization',
     label: 'Visualization',
     icon: '◌',
@@ -239,6 +243,9 @@ function getPageMeta(pathname: string) {
   }
   if (pathname.startsWith('/admin/basketball/visualization')) {
     return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Visualization' };
+  }
+  if (pathname.startsWith('/admin/basketball/media')) {
+    return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Media' };
   }
   if (pathname.startsWith('/admin/basketball/')) {
     return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Match Control' };

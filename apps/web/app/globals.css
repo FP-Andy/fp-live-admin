@@ -8559,6 +8559,17 @@ html.fpa-embed .topbar {
 .fpa-viz-sidebar .fpa-viz-range input[type=number] { padding:10px 8px; }
 
 .basketball-recording { display:grid; gap:20px; }
+.basketball-media-server { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; padding:20px; border:1px solid var(--line-strong); border-radius:12px; }
+.basketball-media-server>div { display:grid; gap:8px; min-width:0; }
+.basketball-media-server code { overflow-wrap:anywhere; font-size:16px; }
+.basketball-media-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; }
+.basketball-media-card { display:grid; align-content:start; gap:18px; min-width:0; }
+.basketball-media-card h3,.basketball-media-card p,.basketball-media-card figure { margin:0; }
+.basketball-media-card .section-heading { flex-wrap:wrap; gap:12px; }
+.basketball-media-card img { width:100%; height:auto; aspect-ratio:16/9; object-fit:contain; border-radius:10px; background:#0c111b; }
+.basketball-media-card figcaption { margin-top:8px; font-size:13px; }
+.basketball-media-placeholder { min-height:140px; display:grid; place-items:center; text-align:center; padding:24px; border:1px dashed var(--line-strong); border-radius:10px; color:var(--muted); }
+@media(max-width:800px) { .basketball-media-grid { grid-template-columns:1fr; } }
 .basketball-recording h3,.basketball-recording p { margin:0; }
 .basketball-recording .section-heading { gap:16px; flex-wrap:wrap; }
 .basketball-recording p { line-height:1.65; }
