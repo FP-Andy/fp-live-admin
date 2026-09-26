@@ -52,7 +52,9 @@ class RecordingTests(unittest.TestCase):
         self.assertNotEqual(first['stream_key'], second['stream_key'])
         self.rec.stop(first['id'])
         self.assertFalse(self.rec.load(first['id'])['desired'])
-        self.assertNotEqual(first['id'], self.rec.start(self.mid)['id'])
+        resumed = self.rec.start(self.mid)
+        self.assertNotEqual(first['id'], resumed['id'])
+        self.assertEqual(first['stream_key'], resumed['stream_key'])
 
     def fixture(self):
         state = self.rec.start(self.mid)
@@ -110,6 +112,37 @@ class RecordingTests(unittest.TestCase):
         recovered=[];self.rec.launch=recovered.append;self.rec.recover()
         self.assertEqual(set(recovered),{s['id'] for s in states})
         with self.assertRaises(ValueError): self.rec.path('../escape')
+
+    def test_prepare_waiting_session_restarts_receiver_without_changing_key(self):
+        from app import recording_service as service
+        from fastapi.testclient import TestClient
+        from app.auth import require_session_user
+        from app.db import get_db
+        service.recorder = self.rec
+        state = self.rec.start(self.mid)
+        # Preserve a previously shared legacy key, not only new basketball keys.
+        self.rec.update(state['id'], stream_key=str(uuid.uuid4()))
+        previous = self.rec.load(state['id'])
+        match = SimpleNamespace(sport='BASKETBALL', operator_id=None, archived=False)
+        service.app.dependency_overrides[get_db] = lambda: SimpleNamespace(get=lambda *args: match)
+        service.app.dependency_overrides[require_session_user] = lambda: SimpleNamespace(id='admin', role='SUPERADMIN')
+        client = TestClient(service.app)
+        try:
+            with patch.dict(os.environ, {'MEDIA_CONTROL_URL':'https://media.example/start'}), patch('urllib.request.urlopen') as control:
+                control.return_value.__enter__.return_value = io.BytesIO(b'{"ok":true,"state":"pending"}')
+                response = client.post(f'/api/recordings/matches/{self.mid}/start')
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['id'], previous['id'])
+                self.assertEqual(response.json()['stream_key'], previous['stream_key'])
+                self.assertEqual(json.loads(control.call_args.args[0].data)['action'], 'start')
+            with patch('app.recording_service.socket.create_connection', side_effect=OSError):
+                self.assertFalse(client.get(f'/api/recordings/matches/{self.mid}').json()['receiver_ready'])
+            with patch('app.recording_service.socket.create_connection'):
+                self.assertTrue(client.get(f'/api/recordings/matches/{self.mid}').json()['receiver_ready'])
+            self.rec.stop(previous['id'])
+            self.assertEqual(self.rec.start(self.mid)['stream_key'], previous['stream_key'])
+        finally:
+            service.app.dependency_overrides.clear()
 
     def test_http_auth_ownership_and_cross_match(self):
         from fastapi.testclient import TestClient

@@ -2,6 +2,8 @@
 from contextlib import asynccontextmanager
 import fcntl
 import os
+import socket
+from urllib.parse import urlsplit
 from pathlib import Path
 from uuid import UUID
 from fastapi import FastAPI, Depends, HTTPException, Request
@@ -79,6 +81,15 @@ def get_state(match_id, sid):
     return state
 
 
+def receiver_ready():
+    target = urlsplit(recorder.pull_base)
+    try:
+        with socket.create_connection((target.hostname, target.port or 1935), timeout=0.4):
+            return True
+    except OSError:
+        return False
+
+
 @app.get('/health')
 def health():
     return {'ok': recorder is not None}
@@ -87,7 +98,8 @@ def health():
 @app.get('/api/recordings/matches/{match_id}')
 def recordings(match_id: UUID, request: Request, db: Session = Depends(get_db), user: User = Depends(require_session_user)):
     match_access(match_id, request, db, user)
-    return {'recordings': [public_state(s) for s in recorder.states(str(match_id))]}
+    return {'recordings': [public_state(s) for s in recorder.states(str(match_id))],
+            'receiver_ready': receiver_ready()}
 
 
 @app.post('/api/recordings/matches/{match_id}/start')
@@ -95,7 +107,7 @@ def start(match_id: UUID, request: Request, db: Session = Depends(get_db), user:
     match_access(match_id, request, db, user)
     try:
         # Starting the ingest host is idempotent; never stop/restart it here.
-        if os.getenv('MEDIA_CONTROL_URL') and not any(s['desired'] for s in recorder.states(str(match_id))):
+        if os.getenv('MEDIA_CONTROL_URL'):
             import json
             import urllib.request
             payload = json.dumps({'action': 'start', 'instance_id': os.getenv('MEDIA_INSTANCE_ID') or None,
