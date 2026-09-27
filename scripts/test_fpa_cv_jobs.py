@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 
@@ -41,6 +41,43 @@ class JobTests(unittest.TestCase):
         people=[{'id':pid,'group':group,'jersey':'REF' if group=='referee' else str(i+1),'detectionId':i+1} for i,(pid,group) in enumerate(SLOTS.items())]
         seed={'preparationId':job['id'],'roster':people,'uniforms':{g:[[100+i*20,150,170]] for i,g in enumerate(('home_gk','home','referee','away','away_gk'))}}
         return {'roi':[[0,0],[1,0],[1,1],[0,1]],'setup':seed,**overrides}
+
+    def test_ready_jobs_wait_for_batch_start_and_survive_restart(self):
+        upload=self.upload();settings=self.settings(upload['id'])
+        job=self.manager.create(upload['id'],{**settings,'defer':True})
+        self.assertEqual(job['status'],'ready');self.assertNotIn(job['id'],self.manager.queue)
+        restarted=TrackingJobs(self.temp.name,probe=False,start_worker=False)
+        try:self.assertEqual(restarted.get(job['id'])['status'],'ready')
+        finally:restarted.close()
+        with self.assertRaises(JobError):self.manager.start_batch([job['id'],'f'*32])
+        self.assertEqual(self.manager.get(job['id'])['status'],'ready')
+        result=self.manager.start_batch([job['id']])
+        self.assertEqual(result['jobs'][0]['status'],'queued')
+        self.manager.start_batch([job['id']])
+        self.assertEqual(list(self.manager.queue).count(job['id']),1)
+
+    def test_s3_archive_preserves_local_files_on_failure_and_persists_cleanup_keys(self):
+        upload=self.upload();job=self.manager.create(upload['id'],self.settings(upload['id'],defer=True))
+        job=self.manager.jobs[job['id']];output=self.manager.root/'jobs'/job['id']/'output';output.mkdir()
+        for name in ('tracks.json','preview.mp4','initial-review.json'):(output/name).write_bytes(b'data')
+        self.manager.storage=Mock();self.manager.storage.upload.side_effect=[None,RuntimeError('S3 failed')]
+        with self.assertRaises(RuntimeError):self.manager._archive(job,{'storage':'s3'},output,['tracks.json','preview.mp4','initial-review.json'])
+        self.assertTrue((output/'tracks.json').exists());self.assertTrue((output/'preview.mp4').exists())
+        persisted=json.loads((output.parent/'job.json').read_text())
+        self.assertEqual(len(persisted['s3Assets']),3)
+        self.manager.storage.upload.side_effect=None
+        self.manager._archive(job,{'storage':'s3'},output,['tracks.json','preview.mp4','initial-review.json'])
+        self.assertFalse((output/'tracks.json').exists());self.assertFalse((output/'preview.mp4').exists())
+        self.assertTrue((output/'initial-review.json').exists())
+
+    def test_s3_registration_accepts_remote_source_without_local_copy(self):
+        uid='c'*32;self.manager.storage=Mock();self.manager.storage.head.return_value={'ContentLength':13}
+        info={'id':uid,'name':'game.mp4','file':'source.mp4','size':13,'key':f'fpa-cv/uploads/{uid}/source.mp4','storage':'s3'}
+        self.manager.register_upload(info)
+        _,path=self.manager._upload(uid);self.assertFalse(path.exists())
+        with self.assertRaises(JobError):self.manager.register_upload({**info,'key':'fpa-cv/uploads/'+'d'*32+'/source.mp4'})
+        self.manager.remove_upload(uid)
+        with self.assertRaises(JobError):self.manager._upload(uid)
 
     def test_upload_is_local_and_truncated_upload_is_discarded(self):
         uploaded = self.upload()
@@ -89,7 +126,8 @@ class JobTests(unittest.TestCase):
         restarted = TrackingJobs(self.temp.name, probe=False, start_worker=False)
         try:
             self.assertEqual(restarted.get(original['id'])['status'], 'cancelled')
-            self.assertEqual(restarted.get(retried['id'])['status'], 'interrupted')
+            self.assertEqual(restarted.get(retried['id'])['status'], 'queued')
+            self.assertIn(retried['id'],restarted.queue)
         finally:
             restarted.close()
 

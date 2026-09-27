@@ -1,4 +1,4 @@
-"""Persistent, local-only upload and single-GPU tracking queue."""
+"""Persistent local/S3 uploads and single-GPU tracking queue."""
 from __future__ import annotations
 
 from collections import deque
@@ -65,7 +65,15 @@ def options_for(value):
 
 
 class TrackingJobs:
-    def __init__(self, root, python=None, *, probe=True, start_worker=True):
+    def __init__(self, root, python=None, *, probe=True, start_worker=True, storage=None):
+        self.storage = storage
+        if self.storage is None and os.getenv('FPA_CV_S3_BUCKET'):
+            try:
+                from fpa_cv_storage import storage as configured_storage
+            except ImportError:
+                sys.path.insert(0, str(ROOT/'apps/api'))
+                from app.fpa_cv_storage import storage as configured_storage
+            self.storage = configured_storage()
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root/'uploads').mkdir(exist_ok=True)
@@ -89,12 +97,13 @@ class TrackingJobs:
                 job = json.loads(path.read_text())
                 if not valid_id(job.get('id')) or path.parent.name != job['id']:
                     continue
-                if job['status'] in ACTIVE:
+                if job['status'] in ACTIVE - {'queued'}:
                     job.update(status='interrupted', error='서버가 종료되어 분석이 중단되었습니다. 재시도할 수 있습니다.', finishedAt=time.time())
                     atomic_json(path, job)
                 self.jobs[job['id']] = job
             except (ValueError, KeyError, OSError):
                 continue
+        self.queue.extend(j['id'] for j in sorted(self.jobs.values(),key=lambda x:x.get('createdAt',0)) if j['status']=='queued' and not j.get('deletedAt'))
         self.worker = None
         if start_worker:
             self.worker = threading.Thread(target=self._work, daemon=True, name='fpa-tracking')
@@ -167,11 +176,70 @@ class TrackingJobs:
         try:
             info = json.loads((folder/'upload.json').read_text())
             source = folder/info['file']
-            if source.parent != folder or not source.is_file():
+            if source.parent != folder or (not source.is_file() and info.get('storage')!='s3'):
                 raise OSError()
             return info, source
         except (OSError, ValueError, KeyError):
             raise JobError('업로드한 영상을 찾지 못했습니다.', 404)
+
+    def register_upload(self, value):
+        uid=value.get('id');name=value.get('file');size=value.get('size')
+        if not valid_id(uid) or not isinstance(name,str) or not re.fullmatch(r'source\.(mp4|mov|m4v|avi|mkv|webm)',name) or type(size) is not int or not 0<size<=MAX_UPLOAD:
+            raise JobError('Invalid S3 upload')
+        if value.get('key')!=f'fpa-cv/uploads/{uid}/{name}' or value.get('storage')!='s3' or not self.storage:
+            raise JobError('S3 upload storage is not configured')
+        if self.storage.head(value['key'])['ContentLength']!=size:raise JobError('S3 video size mismatch')
+        with self.lock:
+            folder=self.root/'uploads'/uid;folder.mkdir(exist_ok=True)
+            path=folder/'upload.json'
+            if path.exists():
+                previous=json.loads(path.read_text())
+                if any(previous.get(k)!=value.get(k) for k in ('key','file','size')):raise JobError('Upload metadata conflict',409)
+            else:atomic_json(path,value)
+        return {'id':uid}
+
+    def remove_upload(self, uid):
+        with self.lock:
+            peers=[j for j in self.jobs.values() if j.get('uploadId')==uid]
+            if any(j.get('kind')!='preparation' or j['status'] in ACTIVE for j in peers):raise JobError('이 영상을 사용하는 분석이 있습니다.',409)
+            for job in peers:
+                for key in job.get('s3Assets',{}).values():self.storage.delete(key)
+                shutil.rmtree(self.root/'jobs'/job['id']);del self.jobs[job['id']]
+            self.queue = deque(key for key in self.queue if key in self.jobs)
+            shutil.rmtree(self.root/'uploads'/uid,ignore_errors=True)
+        return {'removed':True}
+
+    def start(self, job_id):
+        with self.condition:
+            self.get(job_id);job=self.jobs[job_id]
+            if job['status'] in ACTIVE:return self.public(job)
+            if job['status']!='ready' or job.get('deletedAt'):raise JobError('초기 설정 완료 상태에서 분석을 시작하세요.',409)
+            job.update(status='queued',stage='대기 중');self._save(job)
+            self.queue.append(job_id);self.condition.notify()
+            return self.public(job)
+
+    def start_batch(self, ids):
+        if not isinstance(ids,list) or not 1<=len(ids)<=100 or any(not valid_id(uid) for uid in ids) or len(set(ids))!=len(ids):raise JobError('분석 목록을 확인하세요.')
+        with self.condition:
+            jobs=[self.get(uid) for uid in ids]
+            if any(j.get('deletedAt') or j['status'] not in {'ready','queued','starting','running','completed'} for j in jobs):raise JobError('분석 준비 상태를 확인하세요.',409)
+            return {'jobs':[self.start(j['id']) if j['status']=='ready' else j for j in jobs]}
+
+    def _archive(self, job, info, output, names):
+        if info.get('storage')!='s3':return
+        assets={name:f"fpa-cv/jobs/{job['id']}/{name}" for name in names}
+        with self.lock:
+            job.update(stage='S3 결과 저장 중',progress=98,eta=None,storage='s3',s3Assets=assets)
+            self._save(job)
+        for name in names:
+            if self.closing or job['status']=='cancelling':raise RuntimeError('결과 저장 중단')
+            key=assets[name]
+            mime='application/json' if name.endswith('.json') else 'image/png' if name.endswith('.png') else 'video/mp4'
+            self.storage.upload(output/name,key,mime)
+        # Keep small initialization artifacts needed for retracking. Original
+        # and heavy result files are durable in S3 before releasing disk space.
+        for name in ('tracks.json','preview.mp4'):
+            if name in assets:(output/name).unlink()
 
     def create_preparation(self, upload_id, value):
         settings=options_for({'start':value.get('time'), 'device':value.get('device','gpu')})
@@ -198,9 +266,9 @@ class TrackingJobs:
         settings['start']=snapshot['time']
         if settings['duration']:
             settings['duration']=end-snapshot['time']
-        return self._enqueue(upload_id,settings,'tracking')
+        return self._enqueue(upload_id,settings,'tracking',ready=value.get('defer') is True)
 
-    def _enqueue(self, upload_id, settings, kind):
+    def _enqueue(self, upload_id, settings, kind, ready=False):
         info, source = self._upload(upload_id)
         with self.condition:
             caps = self.capability
@@ -211,12 +279,12 @@ class TrackingJobs:
             job_id = uuid.uuid4().hex
             (self.root/'jobs'/job_id).mkdir()
             job = {'id': job_id, 'uploadId': upload_id, 'name': info['name'], 'size': info['size'], 'options': settings,
-                   'kind':kind, 'status': 'queued', 'stage': '대기 중', 'progress': 0, 'createdAt': time.time(),
+                   'kind':kind, 'status': 'ready' if ready else 'queued', 'stage': '초기 설정 완료' if ready else '대기 중', 'progress': 0, 'createdAt': time.time(),
                    'device': caps['gpu'] if settings['device'] == 'gpu' else 'cpu',
                    'deviceLabel': caps['gpuLabel'] if settings['device'] == 'gpu' else 'CPU', 'model': 'YOLO26s'}
             self.jobs[job_id] = job
             self._save(job)
-            self.queue.append(job_id)
+            if not ready:self.queue.append(job_id)
             self.condition.notify()
             return self.public(job)
 
@@ -283,6 +351,13 @@ class TrackingJobs:
             upload_id = job['uploadId']
             peers = [j for j in self.jobs.values() if j['id'] != job_id and j['uploadId'] == upload_id]
             keep_source = any(j.get('kind') != 'preparation' or j['status'] in ACTIVE or self.active_id == j['id'] for j in peers)
+            if self.storage:
+                for key in job.get('s3Assets',{}).values():self.storage.delete(key)
+                if not keep_source:
+                    info,_=self._upload(upload_id)
+                    if info.get('storage')=='s3':self.storage.delete(info['key'])
+                    for prepared in peers:
+                        for key in prepared.get('s3Assets',{}).values():self.storage.delete(key)
             if not keep_source:
                 for prepared in peers:
                     path = self.root/'jobs'/prepared['id']
@@ -369,6 +444,10 @@ class TrackingJobs:
                     job.update(status=status, stage='분석 실패' if status=='failed' else '중단됨', error=str(error), finishedAt=time.time())
                     self._save(job)
             finally:
+                try:
+                    info,source=self._upload(job['uploadId'])
+                    if info.get('storage')=='s3':source.unlink(missing_ok=True)
+                except (OSError,JobError):pass
                 with self.lock:
                     self.active_id = None
                     self.process = None
@@ -377,6 +456,11 @@ class TrackingJobs:
         info, source = self._upload(job['uploadId'])
         folder = self.root/'jobs'/job['id']
         settings = job['options']
+        if info.get('storage')=='s3' and not source.is_file():
+            if not self.storage:raise RuntimeError('S3 worker storage is not configured')
+            if shutil.disk_usage(self.root).free < info['size']*1.3+512*1024**2:raise JobError('현재 경기를 처리할 임시 저장 공간이 부족합니다.',507)
+            job.update(stage='S3 영상 준비 중');self._save(job)
+            self.storage.download(info['key'],source)
         common=[self.python,'-u']
         if job.get('kind')=='preparation':
             command=common+[str(ROOT/'scripts/fpa_cv_prepare.py'),str(source),'--output',str(folder/'output'),
@@ -420,24 +504,34 @@ class TrackingJobs:
         with self.lock:
             if self.closing or job['status'] == 'cancelling':
                 job.update(status='interrupted' if self.closing else 'cancelled', stage='중단됨', finishedAt=time.time())
+                self._save(job)
+                return
             elif code != 0:
                 job.update(status='failed', stage='분석 실패', error='\n'.join(tail)[-1500:] or '추적 프로세스가 종료되었습니다.', finishedAt=time.time())
-            elif job.get('kind')=='preparation':
-                output=folder/'output'
-                payload=json.loads((output/'detections.json').read_text())
-                if not (output/'frame.png').is_file():raise RuntimeError('초기 장면 이미지가 없습니다.')
-                job.update(status='completed',stage='초기 장면 준비 완료',progress=100,finishedAt=time.time(),actualDevice=payload['device'])
-            else:
-                from fpa_cv_initial import initial_review
-                output = folder/'output'
-                payload = json.loads((output/'tracks.json').read_text())
-                if not payload.get('frames') or not (output/'preview.mp4').is_file() or (output/'preview.mp4').stat().st_size == 0:
-                    raise RuntimeError('완료된 트래킹 결과와 재생 영상을 확인하지 못했습니다.')
-                initial=initial_review(payload,settings['setup'])
-                atomic_json(output/'initial-review.json',initial)
-                job['initialMatched']=len(initial['segments'])
-                job.update(status='completed', stage='분석 완료', progress=100, video=payload['video'], datasetId=payload['datasetId'],
-                           actualDevice=payload['detector']['device'], samples=len(payload['frames']), trackCount=len(payload['tracks']), finishedAt=time.time())
+                self._save(job)
+                return
+        # Large result transfers must not block status polling or cancellation.
+        output=folder/'output'
+        if job.get('kind')=='preparation':
+            payload=json.loads((output/'detections.json').read_text())
+            if not (output/'frame.png').is_file():raise RuntimeError('초기 장면 이미지가 없습니다.')
+            self._archive(job,info,output,['detections.json','frame.png'])
+            result={'stage':'초기 장면 준비 완료','actualDevice':payload['device']}
+        else:
+            from fpa_cv_initial import initial_review
+            payload = json.loads((output/'tracks.json').read_text())
+            if not payload.get('frames') or not (output/'preview.mp4').is_file() or (output/'preview.mp4').stat().st_size == 0:
+                raise RuntimeError('완료된 트래킹 결과와 재생 영상을 확인하지 못했습니다.')
+            initial=initial_review(payload,settings['setup'])
+            atomic_json(output/'initial-review.json',initial)
+            self._archive(job,info,output,['tracks.json','preview.mp4','initial-review.json'])
+            result={'stage':'분석 완료','video':payload['video'],'datasetId':payload['datasetId'],
+                    'actualDevice':payload['detector']['device'],'samples':len(payload['frames']),
+                    'trackCount':len(payload['tracks']),'initialMatched':len(initial['segments'])}
+        with self.lock:
+            if self.closing or job['status']=='cancelling':
+                job.update(status='interrupted' if self.closing else 'cancelled',stage='중단됨',finishedAt=time.time())
+            else:job.update(status='completed',progress=100,finishedAt=time.time(),**result)
             self._save(job)
 
     def close(self):

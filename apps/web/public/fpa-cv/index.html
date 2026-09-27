@@ -12,20 +12,25 @@
     <span id="execution-mode" class="local"><i></i> 분석 환경 확인 중</span>
   </header>
   <main id="tracking-panel" class="tracking-page" role="tabpanel" aria-labelledby="tab-tracking">
-    <div class="tracking-heading"><div><h1>영상 트래킹</h1><p>영상 등록 → 코트·유니폼·13명 설정 → 트래킹</p></div><span id="gpu-status" class="tag">GPU 확인 중</span></div>
+    <div class="tracking-heading"><div><h1>영상 트래킹</h1><p>영상 업로드 → 경기별 초기 설정 → 1차 분석 → N차 검수</p></div><span id="gpu-status" class="tag">GPU 확인 중</span></div>
     <p id="tracking-message" class="tracking-message" role="status" aria-live="polite"></p>
+    <section id="upload-library" class="tracking-card upload-library" aria-label="업로드된 영상" hidden>
+      <div class="tracking-list-title"><h2>업로드된 영상 <span id="uploaded-count">0</span></h2><label class="button primary">여러 영상 업로드<input id="library-files" type="file" multiple accept="video/*,.mkv,.avi" hidden></label></div>
+      <p class="tracking-small-note">업로드 완료까지 이 창을 유지하세요. 초기 설정을 저장한 뒤 ‘준비된 경기 모두 분석 시작’을 누르면 창을 닫아도 분석이 계속됩니다.</p>
+      <div id="uploaded-videos"></div>
+    </section>
     <div class="tracking-layout">
       <form id="tracking-form" class="tracking-card" novalidate>
-        <h2>새 영상</h2>
+        <h2>영상 선택 · 초기 설정</h2>
         <label id="tracking-drop" class="tracking-drop">
-          <input id="tracking-video-file" type="file" accept="video/*,.mkv,.avi" aria-label="트래킹할 영상 선택">
+          <input id="tracking-video-file" type="file" multiple accept="video/*,.mkv,.avi" aria-label="트래킹할 영상 선택">
           <span id="tracking-empty"><span class="upload-icon" aria-hidden="true">↑</span></span>
           <strong id="tracking-file-name">영상을 선택하거나 여기에 놓으세요</strong>
           <small id="tracking-file-size">MP4 · MOV · M4V · AVI · MKV · WebM</small>
         </label>
         <fieldset id="tracking-fields">
           <div id="tracking-preview-wrap" class="tracking-preview-wrap" hidden>
-            <div id="tracking-preview-stage"><video id="tracking-preview" controls muted playsinline preload="metadata"></video><img id="tracking-prepared" alt="초기 선수 설정 장면" hidden><div id="tracking-seed-boxes"></div><svg id="tracking-roi" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="코트 범위"></svg><button id="tracking-pick-layer" type="button" aria-label="초기 유니폼 색상 선택" hidden></button></div>
+            <div id="tracking-preview-stage"><video crossorigin="anonymous" id="tracking-preview" controls muted playsinline preload="metadata"></video><img crossorigin="anonymous" id="tracking-prepared" alt="초기 선수 설정 장면" hidden><div id="tracking-seed-boxes"></div><svg id="tracking-roi" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="코트 범위"></svg><button id="tracking-pick-layer" type="button" aria-label="초기 유니폼 색상 선택" hidden></button></div>
             <div class="roi-toolbar"><button id="roi-start" type="button">코트 범위 지정</button><button id="roi-clear" type="button" class="subtle">초기화</button><span id="roi-status">경기장 네 꼭짓점을 지정하세요</span></div>
             <p id="preflight-hint" class="preflight-hint" role="status"></p>
             <div id="preflight-box-tools" class="preflight-box-tools" hidden>
@@ -53,7 +58,7 @@
         <div id="tracking-upload-progress" class="tracking-upload-progress" hidden><progress id="upload-progress" max="100" value="0" aria-label="영상 전송률"></progress><span id="upload-label"></span><button id="cancel-upload" type="button" class="subtle">전송 취소</button></div>
         <p class="tracking-small-note">영상은 이 컴퓨터에서 분석합니다. 다른 탭에서 작업하는 동안에도 분석은 계속됩니다.</p>
       </form>
-      <section aria-label="분석 목록"><div class="tracking-list-title"><h2>분석 목록 <span id="tracking-job-count">0</span></h2><span id="tracking-active-count"></span></div><p id="tracking-list-message" class="tracking-message" role="status"></p><div id="tracking-jobs" class="tracking-jobs"></div><details id="tracking-trash" class="tracking-trash"><summary>삭제한 분석 <span id="tracking-deleted-count">0</span></summary><p class="tracking-small-note">영상과 작업 기록은 보관되며 복원할 수 있습니다. 중지한 분석은 복원 후 다시 분석할 수 있습니다.</p><div id="tracking-deleted-jobs" class="tracking-jobs"></div></details></section>
+      <section aria-label="분석 목록"><button id="start-ready-jobs" class="primary" type="button" hidden>준비된 경기 모두 분석 시작</button><div class="tracking-list-title"><h2>분석 목록 <span id="tracking-job-count">0</span></h2><span id="tracking-active-count"></span></div><p id="tracking-list-message" class="tracking-message" role="status"></p><div id="tracking-jobs" class="tracking-jobs"></div><details id="tracking-trash" class="tracking-trash"><summary>삭제한 분석 <span id="tracking-deleted-count">0</span></summary><p class="tracking-small-note">영상과 작업 기록은 보관되며 복원할 수 있습니다. 중지한 분석은 복원 후 다시 분석할 수 있습니다.</p><div id="tracking-deleted-jobs" class="tracking-jobs"></div></details></section>
     </div>
   </main>
   <main id="work-panel" role="tabpanel" aria-labelledby="tab-work" hidden>
@@ -100,7 +105,7 @@
       <div class="video-column">
       <section class="viewer-panel">
         <div class="panel-bar"><span><i class="live-dot"></i> TRACKING VIEW <small id="model-name">YOLO26 + ByteTrack</small></span><label class="check"><input id="show-labels" type="checkbox" checked> 번호 표시</label><label class="check"><input id="show-raw" type="checkbox"> 원본 BB</label><label class="check"><input id="show-ignored" type="checkbox"> 제외 트랙</label><button id="fullscreen" class="icon-button" title="영상 전체화면">⛶</button></div>
-        <div id="stage" class="stage"><video id="video" playsinline preload="metadata"></video><div id="boxes" class="boxes"></div><button id="pick-layer" class="pick-layer" hidden aria-label="영상에서 유니폼 색상 선택"></button><div id="pick-hint" class="pick-hint" hidden></div><div id="empty" class="empty"><span>⌖</span><h2>작업할 영상을 선택하세요</h2><p>영상 트래킹 → 작업 시작<br><a class="help-link" href="./guide.html#files">파일 준비 방법 ↗</a></p></div></div>
+        <div id="stage" class="stage"><video crossorigin="anonymous" id="video" playsinline preload="metadata"></video><div id="boxes" class="boxes"></div><button id="pick-layer" class="pick-layer" hidden aria-label="영상에서 유니폼 색상 선택"></button><div id="pick-hint" class="pick-hint" hidden></div><div id="empty" class="empty"><span>⌖</span><h2>작업할 영상을 선택하세요</h2><p>영상 트래킹 → 작업 시작<br><a class="help-link" href="./guide.html#files">파일 준비 방법 ↗</a></p></div></div>
         <div class="transport"><button id="play" aria-label="재생 또는 일시정지">▶</button><button id="back" aria-label="이전 프레임">‹</button><button id="forward" aria-label="다음 프레임">›</button><output id="time">00:00.00</output><input id="seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="영상 시간"><output id="end-time">00:00.00</output><select id="speed" aria-label="재생 속도"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></div>
         <div class="video-foot"><span><kbd>Space</kbd> 재생 <kbd>← →</kbd> 1프레임 <kbd>Shift ← →</kbd> 1초</span><span id="coverage">트래킹 대기</span></div>
         <div class="source-options"><label>영상 기준 <select id="video-mode"><option value="preview">분석 구간 미리보기</option><option value="original">전체 원본 영상</option></select></label><span id="source-note"></span></div>

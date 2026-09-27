@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 TEMP=tempfile.TemporaryDirectory()
 os.environ['DATABASE_URL']='sqlite:///'+str(Path(TEMP.name)/'test.db')
@@ -38,6 +38,55 @@ class GatewayTests(unittest.TestCase):
     def test_requires_login_and_ownership(self):
         self.app.dependency_overrides.clear()
         self.assertEqual(self.client.get('/api/tracking/jobs').status_code,401)
+
+    def test_s3_multipart_library_and_owner_checks(self):
+        store=Mock();store.begin.return_value='multipart';store.head.return_value={'ContentLength':7}
+        store.part_url.return_value='https://s3.example/part';store.url.return_value='https://s3.example/source'
+        with patch('app.fpa_cv_uploads.store',return_value=store):
+            created=self.client.post('/api/tracking/uploads/multipart',json={'name':'game.mp4','size':7})
+            self.assertEqual(created.status_code,201)
+            upload=created.json();uid=upload['id'];base=f'/api/tracking/uploads/{uid}'
+            self.assertNotIn('key',upload);self.assertNotIn('multipartId',upload)
+            self.assertEqual(self.client.get('/api/tracking/uploads',headers={'x-test-user':'other'}).json()['uploads'],[])
+            self.assertEqual(self.client.post(base+'/parts',headers={'x-test-user':'other'},json={'parts':[1]}).status_code,404)
+            self.assertEqual(self.client.post(base+'/parts',json={'parts':[2]}).status_code,400)
+            self.assertEqual(self.client.post(base+'/parts',json={'parts':[1]}).json()['parts'][0]['number'],1)
+            self.assertEqual(self.client.get(base+'/source').status_code,409)
+            body={'parts':[{'PartNumber':1,'ETag':'"'+'a'*32+'"'}]}
+            self.assertEqual(self.client.post(base+'/complete',json={'parts':[]}).status_code,400)
+            self.assertEqual(self.client.post(base+'/complete',json=body).json()['status'],'uploaded')
+            self.assertEqual(self.client.post(base+'/complete',json=body).status_code,200)
+            store.finish.assert_called_once()
+            self.assertEqual(self.client.get(base+'/source',follow_redirects=False).headers['location'],'https://s3.example/source')
+            self.assertEqual(self.client.post(base+'/remove').status_code,200)
+            store.delete.assert_called_once()
+
+    def test_s3_size_mismatch_does_not_mark_uploaded(self):
+        store=Mock();store.begin.return_value='multipart';store.head.return_value={'ContentLength':3}
+        with patch('app.fpa_cv_uploads.store',return_value=store):
+            uid=self.client.post('/api/tracking/uploads/multipart',json={'name':'game.mp4','size':7}).json()['id']
+            response=self.client.post(f'/api/tracking/uploads/{uid}/complete',json={'parts':[{'PartNumber':1,'ETag':'a'*32}]})
+            self.assertEqual(response.status_code,409)
+            self.assertEqual(self.client.get('/api/tracking/uploads').json()['uploads'][0]['status'],'uploading')
+
+    def test_batch_cannot_start_unowned_job_and_upload_with_job_cannot_delete(self):
+        with patch('app.fpa_cv_uploads.remote',new_callable=AsyncMock) as remote,patch('app.fpa_cv_uploads.store') as store:
+            self.assertEqual(self.client.post('/api/tracking/batch/start',headers={'x-test-user':'other'},json={'ids':[self.job]}).status_code,404)
+            self.assertEqual(self.client.post(f'/api/tracking/uploads/{self.upload}/remove').status_code,409)
+            remote.assert_not_called();store.assert_not_called()
+
+    def test_s3_assets_require_owner_and_completed_result(self):
+        with SessionLocal() as db:
+            row=db.get(FpaCvResource,self.upload);row.payload={'key':f'fpa-cv/uploads/{self.upload}/source.mp4'}
+            row=db.get(FpaCvResource,self.job);row.payload={**row.payload,'storage':'s3','s3Assets':{'tracks.json':f'fpa-cv/jobs/{self.job}/tracks.json'}};db.commit()
+        store=Mock();store.url.return_value='https://s3.example/tracks'
+        with patch('app.fpa_cv_storage.storage',return_value=store):
+            url=f'/api/tracking/jobs/{self.job}/tracks.json'
+            self.assertEqual(self.client.get(url,headers={'x-test-user':'other'}).status_code,404)
+            self.assertEqual(self.client.get(url,follow_redirects=False).status_code,307)
+            with SessionLocal() as db:
+                row=db.get(FpaCvResource,self.job);row.payload={**row.payload,'status':'running'};db.commit()
+            self.assertEqual(self.client.get(url).status_code,409)
     def test_review_version_and_owner(self):
         url=f'/api/tracking/jobs/{self.job}/review'
         self.assertEqual(self.client.get(url,headers={'x-test-user':'other'}).status_code,404)

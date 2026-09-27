@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .auth import require_session_user
@@ -15,7 +15,7 @@ from .models import FpaCvResource, User
 
 MAX_UPLOAD = 20 * 1024**3
 ID = re.compile(r"^[a-f0-9]{32}$")
-OPERATIONS = {'cancel', 'retry', 'delete', 'restore', 'purge'}
+OPERATIONS = {'cancel', 'retry', 'delete', 'restore', 'purge', 'start'}
 ASSETS = {'tracks.json', 'preview.mp4', 'source', 'detections.json', 'frame.png', 'initial-review.json'}
 
 
@@ -94,7 +94,7 @@ async def capabilities(user: User = Depends(require_session_user)):
         result = await remote('capabilities')
     except HTTPException as error:
         result = {'ready': False, 'checking': False, 'error': error.detail, 'gpu': None}
-    return {**result, 'execution': 'aws', 'reviewStorage': 'server', 'model': 'YOLO26s', 'maxUploadBytes': MAX_UPLOAD}
+    return {**result, 'uploadStorage': 's3' if os.getenv('FPA_CV_S3_BUCKET') else 'worker', 'execution': 'aws', 'reviewStorage': 'server', 'model': 'YOLO26s', 'maxUploadBytes': MAX_UPLOAD}
 
 
 @router.post('/uploads', status_code=201)
@@ -144,7 +144,11 @@ async def create(kind: str, request: Request, user: User = Depends(require_sessi
     if kind not in {'jobs', 'preparations'}:
         raise HTTPException(404)
     value = await body_json(request)
-    owned(db, str(value.get('uploadId', '')), user, 'upload')
+    upload_row=owned(db, str(value.get('uploadId', '')), user, 'upload',lock=True)
+    if upload_row.payload.get('storage')=='s3':
+        if upload_row.payload.get('status')!='uploaded':raise HTTPException(409,'영상 업로드를 먼저 완료하세요.')
+        p=upload_row.payload
+        await remote('uploads/register','POST',json={k:p[k] for k in ('id','name','size','file','key','storage','createdAt')})
     if kind == 'jobs':
         owned(db, str((value.get('setup') or {}).get('preparationId', '')), user)
     return register(db, await remote(kind, 'POST', json=value), 'job', user)
@@ -185,6 +189,7 @@ async def action(job_id: str, operation: str, user: User = Depends(require_sessi
     if operation not in OPERATIONS:
         raise HTTPException(404)
     row = owned(db, job_id, user)
+    if operation=='purge':owned(db,row.payload['uploadId'],user,'upload',lock=True)
     value = await remote(f'jobs/{job_id}/{operation}', 'POST', json={})
     if operation == 'purge':
         # Row and server review are deleted together only after files are gone.
@@ -205,9 +210,16 @@ async def action(job_id: str, operation: str, user: User = Depends(require_sessi
 
 @router.get('/jobs/{job_id}/{asset}')
 async def asset(job_id: str, asset: str, request: Request, user: User = Depends(require_session_user), db: Session = Depends(get_db)):
-    owned(db, job_id, user)
+    row=owned(db, job_id, user)
     if asset not in ASSETS:
         raise HTTPException(404)
+    if row.payload.get('storage')=='s3':
+        if row.payload.get('status')!='completed':raise HTTPException(409,'분석 완료 후 결과를 열 수 있습니다.')
+        from .fpa_cv_storage import storage
+        upload=owned(db,row.payload['uploadId'],user,'upload')
+        key=upload.payload['key'] if asset=='source' else row.payload.get('s3Assets',{}).get(asset)
+        if not key:raise HTTPException(404,'분석 파일을 찾지 못했습니다.')
+        return RedirectResponse(storage().url(key),headers={'Cache-Control':'private, no-store'})
     base, headers = connection()
     if request.headers.get('range'):
         headers['Range'] = request.headers['range']
@@ -227,3 +239,7 @@ async def asset(job_id: str, asset: str, request: Request, user: User = Depends(
     allowed = {'content-type', 'content-length', 'content-range', 'accept-ranges'}
     return StreamingResponse(chunks(), status_code=response.status_code,
                              headers={**{k: v for k, v in response.headers.items() if k in allowed}, 'Cache-Control': 'private, no-store'})
+
+
+from .fpa_cv_uploads import router as uploads_router
+router.include_router(uploads_router)
