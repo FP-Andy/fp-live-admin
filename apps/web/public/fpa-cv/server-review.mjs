@@ -1,6 +1,6 @@
 // Versioned, serial autosave: browser backup survives failed requests/reloads.
 export class ServerReview {
-  constructor(id,{request=fetch,storage=localStorage,status=()=>{}}={}){
+  constructor(id,{request=(...args)=>globalThis.fetch(...args),storage=localStorage,status=()=>{}}={}){
     this.id=id;this.request=request;this.storage=storage;this.status=status;
     this.version=0;this.pending=null;this.running=null;this.conflict=false;
     this.key=`fpa-cv-cloud-draft:${id}`;
