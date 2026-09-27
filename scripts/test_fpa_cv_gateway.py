@@ -61,5 +61,28 @@ class GatewayTests(unittest.TestCase):
         with patch.dict(os.environ,{'FPA_CV_WORKER_URL':'','FPA_CV_WORKER_TOKEN':''}):
             data=self.client.get('/api/tracking/capabilities').json()
             self.assertFalse(data['ready']);self.assertEqual(data['execution'],'aws');self.assertEqual(data['reviewStorage'],'server')
+    def test_public_origin_behind_cloudfront_can_check_and_upload(self):
+        headers={'Host':'ec2-origin.internal','Origin':'https://console.fineludens.kr'}
+        with patch.dict(os.environ,{'FPA_CV_ALLOWED_ORIGINS':'https://console.fineludens.kr'}), patch('app.fpa_cv.remote',new_callable=AsyncMock) as remote:
+            remote.return_value={'ready':True}
+            self.assertEqual(self.client.post('/api/tracking/uploads/check',headers=headers,json={}).json(),{'ready':True})
+            remote.assert_awaited_once_with('capabilities')
+            remote.return_value={'id':'c'*32}
+            result=self.client.post('/api/tracking/uploads?name=test.mp4',headers={**headers,'Content-Type':'application/octet-stream'},content=b'test-video')
+            self.assertEqual(result.status_code,201)
+        with SessionLocal() as db:self.assertEqual(db.get(FpaCvResource,'c'*32).owner_id,'owner')
+    def test_upload_check_rejects_untrusted_origin_even_with_forwarded_host(self):
+        with patch.dict(os.environ,{'FPA_CV_ALLOWED_ORIGINS':'https://console.fineludens.kr'}), patch('app.fpa_cv.remote',new_callable=AsyncMock) as remote:
+            for origin in ['https://attacker.invalid','https://console.fineludens.kr.attacker.invalid','null']:
+                response=self.client.post('/api/tracking/uploads/check',headers={'Host':'ec2-origin.internal','Origin':origin,'X-Forwarded-Host':'console.fineludens.kr'})
+                self.assertEqual(response.status_code,403)
+            remote.assert_not_called()
+    def test_upload_check_rejects_expired_session_and_unready_worker(self):
+        with patch('app.fpa_cv.remote',new_callable=AsyncMock,return_value={'ready':False}) as remote:
+            self.assertEqual(self.client.post('/api/tracking/uploads/check').status_code,503)
+            remote.reset_mock()
+            self.app.dependency_overrides.clear()
+            self.assertEqual(self.client.post('/api/tracking/uploads/check').status_code,401)
+            remote.assert_not_called()
 
 if __name__=='__main__':unittest.main()

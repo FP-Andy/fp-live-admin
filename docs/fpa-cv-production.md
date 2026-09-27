@@ -16,6 +16,8 @@ Futsal → FPA → 영상 분석(`/admin/futsal/fpa/tracking`)에서 새 영상�
 
 앱 `.env`: `FPA_CV_WORKER_URL`, `FPA_CV_WORKER_TOKEN`. 토큰은 최소 32자이며 브라우저에 전달하지 않는다.
 
+`FPA_CV_ALLOWED_ORIGINS`는 외부 화면의 정확한 Origin 목록이다(Compose 기본값 `https://console.fineludens.kr`). CloudFront가 Host를 EC2 원본 주소로 바꾸므로 이 설정이 필요하다. 임의의 전달 헤더나 와일드카드는 신뢰하지 않는다. 영상 전송 전 작은 `/api/tracking/uploads/check` 요청으로 인증·Origin·GPU 연결을 먼저 확인한다.
+
 GPU Compose: `infra/fpa-worker/docker-compose.yml`. `FPA_CV_PRIVATE_IP`, `FPA_CV_RUNTIME_DIR`, `FPA_CV_TOKEN_FILE`을 지정한다. 기본 CUDA 베이스는 해당 서버에 설치된 `highlight-worker-highlight-worker` 이미지다. 다른 서버에서는 `FPA_CV_BASE_IMAGE`에 검증된 CUDA/PyTorch 이미지를 지정하고 관련 CV 의존성을 검증해야 한다.
 
 GPU 4333 포트는 앱 보안 그룹에서만 접근하도록 제한하며 모든 요청에 서비스 인증이 필요하다. 외부 브라우저는 GPU 주소에 직접 연결하지 않는다. GPU가 꺼져 있으면 새 분석 버튼은 비활성화된다. FPC System에서 기존 GPU를 시작한 뒤 화면의 연결 상태를 확인한다. 실행 중 GPU를 중지하면 해당 분석은 재시작 후 재시도해야 한다.

@@ -23,7 +23,7 @@ export function trackingUI({openJob}){
   // Frame-decoded duration may differ slightly from the browser's metadata.
   for(const id of ['initial-frame-time','tracking-from','tracking-to'])$(id).max=duration.toFixed(3);
  };
- const status=(message,error=false)=>{$('tracking-message').textContent=message;$('tracking-message').classList.toggle('error',error);};
+ const status=(message,error=false)=>{for(const id of ['tracking-message','initial-frame-status']){$(id).textContent=message;$(id).classList.toggle('error',error);}};
  const updateReady=()=>{
   const start=calibration.time();
   $('tracking-from').value=Number.isFinite(start)?start.toFixed(3):'';
@@ -67,21 +67,29 @@ export function trackingUI({openJob}){
  syncRange();
  const upload=selected=>new Promise((resolve,reject)=>{
   const request=new XMLHttpRequest();xhr=request;request.open('POST',`/api/tracking/uploads?name=${encodeURIComponent(selected.name)}`);request.setRequestHeader('Content-Type','application/octet-stream');
-  request.upload.onprogress=event=>{if(event.lengthComputable){const percent=Math.round(event.loaded/event.total*100);$('upload-progress').value=percent;$('upload-label').textContent=`영상 전송 ${percent}%`;}};
+  request.upload.onprogress=event=>{if(event.lengthComputable){const percent=event.loaded/event.total*100,label=`영상 전송 ${percent.toFixed(1)}% · ${sizeText(event.loaded)} / ${sizeText(event.total)}`;$('upload-progress').value=percent;$('upload-label').textContent=label;$('detect-initial-frame').textContent=`영상 전송 ${percent.toFixed(1)}%`;status(label);}};
+  request.upload.onload=()=>{if(busy){status('영상 전송 완료 · 서버 저장을 확인하고 있습니다.');$('detect-initial-frame').textContent='전송 확인 중…';}};
   request.onload=()=>{xhr=null;try{const value=JSON.parse(request.responseText);if(request.status>=400)throw Error(value.detail||'영상 전송 실패');resolve(value);}catch(error){reject(error);}};
   request.onerror=()=>reject(Error('분석 서버 연결을 확인하세요.'));request.onabort=()=>reject(Error('영상 전송을 취소했습니다.'));request.send(selected);
  });
- const setBusy=value=>{busy=value;$('tracking-fields').disabled=value;$('tracking-video-file').disabled=value;$('tracking-upload-progress').hidden=!value;updateReady();};
+ const setBusy=value=>{busy=value;$('tracking-fields').disabled=value;$('tracking-video-file').disabled=value;$('tracking-upload-progress').hidden=!value;if(!value)$('detect-initial-frame').textContent='이 장면에서 선수 찾기';updateReady();};
  $('cancel-upload').onclick=async()=>{aborted=true;xhr?.abort();if(preparingId)try{await post(`/api/tracking/jobs/${preparingId}/cancel`);}catch(error){status(error.message,true);}};
  $('detect-initial-frame').onclick=async()=>{
   if(busy||!file)return;video.pause();const time=Number($('initial-frame-time').value);if(!Number.isFinite(time)||time<0){status('장면 시각을 확인하세요.',true);return;}aborted=false;setBusy(true);$('cancel-upload').hidden=false;$('cancel-upload').textContent='취소';status(playable?'선택한 장면의 선수를 찾고 있습니다.':'원본 영상을 전송하고 초기 장면을 준비합니다. 준비 후 장면 시각으로 이동할 수 있습니다.');
   try{
-   if(!uploaded)uploaded=await upload(file);
+   if(!uploaded){
+    $('detect-initial-frame').textContent='연결 확인 중…';$('upload-progress').value=0;$('upload-label').textContent='분석 서버 연결 확인';status('분석 서버 연결을 확인한 뒤 영상을 전송합니다.');
+    if(caps?.execution==='aws')await post('/api/tracking/uploads/check');
+    if(aborted)throw Error('초기 장면 검출을 취소했습니다.');
+    $('detect-initial-frame').textContent='영상 전송 0.0%';status(`영상 ${sizeText(file.size)} 전송 중 · 전송이 끝나면 이 장면의 선수를 찾습니다.`);
+    uploaded=await upload(file);
+   }
    if(aborted)throw Error('초기 장면 검출을 취소했습니다.');
+   $('detect-initial-frame').textContent='선수 찾는 중…';status('영상 전송 완료 · 선택한 장면의 선수를 찾고 있습니다.');
    const job=await post('/api/tracking/preparations',{uploadId:uploaded.id,time,device:$('tracking-device').value});preparingId=job.id;
    if(aborted)await post(`/api/tracking/jobs/${job.id}/cancel`);
    let result=job;
-   while(active.has(result.status)){$('upload-progress').value=result.progress||0;$('upload-label').textContent=result.status==='queued'?'초기 장면 검출 대기':result.stage;await new Promise(resolve=>setTimeout(resolve,800));result=await api(`/api/tracking/jobs/${job.id}`);}
+   while(active.has(result.status)){$('upload-progress').value=result.progress||0;$('upload-label').textContent=result.status==='queued'?'초기 장면 검출 대기':result.stage;status($('upload-label').textContent);await new Promise(resolve=>setTimeout(resolve,800));result=await api(`/api/tracking/jobs/${job.id}`);}
    if(result.status!=='completed')throw Error(aborted?'초기 장면 검출을 취소했습니다.':result.error||'초기 장면 검출이 중단되었습니다.');
    const data=await api(result.result.detections);
    const endWasFull=!Number.isFinite(sourceDuration)||$('tracking-to').value===sourceDuration.toFixed(3);
