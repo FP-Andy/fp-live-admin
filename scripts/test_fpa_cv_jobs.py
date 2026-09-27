@@ -42,6 +42,110 @@ class JobTests(unittest.TestCase):
         seed={'preparationId':job['id'],'roster':people,'uniforms':{g:[[100+i*20,150,170]] for i,g in enumerate(('home_gk','home','referee','away','away_gk'))}}
         return {'roi':[[0,0],[1,0],[1,1],[0,1]],'setup':seed,**overrides}
 
+    def wait_for(self, predicate):
+        deadline=time.monotonic()+5
+        while not predicate() and time.monotonic()<deadline:time.sleep(.01)
+        self.assertTrue(predicate())
+
+    def start_lanes(self):
+        self.manager.worker=threading.Thread(target=self.manager._work,daemon=True)
+        self.manager.preparation_worker=threading.Thread(target=self.manager._work,args=('preparation',),daemon=True)
+        self.manager.worker.start();self.manager.preparation_worker.start()
+
+    def test_preparation_completes_during_tracking_without_deleting_shared_cache(self):
+        uploaded=self.upload();settings=self.settings(uploaded['id'])
+        info,source=self.manager._upload(uploaded['id'])
+        info['storage']='s3';(source.parent/'upload.json').write_text(json.dumps(info))
+        first=self.manager.create(uploaded['id'],settings)
+        second=self.manager.create(uploaded['id'],settings)
+        prepared=self.manager.create_preparation(uploaded['id'],{'time':6})
+        next_prepared=self.manager.create_preparation(uploaded['id'],{'time':7})
+        release_tracking=threading.Event();release_preparation=threading.Event()
+        started=[]
+        def execute(job):
+            with self.manager.lock:started.append(job['id'])
+            if job['id']==first['id']:release_tracking.wait(5)
+            if job['id']==prepared['id']:release_preparation.wait(5)
+            with self.manager.lock:
+                job['status']='completed';self.manager._save(job)
+        with patch.object(self.manager,'_execute',side_effect=execute):
+            try:
+                self.start_lanes()
+                self.wait_for(lambda: first['id'] in started and prepared['id'] in started)
+                self.assertNotIn(second['id'],started)
+                self.assertNotIn(next_prepared['id'],started)
+                release_preparation.set()
+                self.wait_for(lambda: next_prepared['id'] in started and not any(j in self.manager.active_ids for j in (prepared['id'],next_prepared['id'])))
+                self.assertTrue(source.exists())
+                self.assertIn(first['id'],self.manager.active_ids)
+                self.assertNotIn(second['id'],started)
+                release_tracking.set()
+                self.wait_for(lambda: self.manager.get(second['id'])['status']=='completed' and not self.manager.active_ids)
+                self.assertFalse(source.exists())
+            finally:
+                release_preparation.set();release_tracking.set();self.manager.close()
+
+    def test_each_lane_cancels_only_its_own_process_and_close_stops_both(self):
+        launch=subprocess.Popen
+        def fake_tracker(*args,**kwargs):
+            return launch([sys.executable,'-u','-c','import time; print(\'FPA_PROGRESS {"progress":10}\',flush=True); time.sleep(30)'],**kwargs)
+        uploaded=self.upload();settings=self.settings(uploaded['id'])
+        with patch('fpa_cv_jobs.subprocess.Popen',side_effect=fake_tracker):
+            self.start_lanes()
+            tracking=self.manager.create(uploaded['id'],settings)
+            prepared=self.manager.create_preparation(uploaded['id'],{'time':6})
+            for job in (tracking,prepared):self.wait_for(lambda: self.manager.get(job['id'])['status']=='running')
+            tracking_process=self.manager.processes[tracking['id']]
+            preparation_process=self.manager.processes[prepared['id']]
+            self.manager.cancel(prepared['id'])
+            self.wait_for(lambda: self.manager.get(prepared['id'])['status']=='cancelled')
+            self.assertIsNotNone(preparation_process.poll());self.assertIsNone(tracking_process.poll())
+            other=self.manager.create_preparation(uploaded['id'],{'time':7})
+            self.wait_for(lambda: self.manager.get(other['id'])['status']=='running')
+            other_process=self.manager.processes[other['id']]
+            self.manager.cancel(tracking['id'])
+            self.wait_for(lambda: self.manager.get(tracking['id'])['status']=='cancelled')
+            self.assertIsNone(other_process.poll())
+            another=self.manager.create(uploaded['id'],settings)
+            self.wait_for(lambda: self.manager.get(another['id'])['status']=='running')
+            another_process=self.manager.processes[another['id']]
+            self.manager.close()
+            self.assertIsNotNone(other_process.poll());self.assertIsNotNone(another_process.poll())
+            self.assertEqual(self.manager.get(other['id'])['status'],'interrupted')
+            self.assertEqual(self.manager.get(another['id'])['status'],'interrupted')
+
+    def test_preparation_failure_leaves_tracking_running(self):
+        launch=subprocess.Popen
+        def fake_tracker(command,**kwargs):
+            code='raise RuntimeError("bad frame")' if any(arg.endswith('fpa_cv_prepare.py') for arg in command) else 'import time; print(\'FPA_PROGRESS {"progress":10}\',flush=True); time.sleep(30)'
+            return launch([sys.executable,'-u','-c',code],**kwargs)
+        uploaded=self.upload();settings=self.settings(uploaded['id'])
+        with patch('fpa_cv_jobs.subprocess.Popen',side_effect=fake_tracker):
+            self.start_lanes()
+            tracking=self.manager.create(uploaded['id'],settings)
+            self.wait_for(lambda: self.manager.get(tracking['id'])['status']=='running')
+            prepared=self.manager.create_preparation(uploaded['id'],{'time':6})
+            self.wait_for(lambda: self.manager.get(prepared['id'])['status']=='failed')
+            self.assertIsNone(self.manager.processes[tracking['id']].poll())
+            self.assertEqual(self.manager.get(tracking['id'])['status'],'running')
+            self.manager.close()
+
+    def test_restart_restores_both_queues_and_interrupts_both_active_lanes(self):
+        uploaded=self.upload();settings=self.settings(uploaded['id'])
+        tracking=self.manager.create(uploaded['id'],settings)
+        prepared=self.manager.create_preparation(uploaded['id'],{'time':6})
+        active_tracking=self.manager.create(uploaded['id'],settings)
+        active_preparation=self.manager.create_preparation(uploaded['id'],{'time':7})
+        for job in (active_tracking,active_preparation):
+            stored=self.manager.jobs[job['id']];stored['status']='running';self.manager._save(stored)
+        restarted=TrackingJobs(self.temp.name,probe=False,start_worker=False)
+        try:
+            self.assertEqual(list(restarted.queue),[tracking['id']])
+            self.assertEqual(list(restarted.preparation_queue),[prepared['id']])
+            for job in (active_tracking,active_preparation):self.assertEqual(restarted.get(job['id'])['status'],'interrupted')
+            self.assertTrue(restarted.capabilities()['concurrentPreparation'])
+        finally:restarted.close()
+
     def test_ready_jobs_wait_for_batch_start_and_survive_restart(self):
         upload=self.upload();settings=self.settings(upload['id'])
         job=self.manager.create(upload['id'],{**settings,'defer':True})
@@ -175,7 +279,7 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(JobError):self.manager.retry(job['id'])
         with self.assertRaises(JobError):self.manager.delete(settings['setup']['preparationId'])
         self.assertEqual(self.manager.restore(job['id'])['status'],'cancelled')
-        self.assertIsNone(self.manager.process)
+        self.assertEqual(self.manager.processes,{})
         self.assertNotEqual(self.manager.retry(job['id'])['id'],job['id'])
 
     def test_purge_requires_trash_and_keeps_shared_source_until_last_run(self):
@@ -199,7 +303,7 @@ class JobTests(unittest.TestCase):
 
     def test_purge_refuses_a_worker_that_has_not_exited(self):
         uploaded=self.upload();job=self.manager.create(uploaded['id'],self.settings(uploaded['id']))
-        self.manager.delete(job['id']);self.manager.active_id=job['id']
+        self.manager.delete(job['id']);self.manager.active_ids.add(job['id'])
         with self.assertRaises(JobError):self.manager.purge(job['id'])
         self.assertTrue((self.manager.root/'jobs'/job['id']).is_dir())
 
@@ -224,7 +328,7 @@ class JobTests(unittest.TestCase):
             deadline=time.monotonic()+5
             while self.manager.get(job['id'])['status']!='running' and time.monotonic()<deadline:time.sleep(.01)
             self.assertEqual(self.manager.get(job['id'])['status'],'running')
-            process=self.manager.process
+            process=self.manager.processes[job['id']]
             self.assertEqual(self.manager.delete(job['id'])['status'],'cancelling')
             while self.manager.get(job['id'])['status']=='cancelling' and time.monotonic()<deadline:time.sleep(.01)
             self.assertEqual(self.manager.get(job['id'])['status'],'cancelled')
@@ -245,7 +349,7 @@ class JobTests(unittest.TestCase):
             while self.manager.get(job['id'])['status'] != 'running' and time.monotonic()<deadline:
                 time.sleep(.01)
             self.assertEqual(self.manager.get(job['id'])['status'], 'running')
-            process = self.manager.process
+            process = self.manager.processes[job['id']]
             self.manager.cancel(job['id'])
             while self.manager.get(job['id'])['status'] == 'cancelling' and time.monotonic()<deadline:
                 time.sleep(.01)

@@ -36,7 +36,7 @@ export function trackingUI({openJob}){
   if(needOriginalFrame&&deviceReady&&!busy){needOriginalFrame=false;queueMicrotask(()=>$('detect-initial-frame').click());}
   $('gpu-status').textContent=caps?.checking?'GPU 확인 중':caps?.ready?caps.gpuLabel||'GPU 없음 · CPU 선택 가능':'분석 환경 확인 필요';
   $('execution-mode').textContent=caps?.execution==='aws'?'AWS GPU 분석':'로컬 작업';
-  const note=document.querySelector('#tracking-form .tracking-small-note');if(note)note.textContent=caps?.uploadStorage==='s3'?'경기별 설정을 모두 저장한 뒤 일괄 분석을 시작하세요. 초기 장면 검출과 본 분석은 GPU 한 대를 순서대로 사용합니다.':caps?.execution==='aws'?'영상 전송 후 브라우저를 닫아도 분석은 계속됩니다.':'영상은 이 컴퓨터에서 분석합니다. 다른 탭에서 작업하는 동안에도 분석은 계속됩니다.';
+  const note=document.querySelector('#tracking-form .tracking-small-note');if(note)note.textContent=caps?.concurrentPreparation?'분석 중에도 다른 경기의 초기 설정을 할 수 있습니다. 전체 경기 분석은 순서대로 진행합니다.':caps?.uploadStorage==='s3'?'경기별 설정을 모두 저장한 뒤 일괄 분석을 시작하세요. 초기 장면 검출과 본 분석은 GPU 한 대를 순서대로 사용합니다.':caps?.execution==='aws'?'영상 전송 후 브라우저를 닫아도 분석은 계속됩니다.':'영상은 이 컴퓨터에서 분석합니다. 다른 탭에서 작업하는 동안에도 분석은 계속됩니다.';
   library.enable(caps?.uploadStorage==='s3');
   $('local-preview-tools').hidden=!uploaded||caps?.uploadStorage!=='s3';
   $('start-tracking').textContent=caps?.uploadStorage==='s3'?'초기 설정 저장 · 분석 준비':'초기 설정 확정 · 트래킹 시작';
@@ -114,7 +114,7 @@ export function trackingUI({openJob}){
    const job=await post('/api/tracking/preparations',{uploadId:uploaded.id,time,device:$('tracking-device').value});preparingId=job.id;
    if(aborted)await post(`/api/tracking/jobs/${job.id}/cancel`);
    let result=job;
-   while(active.has(result.status)){$('upload-progress').value=result.progress||0;$('upload-label').textContent=result.status==='queued'?'초기 장면 검출 대기':result.stage;status($('upload-label').textContent);await new Promise(resolve=>setTimeout(resolve,800));result=await api(`/api/tracking/jobs/${job.id}`);}
+   while(active.has(result.status)){$('upload-progress').value=result.progress||0;$('upload-label').textContent=result.status==='queued'?(caps?.concurrentPreparation?'다른 초기 장면 검출이 끝나면 시작합니다':'초기 장면 검출 대기'):result.stage;status($('upload-label').textContent);await new Promise(resolve=>setTimeout(resolve,800));result=await api(`/api/tracking/jobs/${job.id}`);}
    if(result.status!=='completed')throw Error(aborted?'초기 장면 검출을 취소했습니다.':result.error||'초기 장면 검출이 중단되었습니다.');
    const data=await api(result.result.detections);
    const endWasFull=!Number.isFinite(sourceDuration)||$('tracking-to').value===sourceDuration.toFixed(3);

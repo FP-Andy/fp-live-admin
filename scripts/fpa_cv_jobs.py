@@ -1,4 +1,4 @@
-"""Persistent local/S3 uploads and single-GPU tracking queue."""
+"""Persistent tracking queue with an independent single-frame preparation lane."""
 from __future__ import annotations
 
 from collections import deque
@@ -84,8 +84,9 @@ class TrackingJobs:
         self.condition = threading.Condition(self.lock)
         self.jobs = {}
         self.queue = deque()
-        self.process = None
-        self.active_id = None
+        self.preparation_queue = deque()
+        self.processes = {}
+        self.active_ids = set()
         self.closing = False
         try:
             self.legacy_deletions=json.loads((self.root/'list-state.json').read_text())
@@ -103,11 +104,16 @@ class TrackingJobs:
                 self.jobs[job['id']] = job
             except (ValueError, KeyError, OSError):
                 continue
-        self.queue.extend(j['id'] for j in sorted(self.jobs.values(),key=lambda x:x.get('createdAt',0)) if j['status']=='queued' and not j.get('deletedAt'))
+        for job in sorted(self.jobs.values(), key=lambda j: j.get('createdAt', 0)):
+            if job['status']=='queued' and not job.get('deletedAt'):
+                self._queue_for(job).append(job['id'])
         self.worker = None
+        self.preparation_worker = None
         if start_worker:
             self.worker = threading.Thread(target=self._work, daemon=True, name='fpa-tracking')
+            self.preparation_worker = threading.Thread(target=self._work, args=('preparation',), daemon=True, name='fpa-preparation')
             self.worker.start()
+            self.preparation_worker.start()
         if probe:
             threading.Thread(target=self._probe, daemon=True, name='fpa-gpu-probe').start()
 
@@ -136,7 +142,10 @@ class TrackingJobs:
 
     def capabilities(self):
         with self.lock:
-            return deepcopy(self.capability)
+            return {**deepcopy(self.capability), 'concurrentPreparation': True}
+
+    def _queue_for(self, job):
+        return self.preparation_queue if job.get('kind') == 'preparation' else self.queue
 
     def receive_upload(self, stream, size, name):
         if not isinstance(size, int) or not 0 < size <= MAX_UPLOAD:
@@ -206,6 +215,7 @@ class TrackingJobs:
                 for key in job.get('s3Assets',{}).values():self.storage.delete(key)
                 shutil.rmtree(self.root/'jobs'/job['id']);del self.jobs[job['id']]
             self.queue = deque(key for key in self.queue if key in self.jobs)
+            self.preparation_queue = deque(key for key in self.preparation_queue if key in self.jobs)
             shutil.rmtree(self.root/'uploads'/uid,ignore_errors=True)
         return {'removed':True}
 
@@ -215,7 +225,7 @@ class TrackingJobs:
             if job['status'] in ACTIVE:return self.public(job)
             if job['status']!='ready' or job.get('deletedAt'):raise JobError('초기 설정 완료 상태에서 분석을 시작하세요.',409)
             job.update(status='queued',stage='대기 중');self._save(job)
-            self.queue.append(job_id);self.condition.notify()
+            self.queue.append(job_id);self.condition.notify_all()
             return self.public(job)
 
     def start_batch(self, ids):
@@ -284,8 +294,8 @@ class TrackingJobs:
                    'deviceLabel': caps['gpuLabel'] if settings['device'] == 'gpu' else 'CPU', 'model': 'YOLO26s'}
             self.jobs[job_id] = job
             self._save(job)
-            if not ready:self.queue.append(job_id)
-            self.condition.notify()
+            if not ready:self._queue_for(job).append(job_id)
+            self.condition.notify_all()
             return self.public(job)
 
     def _save(self, job):
@@ -346,11 +356,11 @@ class TrackingJobs:
         """Permanently remove a trashed, stopped run, preserving shared inputs."""
         with self.condition:
             job = self.get(job_id)
-            if not job.get('deletedAt') or job['status'] in ACTIVE or self.active_id == job_id:
+            if not job.get('deletedAt') or job['status'] in ACTIVE or job_id in self.active_ids:
                 raise JobError('삭제한 분석에서 중지가 완료된 작업만 영구 삭제할 수 있습니다.', 409)
             upload_id = job['uploadId']
             peers = [j for j in self.jobs.values() if j['id'] != job_id and j['uploadId'] == upload_id]
-            keep_source = any(j.get('kind') != 'preparation' or j['status'] in ACTIVE or self.active_id == j['id'] for j in peers)
+            keep_source = any(j.get('kind') != 'preparation' or j['status'] in ACTIVE or j['id'] in self.active_ids for j in peers)
             if self.storage:
                 for key in job.get('s3Assets',{}).values():self.storage.delete(key)
                 if not keep_source:
@@ -368,6 +378,7 @@ class TrackingJobs:
             shutil.rmtree(self.root/'jobs'/job_id)
             del self.jobs[job_id]
             self.queue = deque(key for key in self.queue if key in self.jobs)
+            self.preparation_queue = deque(key for key in self.preparation_queue if key in self.jobs)
             return {'id': job_id, 'purged': True, 'datasetId': job.get('datasetId'), 'sourceDeleted': not keep_source}
 
     def get(self, job_id):
@@ -382,14 +393,15 @@ class TrackingJobs:
             job = self.jobs[job_id]
             if job['status'] not in ACTIVE:
                 return self.public(job)
-            running = self.active_id == job_id
+            running = job_id in self.active_ids
             job.update(status='cancelling' if running else 'cancelled', stage='중지 중' if running else '취소됨')
             if not running:
                 job['finishedAt'] = time.time()
             self._save(job)
-            if running and self.process and self.process.poll() is None:
-                self.process.terminate()
-                threading.Thread(target=self._kill_later, args=(self.process,), daemon=True).start()
+            process = self.processes.get(job_id)
+            if running and process and process.poll() is None:
+                process.terminate()
+                threading.Thread(target=self._kill_later, args=(process,), daemon=True).start()
             return self.public(job)
 
     @staticmethod
@@ -419,23 +431,23 @@ class TrackingJobs:
             raise JobError('파일을 찾지 못했습니다.', 404)
         return self.root/'jobs'/job_id/'output'/name, 'application/json' if name.endswith('.json') else 'image/png' if name.endswith('.png') else 'video/mp4'
 
-    def _work(self):
+    def _work(self, kind='tracking'):
         while True:
             with self.condition:
-                self.condition.wait_for(lambda: self.closing or bool(self.queue))
+                self.condition.wait_for(lambda: self.closing or bool(self._queue_for({'kind': kind})))
                 if self.closing:
                     return
-                job_id = self.queue.popleft()
+                job_id = self._queue_for({'kind': kind}).popleft()
                 job = self.jobs[job_id]
                 if job['status'] != 'queued':
                     continue
-                self.active_id = job_id
+                self.active_ids.add(job_id)
                 job.update(status='starting', stage='영상·모델 준비', startedAt=time.time())
                 self._save(job)
             try:
                 self._execute(job)
             except Exception as error:
-                process = self.process
+                process = self.processes.get(job_id)
                 if process and process.poll() is None:
                     process.terminate()
                     self._kill_later(process)
@@ -446,11 +458,13 @@ class TrackingJobs:
             finally:
                 try:
                     info,source=self._upload(job['uploadId'])
-                    if info.get('storage')=='s3':source.unlink(missing_ok=True)
+                    # Preparation reads S3 ranges and never owns the tracking
+                    # source cache, even when both jobs use the same upload.
+                    if info.get('storage')=='s3' and job.get('kind')!='preparation':source.unlink(missing_ok=True)
                 except (OSError,JobError):pass
                 with self.lock:
-                    self.active_id = None
-                    self.process = None
+                    self.active_ids.discard(job_id)
+                    self.processes.pop(job_id, None)
 
     def _execute(self, job):
         info, source = self._upload(job['uploadId'])
@@ -460,7 +474,8 @@ class TrackingJobs:
         if info.get('storage')=='s3' and not remote_frame and not source.is_file():
             if not self.storage:raise RuntimeError('S3 worker storage is not configured')
             if shutil.disk_usage(self.root).free < info['size']*1.3+512*1024**2:raise JobError('현재 경기를 처리할 임시 저장 공간이 부족합니다.',507)
-            job.update(stage='S3 영상 준비 중');self._save(job)
+            with self.lock:
+                job.update(stage='S3 영상 준비 중');self._save(job)
             self.storage.download(info['key'],source)
         common=[self.python,'-u']
         if job.get('kind')=='preparation':
@@ -481,8 +496,11 @@ class TrackingJobs:
                 job.update(status='interrupted' if self.closing else 'cancelled', stage='중단됨', finishedAt=time.time())
                 self._save(job)
                 return
-            self.process = subprocess.Popen(command, cwd=ROOT, env=self.env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-            process = self.process
+            env = self.env()
+            if job.get('kind') == 'preparation':
+                env.update(OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
+            process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            self.processes[job['id']] = process
         tail = deque(maxlen=12)
         with process.stdout, (folder/'process.log').open('w') as logfile:
             for line in process.stdout:
@@ -540,10 +558,12 @@ class TrackingJobs:
         with self.condition:
             self.closing = True
             self.condition.notify_all()
-            process = self.process
-            if process and process.poll() is None:
-                process.terminate()
-        if process:
+            processes = list(self.processes.values())
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+        for process in processes:
             self._kill_later(process)
-        if self.worker:
-            self.worker.join(timeout=10)
+        for worker in (self.worker, self.preparation_worker):
+            if worker:
+                worker.join(timeout=10)
