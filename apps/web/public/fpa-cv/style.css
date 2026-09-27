@@ -172,6 +172,7 @@ html.console-embed{overflow:hidden}
 #heatmap-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 #heatmap-cards article{min-width:0;border:1px solid #34302c;border-radius:10px;overflow:hidden;background:#131518;padding-bottom:10px}
 #heatmap-cards canvas{display:block;width:100%;height:auto}#heatmap-cards button{margin:0 12px;font-size:11px}
+.heatmap-player{font-size:14px;margin:12px;color:#fff}
 .heatmap-quality{font-size:12px;margin:0 12px 10px;color:#dbe5ef}
 #heatmap-workspace a{color:var(--fp-brand-text)}
 @media(max-width:650px){#review-workspace .inspector-main{grid-template-columns:1fr}#heatmap-cards{grid-template-columns:1fr}}
