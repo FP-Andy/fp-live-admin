@@ -9,6 +9,16 @@ import json
 from pathlib import Path
 
 
+def rgb_histogram(pixels):
+    """Exact counts and RGB means without scanning every pixel for every bin."""
+    import numpy as np
+    pixels = np.asarray(pixels, dtype=np.int32)
+    keys = (pixels[:, 0]//32)*64 + (pixels[:, 1]//32)*8 + pixels[:, 2]//32
+    counts = np.bincount(keys, minlength=512)
+    sums = np.column_stack([np.bincount(keys, weights=pixels[:, channel], minlength=512) for channel in range(3)])
+    return counts, sums / np.maximum(counts[:, None], 1)
+
+
 def appearance(frame, box):
     import numpy as np
     h, w = frame.shape[:2]
@@ -21,10 +31,10 @@ def appearance(frame, box):
     if right <= left or bottom <= top:
         return []
     pixels = frame[top:bottom, left:right, ::-1].reshape(-1, 3).astype(np.int32)
-    keys = (pixels[:, 0]//32)*64 + (pixels[:, 1]//32)*8 + pixels[:, 2]//32
-    bins, counts = np.unique(keys, return_counts=True)
-    means=np.array([pixels[keys==key].mean(axis=0) for key in bins])
-    weights=counts.astype(float)/len(pixels)
+    counts, means = rgb_histogram(pixels)
+    bins = np.flatnonzero(counts)
+    means = means[bins]
+    weights=counts[bins].astype(float)/len(pixels)
     # Estimate local pitch/background in a ring outside the entire person box.
     # Subtract shared colour mass before ranking: bright green keeper shirts
     # must not win merely because every crop also contains a green pitch.
@@ -35,16 +45,15 @@ def appearance(frame, box):
     mask[max(0,int(y1*h)-ey1):min(ey2-ey1,int(y2*h)-ey1),max(0,int(x1*w)-ex1):min(ex2-ex1,int(x2*w)-ex1)]=False
     background=ring[mask].astype(np.int32)
     if len(background):
-        bgkeys=(background[:,0]//32)*64+(background[:,1]//32)*8+background[:,2]//32
-        histogram=np.bincount(bgkeys,minlength=512)/len(background)
+        bgcounts, bgmeans = rgb_histogram(background)
+        histogram=bgcounts/len(background)
         weights=np.maximum(0,weights-histogram[bins])
         # RGB-bin boundaries must not turn slightly different shades of nearby
         # grass into a keeper shirt. Suppress residual bins near dominant ring
         # colours; bright keeper cloth remains far from the darker grass.
         dominant=np.flatnonzero(histogram>=.015)
         if len(dominant):
-            bgmeans=np.array([background[bgkeys==key].mean(axis=0) for key in dominant])
-            nearby=np.min(np.linalg.norm(means[:,None,:]-bgmeans[None,:,:],axis=2),axis=1)<32
+            nearby=np.min(np.linalg.norm(means[:,None,:]-bgmeans[None,dominant,:],axis=2),axis=1)<32
             weights[nearby]*=.08
         if weights.sum()<.04:
             return []
