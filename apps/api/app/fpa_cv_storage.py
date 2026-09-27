@@ -11,24 +11,35 @@ class FpaStorage:
         self.bucket = os.getenv('FPA_CV_S3_BUCKET', '').strip()
         self.region = os.getenv('FPA_CV_S3_REGION', 'us-east-1')
         self._s3 = client
+        self._accelerated = None
 
     @property
     def client(self):
         if self._s3 is None:
-            import boto3
-            import botocore.session
-            from botocore.config import Config
-            session = botocore.session.get_session()
-            if os.getenv('FPA_CV_INSTANCE_ROLE') == '1':
-                # Existing FinePlay credentials belong to a different account.
-                # FPA uses the EC2 role, without changing other services' keys.
-                credentials = session.get_component('credential_provider').get_provider('iam-role').load()
-                if credentials is None:
-                    raise RuntimeError('FPA EC2 role credentials are unavailable')
-                session._credentials = credentials
-            self._s3 = boto3.Session(botocore_session=session).client('s3', region_name=self.region,
-                config=Config(signature_version='s3v4', connect_timeout=10, read_timeout=60, retries={'max_attempts':3,'mode':'standard'}))
+            self._s3 = self._make_client()
         return self._s3
+
+    def _make_client(self, accelerate=False):
+        import boto3
+        import botocore.session
+        from botocore.config import Config
+        session = botocore.session.get_session()
+        if os.getenv('FPA_CV_INSTANCE_ROLE') == '1':
+            # Keep unrelated services' AWS credentials unchanged.
+            credentials = session.get_component('credential_provider').get_provider('iam-role').load()
+            if credentials is None:raise RuntimeError('FPA EC2 role credentials are unavailable')
+            session._credentials = credentials
+        return boto3.Session(botocore_session=session).client('s3', region_name=self.region,
+            config=Config(signature_version='s3v4',connect_timeout=10,read_timeout=60,
+                          s3={'use_accelerate_endpoint':accelerate},retries={'max_attempts':3,'mode':'standard'}))
+
+    @property
+    def upload_client(self):
+        # Only browser PUTs cross continents. GPU transfers and GETs keep the
+        # regional endpoint, avoiding acceleration fees for internal traffic.
+        if os.getenv('FPA_CV_S3_ACCELERATE')!='1':return self.client
+        if self._accelerated is None:self._accelerated=self._make_client(accelerate=True)
+        return self._accelerated
 
     def key(self, value):
         if not self.bucket or not KEY.fullmatch(value):
@@ -67,7 +78,7 @@ class FpaStorage:
         return self.client.create_multipart_upload(Bucket=self.bucket,Key=self.key(key),ContentType=content_type)['UploadId']
 
     def part_url(self, key, upload_id, number):
-        return self.client.generate_presigned_url('upload_part',Params={'Bucket':self.bucket,'Key':self.key(key),'UploadId':upload_id,'PartNumber':number},ExpiresIn=3600)
+        return self.upload_client.generate_presigned_url('upload_part',Params={'Bucket':self.bucket,'Key':self.key(key),'UploadId':upload_id,'PartNumber':number},ExpiresIn=3600)
 
     def finish(self, key, upload_id, parts):
         self.client.complete_multipart_upload(Bucket=self.bucket,Key=self.key(key),UploadId=upload_id,MultipartUpload={'Parts':parts})

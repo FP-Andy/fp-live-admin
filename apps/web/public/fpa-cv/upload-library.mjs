@@ -1,15 +1,19 @@
 // Browser files are held only until transfer finishes. Completed sources live
 // in the authenticated server library and survive closing this page.
+import {uploadParts,transferMeter} from './upload-parts.mjs';
 export function uploadLibrary({api,post,select,status}){
  const $=id=>document.getElementById(id),pending=[],transfers=new Map();let enabled=false,running=false,uploads=[],signature='',jobs=[];
  const size=n=>`${(n/1024**3).toFixed(2)} GB`;
+ const time=n=>n<60?`${Math.ceil(n)}초`:`${Math.ceil(n/60)}분`;
+ const transferLabel=t=>t.error||`${t.state} · ${Math.floor(t.progress*100)}%${t.rate?` · ${(t.rate/1e6).toFixed(1)} MB/s · 약 ${time(t.remaining)} 남음`:''}`;
  function render(){
   const holder=$('uploaded-videos');holder.replaceChildren();$('uploaded-count').textContent=uploads.length;
   for(const t of transfers.values()){
    const row=document.createElement('article');row.className='upload-row';
    const name=document.createElement('strong');name.textContent=t.file.name;
-   const label=document.createElement('span');label.textContent=t.error||`${t.state} · ${Math.floor(t.progress*100)}%`;
+   const label=document.createElement('span');label.textContent=transferLabel(t);
    const progress=document.createElement('progress');progress.max=1;progress.value=t.progress;
+   t.progressLabel=label;t.progressNode=progress;
    row.append(name,label,progress);
    if(t.error){const retry=document.createElement('button');retry.type='button';retry.textContent='전송 재시도';retry.onclick=()=>{t.error=null;t.state='대기';pending.push(t);void pump();};row.append(retry);}
    holder.append(row);
@@ -35,19 +39,13 @@ export function uploadLibrary({api,post,select,status}){
  });}
  async function transfer(t){
   if(!t.id){const upload=await post('/api/tracking/uploads/multipart',{name:t.file.name,size:t.file.size});t.id=upload.id;t.partSize=upload.partSize;t.parts=new Map();}
-  const count=Math.ceil(t.file.size/t.partSize);let next=1;const loaded=new Map();
-  const update=()=>{t.progress=([...t.parts.keys()].reduce((n,i)=>n+Math.min(t.partSize,t.file.size-(i-1)*t.partSize),0)+[...loaded.values()].reduce((a,b)=>a+b,0))/t.file.size;render();};
-  let failed=null;
-  const send=async()=>{while(next<=count&&!failed){const number=next++;if(t.parts.has(number))continue;const blob=t.file.slice((number-1)*t.partSize,number*t.partSize);try{
-   let etag;
-   for(let attempt=0;attempt<3;attempt++){
-    try{const {parts}=await post(`/api/tracking/uploads/${t.id}/parts`,{parts:[number]});etag=await put(parts[0].url,blob,n=>{loaded.set(number,n);update();});break;}
-    catch(error){loaded.delete(number);if(attempt===2)throw error;await new Promise(r=>setTimeout(r,1000*(attempt+1)));}
-   }
-   loaded.delete(number);t.parts.set(number,etag);update();
-  }catch(error){failed=error;}}};
-  await Promise.all([send(),send()]);if(failed)throw failed;
-  await post(`/api/tracking/uploads/${t.id}/complete`,{parts:[...t.parts].sort((a,b)=>a[0]-b[0]).map(([PartNumber,ETag])=>({PartNumber,ETag}))});
+  const meter=transferMeter(t.file.size);let renderedAt=0;
+  const parts=await uploadParts({file:t.file,partSize:t.partSize,parts:t.parts,put,
+   sign:async numbers=>(await post(`/api/tracking/uploads/${t.id}/parts`,{parts:numbers})).parts,
+   progress:bytes=>{Object.assign(t,meter(bytes),{progress:bytes/t.file.size});const now=Date.now();if(now-renderedAt>=250||bytes===t.file.size){renderedAt=now;if(t.progressLabel)t.progressLabel.textContent=transferLabel(t);if(t.progressNode)t.progressNode.value=t.progress;}}
+  });
+  t.state='S3 저장 확인 중';t.rate=0;render();
+  await post(`/api/tracking/uploads/${t.id}/complete`,{parts});
  }
  async function pump(){if(running)return;running=true;try{while(pending.length){const t=pending.shift();t.state='업로드 중';render();try{await transfer(t);transfers.delete(t.key);signature='';await refresh();}catch(error){t.error=error.message;render();}}}finally{running=false;}}
  async function refresh(nextJobs){if(nextJobs)jobs=nextJobs;if(!enabled)return;const value=await api('/api/tracking/uploads');const nextSignature=JSON.stringify([value.uploads,jobs.map(j=>[j.id,j.status,j.deletedAt])]);if(nextSignature!==signature){uploads=value.uploads;signature=nextSignature;render();}}
