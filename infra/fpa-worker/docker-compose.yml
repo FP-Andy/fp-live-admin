@@ -11,6 +11,8 @@ services:
     shm_size: 256m
     stop_grace_period: 30s
     gpus: all
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
     ports:
       - "${FPA_CV_PRIVATE_IP:?GPU private IP required}:4333:4333"
     volumes:
