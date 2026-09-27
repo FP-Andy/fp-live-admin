@@ -35,6 +35,7 @@ def arguments():
     parser.add_argument("--uniforms", type=Path, help="Review JSON exported after eyedropper setup, or five-group RGB palette JSON; enables ByteTrack team constraints")
     parser.add_argument("--preview-width", type=int, default=1920)
     parser.add_argument("--preview-encoder", choices=('auto', 'cpu', 'gpu'), default='auto', help="GPU preview encoding when available; does not alter frames used for detection")
+    parser.add_argument("--video-decode", choices=("cpu", "auto", "gpu"), default="auto", help="Use NVDEC with GPU preview on CUDA when calibration pixels match; otherwise use CPU")
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument("--threaded-colors", action="store_true", help="Use the in-process color stage instead of a separate CPU process")
     parser.add_argument("--serial", action="store_true", help="Disable CUDA pipeline overlap for diagnosis and output parity checks")
@@ -159,18 +160,46 @@ def main():
     print(f'Device: {device} | model: {args.model} | team constraints: {bool(uniforms)}', flush=True)
     progress('모델 불러오는 중', 1, **frame_progress(0, total_frames, 0))
     model = YOLO(args.model)
-    preview = None
+    preview = gpu_video = gpu_first = None
     pw = min(width, args.preview_width) // 2 * 2
     ph = round(height * pw / width / 2) * 2
-    if not args.no_preview:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, first)
+    if args.video_decode != 'cpu' and device not in ('cpu', 'mps') and (args.no_preview or args.preview_encoder != 'cpu'):
+        from fpa_cv_gpu_video import GpuVideo
+        try:
+            gpu_video = GpuVideo(args.video, None if args.no_preview else args.output/'preview.mp4',
+                                 width=width, height=height, fps=fps, first=first, last=last,
+                                 stride=stride, anchor=args.anchor_frame, preview_size=(pw, ph),
+                                 device=device.removeprefix('cuda:'))
+            ok, gpu_first = gpu_video.read()
+            cpu_ok, reference = cap.read()
+            if not ok or not cpu_ok or not np.array_equal(reference, gpu_first):
+                raise RuntimeError('GPU decoded calibration pixels differ from the original decoder')
+            del reference
+            cap.release()
+            preview = gpu_video if not args.no_preview else None
+            print('GPU decoder: NVDEC; calibration pixels match exactly', flush=True)
+        except BaseException as error:
+            if gpu_video:
+                gpu_video.abort()
+            gpu_video = gpu_first = None
+            if args.video_decode == 'gpu' or not isinstance(error, Exception):
+                cap.release()
+                raise
+            print(f'GPU decoder unavailable; using CPU: {error}', flush=True)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, first)
+    elif args.video_decode == 'gpu':
+        cap.release()
+        raise SystemExit('GPU video decoding requires CUDA and a GPU-compatible preview encoder')
+    if not args.no_preview and preview is None:
         from fpa_cv_preview import PreviewWriter
         preview = PreviewWriter(args.output / 'preview.mp4', fps, (pw, ph),
                                 encoder=args.preview_encoder,
                                 device=device.removeprefix('cuda:') if device not in ('cpu', 'mps') else None)
+    if preview:
         print(f'Preview encoder: {preview.encoder}', flush=True)
         if preview.fallback_reason:
             print(f'GPU preview unavailable; using CPU: {preview.fallback_reason}', flush=True)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     appearance_worker = None
     if tracker is not None and use_pipeline and not args.threaded_colors:
         from fpa_cv_appearance_worker import AppearanceWorker
@@ -180,7 +209,9 @@ def main():
             print(f'Appearance worker unavailable; using in-process colors: {error}', flush=True)
         except BaseException:
             cap.release()
-            if preview:
+            if gpu_video:
+                gpu_video.abort()
+            elif preview:
                 preview.abort()
             raise
     frames, summaries = [], {}
@@ -193,6 +224,14 @@ def main():
     def source_frames():
         # One owner for capture and preview; keep every source frame in the
         # preview, but prefetch only sampled/anchor frames for inference.
+        if gpu_video:
+            for index, frame_index in enumerate(gpu_video.indices):
+                ok, frame = (True, gpu_first) if index == 0 else gpu_video.read()
+                if not ok:
+                    raise RuntimeError(f'GPU decode failed at frame {frame_index}')
+                yield {'index': frame_index, 'frame': frame}
+            gpu_video.release()
+            return
         for frame_index in range(first, last):
             ok, frame = cap.read()
             if not ok:
@@ -286,7 +325,9 @@ def main():
                 if processed == 1 or processed % 50 == 0:
                     print(f"{(frame_index-first+1)/(last-first)*100:5.1f}% | source {t:.2f}s | {len(boxes)} people | {len(summaries)} tracks | {time.monotonic()-started:.1f}s elapsed", flush=True)
     except BaseException:
-        if preview:
+        if gpu_video:
+            gpu_video.abort()
+        elif preview:
             preview.abort()
         raise
     finally:
