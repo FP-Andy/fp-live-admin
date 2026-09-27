@@ -61,7 +61,7 @@ def handler_for(run: Path | None, jobs=None, worker_token=None):
     for name, mime in [('recovery-protocol.mjs','text/javascript'),('recovery-cache.mjs','text/javascript'),('recovery-worker.mjs','text/javascript'),('recovery-client.mjs','text/javascript'),('preflight.mjs','text/javascript'),('tracking.mjs','text/javascript'),('shell.mjs','text/javascript'),('tracking.css','text/css'),('guide.html','text/html'),('guide.css','text/css'),('brand.css','text/css'),('fpc-ui.mjs','text/javascript'),('fpc-editor.html','text/html'),
                        ('fpc-editor.bundle.js','text/javascript'),('fpc-editor.bundle.css','text/css')]:
         routes['/'+name]=(WEB/name,mime+'; charset=utf-8')
-    for name in ['heatmaps.mjs','heatmap-ui.mjs','checkpoint-recovery.mjs','checkpoint-plan.mjs','checkpoint-ui.mjs','review-batch.mjs','lineup.mjs','console-embed.mjs','server-review.mjs']:
+    for name in ['upload-library.mjs','heatmaps.mjs','heatmap-ui.mjs','checkpoint-recovery.mjs','checkpoint-plan.mjs','checkpoint-ui.mjs','review-batch.mjs','lineup.mjs','console-embed.mjs','server-review.mjs']:
         routes['/'+name]=(WEB/name,'text/javascript; charset=utf-8')
     for asset in (WEB.parent/'fonts/paperlogy').glob('*.woff2'):
         routes['/fonts/paperlogy/'+asset.name]=(asset,'font/woff2')
@@ -103,13 +103,20 @@ def handler_for(run: Path | None, jobs=None, worker_token=None):
                     self.send_json(jobs.receive_upload(self.rfile,size,name),201);return
                 if not 0<=size<=65536:raise JobError('분석 설정 요청이 너무 큽니다.',413)
                 value=json.loads(self.rfile.read(size) or b'{}')
+                if route=='/api/tracking/batch/start':
+                    self.send_json(jobs.start_batch(value.get('ids')),202);return
+                if route=='/api/tracking/uploads/register':
+                    self.send_json(jobs.register_upload(value),201);return
+                upload_match=re.fullmatch(r'/api/tracking/uploads/([0-9a-f]{32})/remove',route)
+                if upload_match:
+                    self.send_json(jobs.remove_upload(upload_match[1]));return
                 if route in {'/api/tracking/jobs','/api/tracking/preparations'}:
                     if not isinstance(value,dict):raise JobError('분석 설정을 확인하세요.')
                     create=jobs.create_preparation if route.endswith('/preparations') else jobs.create
                     self.send_json(create(value.get('uploadId'),value),202);return
                 if route in {'/api/tracking/jobs/existing/delete','/api/tracking/jobs/existing/restore'} and legacy:
                     self.send_json(jobs.legacy_state(legacy,route.endswith('/delete')));return
-                match=re.fullmatch(r'/api/tracking/jobs/([0-9a-f]{32})/(cancel|retry|delete|restore|purge)',route)
+                match=re.fullmatch(r'/api/tracking/jobs/([0-9a-f]{32})/(cancel|retry|delete|restore|purge|start)',route)
                 if not match:raise JobError('요청을 찾지 못했습니다.',404)
                 self.send_json(getattr(jobs,match[2])(match[1]),202 if match[2] in {'cancel','retry'} else 200)
             except JobError as error:self.send_json({'detail':str(error)},error.status)

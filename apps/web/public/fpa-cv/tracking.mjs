@@ -1,7 +1,8 @@
+import {uploadLibrary} from './upload-library.mjs';
 import {preflight} from './preflight.mjs';
 const $=id=>document.getElementById(id);
 const active=new Set(['queued','starting','running','cancelling']);
-const states={queued:'대기',starting:'준비 중',running:'분석 중',cancelling:'중지 중',cancelled:'취소됨',interrupted:'중단됨',failed:'실패',completed:'완료'};
+const states={ready:'초기 설정 완료',queued:'대기',starting:'준비 중',running:'분석 중',cancelling:'중지 중',cancelled:'취소됨',interrupted:'중단됨',failed:'실패',completed:'완료'};
 const sizeText=n=>n>1024**3?`${(n/1024**3).toFixed(1)} GB`:`${(n/1024**2).toFixed(1)} MB`;
 const durationText=n=>{if(!Number.isFinite(n))return '계산 중';const seconds=Math.max(0,Math.ceil(n));return seconds<60?`${seconds}초`:`${Math.floor(seconds/60)}분 ${seconds%60}초`;};
 const el=(tag,text,className)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;};
@@ -35,9 +36,13 @@ export function trackingUI({openJob}){
   if(needOriginalFrame&&deviceReady&&!busy){needOriginalFrame=false;queueMicrotask(()=>$('detect-initial-frame').click());}
   $('gpu-status').textContent=caps?.checking?'GPU 확인 중':caps?.ready?caps.gpuLabel||'GPU 없음 · CPU 선택 가능':'분석 환경 확인 필요';
   $('execution-mode').textContent=caps?.execution==='aws'?'AWS GPU 분석':'로컬 작업';
-  const note=document.querySelector('.tracking-small-note');if(note)note.textContent=caps?.execution==='aws'?'영상은 AWS 분석 서버로 전송됩니다. 브라우저를 닫아도 분석은 계속됩니다.':'영상은 이 컴퓨터에서 분석합니다. 다른 탭에서 작업하는 동안에도 분석은 계속됩니다.';
+  const note=document.querySelector('#tracking-form .tracking-small-note');if(note)note.textContent=caps?.uploadStorage==='s3'?'경기별 설정을 모두 저장한 뒤 일괄 분석을 시작하세요. 초기 장면 검출과 본 분석은 GPU 한 대를 순서대로 사용합니다.':caps?.execution==='aws'?'영상 전송 후 브라우저를 닫아도 분석은 계속됩니다.':'영상은 이 컴퓨터에서 분석합니다. 다른 탭에서 작업하는 동안에도 분석은 계속됩니다.';
+  library.enable(caps?.uploadStorage==='s3');
+  $('start-tracking').textContent=caps?.uploadStorage==='s3'?'초기 설정 저장 · 분석 준비':'초기 설정 확정 · 트래킹 시작';
   $('tracking-device').options[0].textContent=caps?.gpuLabel?`${caps.gpuLabel} · 자동 선택`:'GPU · 자동 선택';
  };
+ const library=uploadLibrary({api,post,select:chooseUploaded,status});
+ $('library-files').onchange=event=>{library.add([...event.target.files]);event.target.value='';};
  const calibration=preflight({video,status,change:updateReady,isBusy:()=>busy});
  calibration.reset();
  function choose(next){
@@ -50,9 +55,16 @@ export function trackingUI({openJob}){
   $('tracking-preview-wrap').hidden=false;$('tracking-empty').hidden=true;
   video.src=url;video.load();$('tracking-upload-progress').hidden=true;status('');
  }
- $('tracking-video-file').addEventListener('change',event=>choose(event.target.files[0]));
+ async function chooseUploaded(next){
+  if(busy){status('현재 초기 장면 검출이 끝난 뒤 다른 영상을 선택하세요.',true);return;}
+  if(file&&uploaded?.id!==next.id&&Number.isFinite(calibration.time())&&!confirm('저장하지 않은 초기 설정을 닫고 다른 영상을 여시겠어요?'))return;
+  if(url)URL.revokeObjectURL(url);url=null;file=next;uploaded=next;sourceDuration=NaN;playable=true;needOriginalFrame=false;
+  $('initial-frame-time').value='0';calibration.reset();$('tracking-file-name').textContent=next.name;$('tracking-file-size').textContent=sizeText(next.size);
+  $('tracking-preview-wrap').hidden=false;$('tracking-empty').hidden=true;video.src=`/api/tracking/uploads/${next.id}/source`;video.load();status('코트와 초기 13명을 지정한 뒤 초기 설정을 저장하세요.');
+ }
+ $('tracking-video-file').addEventListener('change',event=>{if(caps?.uploadStorage==='s3'){library.add([...event.target.files]);event.target.value='';}else choose(event.target.files[0]);});
  for(const name of ['dragenter','dragover'])$('tracking-drop').addEventListener(name,event=>{event.preventDefault();$('tracking-drop').classList.add('dragging');});
- for(const name of ['dragleave','drop'])$('tracking-drop').addEventListener(name,event=>{event.preventDefault();$('tracking-drop').classList.remove('dragging');if(name==='drop')choose(event.dataTransfer.files[0]);});
+ for(const name of ['dragleave','drop'])$('tracking-drop').addEventListener(name,event=>{event.preventDefault();$('tracking-drop').classList.remove('dragging');if(name==='drop'){if(caps?.uploadStorage==='s3')library.add([...event.dataTransfer.files]);else choose(event.dataTransfer.files[0]);}});
  video.addEventListener('loadedmetadata',()=>{
   if(!file)return;setDuration(video.duration);playable=true;
   $('tracking-preview-stage').style.aspectRatio=`${video.videoWidth}/${video.videoHeight}`;
@@ -107,11 +119,11 @@ export function trackingUI({openJob}){
   const start=calibration.time(),requestedEnd=$('tracking-entire').checked?sourceDuration:Number($('tracking-to').value);
   if(!Number.isFinite(sourceDuration)||!Number.isFinite(start)||!Number.isFinite(requestedEnd)||(!$('tracking-entire').checked&&!$('tracking-to').value)||requestedEnd<=start||requestedEnd>sourceDuration+.001){status('종료 시각은 초기 설정 장면 이후, 영상 끝 이내로 지정하세요.',true);return;}
   const end=Math.min(requestedEnd,sourceDuration);
-  const options={start,duration:$('tracking-entire').checked?0:end-start,roi:calibration.roi(),device:$('tracking-device').value,setup:calibration.setup()};
+  const options={defer:caps?.uploadStorage==='s3',start,duration:$('tracking-entire').checked?0:end-start,roi:calibration.roi(),device:$('tracking-device').value,setup:calibration.setup()};
   setBusy(true);$('cancel-upload').hidden=true;$('upload-label').textContent='초기 설정을 저장하고 분석 시작';status('');
   try{
    await post('/api/tracking/jobs',{uploadId:uploaded.id,...options});
-   status('초기 설정을 적용해 분석을 시작했습니다. 다른 탭에서 작업해도 계속 진행됩니다.');
+   status(options.defer?'초기 설정을 저장했습니다. 다음 경기를 설정하거나 준비된 경기의 분석을 시작하세요.':'초기 설정을 적용해 분석을 시작했습니다.');
    file=null;uploaded=null;video.removeAttribute('src');video.load();if(url)URL.revokeObjectURL(url);url=null;calibration.reset();
    $('tracking-video-file').value='';$('tracking-preview-wrap').hidden=true;$('tracking-empty').hidden=false;$('tracking-file-name').textContent='영상을 선택하거나 여기에 놓으세요';$('tracking-file-size').textContent='MP4 · MOV · M4V · AVI · MKV · WebM';
    await refreshJobs();
@@ -172,6 +184,7 @@ export function trackingUI({openJob}){
    if(job.error){const detail=el('details',undefined,'tracking-error-detail');detail.append(el('summary','중단 원인'),el('pre',job.error));card.append(detail);}
    const actions=el('div',undefined,'tracking-job-actions');
    if(trashed){const button=el('button',active.has(job.status)?'중지 후 복원 가능':'목록으로 복원','subtle');button.disabled=active.has(job.status);button.onclick=()=>action(job.id,'restore',button);actions.append(button);}
+   else if(job.status==='ready'){const button=el('button','1차 분석 시작','primary');button.onclick=()=>action(job.id,'start',button);actions.append(button);}
    else if(job.status==='completed'){const button=el('button','작업 시작 →','primary');button.disabled=!!opening;button.onclick=()=>open(job,button);actions.append(button);}
    else if(active.has(job.status)){const button=el('button',job.status==='cancelling'?'중지 중':'분석 취소','subtle');button.disabled=job.status==='cancelling';button.onclick=()=>action(job.id,'cancel',button);actions.append(button);}
    else{const button=el('button','다시 분석','subtle');button.onclick=()=>action(job.id,'retry',button);actions.append(button);}
@@ -186,7 +199,9 @@ export function trackingUI({openJob}){
    }
   }
  }
- async function refreshJobs(){const {jobs,deleted=[]}=await api('/api/tracking/jobs');const signature=JSON.stringify([jobs,deleted]);if(signature!==jobSignature){jobSignature=signature;renderJobs(jobs,deleted);}return [...jobs,...deleted];}
+ let readyJobs=[];
+ $('start-ready-jobs').onclick=async()=>{const button=$('start-ready-jobs');button.disabled=true;try{await post('/api/tracking/batch/start',{ids:readyJobs});jobSignature='';await refreshJobs();status('분석 예약이 완료됐습니다. 업로드도 모두 끝났다면 창을 닫아도 됩니다.');}catch(error){status(error.message,true);}finally{button.disabled=false;}};
+ async function refreshJobs(){const {jobs,deleted=[]}=await api('/api/tracking/jobs');readyJobs=jobs.filter(j=>j.status==='ready').map(j=>j.id);$('start-ready-jobs').hidden=!readyJobs.length;$('start-ready-jobs').textContent=`준비된 ${readyJobs.length}경기 모두 분석 시작`;await library.refresh(jobs);const signature=JSON.stringify([jobs,deleted]);if(signature!==jobSignature){jobSignature=signature;renderJobs(jobs,deleted);}return [...jobs,...deleted];}
  async function poll(){
   let delay=4000;
   try{

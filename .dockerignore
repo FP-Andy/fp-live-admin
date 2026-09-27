@@ -6,6 +6,7 @@
 !apps/api/
 !apps/api/app/
 !apps/api/app/bytetrack_player.yaml
+!apps/api/app/fpa_cv_storage.py
 !infra/
 !infra/fpa-worker/
 !infra/fpa-worker/Dockerfile
