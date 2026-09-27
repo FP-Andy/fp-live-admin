@@ -14,6 +14,17 @@ class User(Base):
     role: Mapped[str] = mapped_column(String, nullable=False, default="OPERATOR")
 
 
+class FpaCvResource(Base):
+    __tablename__ = "fpa_cv_resources"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    review: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    review_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class AdminAccount(Base):
     __tablename__ = "admin_accounts"
 

@@ -182,6 +182,17 @@ const FPA_ITEMS: NavItem[] = [
   },
 ];
 
+const FUTSAL_FPA_ITEMS: NavItem[] = [
+  FPA_ITEMS[0],
+  {
+    href: '/admin/futsal/fpa/tracking',
+    label: '영상 분석',
+    icon: '⌖',
+    match: (pathname) => pathname.startsWith('/admin/futsal/fpa/tracking'),
+  },
+  ...FPA_ITEMS.slice(1),
+];
+
 const FCM_ITEMS: NavItem[] = [
   {
     href: '/admin/fcm/match-status',
@@ -232,6 +243,9 @@ const NAV_SECTIONS: NavSection[] = [
 ];
 
 function getPageMeta(pathname: string) {
+  if (pathname.startsWith('/admin/futsal/fpa/tracking')) {
+    return { product: 'FPA', eyebrow: 'Futsal Video Analysis', title: '영상 분석' };
+  }
   if (pathname.startsWith('/admin/match/') && pathname.endsWith('/edit')) {
     return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Event Editor' };
   }
@@ -298,6 +312,9 @@ function getPageMeta(pathname: string) {
   if (pathname.startsWith('/admin/fpa/reports')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Model Room' };
   }
+  if (pathname.startsWith('/admin/fpa/tracking')) {
+    return { product: 'FPA', eyebrow: 'Computer Vision Review', title: 'Player Matching' };
+  }
   if (pathname.startsWith('/admin/fpa/replay')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Scene Motion' };
   }
@@ -362,7 +379,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
           ? BASKETBALL_FHL_ITEMS.filter((item) => !item.roles || (user?.role && item.roles.includes(user.role)))
           : [];
     } else if (sport === 'FUTSAL') {
-      items = section.id === 'FLA' ? FUTSAL_FLA_ITEMS : section.id === 'FPA' ? FPA_ITEMS : section.id === 'FCM' ? FUTSAL_FCM_ITEMS : [];
+      items = section.id === 'FLA' ? FUTSAL_FLA_ITEMS : section.id === 'FPA' ? FUTSAL_FPA_ITEMS : section.id === 'FCM' ? FUTSAL_FCM_ITEMS : [];
     } else if (section.id === 'FLA' && user?.role !== 'SUPERADMIN') {
       items = section.items.filter((item) => item.href === '/admin/dashboard');
     } else if (section.id === 'FHL') {

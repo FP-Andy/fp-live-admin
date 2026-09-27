@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FPA · 선수 매칭</title><link rel="stylesheet" href="./brand.css"><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./tracking.css"></head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#"><b>FP</b><span>FINE PLAY <small>ANALYTICS / CV LAB</small></span></a>
+    <nav class="app-tabs" role="tablist" aria-label="FPA 메뉴">
+      <button id="tab-tracking" type="button" role="tab" data-app-tab="tracking" aria-controls="tracking-panel" aria-selected="true">영상 트래킹</button>
+      <button id="tab-work" type="button" role="tab" data-app-tab="work" aria-controls="work-panel" aria-selected="false" tabindex="-1">작업 화면</button>
+      <button id="tab-guide" type="button" role="tab" data-app-tab="guide" aria-controls="guide-panel" aria-selected="false" tabindex="-1">사용 가이드</button>
+    </nav>
+    <span id="execution-mode" class="local"><i></i> 분석 환경 확인 중</span>
+  </header>
+  <main id="tracking-panel" class="tracking-page" role="tabpanel" aria-labelledby="tab-tracking">
+    <div class="tracking-heading"><div><h1>영상 트래킹</h1><p>영상 등록 → 코트·유니폼·13명 설정 → 트래킹</p></div><span id="gpu-status" class="tag">GPU 확인 중</span></div>
+    <p id="tracking-message" class="tracking-message" role="status" aria-live="polite"></p>
+    <div class="tracking-layout">
+      <form id="tracking-form" class="tracking-card" novalidate>
+        <h2>새 영상</h2>
+        <label id="tracking-drop" class="tracking-drop">
+          <input id="tracking-video-file" type="file" accept="video/*,.mkv,.avi" aria-label="트래킹할 영상 선택">
+          <span id="tracking-empty"><span class="upload-icon" aria-hidden="true">↑</span></span>
+          <strong id="tracking-file-name">영상을 선택하거나 여기에 놓으세요</strong>
+          <small id="tracking-file-size">MP4 · MOV · M4V · AVI · MKV · WebM</small>
+        </label>
+        <fieldset id="tracking-fields">
+          <div id="tracking-preview-wrap" class="tracking-preview-wrap" hidden>
+            <div id="tracking-preview-stage"><video id="tracking-preview" controls muted playsinline preload="metadata"></video><img id="tracking-prepared" alt="초기 선수 설정 장면" hidden><div id="tracking-seed-boxes"></div><svg id="tracking-roi" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="코트 범위"></svg><button id="tracking-pick-layer" type="button" aria-label="초기 유니폼 색상 선택" hidden></button></div>
+            <div class="roi-toolbar"><button id="roi-start" type="button">코트 범위 지정</button><button id="roi-clear" type="button" class="subtle">초기화</button><span id="roi-status">경기장 네 꼭짓점을 지정하세요</span></div>
+            <p id="preflight-hint" class="preflight-hint" role="status"></p>
+            <div id="preflight-box-tools" class="preflight-box-tools" hidden>
+              <label>BB 선택<select id="preflight-box-select" aria-label="초기 BB 선택"><option value="">영상에서 BB 선택</option></select></label>
+              <button id="preflight-exclude-box" type="button" disabled>선택 BB 제외</button>
+              <button id="preflight-restore-box" type="button" class="subtle" disabled>최근 제외 복원</button>
+              <label class="check"><input id="preflight-show-excluded" type="checkbox"> 제외 BB 표시 <span id="preflight-excluded-count">0</span></label>
+              <p id="preflight-box-note" role="status">그림자를 포함한 큰 BB를 제외하고, 몸에 맞는 BB에 번호를 연결하세요.</p>
+            </div>
+            <div class="initial-frame-controls"><label>장면 시각 (초)<input id="initial-frame-time" type="number" min="0" step="0.001" value="0"></label><button id="detect-initial-frame" type="button">이 장면에서 선수 찾기</button><button id="choose-initial-frame" type="button" hidden>다른 장면 선택</button><span id="preflight-frame-time">13명이 잘 보이는 장면을 선택하세요</span></div>
+            <section id="preflight-config" hidden>
+              <div class="preflight-colors"><div><h3>유니폼 5그룹</h3><div id="preflight-uniforms"></div></div><div class="preflight-zoom"><canvas id="preflight-crop" width="320" height="220" aria-label="초기 선수 확대 화면"></canvas><p>박스 클릭으로 확대 · 스포이드 사용 가능</p></div></div>
+              <div class="preflight-roster-title"><h3>초기 13명 <span id="preflight-count">0 / 13</span></h3><span>등번호 입력 → 박스 연결 → 영상 선수 클릭</span></div>
+              <div id="preflight-roster"></div>
+            </section>
+          </div>
+          <div class="tracking-settings">
+            <div><label for="tracking-device" class="tracking-setting-label">처리 장치</label><div class="tracking-device"><select id="tracking-device"><option value="gpu">GPU · 자동 선택</option><option value="cpu">CPU</option></select><span>YOLO26s · ByteTrack</span></div></div>
+            <div><label class="tracking-setting-label" for="tracking-from">분석 시작 · 초기 설정 장면 (초)</label><input id="tracking-from" type="number" min="0" step="0.001" readonly placeholder="초기 장면 선택"><label class="check"><input id="tracking-entire" type="checkbox" checked> 영상 끝까지 분석</label><div id="tracking-range" class="tracking-range" hidden><label>종료 시각 (초)<input id="tracking-to" type="number" min="0" step="0.001"></label></div></div>
+          </div>
+        </fieldset>
+        <p id="preflight-check" class="preflight-check" role="status"></p>
+        <button id="start-tracking" type="submit" class="primary tracking-submit" disabled>초기 설정 확정 · 트래킹 시작</button>
+        <div id="tracking-upload-progress" class="tracking-upload-progress" hidden><progress id="upload-progress" max="100" value="0" aria-label="영상 전송률"></progress><span id="upload-label"></span><button id="cancel-upload" type="button" class="subtle">전송 취소</button></div>
+        <p class="tracking-small-note">영상은 이 컴퓨터에서 분석합니다. 다른 탭에서 작업하는 동안에도 분석은 계속됩니다.</p>
+      </form>
+      <section aria-label="분석 목록"><div class="tracking-list-title"><h2>분석 목록 <span id="tracking-job-count">0</span></h2><span id="tracking-active-count"></span></div><p id="tracking-list-message" class="tracking-message" role="status"></p><div id="tracking-jobs" class="tracking-jobs"></div><details id="tracking-trash" class="tracking-trash"><summary>삭제한 분석 <span id="tracking-deleted-count">0</span></summary><p class="tracking-small-note">영상과 작업 기록은 보관되며 복원할 수 있습니다. 중지한 분석은 복원 후 다시 분석할 수 있습니다.</p><div id="tracking-deleted-jobs" class="tracking-jobs"></div></details></section>
+    </div>
+  </main>
+  <main id="work-panel" role="tabpanel" aria-labelledby="tab-work" hidden>
+    <div class="work-file-actions"><a class="help-link file-help" href="./guide.html#files">파일·백업 안내</a>
+      <label class="button" title="미리 분석한 tracks.json을 불러옵니다.">트래킹 결과 열기<input id="tracks-file" type="file" accept=".json" hidden></label>
+      <label class="button" title="트래킹 결과에 해당하는 영상입니다. 이 버튼은 새 트래킹을 실행하지 않습니다.">영상 열기<input id="video-file" type="file" accept="video/*" hidden></label>
+      <label class="button subtle" title="선수 지정·유니폼·FPA 기록이 담긴 작업 백업 JSON을 복원합니다.">작업 복원<input id="review-file" type="file" accept=".json" hidden></label>
+      <button id="export" class="primary" title="현재 선수 지정·유니폼·FPA 기록을 JSON 파일로 백업합니다." disabled>작업 백업 ↗</button>
+    </div>
+    <div class="heading"><h1 class="sr-only">FPA 검수</h1><p id="video-info">영상 트래킹에서 완료된 작업을 선택하세요.</p><span id="fpa-service" class="tag">FPA 연결 중</span></div>
+    <div id="recovery-status" class="recovery-status" hidden>
+      <div role="status" aria-live="polite"><strong id="recovery-label"></strong><small id="recovery-note"></small></div>
+      <progress id="recovery-progress" aria-label="선수 연결 계산 진행률"></progress>
+      <button id="recovery-action" type="button" class="subtle" hidden>계산 중지</button>
+    </div>
+    <div class="workbench-toolbar">
+      <div id="message" role="status" aria-live="polite"></div>
+      <div class="workbench-options">
+        <button id="toggle-setup" aria-expanded="false" aria-controls="tracking-setup">선수·유니폼 수정</button>
+        <fieldset id="fpa-global-controls" disabled aria-label="FPA 입력 설정">
+          <div class="toolbar-group"><span>팀</span><div class="toolbar-segment" role="group" aria-label="이벤트 팀"><button data-fpa-team="home" aria-pressed="true">홈</button><button data-fpa-team="away" aria-pressed="false">어웨이</button></div></div>
+          <div class="toolbar-group"><span>공격 방향</span><div class="toolbar-segment" role="group" aria-label="공격 방향"><button data-fpa-direction="left" aria-pressed="false">← 왼쪽</button><button data-fpa-direction="right" aria-pressed="true">오른쪽 →</button></div></div>
+          <select id="fpa-half" aria-label="피리어드"><option value="1H">1H</option><option value="2H">2H</option></select>
+          <label class="check"><input id="fpa-time-sync" type="checkbox" checked> 영상 시간 동기화</label>
+          <span id="fpa-clock-state" class="toolbar-note"></span>
+        </fieldset>
+      </div>
+    </div>
+    <section id="review-cycle" class="review-cycle" aria-label="반복 검수" hidden>
+      <div class="cycle-heading"><div><strong id="cycle-title">1차 초벌 결과</strong><p id="cycle-note"></p></div><button id="cycle-start" class="primary">2차 검수 시작</button></div>
+      <div class="cycle-actions"><button id="cycle-scenes">추가 태깅 · 추천 장면</button><button id="cycle-tracks">번호·BB 수정</button><button id="cycle-apply" class="primary" disabled>수정 모아 2차 결과 만들기</button><button id="cycle-heatmap">현재 결과 히트맵</button></div>
+      <details><summary>결과 생성 이력 <span id="cycle-count"></span></summary><ol id="cycle-history"></ol></details>
+    </section>
+    <details class="setup-panel" id="tracking-setup"><summary>선수·유니폼 수정</summary>
+      <div class="section-title"><div><div class="eyebrow">6 vs 6 · FIXED ROSTER</div><h2>선수 명단·유니폼 <span id="setup-count">0 / 13</span></h2></div><div class="setup-actions"><button id="anchor-frame">초기 설정 시점으로</button><button id="finish-setup" class="primary" disabled>초기 13명 확정</button><label class="check"><input id="auto-reconnect" type="checkbox" checked> 자동 연결 사용</label></div></div>
+      <p class="muted">등록한 명단·색상 보정 <a class="help-link" href="./guide.html#roster">설정 방법 ↗</a></p>
+      <div id="uniforms" class="uniform-grid"></div>
+      <p id="tracking-colors" class="muted"></p>
+      <div id="roster-board" class="roster-board"></div>
+      <details class="lineup-panel"><summary>출전 명단·포지션 연결</summary><div id="lineup-content"></div></details>
+      <p id="setup-help" class="setup-help">홈 키퍼 1 · 홈 5 · 심판 1 · 원정 5 · 원정 키퍼 1</p>
+    </details>
+    <div class="workspace">
+      <div class="video-column">
+      <section class="viewer-panel">
+        <div class="panel-bar"><span><i class="live-dot"></i> TRACKING VIEW <small id="model-name">YOLO26 + ByteTrack</small></span><label class="check"><input id="show-labels" type="checkbox" checked> 번호 표시</label><label class="check"><input id="show-raw" type="checkbox"> 원본 BB</label><label class="check"><input id="show-ignored" type="checkbox"> 제외 트랙</label><button id="fullscreen" class="icon-button" title="영상 전체화면">⛶</button></div>
+        <div id="stage" class="stage"><video id="video" playsinline preload="metadata"></video><div id="boxes" class="boxes"></div><button id="pick-layer" class="pick-layer" hidden aria-label="영상에서 유니폼 색상 선택"></button><div id="pick-hint" class="pick-hint" hidden></div><div id="empty" class="empty"><span>⌖</span><h2>작업할 영상을 선택하세요</h2><p>영상 트래킹 → 작업 시작<br><a class="help-link" href="./guide.html#files">파일 준비 방법 ↗</a></p></div></div>
+        <div class="transport"><button id="play" aria-label="재생 또는 일시정지">▶</button><button id="back" aria-label="이전 프레임">‹</button><button id="forward" aria-label="다음 프레임">›</button><output id="time">00:00.00</output><input id="seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="영상 시간"><output id="end-time">00:00.00</output><select id="speed" aria-label="재생 속도"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></div>
+        <div class="video-foot"><span><kbd>Space</kbd> 재생 <kbd>← →</kbd> 1프레임 <kbd>Shift ← →</kbd> 1초</span><span id="coverage">트래킹 대기</span></div>
+        <div class="source-options"><label>영상 기준 <select id="video-mode"><option value="preview">분석 구간 미리보기</option><option value="original">전체 원본 영상</option></select></label><span id="source-note"></span></div>
+        <div id="identity-status" class="identity-status">예상 인원 13명 · 유니폼 5그룹</div>
+        <details class="track-section"><summary>트랙 목록</summary><div class="section-title"><h2>트랙 목록 <span id="track-count">0</span></h2><div class="filters"><button data-filter="visible" class="active">현재 화면</button><button data-filter="unassigned">미확정</button><button data-filter="all">전체</button></div></div><div id="track-list" class="track-list"><p class="muted">영상에서 검출된 트랙이 여기에 표시됩니다.</p></div></details>
+      </section>
+      <details class="inspector" id="player-inspector">
+        <summary>선수 번호·트랙 검수</summary>
+        <div class="inspector-body">
+          <div class="section-title inspector-heading"><h2>선수 지정</h2><span id="selected-track" class="tag">선택 대기</span></div>
+          <div class="inspector-main">
+            <div class="inspector-preview">
+              <div class="crop-wrap"><canvas id="crop" width="320" height="220"></canvas><span id="crop-empty">영상의 박스를 클릭하세요</span></div>
+              <p id="selection-info" class="muted">트랙 ID는 선수의 고유 ID가 아닙니다.</p>
+              <p id="uniform-evidence" class="uniform-evidence" hidden></p>
+            </div>
+            <form id="assign-form"><fieldset id="assign-fields" disabled>
+              <label class="field inspector-person">명단 선수<select id="person"></select></label>
+              <label class="field inspector-number">등번호 / 심판<div class="jersey-input"><span>No.</span><input id="jersey" inputmode="numeric" maxlength="12" placeholder="10" autocomplete="off"></div></label>
+              <p class="field-note">등번호 변경은 이 명단 선수의 모든 트랙에 적용됩니다.</p>
+              <label class="field inspector-scope">적용 범위<select id="scope"><option value="all">이 트랙 전체</option><option value="after">현재 시점부터</option><option value="range">구간 직접 지정</option></select></label>
+              <div id="range-fields" class="range-fields" hidden><label>시작 (원본 초)<input id="range-from" type="number" step="any" min="0"></label><label>끝 (원본 초)<input id="range-to" type="number" step="any" min="0"></label></div>
+              <div class="inspector-assign-actions"><button type="submit" class="primary">선수 번호 적용 <span>↵</span></button><button id="clear" type="button" class="subtle">이 구간의 지정 해제</button><button id="exclude-track" type="button" class="subtle">선택 BB 제외</button></div>
+            </fieldset></form>
+          </div>
+          <div id="match-details" class="match-details" hidden></div>
+          <p id="conflict" class="conflict" hidden></p>
+          <section class="inspector-history" aria-label="지정 이력">
+            <div class="section-title"><h3>지정 이력</h3><button id="undo" class="subtle" disabled>되돌리기</button></div>
+            <div id="history" class="history muted">아직 지정된 번호가 없습니다.</div>
+          </section>
+          <a class="help-link" href="./guide.html#reconnect">재연결 검수 방법 ↗</a>
+          <p id="save-state" class="save-state">브라우저 자동 저장 · JSON으로 백업 가능</p>
+        </div>
+      </details>
+      </div>
+      <section class="fpa-panel" aria-label="풋살 FPA 데이터">
+        <div class="work-mode-tabs" role="tablist" aria-label="작업 모드">
+          <button id="mode-fpa" role="tab" aria-selected="true" aria-controls="fpc-editor" data-work-mode="fpa">FPA 기록</button>
+          <button id="mode-review" role="tab" aria-selected="false" aria-controls="review-workspace" data-work-mode="review" tabindex="-1">선수·트랙 검수</button>
+          <button id="mode-checkpoints" role="tab" aria-selected="false" aria-controls="checkpoint-workspace" data-work-mode="checkpoints" tabindex="-1">장면 확인</button>
+          <button id="mode-heatmap" role="tab" aria-selected="false" aria-controls="heatmap-workspace" data-work-mode="heatmap" tabindex="-1">히트맵</button>
+        </div>
+        <iframe id="fpc-editor" src="./fpc-editor.html" title="FPC 풋살 FPA 편집기" scrolling="no"></iframe>
+        <div id="review-workspace" role="tabpanel" aria-labelledby="mode-review" hidden></div>
+        <section id="checkpoint-workspace" role="tabpanel" aria-labelledby="mode-checkpoints" hidden>
+          <div class="checkpoint-toolbar"><label>이번 추천 수<select id="checkpoint-budget"><option value="5">최대 5장면</option><option value="10">10장면</option><option value="15">15장면</option></select></label><strong id="checkpoint-count">누적 0장면</strong><button id="checkpoint-current">현재 장면 확인</button><button id="checkpoint-apply" class="primary" disabled>검수 반영 · 재연결</button></div>
+          <p id="checkpoint-note" class="muted" role="status">초기 설정 후 필요한 장면만 추가로 확인합니다.</p>
+          <section id="checkpoint-editor" hidden>
+            <div class="section-title"><h2>선수 확인 <span id="checkpoint-time"></span></h2><button id="checkpoint-cancel" class="subtle">취소</button></div>
+            <div class="checkpoint-preview"><canvas id="checkpoint-crop" width="220" height="140" aria-label="확인할 선수 확대"></canvas><div><strong id="checkpoint-selection">영상 BB 선택 → 선수 번호 선택</strong><p class="muted">번호는 이 장면에서만 확정됩니다.</p><button id="checkpoint-unlink" class="subtle" disabled>선택 BB 확인 해제</button></div></div>
+            <div id="checkpoint-roster"></div>
+            <div class="checkpoint-editor-actions"><button id="checkpoint-confirm-visible">화면의 예상 번호 모두 확인</button><button id="checkpoint-save" class="primary" disabled>확인 저장</button></div>
+          </section>
+          <div class="section-title"><h3>추천 장면</h3><a class="help-link" href="./guide.html#checkpoints">사용 방법 ↗</a></div>
+          <div id="checkpoint-recommendations"></div>
+          <h3>저장한 확인</h3><div id="checkpoint-saved"></div>
+        </section>
+        <section id="heatmap-workspace" role="tabpanel" aria-labelledby="mode-heatmap" hidden>
+          <div class="heatmap-controls">
+            <label>좌표 기준<select id="heatmap-point"><option value="bottom">박스 하단 · 일반 시점</option><option value="center">박스 중앙 · 수직 촬영</option></select></label>
+            <label>코트 방향<select id="heatmap-turn"><option value="0">기본</option><option value="1">90° 회전</option><option value="2">180° 회전</option><option value="3">270° 회전</option></select></label>
+            <label class="check"><input id="heatmap-manual" type="checkbox"> 수동 지정만</label>
+            <button id="heatmap-build" class="primary">히트맵 만들기</button>
+            <button id="heatmap-report" disabled>10명 PNG 저장</button><button id="heatmap-json" disabled>좌표·품질 JSON</button>
+          </div>
+          <p id="heatmap-status" role="status">선수 연결을 계산한 뒤 히트맵 만들기를 누르세요.</p>
+          <p class="muted">색 농도 = 체류 시간 · 10명 공통 눈금</p>
+          <p class="muted">고정 카메라·교체 없는 명단 기준. 겹침·색상 충돌·코트 밖 좌표는 제외합니다. <a href="./guide.html#heatmaps">히트맵 안내 ↗</a></p>
+          <div id="heatmap-cards"></div>
+        </section>
+      </section>
+    </div>
+    <details class="event-section" id="reconnect-panel">
+      <summary>선수 재연결 검수 <span id="reconnect-count" class="tag">초기 설정 대기</span></summary>
+      <div class="reconnect-help"><p>영상 확인 → 같은 선수면 <b>연결 확정</b>, 다르면 <b>거절</b></p><a class="help-link" href="./guide.html#reconnect">검수 방법 ↗</a></div>
+      <div id="reconnect-list" class="reconnect-list"></div>
+    </details>
+    <footer><span>FPA · CV LAB</span><a class="help-link" href="./guide.html#save">저장·복원 안내 ↗</a></footer>
+  </main>
+  <section id="guide-panel" class="guide-tab-panel" role="tabpanel" aria-labelledby="tab-guide" hidden><iframe id="guide-frame" title="FPA 사용 가이드"></iframe></section>
+  <script type="module" src="./app.mjs"></script>
+</body></html>

@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {courtProjection,buildHeatmaps} from '../apps/web/public/fpa-cv/heatmaps.mjs';
+import {emptyReview} from '../apps/web/public/fpa-cv/core.mjs';
+const roi=[[.2,.15],[.9,.25],[.8,.85],[.1,.7]];
+const near=(a,b)=>assert(a.every((v,i)=>Math.abs(v-b[i])<1e-8),`${a} != ${b}`);
+for(let start=0;start<4;start++)for(const reverse of [false,true]){
+  let corners=roi.map((_,i)=>roi[(start+i)%4]);if(reverse)corners.reverse();
+  const project=courtProjection(corners);roi.forEach((p,i)=>near(project(p),[[0,0],[1,0],[1,1],[0,1]][i]));
+}
+for(const invalid of [null,[[0,0],[1,1],[1,0],[0,1]],[[0,0],[.1,0],[.2,0],[.3,0]]])assert.throws(()=>courtProjection(invalid));
+const make=(id,x=.4)=>({id,box:[x,.3,x+.02,.4],confidence:.9,appearance:[{rgb:[220,25,25],weight:1}]});
+const data={datasetId:'heatmap',video:{name:'test',clipStart:0,clipEnd:2},detector:{sampleFps:10,roi:[[0,0],[1,0],[1,1],[0,1]]},frames:[{t:0,boxes:[make(1)]},{t:.1,boxes:[make(1)]},{t:1,boxes:[make(2)]},{t:1.1,boxes:[make(2),make(3)]},{t:1.2,boxes:[make(2,1.1)]}]};
+const review={...emptyReview(data),uniforms:{home:[[220,25,25]],away:[[25,25,220]]},segments:[{trackId:1,personId:'home-1',from:0,to:.2},{trackId:2,personId:'home-1',from:1,to:2,source:'auto'},{trackId:3,personId:'home-1',from:1,to:2}]};
+const report=buildHeatmaps(data,review),player=report.players[0];
+assert.equal(report.players.length,10);assert(report.players.every(p=>!p.group.endsWith('_gk')&&p.group!=='referee'));
+assert(Math.abs(player.observed-.3)<1e-8,'Missing .8 seconds, duplicate identity and outside court must not create occupancy');
+assert(Math.abs(player.automatic-.1)<1e-8);assert.equal(player.positions.length,3);
+assert(Math.abs(player.grid.reduce((a,b)=>a+b,0)-player.observed)<1e-8,'Grid mass is observed seconds');
+assert(Math.abs(Object.values(player.excludedReasons).reduce((a,b)=>a+b,0)-player.excluded)<1e-8,'Exclusion reasons partition excluded time');
+assert(Math.abs(player.excludedReasons.duplicate-.1)<1e-8,'Duplicate boxes count as one excluded player interval');
+assert(Math.abs(player.unassigned+player.excluded+player.observed-report.duration)<1e-8,'Identity gaps, excluded time and usable time conserve the duration');
+assert.equal(player.positions[0].y,.4,'Default ground point is box bottom');
+assert(Math.abs(player.longestMissing-.9)<1e-8,'Trailing unusable time is included in the longest position gap');
+assert(Math.abs(player.longestUnassigned-.8)<1e-8,'Assigned but excluded positions are not identity gaps');
+assert.equal(report.players[1].longestMissing,2,'A wholly missing player has a full-duration gap');
+assert.equal(buildHeatmaps(data,review,{point:'center'}).players[0].positions[0].y,.35);
+assert(Math.abs(buildHeatmaps(data,review,{manualOnly:true}).players[0].observed-.2)<1e-8);
+const contradiction=structuredClone(data);contradiction.frames[0].boxes[0].appearance[0].rgb=[25,25,220];
+assert(Math.abs(buildHeatmaps(contradiction,review).players[0].observed-.2)<1e-8);
+console.log('PASS: perspective calibration/order invariance, invalid court rejection, time weighting, no gap filling, duplicate/colour/outside exclusion, ten outfield players, export provenance.');
