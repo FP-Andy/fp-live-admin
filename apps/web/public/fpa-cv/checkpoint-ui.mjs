@@ -32,14 +32,14 @@ export function checkpointUI({getData,getReview,getWorking,getRecovery,commit,se
     $('checkpoint-budget').value=String(budget);
     $('checkpoint-count').textContent=`누적 ${saved.length}장면`;
     $('checkpoint-apply').disabled=!isPending()||recovery?.status==='pending';
-    $('checkpoint-note').textContent=recovery?.status==='pending'?'연결 계산 중 · 추가 장면은 저장 후 한 번에 반영할 수 있습니다.':isPending()?'저장된 확인을 반영하면 앞뒤 번호 연결을 다시 계산합니다.':'한 장면에서 확실히 보이는 선수만 확인하세요. 초기 설정은 장면 수에 포함하지 않습니다.';
+    $('checkpoint-note').textContent=recovery?.status==='pending'?'연결 계산 중 · 추가 장면은 저장 후 한 번에 반영할 수 있습니다.':isPending()?'저장된 확인을 반영하면 앞뒤 번호 연결을 다시 계산합니다.':`${(review.batch?.round||0)+1}차 결과 기준 · 개선 우선순위순입니다. 확실한 번호를 저장하고 반영하면 남은 구간에서 다시 추천합니다.`;
     const list=$('checkpoint-recommendations');list.replaceChildren();
     const plan=recovery?.checkpointPlan;
-    const recommendations=(plan?.recommendations||[]).slice(0,budget).filter(c=>!saved.some(s=>Math.abs(s.time-c.time)<1/getData().detector.sampleFps)).sort((a,b)=>a.time-b.time);
+    const recommendations=recovery?.status==='complete'&&!isPending()?(plan?.recommendations||[]).slice(0,budget):[];
     for(const [i,c] of recommendations.entries()){
-      const b=node('button','','checkpoint-scene');b.append(node('b',`${i+1}. ${clock(c.time)}`),node('small',c.reason));b.onclick=guard(()=>begin(c.time));list.append(b);
+      const b=node('button','','checkpoint-scene');b.append(node('b',`우선 ${i+1} · ${clock(c.time)}`),node('small',c.reason));b.title='미연결 시간은 회복 보장량이 아닙니다. 선수 번호는 직접 확인하세요.';b.onclick=guard(()=>begin(c.time));list.append(b);
     }
-    if(!recommendations.length)list.append(node('p',recovery?.status==='pending'?'계산이 끝나면 확인할 장면을 추천합니다.':isPending()?'저장한 검수를 반영하면 다음 장면을 추천합니다.':'추천할 장면이 없습니다. 현재 장면을 직접 확인할 수 있습니다.','muted'));
+    if(!recommendations.length)list.append(node('p',recovery?.status==='pending'?'계산이 끝나면 확인할 장면을 추천합니다.':isPending()?'저장한 검수를 반영하면 다음 장면을 추천합니다.':recovery?.status==='complete'?'추천할 장면이 없습니다. 현재 장면을 직접 확인할 수 있습니다.':'연결 계산을 완료하면 확인할 장면을 추천합니다.','muted'));
     const done=$('checkpoint-saved');done.replaceChildren();
     for(const c of saved){
       const row=node('div','','checkpoint-saved-row'),go=node('button',`${clock(c.time)} · ${c.assignments.length}명 확인`),remove=node('button','삭제','subtle');
