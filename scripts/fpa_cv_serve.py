@@ -61,7 +61,7 @@ def handler_for(run: Path | None, jobs=None, worker_token=None):
     for name, mime in [('recovery-protocol.mjs','text/javascript'),('recovery-cache.mjs','text/javascript'),('recovery-worker.mjs','text/javascript'),('recovery-client.mjs','text/javascript'),('preflight.mjs','text/javascript'),('tracking.mjs','text/javascript'),('shell.mjs','text/javascript'),('tracking.css','text/css'),('guide.html','text/html'),('guide.css','text/css'),('brand.css','text/css'),('fpc-ui.mjs','text/javascript'),('fpc-editor.html','text/html'),
                        ('fpc-editor.bundle.js','text/javascript'),('fpc-editor.bundle.css','text/css')]:
         routes['/'+name]=(WEB/name,mime+'; charset=utf-8')
-    for name in ['upload-library.mjs','heatmaps.mjs','heatmap-ui.mjs','checkpoint-recovery.mjs','checkpoint-plan.mjs','checkpoint-ui.mjs','review-batch.mjs','lineup.mjs','console-embed.mjs','server-review.mjs']:
+    for name in ['upload-parts.mjs','upload-library.mjs','heatmaps.mjs','heatmap-ui.mjs','checkpoint-recovery.mjs','checkpoint-plan.mjs','checkpoint-ui.mjs','review-batch.mjs','lineup.mjs','console-embed.mjs','server-review.mjs']:
         routes['/'+name]=(WEB/name,'text/javascript; charset=utf-8')
     for asset in (WEB.parent/'fonts/paperlogy').glob('*.woff2'):
         routes['/fonts/paperlogy/'+asset.name]=(asset,'font/woff2')
