@@ -35,6 +35,8 @@ def arguments():
     parser.add_argument("--uniforms", type=Path, help="Review JSON exported after eyedropper setup, or five-group RGB palette JSON; enables ByteTrack team constraints")
     parser.add_argument("--preview-width", type=int, default=1920)
     parser.add_argument("--no-preview", action="store_true")
+    parser.add_argument("--threaded-colors", action="store_true", help="Use the in-process color stage instead of a separate CPU process")
+    parser.add_argument("--serial", action="store_true", help="Disable CUDA pipeline overlap for diagnosis and output parity checks")
     parser.add_argument("--roi", help="Fixed-camera court polygon, normalized x,y;x,y;... (box centers)")
     parser.add_argument("--roi-margin", type=float, default=.08, help="Keep a touchline buffer outside ROI, in video-height units (default .08; 0 = strict court)")
     args = parser.parse_args()
@@ -107,8 +109,11 @@ def main():
     from fpa_cv_colors import appearance
     from fpa_cv_uniforms import load_uniforms, classify_uniform, uniform_team
     from fpa_cv_duplicates import suppress_new_duplicates
+    from fpa_cv_pipeline import OrderedPipeline
 
     device = select_device(args.device)
+    # Keep the existing CPU/MPS execution path until separately benchmarked.
+    use_pipeline = not args.serial and device not in ('cpu', 'mps')
     uniforms = load_uniforms(args.uniforms) if args.uniforms else None
     initial_setup=json.loads(args.initial_setup.read_text()) if args.initial_setup else None
     tracker = None
@@ -161,6 +166,18 @@ def main():
         preview = PreviewWriter(args.output / 'preview.mp4', fps, (pw, ph))
         print(f'Preview encoder: {preview.encoder}', flush=True)
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
+    appearance_worker = None
+    if tracker is not None and use_pipeline and not args.threaded_colors:
+        from fpa_cv_appearance_worker import AppearanceWorker
+        try:
+            appearance_worker = AppearanceWorker((height, width, 3), uniforms)
+        except OSError as error:
+            print(f'Appearance worker unavailable; using in-process colors: {error}', flush=True)
+        except BaseException:
+            cap.release()
+            if preview:
+                preview.abort()
+            raise
     frames, summaries = [], {}
     started = time.monotonic()
     processed = 0
@@ -168,78 +185,110 @@ def main():
     suppressed_count=0
     seed_tracks=set()
     progress('선수 추적 중', 2, **frame_progress(0, total_frames, 0))
-    try:
+    def source_frames():
+        # One owner for capture and preview; keep every source frame in the
+        # preview, but prefetch only sampled/anchor frames for inference.
         for frame_index in range(first, last):
             ok, frame = cap.read()
             if not ok:
                 raise RuntimeError(f"Decode failed at frame {frame_index}; incomplete run has not been published")
             if preview:
                 preview.write(cv2.resize(frame, (pw, ph)))
-            if (frame_index - first) % stride and frame_index != args.anchor_frame:
-                continue
-            t = round(frame_index / fps, 6)
-            if tracker is not None:
-                original_scores=None;manual_teams=None
-                if initial_setup and frame_index==first:
-                    from ultralytics.engine.results import Boxes
-                    from fpa_cv_initial import initial_detections
-                    rows,original_scores,manual_teams=initial_detections(initial_setup,width,height,max(config['new_track_thresh'],config['track_high_thresh']))
-                    detections=Boxes(np.asarray(rows,dtype=np.float32).reshape(-1,6),(height,width))
+            if (frame_index-first) % stride == 0 or frame_index == args.anchor_frame:
+                yield {'index': frame_index, 'frame': frame}
+
+    def detect(packet):
+        frame_index, frame = packet['index'], packet['frame']
+        original_scores = manual_teams = None
+        if initial_setup and frame_index == first:
+            from ultralytics.engine.results import Boxes
+            from fpa_cv_initial import initial_detections
+            rows, original_scores, manual_teams = initial_detections(initial_setup, width, height, max(config['new_track_thresh'], config['track_high_thresh']))
+            detections = Boxes(np.asarray(rows, dtype=np.float32).reshape(-1, 6), (height, width))
+        else:
+            result = model.predict(frame, classes=[0], imgsz=args.imgsz, conf=args.conf,
+                                   device=device, verbose=False)[0]
+            detections = result.boxes.cpu().numpy()
+        packet.update(detections=detections, original_scores=original_scores, manual_teams=manual_teams)
+        return packet
+
+    def describe(packet):
+        if appearance_worker:
+            descriptors, classifications = appearance_worker.describe(packet['frame'], packet['detections'].xyxyn)
+        else:
+            descriptors = [appearance(packet['frame'], box) for box in packet['detections'].xyxyn]
+            classifications = [classify_uniform(a, uniforms) for a in descriptors]
+        packet.update(descriptors=descriptors, classifications=classifications)
+        return packet
+
+    # A single inference owner and FIFO queues preserve the exact sequence.
+    # Tracker-dependent duplicate rejection and all identity updates stay here.
+    stages = [('detect', detect), ('describe', describe)] if tracker is not None else []
+    pipeline = OrderedPipeline(source_frames(), stages, capacity=2, threaded=use_pipeline)
+    tracking_seconds = 0.0
+    try:
+        with pipeline:
+            for packet in pipeline:
+                work_started = time.monotonic()
+                frame_index, frame = packet['index'], packet['frame']
+                t = round(frame_index / fps, 6)
+                if tracker is not None:
+                    detections = packet['detections']
+                    original_scores, manual_teams = packet['original_scores'], packet['manual_teams']
+                    descriptors, classifications = packet['descriptors'], packet['classifications']
+                    if original_scores is None:
+                        established=[old.xyxy for old in tracker.tracked_stracks if old.is_activated and (old.tracklet_len>=3 or old.track_id in seed_tracks)]
+                        keep,reasons=suppress_new_duplicates(detections,descriptors,classifications,established)
+                        suppressed_count+=len(reasons)
+                        detections=detections[keep]
+                        descriptors=[descriptors[i] for i in keep]
+                        classifications=[classifications[i] for i in keep]
+                    teams = [uniform_team(result) for result in classifications]
+                    if manual_teams is not None:
+                        teams=[manual if manual is not None else observed for manual,observed in zip(manual_teams,teams)]
+                    output = tracker.update(detections, teams=teams)
+                    if manual_teams is not None:
+                        seed_teams={int(row[4]):manual_teams[int(row[7])] for row in output if manual_teams[int(row[7])] is not None}
+                        seed_tracks=set(seed_teams)
+                        tracker.seed_teams(seed_teams)
+                    observations = [(int(row[4]), row[:4]/np.array([width,height,width,height]), float(original_scores[int(row[7])] if original_scores is not None else row[5])) for row in output]
                 else:
-                    result = model.predict(frame, classes=[0], imgsz=args.imgsz, conf=args.conf,
-                                           device=device, verbose=False)[0]
-                    detections = result.boxes.cpu().numpy()
-                descriptors=[appearance(frame, box) for box in detections.xyxyn]
-                classifications=[classify_uniform(a,uniforms) for a in descriptors]
-                if original_scores is None:
-                    established=[old.xyxy for old in tracker.tracked_stracks if old.is_activated and (old.tracklet_len>=3 or old.track_id in seed_tracks)]
-                    keep,reasons=suppress_new_duplicates(detections,descriptors,classifications,established)
-                    suppressed_count+=len(reasons)
-                    detections=detections[keep]
-                    descriptors=[descriptors[i] for i in keep]
-                    classifications=[classifications[i] for i in keep]
-                teams = [uniform_team(result) for result in classifications]
-                if manual_teams is not None:
-                    teams=[manual if manual is not None else observed for manual,observed in zip(manual_teams,teams)]
-                output = tracker.update(detections, teams=teams)
-                if manual_teams is not None:
-                    seed_teams={int(row[4]):manual_teams[int(row[7])] for row in output if manual_teams[int(row[7])] is not None}
-                    seed_tracks=set(seed_teams)
-                    tracker.seed_teams(seed_teams)
-                observations = [(int(row[4]), row[:4]/np.array([width,height,width,height]), float(original_scores[int(row[7])] if original_scores is not None else row[5])) for row in output]
-            else:
-                result = model.track(frame, persist=True, tracker=args.tracker, classes=[0],
-                                     imgsz=args.imgsz, conf=args.conf, device=device, verbose=False)[0]
-                observations = [] if result.boxes is None or result.boxes.id is None else zip(result.boxes.id.int().cpu().tolist(), result.boxes.xyxyn.cpu().tolist(), result.boxes.conf.cpu().tolist())
-            boxes = []
-            if observations:
-                for track, xyxy, confidence in observations:
-                    x1, y1, x2, y2 = [max(0.0, min(1.0, n)) for n in xyxy]
-                    zone=roi_zone((x1,y1,x2,y2),roi,width/height,args.roi_margin)
-                    if zone is None:
-                        continue
-                    normalized = [round(n, 6) for n in (x1, y1, x2, y2)]
-                    boxes.append({"id": track, "box": normalized, "confidence": round(confidence, 4), "appearance": appearance(frame, normalized), "zone":zone})
-                    if track not in summaries:
-                        summaries[track] = {"id": track, "first": t, "last": t, "samples": 0}
-                    summaries[track]["last"] = t
-                    summaries[track]["samples"] += 1
-            frames.append({"t": t, "boxes": boxes})
-            processed += 1
-            now = time.monotonic()
-            if processed == 1 or processed == total_frames or now-last_progress >= 1:
-                progress('선수 추적 중', 2+processed/total_frames*94, sourceTime=t,
-                         **frame_progress(processed, total_frames, now-started),
-                         samples=processed, trackCount=len(summaries))
-                last_progress = now
-            if processed == 1 or processed % 50 == 0:
-                print(f"{(frame_index-first+1)/(last-first)*100:5.1f}% | source {t:.2f}s | {len(boxes)} people | {len(summaries)} tracks | {time.monotonic()-started:.1f}s elapsed", flush=True)
+                    result = model.track(frame, persist=True, tracker=args.tracker, classes=[0],
+                                         imgsz=args.imgsz, conf=args.conf, device=device, verbose=False)[0]
+                    observations = [] if result.boxes is None or result.boxes.id is None else zip(result.boxes.id.int().cpu().tolist(), result.boxes.xyxyn.cpu().tolist(), result.boxes.conf.cpu().tolist())
+                boxes = []
+                if observations:
+                    for track, xyxy, confidence in observations:
+                        x1, y1, x2, y2 = [max(0.0, min(1.0, n)) for n in xyxy]
+                        zone=roi_zone((x1,y1,x2,y2),roi,width/height,args.roi_margin)
+                        if zone is None:
+                            continue
+                        normalized = [round(n, 6) for n in (x1, y1, x2, y2)]
+                        boxes.append({"id": track, "box": normalized, "confidence": round(confidence, 4), "appearance": appearance(frame, normalized), "zone":zone})
+                        if track not in summaries:
+                            summaries[track] = {"id": track, "first": t, "last": t, "samples": 0}
+                        summaries[track]["last"] = t
+                        summaries[track]["samples"] += 1
+                frames.append({"t": t, "boxes": boxes})
+                processed += 1
+                tracking_seconds += time.monotonic()-work_started
+                now = time.monotonic()
+                if processed == 1 or processed == total_frames or now-last_progress >= 1:
+                    progress('선수 추적 중', 2+processed/total_frames*94, sourceTime=t,
+                             **frame_progress(processed, total_frames, now-started),
+                             samples=processed, trackCount=len(summaries))
+                    last_progress = now
+                if processed == 1 or processed % 50 == 0:
+                    print(f"{(frame_index-first+1)/(last-first)*100:5.1f}% | source {t:.2f}s | {len(boxes)} people | {len(summaries)} tracks | {time.monotonic()-started:.1f}s elapsed", flush=True)
     except BaseException:
         if preview:
             preview.abort()
         raise
     finally:
+        if appearance_worker:
+            appearance_worker.close()
         cap.release()
+    print('Pipeline timings: ' + json.dumps({'threaded': use_pipeline, 'colorProcess': appearance_worker is not None, 'stages': pipeline.stats, 'trackingSeconds': tracking_seconds}), flush=True)
     if preview:
         progress('미리보기 영상 저장 중', 97, eta=None)
         preview.release()
@@ -280,4 +329,10 @@ def main():
 
 
 if __name__ == "__main__":
+    import signal
+    def cancel(signum, frame):
+        # Job cancellation must close queues and the encoder instead of leaving
+        # an FFmpeg process holding a partial preview open.
+        raise SystemExit(128+signum)
+    signal.signal(signal.SIGTERM, cancel)
     main()

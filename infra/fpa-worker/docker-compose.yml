@@ -8,6 +8,7 @@ services:
     container_name: app-fpa-worker
     restart: unless-stopped
     init: true
+    shm_size: 256m
     stop_grace_period: 30s
     gpus: all
     ports:
