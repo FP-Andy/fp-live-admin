@@ -2,7 +2,7 @@
 // in the authenticated server library and survive closing this page.
 import {uploadParts,transferMeter} from './upload-parts.mjs';
 export function uploadLibrary({api,post,select,status}){
- const $=id=>document.getElementById(id),pending=[],transfers=new Map();let enabled=false,running=false,uploads=[],signature='',jobs=[];
+ const $=id=>document.getElementById(id),pending=[],transfers=new Map(),localFiles=new Map();let enabled=false,running=false,uploads=[],signature='',jobs=[];
  const size=n=>`${(n/1024**3).toFixed(2)} GB`;
  const time=n=>n<60?`${Math.ceil(n)}초`:`${Math.ceil(n/60)}분`;
  const transferLabel=t=>t.error||`${t.state} · ${Math.floor(t.progress*100)}%${t.rate?` · ${(t.rate/1e6).toFixed(1)} MB/s · 약 ${time(t.remaining)} 남음`:''}`;
@@ -24,9 +24,9 @@ export function uploadLibrary({api,post,select,status}){
    const name=document.createElement('strong');name.textContent=upload.name;
    const label=document.createElement('span');const related=jobs.filter(j=>j.uploadId===upload.id&&!j.deletedAt);
    label.textContent=`${size(upload.size)} · ${upload.status==='uploaded'?(related.length?`분석 ${related.length}개`:'초기 설정 대기'):'전송 미완료 · 다시 업로드 가능'}`;
-   const button=document.createElement('button');button.type='button';button.textContent='초기 설정';button.disabled=upload.status!=='uploaded';button.onclick=()=>select(upload);
+   const button=document.createElement('button');button.type='button';button.textContent='초기 설정';button.disabled=upload.status!=='uploaded';button.onclick=()=>select(upload,localFiles.get(upload.id));
    const remove=document.createElement('button');remove.type='button';remove.className='job-delete';remove.textContent='영상 삭제';remove.disabled=related.length>0;
-   remove.onclick=async()=>{if(!confirm(`“${upload.name}” 업로드를 삭제할까요?`))return;remove.disabled=true;try{await post(`/api/tracking/uploads/${upload.id}/remove`);signature='';await refresh();}catch(error){status(error.message,true);remove.disabled=false;}};
+   remove.onclick=async()=>{if(!confirm(`“${upload.name}” 업로드를 삭제할까요?`))return;remove.disabled=true;try{await post(`/api/tracking/uploads/${upload.id}/remove`);localFiles.delete(upload.id);signature='';await refresh();}catch(error){status(error.message,true);remove.disabled=false;}};
    row.append(name,label,button,remove);holder.append(row);
   }
   if(!holder.childElementCount){const p=document.createElement('p');p.className='tracking-jobs-empty';p.textContent='여러 영상을 선택해 업로드한 뒤, 경기별 초기 설정을 저장하세요.';holder.append(p);}
@@ -46,6 +46,7 @@ export function uploadLibrary({api,post,select,status}){
   });
   t.state='S3 저장 확인 중';t.rate=0;render();
   await post(`/api/tracking/uploads/${t.id}/complete`,{parts});
+  localFiles.set(t.id,t.file);
  }
  async function pump(){if(running)return;running=true;try{while(pending.length){const t=pending.shift();t.state='업로드 중';render();try{await transfer(t);transfers.delete(t.key);signature='';await refresh();}catch(error){t.error=error.message;render();}}}finally{running=false;}}
  async function refresh(nextJobs){if(nextJobs)jobs=nextJobs;if(!enabled)return;const value=await api('/api/tracking/uploads');const nextSignature=JSON.stringify([value.uploads,jobs.map(j=>[j.id,j.status,j.deletedAt])]);if(nextSignature!==signature){uploads=value.uploads;signature=nextSignature;render();}}

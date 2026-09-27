@@ -79,6 +79,19 @@ class JobTests(unittest.TestCase):
         self.manager.remove_upload(uid)
         with self.assertRaises(JobError):self.manager._upload(uid)
 
+    def test_s3_preparation_skips_full_source_download(self):
+        uid='d'*32;self.manager.storage=Mock();self.manager.storage.head.return_value={'ContentLength':13}
+        key=f'fpa-cv/uploads/{uid}/source.mp4'
+        self.manager.register_upload({'id':uid,'name':'game.mp4','file':'source.mp4','size':13,'key':key,'storage':'s3'})
+        prepared=self.manager.create_preparation(uid,{'time':5,'device':'cpu'})
+        from io import StringIO
+        process=Mock();process.stdout=StringIO('intentional test stop\n');process.wait.return_value=1
+        with patch('fpa_cv_jobs.subprocess.Popen',return_value=process) as popen:
+            self.manager._execute(self.manager.jobs[prepared['id']])
+            command=popen.call_args.args[0]
+            self.assertEqual(command[command.index('--s3-key')+1],key)
+        self.manager.storage.download.assert_not_called()
+
     def test_upload_is_local_and_truncated_upload_is_discarded(self):
         uploaded = self.upload()
         self.assertEqual(uploaded['name'], '경기.mp4')

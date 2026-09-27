@@ -18,7 +18,7 @@ Preparation also uses the single GPU queue. Finish initialization before startin
 - Browser PUT signing supports `FPA_CV_S3_ACCELERATE=1` after bucket Transfer Acceleration is enabled and verified. Only browser uploads use the accelerated endpoint; GPU transfers and browser GETs retain regional URLs. Upload URLs are signed in batches of six, failed parts retry with fresh signatures, and progress shows measured MB/s/ETA. Existing pages continue using two connections until reopened, but each new part signature can pick up the accelerated endpoint. Do not refresh a page with unfinished uploads.
 - Production compose environment files live in `infra/app/.env` and `infra/fpa-worker/.env`.
 - S3 CORS permits GET/HEAD/PUT from `https://console.fineludens.kr`, exposes ETag and range headers. Sign with SigV4. Incomplete multipart uploads expire after 3 days; completed inputs/results have no expiry.
-- Worker downloads only the active source, verifies S3 outputs before removing heavy local outputs, and releases its source cache after each job. Small preparation/metadata files persist on the existing worker volume. Storage/upload failure retains local outputs; failed jobs can be retried or purged.
+- Full tracking downloads only its active source. Initial-frame preparation instead seeks private S3 byte ranges through a short-lived loopback reader; AWS credentials never enter FFmpeg arguments or error logs. Worker verifies S3 outputs before removing heavy local outputs, and releases its source cache after each job. Small preparation/metadata files persist on the existing worker volume. Storage/upload failure retains local outputs; failed jobs can be retried or purged.
 - Existing worker-local analyses continue to open through the original gateway. This change does not migrate or alter them, change the YOLO26s model, or change inference settings.
 - Soft deletion retains files and review. Permanent deletion removes the run and its S3 outputs; the last analysis also removes its source/preparations, preserving sources shared by another run. Upload-only entries can be removed from the library.
 
@@ -27,3 +27,9 @@ Preparation also uses the single GPU queue. Finish initialization before startin
 `PYTHONPATH=scripts runtime/auth-venv/bin/python -m unittest test_fpa_cv_gateway test_fpa_cv_jobs`
 
 Coverage includes owner isolation, multipart validation/completion idempotence, size mismatch, signed result access, ready/batch states, queue restart, archive failure preservation and cleanup manifests. App and GPU EC2 role smoke checks exercise multipart PUT, completion, HEAD, presigned GET and deletion against the real bucket.
+
+## Fast initialization
+
+The current page retains uploaded File references for local previews without downloading the source again. After reopening a page, **내 컴퓨터 원본으로 미리보기** can reconnect the same-name/same-size original without another upload; court/roster settings stay intact. This local file is for preview only. The authoritative frame and detections are still decoded from the registered S3 source.
+
+A production-source check at the same 34.334-second frame read 27,280,308 bytes of a 5,107,381,548-byte file (four range requests). New frame read plus detection took 11.3 seconds; the previous entire preparation job took 54.9 seconds, including whole-source download and output archiving. Frame PNG bytes and detection JSON were identical. This is one-video validation, not a guaranteed latency for all codecs or network conditions.

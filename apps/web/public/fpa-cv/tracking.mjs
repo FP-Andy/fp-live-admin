@@ -38,6 +38,7 @@ export function trackingUI({openJob}){
   $('execution-mode').textContent=caps?.execution==='aws'?'AWS GPU 분석':'로컬 작업';
   const note=document.querySelector('#tracking-form .tracking-small-note');if(note)note.textContent=caps?.uploadStorage==='s3'?'경기별 설정을 모두 저장한 뒤 일괄 분석을 시작하세요. 초기 장면 검출과 본 분석은 GPU 한 대를 순서대로 사용합니다.':caps?.execution==='aws'?'영상 전송 후 브라우저를 닫아도 분석은 계속됩니다.':'영상은 이 컴퓨터에서 분석합니다. 다른 탭에서 작업하는 동안에도 분석은 계속됩니다.';
   library.enable(caps?.uploadStorage==='s3');
+  $('local-preview-tools').hidden=!uploaded||caps?.uploadStorage!=='s3';
   $('start-tracking').textContent=caps?.uploadStorage==='s3'?'초기 설정 저장 · 분석 준비':'초기 설정 확정 · 트래킹 시작';
   $('tracking-device').options[0].textContent=caps?.gpuLabel?`${caps.gpuLabel} · 자동 선택`:'GPU · 자동 선택';
  };
@@ -55,13 +56,25 @@ export function trackingUI({openJob}){
   $('tracking-preview-wrap').hidden=false;$('tracking-empty').hidden=true;
   video.src=url;video.load();$('tracking-upload-progress').hidden=true;status('');
  }
- async function chooseUploaded(next){
+ async function chooseUploaded(next,localFile){
   if(busy){status('현재 초기 장면 검출이 끝난 뒤 다른 영상을 선택하세요.',true);return;}
   if(file&&uploaded?.id!==next.id&&Number.isFinite(calibration.time())&&!confirm('저장하지 않은 초기 설정을 닫고 다른 영상을 여시겠어요?'))return;
   if(url)URL.revokeObjectURL(url);url=null;file=next;uploaded=next;sourceDuration=NaN;playable=true;needOriginalFrame=false;
   $('initial-frame-time').value='0';calibration.reset();$('tracking-file-name').textContent=next.name;$('tracking-file-size').textContent=sizeText(next.size);
-  $('tracking-preview-wrap').hidden=false;$('tracking-empty').hidden=true;video.src=`/api/tracking/uploads/${next.id}/source`;video.load();status('코트와 초기 13명을 지정한 뒤 초기 설정을 저장하세요.');
+  $('tracking-preview-wrap').hidden=false;$('tracking-empty').hidden=true;
+  url=localFile?URL.createObjectURL(localFile):null;
+  video.src=url||`/api/tracking/uploads/${next.id}/source`;video.load();
+  $('preview-source-note').textContent=localFile?'내 컴퓨터 원본 · 추가 전송 없음':'S3 영상 미리보기 · 같은 원본을 선택하면 다시 내려받지 않습니다.';
+  status('코트와 초기 13명을 지정한 뒤 초기 설정을 저장하세요.');
  }
+ $('tracking-local-preview').onchange=event=>{
+  const selected=event.target.files[0];event.target.value='';if(!selected||!uploaded||busy)return;
+  if(selected.size!==uploaded.size||selected.name.normalize('NFC')!==uploaded.name.normalize('NFC')){status('업로드한 영상과 파일 이름·크기가 같은 원본을 선택하세요.',true);return;}
+  const time=Number($('initial-frame-time').value)||0;
+  if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(selected);playable=true;needOriginalFrame=false;
+  video.addEventListener('loadedmetadata',()=>{video.currentTime=Math.min(time,video.duration);},{once:true});
+  video.src=url;video.load();$('preview-source-note').textContent='내 컴퓨터 원본 · 추가 전송 없음';status('미리보기를 내 컴퓨터 원본에 연결했습니다. 업로드와 초기 설정은 유지됩니다.');
+ };
  $('tracking-video-file').addEventListener('change',event=>{if(caps?.uploadStorage==='s3'){library.add([...event.target.files]);event.target.value='';}else choose(event.target.files[0]);});
  for(const name of ['dragenter','dragover'])$('tracking-drop').addEventListener(name,event=>{event.preventDefault();$('tracking-drop').classList.add('dragging');});
  for(const name of ['dragleave','drop'])$('tracking-drop').addEventListener(name,event=>{event.preventDefault();$('tracking-drop').classList.remove('dragging');if(name==='drop'){if(caps?.uploadStorage==='s3')library.add([...event.dataTransfer.files]);else choose(event.dataTransfer.files[0]);}});

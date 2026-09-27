@@ -456,7 +456,8 @@ class TrackingJobs:
         info, source = self._upload(job['uploadId'])
         folder = self.root/'jobs'/job['id']
         settings = job['options']
-        if info.get('storage')=='s3' and not source.is_file():
+        remote_frame=info.get('storage')=='s3' and job.get('kind')=='preparation'
+        if info.get('storage')=='s3' and not remote_frame and not source.is_file():
             if not self.storage:raise RuntimeError('S3 worker storage is not configured')
             if shutil.disk_usage(self.root).free < info['size']*1.3+512*1024**2:raise JobError('현재 경기를 처리할 임시 저장 공간이 부족합니다.',507)
             job.update(stage='S3 영상 준비 중');self._save(job)
@@ -465,6 +466,7 @@ class TrackingJobs:
         if job.get('kind')=='preparation':
             command=common+[str(ROOT/'scripts/fpa_cv_prepare.py'),str(source),'--output',str(folder/'output'),
                 '--model',str(self.model),'--device',job['device'],'--time',str(settings['start'])]
+            if remote_frame:command+=['--s3-key',info['key']]
         else:
             seed=settings['setup']
             atomic_json(folder/'setup.json',seed)
