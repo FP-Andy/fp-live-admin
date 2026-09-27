@@ -34,6 +34,7 @@ def arguments():
     parser.add_argument("--video-name", help="Original uploaded filename for review metadata")
     parser.add_argument("--uniforms", type=Path, help="Review JSON exported after eyedropper setup, or five-group RGB palette JSON; enables ByteTrack team constraints")
     parser.add_argument("--preview-width", type=int, default=1920)
+    parser.add_argument("--preview-encoder", choices=('auto', 'cpu', 'gpu'), default='auto', help="GPU preview encoding when available; does not alter frames used for detection")
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument("--threaded-colors", action="store_true", help="Use the in-process color stage instead of a separate CPU process")
     parser.add_argument("--serial", action="store_true", help="Disable CUDA pipeline overlap for diagnosis and output parity checks")
@@ -163,8 +164,12 @@ def main():
     ph = round(height * pw / width / 2) * 2
     if not args.no_preview:
         from fpa_cv_preview import PreviewWriter
-        preview = PreviewWriter(args.output / 'preview.mp4', fps, (pw, ph))
+        preview = PreviewWriter(args.output / 'preview.mp4', fps, (pw, ph),
+                                encoder=args.preview_encoder,
+                                device=device.removeprefix('cuda:') if device not in ('cpu', 'mps') else None)
         print(f'Preview encoder: {preview.encoder}', flush=True)
+        if preview.fallback_reason:
+            print(f'GPU preview unavailable; using CPU: {preview.fallback_reason}', flush=True)
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     appearance_worker = None
     if tracker is not None and use_pipeline and not args.threaded_colors:
