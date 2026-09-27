@@ -157,9 +157,9 @@ def main():
     pw = min(width, args.preview_width) // 2 * 2
     ph = round(height * pw / width / 2) * 2
     if not args.no_preview:
-        preview = cv2.VideoWriter(str(args.output / "preview.mp4"), cv2.VideoWriter_fourcc(*"avc1"), fps, (pw, ph))
-        if not preview.isOpened():
-            raise SystemExit("H.264 encoder unavailable. Install an OpenCV build with avc1, or use --no-preview and load the original in the browser.")
+        from fpa_cv_preview import PreviewWriter
+        preview = PreviewWriter(args.output / 'preview.mp4', fps, (pw, ph))
+        print(f'Preview encoder: {preview.encoder}', flush=True)
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     frames, summaries = [], {}
     started = time.monotonic()
@@ -232,10 +232,15 @@ def main():
                 last_progress = now
             if processed == 1 or processed % 50 == 0:
                 print(f"{(frame_index-first+1)/(last-first)*100:5.1f}% | source {t:.2f}s | {len(boxes)} people | {len(summaries)} tracks | {time.monotonic()-started:.1f}s elapsed", flush=True)
+    except BaseException:
+        if preview:
+            preview.abort()
+        raise
     finally:
         cap.release()
-        if preview:
-            preview.release()
+    if preview:
+        progress('미리보기 영상 저장 중', 97, eta=None)
+        preview.release()
     stats = frame_progress(processed, total_frames, time.monotonic()-started)
     # Frame throughput cannot estimate final file writes; do not retain an old ETA.
     progress('결과 저장 중', 98, **{**stats, 'eta': None}, samples=processed, trackCount=len(summaries))
