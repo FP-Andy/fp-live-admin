@@ -30,6 +30,7 @@
         </label>
         <fieldset id="tracking-fields">
           <div id="tracking-preview-wrap" class="tracking-preview-wrap" hidden>
+            <div id="local-preview-tools" class="roi-toolbar" hidden><label class="button">내 컴퓨터 원본으로 미리보기<input id="tracking-local-preview" type="file" accept="video/*,.mkv,.avi" hidden></label><span id="preview-source-note">S3 영상 미리보기 · 같은 원본을 선택하면 다시 내려받지 않습니다.</span></div>
             <div id="tracking-preview-stage"><video crossorigin="anonymous" id="tracking-preview" controls muted playsinline preload="metadata"></video><img crossorigin="anonymous" id="tracking-prepared" alt="초기 선수 설정 장면" hidden><div id="tracking-seed-boxes"></div><svg id="tracking-roi" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="코트 범위"></svg><button id="tracking-pick-layer" type="button" aria-label="초기 유니폼 색상 선택" hidden></button></div>
             <div class="roi-toolbar"><button id="roi-start" type="button">코트 범위 지정</button><button id="roi-clear" type="button" class="subtle">초기화</button><span id="roi-status">경기장 네 꼭짓점을 지정하세요</span></div>
             <p id="preflight-hint" class="preflight-hint" role="status"></p>
