@@ -105,7 +105,7 @@ def main():
     import ultralytics
     from ultralytics import YOLO
     from fpa_cv_colors import appearance
-    from fpa_cv_uniforms import load_uniforms, observed_team, classify_uniform
+    from fpa_cv_uniforms import load_uniforms, classify_uniform, uniform_team
     from fpa_cv_duplicates import suppress_new_duplicates
 
     device = select_device(args.device)
@@ -190,13 +190,15 @@ def main():
                                            device=device, verbose=False)[0]
                     detections = result.boxes.cpu().numpy()
                 descriptors=[appearance(frame, box) for box in detections.xyxyn]
+                classifications=[classify_uniform(a,uniforms) for a in descriptors]
                 if original_scores is None:
                     established=[old.xyxy for old in tracker.tracked_stracks if old.is_activated and (old.tracklet_len>=3 or old.track_id in seed_tracks)]
-                    keep,reasons=suppress_new_duplicates(detections,descriptors,[classify_uniform(a,uniforms) for a in descriptors],established)
+                    keep,reasons=suppress_new_duplicates(detections,descriptors,classifications,established)
                     suppressed_count+=len(reasons)
                     detections=detections[keep]
                     descriptors=[descriptors[i] for i in keep]
-                teams = [observed_team(a, uniforms) for a in descriptors]
+                    classifications=[classifications[i] for i in keep]
+                teams = [uniform_team(result) for result in classifications]
                 if manual_teams is not None:
                     teams=[manual if manual is not None else observed for manual,observed in zip(manual_teams,teams)]
                 output = tracker.update(detections, teams=teams)

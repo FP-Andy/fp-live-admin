@@ -63,7 +63,11 @@ def classify_uniform(appearance,uniforms):
 
 
 def observed_team(appearance,uniforms):
-    result=classify_uniform(appearance,uniforms)
+    return uniform_team(classify_uniform(appearance,uniforms))
+
+
+def uniform_team(result):
+    """Reuse the classification already computed for duplicate suppression."""
     if result['margin']<.4:
         return 0
     return {'home':1,'home_gk':1,'away':2,'away_gk':2}.get(result['group'],0)
