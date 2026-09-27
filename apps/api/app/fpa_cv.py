@@ -21,7 +21,10 @@ ASSETS = {'tracks.json', 'preview.mp4', 'source', 'detections.json', 'frame.png'
 
 def same_origin(request: Request):
     origin = request.headers.get('origin')
-    if origin and urlsplit(origin).netloc != request.headers.get('host'):
+    # CloudFront replaces Host with the EC2 origin hostname. Trust explicitly
+    # configured public origins, never a client-supplied X-Forwarded-Host.
+    trusted = {value.strip() for value in os.getenv('FPA_CV_ALLOWED_ORIGINS', '').split(',') if value.strip()}
+    if origin and origin not in trusted and urlsplit(origin).netloc != request.headers.get('host'):
         raise HTTPException(403, '같은 FPC 화면에서 요청하세요.')
 
 
@@ -106,6 +109,15 @@ async def upload(request: Request, name: str, user: User = Depends(require_sessi
     value = await remote('uploads', 'POST', params={'name': name}, content=request.stream(),
                          headers={'Content-Length': str(size), 'Content-Type': 'application/octet-stream'})
     return register(db, value, 'upload', user)
+
+
+@router.post('/uploads/check')
+async def check_upload(user: User = Depends(require_session_user)):
+    # Reject auth/origin/worker failures before the browser sends gigabytes.
+    result = await remote('capabilities')
+    if not result.get('ready'):
+        raise HTTPException(503, result.get('error') or 'AWS 분석 서버를 준비하고 있습니다. 잠시 후 다시 시도하세요.')
+    return {'ready': True}
 
 
 @router.get('/jobs')
