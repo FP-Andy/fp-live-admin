@@ -98,6 +98,8 @@ services:
       SCHEDULE_SLACK_POST_EMPTY_DAILY: ${SCHEDULE_SLACK_POST_EMPTY_DAILY:-0}
       SCHEDULE_SLACK_MENTION_MAP_JSON: ${SCHEDULE_SLACK_MENTION_MAP_JSON:-}
       HIGHLIGHT_RUNTIME_DIR: /app/runtime/highlight
+      FPA_CV_WORKER_URL: ${FPA_CV_WORKER_URL:-}
+      FPA_CV_WORKER_TOKEN: ${FPA_CV_WORKER_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

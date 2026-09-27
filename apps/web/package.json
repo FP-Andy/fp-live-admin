@@ -4,14 +4,16 @@
   "version": "0.1.0",
   "scripts": {
     "copy:ffmpeg": "mkdir -p public/ffmpeg && cp node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm public/ffmpeg/",
-    "predev": "npm run copy:ffmpeg",
+    "predev": "npm run copy:ffmpeg && npm run build:fpa-cv",
     "dev": "NEXT_DIST_DIR=.next-dev next dev",
-    "prebuild": "npm run copy:ffmpeg",
+    "prebuild": "npm run copy:ffmpeg && npm run build:fpa-cv",
     "build": "next build",
     "start": "next start",
     "preview:api": "node ../../scripts/preview-console.cjs",
     "preview:ui": "NEXT_DIST_DIR=.next-dev NEXT_API_PROXY_TARGET=http://127.0.0.1:4319 npm run dev -- --hostname 127.0.0.1 --port 4318",
-    "preview:auth": "../../runtime/auth-venv/bin/python ../../scripts/preview_auth.py"
+    "preview:fpa": "FPA_CV_PREVIEW_ORIGIN=http://127.0.0.1:4331 npm run preview:ui",
+    "preview:auth": "../../runtime/auth-venv/bin/python ../../scripts/preview_auth.py",
+    "build:fpa-cv": "node scripts/build-fpa-cv-editor.cjs"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",

@@ -1,0 +1,9 @@
+/* Shared by the video workbench, embedded FPC editor and user guide. */
+:root {
+  --fp-brand:#ff7400;
+  --fp-brand-hover:#ff8d2e;
+  --fp-brand-ink:#251100;
+  --fp-brand-soft:#332218;
+  --fp-brand-edge:#92501f;
+  --fp-brand-text:#ffb577;
+}

@@ -2033,9 +2033,11 @@ def parse_logs_to_dataframe(
         pos_match = re.search(r"Pos\((.+?), (.+?)\)", parts[4])
         if pos_match:
             log_dict["StartX"], log_dict["StartY"] = pos_match.groups()
-        action_match = re.match(r"(\d+) (.+?)(?: to (\d+))?$", parts[5])
+        # Team actions such as Press may have no player number.
+        action_match = re.match(r"(?:(\d+) )?(.+?)(?: to (\d+))?$", parts[5].strip())
         if action_match:
             log_dict["Player"], log_dict["Action"], log_dict["Receiver"] = action_match.groups()
+            log_dict["Player"] = log_dict["Player"] or ""
             log_dict["Receiver"] = log_dict["Receiver"] if log_dict["Receiver"] else ""
         log_dict["EndX"], log_dict["EndY"], log_dict["PathPoints"], log_dict["PathPointCount"], log_dict["PathDistance"], log_dict["Tags"] = "", "", "", "", "", ""
         log_dict["DualState"], log_dict["DualInputTier"], log_dict["DualActorTeam"], log_dict["DualPrimaryRowIndex"] = "", "", "", ""
@@ -2897,7 +2899,7 @@ def _merge_scene_columns(df: pd.DataFrame, scene_rows: list[dict[str, Any]] | No
         return df
     merged = df.copy()
     row_count = len(merged.index)
-    for column in ["SceneIndex", "SceneActionIndex", "SceneState"]:
+    for column in ["SceneIndex", "SceneActionIndex", "SceneState", "StatInput", "FpaEventId"]:
         values = [""] * row_count
         for index, row in enumerate(scene_rows[:row_count]):
             if isinstance(row, dict):
@@ -3698,6 +3700,11 @@ def import_logs_from_workbook(file_bytes: bytes) -> dict[str, Any]:
                 "SceneIndex": scene_index,
                 "SceneActionIndex": scene_action_index,
                 "SceneState": scene_state,
+                "Half": half,
+                "Direction": direction,
+                "Sport": clean_value(row.get("Sport", "")),
+                "StatInput": clean_value(row.get("StatInput", "")),
+                "FpaEventId": clean_value(row.get("FpaEventId", "")),
             }
         )
 

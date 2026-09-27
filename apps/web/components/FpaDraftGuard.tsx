@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 
-export const FPA_DRAFT_STORAGE_KEY = 'fpa-live-draft-v1';
-export const FPA_DRAFT_EVENT = 'fpa-draft-state';
+import { FPA_DRAFT_STORAGE_KEY, FPA_DRAFT_EVENT } from '../lib/fpa-draft';
+export { FPA_DRAFT_STORAGE_KEY, FPA_DRAFT_EVENT } from '../lib/fpa-draft';
 export const FPA_DRAFT_WARNING_MESSAGE =
   'FPA 입력 중인 데이터가 있습니다.\n\n/admin/fpa 내부에서는 유지되지만, 이 영역을 벗어나면 입력 내용이 사라질 수 있습니다.\n\n계속 이동할까요?';
 

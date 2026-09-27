@@ -1,0 +1,22 @@
+services:
+  fpa-worker:
+    build:
+      context: ../..
+      dockerfile: infra/fpa-worker/Dockerfile
+      args:
+        BASE_IMAGE: ${FPA_CV_BASE_IMAGE:-highlight-worker-highlight-worker}
+    container_name: app-fpa-worker
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    gpus: all
+    ports:
+      - "${FPA_CV_PRIVATE_IP:?GPU private IP required}:4333:4333"
+    volumes:
+      - ${FPA_CV_RUNTIME_DIR:-/opt/fpa-cv/runtime}:/workspace/runtime
+      - ${FPA_CV_TOKEN_FILE:-/opt/fpa-cv/worker-token}:/run/secrets/fpa-worker-token:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; t=open('/run/secrets/fpa-worker-token').read().strip(); urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:4333/api/tracking/capabilities',headers={'Authorization':'Bearer '+t}),timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

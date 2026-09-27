@@ -1,0 +1,11 @@
+# Only the dedicated GPU worker builds from the repository root.
+**
+!scripts/
+!scripts/fpa_cv*.py
+!apps/
+!apps/api/
+!apps/api/app/
+!apps/api/app/bytetrack_player.yaml
+!infra/
+!infra/fpa-worker/
+!infra/fpa-worker/Dockerfile
