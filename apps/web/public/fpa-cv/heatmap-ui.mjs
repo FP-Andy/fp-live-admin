@@ -1,5 +1,7 @@
 import {heatmapSteps} from './heatmaps.mjs';
 import {paintHeatmap,HEATMAP_EXPORT_SIZE} from './heatmap-render.mjs';
+import {saveReport} from './report-store.mjs';
+import {fpaDocument} from './fpa-events.mjs';
 
 export function heatmapUI({getData,getWorking,getRecovery,message}) {
   const $=id=>document.getElementById(id);let result=null,revision=0,dirty=true;
@@ -20,13 +22,13 @@ export function heatmapUI({getData,getWorking,getRecovery,message}) {
       article.append(title,canvas,quality,button);holder.append(article);
     }
     $('heatmap-status').textContent=`${result.resultVersion}차 결과 · 확인 ${result.confirmedScenes}장면 · 평균 유효 ${(result.players.reduce((n,p)=>n+p.coverage,0)/result.players.length*100).toFixed(1)}% · 최저 선수 ${(Math.min(...result.players.map(p=>p.coverage))*100).toFixed(1)}% · 교체 미반영`;
-    $('heatmap-json').disabled=false;$('heatmap-report').disabled=false;
+    $('heatmap-json').disabled=false;$('heatmap-report').disabled=false;$('heatmap-fcm').disabled=false;
   }
   async function compute(){
     const data=getData(),working=getWorking();if(!data)return;
     if(getRecovery()?.status!=='complete'){message('선수 연결 계산이 완료된 뒤 히트맵을 만들 수 있습니다.',true);return;}
     if(!working.setup||getRecovery().issues.length){message('코트와 명단 13명 초기 설정을 완료하세요.',true);return;}
-    const ticket=++revision;dirty=false;$('heatmap-build').disabled=true;result=null;render();$('heatmap-json').disabled=true;$('heatmap-report').disabled=true;
+    const ticket=++revision;dirty=false;$('heatmap-build').disabled=true;result=null;render();$('heatmap-json').disabled=true;$('heatmap-report').disabled=true;$('heatmap-fcm').disabled=true;
     try{
       const steps=heatmapSteps(getRecovery().data||data,working,{point:$('heatmap-point').value,turn:Number($('heatmap-turn').value),manualOnly:$('heatmap-manual').checked});
       let next=steps.next();
@@ -42,10 +44,20 @@ export function heatmapUI({getData,getWorking,getRecovery,message}) {
     }catch(error){dirty=true;$('heatmap-status').textContent=error.message;message(error.message,true);}
     finally{if(ticket===revision)$('heatmap-build').disabled=false;}
   }
-  function invalidate(){++revision;dirty=true;result=null;$('heatmap-cards').replaceChildren();$('heatmap-build').disabled=false;$('heatmap-json').disabled=true;$('heatmap-report').disabled=true;$('heatmap-status').textContent='선수 연결을 계산한 뒤 히트맵 만들기를 누르세요.';}
+  function invalidate(){++revision;dirty=true;result=null;$('heatmap-cards').replaceChildren();$('heatmap-build').disabled=false;$('heatmap-json').disabled=true;$('heatmap-report').disabled=true;$('heatmap-fcm').disabled=true;$('heatmap-status').textContent='선수 연결을 계산한 뒤 히트맵 만들기를 누르세요.';}
   $('heatmap-build').onclick=compute;
   for(const id of ['heatmap-point','heatmap-turn','heatmap-manual'])$(id).onchange=invalidate;
   $('heatmap-json').onclick=()=>{if(result)save(new Blob([JSON.stringify(result)],{type:'application/json'}),'fpa-heatmaps.json');};
+  $('heatmap-fcm').onclick=async()=>{
+    if(!result)return;
+    if(location.protocol==='file:'||!location.pathname.startsWith('/fpa-cv/')){message('FPC 웹에서 열거나 좌표·품질 JSON을 FCM 리포트에 불러오세요.',true);return;}
+    const popup=window.open('about:blank','_blank');
+    if(!popup){message('새 탭을 열 수 없습니다. 팝업을 허용하거나 좌표·품질 JSON을 저장하세요.',true);return;}
+    popup.opener=null;
+    const id=crypto.randomUUID();
+    try{await saveReport({id,kind:'source',title:result.video,updatedAt:new Date().toISOString(),heatmap:result,fpa:fpaDocument(getWorking())});popup.location.href=`/admin/fcm/futsal/reports?report=${encodeURIComponent(id)}`;}
+    catch(error){popup.close();message(error.message,true);}
+  };
   $('heatmap-report').onclick=()=>{
     if(!result)return;const report=document.createElement('canvas'),{width,height}=HEATMAP_EXPORT_SIZE;report.width=2*width;report.height=Math.ceil(result.players.length/2)*height;
     const ctx=report.getContext('2d');result.players.forEach((p,i)=>ctx.drawImage(exportCanvas(p),(i%2)*width,Math.floor(i/2)*height));

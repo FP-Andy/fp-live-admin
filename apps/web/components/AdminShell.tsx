@@ -225,7 +225,13 @@ const FUTSAL_FCM_ITEMS: NavItem[] = [
     href: '/admin/fcm/futsal',
     label: 'Queen Cup Cards',
     icon: '▣',
-    match: (pathname) => pathname.startsWith('/admin/fcm/futsal'),
+    match: (pathname) => pathname === '/admin/fcm/futsal',
+  },
+  {
+    href: '/admin/fcm/futsal/reports',
+    label: '매치 리포트',
+    icon: '▤',
+    match: (pathname) => pathname.startsWith('/admin/fcm/futsal/reports'),
   },
   {
     href: '/admin/fcm/guide',
@@ -323,6 +329,9 @@ function getPageMeta(pathname: string) {
   }
   if (pathname.startsWith('/admin/fpa')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'FPA' };
+  }
+  if (pathname.startsWith('/admin/fcm/futsal/reports')) {
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Match Report' };
   }
   if (pathname.startsWith('/admin/fcm/match-status')) {
     return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Match Status' };

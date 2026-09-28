@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('../apps/web/node_modules/typescript');
+const cache=new Map();function load(file){file=path.resolve(file);if(cache.has(file))return cache.get(file);const m={exports:{}};cache.set(file,m.exports);const compiled=ts.transpile(fs.readFileSync(file,'utf8'),{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020});Function('exports','require','module',compiled)(m.exports,id=>id.startsWith('.')?load(path.resolve(path.dirname(file),id)+'.ts'):require(id),m);return m.exports;}
+const r=load('apps/web/lib/futsal-report.ts');
+const h={schema:'fpa-heatmaps/v1',datasetId:'one',video:'test',from:0,to:10,width:2,height:1,scale:1,players:[{id:'home-1',group:'home',jersey:'2',grid:[1,2],positions:[{t:0,x:.1,y:.2,seconds:1},{t:1,x:.8,y:.9,seconds:3}]}]};
+r.validateHeatmap(h);assert.throws(()=>r.validateHeatmap({...h,scale:0}));assert.throws(()=>r.validateHeatmap({...h,players:[{...h.players[0],positions:[{t:0,x:4,y:.5,seconds:1}]}]}));
+const p=r.blankPlayer(h.players[0]),source=r.parseFpaSource({rows:[{Team:'home',Player:2,Action:'Shot',StartX:10,StartY:4,Direction:'right'},{Team:'away',Player:2,Action:'Shot',StartX:20,StartY:10},{Team:'home',Player:2,Action:'Pass'},{Team:'home',Player:2,Action:'Tackle',Tags:'Fail'},{Team:'home',Player:2,Action:'Acquisition'},{Team:'home',Player:2,Action:'Intercept',Tags:'Fail'},{Team:'home',Player:2,Action:'Tackle',Tags:'Success'}]});
+const events=r.reportEvents(source,p);assert.deepEqual(events.map(e=>e.action),['Shot','Acquisition','Tackle']);assert.deepEqual(r.eventPoint(events[0],'right'),{x:10,y:16});assert.deepEqual(r.eventPoint(events[0],'left'),{x:30,y:4});
+p.jersey='77';assert.equal(r.reportEvents(source,p).length,3,'Display number does not silently change the source binding');
+assert.equal(r.spatialSummary(h,h.players[0],'right').longitudinal[2],.75);assert.equal(r.spatialSummary(h,h.players[0],'left').longitudinal[0],.75);
+const d=r.attachHeatmap(r.emptyDraft(),h);d.fpa=source;d.matchId='match-one';d.players['home-1'].name='테스트';d.players['home-1'].position='ALA';d.players['home-1'].heatComment='직접 수정';assert.deepEqual(r.restoreDraft(JSON.parse(JSON.stringify(d))),d);
+const different=r.attachHeatmap(d,{...h,datasetId:'two'});assert.equal(different.fpa,null);assert.equal(different.matchId,'');assert.equal(different.players['home-1'].heatComment,'');
+assert.throws(()=>r.restoreDraft({...d,players:{}}));assert.throws(()=>r.parseFpaSource({rows:[{Player:{bad:true}}]}));
+const draft=r.commentDraft(h,h.players[0],p,events,'right');assert.match(draft.heatComment,/관측되지 않은 구간/);assert.equal(draft.strengths[0],'');assert.equal(r.commentDraft(null,undefined,p,[],'right').heatComment,'');
+console.log('PASS: strict heatmap import, team+jersey filtering, explicit recovery outcomes, direction/coordinate alignment, independent display edits, draft roundtrip, match isolation and grounded low-coverage comments.');
+if(process.argv[2]){r.validateHeatmap(JSON.parse(fs.readFileSync(process.argv[2],'utf8')));console.log('PASS: supplied real heatmap export validates.');}
