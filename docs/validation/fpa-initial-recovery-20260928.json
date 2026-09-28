@@ -1,0 +1,974 @@
+{
+  "안양–대전": {
+    "before": {
+      "file": "4경기 안양 vs 대전.MP4",
+      "seconds": 17.102,
+      "issues": [],
+      "setup": null,
+      "segments": 0,
+      "meanCoverage": 0.034865562308664194,
+      "players": [
+        {
+          "id": "home-1",
+          "jersey": "6",
+          "group": "home",
+          "coverage": 0.01091161612479642,
+          "identityCoverage": 0.01120652455505618,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.20022900000000066,
+            "teamConflict": 0,
+            "overlap": 0.06674299999999889,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-2",
+          "jersey": "17",
+          "group": "home",
+          "coverage": 0.013786974371125405,
+          "identityCoverage": 0.014229337016515048,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.2669719999999991,
+            "teamConflict": 0,
+            "overlap": 0.13348600000000133,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-3",
+          "jersey": "19",
+          "group": "home",
+          "coverage": 0.14981353899152755,
+          "identityCoverage": 0.15534307416149068,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.9344021586179849,
+            "teamConflict": 0.06674300000000244,
+            "overlap": 0.734173475853936,
+            "outside": 3.2704082689438394,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-4",
+          "jersey": "21",
+          "group": "home",
+          "coverage": 0.01916905532595867,
+          "identityCoverage": 0.020127507899518945,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.6006871586179798,
+            "teamConflict": 0.06674300000000066,
+            "overlap": 0.2002290000000011,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-5",
+          "jersey": "22",
+          "group": "home",
+          "coverage": 0.011353978945402115,
+          "identityCoverage": 0.01238615862652733,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.93440215861798,
+            "teamConflict": 0,
+            "overlap": 0,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-1",
+          "jersey": "19",
+          "group": "away",
+          "coverage": 0.0008109983584303957,
+          "identityCoverage": 0.0010321798563412694,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.06674315861798208,
+            "teamConflict": 0,
+            "overlap": 0.133486,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-2",
+          "jersey": "15",
+          "group": "away",
+          "coverage": 0.04541591508074424,
+          "identityCoverage": 0.04607945957447686,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.5339444758539447,
+            "teamConflict": 0,
+            "overlap": 0.06674300000000244,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-3",
+          "jersey": "12",
+          "group": "away",
+          "coverage": 0.07328477260368692,
+          "identityCoverage": 0.07505422353567757,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.8009160000000017,
+            "teamConflict": 0,
+            "overlap": 0.8009163172359592,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-4",
+          "jersey": "11",
+          "group": "away",
+          "coverage": 0.011575160268096936,
+          "identityCoverage": 0.011722614483226817,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.06674299999999889,
+            "teamConflict": 0,
+            "overlap": 0.06674300000000066,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-5",
+          "jersey": "13",
+          "group": "away",
+          "coverage": 0.012533613016873266,
+          "identityCoverage": 0.0134183384828686,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.1334859999999991,
+            "teamConflict": 0,
+            "overlap": 0.6674301586179818,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        }
+      ]
+    },
+    "after": {
+      "file": "4경기 안양 vs 대전.MP4",
+      "seconds": 164.519,
+      "issues": [],
+      "setup": {
+        "time": 1.368235
+      },
+      "segments": 630,
+      "meanCoverage": 0.7050747140401497,
+      "players": [
+        {
+          "id": "home-1",
+          "jersey": "6",
+          "group": "home",
+          "coverage": 0.5472765253083438,
+          "identityCoverage": 0.5819282795402247,
+          "excludedReasons": {
+            "duplicate": 0.06674300000000244,
+            "lowConfidence": 13.081633551630073,
+            "teamConflict": 0.8009163172360871,
+            "overlap": 9.477509965449816,
+            "outside": 7.9424195378877585,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-2",
+          "jersey": "17",
+          "group": "home",
+          "coverage": 0.8942732887540905,
+          "identityCoverage": 0.9917405619522726,
+          "excludedReasons": {
+            "duplicate": 0.20022931723599413,
+            "lowConfidence": 20.690337930901023,
+            "teamConflict": 1.2681174758539555,
+            "overlap": 10.144939489596279,
+            "outside": 55.93065525481319,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-3",
+          "jersey": "19",
+          "group": "home",
+          "coverage": 0.5941669820276047,
+          "identityCoverage": 0.6533698727222296,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 14.283007551630277,
+            "teamConflict": 0.3337151586179914,
+            "overlap": 11.212828599921721,
+            "outside": 27.7650987860238,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-4",
+          "jersey": "21",
+          "group": "home",
+          "coverage": 0.6701059356057336,
+          "identityCoverage": 0.9360765750499758,
+          "excludedReasons": {
+            "duplicate": 0.06674315861801006,
+            "lowConfidence": 28.39915618374742,
+            "teamConflict": 0.40045799999990095,
+            "overlap": 12.681174282686172,
+            "outside": 199.2279303435527,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-5",
+          "jersey": "22",
+          "group": "home",
+          "coverage": 0.5066528746612007,
+          "identityCoverage": 0.554206876750456,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 14.416494186102051,
+            "teamConflict": 1.535089475854079,
+            "overlap": 13.615575965450203,
+            "outside": 13.482091393012269,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-1",
+          "jersey": "19",
+          "group": "away",
+          "coverage": 0.7763836006222579,
+          "identityCoverage": 0.8855734862042884,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 21.424510137810028,
+            "teamConflict": 1.7353183172361,
+            "overlap": 9.210536855124463,
+            "outside": 66.47605322026232,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-2",
+          "jersey": "15",
+          "group": "away",
+          "coverage": 0.7530120966543667,
+          "identityCoverage": 0.8173021579475863,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 23.960746041226336,
+            "teamConflict": 1.2681176344720484,
+            "overlap": 11.279571124068596,
+            "outside": 21.69148245504681,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-3",
+          "jersey": "12",
+          "group": "away",
+          "coverage": 0.7520536442557605,
+          "identityCoverage": 0.8150166177876619,
+          "excludedReasons": {
+            "duplicate": 0.6006873172360088,
+            "lowConfidence": 27.43138267569809,
+            "teamConflict": 0.600687475853988,
+            "overlap": 13.08163307577685,
+            "outside": 15.28415286886586,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-4",
+          "jersey": "11",
+          "group": "away",
+          "coverage": 0.8466455609589791,
+          "identityCoverage": 0.9655674289474379,
+          "excludedReasons": {
+            "duplicate": 0.06674300000000244,
+            "lowConfidence": 23.29331524813559,
+            "teamConflict": 0,
+            "overlap": 7.808933379269744,
+            "outside": 76.48750670986021,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-5",
+          "jersey": "13",
+          "group": "away",
+          "coverage": 0.7101766315531591,
+          "identityCoverage": 0.8056532719704603,
+          "excludedReasons": {
+            "duplicate": 0.06674300000000244,
+            "lowConfidence": 14.950437393011873,
+            "teamConflict": 52.19304551001514,
+            "overlap": 8.409621648214198,
+            "outside": 10.812370124068366,
+            "automaticFiltered": 0
+          }
+        }
+      ]
+    }
+  },
+  "울산–전북": {
+    "before": {
+      "file": "2경기 울산 전북.MP4",
+      "seconds": 26.524,
+      "issues": [],
+      "setup": null,
+      "segments": 13,
+      "meanCoverage": 0.029496252825864506,
+      "players": [
+        {
+          "id": "home-1",
+          "jersey": "2",
+          "group": "home",
+          "coverage": 0.014885419515811826,
+          "identityCoverage": 0.015246715492759227,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.33366500000000343,
+            "teamConflict": 0,
+            "overlap": 0,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-2",
+          "jersey": "3",
+          "group": "home",
+          "coverage": 0.026157872765286402,
+          "identityCoverage": 0.02702498419277068,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.5338643333333266,
+            "teamConflict": 0.13346633333333102,
+            "overlap": 0.13346633333333102,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-3",
+          "jersey": "4",
+          "group": "home",
+          "coverage": 0,
+          "identityCoverage": 0,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0,
+            "teamConflict": 0,
+            "overlap": 0,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-4",
+          "jersey": "5",
+          "group": "home",
+          "coverage": 0.023484277843696718,
+          "identityCoverage": 0.024423648827507322,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.734064333333329,
+            "teamConflict": 0,
+            "overlap": 0.13346599999999853,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-5",
+          "jersey": "6",
+          "group": "home",
+          "coverage": 0.04574014792202473,
+          "identityCoverage": 0.05058152123185667,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 1.2011953333333167,
+            "teamConflict": 0,
+            "overlap": 0.3336653333333288,
+            "outside": 2.936256999999955,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-1",
+          "jersey": "2",
+          "group": "away",
+          "coverage": 0.05997523179183632,
+          "identityCoverage": 0.06250430760077336,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.6005983333333234,
+            "teamConflict": 0,
+            "overlap": 1.7350603333333083,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-2",
+          "jersey": "3",
+          "group": "away",
+          "coverage": 0.0398871419064348,
+          "identityCoverage": 0.04097103200289804,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.7340643333333219,
+            "teamConflict": 0.06673333333333176,
+            "overlap": 0.2001993333333303,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-3",
+          "jersey": "4",
+          "group": "away",
+          "coverage": 0.06626179261882628,
+          "identityCoverage": 0.06669534815209999,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.3336653333333288,
+            "teamConflict": 0,
+            "overlap": 0.06673299999999927,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-4",
+          "jersey": "5",
+          "group": "away",
+          "coverage": 0.006214301270663699,
+          "identityCoverage": 0.007804006456727001,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.06673333333333176,
+            "teamConflict": 0,
+            "overlap": 1.4013953333333333,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-5",
+          "jersey": "6",
+          "group": "away",
+          "coverage": 0.012356342624064239,
+          "identityCoverage": 0.01271763932288532,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.3336656666666613,
+            "teamConflict": 0,
+            "overlap": 0,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        }
+      ]
+    },
+    "after": {
+      "file": "2경기 울산 전북.MP4",
+      "seconds": 185.449,
+      "issues": [],
+      "setup": {
+        "time": 34.3343
+      },
+      "segments": 469,
+      "meanCoverage": 0.5617583718398762,
+      "players": [
+        {
+          "id": "home-1",
+          "jersey": "2",
+          "group": "home",
+          "coverage": 0.7368282440155348,
+          "identityCoverage": 0.7658042261228846,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 16.216141666666495,
+            "teamConflict": 1.4681286666666438,
+            "overlap": 7.273910333333305,
+            "outside": 1.80179366666664,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-2",
+          "jersey": "3",
+          "group": "home",
+          "coverage": 0.9239076080361508,
+          "identityCoverage": 0.9882906608529772,
+          "excludedReasons": {
+            "duplicate": 0.4671326666666573,
+            "lowConfidence": 24.023917999999696,
+            "teamConflict": 0.4003986666666606,
+            "overlap": 8.875505999999888,
+            "outside": 25.692248999999947,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-3",
+          "jersey": "4",
+          "group": "home",
+          "coverage": 0.7221596020858915,
+          "identityCoverage": 0.7622635215784951,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 13.880486999999903,
+            "teamConflict": 0.5338653333333241,
+            "overlap": 6.740042999999957,
+            "outside": 15.882480666666652,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-4",
+          "jersey": "5",
+          "group": "home",
+          "coverage": 0.7414528343251457,
+          "identityCoverage": 0.782279352629444,
+          "excludedReasons": {
+            "duplicate": 0.3336659999999938,
+            "lowConfidence": 15.14841866666648,
+            "teamConflict": 0.20019966666666278,
+            "overlap": 6.873511333333397,
+            "outside": 15.148416666666662,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-5",
+          "jersey": "6",
+          "group": "home",
+          "coverage": 0.44865809564378445,
+          "identityCoverage": 0.4707694419172808,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 9.476097999999865,
+            "teamConflict": 0,
+            "overlap": 2.6693246666666255,
+            "outside": 8.274905333333209,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-1",
+          "jersey": "2",
+          "group": "away",
+          "coverage": 0.40226761135388633,
+          "identityCoverage": 0.4497419785215113,
+          "excludedReasons": {
+            "duplicate": 0.06673333333333176,
+            "lowConfidence": 15.74901233333324,
+            "teamConflict": 0.6673309999999901,
+            "overlap": 7.474108333333248,
+            "outside": 19.88646599999987,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-2",
+          "jersey": "3",
+          "group": "away",
+          "coverage": 0.3523364228805345,
+          "identityCoverage": 0.3899835282861483,
+          "excludedReasons": {
+            "duplicate": 0.06673333333333176,
+            "lowConfidence": 14.34762133333318,
+            "teamConflict": 0.3336656666666613,
+            "overlap": 0.9342633333333197,
+            "outside": 19.085669000000024,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-3",
+          "jersey": "4",
+          "group": "away",
+          "coverage": 0.21143075870584918,
+          "identityCoverage": 0.2216915810542501,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 5.6723156666666625,
+            "teamConflict": 0.26693199999999706,
+            "overlap": 1.6015936666666448,
+            "outside": 1.935260000000028,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-4",
+          "jersey": "5",
+          "group": "away",
+          "coverage": 0.1996524863964693,
+          "identityCoverage": 0.2176450592546392,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 6.806779333333282,
+            "teamConflict": 0.3336659999999938,
+            "overlap": 3.203189999999978,
+            "outside": 6.272912333333238,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-5",
+          "jersey": "6",
+          "group": "away",
+          "coverage": 0.8788900549555156,
+          "identityCoverage": 0.9262199077026667,
+          "excludedReasons": {
+            "duplicate": 0.2001993333333303,
+            "lowConfidence": 23.823720666666368,
+            "teamConflict": 1.0009973333333164,
+            "overlap": 5.004983999999922,
+            "outside": 13.680287333333126,
+            "automaticFiltered": 0
+          }
+        }
+      ]
+    }
+  },
+  "수원–대전": {
+    "before": {
+      "file": "6경기 수원fc vs 대전.MP4",
+      "seconds": 28.614,
+      "issues": [],
+      "setup": null,
+      "segments": 11,
+      "meanCoverage": 0.0380191229572601,
+      "players": [
+        {
+          "id": "home-1",
+          "jersey": "2",
+          "group": "home",
+          "coverage": 0.017531874901727078,
+          "identityCoverage": 0.018104344401528503,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.33366566666666664,
+            "teamConflict": 0,
+            "overlap": 0.2001993333333303,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-2",
+          "jersey": "3",
+          "group": "home",
+          "coverage": 0.013023678886500445,
+          "identityCoverage": 0.014526410653284583,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.8675303333333293,
+            "teamConflict": 0,
+            "overlap": 0.5338646666666609,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-3",
+          "jersey": "4",
+          "group": "home",
+          "coverage": 0.06440280568120522,
+          "identityCoverage": 0.06454592278807775,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.13346600000000564,
+            "teamConflict": 0,
+            "overlap": 0,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-4",
+          "jersey": "5",
+          "group": "home",
+          "coverage": 0.02390059723810477,
+          "identityCoverage": 0.028766587092824078,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.8007979999999986,
+            "teamConflict": 0,
+            "overlap": 0.5338653333333312,
+            "outside": 3.2031883333333155,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-5",
+          "jersey": "6",
+          "group": "home",
+          "coverage": 0.10225734192817039,
+          "identityCoverage": 0.10469033810655994,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.8675309999999943,
+            "teamConflict": 0,
+            "overlap": 1.401395999999977,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-1",
+          "jersey": "2",
+          "group": "away",
+          "coverage": 0.022612541131629377,
+          "identityCoverage": 0.022970333898810674,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.2669319999999997,
+            "teamConflict": 0,
+            "overlap": 0.06673299999999927,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-2",
+          "jersey": "3",
+          "group": "away",
+          "coverage": 0.020680456614479217,
+          "identityCoverage": 0.021610719238899054,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.8675303333333275,
+            "teamConflict": 0,
+            "overlap": 0,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-3",
+          "jersey": "4",
+          "group": "away",
+          "coverage": 0.10039681810907918,
+          "identityCoverage": 0.10182799167986419,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.6005980000000051,
+            "teamConflict": 0,
+            "overlap": 0.7340643333333361,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-4",
+          "jersey": "5",
+          "group": "away",
+          "coverage": 0.013381472011118861,
+          "identityCoverage": 0.014526410653284584,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.6005976666666637,
+            "teamConflict": 0,
+            "overlap": 0.46713199999999233,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-5",
+          "jersey": "6",
+          "group": "away",
+          "coverage": 0.002003643070586434,
+          "identityCoverage": 0.002289877641768589,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.06673300000000015,
+            "teamConflict": 0,
+            "overlap": 0.20019933333333384,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        }
+      ]
+    },
+    "after": {
+      "file": "6경기 수원fc vs 대전.MP4",
+      "seconds": 301.861,
+      "issues": [],
+      "setup": {
+        "time": 5.2052000000000005
+      },
+      "segments": 315,
+      "meanCoverage": 0.18962690459920992,
+      "players": [
+        {
+          "id": "home-1",
+          "jersey": "2",
+          "group": "home",
+          "coverage": 0.017746550919472973,
+          "identityCoverage": 0.018319020419274395,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.33366566666666664,
+            "teamConflict": 0,
+            "overlap": 0.2001993333333303,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-2",
+          "jersey": "3",
+          "group": "home",
+          "coverage": 0.013023678886500445,
+          "identityCoverage": 0.014526410653284583,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.8675303333333293,
+            "teamConflict": 0,
+            "overlap": 0.5338646666666609,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-3",
+          "jersey": "4",
+          "group": "home",
+          "coverage": 0.09238224725648207,
+          "identityCoverage": 0.09374186120151944,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 0.734063666666664,
+            "teamConflict": 0,
+            "overlap": 0.5338646666666591,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-4",
+          "jersey": "5",
+          "group": "home",
+          "coverage": 0.039858180747300014,
+          "identityCoverage": 0.04694249040522585,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 1.5348619999999915,
+            "teamConflict": 0,
+            "overlap": 1.2679306666666506,
+            "outside": 3.80378633333331,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "home-5",
+          "jersey": "6",
+          "group": "home",
+          "coverage": 0.12580014389703376,
+          "identityCoverage": 0.1298789900213913,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 1.668327999999983,
+            "teamConflict": 0,
+            "overlap": 2.135460999999978,
+            "outside": 0,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-1",
+          "jersey": "2",
+          "group": "away",
+          "coverage": 0.6815605836790801,
+          "identityCoverage": 0.7575558896718809,
+          "excludedReasons": {
+            "duplicate": 0.13346599999999853,
+            "lowConfidence": 29.16236599999969,
+            "teamConflict": 0,
+            "overlap": 14.881483333333144,
+            "outside": 26.693244666666686,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-2",
+          "jersey": "3",
+          "group": "away",
+          "coverage": 0.15678505079306426,
+          "identityCoverage": 0.17352978089211807,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 3.3366559999999623,
+            "teamConflict": 0.06673333333333176,
+            "overlap": 2.3356589999999926,
+            "outside": 9.876500333333183,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-3",
+          "jersey": "4",
+          "group": "away",
+          "coverage": 0.3045537113428608,
+          "identityCoverage": 0.32122688145872985,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 9.14243533333321,
+            "teamConflict": 0.2001993333333303,
+            "overlap": 3.4033889999999616,
+            "outside": 2.802790666666624,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-4",
+          "jersey": "5",
+          "group": "away",
+          "coverage": 0.2027257171609364,
+          "identityCoverage": 0.2218318848849436,
+          "excludedReasons": {
+            "duplicate": 0.6005986666666558,
+            "lowConfidence": 6.339646999999955,
+            "teamConflict": 0.06673299999999927,
+            "overlap": 6.272912333333281,
+            "outside": 4.537851666666597,
+            "automaticFiltered": 0
+          }
+        },
+        {
+          "id": "away-5",
+          "jersey": "6",
+          "group": "away",
+          "coverage": 0.26183318130936817,
+          "identityCoverage": 0.29689693325744476,
+          "excludedReasons": {
+            "duplicate": 0,
+            "lowConfidence": 10.143433999999907,
+            "teamConflict": 0,
+            "overlap": 7.741041666666577,
+            "outside": 14.814750999999845,
+            "automaticFiltered": 0
+          }
+        }
+      ]
+    }
+  }
+}

@@ -547,7 +547,7 @@ class TrackingJobs:
             self._archive(job,info,output,['tracks.json','preview.mp4','initial-review.json'])
             result={'stage':'분석 완료','video':payload['video'],'datasetId':payload['datasetId'],
                     'actualDevice':payload['detector']['device'],'samples':len(payload['frames']),
-                    'trackCount':len(payload['tracks']),'initialMatched':len(initial['segments'])}
+                    'trackCount':len(payload['tracks']),'initialMatched':len(initial['segments']),'initialUnmatched':initial['initialization']['failures']}
         with self.lock:
             if self.closing or job['status']=='cancelling':
                 job.update(status='interrupted' if self.closing else 'cancelled',stage='중단됨',finishedAt=time.time())

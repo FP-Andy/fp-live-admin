@@ -1,3 +1,4 @@
+import {restoreInitialSeeds} from './initial-recovery.mjs';
 import { validateReview, emptyReview, boxesAt, identityAt, trackRange, assign, importEvents, eventPatches, label, clock, clone } from './core.mjs';
 import { RecoveryClient } from './recovery-client.mjs';
 import { emptyRecovery, hydrateRecovery, recoverySignature } from './recovery-protocol.mjs';
@@ -172,6 +173,7 @@ function setDataset(value, initialReview = null) {
     else if(initialReview) { review=validateReview(initialReview,data);message('새 실행의 초기 선수 지정과 유니폼 색상을 불러왔습니다.'); }
     else message('트래킹을 열었습니다. 일치하는 원본 영상 또는 preview.mp4를 열어 주세요.');
   } catch { message('이전 자동 저장을 읽지 못했습니다. 내보낸 검수 JSON을 불러올 수 있습니다.', true); }
+  review=restoreInitialSeeds(review,initialReview,data);
   review={...review,events:review.events.map(e=>({...e,row:{...e.row,FpaEventId:e.row.FpaEventId||crypto.randomUUID()}}))};
   $('video-info').textContent = `${data.video.name} · ${data.video.width} × ${data.video.height} · 분석 ${clock(data.video.clipStart)}–${clock(data.video.clipEnd)}`;
   $('model-name').textContent = `${data.detector.model || 'YOLO26'} · ByteTrack${data.detector.teamConstraint?.enabled?' + 팀 색상':''} · ${data.detector.sampleFps.toFixed(1)} fps`;
