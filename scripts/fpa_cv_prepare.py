@@ -33,6 +33,9 @@ def main():
     if not math.isfinite(args.time) or args.time<0:parser.error('Invalid frame time')
     print('FPA_PROGRESS '+json.dumps({'stage':'초기 장면 검출 중','progress':10}),flush=True)
     import cv2
+    import torch
+    cv2.setNumThreads(1)
+    torch.set_num_threads(1)
     from ultralytics import YOLO
     from fpa_cv_colors import appearance
     reader=nullcontext(None)

@@ -7,7 +7,7 @@
 3. After preparing the matches, click **준비된 N경기 모두 분석 시작**. A single match can also start from its row. The GPU processes the persistent queue sequentially. The browser/computer may now close.
 4. Open completed jobs and repeat checkpoint tagging, substitutions and **검수 반영 · 재연결** as needed; export heatmaps when satisfied. Review data remains in FPC's authenticated database with optimistic version checks.
 
-Preparation also uses the single GPU queue. Finish initialization before starting the batch to avoid waiting behind full analyses. Queued jobs resume after worker restart; a job interrupted while running requires retry. Upload retry retains successful parts while the page remains open; after closing an unfinished transfer, remove that unfinished entry and reselect the file. This release does not implement cross-session multipart resume or multiple GPU workers.
+Preparation has an independent queue and subprocess: one initial frame can be detected while one full match continues on the same GPU. Additional preparations wait only for other preparations; full matches remain sequential. CPU threads for single-frame preparation are capped at one to reduce contention. Cancellation, failures and source-cache cleanup are scoped to the owning job. The YOLO26s model and inference settings are unchanged. Queued jobs in both lanes resume after worker restart; a job interrupted while running requires retry. Upload retry retains successful parts while the page remains open; after closing an unfinished transfer, remove that unfinished entry and reselect the file. This release does not implement cross-session multipart resume or multiple GPU hosts.
 
 ## Storage and deployment
 
