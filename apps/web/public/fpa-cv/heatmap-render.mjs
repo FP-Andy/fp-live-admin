@@ -1,6 +1,17 @@
 export const HEATMAP_EXPORT_SIZE=Object.freeze({width:1320,height:720});
 export const QUEENS_CUP_COLORS=Object.freeze({pitch:'#FFFFFF',line:'#E162A7',surround:'#EFCADE'});
 
+// Shared density remains comparable across players. Colour/opacity alone
+// emphasise concentrated activity: cool faint edges, yellow, orange, red core.
+export function densityColor(value){
+  if(!Number.isFinite(value)||value<.015)return [0,0,0,0];
+  const t=Math.sqrt(Math.min(1,value));
+  const stops=[[0,[65,182,238]],[.28,[45,190,219]],[.45,[255,226,55]],[.62,[255,116,0]],[.76,[247,38,19]],[1,[198,0,0]]];
+  let i=1;while(i<stops.length-1&&t>stops[i][0])i++;
+  const [a,ca]=stops[i-1],[b,cb]=stops[i],w=(t-a)/(b-a);
+  return [...ca.map((c,k)=>Math.round(c+(cb[k]-c)*w)),Math.round(255*Math.min(1,.12+1.25*t))];
+}
+
 // Same 40 x 20 court and 2 m surround as /scene/futsal-pitch.svg.
 // Geometry ported from agusrjs/futsal-pitch (MIT), Copyright 2025 Agustín Rojas.
 const markings=[
@@ -30,8 +41,7 @@ export function paintHeatmap(canvas,result,player){
   const density=document.createElement('canvas');density.width=result.width;density.height=result.height;
   const densityContext=density.getContext('2d'),pixels=densityContext.createImageData(result.width,result.height),max=result.scale||1;
   for(let i=0;i<grid.length;i++){
-    const value=Math.min(1,grid[i]/max);if(value<.01)continue;
-    pixels.data.set([255,Math.round(116+100*value),0,Math.round(255*.82*Math.sqrt(value))],i*4);
+    pixels.data.set(densityColor(grid[i]/max),i*4);
   }
   densityContext.putImageData(pixels,0,0);
   ctx.imageSmoothingEnabled=true;ctx.drawImage(density,pad,pad,cw,ch);
