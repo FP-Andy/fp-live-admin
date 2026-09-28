@@ -1,6 +1,6 @@
 import {courtPosition} from './boundary.mjs';
 import {overlap} from './integrity.mjs';
-import {classifyUniform} from './colors.mjs';
+import {classifyKit} from './keeper-context.mjs';
 export const CHECKPOINT_PLAN_VERSION=4;
 
 const secondsLabel=seconds=>{const rounded=Math.round(seconds);return rounded>=60?`${Math.floor(rounded/60)}분 ${rounded%60}초`:`${seconds.toFixed(1)}초`;};
@@ -42,7 +42,7 @@ export function planCheckpoints(data,review,segments,onProgress=()=>{}) {
       !visible.some(other=>other.box.id!==box.id&&overlap(box.box,other.box.box)>.3));
     const capacity={home:0,away:0,unknown:0},trackIds=[];
     for(const {box} of clear){
-      const color=classifyUniform(box.appearance,review.uniforms);
+      const color=classifyKit(box,frame.t,review.uniforms,data.keeperContext);
       const group=color.strength>=.22&&color.margin>=.5?color.group:null;
       // Clear goalkeeper/referee colours cannot stand in for field players.
       // Weak colour remains available for human judgement.

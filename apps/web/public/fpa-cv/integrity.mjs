@@ -6,12 +6,12 @@ const opposing=(a,b)=>['home','away'].includes(team(a))&&['home','away'].include
 
 // Establish colours quickly, but require sustained, unoccluded evidence to
 // change an established group. Durations are seconds, independent of sample FPS.
-export function uniformTimeline(data,uniforms,onProgress=()=>{}) {
+export function uniformTimeline(data,uniforms,onProgress=()=>{},classify=(box)=>classifyUniform(box.appearance,uniforms)) {
   const timelines=new Map(),states=new Map();
   for(const [index,frame] of data.frames.entries()) {
     if(index%32===0)onProgress(index,data.frames.length);
     for(const box of frame.boxes) {
-    const color=classifyUniform(box.appearance,uniforms),old=states.get(box.id);
+    const color=classify(box,frame.t),old=states.get(box.id);
     const runs=timelines.get(box.id)||[],previous=runs.at(-1);
     // Weak evidence may sustain a recently established team, but can never
     // establish a new team or override strong evidence for the other team.
@@ -32,7 +32,7 @@ export function uniformTimeline(data,uniforms,onProgress=()=>{}) {
   return timelines;
 }
 export function uniformAt(timeline,id,time) {return timeline.get(id)?.find(r=>r.from<=time&&time<r.to);}
-export function teamConflict(identity,run) {return !!(identity&&run&&opposing(identity.group||identity.team,run.group));}
+export function teamConflict(identity,run) {const group=identity?.group||identity?.team;return !!(group&&run&&(opposing(group,run.group)||(group!==run.group&&(group.endsWith('_gk')||run.group?.endsWith('_gk')))));}
 
 export function identityMasks(review,timeline) {
   const masks=[];
@@ -41,7 +41,7 @@ export function identityMasks(review,timeline) {
     const person=review.roster.find(p=>p.id===s.personId);
     const expected=person?.group||s.group||s.team,runs=timeline.get(s.trackId)||[];
     for(let i=0;i<runs.length;i++) {
-      const run=runs[i];if(run.to<=s.from||run.from>=s.to||!opposing(expected,run.group))continue;
+      const run=runs[i];if(run.to<=s.from||run.from>=s.to||!teamConflict({group:expected},run))continue;
       // An ID that moved to the other team is no longer a trustworthy manual
       // anchor for this interval. A later return must pass missing-player
       // association again; colour alone cannot steal an identity back.
