@@ -25,5 +25,5 @@ const gap=distanceProbe([p(0,.1,.2),p(1,.125,.2),p(8,.8,.2),p(9,.825,.2)],court,
 assert.equal(distanceProbe([p(0,.1,.2),p(1,.125,.2,1,2)],court).metres,0,'An ID handoff is not automatically a measured step');
 const jitter=Array.from({length:101},(_,i)=>p(i*.1,.5+(i%2?.001:-.001),.5,.1));assert(distanceProbe(jitter,court).metres<distanceProbe(jitter,court,{windowSeconds:0}).metres/3,'Stationary jitter should not become running distance');
 const spike=distanceProbe([p(0,.1,.2,.1),p(.1,.9,.2,.1)],court);assert.equal(spike.metres,0);assert.equal(spike.rejectedJumps,1);
-assert.deepEqual(densityColor(0),[0,0,0,0]);const hot=densityColor(1);assert(hot[0]>180&&hot[1]<30&&hot[2]<30&&hot[3]===255,'Peak density is opaque red');assert(densityColor(.04)[3]<hot[3]);
-console.log('PASS: time weighting, direction transforms, missing inputs, position-independent metrics, weak-coverage comments, period splitting, known distance, gaps/ID breaks/jitter/jumps and red hotspot palette.');
+assert.deepEqual(densityColor(0),[0,0,0,0]);const hot=densityColor(1),warm=densityColor(.64),low=densityColor(.04);assert(hot[0]===255&&hot[2]>hot[1]&&hot[1]>warm[1]&&hot[3]===255,'Peak density is bright opaque pink above red');assert(warm[0]>220&&warm[1]<50&&warm[2]<50);assert(low[0]>=low[1]&&low[1]>low[2]&&low[3]<hot[3],'Low density is pale yellow');
+console.log('PASS: time weighting, direction transforms, missing inputs, position-independent metrics, weak-coverage comments, period splitting, known distance, gaps/ID breaks/jitter/jumps and warm hotspot palette.');

@@ -2,11 +2,11 @@ export const HEATMAP_EXPORT_SIZE=Object.freeze({width:1320,height:720});
 export const QUEENS_CUP_COLORS=Object.freeze({pitch:'#FFFFFF',line:'#E162A7',surround:'#EFCADE'});
 
 // Shared density remains comparable across players. Colour/opacity alone
-// emphasise concentrated activity: cool faint edges, yellow, orange, red core.
+// emphasise concentrated activity: pale yellow, orange, red, bright pink peak.
 export function densityColor(value){
   if(!Number.isFinite(value)||value<.015)return [0,0,0,0];
   const t=Math.sqrt(Math.min(1,value));
-  const stops=[[0,[65,182,238]],[.28,[45,190,219]],[.45,[255,226,55]],[.62,[255,116,0]],[.76,[247,38,19]],[1,[198,0,0]]];
+  const stops=[[0,[255,247,183]],[.28,[255,237,132]],[.45,[255,205,62]],[.62,[255,116,0]],[.8,[241,35,28]],[.91,[255,80,111]],[1,[255,166,187]]];
   let i=1;while(i<stops.length-1&&t>stops[i][0])i++;
   const [a,ca]=stops[i-1],[b,cb]=stops[i],w=(t-a)/(b-a);
   return [...ca.map((c,k)=>Math.round(c+(cb[k]-c)*w)),Math.round(255*Math.min(1,.12+1.25*t))];
