@@ -25,14 +25,14 @@ export function uniformTimeline(data,uniforms,onProgress=()=>{},classify=(box)=>
     if(state.count<3||frame.t-state.from<(changing?(collision?.95:.55):.10)-1e-6)continue;
     if(previous?.group===group&&state.from<=previous.to){previous.to=Math.min(data.video.clipEnd,frame.t+.8);continue;}
     if(previous)previous.to=Math.min(previous.to,state.from);
-    runs.push({from:state.from,to:Math.min(data.video.clipEnd,frame.t+.8),group});timelines.set(box.id,runs);
+    runs.push({from:state.from,to:Math.min(data.video.clipEnd,frame.t+.8),group,...(color.contextual?{contextual:true}:{})});timelines.set(box.id,runs);
     }
   }
   onProgress(data.frames.length,data.frames.length);
   return timelines;
 }
 export function uniformAt(timeline,id,time) {return timeline.get(id)?.find(r=>r.from<=time&&time<r.to);}
-export function teamConflict(identity,run) {const group=identity?.group||identity?.team;return !!(group&&run&&(opposing(group,run.group)||(group!==run.group&&(group.endsWith('_gk')||run.group?.endsWith('_gk')))));}
+export function teamConflict(identity,run) {const group=identity?.group||identity?.team;return !!(group&&run&&(opposing(group,run.group)||(run.contextual&&run.group&&group!==run.group&&(group.endsWith('_gk')||run.group.endsWith('_gk')))));}
 
 export function identityMasks(review,timeline) {
   const masks=[];

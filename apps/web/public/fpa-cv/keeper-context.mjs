@@ -117,12 +117,12 @@ export function classifyKit(box,time,uniforms,context,appearance=box?.appearance
   const raw=classifyUniform(appearance,uniforms);
   if(!context?.enabled||!box)return raw;
   const role=keeperAt(context,box.id,time);
-  if(role)return {...raw,group:role.group,strength:Math.max(raw.scores[role.group]||0,.25*role.confidence),margin:.8,role:role.reason};
+  if(role)return {...raw,group:role.group,strength:Math.max(raw.scores[role.group]||0,.25*role.confidence),margin:.8,role:role.reason,contextual:true};
   const ranked=['home','away','referee'].map(g=>[g,raw.scores[g]||0]).sort((a,b)=>b[1]-a[1]);
   const [group,strength]=ranked[0],margin=strength?(strength-ranked[1][1])/strength:0;
   // Distinctive keeper colours without a trusted path stay unassigned. They
   // cannot claim an opposing field number just because a shirt is sunlit.
   const keeperScore=Math.max(...keepers.map(g=>raw.scores[g]||0));
   const ambiguousKeeper=keeperScore>=.1&&keeperScore>strength*1.5;
-  return {...raw,group:!ambiguousKeeper&&strength>=.1&&margin>=.28?group:null,strength,margin,role:ambiguousKeeper?'keeper-unresolved':'field'};
+  return {...raw,group:!ambiguousKeeper&&strength>=.1&&margin>=.28?group:null,strength,margin,role:ambiguousKeeper?'keeper-unresolved':'field',contextual:true};
 }

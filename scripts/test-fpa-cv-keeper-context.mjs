@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {buildKeeperContext,classifyKit,keeperAt} from '../apps/web/public/fpa-cv/keeper-context.mjs';
 import {emptyReview,validateDataset,assign,trackRange,identityAt} from '../apps/web/public/fpa-cv/core.mjs';
 import {reconnect} from '../apps/web/public/fpa-cv/identity.mjs';
-import {effectiveSegments} from '../apps/web/public/fpa-cv/integrity.mjs';
+import {effectiveSegments,teamConflict} from '../apps/web/public/fpa-cv/integrity.mjs';
 import {packRecovery,hydrateRecovery} from '../apps/web/public/fpa-cv/recovery-protocol.mjs';
 import {classifyUniform} from '../apps/web/public/fpa-cv/colors.mjs';
 
@@ -18,6 +18,8 @@ function fixture(change=()=>{},roi=[[0,0],[1,0],[1,1],[0,1]]){
 let {data,review}=fixture();
 let context=buildKeeperContext(data,review);
 assert(context.enabled);
+assert(!teamConflict({group:'home'},{group:'home_gk'}),'Uncalibrated colour-only keeper guesses cannot revoke a same-team manual identity');
+assert(teamConflict({group:'home'},{group:'home_gk',contextual:true}),'A calibrated keeper role prevents a field identity from stealing the keeper');
 assert.equal(classifyUniform(data.frames[5].boxes[2].appearance,uniforms).group,null);
 assert.equal(classifyKit(data.frames[5].boxes[2],.5,uniforms,context).group,'home','Home field colour is not vetoed by matching keeper colours');
 assert.equal(keeperAt(context,1,1).group,'home_gk');
