@@ -127,7 +127,7 @@
               <label class="field inspector-person">명단 선수<select id="person"></select></label>
               <label class="field inspector-number">등번호 / 심판<div class="jersey-input"><span>No.</span><input id="jersey" inputmode="numeric" maxlength="12" placeholder="10" autocomplete="off"></div></label>
               <p class="field-note">등번호 변경은 이 명단 선수의 모든 트랙에 적용됩니다.</p>
-              <label class="field inspector-scope">적용 범위<select id="scope"><option value="all">이 트랙 전체</option><option value="after">현재 시점부터</option><option value="range">구간 직접 지정</option></select></label>
+              <label class="field inspector-scope">적용 범위<select id="scope"><option value="frame">현재 장면 확인 · 권장</option><option value="all">이 트랙 전체</option><option value="after">현재 시점부터</option><option value="range">구간 직접 지정</option></select></label>
               <div id="range-fields" class="range-fields" hidden><label>시작 (원본 초)<input id="range-from" type="number" step="any" min="0"></label><label>끝 (원본 초)<input id="range-to" type="number" step="any" min="0"></label></div>
               <div class="inspector-assign-actions"><button type="submit" class="primary">선수 번호 적용 <span>↵</span></button><button id="clear" type="button" class="subtle">이 구간의 지정 해제</button><button id="exclude-track" type="button" class="subtle">선택 BB 제외</button></div>
             </fieldset></form>

@@ -1,3 +1,4 @@
+import {releaseTeamConflicts} from './team-review.mjs';
 import { GROUPS, clone, identityAt, personIdentity, label, clock, assign, boxesAt } from './core.mjs';
 import { samplePatch, hex } from './colors.mjs';
 import {classifyKit} from './keeper-context.mjs';
@@ -130,6 +131,13 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
   }
   let queueLimit=50;
   $('reconnect-panel').addEventListener('toggle',()=>{queueLimit=50;renderQueue();});
+  function pendingTeamConflicts() {
+    return (getRecovery()?.lockedConflicts||[]).filter(c=>getReview().segments.some(s=>s.locked&&s.trackId===c.trackId&&s.personId===c.personId&&s.from<c.to&&c.from<s.to));
+  }
+  function releaseConflicts(conflicts) {
+    commit(releaseTeamConflicts(getReview(),conflicts));
+    message('충돌 구간의 잠금 해제 저장 · 검수 반영 · 재연결을 누르면 같은 팀 후보를 다시 찾습니다.');
+  }
   function renderQueue() {
     const recovery=getRecovery(),holder=$('reconnect-list');holder.replaceChildren();
     if(!recovery)return;
@@ -137,8 +145,16 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
       $('reconnect-count').textContent=recovery.status==='pending'?'선수 연결 계산 중':'선수 연결 계산 대기';
       holder.append(node('p','위 진행 상태에서 계산 완료 여부를 확인하세요. 수동 선수 지정과 FPA 입력은 가능합니다.','muted'));return;
     }
-    $('reconnect-count').textContent=`자동 ${recovery.segments.length}구간 · 보류 ${recovery.suggestions.length}트랙`;
+    const conflicts=pendingTeamConflicts();
+    $('reconnect-count').textContent=`팀 충돌 ${conflicts.length}구간 · 자동 ${recovery.segments.length}구간 · 보류 ${recovery.suggestions.length}트랙`;
     if(!$('reconnect-panel').open)return;
+    if(conflicts.length){
+      const panel=node('div','','reconnect-row pending');
+      panel.append(node('b',`유니폼과 반대 팀으로 잠긴 ${conflicts.length}구간`),node('small','수동 지정 범위가 유지되고 있습니다. 충돌 구간을 풀고 다시 연결할 수 있습니다.'));
+      const release=node('button','충돌 구간 모두 재검토');release.disabled=recovery.status!=='complete';release.onclick=()=>releaseConflicts(conflicts);panel.append(release);
+      for(const c of conflicts.slice(0,10)){const b=node('button',`#${c.trackId} · ${clock(c.from)}–${clock(c.to)} · ${label(personIdentity(getReview(),c.personId),c.trackId)} → ${GROUPS[c.group].label} 유니폼`);b.onclick=()=>viewRecovery(c.trackId,c.from+.0001);panel.append(b);}
+      holder.append(panel);
+    }
     const total=recovery.segments.length+recovery.suggestions.length+recovery.warnings.length;
     let remaining=queueLimit;
     for(const s of recovery.segments) {
@@ -157,7 +173,7 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
       row.append(go,node('small',s.reason));
       for(const candidate of s.options) {
         const b=node('button',`${label(personIdentity(getReview(),candidate.personId),s.trackId)} · ${Math.round(candidate.score*100)}점`);
-        b.onclick=()=>{viewRecovery(s.trackId,candidate.time);choosePerson(candidate.personId);$('scope').value='after';message('후보를 선택했습니다. 영상을 확인한 뒤 선수 번호 적용을 눌러 주세요.');};row.append(b);
+        b.onclick=()=>{viewRecovery(s.trackId,candidate.time);choosePerson(candidate.personId);$('scope').value='frame';$('range-fields').hidden=true;message('후보를 선택했습니다. 영상을 확인한 뒤 선수 번호 적용을 눌러 주세요.');};row.append(b);
       }
       holder.append(row);
     }
@@ -190,7 +206,13 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
     const evidence=$('uniform-evidence'),box=boxesAt(getData(),at).find(b=>b.id===selectedId),raw=classifyKit(box,at,review.uniforms,recovery.keeperContext),stable=uniformAt(recovery.timeline,selectedId,at),detectedGroup=stable?.group||raw.group;
     evidence.hidden=selectedId===null;
     const held=recovery.masks.some(m=>m.trackId===selectedId&&m.from<=at&&at<m.to),duplicate=recovery.duplicates.find(d=>d.trackId===selectedId&&d.from<=at&&at<d.to);
-    evidence.textContent=`유니폼: ${detectedGroup?GROUPS[detectedGroup].label:'판정 보류'}${raw.role&&raw.role!=='field'&&raw.role!=='keeper-unresolved'?' · 키퍼 위치·이동 이력':stable&&!raw.group?' · 최근 색상 유지':''}${held?' · 기존 팀 지정 충돌':''}${duplicate?` · #${duplicate.canonicalTrackId}와 중복 관측`:''}`;
+    const lockedConflict=identity?.locked&&pendingTeamConflicts().find(c=>c.trackId===selectedId&&c.personId===identity.personId&&c.from<=at&&at<c.to);
+    evidence.textContent=`유니폼: ${detectedGroup?GROUPS[detectedGroup].label:'판정 보류'}${raw.role&&raw.role!=='field'&&raw.role!=='keeper-unresolved'?' · 키퍼 위치·이동 이력':stable&&!raw.group?' · 최근 색상 유지':''}${lockedConflict?' · 수동 구간 잠금으로 반대 팀 유지':held?' · 기존 팀 지정 충돌':''}${duplicate?` · #${duplicate.canonicalTrackId}와 중복 관측`:''}`;
+    if(lockedConflict){
+      detail.hidden=false;
+      detail.append(node('b','수동 지정과 유니폼 충돌'),node('p',`${clock(lockedConflict.from)}–${clock(lockedConflict.to)} · ${GROUPS[lockedConflict.group].label} 유니폼`));
+      const release=node('button','이 충돌 구간 재검토');release.disabled=recovery.status!=='complete';release.onclick=()=>releaseConflicts([lockedConflict]);detail.append(release);
+    }
     if(identity?.source==='auto') {
       detail.append(node('b',`자동 재연결 · ${Math.round(identity.score*100)}점`),node('p',`${modeName(identity)} · ${identity.mode==='backward'?'이후':'이전'} #${identity.previousTrack} · ${identity.gap.toFixed(2)}초 공백 · ${GROUPS[identity.group].label}`));
       const accept=node('button','이 연결 확정'),no=node('button','이 연결 거절');accept.onclick=()=>confirm(identity);no.onclick=()=>reject(identity);detail.append(accept,no);

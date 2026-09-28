@@ -1,5 +1,5 @@
 // Bump when identity/colour/continuity rules or this compact format change.
-export const RECOVERY_VERSION = 'identity-v4-keeper-context-1';
+export const RECOVERY_VERSION = 'identity-v4-team-review-2';
 
 export function recoveryInputs(review) {
   const {segments, roster, uniforms, setup, autoReconnect, rejections,checkpoints} = review;
@@ -8,7 +8,7 @@ export function recoveryInputs(review) {
 export const recoverySignature = review => JSON.stringify(recoveryInputs(review));
 
 export function emptyRecovery(data, status = 'pending') {
-  return {data, status, segments:[], suggestions:[], warnings:[], issues:[], waiting:[], masks:[], duplicates:[], timeline:new Map(), hasAppearance:false};
+  return {data, status, segments:[], suggestions:[], warnings:[], lockedConflicts:[], issues:[], waiting:[], masks:[], duplicates:[], timeline:new Map(), hasAppearance:false};
 }
 
 // Consolidation only removes duplicate observations. Keep the original dataset
