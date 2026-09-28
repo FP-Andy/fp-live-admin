@@ -4,6 +4,7 @@ import { courtPosition, touchlineEvidence, TOUCHLINE_NEAR } from './boundary.mjs
 import { uniformTimeline, uniformAt, teamConflict, identityMasks, appearanceSimilarity, compactAppearance, overlap, effectiveSegments } from './integrity.mjs';
 import { consolidate } from './continuity.mjs';
 import {recoverCheckpoints,mergeCheckpointRecovery} from './checkpoint-recovery.mjs';
+import {lockedTeamConflicts} from './team-review.mjs';
 import {planCheckpoints} from './checkpoint-plan.mjs';
 
 export function setupIssues(review,data,time) {
@@ -60,6 +61,7 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
   const report=(phase,completed,total)=>onProgress({phase,completed,total});
   const timeline=uniformTimeline(data,review.uniforms,(completed,total)=>report('1/3 · 유니폼 색상 확인',completed,total),classify);
   result.timeline=timeline;
+  result.lockedConflicts=lockedTeamConflicts(data,review,timeline,classify);
   result.masks=identityMasks(review,timeline);
   for(const m of result.masks)result.warnings.push({trackId:m.trackId,personId:m.personId,time:m.from,reason:'유니폼과 지정 팀이 달라 기존 번호 연결을 보류했습니다.'});
   for(const s of review.segments.filter(s=>s.locked)) {

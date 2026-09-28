@@ -2,6 +2,7 @@ import { validateReview, emptyReview, boxesAt, identityAt, trackRange, assign, i
 import { RecoveryClient } from './recovery-client.mjs';
 import { emptyRecovery, hydrateRecovery, recoverySignature } from './recovery-protocol.mjs';
 import { setupUI } from './setup-ui.mjs';
+import {confirmScene,clearScenes,sceneFrame} from './team-review.mjs';
 import { uniformAt } from './integrity.mjs';
 import {classifyKit} from './keeper-context.mjs';
 import { courtPosition } from './boundary.mjs';
@@ -224,8 +225,10 @@ function selectTrack(id, jump = false) {
   $('assign-fields').disabled = false; $('selected-track').textContent = `TRACK #${id}`;
   const [from, to] = trackRange(data, id);
   $('range-from').value = from.toFixed(6); $('range-to').value = to.toFixed(6);
-  $('scope').value = 'all'; $('range-fields').hidden = true;
-  if(identity?.source==='auto'){
+  const canConfirm=review.setup&&sourceTime()>review.setup.time+1/(2*data.detector.sampleFps);
+  $('scope').querySelector('[value=frame]').disabled=!canConfirm;
+  $('scope').value = canConfirm?'frame':'all'; $('range-fields').hidden = true;
+  if(!canConfirm&&identity?.source==='auto'){
     $('scope').value='range';$('range-fields').hidden=false;
     $('range-from').value=identity.from;$('range-to').value=identity.to;
   }
@@ -279,7 +282,8 @@ function render() {
     const button = text('button', '', `box${selected === box.id ? ' selected' : ''}${identity?.source==='auto'?' automatic':''}${boundaryCandidate?' boundary-candidate':''}`), [x1,y1,x2,y2] = box.box;
     const detectedTeam=uniform.group?.startsWith('home')?'home':uniform.group?.startsWith('away')?'away':uniform.group;
     button.style.cssText = `left:${x1*100}%;top:${y1*100}%;width:${(x2-x1)*100}%;height:${(y2-y1)*100}%;--ink:${colors[identity?.team || detectedTeam || 'unknown']}`;
-    const boxLabel=duplicate?`중복 #${box.id} → #${duplicate.canonicalTrackId}`:identity?`${identity.checkpoint?'✓ ':identity.source==='auto'?'≈ ':''}${label(identity,box.id)}`:`${held?'팀 충돌 · ':detectedTeam==='home'?`홈${uniform.group==='home_gk'?' GK':''} 추정 · `:detectedTeam==='away'?`원정${uniform.group==='away_gk'?' GK':''} 추정 · `:boundaryCandidate?'경계 ':''}#${box.id}`;
+    const lockedConflict=identity?.locked&&(recovery.lockedConflicts||[]).some(c=>c.trackId===box.id&&c.personId===identity.personId&&c.from<=time&&time<c.to);
+    const boxLabel=duplicate?`중복 #${box.id} → #${duplicate.canonicalTrackId}`:identity?`${lockedConflict?'⚠ 팀 충돌 · ':''}${identity.checkpoint?'✓ ':identity.source==='auto'?'≈ ':''}${label(identity,box.id)}`:`${held?'팀 충돌 · ':detectedTeam==='home'?`홈${uniform.group==='home_gk'?' GK':''} 추정 · `:detectedTeam==='away'?`원정${uniform.group==='away_gk'?' GK':''} 추정 · `:boundaryCandidate?'경계 ':''}#${box.id}`;
     button.setAttribute('aria-label', `${boxLabel} · 트랙 ${box.id}`);
     button.title = `트랙 #${box.id} · 검출 신뢰도 ${(box.confidence*100).toFixed(0)}%`;
     if ($('show-labels').checked) button.append(text('span',boxLabel));
@@ -321,16 +325,21 @@ function renderTracks(time) {
 function assignmentRange() {
   if (selected === null) throw Error('트랙을 선택하세요.');
   const [min,max] = trackRange(data,selected), scope = $('scope').value;
+  if(scope==='frame'){const {frame,to}=sceneFrame(data,sourceTime(),selected);return [frame.t,to];}
   return scope === 'all' ? [min,max] : scope === 'after' ? [Math.max(min,sourceTime()),max] : [Number($('range-from').value),Number($('range-to').value)];
 }
 $('assign-form').onsubmit = guard(event => {
   event.preventDefault();
   const [from,to] = assignmentRange(), submission=setup.submitted(),identity=submission.identity;
+  if($('scope').value==='frame'&&identity.personId){
+    commit(confirmScene(submission.review,data,selected,sourceTime(),identity.personId));
+    message('현재 장면 확인 저장 · 수정들을 모은 뒤 검수 반영 · 재연결을 누르세요.');return;
+  }
   commit(assign(submission.review,data,selected,from,to,identity));
   message(`${label(identity,selected)} · ${clock(from)}–${clock(to)} 구간에 적용했습니다.`);
 });
-$('clear').onclick = guard(() => { const [from,to] = assignmentRange(); const identity=identityAt(working,selected,sourceTime());let next=assign(review,data,selected,from,to,null);if(identity?.source==='auto')next={...next,rejections:[...next.rejections,{trackId:selected,personId:identity.personId,from,to}]};commit(next);message('선택 구간의 선수 지정을 해제했습니다.'); });
-$('exclude-track').onclick = guard(() => { const [from,to] = assignmentRange();video.pause();commit(assign(review,data,selected,from,to,{team:'ignore',jersey:'',source:'manual'}));message(`BB #${selected} · ${clock(from)}–${clock(to)} 제외됨 · 되돌리기로 복원할 수 있습니다.`); });
+$('clear').onclick = guard(() => { const [from,to] = assignmentRange(); const identity=identityAt(working,selected,sourceTime());let next=clearScenes(assign(review,data,selected,from,to,null),selected,from,to);if(identity?.source==='auto')next={...next,rejections:[...next.rejections,{trackId:selected,personId:identity.personId,from,to}]};commit(next);message('선택 구간의 선수 지정을 해제했습니다.'); });
+$('exclude-track').onclick = guard(() => { const [from,to] = assignmentRange();video.pause();commit(clearScenes(assign(review,data,selected,from,to,{team:'ignore',jersey:'',source:'manual'}),selected,from,to));message(`BB #${selected} · ${clock(from)}–${clock(to)} 제외됨 · 되돌리기로 복원할 수 있습니다.`); });
 $('scope').onchange = () => { $('range-fields').hidden = $('scope').value !== 'range'; };
 $('undo').onclick = () => { if (undo.length) { const previous=undo.pop(),changed=recoverySignature(previous)!==recoverySignature(review);review={...previous,batch:batch.state()};if(changed)heatmaps.invalidate();persist();refresh(); void fpa.reloadSelection(); message('직전 검수 변경을 되돌렸습니다.'); } };
 for (const button of document.querySelectorAll('[data-filter]')) button.onclick = () => { filter = button.dataset.filter; document.querySelectorAll('[data-filter]').forEach(b => b.classList.toggle('active',b===button)); lastList = ''; render(); };
