@@ -1,0 +1,33 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {chromium}=require('../apps/web/node_modules/playwright-core');
+const origin=process.env.FPA_REPORT_TEST_ORIGIN||'http://127.0.0.1:4342',out=process.env.FPA_REPORT_TEST_OUTPUT||'/tmp/fpa-match-report-ui';
+fs.mkdirSync(out,{recursive:true});
+const h=process.env.FPA_REPORT_TEST_HEATMAP?JSON.parse(fs.readFileSync(process.env.FPA_REPORT_TEST_HEATMAP,'utf8')):{schema:'fpa-heatmaps/v1',datasetId:'fixture',video:'UI 검증 예시',resultVersion:1,from:0,to:100,width:80,height:40,scale:20,players:[{id:'home-1',group:'home',jersey:'2',name:'',grid:Array.from({length:3200},(_,i)=>Math.exp(-((i%80-30)**2+(Math.floor(i/80)-20)**2)/10)),positions:[{t:0,x:.3,y:.4,seconds:80}]}]};
+const match={id:'report-fixture',name:'[UI 검증 예시] 홈 팀 vs 상대 팀',metadata:{home_team:'홈 팀',away_team:'상대 팀',lineups:{teams:{HOME:[{number:'2',name:'테스트 선수',position:'ALA'}],AWAY:[]}}}};
+const fpa={rows:[{Team:'home',Player:'2',Action:'Acquisition',StartX:'8',StartY:'4',Direction:'right'},{Team:'home',Player:'2',Action:'Shot',StartX:'32',StartY:'9',Direction:'right'},{Team:'away',Player:'2',Action:'Shot',StartX:'15',StartY:'10'},{Team:'home',Player:'3',Action:'Shot',StartX:'16',StartY:'10'}],logs:[]};
+(async()=>{const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,args:['--no-sandbox']});try{
+ const page=await browser.newPage({viewport:{width:1600,height:1100}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.route('**/api/**',route=>{const u=new URL(route.request().url());let body={};if(u.pathname==='/api/session/me')body={id:'test',name:'UI test',role:'SUPERADMIN'};else if(u.pathname==='/api/matches/page')body={items:[match],total:1};else if(u.pathname==='/api/matches/report-fixture')body=match;else if(u.pathname.endsWith('/logs'))body=fpa;else if(u.pathname.endsWith('/snapshot'))body={match:{home:{score:3},away:{score:1}}};return route.fulfill({contentType:'application/json',body:JSON.stringify(body)});});
+ await page.context().addCookies([{name:'live_admin_session',value:'local-ui-test',url:origin}]);
+ await page.goto(origin+'/admin/fcm/futsal/reports',{waitUntil:'networkidle'});await page.getByRole('heading',{name:'매치 리포트',exact:true}).waitFor();
+ await page.getByLabel('히트맵 좌표·품질 JSON',{exact:true}).setInputFiles({name:'heatmaps.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(h))});
+ await page.getByLabel('히트맵 선수',{exact:true}).selectOption(h.players[0].id);
+ await page.getByLabel('FPC 풋살 경기',{exact:true}).selectOption(match.id);await page.getByRole('button',{name:'경기 정보·FPA 불러오기',exact:true}).click();await page.getByText('FPA 4행을 불러왔습니다.',{exact:false}).waitFor();
+ await page.getByLabel('선수 이름',{exact:true}).fill('테스트 선수');await page.getByLabel('포지션',{exact:true}).selectOption('ALA');
+ await page.getByRole('button',{name:'데이터 기반 초안 만들기',exact:true}).click();await page.getByLabel('히트맵 코멘트',{exact:true}).fill('측면에서 중앙까지 활동 공간을 넓혔습니다.\n동료와의 연결 장면을 함께 확인해 보세요.');
+ await page.getByLabel('좋았던 장면 1',{exact:true}).fill('측면 공간을 활용한 움직임을 확인할 수 있습니다.');await page.getByLabel('좋았던 장면 2',{exact:true}).fill('공을 되찾는 플레이가 기록되었습니다.');await page.getByLabel('좋았던 장면 3',{exact:true}).fill('슈팅으로 공격을 마무리한 장면이 있습니다.');
+ await page.getByLabel('다음 경기를 위한 제안 2',{exact:true}).fill('공을 받기 전에 주변을 확인하는 습관을 이어가 보세요.');await page.getByLabel('다음 경기를 위한 제안 3',{exact:true}).fill('동료와 간격을 맞춰 새로운 패스 길을 만들어 보세요.');
+ await page.getByLabel('리포트 등번호',{exact:true}).fill('77');assert.equal(await page.getByLabel('FPA 기록 등번호',{exact:true}).inputValue(),'2');
+ assert.match(await page.locator('.mr-position').innerText(),/ALA/);assert.match(await page.locator('.mr-own-team').innerText(),/홈 팀/);assert.match(await page.locator('.mr-controls').innerText(),/연결된 볼 회수·슈팅 2건/);
+ await page.getByText('이 브라우저에 저장됨',{exact:true}).waitFor();await page.reload({waitUntil:'networkidle'});assert.equal(await page.getByLabel('선수 이름',{exact:true}).inputValue(),'테스트 선수');assert.equal(await page.getByLabel('리포트 등번호',{exact:true}).inputValue(),'77');assert.match(await page.getByLabel('히트맵 코멘트',{exact:true}).inputValue(),/측면에서 중앙/);
+ const downloadPromise=page.waitForEvent('download');await page.getByRole('button',{name:'리포트 PNG 다운로드',exact:true}).click();const download=await downloadPromise;await download.saveAs(path.join(out,'report-example.png'));assert(fs.statSync(path.join(out,'report-example.png')).size>10000);
+ const jsonPromise=page.waitForEvent('download');await page.getByRole('button',{name:'리포트 JSON 저장',exact:true}).click();await (await jsonPromise).saveAs(path.join(out,'draft.json'));const before=JSON.parse(fs.readFileSync(path.join(out,'draft.json'),'utf8'));assert.equal(before.players[before.selected].name,'테스트 선수');
+ await page.screenshot({path:path.join(out,'workspace.png'),fullPage:false});
+ await page.getByRole('button',{name:'새 리포트',exact:true}).click();await page.getByLabel('리포트 JSON 불러오기',{exact:true}).setInputFiles(path.join(out,'draft.json'));await page.getByText('파일을 불러왔습니다.',{exact:false}).waitFor();assert.equal(await page.getByLabel('리포트 등번호',{exact:true}).inputValue(),'77');
+ await page.getByLabel('히트맵 기준 홈 공격 방향',{exact:true}).selectOption('left');await page.getByText('← 공격 방향',{exact:true}).waitFor();
+ await page.setViewportSize({width:760,height:1000});await page.screenshot({path:path.join(out,'narrow.png'),fullPage:false});const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2);assert.equal(overflow,false,'The workbench should fit narrow viewports');
+ // Exercise the same storage handoff used by the FPA button, including its FPA rows.
+ const id=await page.evaluate(async data=>{const store=await import('/fpa-cv/report-store.mjs');const id=crypto.randomUUID();await store.saveReport({id,kind:'source',title:'전달 테스트',updatedAt:new Date().toISOString(),heatmap:data.h,fpa:data.fpa});return id;},{h,fpa});
+ await page.goto(origin+'/admin/fcm/futsal/reports?report='+id,{waitUntil:'networkidle'});await page.getByLabel('히트맵 선수',{exact:true}).waitFor();assert.match(await page.locator('.mr-controls').innerText(),/연결된 볼 회수·슈팅 2건/);
+ assert.deepEqual(errors,[]);console.log('PASS: FCM navigation, real heatmap import, saved FPA/team isolation, editable metadata/position/comments, browser persistence, PNG+JSON exports, restore, direction control, narrow layout, and FPA storage handoff. '+out);
+ }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
