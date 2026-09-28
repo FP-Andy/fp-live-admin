@@ -7,7 +7,7 @@ import {recoverCheckpoints,mergeCheckpointRecovery} from './checkpoint-recovery.
 import {lockedTeamConflicts} from './team-review.mjs';
 import {planCheckpoints} from './checkpoint-plan.mjs';
 
-export function setupIssues(review,data,time) {
+export function setupIssues(review,data,time,{allowPartial=false}={}) {
   const issues=[];
   for(const [g,info] of Object.entries(GROUPS)) {
     if(!review.uniforms[g]?.length)issues.push(`${info.label} 유니폼 색상 필요`);
@@ -18,7 +18,7 @@ export function setupIssues(review,data,time) {
     if(new Set(jerseys).size!==jerseys.length)issues.push(`${team==='home'?'홈':'원정'} 등번호 중복`);
   }
   const visible=boxesAt(data,time), assigned=visible.map(b=>identityAt(review,b.id,time)).filter(s=>s?.personId);
-  if(new Set(assigned.map(s=>s.personId)).size!==13)issues.push('이 프레임에서 명단 13명 모두 매칭 필요');
+  if(!allowPartial&&new Set(assigned.map(s=>s.personId)).size!==13)issues.push('이 프레임에서 명단 13명 모두 매칭 필요');
   if(assigned.length!==new Set(assigned.map(s=>s.personId)).size)issues.push('한 사람이 여러 BB에 중복 지정됨');
   return issues;
 }
@@ -54,6 +54,13 @@ const MOTION_MEMORY_SECONDS=8; // Motion precision decays; roster identities do 
  * Manual labels win; only missing members of the fixed roster can reconnect.
  */
 function reconnectBase(data,review,onProgress=()=>{},options={}) {
+  // Older server results left setup null when a single seed was missing.
+  // Recover only from existing human anchors on the reviewed initial frame.
+  // Never infer the missing person's identity or modify the saved review.
+  if(!review.setup&&data.detector.initialSetup?.source==='operator-reviewed-frame') {
+    const time=Math.max(data.video.clipStart,data.frames[0].t);
+    if(review.segments.some(s=>s.source==='manual'&&s.personId&&s.from<=time&&time<s.to&&data.frames[0].boxes.some(b=>b.id===s.trackId)))review={...review,setup:{time}};
+  }
   const keeperContext=options.keeperContext||buildKeeperContext(data,review,(completed,total)=>onProgress({phase:'골키퍼 위치·이동 이력 확인',completed,total}));
   data={...data,keeperContext};
   const classify=(box,time,appearance=box?.appearance)=>classifyKit(box,time,review.uniforms,keeperContext,appearance);
@@ -72,7 +79,7 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
   const continuity=options.reversePass?{data,duplicates:[],segments:[]}:consolidate(data,review,timeline,result.masks);
   result.data=continuity.data;result.duplicates=continuity.duplicates;result.segments=continuity.segments;
   if(!review.setup)return result;
-  result.issues=options.reversePass?[]:setupIssues(review,data,review.setup.time);
+  result.issues=options.reversePass?[]:setupIssues(review,data,review.setup.time,{allowPartial:true});
   if(result.issues.length||!review.autoReconnect||!result.hasAppearance)return result;
   data=result.data;
   // Keep the existing association as the independent baseline. Human points

@@ -220,6 +220,7 @@ def main():
     last_progress = 0.0
     suppressed_count=0
     seed_tracks=set()
+    seed_assignments=[]
     progress('선수 추적 중', 2, **frame_progress(0, total_frames, 0))
     def source_frames():
         # One owner for capture and preview; keep every source frame in the
@@ -293,6 +294,8 @@ def main():
                     output = tracker.update(detections, teams=teams)
                     if manual_teams is not None:
                         seed_teams={int(row[4]):manual_teams[int(row[7])] for row in output if manual_teams[int(row[7])] is not None}
+                        from fpa_cv_initial import initial_track_seeds
+                        seed_assignments=initial_track_seeds(initial_setup,output)
                         seed_tracks=set(seed_teams)
                         tracker.seed_teams(seed_teams)
                     observations = [(int(row[4]), row[:4]/np.array([width,height,width,height]), float(original_scores[int(row[7])] if original_scores is not None else row[5])) for row in output]
@@ -306,7 +309,8 @@ def main():
                         x1, y1, x2, y2 = [max(0.0, min(1.0, n)) for n in xyxy]
                         zone=roi_zone((x1,y1,x2,y2),roi,width/height,args.roi_margin)
                         if zone is None:
-                            continue
+                            if frame_index==first and track in seed_tracks:zone="operator-seed"
+                            else:continue
                         normalized = [round(n, 6) for n in (x1, y1, x2, y2)]
                         boxes.append({"id": track, "box": normalized, "confidence": round(confidence, 4), "appearance": appearance(frame, normalized), "zone":zone})
                         if track not in summaries:
@@ -356,7 +360,7 @@ def main():
         "detector": {"model": Path(args.model).name, "ultralytics": ultralytics.__version__,
                      "appearance": "overhead-rgb12-local-background/v3",
                      "device": device,
-                     "initialSetup": {"frameIndex":initial_setup['frameIndex'],"excludedDetectionIds":initial_setup.get('excludedDetectionIds',[]),"source":"operator-reviewed-frame"} if initial_setup else None,
+                     "initialSetup": {"frameIndex":initial_setup['frameIndex'],"excludedDetectionIds":initial_setup.get('excludedDetectionIds',[]),"source":"operator-reviewed-frame","assignments":seed_assignments} if initial_setup else None,
                      "teamConstraint": {"enabled": bool(uniforms), "uniforms": uniforms,
                                         "stableObservations":3,"conflictSeconds":.6,"minimumMargin":.4,
                                         "stages":["high-confidence","low-confidence"]} if uniforms else {"enabled":False},

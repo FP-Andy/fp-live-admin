@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import {validateDataset,validateReview} from '../apps/web/public/fpa-cv/core.mjs';
+import {reconnect} from '../apps/web/public/fpa-cv/identity.mjs';
+import {effectiveSegments} from '../apps/web/public/fpa-cv/integrity.mjs';
+import {buildHeatmaps} from '../apps/web/public/fpa-cv/heatmaps.mjs';
+const [input,out]=process.argv.slice(2);
+if(!input||!out)throw Error('Usage: node scripts/benchmark-fpa-cv-first-pass.mjs benchmark.json summary.json (input: {tracks,review})');
+const src=JSON.parse(fs.readFileSync(input)),data=validateDataset(src.tracks),review=validateReview(src.review,data);
+let last=Date.now();const start=Date.now(),r=reconnect(data,review,p=>{if(Date.now()-last>15000){console.error(p);last=Date.now();}});
+const h=buildHeatmaps(r.data,{...review,segments:effectiveSegments(review,r)});
+const result={file:data.video.name,seconds:(Date.now()-start)/1000,issues:r.issues,setup:review.setup,segments:r.segments.length,meanCoverage:h.players.reduce((s,p)=>s+p.coverage,0)/10,players:h.players.map(({id,jersey,group,coverage,identityCoverage,excludedReasons})=>({id,jersey,group,coverage,identityCoverage,excludedReasons}))};
+fs.writeFileSync(out,JSON.stringify(result,null,2));console.log(JSON.stringify(result));

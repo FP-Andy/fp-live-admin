@@ -1,4 +1,4 @@
-"""Validate operator seeds and transfer them geometrically, never by detection ID."""
+"""Transfer reviewed detections through tracker provenance, with a legacy geometry fallback."""
 from copy import deepcopy
 import re
 from fpa_cv_uniforms import validate_uniforms
@@ -36,6 +36,15 @@ def validate_initial(value,prepared):
             'detections':[{k:deepcopy(b[k]) for k in ('id','box','confidence')} for b in prepared['boxes']]}
 
 
+def reviewed_detections(setup):
+    """Remove near-identical unassigned copies, never two operator selections."""
+    selected={p['detectionId'] for p in setup['roster']}
+    excluded=set(setup.get('excludedDetectionIds',[]))
+    chosen=[b for b in setup['detections'] if b['id'] in selected]
+    return [b for b in setup['detections'] if b['id'] not in excluded and
+            (b['id'] in selected or not any(iou(b['box'],p['box'])>=.95 for p in chosen))]
+
+
 def initial_detections(setup,width,height,birth_score):
     """Start from reviewed server detections, not unstable re-prediction IDs.
 
@@ -44,15 +53,26 @@ def initial_detections(setup,width,height,birth_score):
     Exclusions apply to this frame only; they are not fixed exclusion regions.
     """
     people={p['detectionId']:p for p in setup['roster']}
-    excluded=set(setup.get('excludedDetectionIds',[]))
     rows=[];scores=[];teams=[]
-    for box in setup['detections']:
-        if box['id'] in excluded:continue
+    for box in reviewed_detections(setup):
         person=people.get(box['id']);score=box['confidence']
         rows.append([n*size for n,size in zip(box['box'],(width,height,width,height))]+[max(score,birth_score) if person else score,0])
         scores.append(score)
         teams.append(1 if person and person['group'].startswith('home') else 2 if person and person['group'].startswith('away') else 0 if person else None)
     return rows,scores,teams
+
+
+def initial_track_seeds(setup, output):
+    """Tracker output column 7 is the input row, not the transient detection ID."""
+    detections=reviewed_detections(setup)
+    people={p['detectionId']:p for p in setup['roster']}
+    seeds=[]
+    for row in output:
+        index=int(row[7])
+        if not 0<=index<len(detections):raise ValueError('초기 검출 인덱스가 범위 밖입니다.')
+        detection=detections[index];person=people.get(detection['id'])
+        if person:seeds.append({'personId':person['id'],'detectionId':detection['id'],'trackId':int(row[4])})
+    return seeds
 
 
 def iou(a,b):
@@ -68,23 +88,47 @@ def initial_review(data,setup):
     roster=[{k:p[k] for k in ('id','group','jersey')} for p in setup['roster']]
     review={'schema':'fpa-review/v1','datasetId':data['datasetId'],'segments':[],'events':[],'links':{},'offsets':{},
             'roster':roster,'uniforms':setup['uniforms'],'setup':None,'autoReconnect':True,'rejections':[],
-            'initialization':{'time':anchor_time,'unmatched':[],'matches':[]}}
+            'initialization':{'time':anchor_time,'unmatched':[],'matches':[],'failures':[]}}
     boxes=frame['boxes'];seeds=setup['roster'];scores=[[iou(p['box'],b['box']) for b in boxes] for p in seeds]
     step=1/data['detector']['sampleFps'];tracks={t['id']:t for t in data['tracks']}
+    provenance=data.get('detector',{}).get('initialSetup',{}) or {}
+    direct=provenance.get('assignments') if provenance.get('frameIndex')==setup['frameIndex'] else None
+    used=set()
+    def exact_box(a,b):return max(abs(x-y) for x,y in zip(a,b))<=2e-6
+    reviewed_frame=provenance.get('source')=='operator-reviewed-frame' and provenance.get('frameIndex')==setup['frameIndex']
     for i,p in enumerate(seeds):
         ranked=sorted(range(len(boxes)),key=lambda j:-scores[i][j])
         j=ranked[0] if ranked else None
         best=scores[i][j] if j is not None else 0
         second=scores[i][ranked[1]] if len(ranked)>1 else 0
         rival=max((scores[k][j] for k in range(len(seeds)) if k!=i),default=0) if j is not None else 0
-        # Conservative reciprocal match. Merged/ambiguous boxes require review.
-        if best<.45 or best-second<.12 or best-rival<.12:
-            review['initialization']['unmatched'].append(p['id']);continue
+        exact=[k for k,b in enumerate(boxes) if exact_box(p['box'],b['box'])]
+        unique_exact=len(exact)==1 and sum(exact_box(q['box'],boxes[exact[0]]['box']) for q in seeds)==1
+        reason=None;method='geometry'
+        if direct is not None:
+            links=[a for a in direct if a['personId']==p['id'] and a['detectionId']==p['detectionId']]
+            j=next((k for k,b in enumerate(boxes) if len(links)==1 and b['id']==links[0]['trackId']),None)
+            if j is None:reason='initial-observation-missing'
+            elif sum(a['trackId']==boxes[j]['id'] for a in direct)!=1:reason='duplicate-seed-track'
+            method='reviewed-detection'
+        elif reviewed_frame and unique_exact:
+            # Older runs retained the reviewed boxes exactly, but omitted the
+            # row-to-track mapping. A unique exact copy proves this seed; high
+            # IoU alone still cannot resolve two ambiguous people.
+            j=exact[0];method='exact-reviewed-box'
+        elif best<.45:reason='initial-observation-missing'
+        elif best-second<.12 or best-rival<.12:reason='ambiguous-overlap'
+        if j is not None and boxes[j]['id'] in used:reason='duplicate-seed-track'
+        if reason:
+            review['initialization']['unmatched'].append(p['id'])
+            review['initialization']['failures'].append({'personId':p['id'],'group':p['group'],'jersey':p['jersey'],'reason':reason})
+            continue
+        used.add(boxes[j]['id']);best=scores[i][j]
         track=tracks[boxes[j]['id']]
         team='home' if p['group'].startswith('home') else 'away' if p['group'].startswith('away') else 'referee'
         review['segments'].append({'trackId':track['id'],'from':max(data['video']['clipStart'],track['first']),
           'to':min(data['video']['clipEnd'],track['last']+step),'personId':p['id'],'group':p['group'],
           'team':team,'jersey':p['jersey'],'source':'manual'})
-        review['initialization']['matches'].append({'personId':p['id'],'trackId':track['id'],'overlap':round(best,4)})
-    if len(review['segments'])==13:review['setup']={'time':anchor_time}
+        review['initialization']['matches'].append({'personId':p['id'],'trackId':track['id'],'overlap':round(best,4),'method':method})
+    if review['segments']:review['setup']={'time':anchor_time}
     return review

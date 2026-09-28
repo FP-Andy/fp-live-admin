@@ -179,7 +179,10 @@ export function trackingUI({openJob}){
    if(job.options?.setup)info.push('코트·팀 색상 적용');
    else if(job.id!=='existing')info.push('초기 설정 전 결과');
    if(Number.isInteger(job.initialMatched))info.push(`초기 번호 연결 ${job.initialMatched}/13`);
-   if(job.initialMatched<13)card.append(el('p','일부 초기 번호를 확실하게 연결하지 못했습니다. 작업 화면에서 확인하세요.','tracking-setup-warning'));
+   if(job.initialMatched<13){
+    const labels=(job.initialUnmatched||[]).map(p=>`${p.group.startsWith('home')?'홈':p.group.startsWith('away')?'원정':'심판'} ${p.jersey}`).join(', ');
+    card.append(el('p',`초기 번호 ${13-job.initialMatched}명 연결 누락${labels?` (${labels})`:''}. 연결된 선수는 자동 복구를 계속합니다. 누락 선수는 작업 화면에서 지정하세요.`,'tracking-setup-warning'));
+   }
    if(job.samples)info.push(`${job.samples}개 샘플`);card.append(el('p',info.filter(Boolean).join(' · '),'tracking-job-meta'));
    if(active.has(job.status)){
     const progress=el('progress');progress.max=100;progress.value=job.progress||0;progress.setAttribute('aria-label','트래킹 진행률');card.append(progress);

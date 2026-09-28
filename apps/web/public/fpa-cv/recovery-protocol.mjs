@@ -1,5 +1,5 @@
 // Bump when identity/colour/continuity rules or this compact format change.
-export const RECOVERY_VERSION = 'identity-v4-team-review-2';
+export const RECOVERY_VERSION = 'identity-v5-initial-recovery-1';
 
 export function recoveryInputs(review) {
   const {segments, roster, uniforms, setup, autoReconnect, rejections,checkpoints} = review;
