@@ -1,6 +1,6 @@
 import {personIdentity,checkpointSegments} from './core.mjs';
 import {courtProjection} from './heatmaps.mjs';
-import {classifyUniform} from './colors.mjs';
+import {classifyKit} from './keeper-context.mjs';
 import {overlap,uniformAt,appearanceSimilarity,compactAppearance,effectiveSegments} from './integrity.mjs';
 
 const length=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
@@ -52,7 +52,7 @@ export function recoverCheckpoints(data,review,timeline,onProgress=()=>{}) {
     n.ignored=review.segments.some(s=>s.trackId===n.trackId&&s.team==='ignore'&&s.from<n.to&&n.from<s.to);
     const clean=n.obs.filter(o=>o.box.confidence>=.3),sample=clean.filter((_,i)=>i%Math.max(1,Math.floor(clean.length/8))===0).slice(0,8);
     n.appearance=compactAppearance(sample.flatMap(o=>(o.box.appearance||[]).map(p=>({...p,weight:p.weight/(sample.length||1)}))),8);
-    const color=classifyUniform(n.appearance,review.uniforms);n.color=color;
+    const color=classifyKit(n.obs[0].box,n.from,review.uniforms,data.keeperContext,n.appearance);n.color=color;
     if(n.seed)n.group=personIdentity(review,n.seed).group;
     else if(!n.group)n.group=color.group;
     n.first=n.obs[0];n.last=n.obs.at(-1);
@@ -157,7 +157,7 @@ export function mergeCheckpointRecovery(data,review,baseline,graph){
     for(const b of frame.boxes){
       if(at(fixed,b.id,frame.t)||at(blocked,b.id,frame.t))continue;
       const previous=at(old,b.id,frame.t),path=at(paths,b.id,frame.t);
-      const readablePath=path?.mode!=='checkpoint-path'||classifyUniform(b.appearance,review.uniforms).group===path.group;
+      const readablePath=path?.mode!=='checkpoint-path'||classifyKit(b,frame.t,review.uniforms,data.keeperContext).group===path.group;
       // Weak/mixed kits cannot add a new one-sided identity at an individual
       // observation merely because its tracklet's average colour looked clear.
       const choice=path?.checkpointSupport&&readablePath?path:previous?.personId?previous:readablePath?path:null;

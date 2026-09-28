@@ -1,5 +1,6 @@
 import { GROUPS, clone, identityAt, personIdentity, label, clock, assign, boxesAt } from './core.mjs';
-import { classifyUniform, samplePatch, hex } from './colors.mjs';
+import { samplePatch, hex } from './colors.mjs';
+import {classifyKit} from './keeper-context.mjs';
 import { setupIssues } from './identity.mjs';
 import { courtPosition } from './boundary.mjs';
 import { uniformAt } from './integrity.mjs';
@@ -102,7 +103,7 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
   function selected(id,identity,box) {
     let choice=identity?.personId||(identity?.team==='ignore'?'ignore':preferred);
     if(!choice) {
-      const group=classifyUniform(box?.appearance,getReview().uniforms).group;
+      const group=classifyKit(box,time(),getReview().uniforms,getRecovery()?.keeperContext).group;
       choice=getReview().roster.find(p=>(!group||p.group===group)&&!p.jersey)?.id||getReview().roster.find(p=>!group||p.group===group)?.id;
     }
     choosePerson(choice||'home-1');
@@ -186,10 +187,10 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
     $('identity-status').textContent=`예상 13명 · 코트/명단 검출 ${detected}개 · 경계 후보 ${outside}개 · 식별 ${visible.size}명 · 미연결 ${13-visible.size}명${detected!==13?' · 인원 불일치 확인':''}`;
     $('identity-status').classList.toggle('mismatch',detected!==13);
     const detail=$('match-details'),identity=selectedId===null?null:identityAt(working,selectedId,at);detail.replaceChildren();detail.hidden=identity?.source!=='auto';
-    const evidence=$('uniform-evidence'),box=boxesAt(getData(),at).find(b=>b.id===selectedId),raw=classifyUniform(box?.appearance,review.uniforms),stable=uniformAt(recovery.timeline,selectedId,at),detectedGroup=stable?.group||raw.group;
+    const evidence=$('uniform-evidence'),box=boxesAt(getData(),at).find(b=>b.id===selectedId),raw=classifyKit(box,at,review.uniforms,recovery.keeperContext),stable=uniformAt(recovery.timeline,selectedId,at),detectedGroup=stable?.group||raw.group;
     evidence.hidden=selectedId===null;
     const held=recovery.masks.some(m=>m.trackId===selectedId&&m.from<=at&&at<m.to),duplicate=recovery.duplicates.find(d=>d.trackId===selectedId&&d.from<=at&&at<d.to);
-    evidence.textContent=`유니폼: ${detectedGroup?GROUPS[detectedGroup].label:'판정 보류'}${stable&&!raw.group?' · 최근 색상 유지':''}${held?' · 기존 팀 지정 충돌':''}${duplicate?` · #${duplicate.canonicalTrackId}와 중복 관측`:''}`;
+    evidence.textContent=`유니폼: ${detectedGroup?GROUPS[detectedGroup].label:'판정 보류'}${raw.role&&raw.role!=='field'&&raw.role!=='keeper-unresolved'?' · 키퍼 위치·이동 이력':stable&&!raw.group?' · 최근 색상 유지':''}${held?' · 기존 팀 지정 충돌':''}${duplicate?` · #${duplicate.canonicalTrackId}와 중복 관측`:''}`;
     if(identity?.source==='auto') {
       detail.append(node('b',`자동 재연결 · ${Math.round(identity.score*100)}점`),node('p',`${modeName(identity)} · ${identity.mode==='backward'?'이후':'이전'} #${identity.previousTrack} · ${identity.gap.toFixed(2)}초 공백 · ${GROUPS[identity.group].label}`));
       const accept=node('button','이 연결 확정'),no=node('button','이 연결 거절');accept.onclick=()=>confirm(identity);no.onclick=()=>reject(identity);detail.append(accept,no);

@@ -1,5 +1,5 @@
 // Bump when identity/colour/continuity rules or this compact format change.
-export const RECOVERY_VERSION = 'identity-v3-human-checkpoints-2';
+export const RECOVERY_VERSION = 'identity-v4-keeper-context-1';
 
 export function recoveryInputs(review) {
   const {segments, roster, uniforms, setup, autoReconnect, rejections,checkpoints} = review;
@@ -32,7 +32,7 @@ export function hydrateRecovery(packed, data) {
     const removed=new Set(ids), frame=frames[index];
     frames[index]={...frame,boxes:frame.boxes.filter(b=>!removed.has(b.id))};
   }
-  return {...labels,data:{...data,frames},status:'complete'};
+  return {...labels,data:{...data,frames,keeperContext:labels.keeperContext},status:'complete'};
 }
 
 export async function digest(value) {

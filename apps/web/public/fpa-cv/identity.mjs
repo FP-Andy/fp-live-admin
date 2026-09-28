@@ -1,5 +1,5 @@
 import { GROUPS, identityAt, personIdentity, boxesAt, validateDataset,checkpointFrame } from './core.mjs';
-import { classifyUniform } from './colors.mjs';
+import {buildKeeperContext,classifyKit} from './keeper-context.mjs';
 import { courtPosition, touchlineEvidence, TOUCHLINE_NEAR } from './boundary.mjs';
 import { uniformTimeline, uniformAt, teamConflict, identityMasks, appearanceSimilarity, compactAppearance, overlap, effectiveSegments } from './integrity.mjs';
 import { consolidate } from './continuity.mjs';
@@ -53,9 +53,12 @@ const MOTION_MEMORY_SECONDS=8; // Motion precision decays; roster identities do 
  * Manual labels win; only missing members of the fixed roster can reconnect.
  */
 function reconnectBase(data,review,onProgress=()=>{},options={}) {
-  const result={segments:[],suggestions:[],warnings:[],issues:[],waiting:[],masks:[],duplicates:[],data,hasAppearance:data.frames.some(f=>f.boxes.some(b=>b.appearance?.length))};
+  const keeperContext=options.keeperContext||buildKeeperContext(data,review,(completed,total)=>onProgress({phase:'골키퍼 위치·이동 이력 확인',completed,total}));
+  data={...data,keeperContext};
+  const classify=(box,time,appearance=box?.appearance)=>classifyKit(box,time,review.uniforms,keeperContext,appearance);
+  const result={segments:[],suggestions:[],warnings:[],issues:[],waiting:[],masks:[],duplicates:[],data,keeperContext,hasAppearance:data.frames.some(f=>f.boxes.some(b=>b.appearance?.length))};
   const report=(phase,completed,total)=>onProgress({phase,completed,total});
-  const timeline=uniformTimeline(data,review.uniforms,(completed,total)=>report('1/3 · 유니폼 색상 확인',completed,total));
+  const timeline=uniformTimeline(data,review.uniforms,(completed,total)=>report('1/3 · 유니폼 색상 확인',completed,total),classify);
   result.timeline=timeline;
   result.masks=identityMasks(review,timeline);
   for(const m of result.masks)result.warnings.push({trackId:m.trackId,personId:m.personId,time:m.from,reason:'유니폼과 지정 팀이 달라 기존 번호 연결을 보류했습니다.'});
@@ -139,7 +142,7 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
     for(const box of frame.boxes) {
       const identity=manual.get(box.id)||active.get(box.id);
       if(!identity?.personId||manualConflicts.has(identity.personId))continue;
-      const rawUniform=classifyUniform(box.appearance,review.uniforms),stable=uniformAt(timeline,box.id,time);
+      const rawUniform=classify(box,time),stable=uniformAt(timeline,box.id,time);
       const uniform=rawUniform.group?rawUniform:{...rawUniform,group:stable?.group||null};
       const expected=personIdentity(review,identity.personId).group;
       // Do not use a contradictory observation as a new identity anchor.
@@ -165,16 +168,16 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
       openWaits.get(id).to=Math.min(data.video.clipEnd,time+step);
     }
     const targets=frame.boxes.filter(b=>!manual.has(b.id)&&!active.has(b.id));
-    const targetColors=new Map(targets.map(b=>[b.id,classifyUniform(b.appearance,review.uniforms)]));
+    const targetColors=new Map(targets.map(b=>[b.id,classify(b,time)]));
     const edges=new Map(),details=new Map();
     for(const box of targets) {
       const history=(histories.get(box.id)||[]).filter(h=>time-h.time<=.45);
       if(history.length<3||history.reduce((s,h)=>s+h.box.confidence,0)/history.length<.35)continue;
       const samples=history.flatMap(h=>(h.box.appearance||[]).map(p=>({...p,weight:p.weight/history.length})));
       const appearance=compactAppearance(samples);
-      const uniform=classifyUniform(samples,review.uniforms);
-      const consistentFrames=history.filter(h=>classifyUniform(h.box.appearance,review.uniforms).group===uniform.group).length;
-      const future=futureEvidence(box.id,time),futureColors=future.map(h=>classifyUniform(h.box.appearance,review.uniforms));
+      const uniform=classify(box,time,samples);
+      const consistentFrames=history.filter(h=>classify(h.box,h.time).group===uniform.group).length;
+      const future=futureEvidence(box.id,time),futureColors=future.map(h=>classify(h.box,h.time));
       const persistent=future.length>=3&&future.at(-1).time-time>=.35&&futureColors.filter(c=>c.group===uniform.group).length/future.length>=.8;
       const collision=frame.boxes.some(other=>other.id!==box.id&&overlap(box.box,other.box)>.25);
       const options=[];
@@ -236,7 +239,7 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
       for(const [id,entry] of active)if(entry.personId===pair.personId)finish(id,detail.from);
       const identity=personIdentity(review,pair.personId);
       active.set(pair.trackId,{...identity,...detail,trackId:pair.trackId,from:detail.from,last:time,source:'auto'});
-      observe(pair.personId,visible.get(pair.trackId),time,classifyUniform(visible.get(pair.trackId).appearance,review.uniforms));occupied.set(pair.personId,pair.trackId);
+      observe(pair.personId,visible.get(pair.trackId),time,classify(visible.get(pair.trackId),time));occupied.set(pair.personId,pair.trackId);
       candidatesAtEnd.delete(pair.trackId);
     }
   }
@@ -257,7 +260,7 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
       const reversed=validateDataset({...data,frames:data.frames.toReversed().map(f=>({...f,t:pivot-f.t}))});
       const reverseReview={...review,checkpoints:[],setup:{time:reversed.frames[0].t},segments:seeds.map(s=>({...mirror(s),locked:true})).filter(s=>s.from<s.to),
         rejections:review.rejections.map(mirror).filter(s=>s.from<s.to)};
-      const back=reconnect(reversed,reverseReview,info=>onProgress({...info,phase:'4/4 · 이후 관측으로 빈 구간 복구'}),{reversePass:true});
+      const back=reconnect(reversed,reverseReview,info=>onProgress({...info,phase:'4/4 · 이후 관측으로 빈 구간 복구'}),{reversePass:true,keeperContext:{...keeperContext,timeline:new Map([...keeperContext.timeline].map(([id,runs])=>[id,runs.map(mirror).sort((a,b)=>a.from-b.from)]))}});
       // Never overwrite a forward/manual track interval, nor duplicate an
       // occupied person on another observed box. Split at observation boundaries.
       const indexByTrack=new Map();for(const s of fixed){const list=indexByTrack.get(s.trackId)||[];list.push(s);indexByTrack.set(s.trackId,list);}
@@ -288,7 +291,8 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
 export function reconnect(data,review,onProgress=()=>{},options={}) {
   // The worker may reuse the exact initial-only result for unchanged inputs.
   // A manually selected hidden/raw BB needs fresh duplicate consolidation.
-  const reusable=options.baseline&&(review.checkpoints||[]).every(c=>{
+  const keeperCheckpoint=(review.checkpoints||[]).some(c=>c.assignments.some(a=>review.roster.find(p=>p.id===a.personId)?.group.endsWith('_gk')));
+  const reusable=options.baseline&&!keeperCheckpoint&&(review.checkpoints||[]).every(c=>{
     const frame=checkpointFrame(options.baseline.data,c.time).frame;
     return c.assignments.every(a=>frame.boxes.some(b=>b.id===a.trackId));
   });

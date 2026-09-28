@@ -1,5 +1,5 @@
 import {identityAt,personIdentity} from './core.mjs';
-import {classifyUniform} from './colors.mjs';
+import {classifyKit} from './keeper-context.mjs';
 import {appearanceSimilarity,overlap,teamConflict,uniformAt,effectiveSegments} from './integrity.mjs';
 
 const centre=b=>[(b[0]+b[2])/2,(b[1]+b[3])/2];
@@ -31,7 +31,7 @@ export function consolidate(data,review,timeline,masks) {
   for(const [id,list] of observations) {
     const birth=list[0],future=list.filter(o=>o.time-birth.time<=.55&&o.box.confidence>=.3);
     if(future.length<3)continue;
-    const color=classifyUniform(samples(future),review.uniforms);
+    const color=classifyKit(future.at(-1).box,future.at(-1).time,review.uniforms,data.keeperContext,samples(future));
     if(!color.group||color.margin<.45)continue;
     const first=framesByTime.get(birth.time),options=[];
     for(const old of first.boxes) {
@@ -40,7 +40,7 @@ export function consolidate(data,review,timeline,masks) {
       if(a?.team==='ignore'||b?.team==='ignore'||(a?.personId&&b?.personId&&a.personId!==b.personId))continue;
       const history=observations.get(old.id).filter(o=>o.time<=birth.time&&birth.time-o.time<=.55&&o.box.confidence>=.3);
       if(history.length<3)continue;
-      const previous=classifyUniform(samples(history),review.uniforms);
+      const previous=classifyKit(history.at(-1).box,history.at(-1).time,review.uniforms,data.keeperContext,samples(history));
       if(previous.group!==color.group||(appearanceSimilarity(samples(history),samples(future))??0)<.65)continue;
       if((a&&teamConflict(a,color))||(b&&teamConflict(b,color)))continue;
       const together=list.filter(o=>o.time-birth.time<=.7).map(o=>({o,old:indexed.get(old.id).get(o.time)})).filter(p=>p.old);
