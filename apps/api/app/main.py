@@ -84,6 +84,8 @@ from .highlight_jobs import (
     download_link_for_job,
     fetch_youtube_sources_for_job,
     fineplay_youtube_path,
+    YT_HEIGHT_CHOICES,
+    YT_MAX_HEIGHT,
     list_manual_clip_info,
     merge_clips_for_job,
     merge_manual_clips_for_job,
@@ -11928,6 +11930,10 @@ def fineplay_source_url(
                     "code": entry.get("code"),
                     "detail": entry.get("detail"),
                 },
+                # 실제로 무엇을 받았는지. 없으면(예전에 받은 것) None 이다.
+                "downloaded": entry.get("video") or None,
+                "requestedHeight": entry.get("requested_height"),
+                "sizeBytes": entry.get("size"),
                 "durationSeconds": v.duration_seconds,
                 "resolution": v.resolution,
             })
@@ -11945,6 +11951,9 @@ def fineplay_source_url(
         "durationSeconds": videos[0]["durationSeconds"],
         "resolution": videos[0]["resolution"],
         "videos": videos,
+        # 이 신청을 어떤 화질로 받기로 했는지, 그리고 고를 수 있는 값들.
+        "maxHeight": int((job.job_metadata or {}).get("youtube_max_height") or YT_MAX_HEIGHT),
+        "heightChoices": list(YT_HEIGHT_CHOICES),
     }
 
 
@@ -11984,10 +11993,17 @@ def fineplay_local_source(
 def fineplay_fetch_youtube(
     job_id: str,
     background_tasks: BackgroundTasks,
+    force: bool = False,
+    max_height: int | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    """유튜브 원본 취득을 (다시) 시작한다. 클레임 때 자동으로 돌지만 실패했을 때 쓴다."""
+    """유튜브 원본 취득을 (다시) 시작한다. 클레임 때 자동으로 돌지만 실패했을 때 쓴다.
+
+    force=true 면 **이미 받아 둔 것도 지우고 다시 받는다.** 받는 화질 규칙을 고친 뒤,
+    예전에 낮은 화질로 받아 둔 영상을 새로 받으려면 이게 필요하다 — 파일이 있으면
+    건너뛰는 구조라 지우지 않으면 영영 그대로다.
+    """
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
@@ -11995,18 +12011,36 @@ def fineplay_fetch_youtube(
     targets = [v for v in manifest.videos if v.is_youtube]
     if not targets:
         raise HTTPException(status_code=400, detail="이 신청에는 유튜브 영상이 없습니다.")
-    # 실패로 남은 것만 지워 다시 받게 한다 — 이미 받아 둔 건 그대로 둔다.
+    if max_height is not None and int(max_height) not in YT_HEIGHT_CHOICES:
+        raise HTTPException(status_code=400,
+                            detail=f"고를 수 있는 화질: {', '.join(f'{h}p' for h in YT_HEIGHT_CHOICES)}")
     metadata = dict(job.job_metadata or {})
+    # 고른 화질은 잡에 남긴다 — 백그라운드로 넘어가도, 나중에 다시 받아도 따라간다.
+    if max_height is not None:
+        metadata["youtube_max_height"] = int(max_height)
+    height = int(metadata.get("youtube_max_height") or YT_MAX_HEIGHT)
     state = dict(metadata.get("youtube_fetch") or {})
+    removed = 0
     for v in targets:
-        if str((state.get(v.video_id) or {}).get("status")) == "error":
+        if force:
+            # 파일까지 지운다. 기록만 지우면 파일이 남아 있어 그대로 건너뛴다.
+            path = fineplay_youtube_path(job_id, v.video_id)
+            if path.exists():
+                path.unlink(missing_ok=True)
+                removed += 1
+            state.pop(v.video_id, None)
+        elif str((state.get(v.video_id) or {}).get("status")) == "error":
+            # 실패로 남은 것만 지워 다시 받게 한다 — 이미 받아 둔 건 그대로 둔다.
             state.pop(v.video_id, None)
     metadata["youtube_fetch"] = state
     update_job(db, job_id, job_metadata=metadata)
-    background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
-    _audit(db, "FINEPLAY_YOUTUBE_FETCH", "highlight", actor=user, target_id=job_id, severity="INFO")
+    background_tasks.add_task(fetch_youtube_sources_for_job, job_id, height)
+    _audit(db, "FINEPLAY_YOUTUBE_FETCH", "highlight", actor=user, target_id=job_id,
+           severity="INFO",
+           details={"force": bool(force), "removed": removed, "max_height": height})
     db.commit()
-    return {"ok": True, "videos": [v.video_id for v in targets]}
+    return {"ok": True, "videos": [v.video_id for v in targets],
+            "force": bool(force), "removed": removed, "maxHeight": height}
 
 
 @app.post("/api/highlight/fineplay-jobs/{job_id}/resend-callback")

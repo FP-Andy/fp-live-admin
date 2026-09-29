@@ -398,12 +398,74 @@ def youtube_cookie_args() -> list[str]:
         return []
     return ["--cookies", YT_COOKIES]
 
-YT_FORMAT = (
-    "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]"
-    "/b[height<=1080][vcodec^=avc1]"
-    "/bv*[height<=1080]+ba"
-    "/b[height<=1080]"
-)
+# 유튜브에서 받을 화질.
+#
+# ⚠️ 한때 "HLS(m3u8) 렌디션이 더 고화질인데 avc1 우선 때문에 못 받고 있다" 고 보고
+# avc1 조건을 뺐다가 되돌렸다. 목록의 비트레이트(270 이 5592k, 137 이 3970k)만 보고
+# 내린 판단이었는데, **실제로 같은 구간을 두 포맷으로 받아 보니 영상 스트림 md5 가
+# 완전히 같았다**(HppAqWgGdmE, 10:00~10:30, 둘 다 96d80e05d9eda69e597ee84884f8a018).
+# HLS 가 선언하는 BANDWIDTH 는 최대치라 실제 바이트가 아니다. 즉 얻는 것은 없고
+# AV1 을 물어 올 위험만 커졌다 — 그래서 avc1 우선을 유지한다.
+#
+# avc1(H.264) 을 먼저 고르는 이유: 요즘 유튜브는 1080p 를 AV1 로도 주는데, 그러면
+# 브라우저 태깅 재생이 무겁고 클립 렌더도 AV1 디코드를 탄다. 결과물은 어차피 H.264 다.
+#
+# 다만 같은 조건 안에서는 비트레이트가 높은 쪽을 집도록 정렬을 붙인다(-S res:N,br).
+# 이건 공짜다 — 렌디션이 실제로 다를 때만 효과가 있고, 같으면 아무 일도 없다.
+
+#: 기본 최대 높이. 운영자가 콘솔에서 건별로 바꿀 수 있다.
+YT_MAX_HEIGHT = int(os.getenv("HIGHLIGHT_YT_MAX_HEIGHT", "1080") or 1080)
+
+#: 콘솔에서 고를 수 있는 화질. 원본이 그보다 낮으면 있는 것 중 가장 좋은 것을 받는다.
+YT_HEIGHT_CHOICES = (2160, 1440, 1080, 720)
+
+
+def youtube_quality_args(max_height: int | None = None) -> list[str]:
+    """받을 화질을 yt-dlp 인자로 만든다.
+
+    높이를 인자로 받는 이유는 **원본이 흐릴 때 운영자가 올려 볼 수 있어야** 해서다.
+    유튜브가 4K 를 주는 경기 영상도 있는데 1080p 로 못 박아 두면 그걸 못 쓴다.
+    """
+    h = int(max_height or YT_MAX_HEIGHT)
+    fmt = (
+        f"bv*[height<={h}][vcodec^=avc1]+ba[ext=m4a]"
+        f"/b[height<={h}][vcodec^=avc1]"
+        f"/bv*[height<={h}]+ba"
+        f"/b[height<={h}]"
+    )
+    return ["-f", fmt, "-S", f"res:{h},br"]
+
+
+def probe_video_info(path: Path) -> dict:
+    """받아 둔 파일이 실제로 무엇인지 읽는다.
+
+    이게 없으면 '왜 화질이 낮게 받아졌나' 를 매번 추측하게 된다 — 실제로 그랬다.
+    받은 뒤 한 번 재어 기록으로 남기면 화면에서 바로 보인다.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,codec_name,bit_rate",
+             "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=0", str(path)],
+            capture_output=True, text=True, timeout=60,
+        ).stdout
+    except Exception:  # noqa: BLE001 - 재는 데 실패해도 받은 건 멀쩡하다
+        return {}
+    # 이름으로 읽는다. 자리로 읽으면 순서가 바뀌었을 때 조용히 틀린 값을 집는다.
+    got = dict(
+        line.split("=", 1) for line in out.splitlines() if "=" in line
+    )
+
+    def num(key):
+        try:
+            return int(float(got.get(key, "")))
+        except (TypeError, ValueError):
+            return None
+
+    info = {"width": num("width"), "height": num("height"),
+            "codec": got.get("codec_name") or None, "bitrate": num("bit_rate")}
+    return {k: v for k, v in info.items() if v is not None}
 
 
 def fineplay_source_dir(job_id: str) -> Path:
@@ -455,7 +517,8 @@ def classify_youtube_failure(stderr: str) -> str:
     return YT_FETCH_ERROR
 
 
-def fetch_youtube_source(url: str, dest: Path, on_progress=None) -> None:
+def fetch_youtube_source(url: str, dest: Path, on_progress=None,
+                         max_height: int | None = None) -> None:
     """유튜브 영상 하나를 dest 로 받는다. 실패하면 사유 코드를 단 예외를 던진다.
 
     받는 방식은 운영자가 링크를 붙여넣는 기존 기능(download_link_for_job)과 같다 —
@@ -466,7 +529,7 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None) -> None:
     tmpl = str(dest.with_suffix("")) + ".%(ext)s"
     cmd = [
         "yt-dlp",
-        "-f", YT_FORMAT,
+        *youtube_quality_args(max_height),
         *YT_JS_ARGS,
         # 유튜브는 데이터센터 IP 를 봇으로 본다. 로그인 쿠키를 주면 통과한다.
         *youtube_cookie_args(),
@@ -519,7 +582,7 @@ class YoutubeFetchError(RuntimeError):
         self.detail = detail
 
 
-def fetch_youtube_sources_for_job(job_id: str) -> None:
+def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) -> None:
     """FPC 신청에 실린 유튜브 원본을 전부 내려받는다(백그라운드).
 
     받아 둔 파일은 태깅 화면이 재생하고 클립 렌더가 읽는다 — S3 원본과 같은 자리에서
@@ -542,6 +605,8 @@ def fetch_youtube_sources_for_job(job_id: str) -> None:
             return
 
         state = dict(metadata.get("youtube_fetch") or {})
+        # 화질은 인자로 온 것 > 잡에 저장해 둔 것 > 기본값 순으로 정한다.
+        height = int(max_height or metadata.get("youtube_max_height") or YT_MAX_HEIGHT)
 
         # 이미 받는 중이면 손대지 않는다. 받는 중인 파일은 아직 최종 이름이 없어서
         # (yt-dlp 가 임시 이름으로 쓴다) '파일이 있나' 로는 못 걸러진다 — 두 번 부르면
@@ -562,7 +627,11 @@ def fetch_youtube_sources_for_job(job_id: str) -> None:
         for video in targets:
             dest = fineplay_youtube_path(job_id, video.video_id)
             if dest.exists() and dest.stat().st_size > 0:
-                save(video.video_id, status="done", percent=100, path=str(dest))
+                # 예전에 받아 둔 건 실물 기록이 없다 — 이때 한 번 재어 채운다.
+                known = (state.get(video.video_id) or {}).get("video") or {}
+                save(video.video_id, status="done", percent=100, path=str(dest),
+                     size=dest.stat().st_size,
+                     video=known or probe_video_info(dest))
                 continue
             save(video.video_id, status="downloading", percent=0, url=video.youtube_url)
             # 퍼센트를 매 줄 저장하면 DB 를 너무 두드린다. 5% 단위로만 남긴다.
@@ -574,7 +643,8 @@ def fetch_youtube_sources_for_job(job_id: str) -> None:
                     save(_vid, status="downloading", percent=int(pct))
 
             try:
-                fetch_youtube_source(video.youtube_url, dest, on_progress=on_progress)
+                fetch_youtube_source(video.youtube_url, dest, on_progress=on_progress,
+                                     max_height=height)
             except YoutubeFetchError as exc:
                 logger.warning("유튜브 취득 실패 %s/%s: %s", job_id, video.video_id, exc.detail[:200])
                 save(video.video_id, status="error", code=exc.code, detail=exc.detail[-300:])
@@ -583,8 +653,12 @@ def fetch_youtube_sources_for_job(job_id: str) -> None:
                 logger.exception("유튜브 취득 중 예외 %s/%s", job_id, video.video_id)
                 save(video.video_id, status="error", code=YT_FETCH_ERROR, detail=str(exc)[-300:])
                 continue
+            # 받은 실물을 재어 남긴다. 화면이 이걸 그대로 보여 주므로 '왜 흐린가' 를
+            # 파일을 직접 열어 보지 않고도 알 수 있다.
             save(video.video_id, status="done", percent=100, path=str(dest),
-                 size=dest.stat().st_size if dest.exists() else 0)
+                 size=dest.stat().st_size if dest.exists() else 0,
+                 requested_height=height,
+                 video=probe_video_info(dest) if dest.exists() else {})
     finally:
         db.close()
 
@@ -611,8 +685,8 @@ def download_link_for_job(job_id: str) -> None:
 
         cmd = [
             "yt-dlp",
-            "-f",
-            YT_FORMAT,
+            # 링크 붙여넣기도 FPC 취득과 같은 규칙으로 받는다 — 한쪽만 고쳐지지 않게.
+            *youtube_quality_args(metadata.get("youtube_max_height")),
             *YT_JS_ARGS,
             *youtube_cookie_args(),
             "--downloader",
