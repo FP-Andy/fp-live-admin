@@ -190,6 +190,9 @@ type SourceVideo = {
   downloaded?: { width?: number; height?: number; codec?: string; bitrate?: number } | null;
   requestedHeight?: number | null;
   sizeBytes?: number | null;
+  /** 요청보다 한참 낮게 받아졌나. 유튜브가 서버를 막았을 때 이렇게 된다. */
+  lowQuality?: boolean;
+  lowQualityDetail?: string | null;
 };
 
 /** 받은 실물을 한 줄로. '왜 흐린가' 를 파일을 열어 보지 않고 알 수 있게. */
@@ -1989,6 +1992,22 @@ export default function FineplayJobsPage() {
                   ↻ 이 화질로 다시 받기
                 </button>
               ) : null}
+
+              {/* 저화질로 떨어졌으면 태깅을 시작하기 전에 알린다. 이걸 모르고
+                  한 시간 태깅한 뒤에 알면 그 시간이 통째로 날아간다. */}
+              {sourceVideos.filter((v) => v.lowQuality).map((v) => (
+                <p
+                  key={`low-${v.videoId}`}
+                  style={{
+                    flexBasis: '100%', margin: '2px 0 0', fontSize: 12,
+                    color: '#fca5a5', lineHeight: 1.5,
+                  }}
+                >
+                  ⚠ {v.lowQualityDetail || '요청한 화질보다 낮게 받아졌습니다.'}
+                  {' '}원본 자체가 그 화질이 아니라면 유튜브가 이 서버를 막은 것입니다 —
+                  {' '}쿠키(YTDLP_COOKIES)를 새로 넣고 다시 받아야 합니다.
+                </p>
+              ))}
             </div>
           ) : null}
 
