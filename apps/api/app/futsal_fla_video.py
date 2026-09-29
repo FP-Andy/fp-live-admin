@@ -73,12 +73,19 @@ def get_match(db, id, user, write=False):
 
 
 def public_upload(row):
-    return {'id':row.id,'name':row.payload.get('name'),'size':row.payload.get('size')}
+    return {'id':row.id,'name':row.payload.get('name'),'size':row.payload.get('size'),'legacy':not row.payload.get('storage') and not row.payload.get('status')}
+
+
+def upload_ready(row):
+    # Legacy uploads were registered only after the private worker received the
+    # complete source. Keep them selectable without guessing their fixture.
+    p=row.payload
+    return p.get('status')=='uploaded' or (not p.get('storage') and not p.get('status') and bool(p.get('size')))
 
 
 def allowed_upload(db, id, user):
     row=db.query(FpaCvResource).filter_by(id=id,kind='upload').first()
-    if not row or row.payload.get('status')!='uploaded' or (user.role!='SUPERADMIN' and row.owner_id!=user.id):
+    if not row or not upload_ready(row) or (user.role!='SUPERADMIN' and row.owner_id!=user.id):
         raise HTTPException(404,'접근 가능한 업로드 영상을 선택하세요.')
     return row
 
@@ -211,7 +218,7 @@ def create_router(dominance_builder=None):
     @router.get('/fixtures')
     def fixtures(user: User=Depends(require_session_user),db: Session=Depends(get_db)):
         uploads=db.query(FpaCvResource).filter_by(kind='upload').all()
-        uploads=[u for u in uploads if u.payload.get('status')=='uploaded' and (user.role=='SUPERADMIN' or u.owner_id==user.id)]
+        uploads=[u for u in uploads if upload_ready(u) and (user.role=='SUPERADMIN' or u.owner_id==user.id)]
         matches=db.query(Match).filter_by(sport='FUTSAL').all()
         result=[]
         for f in FIXTURES:
@@ -275,6 +282,12 @@ def create_router(dominance_builder=None):
     @router.get('/uploads/{id}/source')
     def source(id: str,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
         upload=allowed_upload(db,id,user)
+        if public_upload(upload)['legacy']:
+            job=next((j for j in db.query(FpaCvResource).filter_by(kind='job').all()
+                      if j.payload.get('uploadId')==id and j.payload.get('status')=='completed'
+                      and j.payload.get('result',{}).get('original') and (user.role=='SUPERADMIN' or j.owner_id==user.id)),None)
+            if not job:raise HTTPException(404,'기존 분석의 원본 영상을 찾지 못했습니다.')
+            return RedirectResponse(f'/api/tracking/jobs/{job.id}/source',headers={'Cache-Control':'private, no-store'})
         store=storage()
         if not store:raise HTTPException(503,'영상 저장소 설정을 확인하세요.')
         return RedirectResponse(store.url(upload.payload['key']),headers={'Cache-Control':'private, no-store'})

@@ -204,7 +204,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     {showSetup?<section id="fv-start-settings" className="fv-start-settings" aria-label="경기 시작 시각 설정">
       <div className="row"><strong>{s.configured?`영상 ${mediaLabel(s.offset_ms)} → 경기 00:00`:'킥오프 장면을 지정하고 저장하세요'}</strong>{s.started?<small>기록 중 · 시작 기준 고정</small>:null}</div>
       <div className="fv-start-fields">
-        <label>{process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?'로컬 샘플 영상':'S3 경기 영상'}<select aria-label="경기 영상 선택" value={uploadId} onChange={e=>{video.current?.pause();setUploadId(e.target.value);setDuration(0);setStartTime('00:00.000');}} disabled={!canWrite||s.started}><option value="">영상을 선택하세요</option>{uploads.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
+        <label>{process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?'로컬 샘플 영상':'경기 영상'}<select aria-label="경기 영상 선택" value={uploadId} onChange={e=>{video.current?.pause();setUploadId(e.target.value);setDuration(0);setStartTime('00:00.000');}} disabled={!canWrite||s.started}><option value="">영상을 선택하세요</option>{uploads.map(u=><option key={u.id} value={u.id}>{u.name}{u.legacy?' · 기존 분석 원본':''}</option>)}</select></label>
         <label>경기 시작 영상 시각<input aria-label="경기 시작 영상 시각" value={startTime} onChange={e=>setStartTime(e.target.value)} placeholder="00:30.000 또는 30" disabled={!canWrite||s.started}/></label>
         <button className="btn-secondary" disabled={!duration||s.started} onClick={()=>{video.current?.pause();setStartTime(mediaLabel(video.current!.currentTime*1000));}}>현재 영상 시각 가져오기</button>
         <button className="btn-primary" onClick={configure} disabled={!canWrite||!duration||s.started||busy}>시작 시각 저장</button>

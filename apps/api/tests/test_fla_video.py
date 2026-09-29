@@ -93,6 +93,17 @@ class FlaVideoTests(unittest.TestCase):
         r,_=self.update(action='start');self.assertEqual(r.status_code,200,r.text)
         r=self.client.put(self.base+'/video',json={'upload_id':'upload','version':self.version})
         self.assertEqual(r.status_code,409)
+    def test_legacy_original_is_selectable_without_auto_matching(self):
+        uid,jid='a'*32,'b'*32
+        with self.Session() as db:
+            db.add(FpaCvResource(id=uid,kind='upload',owner_id=self.user.id,payload={'name':'DJI_20260912093904_0001_W.MP4','size':1000}))
+            db.add(FpaCvResource(id=jid,kind='job',owner_id=self.user.id,payload={'uploadId':uid,'status':'completed','result':{'original':'source'}}))
+            db.commit()
+        listing=self.client.get('/api/futsal/fla-video/fixtures').json()
+        self.assertTrue(next(u for u in listing['uploads'] if u['id']==uid)['legacy'])
+        self.assertTrue(all(uid not in f['candidates'] for f in listing['fixtures']))
+        r=self.client.get(f'/api/futsal/fla-video/uploads/{uid}/source',follow_redirects=False)
+        self.assertEqual(r.status_code,307);self.assertEqual(r.headers['location'],f'/api/tracking/jobs/{jid}/source')
     def test_shot_coordinates_and_upload_access(self):
         self.update(action='start')
         payload=dict(event_id=str(uuid4()),client_id=self.client_id,type='XG',clock_ms=0,team='HOME',shot_x=38,shot_y=10,is_goal=True,goalmouth_x=.9,goalmouth_y=.8,xg=.36)
