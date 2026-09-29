@@ -12050,6 +12050,123 @@ def fineplay_fetch_youtube(
             "force": bool(force), "removed": removed, "maxHeight": height}
 
 
+@app.post("/api/highlight/fineplay-jobs/{job_id}/refresh-manifest")
+def refresh_fineplay_manifest(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """FinePlay 가 원본을 바꿨을 때, 잡에 박힌 매니페스트만 새 claim 으로 갈아끼운다.
+
+    **태깅(clips)은 건드리지 않는다.** 렌더러가 무슨 원본을 읽을지는 오직 잡의
+    매니페스트가 정하기 때문에(fineplay_worker 는 source 필드로만 분기한다),
+    저쪽이 유튜브 링크를 S3 업로드본으로 바꿔도 이걸 갈아끼우지 않으면 영영
+    옛 원본으로 렌더된다. 잡을 지우면 반영되지만 태깅이 통째로 날아간다.
+
+    claim 재호출은 멱등이다 — 이미 우리가 잡고 있는 건이면 lease 만 갱신되고
+    상태 전이 이벤트도 발행되지 않는다(FinePlay 확인, 2026-09-29). 그래서 신청자에게
+    알림이 가지 않는다.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = dict(job.job_metadata or {})
+    rid = str(metadata.get("analysis_request_id") or "").strip()
+    if not rid and job_id.startswith("fp-"):
+        rid = job_id[3:]
+    if not rid:
+        raise HTTPException(status_code=400, detail="이 잡에 FinePlay 신청 번호가 없습니다.")
+
+    client = fineplay_default_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+    try:
+        cr = client.claim(rid, pipeline_version=FINEPLAY_PIPELINE_VERSION)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FinePlay claim 실패: {exc}")
+    if not cr.granted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"claim 이 거부됐습니다 (HTTP {cr.status_code}). 다른 워커가 잡고 있을 수 있습니다.")
+
+    new_raw = cr.manifest or {}
+    # 깨진 매니페스트로 덮으면 잡이 통째로 못 쓰게 된다 — 먼저 읽히는지 본다.
+    try:
+        new_manifest = fineplay_parse_manifest(new_raw)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"새 매니페스트를 읽을 수 없습니다: {exc}")
+    if not new_manifest.videos:
+        raise HTTPException(status_code=422, detail="새 매니페스트에 영상이 없습니다.")
+
+    try:
+        old_manifest = fineplay_parse_manifest(metadata.get("manifest") or {})
+        old_videos = {v.video_id: v for v in old_manifest.videos}
+    except Exception:  # noqa: BLE001 - 옛 것이 깨졌으면 그냥 갈아끼운다
+        old_videos = {}
+
+    # 태깅이 끊기지 않는지 확인한다. 클립은 sourceVideoId 로 원본을 찾으므로,
+    # 새 매니페스트에 그 id 가 없으면 렌더가 통째로 실패한다.
+    new_ids = {v.video_id for v in new_manifest.videos}
+    used_ids = {
+        str((c or {}).get("sourceVideoId") or "").strip()
+        for c in (metadata.get("clips") or [])
+        if isinstance(c, dict)
+    } - {""}
+    missing = sorted(used_ids - new_ids)
+    if missing and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=("태깅이 가리키는 원본이 새 매니페스트에 없습니다: "
+                    f"{', '.join(missing)}. 그대로 바꾸면 렌더가 실패합니다."))
+
+    # 무엇이 바뀌는지 남긴다 — 나중에 '무엇을 갈아끼웠나' 를 감사기록으로 되짚을 수 있게.
+    changes = []
+    for v in new_manifest.videos:
+        before = old_videos.get(v.video_id)
+        changes.append({
+            "videoId": v.video_id,
+            "sourceBefore": ("YOUTUBE" if before.is_youtube else "UPLOAD") if before else None,
+            "sourceAfter": "YOUTUBE" if v.is_youtube else "UPLOAD",
+            "s3KeyAfter": v.s3_key or None,
+            "durationBefore": before.duration_seconds if before else None,
+            "durationAfter": v.duration_seconds,
+        })
+
+    metadata["manifest"] = new_raw
+    # plan(산출 지시)은 claim 스냅샷으로 굳히는 값이라 건드리지 않는다 — 원본만 바꾸는 작업이다.
+
+    # 유튜브가 아니게 된 영상은 받아 둔 파일이 쓸모없다. 지워서 디스크를 돌려주고,
+    # 화면에 '받아 둔 유튜브 원본' 으로 남지 않게 한다.
+    fetch_state = dict(metadata.get("youtube_fetch") or {})
+    freed = 0
+    for v in new_manifest.videos:
+        if v.is_youtube:
+            continue
+        path = fineplay_youtube_path(job_id, v.video_id)
+        if path.exists():
+            freed += path.stat().st_size
+            path.unlink(missing_ok=True)
+        fetch_state.pop(v.video_id, None)
+    metadata["youtube_fetch"] = fetch_state
+
+    # 매니페스트는 FinePlay 가 준 JSON 그대로라 별도 변환이 필요 없다.
+    update_job(db, job_id, job_metadata=metadata)
+    _audit(db, "FINEPLAY_MANIFEST_REFRESH", "highlight", actor=user, target_id=job_id,
+           severity="INFO",
+           details={"analysis_request_id": rid, "changes": changes,
+                    "freed_bytes": freed, "forced": bool(force)})
+    db.commit()
+
+    # 새 매니페스트가 여전히 유튜브라면 받아 둔 게 없을 수 있다 — 그때만 받기를 건다.
+    if _needs_youtube_fetch(db.get(HighlightJob, job_id)):
+        background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
+
+    return {"ok": True, "analysisRequestId": rid, "changes": changes,
+            "freedBytes": freed, "clipsKept": len(metadata.get("clips") or [])}
+
+
 @app.post("/api/highlight/fineplay-jobs/{job_id}/resend-callback")
 def resend_fineplay_callback(
     job_id: str,
