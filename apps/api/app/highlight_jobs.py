@@ -420,20 +420,57 @@ YT_MAX_HEIGHT = int(os.getenv("HIGHLIGHT_YT_MAX_HEIGHT", "1080") or 1080)
 YT_HEIGHT_CHOICES = (2160, 1440, 1080, 720)
 
 
+#: 이 밑이면 '쓸 수 없는 화질' 로 본다. 유튜브가 서버를 봇으로 보면 저화질 목록만
+#: 내주는데, 그때 조용히 받아지는 게 보통 360p(포맷 18)다.
+YT_MIN_USABLE_HEIGHT = 720
+
+
 def youtube_quality_args(max_height: int | None = None) -> list[str]:
     """받을 화질을 yt-dlp 인자로 만든다.
 
     높이를 인자로 받는 이유는 **원본이 흐릴 때 운영자가 올려 볼 수 있어야** 해서다.
     유튜브가 4K 를 주는 경기 영상도 있는데 1080p 로 못 박아 두면 그걸 못 쓴다.
+
+    **쓸 만한 화질을 먼저 찾고, 없을 때만 아래로 내려간다.** 예전에는 바로
+    `height<=1080` 하나로 골라서, 유튜브가 저화질 목록만 내준 날에 360p 가 조용히
+    받아졌다 — 그러고도 '완료' 로 남아 아무도 몰랐다(실제로 그 일이 났다).
+    내려간 것 자체는 막지 않는다. 못 받는 것보다는 낫고, 대신 티를 낸다.
     """
     h = int(max_height or YT_MAX_HEIGHT)
-    fmt = (
-        f"bv*[height<={h}][vcodec^=avc1]+ba[ext=m4a]"
-        f"/b[height<={h}][vcodec^=avc1]"
-        f"/bv*[height<={h}]+ba"
-        f"/b[height<={h}]"
-    )
-    return ["-f", fmt, "-S", f"res:{h},br"]
+    lo = min(YT_MIN_USABLE_HEIGHT, h)
+
+    def tier(extra: str) -> str:
+        return (
+            f"bv*[height<={h}]{extra}[vcodec^=avc1]+ba[ext=m4a]"
+            f"/b[height<={h}]{extra}[vcodec^=avc1]"
+            f"/bv*[height<={h}]{extra}+ba"
+            f"/b[height<={h}]{extra}"
+        )
+
+    # 앞 묶음: 쓸 만한 화질. 뒤 묶음: 그것마저 없을 때의 최후 수단.
+    return ["-f", f"{tier(f'[height>={lo}]')}/{tier('')}", "-S", f"res:{h},br"]
+
+
+def youtube_available_formats(url: str) -> str:
+    """유튜브가 지금 이 서버에 무엇을 내주고 있는지 한 줄 요약.
+
+    저화질로 떨어졌을 때 '원본이 그것뿐' 인지 '서버가 막혀서' 인지는 목록을 봐야
+    갈린다. 실패 사유에 이걸 같이 남겨 두면 다음 사람이 다시 재현하지 않아도 된다.
+    """
+    try:
+        out = subprocess.run(
+            ["yt-dlp", "--list-formats", "--no-warnings", *YT_JS_ARGS,
+             *youtube_cookie_args(), url],
+            capture_output=True, text=True, timeout=120,
+        ).stdout
+    except Exception:  # noqa: BLE001 - 진단이 실패해도 받은 건 그대로 쓴다
+        return ""
+    heights = set()
+    for line in out.splitlines():
+        hit = re.search(r"\b(\d{3,4})x(\d{3,4})\b", line)
+        if hit:
+            heights.add(int(hit.group(2)))
+    return ", ".join(f"{x}p" for x in sorted(heights, reverse=True)) if heights else ""
 
 
 def probe_video_info(path: Path) -> dict:
@@ -655,10 +692,30 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
                 continue
             # 받은 실물을 재어 남긴다. 화면이 이걸 그대로 보여 주므로 '왜 흐린가' 를
             # 파일을 직접 열어 보지 않고도 알 수 있다.
-            save(video.video_id, status="done", percent=100, path=str(dest),
-                 size=dest.stat().st_size if dest.exists() else 0,
-                 requested_height=height,
-                 video=probe_video_info(dest) if dest.exists() else {})
+            info = probe_video_info(dest) if dest.exists() else {}
+            got = int(info.get("height") or 0)
+            fields = {
+                "status": "done", "percent": 100, "path": str(dest),
+                "size": dest.stat().st_size if dest.exists() else 0,
+                "requested_height": height,
+                "video": info,
+                "cookies_used": bool(youtube_cookie_args()),
+            }
+            # 요청한 것보다 한참 아래가 받아졌으면 **티를 낸다.** 조용히 '완료' 로
+            # 남으면 운영자가 360p 영상으로 한 시간 태깅하고 나서야 안다 — 실제로
+            # 그렇게 한 번 나갔다.
+            if got and got < min(YT_MIN_USABLE_HEIGHT, height):
+                avail = youtube_available_formats(video.youtube_url)
+                fields["low_quality"] = True
+                fields["low_quality_detail"] = (
+                    f"{height}p 를 요청했지만 {got}p 를 받았습니다."
+                    + (f" 유튜브가 지금 이 서버에 내주는 화질: {avail}." if avail else "")
+                    + (" 쿠키를 쓰고 있습니다." if youtube_cookie_args()
+                       else " 쿠키 없이 받고 있습니다(YTDLP_COOKIES 미설정).")
+                )
+                logger.warning("유튜브 저화질 취득 %s/%s: %s",
+                               job_id, video.video_id, fields["low_quality_detail"])
+            save(video.video_id, **fields)
     finally:
         db.close()
 
