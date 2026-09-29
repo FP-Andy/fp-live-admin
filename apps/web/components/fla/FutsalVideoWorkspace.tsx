@@ -9,6 +9,7 @@ import {MatchPossessionCard,MatchAttackCard,MatchShotCard,MatchRecentRecords,Mat
 import './fla-video.css';
 
 type Lane='LEFT'|'CENTER'|'RIGHT';
+type ResetKind='possession'|'events'|'recording';
 const base='/futsal/fla-video';
 export default function FutsalVideoWorkspace({id}:{id:string}){
   const video=useRef<HTMLVideoElement>(null),workspace=useRef<HTMLDivElement>(null),clock=useRef(new VideoClock());
@@ -20,6 +21,9 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const [goalmouth,setGoalmouth]=useState<{x:number;y:number}|null>(null),[timelineFrom,setTimelineFrom]=useState(0);
   const [shotTeam,setShotTeam]=useState<'HOME'|'AWAY'>('HOME');
   const [expanded,setExpanded]=useState(false);
+  const [pendingReset,setPendingReset]=useState<ResetKind|null>(null);
+  const resetDialog=useRef<HTMLDialogElement>(null);
+  useEffect(()=>{const dialog=resetDialog.current;if(!dialog)return;if(pendingReset&&!dialog.open)dialog.showModal();else if(!pendingReset&&dialog.open)dialog.close();},[pendingReset]);
   const [goal,setGoal]=useState(false),[ownGoal,setOwnGoal]=useState(false),[player,setPlayer]=useState(''),[buffering,setBuffering]=useState(false);
   const controlBusy=useRef(false);
   const setBusy=(value:boolean)=>{controlBusy.current=value;setBusyState(value);};
@@ -128,17 +132,22 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     try{await flush();const next=await request(`/matches/${id}/events`,payload);merge(next);setNotice(`${fmt(payload.clock_ms)} · ${type==='XG'?'슈팅':'공격'} 기록 저장`);if(type==='XG'){setShot(null);setGoal(false);setOwnGoal(false);setGoalmouth(null);setPlayer('');setXgValue('0.10');setEstimateNotice('');}}
     catch(e){fail(e);}finally{eventBusy.current=false;setBusy(false);}
   }
-  async function reset(kind:'possession'|'events'|'recording'){
+  function reset(kind:ResetKind){
     if(!canWrite||busy)return;
-    const message=kind==='possession'?'점유율 집계를 0:0으로 초기화할까요?':kind==='events'?'공격방향/슈팅 이벤트를 모두 초기화할까요?':'점유와 이벤트 기록을 초기화하고 경기 시작 시각을 다시 설정할까요?';
-    if(!window.confirm(message))return;
-    video.current?.pause();setBusy(true);
+    video.current?.pause();setPendingReset(kind);
+  }
+  async function confirmReset(){
+    const kind=pendingReset;
+    if(!kind||!canWrite||busy)return;
+    setPendingReset(null);setBusy(true);
     try{
       await flush();const state=clock.current.state;
       const next=await request(`/matches/${id}/reset`,{request_id:crypto.randomUUID(),client_id:client.current,version:state.version,kind});
-      clock.current=new VideoClock(next.state);merge(next);
-      if(kind==='recording'){setShowSetup(true);setStartTime(mediaLabel(next.state.offset_ms));restoring.current=next.state.offset_ms;lastMedia.current=next.state.offset_ms;if(video.current)video.current.currentTime=next.state.offset_ms/1000;}
-      setNotice(kind==='recording'?'경기 시작 시각을 지정하고 저장하세요.':'초기화했습니다.');redraw();
+      clock.current=new VideoClock(next.state);merge(next);setError('');
+      if(kind==='recording'||kind==='possession')setTimelineFrom(0);
+      if(kind==='recording'||kind==='events'){setShot(null);setGoalmouth(null);setGoal(false);setOwnGoal(false);setPlayer('');setXgValue('0.10');setEstimateNotice('');}
+      if(kind==='recording'){setStartTime(mediaLabel(next.state.offset_ms));restoring.current=next.state.offset_ms;lastMedia.current=next.state.offset_ms;setMediaTime(next.state.offset_ms);if(video.current)video.current.currentTime=next.state.offset_ms/1000;}
+      setNotice(kind==='recording'?'모든 기록을 초기화했습니다. 경기 시작을 눌러 다시 기록하세요.':'초기화했습니다.');redraw();
     }catch(e){fail(e);}finally{setBusy(false);}
   }
   function selectTeam(team:'HOME'|'AWAY'){clock.current.state.selected_team=team;setShotTeam(team);setPlayer('');redraw();}
@@ -151,7 +160,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     }
     setExpanded(true);
   }
-  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape')setExpanded(false);};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[]);
+  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]'))setExpanded(false);};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[]);
   const keys=useRef({toggle,choose,addEvent});keys.current={toggle,choose,addEvent};
   useEffect(()=>{
     const onKey=(event:KeyboardEvent)=>{
@@ -189,7 +198,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
         <div className="fv-match-meta"><small className="muted">{data.match.fixture?.stage} {data.match.fixture?.round}경기 · {data.match.fixture?.court}구장</small><button className="fv-setup-toggle" aria-label="경기 시작 시각 설정" aria-expanded={showSetup} aria-controls="fv-start-settings" onClick={()=>setShowSetup(!showSetup)}>시작 시각 {s.upload_id?mediaLabel(s.offset_ms):'설정'} {showSetup?'▴':'▾'}</button></div>
       </div>
       <div className="fv-timer"><strong aria-label="경기 시간">{fmt(s.cursor_ms)}</strong><div><span role="status">{status}</span>{review?<small>마지막 기록 {fmt(s.frontier_ms)}</small>:null}</div></div>
-      <div className="fv-top-actions">{!s.started?<button className="btn-primary" onClick={start} disabled={!canWrite||!s.upload_id||uploadId!==s.upload_id||parseStart(startTime)!==s.offset_ms||busy}>경기 시작</button>:<><button onClick={toggle} disabled={Boolean(error)} className="btn-primary">{playing?'일시정지':'재생'} <kbd>Space</kbd></button><button className="btn-success" disabled={busy||s.ended} onClick={async()=>{video.current?.pause();try{await flush('finish');setNotice('점유 기록을 마쳤습니다. 과거 장면에 이벤트를 추가할 수 있습니다.');}catch{}}}>{s.ended?'기록 완료됨':'기록 완료'}</button></>}<button className="btn-secondary" aria-label="작업 전체화면" onClick={()=>void fullscreen()}>⛶</button></div>
+      <div className="fv-top-actions">{!s.started?<button className="btn-primary" onClick={start} disabled={!canWrite||!s.upload_id||uploadId!==s.upload_id||parseStart(startTime)!==s.offset_ms||busy}>경기 시작</button>:<><button onClick={toggle} disabled={Boolean(error)} className="btn-primary">{playing?'일시정지':'재생'} <kbd>Space</kbd></button><button className="btn-success" disabled={busy||s.ended} onClick={async()=>{video.current?.pause();try{await flush('finish');setNotice('점유 기록을 마쳤습니다. 과거 장면에 이벤트를 추가할 수 있습니다.');}catch{}}}>{s.ended?'기록 완료됨':'기록 완료'}</button></>}<button className="btn-danger fv-reset-button" disabled={!canWrite||busy} onClick={()=>reset('recording')}>기록 초기화</button><button className="btn-secondary" aria-label="작업 전체화면" onClick={()=>void fullscreen()}>⛶</button></div>
     </header>
     {error?<div className="fv-error" role="alert">{error}<button onClick={()=>{setError('');void flush().catch(()=>{});}}>저장 다시 시도</button></div>:null}
     {showSetup?<section id="fv-start-settings" className="fv-start-settings" aria-label="경기 시작 시각 설정">
@@ -231,5 +240,11 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
       <MatchPossessionTimeline possessionLogs={timeline} downloadPossessionCsv={csv} resetPossessionLogView={()=>setTimelineFrom(s.frontier_ms)}/>
       <MatchFlowCard isFutsal={true} dominanceChartData={chart} dominanceXAxisTicks={(data.flow||[]).map((b:any)=>b.start_ms/60000)} formatDominanceTick={v=>String(Math.round(v))} dominanceMeta={null} dominanceSeriesData={series}/>
     </aside></div>
+    <dialog ref={resetDialog} className="fv-reset-dialog" role="alertdialog" aria-labelledby="fv-reset-title" aria-describedby="fv-reset-description" data-fla-text-edit={pendingReset?'true':undefined} onCancel={()=>setPendingReset(null)}>
+      <h2 id="fv-reset-title">{pendingReset==='recording'?'전체 기록을 초기화할까요?':pendingReset==='possession'?'점유율을 초기화할까요?':'이벤트 기록을 초기화할까요?'}</h2>
+      <strong>{names.HOME} vs {names.AWAY}</strong>
+      <p id="fv-reset-description">{pendingReset==='recording'?'점유율, 공격 방향, 슈팅·골, 경기 진행 기록을 모두 삭제합니다. 영상과 경기 시작 시각 설정은 유지됩니다.':pendingReset==='possession'?'점유율 기록을 삭제하고 0:0부터 다시 집계합니다. 공격 방향과 슈팅·골 기록은 유지됩니다.':'공격 방향과 슈팅·골 기록을 모두 삭제합니다. 점유율 기록은 유지됩니다.'}<br/>삭제한 기록은 되돌릴 수 없습니다.</p>
+      <div className="fv-reset-actions"><button className="btn-secondary" onClick={()=>setPendingReset(null)}>취소</button><button className="btn-danger fv-reset-button" onClick={()=>void confirmReset()}>{pendingReset==='recording'?'전체 기록 초기화':'초기화'}</button></div>
+    </dialog>
   </div>;
 }
