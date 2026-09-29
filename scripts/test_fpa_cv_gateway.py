@@ -39,6 +39,17 @@ class GatewayTests(unittest.TestCase):
         self.app.dependency_overrides.clear()
         self.assertEqual(self.client.get('/api/tracking/jobs').status_code,401)
 
+    def test_queue_control_requires_admin_and_validates_request(self):
+        with patch('app.fpa_cv.remote',new_callable=AsyncMock,return_value={'paused':True,'deployReady':False}) as remote:
+            self.assertEqual(self.client.post('/api/tracking/queue/pause',json={'stopRunning':True}).status_code,403)
+            remote.assert_not_called()
+            self.app.dependency_overrides[require_session_user]=lambda:User(id='admin',name='admin',role='SUPERADMIN')
+            self.assertEqual(self.client.post('/api/tracking/queue/pause',json={'stopRunning':'yes'}).status_code,400)
+            self.assertEqual(self.client.post('/api/tracking/queue/unknown',json={}).status_code,404)
+            remote.assert_not_called()
+            self.assertEqual(self.client.post('/api/tracking/queue/pause',json={'stopRunning':True}).status_code,200)
+            remote.assert_awaited_once_with('queue/pause','POST',json={'stopRunning':True})
+
     def test_s3_multipart_library_and_owner_checks(self):
         store=Mock();store.begin.return_value='multipart';store.head.return_value={'ContentLength':7}
         store.part_url.return_value='https://s3.example/part';store.url.return_value='https://s3.example/source'

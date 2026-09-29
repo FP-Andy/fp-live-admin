@@ -161,6 +161,7 @@ def main():
     progress('모델 불러오는 중', 1, **frame_progress(0, total_frames, 0))
     model = YOLO(args.model)
     preview = gpu_video = gpu_first = None
+    decoder_fallback = None
     pw = min(width, args.preview_width) // 2 * 2
     ph = round(height * pw / width / 2) * 2
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
@@ -187,6 +188,7 @@ def main():
                 cap.release()
                 raise
             print(f'GPU decoder unavailable; using CPU: {error}', flush=True)
+            decoder_fallback = str(error).splitlines()[0][:300]
             cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     elif args.video_decode == 'gpu':
         cap.release()
@@ -221,7 +223,8 @@ def main():
     suppressed_count=0
     seed_tracks=set()
     seed_assignments=[]
-    progress('선수 추적 중', 2, **frame_progress(0, total_frames, 0))
+    progress('선수 추적 중', 2, videoDecoder='nvdec' if gpu_video else 'cpu',
+             decoderFallback=decoder_fallback, **frame_progress(0, total_frames, 0))
     def source_frames():
         # One owner for capture and preview; keep every source frame in the
         # preview, but prefetch only sampled/anchor frames for inference.
