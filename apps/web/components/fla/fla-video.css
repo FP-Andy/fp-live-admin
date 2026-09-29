@@ -72,6 +72,13 @@
 .fv-workspace[data-state=recording] .fv-timer [role=status]::before{background:#ff7400;box-shadow:0 0 10px 3px #ff740080}
 .fv-top-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .fv-top-actions button{padding:8px 12px;min-height:38px;font-size:12px;white-space:nowrap}
+.fv-workspace .fv-top-actions .btn-success{background:#198754;border-color:#36b77b;color:#fff}
+.fv-workspace .fv-top-actions .btn-success:hover:not(:disabled){background:#157347}
+.fv-workspace .fv-top-actions .btn-success:disabled{opacity:.65}
+.fv-inputs.fla-video-match-controls{min-width:0;overflow-x:hidden}
+.fv-inputs.fla-video-match-controls>:is(.card,.fla-feedback){max-width:100%;overflow-wrap:anywhere}
+.fv-inputs.fla-video-match-controls .row{min-width:0;max-width:100%}
+.fv-inputs.fla-video-match-controls .row>select{min-width:0}
 .fv-body{padding:10px 0 0}
 .fv-player-controls{flex-shrink:0;padding:6px 8px;gap:8px;min-height:46px}
 .fv-player-controls button,.fv-player-controls select{min-height:32px;height:32px;padding:5px 8px;font-size:12px}
@@ -81,5 +88,18 @@
 /* Overlay the video edge so its glow is not clipped or hidden behind pixels. */
 .fv-player:has(video)::after{content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:var(--fv-media-width,100%);height:100%;border-radius:10px 10px 0 0;pointer-events:none;box-shadow:var(--fv-recording-shadow);transition:box-shadow .2s}
 .fv-player video{border-color:var(--fv-recording-edge);transition:border-color .2s}
+@keyframes fv-recording-pulse{
+  0%,100%{box-shadow:inset 0 0 5px #ff740014,0 0 3px #ff74001a}
+  50%{box-shadow:inset 0 0 18px #ff740063,0 0 14px #ff740099}
+}
+@keyframes fv-recording-dot{0%,100%{opacity:.3}50%{opacity:1}}
+.fv-workspace[data-state=recording] :is(.fv-player-controls,.fv-inputs>.card),
+.fv-workspace[data-state=recording] .fv-player:has(video)::after{animation:fv-recording-pulse 1.6s ease-in-out infinite}
+.fv-workspace[data-state=recording] .fv-timer [role=status]::before{animation:fv-recording-dot 1.6s ease-in-out infinite}
+@media(prefers-reduced-motion:reduce){
+  .fv-workspace[data-state=recording] :is(.fv-player-controls,.fv-inputs>.card),
+  .fv-workspace[data-state=recording] .fv-player:has(video)::after,
+  .fv-workspace[data-state=recording] .fv-timer [role=status]::before{animation:none}
+}
 @media(max-width:1100px){.fv-top{flex-wrap:wrap;gap:8px 14px}.fv-match-name{flex:1}.fv-timer>strong{font-size:28px}.fv-top-actions{margin-left:auto}}
 @media(max-width:700px){.fv-top{padding:6px 0}.fv-timer>div{max-width:120px}.fv-match-title strong{font-size:16px}.fv-top-actions button{padding:6px 8px}.fv-player-controls{padding:4px;gap:4px}.fv-player-controls select{width:58px}}
