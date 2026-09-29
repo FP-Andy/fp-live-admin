@@ -380,6 +380,28 @@ YT_JS_ARGS = ["--remote-components", "ejs:github"]
 # 유튜브 쿠키 파일(Netscape 형식). 서버 IP 가 막혔을 때 이걸로 푼다.
 YT_COOKIES = os.getenv("YTDLP_COOKIES", "").strip()
 
+# PO 토큰 발급기 주소(별도 컨테이너). 비우면 토큰 없이 진행한다.
+#
+# 유튜브는 데이터센터 IP 에서 오는 요청에 PO 토큰을 요구하고, 없으면 고화질
+# 포맷을 목록에서 뺀다. 그러면 yt-dlp 는 360p 만 주는 하위 클라이언트로 밀려난다.
+# 실측(2026-09-29, 같은 영상·같은 회선, 클라이언트만 바꿔서):
+#
+#   visionos(기본)                      1080p  포맷 17개
+#   web_embedded                        1080p  포맷 13개
+#   mweb · tv_simply · android          360p   포맷 2개    ← 운영에서 받아진 모양
+#   web · web_safari · ios              180p   포맷 1개
+#
+# 운영에서 받아진 것이 정확히 '360p·2개' 였다. 고화질 클라이언트가 죽어 하위로
+# 밀린 것이고, 그 시점엔 360p 가 존재하는 유일한 화질이라 고를 여지가 없었다.
+YT_POT_BASE_URL = os.getenv("YTDLP_POT_BASE_URL", "").strip()
+
+
+def youtube_pot_args() -> list[str]:
+    """PO 토큰 공급자를 yt-dlp 에 물린다. 주소가 없으면 아무것도 넘기지 않는다."""
+    if not YT_POT_BASE_URL:
+        return []
+    return ["--extractor-args", f"youtubepot-bgutilhttp:base_url={YT_POT_BASE_URL}"]
+
 
 def youtube_cookie_args() -> list[str]:
     """yt-dlp 에 넘길 쿠키 인자. 설정됐는데 파일이 없으면 **소리 내어** 알린다.
@@ -502,7 +524,8 @@ def youtube_available_formats(url: str) -> tuple[str, str]:
     """
     try:
         proc = subprocess.run(
-            ["yt-dlp", "--list-formats", *YT_JS_ARGS, *youtube_cookie_args(), url],
+            ["yt-dlp", "--list-formats", *YT_JS_ARGS, *youtube_pot_args(),
+             *youtube_cookie_args(), url],
             capture_output=True, text=True, timeout=180,
         )
     except Exception:  # noqa: BLE001 - 진단이 실패해도 받은 건 그대로 쓴다
@@ -519,10 +542,14 @@ def youtube_available_formats(url: str) -> tuple[str, str]:
 
 def summarize_ytdlp_warnings(lines) -> str:
     """yt-dlp 가 뱉은 줄에서 경고만 추려 한 줄로. 같은 말이 반복되므로 한 번씩만."""
+    # WARNING/ERROR 접두어가 붙는 것들, 그리고 접두어 없이 나오지만 원인을 그대로
+    # 말해 주는 문구들(SABR 강제·PO 토큰·포맷 누락)을 같이 잡는다.
+    keys = re.compile(r"(WARNING|ERROR|SABR|PO Token|missing a URL|"
+                      r"formats have been skipped|challenge)", re.I)
     seen: list[str] = []
     for line in lines:
         text = str(line).strip()
-        if not text or not re.match(r"(WARNING|ERROR)", text, re.I):
+        if not text or not keys.search(text):
             continue
         text = re.sub(r"\s+", " ", text)[:220]
         if text not in seen:
@@ -627,6 +654,7 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None,
         "yt-dlp",
         *youtube_quality_args(max_height),
         *YT_JS_ARGS,
+        *youtube_pot_args(),
         # 유튜브는 데이터센터 IP 를 봇으로 본다. 로그인 쿠키를 주면 통과한다.
         *youtube_cookie_args(),
         "--downloader", "aria2c",
@@ -815,6 +843,7 @@ def download_link_for_job(job_id: str) -> None:
             # 링크 붙여넣기도 FPC 취득과 같은 규칙으로 받는다 — 한쪽만 고쳐지지 않게.
             *youtube_quality_args(metadata.get("youtube_max_height")),
             *YT_JS_ARGS,
+            *youtube_pot_args(),
             *youtube_cookie_args(),
             "--downloader",
             "aria2c",
