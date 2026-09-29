@@ -38,6 +38,17 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     return()=>{alive=false;video.current?.pause();};
   },[id]);
 
+  // Match the existing transport to the video's intrinsic box, including when
+  // the available height changes. No wrapper or recording-state layout is added.
+  useEffect(()=>{
+    const media=video.current;
+    const column=media?.closest<HTMLElement>('.fv-video-column');
+    if(!media||!column)return;
+    const fit=()=>{const width=media.getBoundingClientRect().width;if(width>0)column.style.setProperty('--fv-media-width',`${width}px`);};
+    const observer=new ResizeObserver(fit);observer.observe(media);fit();
+    return()=>{observer.disconnect();column.style.removeProperty('--fv-media-width');};
+  },[uploadId]);
+
   function sample(){
     const v=video.current;if(!v||v.seeking)return;
     lastMedia.current=v.currentTime*1000;clock.current.tick(lastMedia.current);
