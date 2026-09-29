@@ -82,6 +82,17 @@ class FlaVideoTests(unittest.TestCase):
         self.assertEqual(candidates(f,uploads),['ok'])
         for _ in range(2):self.assertEqual(self.client.post('/api/futsal/fla-video/fixtures/create').status_code,200)
         with self.Session() as db:self.assertEqual(db.query(Match).count(),40)
+    def test_linked_video_requires_operator_kickoff_before_recording(self):
+        r=self.client.put(self.base+'/video',json={'upload_id':'upload','version':self.version})
+        self.assertEqual(r.status_code,200,r.text)
+        self.version=r.json()['state']['version']
+        self.assertEqual(r.json()['state']['duration_ms'],0)
+        r,_=self.update(action='start');self.assertEqual(r.status_code,409)
+        r=self.client.put(self.base+'/config',json={'upload_id':'upload','offset_ms':5000,'duration_ms':90000,'version':self.version})
+        self.assertEqual(r.status_code,200,r.text);self.version=r.json()['state']['version']
+        r,_=self.update(action='start');self.assertEqual(r.status_code,200,r.text)
+        r=self.client.put(self.base+'/video',json={'upload_id':'upload','version':self.version})
+        self.assertEqual(r.status_code,409)
     def test_shot_coordinates_and_upload_access(self):
         self.update(action='start')
         payload=dict(event_id=str(uuid4()),client_id=self.client_id,type='XG',clock_ms=0,team='HOME',shot_x=38,shot_y=10,is_goal=True,goalmouth_x=.9,goalmouth_y=.8,xg=.36)

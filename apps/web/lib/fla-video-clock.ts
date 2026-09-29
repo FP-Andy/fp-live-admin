@@ -1,14 +1,14 @@
 export type Team = 'HOME' | 'AWAY' | 'NONE';
 export type Segment = {start_ms:number;end_ms:number;team:Team};
-export type VideoState = {version:number;upload_id?:string;offset_ms:number;duration_ms:number;cursor_ms:number;frontier_ms:number;started:boolean;ended:boolean;possession_team:Team;selected_team:'HOME'|'AWAY';direction:'L2R'|'R2L';rate:number};
-export const emptyVideoState = ():VideoState => ({version:0,offset_ms:0,duration_ms:0,cursor_ms:0,frontier_ms:0,started:false,ended:false,possession_team:'NONE',selected_team:'HOME',direction:'L2R',rate:1});
+export type VideoState = {configured:boolean;version:number;upload_id?:string;offset_ms:number;duration_ms:number;cursor_ms:number;frontier_ms:number;started:boolean;ended:boolean;possession_team:Team;selected_team:'HOME'|'AWAY';direction:'L2R'|'R2L';rate:number};
+export const emptyVideoState = ():VideoState => ({configured:false,version:0,offset_ms:0,duration_ms:0,cursor_ms:0,frontier_ms:0,started:false,ended:false,possession_team:'NONE',selected_team:'HOME',direction:'L2R',rate:1});
 
 /** Only natural playback can extend possession. Replay changes the event cursor. */
 export class VideoClock {
   state:VideoState;
   pending:Segment[]=[];
   playing=false;
-  constructor(state:Partial<VideoState>={}) {this.state={...emptyVideoState(),...state};}
+  constructor(state:Partial<VideoState>={}) {this.state={...emptyVideoState(),...state,configured:state.configured??Boolean(state.upload_id&&(state.duration_ms||0)>0)};}
   get reviewing(){return this.state.started&&this.state.cursor_ms<this.state.frontier_ms;}
   tick(mediaMs:number){
     const s=this.state;

@@ -102,11 +102,14 @@ def serialize(db, match, dominance_builder=None):
             'flow':dominance_builder(match.id,60,db)['bins'] if dominance_builder else []}
 
 
-class Config(BaseModel):
+class VideoLink(BaseModel):
     upload_id: str
+    version: int = Field(ge=0)
+
+
+class Config(VideoLink):
     offset_ms: int = Field(ge=0)
     duration_ms: int = Field(gt=0)
-    version: int = Field(ge=0)
 
 
 class Segment(BaseModel):
@@ -168,6 +171,7 @@ def save_metadata(match,state):
 def update_recording(db, match, body):
     state=video_state(match)
     if not state.get('upload_id'):raise HTTPException(409,'영상과 경기 시작 장면을 먼저 저장하세요.')
+    if state.get('configured') is False or not state.get('duration_ms'):raise HTTPException(409,'경기 시작 시각을 먼저 확인하고 저장하세요.')
     if state.get('last_request')==str(body.request_id):return
     if state.get('version',0)!=body.version:raise HTTPException(409,'다른 변경이 저장되었습니다. 새로고침 후 이어서 기록하세요.')
     claim(state,body.client_id)
@@ -251,7 +255,20 @@ def create_router(dominance_builder=None):
         if db.query(State).filter_by(match_id=id).first() or db.query(Event).filter_by(match_id=id).first():raise HTTPException(409,'기존 FLA 기록이 있는 경기에는 새 시간 기준을 적용할 수 없습니다.')
         allowed_upload(db,body.upload_id,user)
         if body.offset_ms>=body.duration_ms:raise HTTPException(400,'영상 안의 시작 장면을 선택하세요.')
-        save_metadata(m,{'version':body.version+1,'upload_id':body.upload_id,'offset_ms':body.offset_ms,'duration_ms':body.duration_ms,
+        save_metadata(m,{'version':body.version+1,'upload_id':body.upload_id,'offset_ms':body.offset_ms,'duration_ms':body.duration_ms,'configured':True,
+                         'cursor_ms':0,'frontier_ms':0,'started':False,'ended':False,'possession_team':'NONE','selected_team':'HOME','direction':'L2R','rate':1})
+        db.commit();return serialize(db,m,dominance_builder)
+
+    @router.put('/matches/{id}/video')
+    def link_video(id: UUID,body: VideoLink,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
+        m=get_match(db,id,user,True);state=video_state(m)
+        if state.get('started') or db.query(State).filter_by(match_id=id).first() or db.query(Event).filter_by(match_id=id).first():
+            raise HTTPException(409,'기록이 있는 경기의 영상 연결은 변경할 수 없습니다.')
+        if state.get('version',0)!=body.version:raise HTTPException(409,'다른 창의 설정을 먼저 불러오세요.')
+        allowed_upload(db,body.upload_id,user)
+        # Match a source without guessing kickoff. The operator must save the
+        # actual media start frame before this game can begin recording.
+        save_metadata(m,{'version':body.version+1,'upload_id':body.upload_id,'offset_ms':0,'duration_ms':0,'configured':False,
                          'cursor_ms':0,'frontier_ms':0,'started':False,'ended':False,'possession_team':'NONE','selected_team':'HOME','direction':'L2R','rate':1})
         db.commit();return serialize(db,m,dominance_builder)
 
