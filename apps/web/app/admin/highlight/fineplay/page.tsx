@@ -650,6 +650,39 @@ export default function FineplayJobsPage() {
     }
   };
 
+  // FinePlay 가 원본을 바꿨을 때 — 매니페스트만 새 claim 으로 갈아끼운다.
+  //
+  // 렌더러가 무슨 원본을 읽을지는 잡에 박힌 매니페스트가 정한다. 저쪽이 유튜브
+  // 링크를 S3 업로드본으로 교체해도 이걸 갱신하지 않으면 영영 옛 원본으로 렌더된다.
+  // 잡을 지우면 반영되지만 태깅이 통째로 날아가므로, 매니페스트만 바꾼다.
+  const refreshManifest = async (job: FpJob, force = false) => {
+    if (!window.confirm(
+      '원본이 교체됐다면 새 정보를 받아 옵니다.\n\n'
+      + '태깅(클립)은 그대로 보존되고, 원본만 바뀝니다.\n'
+      + '신청자에게 알림은 가지 않습니다. 계속할까요?')) return;
+    try {
+      const res = await apiJson<{
+        changes?: { videoId: string; sourceBefore?: string | null; sourceAfter?: string;
+                    s3KeyAfter?: string | null }[];
+        clipsKept?: number; freedBytes?: number;
+      }>(
+        `/highlight/fineplay-jobs/${job.id}/refresh-manifest${force ? '?force=true' : ''}`,
+        { method: 'POST' },
+      );
+      const moved = (res.changes || [])
+        .map((c) => `${c.videoId}: ${c.sourceBefore || '?'} → ${c.sourceAfter}`)
+        .join(', ');
+      const freed = res.freedBytes
+        ? ` · 유튜브 캐시 ${(res.freedBytes / 1024 / 1024 / 1024).toFixed(2)}GB 정리`
+        : '';
+      setPollMsg(`매니페스트 갱신 완료 — ${moved || '변화 없음'} · 태깅 ${res.clipsKept ?? 0}건 보존${freed}`);
+      await loadJobs();
+      if (selected?.id === job.id) await selectJob(job);
+    } catch (err) {
+      setPollMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   // 사전 작업 원본 삭제 — 보관비 정리. 클립·데이터는 그대로, 재제작만 불가.
   const deleteSource = async (job: FpJob) => {
     const ok = window.confirm(
@@ -2009,6 +2042,23 @@ export default function FineplayJobsPage() {
                 </p>
               ))}
             </div>
+          ) : null}
+
+          {/* FinePlay 가 원본을 바꿨을 때 — 태깅을 살린 채 원본만 갈아끼운다.
+              클레임 잡은 지울 수 없고(저쪽 신청이 짝을 잃는다), 지울 수 있어도
+              태깅이 통째로 날아간다. 그래서 매니페스트만 새로 받아 덮는다. */}
+          {selected && !selected.job_metadata?.standalone ? (
+            <p style={{
+              margin: '0 0 10px', display: 'flex', alignItems: 'center',
+              gap: 10, flexWrap: 'wrap',
+            }}>
+              <span style={{ fontSize: 12, color: 'var(--muted, #777)' }}>
+                FinePlay 가 이 신청의 원본을 교체했다면, 태깅을 살린 채 원본만 바꿀 수 있습니다
+              </span>
+              <button style={smallBtn} onClick={() => void refreshManifest(selected)}>
+                ⇵ 원본 교체 반영
+              </button>
+            </p>
           ) : null}
 
           {sourceError ? (
