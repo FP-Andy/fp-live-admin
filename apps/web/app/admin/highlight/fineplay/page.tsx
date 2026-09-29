@@ -414,6 +414,8 @@ export default function FineplayJobsPage() {
   // 이 신청을 몇 p 로 받을지. 서버가 내려준 값을 그대로 쓰고, 바꾸면 다시 받을 때 적용된다.
   const [ytMaxHeight, setYtMaxHeight] = useState(1080);
   const [ytHeightChoices, setYtHeightChoices] = useState<number[]>([2160, 1440, 1080, 720]);
+  // 쿠키가 로그인된 것인지. 이게 죽으면 유튜브가 저화질만 내준다.
+  const [ytCookieHealth, setYtCookieHealth] = useState('');
   const [activeVideoIdx, setActiveVideoIdx] = useState(0);
   const activeVideo = sourceVideos[activeVideoIdx];
   const sourceUrl = activeVideo?.url || '';
@@ -943,13 +945,14 @@ export default function FineplayJobsPage() {
     try {
       const res = await apiJson<{
         url: string | null; videoId?: string; videos?: SourceVideo[];
-        maxHeight?: number; heightChoices?: number[];
+        maxHeight?: number; heightChoices?: number[]; cookieHealth?: string | null;
       }>(
         `/highlight/fineplay-jobs/${job.id}/source-url`,
       );
       setSourceVideos(res.videos?.length ? res.videos : [{ videoId: res.videoId, url: res.url }]);
       if (res.maxHeight) setYtMaxHeight(res.maxHeight);
       if (res.heightChoices?.length) setYtHeightChoices(res.heightChoices);
+      setYtCookieHealth(res.cookieHealth || '');
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : String(err));
     }
@@ -1991,6 +1994,24 @@ export default function FineplayJobsPage() {
                 >
                   ↻ 이 화질로 다시 받기
                 </button>
+              ) : null}
+
+              {/* 쿠키 상태. 파일이 있는 것과 쓸모가 있는 것은 다르다 — 로그아웃
+                  상태로 뽑은 쿠키는 파일이 멀쩡해도 유튜브에겐 익명이라 저화질만
+                  받힌다. 받기 전에 보이게 둔다. */}
+              {ytCookieHealth ? (
+                <span
+                  style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                    background: ytCookieHealth.startsWith('로그인 쿠키 있음')
+                      ? 'var(--bg, #0b0b0e)' : '#3b1d1d',
+                    color: ytCookieHealth.startsWith('로그인 쿠키 있음')
+                      ? 'var(--muted, #999)' : '#fca5a5',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}
+                >
+                  {ytCookieHealth}
+                </span>
               ) : null}
 
               {/* 저화질로 떨어졌으면 태깅을 시작하기 전에 알린다. 이걸 모르고

@@ -451,26 +451,85 @@ def youtube_quality_args(max_height: int | None = None) -> list[str]:
     return ["-f", f"{tier(f'[height>={lo}]')}/{tier('')}", "-S", f"res:{h},br"]
 
 
-def youtube_available_formats(url: str) -> str:
-    """유튜브가 지금 이 서버에 무엇을 내주고 있는지 한 줄 요약.
+#: 로그인된 세션에만 들어 있는 쿠키들. 이 중 하나라도 있어야 유튜브가 우리를
+#: '로그인한 사람' 으로 본다. 이름만 쓴다 — 값은 읽지도, 남기지도 않는다.
+YT_LOGIN_COOKIES = ("SAPISID", "__Secure-3PSID", "__Secure-1PSID", "SID", "LOGIN_INFO")
+
+
+def youtube_cookie_health() -> str:
+    """쿠키 파일이 '로그인된 것' 인지 한 줄로. **값은 절대 읽지 않는다.**
+
+    파일이 있는 것과 쓸모가 있는 것은 다르다. 로그아웃 상태에서 뽑으면 파일은
+    멀쩡해도 유튜브 입장에선 익명이라 저화질만 내준다 — 그 둘을 구별 못 해서
+    '쿠키는 넣었는데 왜 안 되지' 로 한참 헤맸다(2026-09-11, 2026-09-29).
+    """
+    if not YT_COOKIES:
+        return "쿠키 미설정"
+    path = Path(YT_COOKIES)
+    if not path.exists():
+        return f"쿠키 파일 없음({YT_COOKIES})"
+    try:
+        names = set()
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("#") or not line.strip():
+                    continue
+                cols = line.split("\t")
+                # 넷스케이프 형식: domain, flag, path, secure, expiry, name, value
+                if len(cols) >= 6:
+                    names.add(cols[5].strip())
+    except OSError as exc:
+        return f"쿠키 파일을 읽지 못함({exc.__class__.__name__})"
+    found = [n for n in YT_LOGIN_COOKIES if n in names]
+    if found:
+        return f"로그인 쿠키 있음({', '.join(found)}, 전체 {len(names)}개)"
+    if not names:
+        # 파일은 있는데 한 줄도 못 읽었다 — 로그아웃과는 다른 문제다(형식/인코딩).
+        return "쿠키를 한 개도 읽지 못했습니다 — 넷스케이프 형식이 맞는지 확인이 필요합니다"
+    return (f"로그인 쿠키 없음 — 로그아웃 상태로 뽑힌 파일입니다"
+            f"(전체 {len(names)}개). 유튜브는 이걸 익명으로 봅니다")
+
+
+def youtube_available_formats(url: str) -> tuple[str, str]:
+    """유튜브가 지금 이 서버에 무엇을 내주고 있는지, 그리고 왜 깎였는지.
 
     저화질로 떨어졌을 때 '원본이 그것뿐' 인지 '서버가 막혀서' 인지는 목록을 봐야
-    갈린다. 실패 사유에 이걸 같이 남겨 두면 다음 사람이 다시 재현하지 않아도 된다.
+    갈린다. 그리고 **왜** 깎였는지는 yt-dlp 가 경고로 또박또박 말해 준다 —
+    "n challenge solving failed", "missing a GVS PO Token", "Sign in to confirm"
+    처럼. 그걸 안 남겨서 원인을 손으로 찾느라 하루를 썼다(2026-09-29).
+
+    돌려주는 것: (화질 목록, 경고 요약).
     """
     try:
-        out = subprocess.run(
-            ["yt-dlp", "--list-formats", "--no-warnings", *YT_JS_ARGS,
-             *youtube_cookie_args(), url],
-            capture_output=True, text=True, timeout=120,
-        ).stdout
+        proc = subprocess.run(
+            ["yt-dlp", "--list-formats", *YT_JS_ARGS, *youtube_cookie_args(), url],
+            capture_output=True, text=True, timeout=180,
+        )
     except Exception:  # noqa: BLE001 - 진단이 실패해도 받은 건 그대로 쓴다
-        return ""
+        return "", ""
     heights = set()
-    for line in out.splitlines():
+    for line in proc.stdout.splitlines():
         hit = re.search(r"\b(\d{3,4})x(\d{3,4})\b", line)
         if hit:
             heights.add(int(hit.group(2)))
-    return ", ".join(f"{x}p" for x in sorted(heights, reverse=True)) if heights else ""
+    sizes = ", ".join(f"{x}p" for x in sorted(heights, reverse=True)) if heights else ""
+
+    return sizes, summarize_ytdlp_warnings((proc.stderr or "").splitlines())
+
+
+def summarize_ytdlp_warnings(lines) -> str:
+    """yt-dlp 가 뱉은 줄에서 경고만 추려 한 줄로. 같은 말이 반복되므로 한 번씩만."""
+    seen: list[str] = []
+    for line in lines:
+        text = str(line).strip()
+        if not text or not re.match(r"(WARNING|ERROR)", text, re.I):
+            continue
+        text = re.sub(r"\s+", " ", text)[:220]
+        if text not in seen:
+            seen.append(text)
+        if len(seen) >= 4:
+            break
+    return " / ".join(seen)
 
 
 def probe_video_info(path: Path) -> dict:
@@ -555,7 +614,7 @@ def classify_youtube_failure(stderr: str) -> str:
 
 
 def fetch_youtube_source(url: str, dest: Path, on_progress=None,
-                         max_height: int | None = None) -> None:
+                         max_height: int | None = None) -> str:
     """유튜브 영상 하나를 dest 로 받는다. 실패하면 사유 코드를 단 예외를 던진다.
 
     받는 방식은 운영자가 링크를 붙여넣는 기존 기능(download_link_for_job)과 같다 —
@@ -610,6 +669,10 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None,
         if not made:
             raise YoutubeFetchError(YT_FETCH_ERROR, "받은 파일을 찾을 수 없습니다.")
         made[0].rename(dest)
+
+    # 성공했어도 경고는 돌려준다. "받긴 받았는데 고화질이 빠졌다" 가 바로 이 경고로
+    # 드러나는데, 예전에는 성공하면 통째로 버려서 아무 단서도 남지 않았다.
+    return summarize_ytdlp_warnings(tail)
 
 
 class YoutubeFetchError(RuntimeError):
@@ -680,8 +743,8 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
                     save(_vid, status="downloading", percent=int(pct))
 
             try:
-                fetch_youtube_source(video.youtube_url, dest, on_progress=on_progress,
-                                     max_height=height)
+                fetch_warnings = fetch_youtube_source(
+                    video.youtube_url, dest, on_progress=on_progress, max_height=height)
             except YoutubeFetchError as exc:
                 logger.warning("유튜브 취득 실패 %s/%s: %s", job_id, video.video_id, exc.detail[:200])
                 save(video.video_id, status="error", code=exc.code, detail=exc.detail[-300:])
@@ -690,6 +753,9 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
                 logger.exception("유튜브 취득 중 예외 %s/%s", job_id, video.video_id)
                 save(video.video_id, status="error", code=YT_FETCH_ERROR, detail=str(exc)[-300:])
                 continue
+            if fetch_warnings:
+                logger.warning("유튜브 취득 경고 %s/%s: %s",
+                               job_id, video.video_id, fetch_warnings)
             # 받은 실물을 재어 남긴다. 화면이 이걸 그대로 보여 주므로 '왜 흐린가' 를
             # 파일을 직접 열어 보지 않고도 알 수 있다.
             info = probe_video_info(dest) if dest.exists() else {}
@@ -705,13 +771,17 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
             # 남으면 운영자가 360p 영상으로 한 시간 태깅하고 나서야 안다 — 실제로
             # 그렇게 한 번 나갔다.
             if got and got < min(YT_MIN_USABLE_HEIGHT, height):
-                avail = youtube_available_formats(video.youtube_url)
+                avail, listed = youtube_available_formats(video.youtube_url)
+                # 받을 때 난 경고가 더 믿을 만하다 — 목록 조회는 다른 클라이언트를 탈 수 있다.
+                warned = fetch_warnings or listed
                 fields["low_quality"] = True
+                fields["cookie_health"] = youtube_cookie_health()
+                fields["ytdlp_warnings"] = warned
                 fields["low_quality_detail"] = (
                     f"{height}p 를 요청했지만 {got}p 를 받았습니다."
                     + (f" 유튜브가 지금 이 서버에 내주는 화질: {avail}." if avail else "")
-                    + (" 쿠키를 쓰고 있습니다." if youtube_cookie_args()
-                       else " 쿠키 없이 받고 있습니다(YTDLP_COOKIES 미설정).")
+                    + f" {fields['cookie_health']}."
+                    + (f" yt-dlp 경고: {warned}" if warned else "")
                 )
                 logger.warning("유튜브 저화질 취득 %s/%s: %s",
                                job_id, video.video_id, fields["low_quality_detail"])

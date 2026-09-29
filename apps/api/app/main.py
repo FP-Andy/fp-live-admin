@@ -84,6 +84,7 @@ from .highlight_jobs import (
     download_link_for_job,
     fetch_youtube_sources_for_job,
     fineplay_youtube_path,
+    youtube_cookie_health,
     YT_HEIGHT_CHOICES,
     YT_MAX_HEIGHT,
     list_manual_clip_info,
@@ -11957,6 +11958,9 @@ def fineplay_source_url(
         # 이 신청을 어떤 화질로 받기로 했는지, 그리고 고를 수 있는 값들.
         "maxHeight": int((job.job_metadata or {}).get("youtube_max_height") or YT_MAX_HEIGHT),
         "heightChoices": list(YT_HEIGHT_CHOICES),
+        # 유튜브 쿠키가 '로그인된 것' 인지. 저화질로 한 번 당하기 전에 보이게 한다.
+        "cookieHealth": youtube_cookie_health() if any(
+            v.is_youtube for v in manifest.videos) else None,
     }
 
 
