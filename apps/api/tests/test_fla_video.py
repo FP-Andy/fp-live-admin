@@ -58,6 +58,23 @@ class FlaVideoTests(unittest.TestCase):
         r,_=self.update(client_id=str(uuid4()));self.assertEqual(r.status_code,409)
         r,_=self.update(version=0);self.assertEqual(r.status_code,409)
         r=self.client.post(self.base+'/events',json=dict(event_id=str(uuid4()),client_id=self.client_id,type='ATTACK_LANE',clock_ms=1,team='HOME',lane='CENTER'));self.assertEqual(r.status_code,400)
+    def test_reset_preserves_video_frontier_and_allows_explicit_start_reconfiguration(self):
+        self.update(action='start')
+        self.update(cursor_ms=2000,frontier_ms=2000,segments=[dict(start_ms=0,end_ms=2000,team='HOME')])
+        payload=dict(event_id=str(uuid4()),client_id=self.client_id,type='XG',clock_ms=1000,team='AWAY',xg=.24)
+        r=self.client.post(self.base+'/events',json=payload);self.assertEqual(r.status_code,200,r.text)
+        for kind in ('possession','events','recording'):
+            payload=dict(request_id=str(uuid4()),client_id=self.client_id,version=self.version,kind=kind)
+            r=self.client.post(self.base+'/reset',json=payload);self.assertEqual(r.status_code,200,r.text)
+            self.version=r.json()['state']['version']
+            retry=self.client.post(self.base+'/reset',json=payload);self.assertEqual(retry.json()['state']['version'],self.version)
+            if kind=='possession':
+                self.assertEqual(r.json()['possession']['HOME'],0);self.assertEqual(r.json()['state']['frontier_ms'],2000);self.assertEqual(len(r.json()['events']),1)
+            if kind=='events':self.assertEqual(len(r.json()['events']),0);self.assertEqual(r.json()['state']['frontier_ms'],2000)
+        self.assertFalse(r.json()['state']['started']);self.assertEqual(r.json()['state']['frontier_ms'],0)
+        r=self.client.put(self.base+'/config',json=dict(upload_id='upload',offset_ms=12000,duration_ms=90000,version=self.version));self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['state']['offset_ms'],12000)
+
     def test_fixtures_and_strict_ordered_filename_matching(self):
         self.assertEqual(len(FIXTURES),39);self.assertEqual(sum(f['stage']=='정규' for f in FIXTURES),17)
         f=next(f for f in FIXTURES if f['stage']=='정규' and f['home']=='경남' and f['away']=='대구')
@@ -67,9 +84,9 @@ class FlaVideoTests(unittest.TestCase):
         with self.Session() as db:self.assertEqual(db.query(Match).count(),40)
     def test_shot_coordinates_and_upload_access(self):
         self.update(action='start')
-        payload=dict(event_id=str(uuid4()),client_id=self.client_id,type='XG',clock_ms=0,team='HOME',shot_x=38,shot_y=10,is_goal=True)
+        payload=dict(event_id=str(uuid4()),client_id=self.client_id,type='XG',clock_ms=0,team='HOME',shot_x=38,shot_y=10,is_goal=True,goalmouth_x=.9,goalmouth_y=.8,xg=.36)
         r=self.client.post(self.base+'/events',json=payload);self.assertEqual(r.status_code,200,r.text)
-        self.assertGreater(r.json()['events'][0]['xg'],0);self.assertEqual(r.json()['events'][0]['shot_x'],38)
+        self.assertEqual(r.json()['events'][0]['xg'],.36);self.assertEqual(r.json()['events'][0]['goalmouth_x'],.9);self.assertEqual(r.json()['events'][0]['shot_x'],38)
         payload.update(event_id=str(uuid4()),shot_x=5)
         self.assertEqual(self.client.post(self.base+'/events',json=payload).status_code,422)
         self.user=User(id='outsider',role='OPERATOR',name='test')

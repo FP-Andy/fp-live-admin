@@ -18,8 +18,9 @@ from sqlalchemy.exc import IntegrityError
 
 from .auth import require_session_user
 from .db import get_db
-from .models import Match, User, Event, State, PossessionSegment, FpaCvResource
-from .services import apply_possession_segment, apply_attack_event, apply_xg_event
+from .models import Match, User, Event, State, PossessionSegment, FpaCvResource, DominanceBin
+from .services import apply_possession_segment, apply_attack_event, apply_xg_event, recompute_dominance
+from .xgot import estimate_xgot
 from .fpa_cv import same_origin
 from .fpa_cv_storage import storage
 
@@ -89,7 +90,7 @@ def serialize(db, match, dominance_builder=None):
     for s in segments:
         if s.end_ms is not None and s.team in totals:totals[s.team]+=max(0,s.end_ms-s.start_ms)
     events=db.query(Event).filter_by(match_id=match.id).order_by(Event.clock_ms.desc(),Event.created_at.desc()).all()
-    keys=('type','clock_ms','team','lane','xg','xgot','shot_x','shot_y','is_goal','is_own_goal','player_number','player_name')
+    keys=('type','clock_ms','team','lane','xg','xgot','shot_x','shot_y','is_goal','is_own_goal','player_number','player_name','is_on_target','goalmouth_x','goalmouth_y')
     meta=match.metadata_json or {}
     # The writer token is scoped to one tab; never publish it to other tabs.
     state.pop('writer',None);state.pop('writer_at',None);state.pop('last_request',None)
@@ -137,10 +138,20 @@ class VideoEvent(BaseModel):
     lane: Literal['LEFT','CENTER','RIGHT'] | None = None
     shot_x: float | None = Field(default=None,ge=20,le=40,allow_inf_nan=False)
     shot_y: float | None = Field(default=None,ge=0,le=20,allow_inf_nan=False)
+    xg: float | None = Field(default=None,ge=0,le=1,allow_inf_nan=False)
+    goalmouth_x: float | None = Field(default=None,ge=0,le=1,allow_inf_nan=False)
+    goalmouth_y: float | None = Field(default=None,ge=0,le=1,allow_inf_nan=False)
     is_goal: bool = False
     is_own_goal: bool = False
     player_number: str = Field(default='',max_length=12)
     player_name: str = Field(default='',max_length=100)
+
+
+class Reset(BaseModel):
+    request_id: UUID
+    client_id: UUID
+    version: int = Field(ge=0)
+    kind: Literal['possession','events','recording']
 
 
 def claim(state, client_id):
@@ -256,6 +267,30 @@ def create_router(dominance_builder=None):
         m=get_match(db,id,user,True);update_recording(db,m,body);db.commit()
         return serialize(db,m,dominance_builder)
 
+    @router.post('/matches/{id}/reset')
+    def reset(id: UUID,body: Reset,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
+        m=get_match(db,id,user,True);state=video_state(m)
+        if state.get('last_reset_request')==str(body.request_id):return serialize(db,m,dominance_builder)
+        if state.get('version',0)!=body.version:raise HTTPException(409,'다른 변경을 불러온 후 다시 시도하세요.')
+        claim(state,body.client_id)
+        if body.kind in ('possession','recording'):
+            db.query(PossessionSegment).filter_by(match_id=id).delete(synchronize_session=False)
+            state['possession_team']='NONE'
+        if body.kind in ('events','recording'):
+            db.query(Event).filter_by(match_id=id).delete(synchronize_session=False)
+            m.metadata_json={**(m.metadata_json or {}),'fla_video_event_sources':{}}
+        for b in db.query(DominanceBin).filter_by(match_id=id).all():
+            if body.kind in ('possession','recording'):b.home_poss_ms=b.away_poss_ms=0
+            if body.kind in ('events','recording'):b.home_xg=b.away_xg=b.home_attack_score=b.away_attack_score=0
+            recompute_dominance(b)
+        if body.kind=='recording':
+            db.query(State).filter_by(match_id=id).delete(synchronize_session=False)
+            state.update(started=False,ended=False,cursor_ms=0,frontier_ms=0)
+        state.update(version=body.version+1,last_reset_request=str(body.request_id))
+        state.pop('last_request',None)
+        save_metadata(m,state);db.commit()
+        return serialize(db,m,dominance_builder)
+
     @router.post('/matches/{id}/events')
     def event(id: UUID,body: VideoEvent,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
         m=get_match(db,id,user,True);state=video_state(m)
@@ -271,13 +306,26 @@ def create_router(dominance_builder=None):
             fields['lane']=body.lane
             apply_attack_event(db,id,body.team,body.clock_ms)
         else:
-            if body.shot_x is None or body.shot_y is None:raise HTTPException(400,'피치에서 슈팅 위치를 선택하세요.')
-            dx=max(.001,40-body.shot_x);dy=body.shot_y-10
-            angle=abs(math.atan2(1.5-dy,dx)-math.atan2(-1.5-dy,dx))
-            threat=0 if body.is_own_goal else min(.8,.8*math.exp(-.1*math.hypot(dx,dy))*(angle/math.pi)**.55)
-            fields.update(xg=threat,xgot=threat if body.is_goal else 0,shot_x=body.shot_x,shot_y=body.shot_y,
-                          is_goal=body.is_goal or body.is_own_goal,is_on_target=body.is_goal and not body.is_own_goal,is_own_goal=body.is_own_goal,
-                          player_number=body.player_number or None,player_name=body.player_name or None)
+            if (body.shot_x is None)!=(body.shot_y is None):raise HTTPException(400,'슈팅 좌표를 확인하세요.')
+            if body.is_own_goal and body.shot_x is None:raise HTTPException(400,'피치에서 자책골 위치를 선택하세요.')
+            if body.is_own_goal:threat=0
+            elif body.xg is not None:threat=body.xg
+            elif body.shot_x is not None:
+                dx=max(.001,40-body.shot_x);dy=body.shot_y-10
+                angle=abs(math.atan2(1.5-dy,dx)-math.atan2(-1.5-dy,dx))
+                threat=min(.8,.8*math.exp(-.1*math.hypot(dx,dy))*(angle/math.pi)**.55)
+            else:raise HTTPException(400,'위협도 또는 슈팅 위치를 입력하세요.')
+            if body.is_goal and not body.is_own_goal and (body.goalmouth_x is None or body.goalmouth_y is None):
+                raise HTTPException(400,'골문에서 슈팅 도착 위치를 선택하세요.')
+            gx=None if body.is_own_goal else body.goalmouth_x
+            gy=None if body.is_own_goal else body.goalmouth_y
+            target=body.is_goal and not body.is_own_goal
+            xgot=estimate_xgot(threat,is_on_target=target,goalmouth_x=gx,goalmouth_y=gy,is_goal=target,
+                               is_header=False,is_weak_foot=False,under_pressure=False,one_on_one=False,shot_pace_band='MID')['xgot']
+            fields.update(xg=threat,xgot=xgot,shot_x=body.shot_x,shot_y=body.shot_y,goalmouth_x=gx,goalmouth_y=gy,
+                          is_goal=body.is_goal or body.is_own_goal,is_on_target=target,is_own_goal=body.is_own_goal,
+                          player_number=(body.player_number or None) if not body.is_own_goal else None,
+                          player_name=(body.player_name or None) if not body.is_own_goal else None)
             apply_xg_event(db,id,body.team,body.clock_ms,threat*(float(os.getenv('DOM_GOAL_XG_MULTIPLIER','2.5')) if body.is_goal else 1))
         db.add(Event(id=body.event_id,match_id=id,type=body.type,clock_ms=body.clock_ms,team=body.team,**fields))
         sources=deepcopy((m.metadata_json or {}).get('fla_video_event_sources',{}))

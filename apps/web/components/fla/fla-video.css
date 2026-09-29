@@ -9,3 +9,37 @@
 .app-shell .app-content>.fv-workspace{height:100%;min-height:0}
 
 .app-shell .app-content>.fv-workspace.fv-expanded{position:fixed;inset:0;z-index:1000;height:100dvh;width:100vw;padding:16px;border-radius:0}
+/* Match-control cards keep the same one-column/mobile proportions in this rail. */
+.fv-inputs.fla-video-match-controls{gap:16px}
+.fv-inputs.fla-video-match-controls>.card{padding:16px;gap:14px}
+.fv-inputs.fla-video-match-controls h3{font-size:17px}
+.fv-inputs.fla-video-match-controls button{font-size:14px;min-height:44px;padding:10px 12px}
+.fv-inputs.fla-video-match-controls .muted{font-size:12px;line-height:1.6}
+.fv-inputs.fla-video-match-controls .row{justify-content:flex-start}
+.fv-inputs.fla-video-match-controls .row select{flex:initial;width:auto;max-width:100%}
+.fv-inputs.fla-video-match-controls .fla-possession-buttons button{min-height:62px;font-size:15px}
+.fv-inputs.fla-video-match-controls .fla-possession-buttons button:last-child{min-height:44px}
+.fv-inputs.fla-video-match-controls .fla-attack-layout{grid-template-columns:minmax(0,1fr);gap:20px}
+.fv-inputs.fla-video-match-controls .fla-attack-controls{gap:14px}
+.fv-inputs.fla-video-match-controls .fla-control-label{flex:0 0 82px;font-size:13px}
+.fv-inputs.fla-video-match-controls .fla-shot-toolbar{grid-template-columns:minmax(0,1fr)}
+.fv-inputs.fla-video-match-controls .fla-shot-value-row{grid-template-columns:minmax(0,1fr) 104px}
+.fv-inputs.fla-video-match-controls .fla-shot-value-row>label{grid-column:1/-1}
+.fv-inputs.fla-video-match-controls .fla-shot-value-row>input{width:100%;min-width:0;min-height:44px}
+.fv-inputs.fla-video-match-controls .fla-shot-submit{width:100%}
+.fv-inputs.fla-video-match-controls .fla-record-list{height:auto!important;overflow:visible!important;min-height:90px;padding-right:0!important;gap:12px}
+.fv-inputs.fla-video-match-controls .fla-record-list>.row{gap:4px;flex-direction:column;align-items:flex-start;font-size:12px}
+.fv-inputs.fla-video-match-controls .fla-record-list>.row .muted{font-size:10px}
+.fv-start-settings{padding:8px 16px;border-bottom:1px solid var(--fv-border);flex-shrink:0}
+.fv-start-settings>.row{gap:12px;flex-wrap:wrap}
+.fv-start-settings>.row>strong{font-size:13px;font-variant-numeric:tabular-nums}
+.fv-start-settings small,.fv-start-locked>span{font-size:12px;color:var(--muted)}
+.fv-start-fields{display:flex;align-items:flex-end;flex-wrap:wrap;gap:10px;padding:10px 0}
+.fv-start-fields>label{display:grid;gap:6px;font-size:12px;min-width:0}
+.fv-start-fields>label:first-child{flex:1;min-width:180px}
+.fv-start-fields select{width:100%;max-width:100%}
+.fv-start-fields input{width:155px;font-variant-numeric:tabular-nums}
+.fv-start-fields>small,.fv-start-locked{flex-basis:100%}
+.fv-start-locked{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.fv-start-fields button,.fv-start-settings>.row button{font-size:12px;padding:8px 10px;min-height:36px}
+@media(min-width:1450px){.fv-body{grid-template-columns:minmax(0,1fr) minmax(380px,460px)}}
