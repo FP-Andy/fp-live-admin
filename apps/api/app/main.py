@@ -11932,6 +11932,9 @@ def fineplay_source_url(
                 },
                 # 실제로 무엇을 받았는지. 없으면(예전에 받은 것) None 이다.
                 "downloaded": entry.get("video") or None,
+                # 요청보다 한참 낮게 받아졌나 — 화면이 빨갛게 띄운다.
+                "lowQuality": bool(entry.get("low_quality")),
+                "lowQualityDetail": entry.get("low_quality_detail") or None,
                 "requestedHeight": entry.get("requested_height"),
                 "sizeBytes": entry.get("size"),
                 "durationSeconds": v.duration_seconds,
