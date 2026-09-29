@@ -67,6 +67,9 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
 
 // 퀸컵은 수동 FLA/FPA 기록만 사용한다. 미디어·라이브 코더 메뉴를 노출하지 않는다.
 const FUTSAL_FLA_ITEMS: NavItem[] = [FLA_ITEMS[0], {
+  href: '/admin/futsal/fla/video', label: '영상 기록', icon: '▷',
+  match: pathname => pathname.startsWith('/admin/futsal/fla/video'),
+}, {
   href: '/admin/futsal/visualization', label: 'Visualization', icon: '◌',
   match: pathname => pathname.startsWith('/admin/futsal/visualization'),
 }];
@@ -249,6 +252,7 @@ const NAV_SECTIONS: NavSection[] = [
 ];
 
 function getPageMeta(pathname: string) {
+  if (pathname.startsWith('/admin/futsal/fla/video')) return { product: 'FLA', eyebrow: 'Futsal FLA', title: '영상 기록' };
   if (pathname.startsWith('/admin/futsal/fpa/tracking')) {
     return { product: 'FPA', eyebrow: 'Futsal Video Analysis', title: '영상 분석' };
   }

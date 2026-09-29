@@ -14671,3 +14671,7 @@ def delete_highlight_job(
     db.delete(job)
     db.commit()
     return {"ok": True}
+
+# Futsal video coding shares the canonical one-minute FLA aggregation.
+from .futsal_fla_video import create_router as create_fla_video_router
+app.include_router(create_fla_video_router(_build_split_halves_dominance))

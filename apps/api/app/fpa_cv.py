@@ -200,7 +200,10 @@ async def action(job_id: str, operation: str, user: User = Depends(require_sessi
     if operation not in OPERATIONS:
         raise HTTPException(404)
     row = owned(db, job_id, user)
-    if operation=='purge':owned(db,row.payload['uploadId'],user,'upload',lock=True)
+    if operation=='purge':
+        owned(db,row.payload['uploadId'],user,'upload',lock=True)
+        from .futsal_fla_video import video_references
+        if video_references(db,row.payload['uploadId']):raise HTTPException(409,'FLA 경기에 연결된 원본을 보호하기 위해 이 분석의 영구 삭제를 제한합니다.')
     value = await remote(f'jobs/{job_id}/{operation}', 'POST', json={})
     if operation == 'purge':
         # Row and server review are deleted together only after files are gone.

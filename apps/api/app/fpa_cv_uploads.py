@@ -82,6 +82,8 @@ def source(uid: str,user: User=Depends(require_session_user),db: Session=Depends
 @router.post('/uploads/{uid}/remove')
 async def remove(uid: str,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
     row=owned(db,uid,user,'upload',lock=True);p=row.payload
+    from .futsal_fla_video import video_references
+    if video_references(db,uid):raise HTTPException(409,'FLA 경기에 연결된 원본 영상은 삭제할 수 없습니다.')
     refs=[r for r in db.query(FpaCvResource).filter_by(kind='job').all() if r.payload.get('uploadId')==uid]
     if any(r.payload.get('kind')!='preparation' for r in refs):raise HTTPException(409,'연결된 분석을 삭제한 분석에서 먼저 영구 삭제하세요.')
     if any(r.payload.get('status') in {'queued','starting','running','cancelling'} for r in refs):raise HTTPException(409,'초기 장면 검출이 끝난 후 삭제하세요.')
