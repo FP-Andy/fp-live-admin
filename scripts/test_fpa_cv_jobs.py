@@ -52,6 +52,49 @@ class JobTests(unittest.TestCase):
         self.manager.preparation_worker=threading.Thread(target=self.manager._work,args=('preparation',),daemon=True)
         self.manager.worker.start();self.manager.preparation_worker.start()
 
+    def test_queue_pause_drains_current_preserves_both_lanes_and_survives_restart(self):
+        uploaded=self.upload();settings=self.settings(uploaded['id'])
+        first=self.manager.create(uploaded['id'],settings)
+        second=self.manager.create(uploaded['id'],settings)
+        started=[];release=threading.Event()
+        def execute(job):
+            started.append(job['id'])
+            if job['id']==first['id']:release.wait(5)
+            with self.manager.lock:job['status']='completed';self.manager._save(job)
+        with patch.object(self.manager,'_execute',side_effect=execute):
+            try:
+                self.start_lanes();self.wait_for(lambda:first['id'] in started)
+                state=self.manager.control_queue('pause')
+                self.assertTrue(state['paused']);self.assertFalse(state['deployReady'])
+                prepared=self.manager.create_preparation(uploaded['id'],{'time':6})
+                release.set();self.wait_for(lambda:self.manager.queue_status()['deployReady'])
+                time.sleep(.05)
+                self.assertNotIn(second['id'],started);self.assertNotIn(prepared['id'],started)
+                restarted=TrackingJobs(self.temp.name,probe=False,start_worker=False)
+                try:self.assertTrue(restarted.queue_status()['paused']);self.assertIn(second['id'],restarted.queue)
+                finally:restarted.close()
+                self.manager.control_queue('resume')
+                self.wait_for(lambda:second['id'] in started and prepared['id'] in started)
+            finally:release.set();self.manager.close()
+
+    def test_pause_and_stop_does_not_cancel_queued_jobs(self):
+        launch=subprocess.Popen
+        def fake_tracker(*args,**kwargs):
+            return launch([sys.executable,'-u','-c','import time; print(\'FPA_PROGRESS {"progress":10}\',flush=True); time.sleep(30)'],**kwargs)
+        uploaded=self.upload();settings=self.settings(uploaded['id'])
+        first=self.manager.create(uploaded['id'],settings);second=self.manager.create(uploaded['id'],settings)
+        with patch('fpa_cv_jobs.subprocess.Popen',side_effect=fake_tracker):
+            self.start_lanes();self.wait_for(lambda:self.manager.get(first['id'])['status']=='running')
+            self.manager.control_queue('pause',stop_running=True)
+            self.wait_for(lambda:self.manager.queue_status()['deployReady'])
+            self.assertEqual(self.manager.get(first['id'])['status'],'cancelled')
+            self.assertEqual(self.manager.get(second['id'])['status'],'queued')
+            self.assertEqual(self.manager.get(first['id'])['options'],first['options'])
+            retried=self.manager.retry(first['id'])
+            self.assertEqual(retried['status'],'queued')
+            self.assertEqual(retried['options'],first['options'])
+            self.assertTrue(self.manager.queue_status()['paused'])
+
     def test_preparation_completes_during_tracking_without_deleting_shared_cache(self):
         uploaded=self.upload();settings=self.settings(uploaded['id'])
         info,source=self.manager._upload(uploaded['id'])
@@ -382,6 +425,7 @@ class JobTests(unittest.TestCase):
                     self.assertEqual(persisted[key],value)
                 gate.touch()
             self.manager.cancel(job['id'])
+            self.wait_for(lambda:job['id'] not in self.manager.active_ids)
 
     def test_setup_is_required_and_must_belong_to_same_video(self):
         uploaded=self.upload();other=self.upload()

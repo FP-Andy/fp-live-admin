@@ -94,7 +94,17 @@ async def capabilities(user: User = Depends(require_session_user)):
         result = await remote('capabilities')
     except HTTPException as error:
         result = {'ready': False, 'checking': False, 'error': error.detail, 'gpu': None}
-    return {**result, 'uploadStorage': 's3' if os.getenv('FPA_CV_S3_BUCKET') else 'worker', 'execution': 'aws', 'reviewStorage': 'server', 'model': 'YOLO26s', 'maxUploadBytes': MAX_UPLOAD}
+    return {**result, 'canManageQueue': user.role=='SUPERADMIN', 'uploadStorage': 's3' if os.getenv('FPA_CV_S3_BUCKET') else 'worker', 'execution': 'aws', 'reviewStorage': 'server', 'model': 'YOLO26s', 'maxUploadBytes': MAX_UPLOAD}
+
+
+@router.post('/queue/{operation}')
+async def control_queue(operation: str, request: Request, user: User = Depends(require_session_user)):
+    if user.role != 'SUPERADMIN':raise HTTPException(403, '전체 대기열은 관리자만 제어할 수 있습니다.')
+    if operation not in {'pause','resume'}:raise HTTPException(404)
+    value = await body_json(request)
+    stop = value.get('stopRunning', False)
+    if not isinstance(stop,bool):raise HTTPException(400, '중단 여부를 확인하세요.')
+    return await remote('queue/'+operation, 'POST', json={'stopRunning':stop})
 
 
 @router.post('/uploads', status_code=201)
@@ -133,7 +143,8 @@ async def jobs(user: User = Depends(require_session_user), db: Session = Depends
                 if item['id'] in rows:
                     rows[item['id']].payload = item
         db.commit()
-        return {key: [j for j in listing.get(key, []) if j['id'] in rows] for key in ('jobs', 'deleted')}
+        return {**{key: [j for j in listing.get(key, []) if j['id'] in rows] for key in ('jobs', 'deleted')},
+                'queue':listing.get('queue'), 'canManageQueue':user.role=='SUPERADMIN'}
     except HTTPException:
         values = [r.payload for r in rows.values() if r.payload.get('kind') != 'preparation']
         return {'jobs': [j for j in values if not j.get('deletedAt')], 'deleted': [j for j in values if j.get('deletedAt')], 'offline': True}

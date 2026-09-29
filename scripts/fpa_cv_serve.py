@@ -103,6 +103,9 @@ def handler_for(run: Path | None, jobs=None, worker_token=None):
                     self.send_json(jobs.receive_upload(self.rfile,size,name),201);return
                 if not 0<=size<=65536:raise JobError('분석 설정 요청이 너무 큽니다.',413)
                 value=json.loads(self.rfile.read(size) or b'{}')
+                if route in {'/api/tracking/queue/pause','/api/tracking/queue/resume'}:
+                    if not isinstance(value,dict):raise JobError('대기열 요청을 확인하세요.')
+                    self.send_json(jobs.control_queue(route.rsplit('/',1)[1],stop_running=value.get('stopRunning',False)));return
                 if route=='/api/tracking/batch/start':
                     self.send_json(jobs.start_batch(value.get('ids')),202);return
                 if route=='/api/tracking/uploads/register':
@@ -175,8 +178,9 @@ def handler_for(run: Path | None, jobs=None, worker_token=None):
                 try:
                     if not jobs:raise JobError('트래킹 서버가 준비되지 않았습니다.',503)
                     if route=='/api/tracking/capabilities':self.send_json(jobs.capabilities());return
+                    if route=='/api/tracking/queue':self.send_json(jobs.queue_status());return
                     if route=='/api/tracking/jobs':
-                        listing={'jobs':jobs.listing(),'deleted':jobs.listing(deleted=True)}
+                        listing={'jobs':jobs.listing(),'deleted':jobs.listing(deleted=True),'queue':jobs.queue_status()}
                         if legacy:
                             item=jobs.legacy_state(legacy)
                             listing['deleted' if item.get('deletedAt') else 'jobs'].append(item)

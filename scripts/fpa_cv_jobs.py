@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -89,6 +90,14 @@ class TrackingJobs:
         self.active_ids = set()
         self.closing = False
         try:
+            self.queue_state = json.loads((self.root/'queue-state.json').read_text())
+            if not isinstance(self.queue_state.get('paused'), bool):raise ValueError('Invalid queue state')
+        except FileNotFoundError:
+            self.queue_state = {'paused': False}
+        except (OSError, ValueError, AttributeError):
+            # A damaged maintenance flag must not silently start GPU jobs.
+            self.queue_state = {'paused': True}
+        try:
             self.legacy_deletions=json.loads((self.root/'list-state.json').read_text())
             if not isinstance(self.legacy_deletions,dict):self.legacy_deletions={}
         except (OSError,ValueError):self.legacy_deletions={}
@@ -142,7 +151,27 @@ class TrackingJobs:
 
     def capabilities(self):
         with self.lock:
-            return {**deepcopy(self.capability), 'concurrentPreparation': True}
+            return {**deepcopy(self.capability), 'concurrentPreparation': True, 'queueControl': True}
+
+    def queue_status(self):
+        with self.lock:
+            paused = self.queue_state['paused']
+            running = len(self.active_ids)
+            return {**self.queue_state, 'activeCount': running,
+                    'queuedCount': sum(j['status']=='queued' and not j.get('deletedAt') for j in self.jobs.values()),
+                    'deployReady': paused and running == 0}
+
+    def control_queue(self, operation, *, stop_running=False):
+        if operation not in {'pause', 'resume'} or not isinstance(stop_running, bool):
+            raise JobError('대기열 요청을 확인하세요.')
+        with self.condition:
+            state = {'paused': operation=='pause', 'updatedAt': time.time()}
+            atomic_json(self.root/'queue-state.json', state)
+            self.queue_state = state
+            if state['paused'] and stop_running:
+                for job_id in list(self.active_ids):self.cancel(job_id)
+            self.condition.notify_all()
+            return self.queue_status()
 
     def _queue_for(self, job):
         return self.preparation_queue if job.get('kind') == 'preparation' else self.queue
@@ -400,16 +429,35 @@ class TrackingJobs:
             self._save(job)
             process = self.processes.get(job_id)
             if running and process and process.poll() is None:
-                process.terminate()
+                self._signal_process(process, signal.SIGTERM)
                 threading.Thread(target=self._kill_later, args=(process,), daemon=True).start()
             return self.public(job)
+
+    @staticmethod
+    def _signal_process(process, sig):
+        try:
+            # Each analysis owns its process group, including FFmpeg and colour workers.
+            group = getattr(process, '_fpa_process_group', None)
+            if os.name == 'posix' and isinstance(group,int):
+                os.killpg(group, sig)
+            elif sig == signal.SIGTERM:process.terminate()
+            else:process.kill()
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS can report EPERM for a group whose leader just exited.
+            if process.poll() is None:raise
 
     @staticmethod
     def _kill_later(process):
         try:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            process.kill()
+            TrackingJobs._signal_process(process, signal.SIGKILL)
+        finally:
+            # A parent may exit before a child that inherited its stdout pipe.
+            if isinstance(getattr(process, '_fpa_process_group', None),int):
+                TrackingJobs._signal_process(process, signal.SIGKILL)
 
     def retry(self, job_id):
         job = self.get(job_id)
@@ -434,7 +482,7 @@ class TrackingJobs:
     def _work(self, kind='tracking'):
         while True:
             with self.condition:
-                self.condition.wait_for(lambda: self.closing or bool(self._queue_for({'kind': kind})))
+                self.condition.wait_for(lambda: self.closing or (not self.queue_state['paused'] and bool(self._queue_for({'kind': kind}))))
                 if self.closing:
                     return
                 job_id = self._queue_for({'kind': kind}).popleft()
@@ -449,7 +497,7 @@ class TrackingJobs:
             except Exception as error:
                 process = self.processes.get(job_id)
                 if process and process.poll() is None:
-                    process.terminate()
+                    self._signal_process(process, signal.SIGTERM)
                     self._kill_later(process)
                 with self.lock:
                     status = 'interrupted' if self.closing else 'cancelled' if job['status']=='cancelling' else 'failed'
@@ -499,7 +547,8 @@ class TrackingJobs:
             env = self.env()
             if job.get('kind') == 'preparation':
                 env.update(OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
-            process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=os.name=='posix')
+            if os.name=='posix':process._fpa_process_group=process.pid
             self.processes[job['id']] = process
         tail = deque(maxlen=12)
         with process.stdout, (folder/'process.log').open('w') as logfile:
@@ -515,6 +564,8 @@ class TrackingJobs:
                                            processedFrames=progress.get('processedFrames'), totalFrames=progress.get('totalFrames'),
                                            remainingFrames=progress.get('remainingFrames'), processingFps=progress.get('processingFps'),
                                            samples=progress.get('samples', 0), trackCount=progress.get('trackCount', 0))
+                                for key in ('videoDecoder','decoderFallback'):
+                                    if key in progress:job[key]=progress[key]
                                 self._save(job)
                     except (ValueError, TypeError):
                         continue
@@ -561,7 +612,7 @@ class TrackingJobs:
             processes = list(self.processes.values())
             for process in processes:
                 if process.poll() is None:
-                    process.terminate()
+                    self._signal_process(process, signal.SIGTERM)
         for process in processes:
             self._kill_later(process)
         for worker in (self.worker, self.preparation_worker):

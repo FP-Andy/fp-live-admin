@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from fpa_cv_gpu_video import GpuVideo
+from fpa_cv_gpu_video import GpuVideo, decoder_formats
 
 
 class GpuVideoTests(unittest.TestCase):
@@ -15,9 +15,27 @@ class GpuVideoTests(unittest.TestCase):
         process.stdout=io.BytesIO(data)
         process.wait.return_value=0
         process.poll.return_value=None
-        with patch('fpa_cv_gpu_video.shutil.which',return_value='/ffmpeg'), patch('fpa_cv_gpu_video.subprocess.Popen',return_value=process):
+        with patch('fpa_cv_gpu_video.shutil.which',return_value='/ffmpeg'), patch('fpa_cv_gpu_video.decoder_formats',return_value=('nv12','yuv420p')), patch('fpa_cv_gpu_video.subprocess.Popen',return_value=process):
             video=GpuVideo('source',path,width=2,height=2,fps=30,first=first,last=last,stride=stride,anchor=anchor,preview_size=(2,2))
         return video,process
+
+    def test_native_depth_probe_and_unsupported_format(self):
+        import json
+        for pixel_format, expected in [('yuv420p',('nv12','yuv420p')),('yuv420p10le',('p010le','yuv420p10le'))]:
+            with patch('fpa_cv_gpu_video.shutil.which',return_value='/ffprobe'), patch('fpa_cv_gpu_video.subprocess.run',return_value=MagicMock(stdout=json.dumps({'streams':[{'pix_fmt':pixel_format}]}))):
+                self.assertEqual(decoder_formats('video'),expected)
+        with patch('fpa_cv_gpu_video.shutil.which',return_value='/ffprobe'), patch('fpa_cv_gpu_video.subprocess.run',return_value=MagicMock(stdout='{"streams":[{"pix_fmt":"yuv444p12le"}]}')):
+            with self.assertRaisesRegex(RuntimeError,'Unsupported'):decoder_formats('video')
+
+    def test_10bit_download_retains_depth_and_preview_converts_on_gpu(self):
+        process=MagicMock();process.stdout=io.BytesIO()
+        with patch('fpa_cv_gpu_video.shutil.which',return_value='/ffmpeg'), patch('fpa_cv_gpu_video.decoder_formats',return_value=('p010le','yuv420p10le')), patch('fpa_cv_native_color.NativeColor'), patch('fpa_cv_gpu_video.subprocess.Popen',return_value=process) as launch:
+            video=GpuVideo('source','/tmp/fpa-test-unused-preview.mp4',width=2,height=2,fps=30,first=0,last=1,stride=1,anchor=0,preview_size=(2,2))
+        command=launch.call_args.args[0];graph=command[command.index('-filter_complex')+1]
+        self.assertIn('hwdownload,format=p010le,format=yuv420p10le,format=yuv420p10le',graph)
+        self.assertEqual(command[command.index('-pix_fmt')+1],'yuv420p10le')
+        self.assertIn('scale_cuda=2:2:format=nv12',graph)
+        video.abort()
 
     def test_off_stride_anchor_order_and_exact_end(self):
         video,process=self.video(b''.join(bytes([n])*12 for n in [2,3,4,6]))

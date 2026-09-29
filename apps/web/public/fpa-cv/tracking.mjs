@@ -2,7 +2,7 @@ import {uploadLibrary} from './upload-library.mjs';
 import {preflight} from './preflight.mjs';
 const $=id=>document.getElementById(id);
 const active=new Set(['queued','starting','running','cancelling']);
-const states={ready:'초기 설정 완료',queued:'대기',starting:'준비 중',running:'분석 중',cancelling:'중지 중',cancelled:'취소됨',interrupted:'중단됨',failed:'실패',completed:'완료'};
+const states={ready:'초기 설정 완료',queued:'대기',starting:'준비 중',running:'분석 중',cancelling:'중지 중',cancelled:'중단됨',interrupted:'중단됨',failed:'실패',completed:'완료'};
 const sizeText=n=>n>1024**3?`${(n/1024**3).toFixed(1)} GB`:`${(n/1024**2).toFixed(1)} MB`;
 const durationText=n=>{if(!Number.isFinite(n))return '계산 중';const seconds=Math.max(0,Math.ceil(n));return seconds<60?`${seconds}초`:`${Math.floor(seconds/60)}분 ${seconds%60}초`;};
 const el=(tag,text,className)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;};
@@ -13,6 +13,28 @@ export function trackingUI({openJob}){
  let file=null,url=null,busy=false,xhr=null,caps=null,jobSignature='',opening=null,uploaded=null,preparingId=null,aborted=false,sourceDuration=NaN,playable=true,needOriginalFrame=false;
  const video=$('tracking-preview');
  const pendingJobs=new Set();
+ let queueBusy=false;
+ function renderQueue(queue,canManage){
+  const box=$('tracking-queue-controls');box.hidden=!queue;
+  if(!queue)return;
+  $('tracking-queue-status').textContent=queue.paused?(queue.deployReady?'대기열 일시정지 · 실행 중인 작업 없음 · 배포 가능':`대기열 일시정지 · ${queue.activeCount}개 작업 종료 대기`):`대기열 실행 중 · ${queue.queuedCount}개 대기`;
+  $('pause-tracking-queue').hidden=!canManage||queue.paused;
+  $('stop-tracking-queue').hidden=!canManage||queue.activeCount===0;
+  $('resume-tracking-queue').hidden=!canManage||!queue.paused;
+  for(const button of box.querySelectorAll('button'))button.disabled=queueBusy;
+ }
+ async function controlQueue(operation,stopRunning=false){
+  if(queueBusy)return;
+  if(stopRunning&&!confirm('진행 중인 분석과 초기 장면 검출을 중단하고 대기열을 일시정지할까요?\n영상과 초기 설정은 보존됩니다. 중단된 분석은 다시 분석할 때 초기 설정 시점부터 처리합니다.'))return;
+  queueBusy=true;
+  for(const button of $('tracking-queue-controls').querySelectorAll('button'))button.disabled=true;
+  try{await post(`/api/tracking/queue/${operation}`,{stopRunning});}
+  catch(error){$('tracking-list-message').textContent=error.message;$('tracking-list-message').classList.add('error');}
+  finally{queueBusy=false;await refreshJobs().catch(error=>status(error.message,true));}
+ }
+ $('pause-tracking-queue').onclick=()=>controlQueue('pause');
+ $('stop-tracking-queue').onclick=()=>controlQueue('pause',true);
+ $('resume-tracking-queue').onclick=()=>controlQueue('resume');
  const syncRange=()=>{
   const entire=$('tracking-entire').checked;
   $('tracking-range').hidden=entire;
@@ -154,6 +176,10 @@ export function trackingUI({openJob}){
     $('tracking-list-message').classList.remove('error');
     $('tracking-list-message').textContent=job.sourceDeleted?'분석 결과와 원본 영상을 영구 삭제했습니다.':'분석 결과를 영구 삭제했습니다. 다른 분석에서 쓰는 원본 영상은 유지했습니다.';
    }
+   if(operation==='cancel'){
+    $('tracking-list-message').classList.remove('error');
+    $('tracking-list-message').textContent='분석을 중단합니다. 영상과 초기 설정은 유지되며, 다시 분석하면 초기 설정 시점부터 처리합니다. 배포하려면 대기열도 일시정지하세요.';
+   }
    if(operation==='delete'||operation==='restore'){
     $('tracking-list-message').classList.remove('error');
     $('tracking-list-message').textContent=operation==='restore'?'분석 목록으로 복원했습니다.':active.has(job.status)?'분석을 중지하고 삭제한 분석으로 이동했습니다.':'목록에서 삭제했습니다. 아래 삭제한 분석에서 복원할 수 있습니다.';
@@ -183,6 +209,8 @@ export function trackingUI({openJob}){
     const labels=(job.initialUnmatched||[]).map(p=>`${p.group.startsWith('home')?'홈':p.group.startsWith('away')?'원정':'심판'} ${p.jersey}`).join(', ');
     card.append(el('p',`초기 번호 ${13-job.initialMatched}명 연결 누락${labels?` (${labels})`:''}. 연결된 선수는 자동 복구를 계속합니다. 누락 선수는 작업 화면에서 지정하세요.`,'tracking-setup-warning'));
    }
+   if(job.videoDecoder)info.push(job.videoDecoder==='nvdec'?'영상 읽기 GPU':'영상 읽기 CPU');
+   if(job.decoderFallback)info.push('GPU 영상 읽기 전환 실패');
    if(job.samples)info.push(`${job.samples}개 샘플`);card.append(el('p',info.filter(Boolean).join(' · '),'tracking-job-meta'));
    if(active.has(job.status)){
     const progress=el('progress');progress.max=100;progress.value=job.progress||0;progress.setAttribute('aria-label','트래킹 진행률');card.append(progress);
@@ -202,8 +230,8 @@ export function trackingUI({openJob}){
    if(trashed){const button=el('button',active.has(job.status)?'중지 후 복원 가능':'목록으로 복원','subtle');button.disabled=active.has(job.status);button.onclick=()=>action(job.id,'restore',button);actions.append(button);}
    else if(job.status==='ready'){const button=el('button','1차 분석 시작','primary');button.onclick=()=>action(job.id,'start',button);actions.append(button);}
    else if(job.status==='completed'){const button=el('button','작업 시작 →','primary');button.disabled=!!opening;button.onclick=()=>open(job,button);actions.append(button);}
-   else if(active.has(job.status)){const button=el('button',job.status==='cancelling'?'중지 중':'분석 취소','subtle');button.disabled=job.status==='cancelling';button.onclick=()=>action(job.id,'cancel',button);actions.append(button);}
-   else{const button=el('button','다시 분석','subtle');button.onclick=()=>action(job.id,'retry',button);actions.append(button);}
+   else if(active.has(job.status)){const button=el('button',job.status==='cancelling'?'중지 중':job.status==='queued'?'대기 취소':'분석 중단','subtle');button.disabled=job.status==='cancelling';button.onclick=()=>action(job.id,'cancel',button);actions.append(button);}
+   else{const button=el('button','처음부터 다시 분석','subtle');button.onclick=()=>action(job.id,'retry',button);actions.append(button);}
    if(!trashed){const button=el('button',active.has(job.status)?'중지 후 삭제':'삭제','job-delete');button.title='목록에서 삭제 · 삭제한 분석에서 복원 가능';button.onclick=()=>action(job.id,'delete',button);actions.append(button);}
    if(trashed&&job.id!=='existing'){
     const button=el('button','영구 삭제','job-delete');button.disabled=active.has(job.status);
@@ -217,7 +245,7 @@ export function trackingUI({openJob}){
  }
  let readyJobs=[];
  $('start-ready-jobs').onclick=async()=>{const button=$('start-ready-jobs');button.disabled=true;try{await post('/api/tracking/batch/start',{ids:readyJobs});jobSignature='';await refreshJobs();status('분석 예약이 완료됐습니다. 업로드도 모두 끝났다면 창을 닫아도 됩니다.');}catch(error){status(error.message,true);}finally{button.disabled=false;}};
- async function refreshJobs(){const {jobs,deleted=[]}=await api('/api/tracking/jobs');readyJobs=jobs.filter(j=>j.status==='ready').map(j=>j.id);$('start-ready-jobs').hidden=!readyJobs.length;$('start-ready-jobs').textContent=`준비된 ${readyJobs.length}경기 모두 분석 시작`;await library.refresh(jobs);const signature=JSON.stringify([jobs,deleted]);if(signature!==jobSignature){jobSignature=signature;renderJobs(jobs,deleted);}return [...jobs,...deleted];}
+ async function refreshJobs(){const {jobs,deleted=[],queue,canManageQueue}=await api('/api/tracking/jobs');renderQueue(queue,canManageQueue??caps?.canManageQueue??caps?.execution!=='aws');readyJobs=jobs.filter(j=>j.status==='ready').map(j=>j.id);$('start-ready-jobs').hidden=!readyJobs.length;$('start-ready-jobs').textContent=`준비된 ${readyJobs.length}경기 모두 분석 시작`;await library.refresh(jobs);const signature=JSON.stringify([jobs,deleted]);if(signature!==jobSignature){jobSignature=signature;renderJobs(jobs,deleted);}return [...jobs,...deleted];}
  async function poll(){
   let delay=4000;
   try{
