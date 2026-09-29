@@ -44,9 +44,12 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     const media=video.current;
     const column=media?.closest<HTMLElement>('.fv-video-column');
     if(!media||!column)return;
-    const fit=()=>{const width=media.getBoundingClientRect().width;if(width>0)column.style.setProperty('--fv-media-width',`${width}px`);};
+    const fit=()=>{
+      column.style.setProperty('--fv-media-ratio',`${media.videoWidth||16} / ${media.videoHeight||9}`);
+      const width=media.getBoundingClientRect().width;if(width>0)column.style.setProperty('--fv-media-width',`${width}px`);
+    };
     const observer=new ResizeObserver(fit);observer.observe(media);fit();
-    return()=>{observer.disconnect();column.style.removeProperty('--fv-media-width');};
+    return()=>{observer.disconnect();column.style.removeProperty('--fv-media-width');column.style.removeProperty('--fv-media-ratio');};
   },[uploadId]);
 
   function sample(){
@@ -180,18 +183,25 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   if(!data)return <p role="status">{error||'경기 불러오는 중…'}</p>;
   return <div className={`fv-workspace${expanded?' fv-expanded':''}`} ref={workspace} data-state={glow}>
     {process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?<div className="fv-preview">로컬 검토 · 운영 데이터에 저장되지 않습니다 · 현재 영상은 기능 확인용 샘플입니다.</div>:null}
-    <header className="fv-top"><div className="fv-match-name"><Link href="/admin/futsal/fla/video">← 경기 목록</Link><strong>{names.HOME} <span className="muted">vs</span> {names.AWAY}</strong><small className="muted">{data.match.fixture?.stage} {data.match.fixture?.round}경기 · {data.match.fixture?.court}구장</small></div><div className="fv-timer"><span role="status">{status}</span><strong aria-label="경기 시간">{fmt(s.cursor_ms)}</strong>{review?<small>마지막 기록 {fmt(s.frontier_ms)}</small>:null}</div><div className="row">{!s.started?<button className="btn-primary" onClick={start} disabled={!canWrite||!s.upload_id||uploadId!==s.upload_id||parseStart(startTime)!==s.offset_ms||busy}>경기 시작</button>:<><button onClick={toggle} disabled={Boolean(error)} className="btn-primary">{playing?'일시정지':'재생'} <kbd>Space</kbd></button>{!s.ended?<button className="btn-secondary" disabled={busy} onClick={async()=>{video.current?.pause();try{await flush('finish');setNotice('점유 기록을 마쳤습니다. 과거 장면에 이벤트를 추가할 수 있습니다.');}catch{}}}>기록 종료</button>:null}</>}<button className="btn-secondary" aria-label="작업 전체화면" onClick={()=>void fullscreen()}>⛶</button></div></header>
+    <header className="fv-top">
+      <div className="fv-match-name">
+        <div className="fv-match-title"><Link href="/admin/futsal/fla/video" aria-label="경기 목록" title="경기 목록">←</Link><strong>{names.HOME} <span className="muted">vs</span> {names.AWAY}</strong></div>
+        <div className="fv-match-meta"><small className="muted">{data.match.fixture?.stage} {data.match.fixture?.round}경기 · {data.match.fixture?.court}구장</small><button className="fv-setup-toggle" aria-label="경기 시작 시각 설정" aria-expanded={showSetup} aria-controls="fv-start-settings" onClick={()=>setShowSetup(!showSetup)}>시작 시각 {s.upload_id?mediaLabel(s.offset_ms):'설정'} {showSetup?'▴':'▾'}</button></div>
+      </div>
+      <div className="fv-timer"><strong aria-label="경기 시간">{fmt(s.cursor_ms)}</strong><div><span role="status">{status}</span>{review?<small>마지막 기록 {fmt(s.frontier_ms)}</small>:null}</div></div>
+      <div className="fv-top-actions">{!s.started?<button className="btn-primary" onClick={start} disabled={!canWrite||!s.upload_id||uploadId!==s.upload_id||parseStart(startTime)!==s.offset_ms||busy}>경기 시작</button>:<><button onClick={toggle} disabled={Boolean(error)} className="btn-primary">{playing?'일시정지':'재생'} <kbd>Space</kbd></button>{!s.ended?<button className="btn-secondary" disabled={busy} onClick={async()=>{video.current?.pause();try{await flush('finish');setNotice('점유 기록을 마쳤습니다. 과거 장면에 이벤트를 추가할 수 있습니다.');}catch{}}}>기록 종료</button>:null}</>}<button className="btn-secondary" aria-label="작업 전체화면" onClick={()=>void fullscreen()}>⛶</button></div>
+    </header>
     {error?<div className="fv-error" role="alert">{error}<button onClick={()=>{setError('');void flush().catch(()=>{});}}>저장 다시 시도</button></div>:null}
-    <section className="fv-start-settings" aria-label="경기 시작 시각 설정">
-      <div className="row"><button className="btn-secondary" aria-expanded={showSetup} onClick={()=>setShowSetup(!showSetup)}>경기 시작 시각 설정 {showSetup?'▴':'▾'}</button><strong>{s.upload_id?`영상 ${mediaLabel(s.offset_ms)} → 경기 00:00`:'영상 시작 기준 미설정'}</strong>{s.started?<small>기록 중 · 시작 기준 고정</small>:null}</div>
-      {showSetup?<div className="fv-start-fields">
+    {showSetup?<section id="fv-start-settings" className="fv-start-settings" aria-label="경기 시작 시각 설정">
+      <div className="row"><strong>{s.upload_id?`영상 ${mediaLabel(s.offset_ms)} → 경기 00:00`:'영상 시작 기준 미설정'}</strong>{s.started?<small>기록 중 · 시작 기준 고정</small>:null}</div>
+      <div className="fv-start-fields">
         <label>{process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?'로컬 샘플 영상':'S3 경기 영상'}<select aria-label="경기 영상 선택" value={uploadId} onChange={e=>{video.current?.pause();setUploadId(e.target.value);setDuration(0);setStartTime('00:00.000');}} disabled={!canWrite||s.started}><option value="">영상을 선택하세요</option>{uploads.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
         <label>경기 시작 영상 시각<input aria-label="경기 시작 영상 시각" value={startTime} onChange={e=>setStartTime(e.target.value)} placeholder="00:30.000 또는 30" disabled={!canWrite||s.started}/></label>
         <button className="btn-secondary" disabled={!duration||s.started} onClick={()=>{video.current?.pause();setStartTime(mediaLabel(video.current!.currentTime*1000));}}>현재 영상 시각 가져오기</button>
         <button className="btn-primary" onClick={configure} disabled={!canWrite||!duration||s.started||busy}>시작 시각 저장</button>
         {s.started?<div className="fv-start-locked"><span>시작 기준을 바꾸려면 기존 기록을 초기화해야 합니다.</span><button className="btn-danger" disabled={!canWrite||busy} onClick={()=>void reset('recording')}>초기화 후 시작 시각 변경</button></div>:<small>킥오프 장면으로 이동해 시각을 가져오거나, 영상의 분:초 또는 초 값을 직접 입력하세요.</small>}
-      </div>:null}
-    </section>
+      </div>
+    </section>:null}
     <div className="fv-body"><section className="fv-video-column" aria-label="경기 영상">
 
       <div className="fv-player">{uploadId?<video key={uploadId} ref={video} src={`/api/futsal/fla-video/uploads/${uploadId}/source`} playsInline preload="metadata"
