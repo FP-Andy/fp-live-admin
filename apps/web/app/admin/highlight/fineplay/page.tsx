@@ -186,7 +186,22 @@ type SourceVideo = {
   source?: 'UPLOAD' | 'YOUTUBE';
   youtubeUrl?: string;
   fetch?: SourceFetch | null;
+  /** 실제로 받아 온 것. 받기 전이거나 예전에 받은 건 없다. */
+  downloaded?: { width?: number; height?: number; codec?: string; bitrate?: number } | null;
+  requestedHeight?: number | null;
+  sizeBytes?: number | null;
 };
+
+/** 받은 실물을 한 줄로. '왜 흐린가' 를 파일을 열어 보지 않고 알 수 있게. */
+function downloadedLabel(v: SourceVideo): string {
+  const d = v.downloaded;
+  if (!d?.height) return '';
+  const parts = [`${d.width ?? '?'}×${d.height}`];
+  if (d.codec) parts.push(d.codec);
+  if (d.bitrate) parts.push(`${Math.round(d.bitrate / 1000).toLocaleString()}kbps`);
+  if (v.sizeBytes) parts.push(`${(v.sizeBytes / 1024 / 1024 / 1024).toFixed(2)}GB`);
+  return parts.join(' · ');
+}
 
 /** 유튜브 취득 실패 사유를 사람 말로. */
 const YT_REASON: Record<string, string> = {
@@ -393,6 +408,9 @@ export default function FineplayJobsPage() {
   const [selected, setSelected] = useState<FpJob | null>(null);
   // 다중 영상 신청: 영상 탭으로 전환하며 태깅한다. sourceUrl 은 현재 탭에서 파생.
   const [sourceVideos, setSourceVideos] = useState<SourceVideo[]>([]);
+  // 이 신청을 몇 p 로 받을지. 서버가 내려준 값을 그대로 쓰고, 바꾸면 다시 받을 때 적용된다.
+  const [ytMaxHeight, setYtMaxHeight] = useState(1080);
+  const [ytHeightChoices, setYtHeightChoices] = useState<number[]>([2160, 1440, 1080, 720]);
   const [activeVideoIdx, setActiveVideoIdx] = useState(0);
   const activeVideo = sourceVideos[activeVideoIdx];
   const sourceUrl = activeVideo?.url || '';
@@ -920,10 +938,15 @@ export default function FineplayJobsPage() {
       setFpaOurSide('home');
     }
     try {
-      const res = await apiJson<{ url: string | null; videoId?: string; videos?: SourceVideo[] }>(
+      const res = await apiJson<{
+        url: string | null; videoId?: string; videos?: SourceVideo[];
+        maxHeight?: number; heightChoices?: number[];
+      }>(
         `/highlight/fineplay-jobs/${job.id}/source-url`,
       );
       setSourceVideos(res.videos?.length ? res.videos : [{ videoId: res.videoId, url: res.url }]);
+      if (res.maxHeight) setYtMaxHeight(res.maxHeight);
+      if (res.heightChoices?.length) setYtHeightChoices(res.heightChoices);
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : String(err));
     }
@@ -947,15 +970,29 @@ export default function FineplayJobsPage() {
     return () => clearInterval(timer);
   }, [selected, pendingFetch]);
 
-  /** 실패한 유튜브 취득을 다시 시킨다. */
-  const retryYoutubeFetch = async () => {
+  /** 유튜브 취득을 (다시) 시킨다.
+   *
+   *  force 면 **이미 받아 둔 것까지 지우고** 다시 받는다. 화질을 바꾼 뒤 예전에 받아
+   *  둔 영상에 그걸 적용하려면 이 길뿐이다 — 파일이 있으면 건너뛰는 구조라 지우지
+   *  않으면 영영 그대로다. */
+  const retryYoutubeFetch = async (force = false) => {
     if (!selected) return;
+    if (force && !window.confirm(
+      `받아 둔 영상을 지우고 ${ytMaxHeight}p 기준으로 다시 받습니다.\n\n`
+      + '원본에 그 화질이 없으면 있는 것 중 가장 좋은 것을 받습니다.\n'
+      + '받는 시간과 용량이 늘 수 있습니다. 계속할까요?')) return;
     setSourceError('');
     try {
-      await apiJson(`/highlight/fineplay-jobs/${selected.id}/fetch-youtube`, { method: 'POST' });
+      const qs = new URLSearchParams({ max_height: String(ytMaxHeight) });
+      if (force) qs.set('force', 'true');
+      await apiJson(
+        `/highlight/fineplay-jobs/${selected.id}/fetch-youtube?${qs}`,
+        { method: 'POST' },
+      );
       setSourceVideos((prev) => prev.map((v) => (
-        v.source === 'YOUTUBE' && !v.url
-          ? { ...v, fetch: { status: 'downloading', percent: 0 } }
+        // force 면 이미 받아 둔 것도 다시 받으므로 전부 '받는 중' 으로 돌린다.
+        v.source === 'YOUTUBE' && (force || !v.url)
+          ? { ...v, url: force ? '' : v.url, fetch: { status: 'downloading', percent: 0 } }
           : v
       )));
     } catch (err) {
@@ -1895,6 +1932,66 @@ export default function FineplayJobsPage() {
             </div>
           ) : null}
 
+          {/* 유튜브 원본의 화질 — 무엇을 받았는지 보여 주고, 다시 받을 수 있게 한다.
+              받은 실물을 여기 적는 이유: 이게 없으면 '원본이 흐리다' 를 파일을 직접
+              열어 보기 전까지 확인할 방법이 없다 — 실제로 그것 때문에 한참 헤맸다. */}
+          {sourceVideos.some((v) => v.source === 'YOUTUBE') ? (
+            <div style={{
+              margin: '0 0 10px', padding: '8px 10px', borderRadius: 8,
+              background: 'var(--surface, #101014)',
+              border: '1px solid var(--border-ghost, #2c2c32)',
+              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>유튜브 화질</span>
+              <select
+                value={ytMaxHeight}
+                onChange={(e) => setYtMaxHeight(Number(e.target.value))}
+                style={{
+                  fontSize: 12, padding: '3px 6px', borderRadius: 6,
+                  background: 'var(--bg, #0b0b0e)', color: 'inherit',
+                  border: '1px solid var(--border-ghost, #2c2c32)',
+                }}
+              >
+                {ytHeightChoices.map((h) => (
+                  <option key={h} value={h}>{h}p 까지</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 11, color: 'var(--muted, #777)' }}>
+                원본에 그 화질이 없으면 있는 것 중 가장 좋은 것을 받습니다
+              </span>
+
+              {/* 실제로 받아 온 것 */}
+              {sourceVideos.filter((v) => v.source === 'YOUTUBE').map((v) => {
+                const label = downloadedLabel(v);
+                if (!label) return null;
+                const low = (v.downloaded?.height ?? 0) < 720;
+                return (
+                  <span
+                    key={v.videoId}
+                    title="실제로 받아 온 영상"
+                    style={{
+                      fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                      background: low ? '#3b1d1d' : 'var(--bg, #0b0b0e)',
+                      color: low ? '#fca5a5' : 'var(--muted, #999)',
+                      border: '1px solid var(--border-ghost, #2c2c32)',
+                    }}
+                  >
+                    받은 실물 {label}
+                  </span>
+                );
+              })}
+
+              {sourceVideos.some((v) => v.source === 'YOUTUBE' && v.url) ? (
+                <button
+                  style={{ ...smallBtn, marginLeft: 'auto' }}
+                  onClick={() => void retryYoutubeFetch(true)}
+                >
+                  ↻ 이 화질로 다시 받기
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
           {sourceError ? (
             <p style={{ fontSize: 13, color: '#ef4444' }}>원본 재생 실패: {sourceError}</p>
           ) : failedFetch ? (
@@ -1919,7 +2016,8 @@ export default function FineplayJobsPage() {
                   링크 열어 보기
                 </a>
               ) : null}
-              <button style={smallBtn} onClick={retryYoutubeFetch}>다시 받기</button>
+              {/* onClick 이 넘기는 이벤트가 force 로 들어가면 안 된다 — 감싸서 부른다. */}
+              <button style={smallBtn} onClick={() => void retryYoutubeFetch()}>다시 받기</button>
               {failedFetch.fetch?.code === 'YT_BLOCKED' ? (
                 <span style={{ width: '100%', fontSize: 12, opacity: 0.85 }}>
                   영상은 멀쩡합니다. 서버 IP 가 막힌 것이라 다시 눌러도 같을 수 있습니다 —
@@ -1945,7 +2043,7 @@ export default function FineplayJobsPage() {
                     아직 받기 시작하지 않았습니다.
                     {' '}<span style={{ opacity: 0.75 }}>(이 기능이 생기기 전에 접수된 신청입니다)</span>
                   </span>
-                  <button style={smallBtn} onClick={retryYoutubeFetch}>받기 시작</button>
+                  <button style={smallBtn} onClick={() => void retryYoutubeFetch()}>받기 시작</button>
                 </p>
               ) : (
                 <p style={{ margin: '0 0 8px' }}>
