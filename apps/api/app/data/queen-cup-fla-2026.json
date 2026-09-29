@@ -1,0 +1,392 @@
+[
+  {
+    "key": "2026-09-12-regular-1-A",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 1,
+    "time": "09:40",
+    "court": "A",
+    "home": "경남",
+    "away": "대구"
+  },
+  {
+    "key": "2026-09-12-regular-1-D",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 1,
+    "time": "09:40",
+    "court": "D",
+    "home": "부천",
+    "away": "충남아산"
+  },
+  {
+    "key": "2026-09-12-regular-2-A",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 2,
+    "time": "10:00",
+    "court": "A",
+    "home": "울산",
+    "away": "전북"
+  },
+  {
+    "key": "2026-09-12-regular-2-D",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 2,
+    "time": "10:00",
+    "court": "D",
+    "home": "안산",
+    "away": "성남"
+  },
+  {
+    "key": "2026-09-12-regular-3-A",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 3,
+    "time": "10:20",
+    "court": "A",
+    "home": "광주",
+    "away": "경남"
+  },
+  {
+    "key": "2026-09-12-regular-3-D",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 3,
+    "time": "10:20",
+    "court": "D",
+    "home": "김포",
+    "away": "부천"
+  },
+  {
+    "key": "2026-09-12-regular-4-B",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 4,
+    "time": "10:40",
+    "court": "B",
+    "home": "안양",
+    "away": "대전"
+  },
+  {
+    "key": "2026-09-12-regular-4-E",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 4,
+    "time": "10:40",
+    "court": "E",
+    "home": "강원",
+    "away": "김해"
+  },
+  {
+    "key": "2026-09-12-regular-5-B",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 5,
+    "time": "11:00",
+    "court": "B",
+    "home": "제주",
+    "away": "김천"
+  },
+  {
+    "key": "2026-09-12-regular-5-E",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 5,
+    "time": "11:00",
+    "court": "E",
+    "home": "용인",
+    "away": "포항"
+  },
+  {
+    "key": "2026-09-12-regular-6-B",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 6,
+    "time": "11:20",
+    "court": "B",
+    "home": "수원FC",
+    "away": "대전"
+  },
+  {
+    "key": "2026-09-12-regular-6-E",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 6,
+    "time": "11:20",
+    "court": "E",
+    "home": "인천",
+    "away": "김해"
+  },
+  {
+    "key": "2026-09-12-regular-8-C",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 8,
+    "time": "12:00",
+    "court": "C",
+    "home": "수원삼성",
+    "away": "천안"
+  },
+  {
+    "key": "2026-09-12-regular-9-C",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 9,
+    "time": "12:20",
+    "court": "C",
+    "home": "서울E",
+    "away": "화성"
+  },
+  {
+    "key": "2026-09-12-regular-9-F",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 9,
+    "time": "12:20",
+    "court": "F",
+    "home": "파주",
+    "away": "연맹연합"
+  },
+  {
+    "key": "2026-09-12-regular-10-C",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 10,
+    "time": "12:40",
+    "court": "C",
+    "home": "천안",
+    "away": "충북청주"
+  },
+  {
+    "key": "2026-09-12-regular-10-F",
+    "date": "2026-09-12",
+    "stage": "정규",
+    "round": 10,
+    "time": "12:40",
+    "court": "F",
+    "home": "서울",
+    "away": "부산"
+  },
+  {
+    "key": "2026-09-12-final-1-D",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 1,
+    "time": "14:30",
+    "court": "D",
+    "home": "광주",
+    "away": "대전"
+  },
+  {
+    "key": "2026-09-12-final-1-F",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 1,
+    "time": "14:30",
+    "court": "F",
+    "home": "포항",
+    "away": "전남"
+  },
+  {
+    "key": "2026-09-12-final-2-D",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 2,
+    "time": "14:50",
+    "court": "D",
+    "home": "경남",
+    "away": "제주"
+  },
+  {
+    "key": "2026-09-12-final-2-F",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 2,
+    "time": "14:50",
+    "court": "F",
+    "home": "강원",
+    "away": "연맹연합"
+  },
+  {
+    "key": "2026-09-12-final-3-D",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 3,
+    "time": "15:10",
+    "court": "D",
+    "home": "충북청주",
+    "away": "광주"
+  },
+  {
+    "key": "2026-09-12-final-3-F",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 3,
+    "time": "15:10",
+    "court": "F",
+    "home": "전남",
+    "away": "안산"
+  },
+  {
+    "key": "2026-09-12-final-4-C",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 4,
+    "time": "15:30",
+    "court": "C",
+    "home": "서울",
+    "away": "김포"
+  },
+  {
+    "key": "2026-09-12-final-5-D",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 5,
+    "time": "15:50",
+    "court": "D",
+    "home": "천안",
+    "away": "경남"
+  },
+  {
+    "key": "2026-09-12-final-5-F",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 5,
+    "time": "15:50",
+    "court": "F",
+    "home": "연맹연합",
+    "away": "충남아산"
+  },
+  {
+    "key": "2026-09-12-final-6-B",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 6,
+    "time": "16:10",
+    "court": "B",
+    "home": "전남",
+    "away": "대전"
+  },
+  {
+    "key": "2026-09-12-final-6-D",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 6,
+    "time": "16:10",
+    "court": "D",
+    "home": "대구",
+    "away": "부천"
+  },
+  {
+    "key": "2026-09-12-final-6-F",
+    "date": "2026-09-12",
+    "stage": "파이널",
+    "round": 6,
+    "time": "16:10",
+    "court": "F",
+    "home": "화성",
+    "away": "인천"
+  },
+  {
+    "key": "2026-09-13-final-8-D",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 8,
+    "time": "08:00",
+    "court": "D",
+    "home": "김해",
+    "away": "울산"
+  },
+  {
+    "key": "2026-09-13-final-8-E",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 8,
+    "time": "08:00",
+    "court": "E",
+    "home": "안양",
+    "away": "김포"
+  },
+  {
+    "key": "2026-09-13-final-9-D",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 9,
+    "time": "08:20",
+    "court": "D",
+    "home": "용인",
+    "away": "전북"
+  },
+  {
+    "key": "2026-09-13-final-9-E",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 9,
+    "time": "08:20",
+    "court": "E",
+    "home": "김천상무",
+    "away": "성남"
+  },
+  {
+    "key": "2026-09-13-final-11-D",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 11,
+    "time": "09:00",
+    "court": "D",
+    "home": "전북",
+    "away": "부산"
+  },
+  {
+    "key": "2026-09-13-final-11-E",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 11,
+    "time": "09:00",
+    "court": "E",
+    "home": "서울E",
+    "away": "김천상무"
+  },
+  {
+    "key": "2026-09-13-final-12-D",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 12,
+    "time": "09:20",
+    "court": "D",
+    "home": "대구",
+    "away": "파주"
+  },
+  {
+    "key": "2026-09-13-final-12-E",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 12,
+    "time": "09:20",
+    "court": "E",
+    "home": "화성",
+    "away": "수원FC"
+  },
+  {
+    "key": "2026-09-13-final-13-E",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 13,
+    "time": "09:40",
+    "court": "E",
+    "home": "서울",
+    "away": "안양"
+  },
+  {
+    "key": "2026-09-13-final-13-F",
+    "date": "2026-09-13",
+    "stage": "파이널",
+    "round": 13,
+    "time": "09:40",
+    "court": "F",
+    "home": "수원삼성",
+    "away": "김해"
+  }
+]
