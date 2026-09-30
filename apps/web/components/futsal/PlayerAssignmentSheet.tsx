@@ -27,7 +27,7 @@ export default function PlayerAssignmentSheet({draft}:{draft:ReportDraft}){
     <text x={x+width/2+2} y={y+height/2+1} dominantBaseline="middle" textAnchor="middle" fill="#30202A" fontSize="18" fontWeight="700">{text}</text>
    </g>)}</svg></>:<p>초기 설정 장면을 불러오면 선수 배정표가 완성됩니다.</p>}</div>
   <p className="ar-instruction">사진의 분석번호를 확인한 뒤, 같은 번호의 개인 리포트를 찾아보세요.</p>
-  <div className="ar-teams">{sides.map((side,i)=>{const name=clubName(side==='home'?draft.homeName:draft.awayName),logo=teamLogo(name);return <section key={side} className="ar-team"><h2>{logo&&<img src={logo} alt={`${name} 로고`}/>}<span><small>{i===0?'아군':'상대'}</small>{name}</span></h2><table><thead><tr><th>분석번호</th><th>축구식</th><th>풋살식</th></tr></thead><tbody>{assignmentRows(draft,side).map(p=><tr key={p.id}><th>#{p.number}</th><td>{p.role?.football||'—'}</td><td>{p.role?.futsal||'—'}</td></tr>)}</tbody></table></section>;})}</div>
+  <div className="ar-teams">{sides.map((side,i)=>{const name=clubName(side==='home'?draft.homeName:draft.awayName),logo=teamLogo(name);return <section key={side} className="ar-team"><h2>{logo&&<img src={logo} alt={`${name} 로고`}/>}<span><small>{i===0?'아군':'상대'}</small>{name}</span></h2><table><thead><tr><th>분석번호</th><th>축구식</th><th>풋살식</th></tr></thead><tbody>{assignmentRows(draft,side).map(p=><tr key={p.id}><th>#{p.number}</th><td>{p.role?.football||'—'}</td><td>{p.role?.futsal||'—'}</td></tr>)}</tbody></table><p className="ar-position-note" data-report-text="포지션 안내">포지션은 히트맵을 바탕으로 제안된 포지션이며, 실제와는 차이가 있을 수 있습니다.</p></section>;})}</div>
   <ReportBrand/>
  </div>;
 }
