@@ -4,13 +4,13 @@ import {occupancyGrid} from './heatmap-reconstruction.mjs';
  * Longer gaps borrow ONLY this player's nearby observed activity distribution.
  * This layer must never alter identity, observed coverage, distance or events.
  */
-export const AUGMENTATION_VERSION='personal-activity-density/experiment-2';
+export const AUGMENTATION_VERSION='personal-activity-density/v1';
 export const AUGMENTATION_DEFAULTS=Object.freeze({targetRatio:.2,courtWidth:40,courtHeight:20,width:80,height:40,
   profileWindowSeconds:120,profileDecaySeconds:60,profileSigma:1.1,movementLimitSeconds:15,
   minObservedSeconds:1,maxSpeed:8,sampleSeconds:.25});
 const total=a=>a.reduce((s,v)=>s+v,0);
 const dist=(a,b,c)=>Math.hypot((a.x-b.x)*c.courtWidth,(a.y-b.y)*c.courtHeight);
-const unavailable=new Set(['outside','substitution','bench','inactive']);
+const unavailable=new Set(['outside','substitution','bench','inactive','automaticFiltered']);
 const epsilon=1e-5;
 
 function config(options){
@@ -58,9 +58,9 @@ function personalDensity(points,gap,c){
   let context=points.filter(p=>p.t+p.seconds<=gap.from+epsilon||p.t>=gap.to-epsilon);
   const age=p=>p.t<gap.from?Math.max(0,gap.from-p.t-p.seconds):Math.max(0,p.t-gap.to);
   const local=context.filter(p=>age(p)<=c.profileWindowSeconds);
-  if(total(local.map(p=>p.seconds))>=c.minObservedSeconds)context=local;
+  if(total(local.map(p=>p.seconds))>=c.minObservedSeconds-epsilon)context=local;
   const evidenceSeconds=total(context.map(p=>p.seconds));
-  if(evidenceSeconds<c.minObservedSeconds)return null;
+  if(evidenceSeconds<c.minObservedSeconds-epsilon)return null;
   const cells=new Map();let weight=0;
   for(const p of context){
     const w=p.seconds*Math.exp(-age(p)/c.profileDecaySeconds),x=Math.min(c.width-1,Math.floor(p.x*c.width)),y=Math.min(c.height-1,Math.floor(p.y*c.height));
@@ -127,7 +127,7 @@ export function augmentPlayerActivity(player,options={}){
   candidates.sort((a,b)=>a.rank-b.rank||(a.to-a.from)-(b.to-b.from)||a.from-b.from);
   const eligibleSeconds=total(candidates.map(g=>g.to-g.from)),targetSeconds=Math.min(requestedSeconds,eligibleSeconds);
   const gaps=[],rejected={},byKind={shortMotion:0,movementDensity:0,activityPattern:0};let inferredSeconds=0;
-  if(observedSeconds>=c.minObservedSeconds)for(const g of candidates){
+  if(observedSeconds>=c.minObservedSeconds-epsilon)for(const g of candidates){
     const remaining=targetSeconds-inferredSeconds;if(remaining<=epsilon)break;
     const estimated=estimateActivityGap(player,g,c);
     if(!estimated){const r=rejected.insufficientEvidence??={gaps:0,seconds:0};r.gaps++;r.seconds+=g.to-g.from;continue;}
@@ -139,7 +139,7 @@ export function augmentPlayerActivity(player,options={}){
       referenceFrom:estimated.referenceFrom,referenceTo:estimated.referenceTo,referenceSeconds:estimated.referenceSeconds});
   }
   const missingSeconds=Math.max(0,duration-observedSeconds);
-  return {schema:'fpa-heatmap-augmentation/experiment-2',algorithm:AUGMENTATION_VERSION,experimental:true,
+  return {schema:'fpa-heatmap-augmentation/v1',algorithm:AUGMENTATION_VERSION,
     parameters:{...c,targetBasis},from,to,observedSeconds,requestedSeconds,eligibleSeconds,knownAbsentSeconds,inferredSeconds,
     targetReached:inferredSeconds>=requestedSeconds-epsilon,addedCoverage:inferredSeconds/duration,
     targetRatioAchieved:inferredSeconds/(targetBasis==='duration'?duration:observedSeconds||1),

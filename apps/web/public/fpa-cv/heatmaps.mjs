@@ -12,7 +12,7 @@ export function* heatmapSteps(data,review,{point='bottom',turn=0,manualOnly=fals
   const project=courtProjection(data.detector.roi,turn),width=80,height=40,step=1/data.detector.sampleFps;
   from=Math.max(from,review.setup?.time??from,data.video.clipStart);to=Math.min(to,data.video.clipEnd);
   if(!Number.isFinite(from)||!Number.isFinite(to)||to<=from)throw Error('히트맵 시간 범위를 확인하세요.');
-  const players=review.roster.filter(p=>p.group==='home'||p.group==='away').map(p=>({...p,grid:new Float64Array(width*height),observed:0,manual:0,automatic:0,excluded:0,excludedReasons:{duplicate:0,lowConfidence:0,teamConflict:0,overlap:0,outside:0,automaticFiltered:0},positions:[],longestMissing:0,longestUnassigned:0,lastObservedTo:from,lastIdentityTo:from}));
+  const players=review.roster.filter(p=>p.group==='home'||p.group==='away').map(p=>({...p,grid:new Float64Array(width*height),observed:0,manual:0,automatic:0,excluded:0,excludedReasons:{duplicate:0,lowConfidence:0,teamConflict:0,overlap:0,outside:0,automaticFiltered:0},positions:[],blockedIntervals:[],longestMissing:0,longestUnassigned:0,lastObservedTo:from,lastIdentityTo:from}));
   const byPerson=new Map(players.map(p=>[p.id,p])),segments=new Map();
   for(const s of review.segments){const list=segments.get(s.trackId)||[];list.push(s);segments.set(s.trackId,list);}
   for(const [index,frame] of data.frames.entries()) {
@@ -28,6 +28,12 @@ export function* heatmapSteps(data,review,{point='bottom',turn=0,manualOnly=fals
       const conflict=color.group&&color.group!==player.group&&color.strength>=.22&&color.margin>=.5;
       const collision=frame.boxes.some(other=>other.id!==box.id&&overlap(box.box,other.box)>.55);
       const xy=project([(box.box[0]+box.box[2])/2,point==='center'?(box.box[1]+box.box[3])/2:box.box[3]]);
+      const blockedReason=!xy||xy.some(v=>v<0||v>1)?'outside':manualOnly&&identity.source==='auto'?'automaticFiltered':null;
+      if(blockedReason){
+        const start=Math.max(from,frame.t),end=start+dt,last=player.blockedIntervals.at(-1);
+        if(last?.reason===blockedReason&&start<=last.to+.00001)last.to=Math.max(last.to,end);
+        else player.blockedIntervals.push({from:start,to:end,reason:blockedReason});
+      }
       const reason=counts.get(player.id)!==1?'duplicate':box.confidence<.35?'lowConfidence':conflict?'teamConflict':collision?'overlap':!xy||xy.some(v=>v<0||v>1)?'outside':manualOnly&&identity.source==='auto'?'automaticFiltered':null;
       if(reason){const seconds=dt/counts.get(player.id);player.excluded+=seconds;player.excludedReasons[reason]+=seconds;continue;}
       const cell=Math.min(height-1,Math.floor(xy[1]*height))*width+Math.min(width-1,Math.floor(xy[0]*width));

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import {augmentPlayerActivity,estimateActivityGap} from '../apps/web/public/fpa-cv/heatmap-augmentation.mjs';
+import {validateHeatmapAugmentation} from '../apps/web/public/fpa-cv/heatmap-augmentation-schema.mjs';
+import {displayedHeatmapGrid} from '../apps/web/public/fpa-cv/heatmap-render.mjs';
 const sum=a=>a.reduce((s,v)=>s+v,0),near=(a,b)=>assert(Math.abs(a-b)<1e-6,`${a} != ${b}`);
 const point=t=>({t,x:.2+.001*t,y:.4,seconds:1,trackId:t<50?1:2,source:'manual'});
 const make=times=>({id:'test',positions:times.map(point),coverage:.4,grid:[7],blockedIntervals:[]});
@@ -23,4 +25,17 @@ const stationary={positions:Array.from({length:10},(_,i)=>({...point(40+i),x:.2,
 const local=augmentPlayerActivity(stationary,{from:0,to:100});near(local.inferredSeconds,20);
 for(let y=0;y<40;y++)for(let x=0;x<80;x++)if(x>40||y>25)near(local.estimatedGrid[y*80+x],0);
 assert(local.gaps.every(g=>g.inferredSeconds<=g.intervalSeconds+1e-8));
+const policy={enabled:true,algorithm:'personal-activity-density/v1',targetRatio:.3,targetBasis:'duration',use:'heatmap-only'};
+const production={from:0,to:100,width:80,height:40,augmentation:policy,players:[{...player,grid:Array(3200).fill(0),augmentation:augmentPlayerActivity(player,{from:0,to:100,targetRatio:.3})}]};
+validateHeatmapAugmentation(production);near(production.players[0].augmentation.inferredSeconds,30);
+near(sum(displayedHeatmapGrid(production,production.players[0])),30);
+assert.equal(displayedHeatmapGrid({...production,augmentation:undefined},production.players[0]),production.players[0].grid);
+const invalid=mutate=>{const h=structuredClone(production);mutate(h);assert.throws(()=>validateHeatmapAugmentation(h));};
+invalid(h=>h.players[0].augmentation.estimatedGrid[0]+=1);
+invalid(h=>h.players[0].augmentation.gaps[0].from=0);
+invalid(h=>h.players[0].blockedIntervals=[{from:20,to:80,reason:'outside'}]);
+invalid(h=>h.players[0].augmentation.gaps.push(h.players[0].augmentation.gaps[0]));
+invalid(h=>delete h.augmentation);
+invalid(h=>h.augmentation.targetRatio=.9);
+near(augmentPlayerActivity({...player,blockedIntervals:[{from:20,to:80,reason:'automaticFiltered'}]},{from:0,to:100,targetRatio:.3}).inferredSeconds,0);
 console.log('PASS: +20 percentage points, relative alternative, duration cap, known exits/substitutions, zero evidence, immutable observations, local personal support, no overlap or hidden-reference leakage.');

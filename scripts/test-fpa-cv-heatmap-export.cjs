@@ -5,7 +5,7 @@ const http=require('node:http');
 const {chromium}=require(process.env.FPA_CV_PLAYWRIGHT_PATH||'../apps/web/node_modules/playwright-core');
 const root=path.resolve(__dirname,'../apps/web/public/fpa-cv');
 const output=process.env.FPA_CV_EXPORT_QA_DIR;
-const html=`<!doctype html><html lang="ko"><head><meta charset="utf-8"><link rel="stylesheet" href="/brand.css"><link rel="stylesheet" href="/style.css"></head><body style="padding:20px"><select id="heatmap-point"><option value="bottom">하단</option></select><select id="heatmap-turn"><option value="0">기본</option></select><input type="checkbox" id="heatmap-manual"><button id="heatmap-build">히트맵 만들기</button><button id="heatmap-report">10명 PNG 저장</button><button id="heatmap-json">좌표·품질 JSON</button><p id="heatmap-status"></p><div id="heatmap-cards"></div><script type="module">
+const html=`<!doctype html><html lang="ko"><head><meta charset="utf-8"><link rel="stylesheet" href="/brand.css"><link rel="stylesheet" href="/style.css"></head><body style="padding:20px"><select id="heatmap-point"><option value="bottom">하단</option></select><select id="heatmap-turn"><option value="0">기본</option></select><input type="checkbox" id="heatmap-manual"><button id="heatmap-build">히트맵 만들기</button><button id="heatmap-report">10명 PNG 저장</button><button id="heatmap-fcm">FCM</button><button id="heatmap-json">좌표·품질 JSON</button><p id="heatmap-status"></p><div id="heatmap-cards"></div><script type="module">
 import {heatmapUI} from '/heatmap-ui.mjs';
 import {emptyReview} from '/core.mjs';
 // Export must never paint identity/quality text into the artwork.
