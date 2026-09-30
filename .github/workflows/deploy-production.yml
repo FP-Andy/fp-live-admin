@@ -71,8 +71,11 @@ jobs:
           print(f"Private administrator manifest verified: {len(accounts)} accounts")
           PY
 
-          docker compose -f "$COMPOSE_FILE" up -d api web
-          docker compose -f "$COMPOSE_FILE" ps api web
+          # potoken(유튜브 PO 토큰 발급기)도 함께 띄운다. 빌드가 없는 기성 이미지라
+          # up 만으로 받는다. 이걸 빼먹어서 코드만 배포되고 컨테이너가 안 생겨,
+          # 유튜브 취득이 360p 로 떨어진 적이 있다(2026-09-30).
+          docker compose -f "$COMPOSE_FILE" up -d potoken api web
+          docker compose -f "$COMPOSE_FILE" ps potoken api web
 
           # `up -d` returns once the container process starts, but uvicorn only
           # binds :8000 after startup (schema migration + seeding + workers).
@@ -95,6 +98,23 @@ jobs:
             exit 1
           fi
           docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
+
+          # potoken 이 실제로 응답하는지 본다. 실패해도 배포는 계속한다 —
+          # 화질 저하는 감수할 수 있지만 배포 전체가 막히면 안 된다. 대신 크게 남긴다.
+          echo "Checking potoken (YouTube PO token provider)..."
+          potoken_ok=false
+          for i in $(seq 1 10); do
+            if docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://potoken:4416/ping', timeout=3)" >/dev/null 2>&1; then
+              echo "potoken healthy after ${i} attempt(s)"
+              potoken_ok=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$potoken_ok" != "true" ]; then
+            echo "::warning::potoken 이 응답하지 않습니다 — 유튜브 취득이 저화질로 떨어질 수 있습니다"
+            docker compose -f "$COMPOSE_FILE" logs --tail=30 potoken || true
+          fi
 
           # api/web are recreated above, so nginx needs a reload to resolve
           # their new Docker network addresses. Its config is file-mounted;
