@@ -376,8 +376,9 @@ def _sufa(key: str, name: str, home_src: str, away_src: str,
         board_bg=f"sufa-{low}-board.png",
         board_design=(1215, 605),
         board_fields=_with_round_default(_SUFA_BOARD_FIELDS, round_text),
-        # 운영에서 맞춰 본 자리 — 크기 27%, 위로 붙여(74, 80).
-        board_defaults={"size_pct": 27, "pos_x": 74, "pos_y": 80},
+        # 운영에서 맞춰 본 자리 — 크기 27%, 영상 픽셀 (74, 80). 비율(%)이 아니라
+        # **픽셀**이다 — 화면의 위치 숫자 칸이 픽셀이라 그 값이 그대로 보여야 한다.
+        board_defaults={"size_pct": 27, "pos_px_x": 74, "pos_px_y": 80},
         board_zones=(
             ColorZone(id="home_color", label="홈 팀 색",
                       box=_SUFA_HOME_BOX, source=home_src),

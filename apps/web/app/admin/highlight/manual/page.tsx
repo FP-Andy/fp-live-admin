@@ -76,8 +76,8 @@ type CardTemplateSpec = {
   section_fields: CardFieldSpec[];
   /** 이 세트가 자기 점수판을 들고 있나 — 있으면 '대회·라운드' 칸이 뜬다. */
   has_board?: boolean;
-  /** 점수판 기본 크기·자리. 세트를 고르는 순간 적용되고, 그 뒤엔 자유. */
-  board_defaults?: { size_pct?: number; pos_x?: number; pos_y?: number };
+  /** 점수판 기본 크기·자리(픽셀). 세트를 고르는 순간 적용되고, 그 뒤엔 자유. */
+  board_defaults?: { size_pct?: number; pos_px_x?: number; pos_px_y?: number };
   /** 전후반 효과 영상을 들고 있나. */
   has_half_videos?: boolean;
   board_fields?: CardFieldSpec[];
@@ -389,9 +389,9 @@ export default function ManualHighlightPage() {
       setScoreboard((prev) => ({
         ...prev,
         sizePct: bd.size_pct ?? prev.sizePct,
-        posX: bd.pos_x ?? prev.posX,
-        posY: bd.pos_y ?? prev.posY,
-        posPxX: null, posPxY: null,
+        // 픽셀 좌표로 잡는다 — 위치 숫자 칸이 픽셀이라, 적은 값이 그대로 보인다.
+        posPxX: bd.pos_px_x ?? prev.posPxX,
+        posPxY: bd.pos_px_y ?? prev.posPxY,
       }));
     }
     lastTemplateRef.current = cards.template;
