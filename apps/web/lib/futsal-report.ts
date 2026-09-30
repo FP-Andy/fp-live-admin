@@ -1,9 +1,10 @@
 import { parseFpa, isShot, type FpaEvent, type SavedFpa } from '../components/futsal/fpaGraphics';
+import { validateHeatmapAugmentation, type ActivityPolicy, type ActivityDensity } from '../public/fpa-cv/heatmap-augmentation-schema.mjs';
 
 export type Side='home'|'away';
 export type Direction='right'|'left';
-export type HeatPlayer={id:string;group:Side;jersey:string;name?:string;grid:number[];coverage:number;observed:number;positions:Array<{x:number;y:number;t:number;seconds:number}>};
-export type HeatSource={schema:'fpa-heatmaps/v1';datasetId:string;video:string;resultVersion?:number;from:number;to:number;width:number;height:number;scale:number;players:HeatPlayer[]};
+export type HeatPlayer={id:string;group:Side;jersey:string;name?:string;grid:number[];coverage:number;observed:number;positions:Array<{x:number;y:number;t:number;seconds:number}>;augmentation?:ActivityDensity};
+export type HeatSource={schema:'fpa-heatmaps/v1';datasetId:string;video:string;resultVersion?:number;from:number;to:number;width:number;height:number;scale:number;players:HeatPlayer[];augmentation?:ActivityPolicy};
 export type PlayerText={name:string;jersey:string;position:string;context:string;heatComment:string;eventComment:string;strengths:string[];improvements:string[];eventNumber:string;side:Side};
 export type ReportDraft={schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>;sourceSnapshot?:{id:string;version:number;createdAt:string;jobId:string}};
 export const POSITIONS=['','DF','MF','FW','GK','FIXO','ALA','PIVO','GOLEIRO'];
@@ -19,6 +20,7 @@ export function validateHeatmap(raw:unknown):HeatSource {
   ids.add(p.id);let end=h.from;
   for(const o of p.positions){if(!o||![o.x,o.y,o.t,o.seconds].every(Number.isFinite)||o.x<0||o.x>1||o.y<0||o.y>1||o.seconds<=0||o.t<end-.002||o.t+o.seconds>h.to+.002)throw Error('히트맵 관측 좌표가 올바르지 않습니다.');end=o.t+o.seconds;}
  }
+ validateHeatmapAugmentation(h);
  return h;
 }
 export function parseFpaSource(raw:unknown):SavedFpa {
@@ -54,6 +56,10 @@ export function spatialSummary(source:HeatSource|null,p:HeatPlayer|undefined,dir
  const longitudinal=[0,0,0],lateral=[0,0,0];let seconds=0;
  for(const o of p.positions){const f=direction==='right'?o.x:1-o.x,l=direction==='right'?o.y:1-o.y;seconds+=o.seconds;longitudinal[Math.min(2,Math.floor(f*3))]+=o.seconds;lateral[Math.min(2,Math.floor(l*3))]+=o.seconds;}
  return {coverage:Math.min(1,seconds/(source.to-source.from)),longitudinal:longitudinal.map(n=>n/seconds),lateral:lateral.map(n=>n/seconds)};
+}
+export function heatmapDisplayCoverage(source:HeatSource,p:HeatPlayer){
+ const observed=p.positions.reduce((s,o)=>s+o.seconds,0),density=source.augmentation?.enabled?p.augmentation?.inferredSeconds||0:0;
+ return Math.min(1,(observed+density)/(source.to-source.from));
 }
 // Grounded starter text, editable by the operator. No performance ratings or LLM claims.
 export function commentDraft(source:HeatSource|null,p:HeatPlayer|undefined,person:PlayerText,events:FpaEvent[],direction:Direction){

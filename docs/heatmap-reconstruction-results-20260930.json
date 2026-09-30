@@ -1,0 +1,2107 @@
+{
+  "algorithm": "occupancy-bridge/experiment-1",
+  "createdAt": "2026-09-30T05:32:00.678Z",
+  "selected": {
+    "method": "hermite",
+    "diffusion": 0,
+    "maxGapSeconds": 3
+  },
+  "holdoutPass": true,
+  "microPass": true,
+  "referenceLimit": "Held-out CV observations are a proxy reference, not independent video identity ground truth. Masked continuous runs underrepresent real occlusions and identity switches.",
+  "protocol": {
+    "durations": [
+      0.5,
+      1,
+      2,
+      3,
+      5,
+      10
+    ],
+    "contextSeconds": 1.2,
+    "maxCasesPerPlayerPerDuration": 12,
+    "seed": 20260930,
+    "train": {
+      "datasetId": "9825115c-8509-4c3f-84c2-44224a18c1e5",
+      "video": "3경기 광주 경남.MP4",
+      "source": {
+        "jobId": "8fa3940a21e741d08d5e518536287458",
+        "inputSha256": "3c516e6b06583d40e4be7466da2f2608682700147cde5e5727488533afee3954",
+        "exportedAt": "2026-09-30T05:29:08.848Z",
+        "dirty": false,
+        "reference": "Existing CV observations; no independent frame-by-frame identity ground truth.",
+        "courtMeters": [
+          40,
+          20
+        ],
+        "seconds": 138.863
+      },
+      "range": [
+        45.51213333333333,
+        511.01050000000004
+      ]
+    },
+    "holdout": {
+      "datasetId": "b1c08090-ad35-43d6-ae8f-296e798df96b",
+      "video": "2경기 울산 전북.MP4",
+      "source": {
+        "jobId": "1de418e3560f400aae61d0619e28d8b6",
+        "inputSha256": "80e8d3bdca20f2ddf13ea57bce3dd3b181146d6aee7598a995252448f21e82cd",
+        "exportedAt": "2026-09-30T05:28:42.648Z",
+        "dirty": false,
+        "reference": "Existing CV observations; no independent frame-by-frame identity ground truth.",
+        "courtMeters": [
+          40,
+          20
+        ],
+        "seconds": 112.803
+      }
+    },
+    "metric": "Total variation between normalised occupancy in a masked window plus visible context; 0.75 m Gaussian measurement smoothing on a 1 m grid.",
+    "rule": "Every duration up to limit: n>=30, acceptance>=0.6, TV improvement>=0.05, P95 gap RMSE<=1.5 m. Model selected before examining held-out match."
+  },
+  "actual": [
+    {
+      "datasetId": "9825115c-8509-4c3f-84c2-44224a18c1e5",
+      "video": "3경기 광주 경남.MP4",
+      "duration": 930.9967333333334,
+      "seconds": 0.0657223329999997,
+      "players": [
+        {
+          "id": "home-1",
+          "group": "home",
+          "jersey": "2",
+          "coverage": 0.8860984048565514,
+          "observed": 824.9547203333269,
+          "inferredSeconds": 6.606609333333168,
+          "gaps": 66,
+          "rejected": {
+            "blockedInterval": {
+              "gaps": 3,
+              "seconds": 1.3346679999999793
+            },
+            "shortContext": {
+              "gaps": 124,
+              "seconds": 24.691357666667187
+            },
+            "identityBoundary": {
+              "gaps": 32,
+              "seconds": 19.6196093333333
+            },
+            "longGap": {
+              "gaps": 7,
+              "seconds": 53.52013466666668
+            },
+            "unstableAnchor": {
+              "gaps": 3,
+              "seconds": 0.2669336666666595
+            }
+          }
+        },
+        {
+          "id": "home-2",
+          "group": "home",
+          "jersey": "3",
+          "coverage": 0.8812242176861127,
+          "observed": 820.4168679999932,
+          "inferredSeconds": 6.873547000000144,
+          "gaps": 58,
+          "rejected": {
+            "shortContext": {
+              "gaps": 115,
+              "seconds": 18.15149166666653
+            },
+            "identityBoundary": {
+              "gaps": 19,
+              "seconds": 5.5388723333335435
+            },
+            "blockedInterval": {
+              "gaps": 3,
+              "seconds": 2.135468666666725
+            },
+            "longGap": {
+              "gaps": 5,
+              "seconds": 77.61086833333354
+            },
+            "unstableAnchor": {
+              "gaps": 1,
+              "seconds": 0.2669336666666595
+            }
+          }
+        },
+        {
+          "id": "home-3",
+          "group": "home",
+          "jersey": "4",
+          "coverage": 0.8080397403470952,
+          "observed": 752.2823586666606,
+          "inferredSeconds": 7.60761533333357,
+          "gaps": 69,
+          "rejected": {
+            "shortContext": {
+              "gaps": 219,
+              "seconds": 59.125779333333185
+            },
+            "identityBoundary": {
+              "gaps": 29,
+              "seconds": 15.081744000000128
+            },
+            "longGap": {
+              "gaps": 15,
+              "seconds": 87.42067100000014
+            },
+            "blockedInterval": {
+              "gaps": 4,
+              "seconds": 6.139466999999968
+            },
+            "unstableAnchor": {
+              "gaps": 1,
+              "seconds": 0.06673299999999927
+            }
+          }
+        },
+        {
+          "id": "home-4",
+          "group": "home",
+          "jersey": "5",
+          "coverage": 0.93025279501517,
+          "observed": 866.0623133333263,
+          "inferredSeconds": 7.807819333333313,
+          "gaps": 76,
+          "rejected": {
+            "shortContext": {
+              "gaps": 93,
+              "seconds": 12.078757999999851
+            },
+            "identityBoundary": {
+              "gaps": 30,
+              "seconds": 15.615610666666825
+            },
+            "blockedInterval": {
+              "gaps": 3,
+              "seconds": 0.33366733333332377
+            },
+            "longGap": {
+              "gaps": 5,
+              "seconds": 28.89553400000011
+            },
+            "unstableAnchor": {
+              "gaps": 3,
+              "seconds": 0.20019966666666278
+            }
+          }
+        },
+        {
+          "id": "home-5",
+          "group": "home",
+          "jersey": "6",
+          "coverage": 0.9192858804158996,
+          "observed": 855.8521516666599,
+          "inferredSeconds": 6.206217666666575,
+          "gaps": 60,
+          "rejected": {
+            "shortContext": {
+              "gaps": 108,
+              "seconds": 17.150483000000406
+            },
+            "identityBoundary": {
+              "gaps": 24,
+              "seconds": 16.416404000000043
+            },
+            "longGap": {
+              "gaps": 5,
+              "seconds": 34.634601333333364
+            },
+            "blockedInterval": {
+              "gaps": 1,
+              "seconds": 0.7340666666666493
+            }
+          }
+        },
+        {
+          "id": "away-1",
+          "group": "away",
+          "jersey": "2",
+          "coverage": 0.8926212075502377,
+          "observed": 831.0274283333266,
+          "inferredSeconds": 7.073746666666551,
+          "gaps": 74,
+          "rejected": {
+            "identityBoundary": {
+              "gaps": 41,
+              "seconds": 10.744073666666687
+            },
+            "shortContext": {
+              "gaps": 118,
+              "seconds": 20.15349899999977
+            },
+            "blockedInterval": {
+              "gaps": 3,
+              "seconds": 4.404399666666677
+            },
+            "longGap": {
+              "gaps": 6,
+              "seconds": 57.52413600000017
+            },
+            "unstableAnchor": {
+              "gaps": 1,
+              "seconds": 0.06673366666666425
+            }
+          }
+        },
+        {
+          "id": "away-2",
+          "group": "away",
+          "jersey": "3",
+          "coverage": 0.9526167102197415,
+          "observed": 886.883045333326,
+          "inferredSeconds": 9.34269033333328,
+          "gaps": 91,
+          "rejected": {
+            "blockedInterval": {
+              "gaps": 2,
+              "seconds": 0.20020100000000696
+            },
+            "identityBoundary": {
+              "gaps": 18,
+              "seconds": 6.20620466666675
+            },
+            "shortContext": {
+              "gaps": 69,
+              "seconds": 8.60861499999993
+            },
+            "longGap": {
+              "gaps": 4,
+              "seconds": 19.75306733333332
+            }
+          }
+        },
+        {
+          "id": "away-3",
+          "group": "away",
+          "jersey": "4",
+          "coverage": 0.9532618238331012,
+          "observed": 887.4836439999928,
+          "inferredSeconds": 8.87555433333317,
+          "gaps": 106,
+          "rejected": {
+            "identityBoundary": {
+              "gaps": 30,
+              "seconds": 8.608607000000177
+            },
+            "shortContext": {
+              "gaps": 145,
+              "seconds": 19.352699000000214
+            },
+            "blockedInterval": {
+              "gaps": 2,
+              "seconds": 2.9362670000001003
+            },
+            "longGap": {
+              "gaps": 1,
+              "seconds": 3.7370670000000246
+            }
+          }
+        },
+        {
+          "id": "away-4",
+          "group": "away",
+          "jersey": "5",
+          "coverage": 0.9393560546685693,
+          "observed": 874.5374183333262,
+          "inferredSeconds": 9.609615333333352,
+          "gaps": 78,
+          "rejected": {
+            "shortContext": {
+              "gaps": 130,
+              "seconds": 20.754097999999644
+            },
+            "identityBoundary": {
+              "gaps": 33,
+              "seconds": 18.818810999999826
+            },
+            "longGap": {
+              "gaps": 1,
+              "seconds": 4.270934000000011
+            },
+            "unstableAnchor": {
+              "gaps": 2,
+              "seconds": 0.133467666666661
+            },
+            "blockedInterval": {
+              "gaps": 3,
+              "seconds": 2.869534666666766
+            }
+          }
+        },
+        {
+          "id": "away-5",
+          "group": "away",
+          "jersey": "6",
+          "coverage": 0.893051281024896,
+          "observed": 831.4278253333268,
+          "inferredSeconds": 7.807819333333214,
+          "gaps": 79,
+          "rejected": {
+            "blockedInterval": {
+              "gaps": 2,
+              "seconds": 0.4004006666666555
+            },
+            "shortContext": {
+              "gaps": 125,
+              "seconds": 39.97329800000006
+            },
+            "identityBoundary": {
+              "gaps": 25,
+              "seconds": 13.413407000000205
+            },
+            "longGap": {
+              "gaps": 8,
+              "seconds": 37.97126933333357
+            }
+          }
+        }
+      ]
+    },
+    {
+      "datasetId": "b1c08090-ad35-43d6-ae8f-296e798df96b",
+      "video": "2경기 울산 전북.MP4",
+      "duration": 923.5226,
+      "seconds": 0.05674541700000009,
+      "players": [
+        {
+          "id": "home-1",
+          "group": "home",
+          "jersey": "2",
+          "coverage": 0.6863912422572679,
+          "observed": 633.8978246666619,
+          "inferredSeconds": 5.672350000000172,
+          "gaps": 61,
+          "rejected": {
+            "unstableAnchor": {
+              "gaps": 2,
+              "seconds": 0.1334670000000031
+            },
+            "shortContext": {
+              "gaps": 135,
+              "seconds": 20.35369600000002
+            },
+            "identityBoundary": {
+              "gaps": 23,
+              "seconds": 5.672337000000063
+            },
+            "longGap": {
+              "gaps": 2,
+              "seconds": 234.96806666666666
+            }
+          }
+        },
+        {
+          "id": "home-2",
+          "group": "home",
+          "jersey": "3",
+          "coverage": 0.7762095668620645,
+          "observed": 716.8470773333277,
+          "inferredSeconds": 8.008020999999907,
+          "gaps": 81,
+          "rejected": {
+            "shortContext": {
+              "gaps": 148,
+              "seconds": 25.8925703333336
+            },
+            "longGap": {
+              "gaps": 6,
+              "seconds": 154.62113499999998
+            },
+            "identityBoundary": {
+              "gaps": 22,
+              "seconds": 7.8078066666666075
+            },
+            "blockedInterval": {
+              "gaps": 8,
+              "seconds": 10.010003000000097
+            },
+            "unstableAnchor": {
+              "gaps": 3,
+              "seconds": 0.2669343333333245
+            },
+            "implausibleMotion": {
+              "gaps": 1,
+              "seconds": 0.06673366666677794
+            }
+          }
+        },
+        {
+          "id": "home-3",
+          "group": "home",
+          "jersey": "4",
+          "coverage": 0.7214370090491862,
+          "observed": 666.263382333328,
+          "inferredSeconds": 8.742080333333305,
+          "gaps": 75,
+          "rejected": {
+            "shortContext": {
+              "gaps": 96,
+              "seconds": 15.148485333333355
+            },
+            "identityBoundary": {
+              "gaps": 18,
+              "seconds": 6.006006333333389
+            },
+            "blockedInterval": {
+              "gaps": 4,
+              "seconds": 3.7370676666666327
+            },
+            "longGap": {
+              "gaps": 2,
+              "seconds": 8.808800666666684
+            }
+          }
+        },
+        {
+          "id": "home-4",
+          "group": "home",
+          "jersey": "5",
+          "coverage": 0.9298328699986984,
+          "observed": 858.72166966666,
+          "inferredSeconds": 11.144486999999913,
+          "gaps": 93,
+          "rejected": {
+            "shortContext": {
+              "gaps": 159,
+              "seconds": 20.220240000000068
+            },
+            "identityBoundary": {
+              "gaps": 40,
+              "seconds": 14.814811333333452
+            },
+            "longGap": {
+              "gaps": 3,
+              "seconds": 18.55186866666662
+            },
+            "unstableAnchor": {
+              "gaps": 1,
+              "seconds": 0.06673399999999674
+            }
+          }
+        },
+        {
+          "id": "home-5",
+          "group": "home",
+          "jersey": "6",
+          "coverage": 0.43702434497361514,
+          "observed": 403.60185933332997,
+          "inferredSeconds": 3.470138333333246,
+          "gaps": 36,
+          "rejected": {
+            "shortContext": {
+              "gaps": 52,
+              "seconds": 8.34167466666672
+            },
+            "longGap": {
+              "gaps": 6,
+              "seconds": 207.6073999999999
+            },
+            "identityBoundary": {
+              "gaps": 8,
+              "seconds": 1.0010016666666388
+            }
+          }
+        },
+        {
+          "id": "away-1",
+          "group": "away",
+          "jersey": "2",
+          "coverage": 0.9046866335485388,
+          "observed": 835.4985519999939,
+          "inferredSeconds": 9.20922133333324,
+          "gaps": 90,
+          "rejected": {
+            "shortContext": {
+              "gaps": 194,
+              "seconds": 27.69437933333367
+            },
+            "identityBoundary": {
+              "gaps": 29,
+              "seconds": 16.95027666666654
+            },
+            "blockedInterval": {
+              "gaps": 2,
+              "seconds": 0.8675336666666453
+            },
+            "longGap": {
+              "gaps": 6,
+              "seconds": 32.56586866666666
+            },
+            "unstableAnchor": {
+              "gaps": 3,
+              "seconds": 0.7340670000000102
+            }
+          }
+        },
+        {
+          "id": "away-2",
+          "group": "away",
+          "jersey": "3",
+          "coverage": 0.7532311026642199,
+          "observed": 695.6259463333273,
+          "inferredSeconds": 9.542885666667033,
+          "gaps": 90,
+          "rejected": {
+            "shortContext": {
+              "gaps": 177,
+              "seconds": 26.960311333333443
+            },
+            "identityBoundary": {
+              "gaps": 34,
+              "seconds": 25.29194266666687
+            },
+            "longGap": {
+              "gaps": 5,
+              "seconds": 28.228202666666732
+            },
+            "unstableAnchor": {
+              "gaps": 1,
+              "seconds": 0.20020066666666025
+            },
+            "blockedInterval": {
+              "gaps": 4,
+              "seconds": 0.2669343333333245
+            }
+          }
+        },
+        {
+          "id": "away-3",
+          "group": "away",
+          "jersey": "4",
+          "coverage": 0.8472404808140696,
+          "observed": 782.4457316666596,
+          "inferredSeconds": 11.277953666666683,
+          "gaps": 108,
+          "rejected": {
+            "shortContext": {
+              "gaps": 274,
+              "seconds": 46.513187666666866
+            },
+            "identityBoundary": {
+              "gaps": 41,
+              "seconds": 23.690347000000216
+            },
+            "unstableAnchor": {
+              "gaps": 4,
+              "seconds": 0.26693366666667373
+            },
+            "longGap": {
+              "gaps": 4,
+              "seconds": 40.97426599999994
+            }
+          }
+        },
+        {
+          "id": "away-4",
+          "group": "away",
+          "jersey": "5",
+          "coverage": 0.7406579799274309,
+          "observed": 684.0143833333287,
+          "inferredSeconds": 9.60962066666658,
+          "gaps": 95,
+          "rejected": {
+            "blockedInterval": {
+              "gaps": 4,
+              "seconds": 1.4681349999999895
+            },
+            "identityBoundary": {
+              "gaps": 28,
+              "seconds": 15.815810666666756
+            },
+            "shortContext": {
+              "gaps": 157,
+              "seconds": 21.28796933333318
+            },
+            "longGap": {
+              "gaps": 6,
+              "seconds": 60.060001333333474
+            }
+          }
+        },
+        {
+          "id": "away-5",
+          "group": "away",
+          "jersey": "6",
+          "coverage": 0.9021575534083591,
+          "observed": 833.1628893333267,
+          "inferredSeconds": 11.077757999999989,
+          "gaps": 109,
+          "rejected": {
+            "shortContext": {
+              "gaps": 145,
+              "seconds": 25.025038666666987
+            },
+            "identityBoundary": {
+              "gaps": 22,
+              "seconds": 13.813804333333465
+            },
+            "blockedInterval": {
+              "gaps": 3,
+              "seconds": 2.402400666666651
+            },
+            "longGap": {
+              "gaps": 3,
+              "seconds": 26.092734000000007
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "training": [
+    {
+      "parameters": {
+        "method": "linear",
+        "diffusion": 0
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.008823766667024509,
+          "relativeImprovement": 0.8748482465335392,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0025884512230034897,
+          "meanGapRMSEM": 0.10830718633194959,
+          "p95GapRMSEM": 0.210294915114615
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.0225933051234076,
+          "relativeImprovement": 0.8153473610978057,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.008061413543829095,
+          "meanGapRMSEM": 0.18300682348783875,
+          "p95GapRMSEM": 0.38980268281069425
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.0710528650083857,
+          "relativeImprovement": 0.6749987311329412,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.01719968888727791,
+          "meanGapRMSEM": 0.40444019337709053,
+          "p95GapRMSEM": 0.9863751796488962
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.12873337745039456,
+          "relativeImprovement": 0.566585938840532,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.05389628513955007,
+          "meanGapRMSEM": 0.6527145154479929,
+          "p95GapRMSEM": 1.8024725639207406
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.2459283301448549,
+          "relativeImprovement": 0.3719843291543338,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.09563613082566318,
+          "meanGapRMSEM": 1.222061825113989,
+          "p95GapRMSEM": 2.657601390712746
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.41851071846698645,
+          "relativeImprovement": 0.20334777584256175,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.17866037212405642,
+          "meanGapRMSEM": 2.3049285948315505,
+          "p95GapRMSEM": 4.463259976116771
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "hermite",
+        "diffusion": 0
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.008255556794152156,
+          "relativeImprovement": 0.8829074421821147,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0024621900587817047,
+          "meanGapRMSEM": 0.10489276905503601,
+          "p95GapRMSEM": 0.19599505517112684
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.017464990465555906,
+          "relativeImprovement": 0.8572605220771629,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.006877692147911946,
+          "meanGapRMSEM": 0.15150807668251687,
+          "p95GapRMSEM": 0.2906018574275784
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.0538528485891808,
+          "relativeImprovement": 0.7536729290011918,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.011811711327772652,
+          "meanGapRMSEM": 0.30765522583302357,
+          "p95GapRMSEM": 0.7432179801284958
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.09632198812877926,
+          "relativeImprovement": 0.675707226201418,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.034397253716677074,
+          "meanGapRMSEM": 0.5049084522228354,
+          "p95GapRMSEM": 1.2398683223542575
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.2025242865208535,
+          "relativeImprovement": 0.4828232046831769,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.0781829760349245,
+          "meanGapRMSEM": 0.9880253839809169,
+          "p95GapRMSEM": 2.0770477136426737
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.36706779807109163,
+          "relativeImprovement": 0.3012714732347385,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.15638699152146396,
+          "meanGapRMSEM": 2.0092564877739774,
+          "p95GapRMSEM": 4.392015335922247
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-linear",
+        "diffusion": 0.05
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.010199864287407654,
+          "relativeImprovement": 0.8553303879329048,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0025884512230034897,
+          "meanGapRMSEM": 0.10830718633194959,
+          "p95GapRMSEM": 0.210294915114615
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.023828010538413612,
+          "relativeImprovement": 0.8052562472965106,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.008061413543829095,
+          "meanGapRMSEM": 0.18300682348783875,
+          "p95GapRMSEM": 0.38980268281069425
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.07090989998058304,
+          "relativeImprovement": 0.6756526641648323,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.01719968888727791,
+          "meanGapRMSEM": 0.40444019337709053,
+          "p95GapRMSEM": 0.9863751796488962
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.12731195837582523,
+          "relativeImprovement": 0.5713715121387702,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.05389628513955007,
+          "meanGapRMSEM": 0.6527145154479929,
+          "p95GapRMSEM": 1.8024725639207406
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.2398703164022547,
+          "relativeImprovement": 0.3874543954224633,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.09563613082566318,
+          "meanGapRMSEM": 1.222061825113989,
+          "p95GapRMSEM": 2.657601390712746
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.4070689509038333,
+          "relativeImprovement": 0.22512764712248312,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.17866037212405642,
+          "meanGapRMSEM": 2.3049285948315505,
+          "p95GapRMSEM": 4.463259976116771
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-linear",
+        "diffusion": 0.15
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.010786634102734456,
+          "relativeImprovement": 0.8470079476372229,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0025884512230034897,
+          "meanGapRMSEM": 0.10830718633194959,
+          "p95GapRMSEM": 0.210294915114615
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.02502519835668057,
+          "relativeImprovement": 0.7954717607551623,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.008061413543829095,
+          "meanGapRMSEM": 0.18300682348783875,
+          "p95GapRMSEM": 0.38980268281069425
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.07222838001054215,
+          "relativeImprovement": 0.6696218351101275,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.01719968888727791,
+          "meanGapRMSEM": 0.40444019337709053,
+          "p95GapRMSEM": 0.9863751796488962
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.1279043678153447,
+          "relativeImprovement": 0.5693770132284136,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.05389628513955007,
+          "meanGapRMSEM": 0.6527145154479929,
+          "p95GapRMSEM": 1.8024725639207406
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.23605446432657104,
+          "relativeImprovement": 0.39719875834212687,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.09563613082566318,
+          "meanGapRMSEM": 1.222061825113989,
+          "p95GapRMSEM": 2.657601390712746
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.3977027019510836,
+          "relativeImprovement": 0.24295668406460136,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.17866037212405642,
+          "meanGapRMSEM": 2.3049285948315505,
+          "p95GapRMSEM": 4.463259976116771
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-linear",
+        "diffusion": 0.5
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.013294696156043366,
+          "relativeImprovement": 0.8114348895975829,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0025884512230034897,
+          "meanGapRMSEM": 0.10830718633194959,
+          "p95GapRMSEM": 0.210294915114615
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.030424974541120562,
+          "relativeImprovement": 0.7513399740824349,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.008061413543829095,
+          "meanGapRMSEM": 0.18300682348783875,
+          "p95GapRMSEM": 0.38980268281069425
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.08107925159958465,
+          "relativeImprovement": 0.6291372677858018,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.01719968888727791,
+          "meanGapRMSEM": 0.40444019337709053,
+          "p95GapRMSEM": 0.9863751796488962
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.1365733551573723,
+          "relativeImprovement": 0.540190635270638,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.05389628513955007,
+          "meanGapRMSEM": 0.6527145154479929,
+          "p95GapRMSEM": 1.8024725639207406
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.23664772150435612,
+          "relativeImprovement": 0.39568378524296727,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.09563613082566318,
+          "meanGapRMSEM": 1.222061825113989,
+          "p95GapRMSEM": 2.657601390712746
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.38785674635748085,
+          "relativeImprovement": 0.2616988621653941,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.17866037212405642,
+          "meanGapRMSEM": 2.3049285948315505,
+          "p95GapRMSEM": 4.463259976116771
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-hermite",
+        "diffusion": 0.05
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.00979301633776758,
+          "relativeImprovement": 0.8611009093228205,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0024621900587817047,
+          "meanGapRMSEM": 0.10489276905503601,
+          "p95GapRMSEM": 0.19599505517112684
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.019280842089256532,
+          "relativeImprovement": 0.8424197631735986,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.006877692147911946,
+          "meanGapRMSEM": 0.15150807668251687,
+          "p95GapRMSEM": 0.2906018574275784
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.054748641464736104,
+          "relativeImprovement": 0.7495755034974745,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.011811711327772652,
+          "meanGapRMSEM": 0.30765522583302357,
+          "p95GapRMSEM": 0.7432179801284958
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.09623759602047043,
+          "relativeImprovement": 0.6759913539631248,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.034397253716677074,
+          "meanGapRMSEM": 0.5049084522228354,
+          "p95GapRMSEM": 1.2398683223542575
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.19809157726564036,
+          "relativeImprovement": 0.4941428069223202,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.0781829760349245,
+          "meanGapRMSEM": 0.9880253839809169,
+          "p95GapRMSEM": 2.0770477136426737
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.3553715876268193,
+          "relativeImprovement": 0.32353568691790136,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.15638699152146396,
+          "meanGapRMSEM": 2.0092564877739774,
+          "p95GapRMSEM": 4.392015335922247
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-hermite",
+        "diffusion": 0.15
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.01043163585960761,
+          "relativeImprovement": 0.852043059543669,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0024621900587817047,
+          "meanGapRMSEM": 0.10489276905503601,
+          "p95GapRMSEM": 0.19599505517112684
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.020751164062259176,
+          "relativeImprovement": 0.8304029807299563,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.006877692147911946,
+          "meanGapRMSEM": 0.15150807668251687,
+          "p95GapRMSEM": 0.2906018574275784
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.056964708069025406,
+          "relativeImprovement": 0.7394390444229116,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.011811711327772652,
+          "meanGapRMSEM": 0.30765522583302357,
+          "p95GapRMSEM": 0.7432179801284958
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.0985397125604076,
+          "relativeImprovement": 0.6682406858877764,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.034397253716677074,
+          "meanGapRMSEM": 0.5049084522228354,
+          "p95GapRMSEM": 1.2398683223542575
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.19665890162227126,
+          "relativeImprovement": 0.49780136368454736,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.0781829760349245,
+          "meanGapRMSEM": 0.9880253839809169,
+          "p95GapRMSEM": 2.0770477136426737
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.3471068651969237,
+          "relativeImprovement": 0.3392679231911752,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.15638699152146396,
+          "meanGapRMSEM": 2.0092564877739774,
+          "p95GapRMSEM": 4.392015335922247
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-hermite",
+        "diffusion": 0.5
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.07050453887079715,
+          "reconstructionTV": 0.01307630571964171,
+          "relativeImprovement": 0.8145324268611323,
+          "baselineZoneTV": 0.023937025971019855,
+          "zoneTV": 0.0024621900587817047,
+          "meanGapRMSEM": 0.10489276905503601,
+          "p95GapRMSEM": 0.19599505517112684
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.12235571209667184,
+          "reconstructionTV": 0.027296542798387367,
+          "relativeImprovement": 0.7769083083197564,
+          "baselineZoneTV": 0.05312531881079903,
+          "zoneTV": 0.006877692147911946,
+          "meanGapRMSEM": 0.15150807668251687,
+          "p95GapRMSEM": 0.2906018574275784
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2186233464751479,
+          "reconstructionTV": 0.06887904938959176,
+          "relativeImprovement": 0.6849419309505373,
+          "baselineZoneTV": 0.08030998119735862,
+          "zoneTV": 0.011811711327772652,
+          "meanGapRMSEM": 0.30765522583302357,
+          "p95GapRMSEM": 0.7432179801284958
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.2970216912344916,
+          "reconstructionTV": 0.11338994610459521,
+          "relativeImprovement": 0.6182435510574327,
+          "baselineZoneTV": 0.11655952588858227,
+          "zoneTV": 0.034397253716677074,
+          "meanGapRMSEM": 0.5049084522228354,
+          "p95GapRMSEM": 1.2398683223542575
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3915958495330149,
+          "reconstructionTV": 0.20465533983363443,
+          "relativeImprovement": 0.47738123354042283,
+          "baselineZoneTV": 0.1697370607943036,
+          "zoneTV": 0.0781829760349245,
+          "meanGapRMSEM": 0.9880253839809169,
+          "p95GapRMSEM": 2.0770477136426737
+        },
+        {
+          "duration": 10,
+          "n": 109,
+          "accepted": 109,
+          "acceptance": 1,
+          "baselineTV": 0.5253367853326653,
+          "reconstructionTV": 0.3443241016518258,
+          "relativeImprovement": 0.3445650271115407,
+          "baselineZoneTV": 0.2908510748865201,
+          "zoneTV": 0.15638699152146396,
+          "meanGapRMSEM": 2.0092564877739774,
+          "p95GapRMSEM": 4.392015335922247
+        }
+      ]
+    }
+  ],
+  "heldout": [
+    {
+      "parameters": {
+        "method": "linear",
+        "diffusion": 0
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.008210812053733675,
+          "relativeImprovement": 0.8586893453108512,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0015152043206137168,
+          "meanGapRMSEM": 0.10335759733495115,
+          "p95GapRMSEM": 0.20018162906269876
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.0181810889927505,
+          "relativeImprovement": 0.8467548151824076,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.004765882373227978,
+          "meanGapRMSEM": 0.14962976957135818,
+          "p95GapRMSEM": 0.33023073890973365
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.06327724172598327,
+          "relativeImprovement": 0.7026195524610593,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.023880850470051822,
+          "meanGapRMSEM": 0.3586097749999527,
+          "p95GapRMSEM": 0.8664644380004436
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.10929564348961623,
+          "relativeImprovement": 0.6013208016942722,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.03796589235717548,
+          "meanGapRMSEM": 0.5544874661570094,
+          "p95GapRMSEM": 1.3425623534243045
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.2242006297816345,
+          "relativeImprovement": 0.42268502297279964,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.07949183138072405,
+          "meanGapRMSEM": 1.0645990105670002,
+          "p95GapRMSEM": 2.4826477046121
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.4148722150654695,
+          "relativeImprovement": 0.22184914247293672,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.17731514258823786,
+          "meanGapRMSEM": 2.384265657474311,
+          "p95GapRMSEM": 4.411925210523112
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "hermite",
+        "diffusion": 0
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.007699551051898847,
+          "relativeImprovement": 0.8674883077537264,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0012626734779331947,
+          "meanGapRMSEM": 0.09900433589139897,
+          "p95GapRMSEM": 0.1808232703461786
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.015236377376934899,
+          "relativeImprovement": 0.8715752687856054,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.003966921527696556,
+          "meanGapRMSEM": 0.12914725951601777,
+          "p95GapRMSEM": 0.24534228244738415
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.04491708739592412,
+          "relativeImprovement": 0.7889057236440711,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.01748441081919892,
+          "meanGapRMSEM": 0.26162112905314366,
+          "p95GapRMSEM": 0.7019513310188775
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.08512964880406032,
+          "relativeImprovement": 0.6894714276468359,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.030508695714034903,
+          "meanGapRMSEM": 0.42383016775827487,
+          "p95GapRMSEM": 0.9529427828385918
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.17407634335650096,
+          "relativeImprovement": 0.5517546928225906,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.053758036116084984,
+          "meanGapRMSEM": 0.7971228150953784,
+          "p95GapRMSEM": 1.6910678720380734
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.369200820255486,
+          "relativeImprovement": 0.30751223039565384,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.15039687560498657,
+          "meanGapRMSEM": 2.1122247555446716,
+          "p95GapRMSEM": 4.325821859341198
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-linear",
+        "diffusion": 0.05
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.009673312551907044,
+          "relativeImprovement": 0.8335192523252118,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0015152043206137168,
+          "meanGapRMSEM": 0.10335759733495115,
+          "p95GapRMSEM": 0.20018162906269876
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.019881647077384778,
+          "relativeImprovement": 0.83242111173501,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.004765882373227978,
+          "meanGapRMSEM": 0.14962976957135818,
+          "p95GapRMSEM": 0.33023073890973365
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.06329143646660451,
+          "relativeImprovement": 0.7025528422473473,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.023880850470051822,
+          "meanGapRMSEM": 0.3586097749999527,
+          "p95GapRMSEM": 0.8664644380004436
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.10790721409511378,
+          "relativeImprovement": 0.6063853943919394,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.03796589235717548,
+          "meanGapRMSEM": 0.5544874661570094,
+          "p95GapRMSEM": 1.3425623534243045
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.2179746183686158,
+          "relativeImprovement": 0.4387169566893944,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.07949183138072405,
+          "meanGapRMSEM": 1.0645990105670002,
+          "p95GapRMSEM": 2.4826477046121
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.4015996864603935,
+          "relativeImprovement": 0.246743625980256,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.17731514258823786,
+          "meanGapRMSEM": 2.384265657474311,
+          "p95GapRMSEM": 4.411925210523112
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-linear",
+        "diffusion": 0.15
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.01034777050728919,
+          "relativeImprovement": 0.821911619047086,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0015152043206137168,
+          "meanGapRMSEM": 0.10335759733495115,
+          "p95GapRMSEM": 0.20018162906269876
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.021267604321816066,
+          "relativeImprovement": 0.8207391231502315,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.004765882373227978,
+          "meanGapRMSEM": 0.14962976957135818,
+          "p95GapRMSEM": 0.33023073890973365
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.06503231000777616,
+          "relativeImprovement": 0.69437135805712,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.023880850470051822,
+          "meanGapRMSEM": 0.3586097749999527,
+          "p95GapRMSEM": 0.8664644380004436
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.10893014900415145,
+          "relativeImprovement": 0.6026540208766462,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.03796589235717548,
+          "meanGapRMSEM": 0.5544874661570094,
+          "p95GapRMSEM": 1.3425623534243045
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.21474005327050572,
+          "relativeImprovement": 0.4470459380893449,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.07949183138072405,
+          "meanGapRMSEM": 1.0645990105670002,
+          "p95GapRMSEM": 2.4826477046121
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.3899796473350721,
+          "relativeImprovement": 0.26853863437444303,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.17731514258823786,
+          "meanGapRMSEM": 2.384265657474311,
+          "p95GapRMSEM": 4.411925210523112
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-linear",
+        "diffusion": 0.5
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.0130580616185299,
+          "relativeImprovement": 0.7752666576448275,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0015152043206137168,
+          "meanGapRMSEM": 0.10335759733495115,
+          "p95GapRMSEM": 0.20018162906269876
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.027588963970073446,
+          "relativeImprovement": 0.7674575002517385,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.004765882373227978,
+          "meanGapRMSEM": 0.14962976957135818,
+          "p95GapRMSEM": 0.33023073890973365
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.07560629699533834,
+          "relativeImprovement": 0.6446773938946309,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.023880850470051822,
+          "meanGapRMSEM": 0.3586097749999527,
+          "p95GapRMSEM": 0.8664644380004436
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.1205197326035062,
+          "relativeImprovement": 0.5603785398916522,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.03796589235717548,
+          "meanGapRMSEM": 0.5544874661570094,
+          "p95GapRMSEM": 1.3425623534243045
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.2191406894384893,
+          "relativeImprovement": 0.43571433223837586,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.07949183138072405,
+          "meanGapRMSEM": 1.0645990105670002,
+          "p95GapRMSEM": 2.4826477046121
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.37772529480901607,
+          "relativeImprovement": 0.29152338625782637,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.17731514258823786,
+          "meanGapRMSEM": 2.384265657474311,
+          "p95GapRMSEM": 4.411925210523112
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-hermite",
+        "diffusion": 0.05
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.009307051437428873,
+          "relativeImprovement": 0.8398227211581821,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0012626734779331947,
+          "meanGapRMSEM": 0.09900433589139897,
+          "p95GapRMSEM": 0.1808232703461786
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.017303847170234806,
+          "relativeImprovement": 0.8541489314135499,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.003966921527696556,
+          "meanGapRMSEM": 0.12914725951601777,
+          "p95GapRMSEM": 0.24534228244738415
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.04667957968059187,
+          "relativeImprovement": 0.7806226390768244,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.01748441081919892,
+          "meanGapRMSEM": 0.26162112905314366,
+          "p95GapRMSEM": 0.7019513310188775
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.08502697110136664,
+          "relativeImprovement": 0.6898459664929123,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.030508695714034903,
+          "meanGapRMSEM": 0.42383016775827487,
+          "p95GapRMSEM": 0.9529427828385918
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.16969143211671545,
+          "relativeImprovement": 0.5630458070988024,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.053758036116084984,
+          "meanGapRMSEM": 0.7971228150953784,
+          "p95GapRMSEM": 1.6910678720380734
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.3574894400880748,
+          "relativeImprovement": 0.3294785616879491,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.15039687560498657,
+          "meanGapRMSEM": 2.1122247555446716,
+          "p95GapRMSEM": 4.325821859341198
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-hermite",
+        "diffusion": 0.15
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.010018539633793776,
+          "relativeImprovement": 0.8275777858005147,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0012626734779331947,
+          "meanGapRMSEM": 0.09900433589139897,
+          "p95GapRMSEM": 0.1808232703461786
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.01895618677948239,
+          "relativeImprovement": 0.8402216529704633,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.003966921527696556,
+          "meanGapRMSEM": 0.12914725951601777,
+          "p95GapRMSEM": 0.24534228244738415
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.04985881921468321,
+          "relativeImprovement": 0.7656813481846623,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.01748441081919892,
+          "meanGapRMSEM": 0.26162112905314366,
+          "p95GapRMSEM": 0.7019513310188775
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.08757484383851731,
+          "relativeImprovement": 0.6805520566187392,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.030508695714034903,
+          "meanGapRMSEM": 0.42383016775827487,
+          "p95GapRMSEM": 0.9529427828385918
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.16898485744270922,
+          "relativeImprovement": 0.564865231701174,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.053758036116084984,
+          "meanGapRMSEM": 0.7971228150953784,
+          "p95GapRMSEM": 1.6910678720380734
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.3481570472897274,
+          "relativeImprovement": 0.3469827694779729,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.15039687560498657,
+          "meanGapRMSEM": 2.1122247555446716,
+          "p95GapRMSEM": 4.325821859341198
+        }
+      ]
+    },
+    {
+      "parameters": {
+        "method": "bridge-hermite",
+        "diffusion": 0.5
+      },
+      "bins": [
+        {
+          "duration": 0.5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.05810469190589759,
+          "reconstructionTV": 0.012843722728589912,
+          "relativeImprovement": 0.7789554972705004,
+          "baselineZoneTV": 0.017760943550094877,
+          "zoneTV": 0.0012626734779331947,
+          "meanGapRMSEM": 0.09900433589139897,
+          "p95GapRMSEM": 0.1808232703461786
+        },
+        {
+          "duration": 1,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.11864052377496517,
+          "reconstructionTV": 0.025884206115537673,
+          "relativeImprovement": 0.781826602817143,
+          "baselineZoneTV": 0.04289309285754373,
+          "zoneTV": 0.003966921527696556,
+          "meanGapRMSEM": 0.12914725951601777,
+          "p95GapRMSEM": 0.24534228244738415
+        },
+        {
+          "duration": 2,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.21278211883011366,
+          "reconstructionTV": 0.06444308413204806,
+          "relativeImprovement": 0.6971405093324605,
+          "baselineZoneTV": 0.07292321637108708,
+          "zoneTV": 0.01748441081919892,
+          "meanGapRMSEM": 0.26162112905314366,
+          "p95GapRMSEM": 0.7019513310188775
+        },
+        {
+          "duration": 3,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.27414433447767367,
+          "reconstructionTV": 0.10476328327116365,
+          "relativeImprovement": 0.617853553418243,
+          "baselineZoneTV": 0.09350729025004137,
+          "zoneTV": 0.030508695714034903,
+          "meanGapRMSEM": 0.42383016775827487,
+          "p95GapRMSEM": 0.9529427828385918
+        },
+        {
+          "duration": 5,
+          "n": 120,
+          "accepted": 120,
+          "acceptance": 1,
+          "baselineTV": 0.3883506208969722,
+          "reconstructionTV": 0.18248113197786175,
+          "relativeImprovement": 0.5301124237772926,
+          "baselineZoneTV": 0.13139098616777084,
+          "zoneTV": 0.053758036116084984,
+          "meanGapRMSEM": 0.7971228150953784,
+          "p95GapRMSEM": 1.6910678720380734
+        },
+        {
+          "duration": 10,
+          "n": 117,
+          "accepted": 117,
+          "acceptance": 1,
+          "baselineTV": 0.533151394812979,
+          "reconstructionTV": 0.3437444449091906,
+          "relativeImprovement": 0.3552592223269515,
+          "baselineZoneTV": 0.24564517368012936,
+          "zoneTV": 0.15039687560498657,
+          "meanGapRMSEM": 2.1122247555446716,
+          "p95GapRMSEM": 4.325821859341198
+        }
+      ]
+    }
+  ],
+  "microTraining": {
+    "parameters": {
+      "method": "hermite",
+      "diffusion": 0,
+      "maxGapSeconds": 3
+    },
+    "bins": [
+      {
+        "duration": 0.05,
+        "n": 120,
+        "accepted": 120,
+        "acceptance": 1,
+        "baselineTV": 0.007570466662395374,
+        "reconstructionTV": 0.0008461347241305384,
+        "relativeImprovement": 0.8882321576906842,
+        "baselineZoneTV": 0.003340842881390882,
+        "zoneTV": 2.3777123826958235e-8,
+        "meanGapRMSEM": 0.05878165023030139,
+        "p95GapRMSEM": 0.14239994101033468
+      },
+      {
+        "duration": 0.2,
+        "n": 120,
+        "accepted": 120,
+        "acceptance": 1,
+        "baselineTV": 0.025409792498674262,
+        "reconstructionTV": 0.0028797993333204057,
+        "relativeImprovement": 0.886665767401656,
+        "baselineZoneTV": 0.00798539376227994,
+        "zoneTV": 0.0012820881398341185,
+        "meanGapRMSEM": 0.07800046119272541,
+        "p95GapRMSEM": 0.15565910118900422
+      }
+    ]
+  },
+  "microHeldout": {
+    "parameters": {
+      "method": "hermite",
+      "diffusion": 0,
+      "maxGapSeconds": 3
+    },
+    "bins": [
+      {
+        "duration": 0.05,
+        "n": 120,
+        "accepted": 120,
+        "acceptance": 1,
+        "baselineTV": 0.006672713382914429,
+        "reconstructionTV": 0.000761949484719169,
+        "relativeImprovement": 0.8858111474306464,
+        "baselineZoneTV": 0.0029101055631813185,
+        "zoneTV": 2.244635205154305e-8,
+        "meanGapRMSEM": 0.05300294423756383,
+        "p95GapRMSEM": 0.12912782154690944
+      },
+      {
+        "duration": 0.2,
+        "n": 120,
+        "accepted": 120,
+        "acceptance": 1,
+        "baselineTV": 0.020993077080543262,
+        "reconstructionTV": 0.002710635839812182,
+        "relativeImprovement": 0.8708795366485629,
+        "baselineZoneTV": 0.007522511321601236,
+        "zoneTV": 0.0004273789133077557,
+        "meanGapRMSEM": 0.07229993957266118,
+        "p95GapRMSEM": 0.16821979154558886
+      }
+    ]
+  }
+}

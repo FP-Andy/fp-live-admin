@@ -1,0 +1,446 @@
+{
+  "algorithm": "personal-activity-density/experiment-2",
+  "createdAt": "2026-09-30T05:48:46.615Z",
+  "target": {
+    "basis": "duration",
+    "fraction": 0.2
+  },
+  "note": "Latest user clarification: add 20 percentage points, capped by unobserved eligible time. Not a 20% increase relative to observations.",
+  "referenceLimit": "Existing CV positions masked in the two previously used matches. No independent identity ground truth; long missing intervals use a personal activity prior and may miss changes of tactics or substitutions.",
+  "protocol": {
+    "durations": [
+      3,
+      10,
+      30,
+      60
+    ],
+    "minReferenceCoverage": 0.85,
+    "maxCasesPerPlayerPerDuration": 6,
+    "baseline": "Entire visible personal activity distribution, excluding hidden samples.",
+    "metric": "Normalised occupancy total variation; 0 means equal distributions, 1 means disjoint. Coarse zone error uses nine court zones."
+  },
+  "evaluations": [
+    {
+      "datasetId": "9825115c-8509-4c3f-84c2-44224a18c1e5",
+      "video": "3경기 광주 경남.MP4",
+      "bins": [
+        {
+          "seconds": 3,
+          "n": 60,
+          "distributionTV": 0.17509999001028936,
+          "baselineTV": 0.9187412450078575,
+          "zoneTV": 0.04502986206527428,
+          "baselineZoneTV": 0.6974370603444563,
+          "topZoneOverlap": 1
+        },
+        {
+          "seconds": 10,
+          "n": 60,
+          "distributionTV": 0.4957568380562778,
+          "baselineTV": 0.8479867587763006,
+          "zoneTV": 0.2297704958829254,
+          "baselineZoneTV": 0.5958198156118918,
+          "topZoneOverlap": 0.847222222222222
+        },
+        {
+          "seconds": 30,
+          "n": 60,
+          "distributionTV": 0.6603500995443905,
+          "baselineTV": 0.7334616196925466,
+          "zoneTV": 0.3887493752790289,
+          "baselineZoneTV": 0.45429683790547803,
+          "topZoneOverlap": 0.686111111111111
+        },
+        {
+          "seconds": 60,
+          "n": 59,
+          "distributionTV": 0.5816391513614535,
+          "baselineTV": 0.6339622245834211,
+          "zoneTV": 0.3409099267706322,
+          "baselineZoneTV": 0.39778120918749166,
+          "topZoneOverlap": 0.6440677966101693
+        }
+      ]
+    },
+    {
+      "datasetId": "b1c08090-ad35-43d6-ae8f-296e798df96b",
+      "video": "2경기 울산 전북.MP4",
+      "bins": [
+        {
+          "seconds": 3,
+          "n": 60,
+          "distributionTV": 0.18991689812541904,
+          "baselineTV": 0.9134495311382255,
+          "zoneTV": 0.06576351583188694,
+          "baselineZoneTV": 0.7016027620490307,
+          "topZoneOverlap": 0.9805555555555555
+        },
+        {
+          "seconds": 10,
+          "n": 60,
+          "distributionTV": 0.4540927229534428,
+          "baselineTV": 0.8495499902137464,
+          "zoneTV": 0.2019565779630881,
+          "baselineZoneTV": 0.6257252053887478,
+          "topZoneOverlap": 0.8583333333333333
+        },
+        {
+          "seconds": 30,
+          "n": 60,
+          "distributionTV": 0.622054426422784,
+          "baselineTV": 0.7446964222795486,
+          "zoneTV": 0.3632644091458319,
+          "baselineZoneTV": 0.49977631280801776,
+          "topZoneOverlap": 0.6972222222222223
+        },
+        {
+          "seconds": 60,
+          "n": 58,
+          "distributionTV": 0.5594012748865042,
+          "baselineTV": 0.6608248085589918,
+          "zoneTV": 0.30760828919753314,
+          "baselineZoneTV": 0.42810360566742667,
+          "topZoneOverlap": 0.7126436781609196
+        }
+      ]
+    }
+  ],
+  "actual": [
+    {
+      "datasetId": "9825115c-8509-4c3f-84c2-44224a18c1e5",
+      "video": "3경기 광주 경남.MP4",
+      "duration": 930.9967333333334,
+      "seconds": 1.693776042,
+      "players": [
+        {
+          "id": "home-1",
+          "group": "home",
+          "jersey": "2",
+          "coverage": 0.8860984048565514,
+          "observed": 824.9547203333269,
+          "inferred": 88.28824833333363,
+          "addedCoverage": 0.09483196360660373,
+          "targetReached": false,
+          "knownAbsent": 17.751064333333346,
+          "byKind": {
+            "shortMotion": 46.9803063333335,
+            "movementDensity": 7.674333666666712,
+            "activityPattern": 33.63360833333341
+          }
+        },
+        {
+          "id": "home-2",
+          "group": "home",
+          "jersey": "3",
+          "coverage": 0.8812242176861127,
+          "observed": 820.4168679999932,
+          "inferred": 95.8291153333337,
+          "addedCoverage": 0.10293174175834956,
+          "targetReached": false,
+          "knownAbsent": 14.74806633333344,
+          "byKind": {
+            "shortMotion": 32.8995803333336,
+            "movementDensity": 4.137467000000015,
+            "activityPattern": 58.792068000000086
+          }
+        },
+        {
+          "id": "home-3",
+          "group": "home",
+          "jersey": "4",
+          "coverage": 0.8080397403470952,
+          "observed": 752.2823586666606,
+          "inferred": 141.54147933333365,
+          "addedCoverage": 0.15203219760670872,
+          "targetReached": false,
+          "knownAbsent": 37.17046400000004,
+          "byKind": {
+            "shortMotion": 78.87887100000029,
+            "movementDensity": 50.717336666666654,
+            "activityPattern": 11.945271666666713
+          }
+        },
+        {
+          "id": "home-4",
+          "group": "home",
+          "jersey": "5",
+          "coverage": 0.93025279501517,
+          "observed": 866.0623133333263,
+          "inferred": 42.242260000000215,
+          "addedCoverage": 0.045373155981714736,
+          "targetReached": false,
+          "knownAbsent": 22.689328999999873,
+          "byKind": {
+            "shortMotion": 32.03205333333338,
+            "movementDensity": 8.742066666666744,
+            "activityPattern": 1.4681400000000906
+          }
+        },
+        {
+          "id": "home-5",
+          "group": "home",
+          "jersey": "6",
+          "coverage": 0.9192858804158996,
+          "observed": 855.8521516666599,
+          "inferred": 56.456445000000286,
+          "addedCoverage": 0.06064086261383977,
+          "targetReached": false,
+          "knownAbsent": 18.68532766666675,
+          "byKind": {
+            "shortMotion": 25.82583600000025,
+            "movementDensity": 28.962267333333386,
+            "activityPattern": 1.6683416666666488
+          }
+        },
+        {
+          "id": "away-1",
+          "group": "away",
+          "jersey": "2",
+          "coverage": 0.8926212075502377,
+          "observed": 831.0274283333266,
+          "inferred": 74.34099233333319,
+          "addedCoverage": 0.07985097011797591,
+          "targetReached": false,
+          "knownAbsent": 25.625596333333334,
+          "byKind": {
+            "shortMotion": 31.965318666666313,
+            "movementDensity": 16.416401333333425,
+            "activityPattern": 25.959272333333445
+          }
+        },
+        {
+          "id": "away-2",
+          "group": "away",
+          "jersey": "3",
+          "coverage": 0.9526167102197415,
+          "observed": 886.883045333326,
+          "inferred": 37.70437833333327,
+          "addedCoverage": 0.04049893730382577,
+          "targetReached": false,
+          "knownAbsent": 6.406400000000019,
+          "byKind": {
+            "shortMotion": 24.357710999999966,
+            "movementDensity": 13.3466673333333,
+            "activityPattern": 0
+          }
+        },
+        {
+          "id": "away-3",
+          "group": "away",
+          "jersey": "4",
+          "coverage": 0.9532618238331012,
+          "observed": 887.4836439999928,
+          "inferred": 40.573927333333586,
+          "addedCoverage": 0.043581170460247495,
+          "targetReached": false,
+          "knownAbsent": 2.9362663333334353,
+          "byKind": {
+            "shortMotion": 36.703393333333565,
+            "movementDensity": 3.7370670000000246,
+            "activityPattern": 0.133466999999996
+          }
+        },
+        {
+          "id": "away-4",
+          "group": "away",
+          "jersey": "5",
+          "coverage": 0.9393560546685693,
+          "observed": 874.5374183333262,
+          "inferred": 43.710395333332855,
+          "addedCoverage": 0.046950106018989454,
+          "targetReached": false,
+          "knownAbsent": 12.746065333333405,
+          "byKind": {
+            "shortMotion": 40.0400576666662,
+            "movementDensity": 0,
+            "activityPattern": 3.6703376666666543
+          }
+        },
+        {
+          "id": "away-5",
+          "group": "away",
+          "jersey": "6",
+          "coverage": 0.893051281024896,
+          "observed": 831.4278253333268,
+          "inferred": 81.94859633333354,
+          "addedCoverage": 0.08802243165765515,
+          "targetReached": false,
+          "knownAbsent": 17.617598000000157,
+          "byKind": {
+            "shortMotion": 51.65165433333337,
+            "movementDensity": 29.829802333333532,
+            "activityPattern": 0.46713966666663964
+          }
+        }
+      ]
+    },
+    {
+      "datasetId": "b1c08090-ad35-43d6-ae8f-296e798df96b",
+      "video": "2경기 울산 전북.MP4",
+      "duration": 923.5226,
+      "seconds": 1.3427014170000002,
+      "players": [
+        {
+          "id": "home-1",
+          "group": "home",
+          "jersey": "2",
+          "coverage": 0.6863912422572679,
+          "observed": 633.8978246666619,
+          "inferred": 184.70452,
+          "addedCoverage": 0.2,
+          "targetReached": true,
+          "knownAbsent": 2.1354659999999512,
+          "byKind": {
+            "shortMotion": 29.629649333333646,
+            "movementDensity": 0,
+            "activityPattern": 155.07487066666636
+          }
+        },
+        {
+          "id": "home-2",
+          "group": "home",
+          "jersey": "3",
+          "coverage": 0.7762095668620645,
+          "observed": 716.8470773333277,
+          "inferred": 179.31254200000018,
+          "addedCoverage": 0.19416150942056012,
+          "targetReached": false,
+          "knownAbsent": 27.360662000000104,
+          "byKind": {
+            "shortMotion": 38.97233166666679,
+            "movementDensity": 4.40440000000001,
+            "activityPattern": 135.9358103333334
+          }
+        },
+        {
+          "id": "home-3",
+          "group": "home",
+          "jersey": "4",
+          "coverage": 0.7214370090491862,
+          "observed": 666.263382333328,
+          "inferred": 184.70452,
+          "addedCoverage": 0.2,
+          "targetReached": true,
+          "knownAbsent": 16.34966566666668,
+          "byKind": {
+            "shortMotion": 25.892571000000032,
+            "movementDensity": 0,
+            "activityPattern": 158.81194899999997
+          }
+        },
+        {
+          "id": "home-4",
+          "group": "home",
+          "jersey": "5",
+          "coverage": 0.9298328699986984,
+          "observed": 858.72166966666,
+          "inferred": 49.11580900000008,
+          "addedCoverage": 0.05318311538883843,
+          "targetReached": false,
+          "knownAbsent": 15.682331999999974,
+          "byKind": {
+            "shortMotion": 44.31100100000004,
+            "movementDensity": 0,
+            "activityPattern": 4.804808000000037
+          }
+        },
+        {
+          "id": "home-5",
+          "group": "home",
+          "jersey": "6",
+          "coverage": 0.43702434497361514,
+          "observed": 403.60185933332997,
+          "inferred": 184.70452,
+          "addedCoverage": 0.2,
+          "targetReached": true,
+          "knownAbsent": 9.476130333333245,
+          "byKind": {
+            "shortMotion": 12.545880999999945,
+            "movementDensity": 14.547866999999997,
+            "activityPattern": 157.61077200000005
+          }
+        },
+        {
+          "id": "away-1",
+          "group": "away",
+          "jersey": "2",
+          "coverage": 0.9046866335485388,
+          "observed": 835.4985519999939,
+          "inferred": 57.72442166666672,
+          "addedCoverage": 0.06250461187053433,
+          "targetReached": false,
+          "knownAbsent": 30.296925000000044,
+          "byKind": {
+            "shortMotion": 46.446475000000014,
+            "movementDensity": 7.07373400000003,
+            "activityPattern": 4.2042126666666775
+          }
+        },
+        {
+          "id": "away-2",
+          "group": "away",
+          "jersey": "3",
+          "coverage": 0.7532311026642199,
+          "observed": 695.6259463333273,
+          "inferred": 184.70452,
+          "addedCoverage": 0.2,
+          "targetReached": true,
+          "knownAbsent": 24.491130333333373,
+          "byKind": {
+            "shortMotion": 58.79213800000068,
+            "movementDensity": 4.871533999999997,
+            "activityPattern": 121.04084799999933
+          }
+        },
+        {
+          "id": "away-3",
+          "group": "away",
+          "jersey": "4",
+          "coverage": 0.8472404808140696,
+          "observed": 782.4457316666596,
+          "inferred": 130.93089133333382,
+          "addedCoverage": 0.14177334840894398,
+          "targetReached": false,
+          "knownAbsent": 10.143463666666605,
+          "byKind": {
+            "shortMotion": 70.27028566666709,
+            "movementDensity": 22.689332999999976,
+            "activityPattern": 37.971272666666735
+          }
+        },
+        {
+          "id": "away-4",
+          "group": "away",
+          "jersey": "5",
+          "coverage": 0.7406579799274309,
+          "observed": 684.0143833333287,
+          "inferred": 184.70452,
+          "addedCoverage": 0.2,
+          "targetReached": true,
+          "knownAbsent": 14.214198666666604,
+          "byKind": {
+            "shortMotion": 48.181535666666505,
+            "movementDensity": 8.20820066666667,
+            "activityPattern": 128.3147836666668
+          }
+        },
+        {
+          "id": "away-5",
+          "group": "away",
+          "jersey": "6",
+          "coverage": 0.9021575534083591,
+          "observed": 833.1628893333267,
+          "inferred": 75.14180566666714,
+          "addedCoverage": 0.08136433874673683,
+          "targetReached": false,
+          "knownAbsent": 15.215196999999904,
+          "byKind": {
+            "shortMotion": 43.37673200000047,
+            "movementDensity": 20.487134000000026,
+            "activityPattern": 11.27793966666664
+          }
+        }
+      ]
+    }
+  ]
+}

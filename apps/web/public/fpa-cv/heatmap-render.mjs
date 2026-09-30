@@ -1,6 +1,24 @@
 export const HEATMAP_EXPORT_SIZE=Object.freeze({width:1320,height:720});
 export const QUEENS_CUP_COLORS=Object.freeze({pitch:'#FFFFFF',line:'#E162A7',surround:'#EFCADE'});
 
+// Estimated density is a display layer only; never replace observed grid or
+// positions, which continue to drive coverage, distance and report statistics.
+export function displayedHeatmapGrid(result,player){
+  const a=player.augmentation;
+  return result.augmentation?.enabled&&a?.schema==='fpa-heatmap-augmentation/v1'
+    ?player.grid.map((v,i)=>v+a.estimatedGrid[i]):player.grid;
+}
+export function heatmapDensityScale(result){
+  let peak=0;
+  for(const p of result.players){const grid=displayedHeatmapGrid(result,p);
+    for(let y=0;y<result.height;y++)for(let x=0;x<result.width;x++){
+      let value=0;for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++){
+        const xx=x+dx,yy=y+dy;if(xx>=0&&yy>=0&&xx<result.width&&yy<result.height)value+=grid[yy*result.width+xx]*Math.exp(-(dx*dx+dy*dy)/8);
+      }peak=Math.max(peak,value);
+    }
+  }return peak||1;
+}
+
 // Shared density remains comparable across players. Colour/opacity alone
 // emphasise concentrated activity: pale yellow, orange, red, bright pink peak.
 export function densityColor(value){
@@ -30,9 +48,9 @@ export function paintHeatmap(canvas,result,player){
   ctx.fillStyle=QUEENS_CUP_COLORS.surround;ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=QUEENS_CUP_COLORS.pitch;ctx.fillRect(pad,pad,cw,ch);
   // Keep the existing Gaussian density and shared scale across all players.
-  const grid=new Float64Array(result.width*result.height);
+  const grid=new Float64Array(result.width*result.height),sourceGrid=displayedHeatmapGrid(result,player);
   for(let y=0;y<result.height;y++)for(let x=0;x<result.width;x++){
-    const value=player.grid[y*result.width+x];if(!value)continue;
+    const value=sourceGrid[y*result.width+x];if(!value)continue;
     for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++){
       const xx=x+dx,yy=y+dy;
       if(xx>=0&&yy>=0&&xx<result.width&&yy<result.height)grid[yy*result.width+xx]+=value*Math.exp(-(dx*dx+dy*dy)/8);

@@ -17,6 +17,7 @@ from .db import get_db
 from .models import FpaCvResource, Match, User
 from .fpa_cv import owned, same_origin
 from .fpa_cv_storage import storage
+from .heatmap_augmentation import validate_augmentation
 
 router = APIRouter(prefix='/api/futsal/analysis-snapshots', dependencies=[Depends(same_origin)])
 INPUTS = ('segments', 'roster', 'uniforms', 'setup', 'autoReconnect', 'rejections', 'checkpoints')
@@ -70,6 +71,10 @@ def validate_source(heat, job, version):
         if abs(sum(grid) - observed) > max(.05, observed * .00001):
             raise HTTPException(400, '히트맵과 관측 시간의 합계가 다릅니다.')
         qualities.append({'id': p['id'], 'group': p['group'], 'jersey': str(p['jersey']), 'coverage': min(1, observed / (end - start)), 'longestMissing': max(gap, end - until)})
+    validate_augmentation(heat)
+    if heat.get('augmentation'):
+        for quality, player in zip(qualities, players):
+            quality['estimatedCoverage'] = player['augmentation']['inferredSeconds'] / (end - start)
     return qualities
 
 
@@ -130,6 +135,9 @@ async def create_snapshot(request: Request, user: User = Depends(require_session
                 'eventCount': len(fpa['rows']), 'quality': quality, 'meanCoverage': sum(p['coverage'] for p in quality) / len(quality),
                 'minCoverage': min(p['coverage'] for p in quality), 'from': heat['from'], 'to': heat['to'],
                 'approval': 'operator-confirmed', 'substitutionsApplied': False}
+    if heat.get('augmentation'):
+        manifest['augmentation'] = heat['augmentation']
+        manifest['meanEstimatedCoverage'] = sum(p['estimatedCoverage'] for p in quality) / len(quality)
     metadata = (match.metadata_json or {}) if match else {}
     document = {'schema': 'fpc-analysis-snapshot/v1', **manifest, 'heatmap': heat, 'fpa': fpa,
                 'roster': review.get('roster', []), 'matchName': match.name if match else '',

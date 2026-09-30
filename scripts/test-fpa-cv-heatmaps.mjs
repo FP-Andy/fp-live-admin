@@ -25,6 +25,8 @@ assert(Math.abs(player.longestUnassigned-.8)<1e-8,'Assigned but excluded positio
 assert.equal(report.players[1].longestMissing,2,'A wholly missing player has a full-duration gap');
 assert.equal(buildHeatmaps(data,review,{point:'center'}).players[0].positions[0].y,.35);
 assert(Math.abs(buildHeatmaps(data,review,{manualOnly:true}).players[0].observed-.2)<1e-8);
+assert(player.blockedIntervals.some(b=>b.reason==='outside'&&b.from===1.2));
+assert(buildHeatmaps(data,review,{manualOnly:true}).players[0].blockedIntervals.some(b=>b.reason==='automaticFiltered'&&b.from===1));
 const contradiction=structuredClone(data);contradiction.frames[0].boxes[0].appearance[0].rgb=[25,25,220];
 assert(Math.abs(buildHeatmaps(contradiction,review).players[0].observed-.2)<1e-8);
 console.log('PASS: perspective calibration/order invariance, invalid court rejection, time weighting, no gap filling, duplicate/colour/outside exclusion, ten outfield players, export provenance.');

@@ -96,3 +96,32 @@ class Snapshots(unittest.TestCase):
         self.storage_mock.return_value.client.put_object = lambda **kw: (_ for _ in ()).throw(IOError('offline'))
         self.assertEqual(self.save().status_code, 503)
         self.assertEqual(self.client.get(self.url).json()['snapshots'], [])
+
+    def augmented(self):
+        heat = self.body['heatmap']
+        heat['augmentation'] = {'enabled': True, 'algorithm': 'personal-activity-density/v1', 'targetRatio': .3, 'targetBasis': 'duration', 'use': 'heatmap-only'}
+        heat['players'][0]['augmentation'] = {'schema': 'fpa-heatmap-augmentation/v1', 'algorithm': 'personal-activity-density/v1', 'from': 0, 'to': 10, 'inferredSeconds': 2, 'estimatedGrid': [2], 'gaps': [{'from': 8, 'to': 10, 'inferredSeconds': 2, 'kind': 'activityPattern'}]}
+        return heat
+
+    def test_augmented_snapshot_keeps_measured_coverage_and_grid(self):
+        heat = self.augmented()
+        response = self.save(); self.assertEqual(response.status_code, 201, response.text)
+        summary = response.json()
+        self.assertEqual(summary['meanCoverage'], .8)
+        self.assertEqual(summary['meanEstimatedCoverage'], .2)
+        saved = self.client.get(self.url + '/' + summary['id']).json()['heatmap']
+        self.assertEqual(saved, heat)
+        self.assertEqual(saved['players'][0]['grid'], [8])
+
+    def test_reject_density_overcount_overlap_and_known_absence(self):
+        base = copy.deepcopy(self.augmented())
+        changes = [lambda h: h['players'][0]['augmentation']['estimatedGrid'].__setitem__(0, 3),
+                   lambda h: h['players'][0]['augmentation']['gaps'][0].update({'from': 7}),
+                   lambda h: h['players'][0].update({'blockedIntervals': [{'from': 8, 'to': 10, 'reason': 'outside'}]}),
+                   lambda h: h['players'][0]['augmentation']['gaps'].append({'from': 8, 'to': 10, 'inferredSeconds': 2, 'kind': 'activityPattern'}),
+                   lambda h: h.pop('augmentation'),
+                   lambda h: h['augmentation'].update({'targetRatio': .9})]
+        for change in changes:
+            self.body['heatmap'] = copy.deepcopy(base); change(self.body['heatmap'])
+            self.assertEqual(self.save().status_code, 400)
+        self.assertEqual(self.objects, {})
