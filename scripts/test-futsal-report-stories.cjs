@@ -34,6 +34,24 @@ assert.throws(()=>assignment.assignmentPlayers([{id:'bad',group:'home',jersey:'4
 d.sourceSnapshot={id:'a'.repeat(32),jobId:'b'.repeat(32),version:1,createdAt:'now'};d.assignment={jobId:'b'.repeat(32),time:0,width:1600,height:900,image:'data:image/png;base64,aQ==',players:people};
 assert.equal(assignment.assignmentNumber(d,p.id),'4','Report reference uses the actual initial number, not an edited shirt label');assert.equal(assignment.assignmentRows(d,'home')[0].id,'home_gk-1');assert.equal(assignment.assignmentRows(d,'home')[0].role.value,'GK');
 assert.equal(roles.reportRole('PIVO').value,'FW');assert.equal(roles.reportRole('FIXO').value,'DF');assert.equal(roles.reportRole('ALA').value,'MF');
-for(const role of roles.REPORT_ROLES){d.players[p.id].position=role.value;const comments=e.reportPlayer(d).generated;assert(comments.heatComment.includes(role.short));assert(comments.eventComment.includes(role.short));assert.equal(comments.improvements[0],role.next);}
+for(const role of roles.REPORT_ROLES){const comments=r.commentDraft(heat,p,{...d.players[p.id],position:role.value},[],'right',50);assert(comments.heatComment.includes(role.short));assert(roles.rolePlay(role.value,0,0,0,0).includes(role.short));assert(comments.improvements.every(Boolean));}
 d.players[p.id].name='';assert.equal(e.reportPlayer(d).person.name,'');assert.throws(()=>assignment.validateAssignment({...d.assignment,image:'https://example.com/frame.png'}));
 console.log('PASS: validated initial frame coordinates; immutable analysis numbers; keeper-inclusive roster; paired football/futsal roles personalize stories without player names.');
+
+const auto=load('apps/web/lib/futsal-report-auto-position.ts');
+let ad=r.attachHeatmap(r.emptyDraft(),{...heat,from:0,to:900,players:Array.from({length:10},(_,i)=>({...p,id:(i<5?'home-':'away-')+(i%5),group:i<5?'home':'away',positions:[{t:0,x:i<5?.25+.12*(i%5):1-(.25+.12*(i%5)),y:.5,seconds:300}]}))});
+let ar=auto.automaticPositions(ad);assert.deepEqual(Object.values(ar).map(a=>a.position),['DF','DF','MF','FW','FW','DF','DF','MF','FW','FW']);
+const reflected=auto.automaticPositions({...ad,homeDirection:'left'});assert.equal(reflected['home-0'].position,'FW');assert.equal(reflected['away-0'].position,'FW');
+ad.players['home-0'].position='PIVO';ad.players['home-0'].heatComment='직접 쓴 문구';const normalized=auto.applyAutomaticPositions(ad);assert.equal(normalized.players['home-0'].position,'DF');assert.equal(normalized.players['home-0'].heatComment,'직접 쓴 문구');
+const weighted=structuredClone(ad);weighted.heatmap.players[0].positions=[{t:0,x:.1,y:.5,seconds:100},{t:100,x:.9,y:.5,seconds:1}];assert(Math.abs(auto.automaticPositions(weighted)['home-0'].forward-10.9/101)<1e-9);
+weighted.heatmap.players[0].augmentation={inferredSeconds:600,grid:[900]};assert.equal(auto.automaticPositions(weighted)['home-0'].position,'DF');
+const short=structuredClone(ad);short.heatmap.players[0].positions[0].seconds=3;assert.equal(auto.automaticPositions(short)['home-0'].position,'');
+const ties=structuredClone(ad);ties.heatmap.players.forEach(p=>p.positions[0].x=.5);assert(Object.values(auto.automaticPositions(ties)).every(a=>a.position==='MF'),'No forced defender/forward quota for tied centers');
+const thin=structuredClone(ad);thin.heatmap.players=thin.heatmap.players.slice(0,2);assert(Object.values(auto.automaticPositions(thin)).every(a=>a.position===''));
+const keeper=structuredClone(ad);keeper.assignment={...d.assignment,players:[{id:'home-0',group:'home_gk',number:'1',box:[.1,.1,.2,.2]}]};assert.equal(auto.automaticPositions(keeper)['home-0'].position,'GK');assert.equal(assignment.assignmentRows(keeper,'home')[0].role.value,'GK');
+const cutoff=auto.automaticPositions({...ad,matchStartSeconds:290});assert(Object.values(cutoff).every(a=>a.position===''),'Pre-kickoff observations do not provide a role');
+for(const [id,role] of [['home-0','DF · FIXO'],['home-2','MF · ALA'],['home-4','FW · PIVO']]){const c=e.reportPlayer(ad,id);assert.equal(c.person.position,role.split(' · ')[0]);assert(c.generated.heatComment.includes(role));assert(c.generated.eventComment.includes(role));}
+const withEvents=structuredClone(ad);withEvents.fpa={rows:[{Team:'home',Player:'7',Action:'Shot',Tags:'Goal',StartX:'35',StartY:'10'},{Team:'home',Player:'7',Action:'Acquisition',StartX:'10',StartY:'10'}],logs:[]};
+const phrases=['home-0','home-2','home-4'].map(id=>e.reportPlayer(ad,id).generated);assert.equal(new Set(phrases.map(c=>c.strengths[0])).size,3);assert.equal(new Set(phrases.map(c=>c.improvements[0])).size,3);
+assert.notDeepEqual(e.reportPlayer(withEvents,'home-0').generated.strengths,phrases[0].strengths);assert.doesNotMatch(phrases.map(c=>c.strengths.join(' ')).join(' '),/어시스트|득점으로|스프린트/);
+console.log('PASS: time-weighted team-relative roles, direction reflection, tied centers, sparse data, keeper preservation, kickoff clipping, no inferred density, role-specific prose/review variation and manual text preservation.');
