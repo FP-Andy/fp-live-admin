@@ -398,4 +398,8 @@ def describe(template: CardTemplate) -> dict:
         # 이 템플릿이 기본으로 쓸 배치. 설정 화면은 여기서 시작해 더 옮길 수 있다.
         "boxes": {"start": template.boxes_for("start"),
                   "section": template.boxes_for("section")},
+        # 이 세트가 자기 점수판·효과 영상을 들고 있나. 화면이 칸을 보일지 정한다.
+        "has_board": template.has_board,
+        "has_half_videos": bool(template.first_half_video or template.second_half_video),
+        "board_fields": [one(f) for f in template.board_fields],
     }

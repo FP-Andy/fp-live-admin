@@ -72,6 +72,11 @@ type CardTemplateSpec = {
   base_color: string;
   start_fields: CardFieldSpec[];
   section_fields: CardFieldSpec[];
+  /** 이 세트가 자기 점수판을 들고 있나 — 있으면 '대회·라운드' 칸이 뜬다. */
+  has_board?: boolean;
+  /** 전후반 효과 영상을 들고 있나. */
+  has_half_videos?: boolean;
+  board_fields?: CardFieldSpec[];
 };
 
 type CardSettings = {
@@ -1237,6 +1242,8 @@ export default function ManualHighlightPage() {
             logo_size_pct: scoreboard.logoSizePct,
             // 팀명 글자 크기(%). 점수는 그대로다.
             name_size_pct: scoreboard.nameSizePct,
+            // 대회 세트 점수판의 맨 윗줄. 기본 점수판은 이 값을 쓰지 않는다.
+            round_label: scoreboard.roundLabel || '',
             // 적어 넣은 픽셀 좌표. 없으면 null 이고 그때는 비율을 쓴다.
             pos_px_x: scoreboard.posPxX ?? null,
             pos_px_y: scoreboard.posPxY ?? null,
@@ -1659,6 +1666,18 @@ export default function ManualHighlightPage() {
                     </select>
                   </label>
                 ) : null}
+                {/* 세트가 점수판·효과 영상까지 들고 있으면 알려 준다 — 고르는 순간
+                    합본이 달라지는데 화면에 아무 표시가 없으면 모른다. */}
+                {cards.enabled && (cardTemplate?.has_board || cardTemplate?.has_half_videos) ? (
+                  <span style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                    background: 'var(--surface, #101014)', color: 'var(--muted, #999)',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}>
+                    세트 포함:{cardTemplate?.has_board ? ' 점수판' : ''}
+                    {cardTemplate?.has_half_videos ? ' 전후반 효과 영상' : ''}
+                  </span>
+                ) : null}
                 {cards.enabled ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
                     {([
@@ -2011,6 +2030,26 @@ export default function ManualHighlightPage() {
                   </span>
                 )}
               </div>
+
+              {/* 대회·라운드 — 대회 세트 점수판이 맨 위에 그린다. 세트를 안 고르면
+                  기본 점수판이 이 값을 쓰지 않으므로 그때는 보여 주지 않는다. */}
+              {scoreboard.enabled && cardTemplate?.has_board ? (
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap',
+                }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>대회·라운드</span>
+                  <input
+                    value={scoreboard.roundLabel || ''}
+                    onChange={(e) => setScoreboard((p) => ({ ...p, roundLabel: e.target.value }))}
+                    placeholder="2026 SUFA ADVANCED LEAGUE 4R"
+                    maxLength={48}
+                    style={{ ...smallBtn, width: 300, fontSize: 12, textAlign: 'left' }}
+                  />
+                  <span style={{ fontSize: 11, color: 'var(--muted, #777)' }}>
+                    점수판 맨 윗줄에 들어갑니다
+                  </span>
+                </label>
+              ) : null}
 
               {scoreboard.enabled ? (
                 <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 12 }}>
