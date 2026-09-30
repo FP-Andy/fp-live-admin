@@ -424,6 +424,27 @@ YT_PLAYER_CLIENTS = os.getenv(
     "YTDLP_PLAYER_CLIENTS", "default,web_embedded,mweb,tv_simply").strip()
 
 
+def youtube_pot_health() -> str:
+    """토큰 발급기가 살아 있나. 한 줄로.
+
+    쿠키와 달리 이건 **사람이 넣는 게 아니라 컨테이너가 떠 있어야** 하는 것이다.
+    배포가 api 만 재시작하고 새 서비스를 안 만들면 조용히 없는 상태가 되고, 증상은
+    '화질이 낮다' 로만 보인다 — 그 둘을 구별 못 해서 한참 헤맸다(2026-09-29).
+    """
+    if not YT_POT_BASE_URL:
+        return "토큰 발급기 미설정"
+    try:
+        import json as _json
+        import urllib.request
+        with urllib.request.urlopen(f"{YT_POT_BASE_URL}/ping", timeout=5) as resp:
+            body = _json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        ver = str(body.get("version") or "?")
+        return f"토큰 발급기 정상(v{ver})"
+    except Exception as exc:  # noqa: BLE001 - 닿지 않는 것도 답이다
+        return (f"토큰 발급기에 닿지 않음({exc.__class__.__name__}) — "
+                f"potoken 컨테이너가 떠 있는지 확인이 필요합니다")
+
+
 def youtube_client_args() -> list[str]:
     """물어볼 창구 목록. 비우면 yt-dlp 기본값에 맡긴다(예전 동작)."""
     if not YT_PLAYER_CLIENTS:
