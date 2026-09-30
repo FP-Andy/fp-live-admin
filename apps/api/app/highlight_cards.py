@@ -491,6 +491,14 @@ def render_board(
         _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), merged)
     out = Image.alpha_composite(base, layer)
 
+    # 시안 캔버스(1215x605)는 대부분 투명 여백이고 보이는 판은 가운데 띠뿐이다.
+    # 통짜로 내보내면 얹는 쪽이 캔버스 크기로 자리를 잡아 배치 상자가 실물보다
+    # 훨씬 커지고, 위아래로 옮길 수 있는 폭이 그만큼 좁아진다 — 실제로 그랬다.
+    # 자르는 기준은 **배경**의 알파다. 글자는 배경 띠 안에만 들어가므로 함께 남는다.
+    bbox = base.getchannel("A").getbbox()
+    if bbox:
+        out = out.crop(bbox)
+
     width = max(80, int(board_width))
     height = max(1, round(width * out.height / out.width))
     return out.resize((width, height), Image.LANCZOS)
