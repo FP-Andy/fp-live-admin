@@ -6,4 +6,10 @@ async function request(path,options){
 }
 export const listAnalysisSnapshots=async jobId=>(await request(jobId?`?job_id=${encodeURIComponent(jobId)}`:'')).snapshots;
 export const loadAnalysisSnapshot=id=>request('/'+encodeURIComponent(id));
-export const saveAnalysisSnapshot=value=>request('',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
+export const saveAnalysisSnapshot=async value=>{
+  const saved=await request('',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
+  // Other report tabs refresh their source without replacing edited prose.
+  try{localStorage.setItem('fpc-analysis-snapshot-updated',JSON.stringify({id:saved.id,at:Date.now()}));}catch{}
+  if(typeof BroadcastChannel!=='undefined'){const channel=new BroadcastChannel('fpc-analysis-snapshots');channel.postMessage({id:saved.id});channel.close();}
+  return saved;
+};
