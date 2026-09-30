@@ -85,6 +85,7 @@ from .highlight_jobs import (
     fetch_youtube_sources_for_job,
     fineplay_youtube_path,
     youtube_cookie_health,
+    youtube_pot_health,
     YT_HEIGHT_CHOICES,
     YT_MAX_HEIGHT,
     list_manual_clip_info,
@@ -11960,6 +11961,9 @@ def fineplay_source_url(
         "heightChoices": list(YT_HEIGHT_CHOICES),
         # 유튜브 쿠키가 '로그인된 것' 인지. 저화질로 한 번 당하기 전에 보이게 한다.
         "cookieHealth": youtube_cookie_health() if any(
+            v.is_youtube for v in manifest.videos) else None,
+        # 토큰 발급기 상태. 이게 죽어 있으면 고화질 목록이 통째로 안 보인다.
+        "potHealth": youtube_pot_health() if any(
             v.is_youtube for v in manifest.videos) else None,
     }
 

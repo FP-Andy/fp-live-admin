@@ -416,6 +416,8 @@ export default function FineplayJobsPage() {
   const [ytHeightChoices, setYtHeightChoices] = useState<number[]>([2160, 1440, 1080, 720]);
   // 쿠키가 로그인된 것인지. 이게 죽으면 유튜브가 저화질만 내준다.
   const [ytCookieHealth, setYtCookieHealth] = useState('');
+  // 토큰 발급기 상태. 쿠키와 달리 사람이 넣는 게 아니라 컨테이너가 떠 있어야 한다.
+  const [ytPotHealth, setYtPotHealth] = useState('');
   const [activeVideoIdx, setActiveVideoIdx] = useState(0);
   const activeVideo = sourceVideos[activeVideoIdx];
   const sourceUrl = activeVideo?.url || '';
@@ -978,7 +980,8 @@ export default function FineplayJobsPage() {
     try {
       const res = await apiJson<{
         url: string | null; videoId?: string; videos?: SourceVideo[];
-        maxHeight?: number; heightChoices?: number[]; cookieHealth?: string | null;
+        maxHeight?: number; heightChoices?: number[];
+        cookieHealth?: string | null; potHealth?: string | null;
       }>(
         `/highlight/fineplay-jobs/${job.id}/source-url`,
       );
@@ -986,6 +989,7 @@ export default function FineplayJobsPage() {
       if (res.maxHeight) setYtMaxHeight(res.maxHeight);
       if (res.heightChoices?.length) setYtHeightChoices(res.heightChoices);
       setYtCookieHealth(res.cookieHealth || '');
+      setYtPotHealth(res.potHealth || '');
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : String(err));
     }
@@ -2044,6 +2048,23 @@ export default function FineplayJobsPage() {
                   }}
                 >
                   {ytCookieHealth}
+                </span>
+              ) : null}
+
+              {/* 토큰 발급기. 이게 죽어 있으면 유튜브가 고화질 목록을 아예 안 준다 —
+                  그래서 쿠키가 멀쩡해도 360p 가 받힌다. 실제로 그 일이 났다. */}
+              {ytPotHealth ? (
+                <span
+                  style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                    background: ytPotHealth.startsWith('토큰 발급기 정상')
+                      ? 'var(--bg, #0b0b0e)' : '#3b1d1d',
+                    color: ytPotHealth.startsWith('토큰 발급기 정상')
+                      ? 'var(--muted, #999)' : '#fca5a5',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}
+                >
+                  {ytPotHealth}
                 </span>
               ) : null}
 
