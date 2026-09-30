@@ -1,5 +1,5 @@
 import {validateAssignment,type ReportAssignment} from './futsal-report-assignment';
-import {reportRole} from './futsal-report-positions';
+import {roleActivity,roleReview} from './futsal-report-positions';
 import { parseFpa, isShot, isDefense, type FpaEvent, type SavedFpa } from '../components/futsal/fpaGraphics';
 import { validateHeatmapAugmentation, type ActivityPolicy, type ActivityDensity } from '../public/fpa-cv/heatmap-augmentation-schema.mjs';
 import type { AnalysisSnapshot } from '../public/fpa-cv/analysis-snapshots.mjs';
@@ -105,14 +105,14 @@ export function commentDraft(source:HeatSource|null,p:HeatPlayer|undefined,perso
   const activity=[`${mainZone}을 중심으로 움직였고, 좌우로는 ${mainSide}에 발자취가 남았어요.`,hasZone?(zone===0?'후방에서 자리를 잡은 움직임은 공을 되찾은 뒤 연결하거나 동료의 뒤를 지원하는 역할과 함께 읽어 볼 수 있어요.':zone===2?'전방을 자주 찾은 움직임은 상대 골문 가까이에서 공을 받을 위치를 준비하는 역할과 함께 읽어 볼 수 있어요.':'가운데를 자주 찾은 움직임은 앞뒤와 양옆을 잇는 연결 위치라는 점에서 눈여겨볼 만해요.'):'활동 구역이 한 곳에만 모이지 않았어요. 서로 다른 공간을 찾은 장면을 비교하면 움직임의 폭을 더 잘 이해할 수 있어요.'];
   if(usable.length>=2){const first=usable[0],last=usable.at(-1)!,delta=last.forward-first.forward;
    const chronology=usable.map(v=>`${v.label}에는 ${zoneNames[v.zone]}`).join(', ');
-   activity.push(`${chronology}에 활동이 가장 많이 모였어요.`);
+   activity.push(usable.every(v=>v.zone===first.zone)?`${usable.map(v=>v.label).join('·')} 모두 ${zoneNames[first.zone]}에 활동이 가장 많이 모였어요.`:`${chronology}에 활동이 가장 많이 모였어요.`);
    activity.push(Math.abs(delta)>=.1?`${first.label}보다 ${last.label}에는 ${delta>0?'상대 골문 쪽':'우리 진영 쪽'}으로 평균 위치가 옮겨 갔어요. 그 변화가 나온 장면을 돌아보면 나에게 맞는 지원 위치를 찾는 데 도움이 돼요.`:first.side!==last.side?`${first.label}의 ${sideNames[first.side]}에서 ${last.label}의 ${sideNames[last.side]}으로 주로 찾는 통로도 달라졌어요. 공간을 바꾼 순간의 선택을 다음 경기에도 살려 봐요.`:'시간이 흘러도 평균적인 활동 위치는 비슷했어요. 익숙한 공간을 바탕으로, 공을 연결한 뒤 한 걸음 더 지원하는 움직임을 더해 보세요.');
    texts.strengths[0]=Math.abs(delta)>=.1?`${last.label}에는 ${delta>0?'전방':'후방'}으로 활동 위치가 달라졌어요. 시간대별 움직임이 분명히 남았어요.`:`${mainZone}을 중심으로 움직였어요. 자주 찾은 공간이 플레이의 바탕이 됐어요.`;
    texts.strengths[2]=`${usable.map(v=>v.label).join('·')}의 활동 구역을 비교할 수 있어요. 나만의 움직임을 돌아볼 좋은 단서예요.`;
    texts.improvements[2]='시간대별 활동 위치가 달라진 순간을 돌아봐요. 공을 연결한 뒤 지원할 공간을 하나 더 찾아보세요.';
   }else if(usable.length===1)activity.push(`${usable[0].label}에는 ${zoneNames[usable[0].zone]}에서의 움직임이 가장 잘 남아 있어요. 이 시간대에 공을 연결한 뒤 어디로 움직였는지 돌아보면 다음 플레이를 구체적으로 준비할 수 있어요.`);
   else activity.push('현재 남아 있는 위치를 중심으로 읽었어요. 자주 찾은 공간에서 공을 연결한 뒤, 다시 공을 받을 자리를 찾는 움직임도 함께 돌아보면 좋아요.');
-  const role=reportRole(person.position);if(role)activity[1]=`${role.short} 관점에서는 ${role.focus}을 살펴볼 만해요. 자주 활동한 공간에서 그 역할을 어떻게 준비했는지 함께 읽어 봐요.`;
+  const interpretation=roleActivity(person.position,zone,spatial.longitudinal[0]>=.2&&spatial.longitudinal[2]>=.2);if(interpretation)activity[1]=interpretation;
   texts.heatComment=activity.slice(0,2).join(' ')+'\n\n'+activity.slice(2).join(' ');
   if(spatial.coverage>=.2){texts.strengths[0] ||= `${mainZone}에서 활동을 이어 갔어요. 자주 찾은 공간을 다음 경기에도 활용해 봐요.`;texts.strengths[1]=`${mainSide}에서의 움직임이 눈에 띄어요. 익숙한 통로를 바탕으로 다음 선택을 준비해 봐요.`;texts.improvements[1]=hasSide?`${mainSide}에서 움직인 뒤 반대편 동료도 살펴보세요. 다음 연결의 선택지가 넓어질 거예요.`:'서로 다른 공간으로 이동할 때 동료와의 간격도 살펴봐요. 지원할 위치를 더 쉽게 찾을 수 있어요.';}
   texts.improvements[0]=zone===2?'전방에서 플레이한 뒤에는 동료와의 간격을 살펴보세요. 다음 공격과 수비를 함께 준비해 봐요.':zone===0?'후방에서 공을 연결한 다음, 한 걸음 앞으로 지원해 볼까요? 다시 공을 받을 선택지를 만들어 봐요.':'가운데서 공을 연결한 뒤 옆 공간으로 한 번 더 움직여 보세요. 새로운 연결을 준비할 수 있어요.';
@@ -125,6 +125,11 @@ export function commentDraft(source:HeatSource|null,p:HeatPlayer|undefined,perso
   if(recoveries.length||defense.length)texts.improvements[1]='공을 되찾거나 수비한 뒤 가까운 동료를 찾아보세요. 다음 연결을 미리 준비해 봐요.';
   if(shots.length)texts.improvements[2]='슈팅 전 동료와 골문을 함께 살펴보세요. 직접 마무리할 때와 연결할 때의 선택을 비교해 봐요.';
  }else texts.eventComment='아직 이 선수에게 연결된 이벤트가 없어요. 팀의 슈팅 위치와 내 활동 구역을 함께 보며, 공격에 나설 때와 수비로 돌아설 때 지원할 공간을 살펴봐요.';
- const role=reportRole(person.position);if(role&&spatial)texts.improvements[0]=role.next;
+ if(spatial){
+  const first=usable[0],last=usable.at(-1),delta=first&&last?last.forward-first.forward:0;
+  const zones=[...spatial.longitudinal].sort((a,b)=>b-a),lanes=[...spatial.lateral].sort((a,b)=>b-a);
+  const review=roleReview({position:person.position,zone:spatial.longitudinal.indexOf(Math.max(...spatial.longitudinal)),side:spatial.lateral.indexOf(Math.max(...spatial.lateral)),broad:spatial.longitudinal[0]>=.2&&spatial.longitudinal[2]>=.2,shots:shots.length,goals:shots.filter(e=>e.goal).length,recoveries:recoveries.length,defense:defense.length,phaseChange:usable.length<2?undefined:delta>=.1?'forward':delta<=-.1?'back':first.side!==last!.side?'side':'steady',firstPhase:first?.label,lastPhase:last?.label,distinctZone:zones[0]-zones[1]>=.08,distinctSide:lanes[0]-lanes[1]>=.08});
+  if(review){texts.strengths=review.strengths;texts.improvements=review.improvements;}
+ }
  return texts;
 }

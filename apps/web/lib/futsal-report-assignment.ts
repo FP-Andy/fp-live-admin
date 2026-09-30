@@ -1,6 +1,7 @@
 import {apiJson} from './api';
 import type {ReportDraft} from './futsal-report';
 import {reportRole} from './futsal-report-positions';
+import {automaticPositions} from './futsal-report-auto-position';
 export type AssignmentPlayer={id:string;group:'home'|'home_gk'|'away'|'away_gk'|'referee';number:string;box:[number,number,number,number]};
 export type ReportAssignment={jobId:string;time:number;width:number;height:number;image:string;players:AssignmentPlayer[]};
 const validId=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{32}$/.test(v);
@@ -29,8 +30,9 @@ export async function loadReportAssignment(jobId:string):Promise<ReportAssignmen
  }finally{URL.revokeObjectURL(url);}
 }
 export function assignmentNumber(d:ReportDraft,id:string){return d.assignment?.players.find(p=>p.id===id)?.number||d.players[id]?.jersey||'';}
-export function assignmentPosition(d:ReportDraft,p:AssignmentPlayer){return d.players[p.id]?.position||d.assignmentPositions?.[p.id]||(p.group.endsWith('_gk')?'GK':'');}
+export function assignmentPosition(d:ReportDraft,p:AssignmentPlayer){return automaticPositions(d)[p.id]?.position||'';}
 export function assignmentRows(d:ReportDraft,side:'home'|'away'){
+ const positions=automaticPositions(d);
  const source=d.assignment?.players||Object.entries(d.players).map(([id,p])=>({id,group:p.side,number:p.jersey,box:[0,0,1,1] as AssignmentPlayer['box']}));
- return source.filter(p=>p.group===side||p.group===side+'_gk').sort((a,b)=>Number(b.group.endsWith('_gk'))-Number(a.group.endsWith('_gk'))||a.number.localeCompare(b.number,undefined,{numeric:true})).map(p=>({...p,role:reportRole(assignmentPosition(d,p))}));
+ return source.filter(p=>p.group===side||p.group===side+'_gk').sort((a,b)=>Number(b.group.endsWith('_gk'))-Number(a.group.endsWith('_gk'))||a.number.localeCompare(b.number,undefined,{numeric:true})).map(p=>({...p,role:reportRole(positions[p.id]?.position||''),automatic:positions[p.id]}));
 }

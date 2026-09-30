@@ -11,3 +11,19 @@ const updated=f.updateSnapshotSource(d,source);assert.equal(updated.players['hom
 console.log('PASS: team-perspective inversion, preserved time axis/goals/colors, grounded comments, source refresh preserves edits, older/different snapshots ignored.');
 
 if(process.env.REAL_FLA_SUMMARY&&process.env.REAL_FLA_DOMINANCE){const actual={...data,summary:JSON.parse(fs.readFileSync(process.env.REAL_FLA_SUMMARY)),dominance:JSON.parse(fs.readFileSync(process.env.REAL_FLA_DOMINANCE))};r.validateMatchReportData(actual);console.log('Real FLA accepted:',actual.dominance.bins.length,'bins',r.matchComment(actual,'home'));}
+
+const shot=(i,team)=>({id:String(i),type:'XG',team,shot_x:30,shot_y:10,xg:.1,is_goal:false});
+const full={...data,ended:true,summary:{...data.summary,possession:{home_ms:600000,away_ms:300000}},dominance:{bins:Array.from({length:15},(_,i)=>({start_ms:i*60000,end_ms:(i+1)*60000,dominance:.5}))},events:[...Array.from({length:9},(_,i)=>shot(i,'HOME')),...Array.from({length:3},(_,i)=>shot(i+9,'AWAY'))]};
+assert.match(r.matchComment(full,'home',{homeScore:'3',awayScore:'1'}),/승리.*경기 지표가 함께/s);
+assert.match(r.matchComment(full,'away',{homeScore:'3',awayScore:'1'}),/패배.*상대 쪽으로 기운/s);
+assert.match(r.matchComment(full,'home',{homeScore:'1',awayScore:'1'}),/우위를 득점 차로 연결/);
+assert.match(r.matchComment(full,'home',{homeScore:'1',awayScore:'3'}),/유리하게 남은 지표/);
+assert.match(r.matchComment(full,'away',{homeScore:'1',awayScore:'3'}),/상대 쪽에 유리한 지표가 더 많았는데도 승리/);
+assert.match(r.matchComment(full,'home',{homeScore:'3',awayScore:'0'}),/실점 없이/);
+const live=r.matchComment({...full,ended:false},'home',{homeScore:'3',awayScore:'1'});assert.match(live,/현재 스코어.*아직 기록 중/s);assert.doesNotMatch(live,/승리로 경기를 마쳤|패배였|무승부로 경기를 마쳤/);
+for(const score of [{homeScore:'',awayScore:''},{homeScore:'-1',awayScore:'0'},{homeScore:'a',awayScore:'1'}])assert.equal(r.matchResult(full,'home',score),null);
+const missing=r.matchComment(full,'home',{homeScore:'',awayScore:''});assert.doesNotMatch(missing,/0:0|승리로|패배였/);
+const oneTeam=r.matchComment({...full,events:[shot(1,'AWAY')]},'home',{homeScore:'3',awayScore:'1'});assert.match(oneTeam,/횟수 비교는 보류/);assert.doesNotMatch(oneTeam,/우리 팀 0회|결정력|역전|선제골/);
+const sparse={...full,summary:data.summary,dominance:{bins:[]},events:[]};assert.doesNotMatch(r.matchComment(sparse,'home',{homeScore:'2',awayScore:'1'}),/지표가 함께 뒷받침|상대 쪽에 유리한 지표/);
+for(const own of [0,1,3])for(const other of [0,1,3])for(const side of ['home','away']){const text=r.matchComment(full,side,{homeScore:String(own),awayScore:String(other)});assert(text.length<1100);assert(!text.includes('undefined'));assert.equal(text.split('\n\n').length,3);}
+console.log('PASS: score-aware win/draw/loss assessment, score perspective inversion, process/result divergence, clean sheet, ongoing/missing score safeguards, sparse and one-team log limits.');
