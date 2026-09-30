@@ -2079,8 +2079,8 @@ export default function FineplayJobsPage() {
                   }}
                 >
                   ⚠ {v.lowQualityDetail || '요청한 화질보다 낮게 받아졌습니다.'}
-                  {' '}원본 자체가 그 화질이 아니라면 유튜브가 이 서버를 막은 것입니다 —
-                  {' '}쿠키(YTDLP_COOKIES)를 새로 넣고 다시 받아야 합니다.
+                  {' '}원본 자체가 그 화질이 아니라면 유튜브가 이 서버를 막은 것입니다.
+                  {' '}위 경고에 potoken·SABR 가 보이면 토큰 발급기 컨테이너부터 확인하세요.
                 </p>
               ))}
             </div>

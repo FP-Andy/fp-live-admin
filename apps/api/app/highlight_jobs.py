@@ -690,7 +690,8 @@ def classify_youtube_failure(stderr: str) -> str:
 
 
 def fetch_youtube_source(url: str, dest: Path, on_progress=None,
-                         max_height: int | None = None) -> str:
+                         max_height: int | None = None,
+                         use_cookies: bool = True) -> str:
     """유튜브 영상 하나를 dest 로 받는다. 실패하면 사유 코드를 단 예외를 던진다.
 
     받는 방식은 운영자가 링크를 붙여넣는 기존 기능(download_link_for_job)과 같다 —
@@ -705,8 +706,9 @@ def fetch_youtube_source(url: str, dest: Path, on_progress=None,
         *YT_JS_ARGS,
         *youtube_pot_args(),
         *youtube_client_args(),
-        # 유튜브는 데이터센터 IP 를 봇으로 본다. 로그인 쿠키를 주면 통과한다.
-        *youtube_cookie_args(),
+        # 유튜브는 데이터센터 IP 를 봇으로 본다. 로그인 쿠키를 주면 통과한다 —
+        # 그런데 쿠키가 오히려 창구를 죽이는 조합이 있어 끌 수도 있어야 한다(아래 재시도).
+        *(youtube_cookie_args() if use_cookies else []),
         "--downloader", "aria2c",
         "--downloader-args", "aria2c:-x 16 -s 16 -k 1M",
         "--merge-output-format", "mp4",
@@ -838,12 +840,52 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
             # 파일을 직접 열어 보지 않고도 알 수 있다.
             info = probe_video_info(dest) if dest.exists() else {}
             got = int(info.get("height") or 0)
+
+            # ── 쿠키 없이 재시도 ─────────────────────────────────────────
+            # 쿠키를 붙이면 예비 창구가 죽는 조합이 있다(운영 실측, 2026-09-30):
+            #   · 쿠키를 못 쓰는 클라이언트(tv_simply)는 통째로 건너뛰어진다
+            #   · 쿠키 계정에 SABR 전용 실험이 걸리면 web_embedded 의 포맷이 빠진다
+            # 그러면 남는 게 360p 뿐이다. 이때는 **쿠키를 빼고** 한 번 더 받아 본다 —
+            # 토큰 발급기(potoken)가 있으면 쿠키 없이도 mweb 이 1080p 를 내준다(실측).
+            # 더 나빠질 일은 없다: 재시도 결과가 더 낮으면 처음 것을 그대로 쓴다.
+            retried_without_cookies = False
+            retry_attempted = False
+            if (got and got < min(YT_MIN_USABLE_HEIGHT, height)
+                    and youtube_cookie_args()):
+                retry_attempted = True
+                logger.warning("저화질(%sp)로 받혀 쿠키 없이 다시 받아 봅니다 %s/%s",
+                               got, job_id, video.video_id)
+                save(video.video_id, status="downloading", percent=0,
+                     detail="쿠키 없이 다시 받는 중")
+                retry_dest = dest.with_name(dest.stem + ".retry" + dest.suffix)
+                try:
+                    retry_warn = fetch_youtube_source(
+                        video.youtube_url, retry_dest, on_progress=on_progress,
+                        max_height=height, use_cookies=False)
+                except YoutubeFetchError as exc:
+                    logger.warning("쿠키 없는 재시도 실패 %s/%s: %s",
+                                   job_id, video.video_id, exc.detail[:200])
+                    retry_dest.unlink(missing_ok=True)
+                else:
+                    retry_info = probe_video_info(retry_dest) if retry_dest.exists() else {}
+                    retry_got = int(retry_info.get("height") or 0)
+                    if retry_got > got:
+                        retry_dest.replace(dest)
+                        info, got = retry_info, retry_got
+                        fetch_warnings = retry_warn
+                        retried_without_cookies = True
+                        logger.info("쿠키 없는 재시도 성공 %s/%s: %sp",
+                                    job_id, video.video_id, retry_got)
+                    else:
+                        retry_dest.unlink(missing_ok=True)
             fields = {
                 "status": "done", "percent": 100, "path": str(dest),
                 "size": dest.stat().st_size if dest.exists() else 0,
                 "requested_height": height,
                 "video": info,
-                "cookies_used": bool(youtube_cookie_args()),
+                "cookies_used": bool(youtube_cookie_args()) and not retried_without_cookies,
+                # 쿠키가 창구를 죽여 쿠키 없이 받은 경우 — 화면이 이 사정을 말해 준다.
+                "retried_without_cookies": retried_without_cookies,
             }
             # 요청한 것보다 한참 아래가 받아졌으면 **티를 낸다.** 조용히 '완료' 로
             # 남으면 운영자가 360p 영상으로 한 시간 태깅하고 나서야 안다 — 실제로
@@ -857,6 +899,8 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
                 fields["ytdlp_warnings"] = warned
                 fields["low_quality_detail"] = (
                     f"{height}p 를 요청했지만 {got}p 를 받았습니다."
+                    + (" 쿠키 없이도 다시 받아 봤지만 그대로였습니다."
+                       if retry_attempted else "")
                     + (f" 유튜브가 지금 이 서버에 내주는 화질: {avail}." if avail else "")
                     + f" {fields['cookie_health']}."
                     + (f" yt-dlp 경고: {warned}" if warned else "")
