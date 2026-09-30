@@ -430,6 +430,40 @@ YT_PLAYER_CLIENTS = os.getenv(
     "YTDLP_PLAYER_CLIENTS", "default,web_embedded,mweb,tv_simply").strip()
 
 
+def probe_video_info_url(url: str) -> dict:
+    """원격 영상(presigned URL 등)의 실물을 잰다. 통째로 받지 않는다.
+
+    업로드 원본은 유튜브와 달리 우리가 받아 오는 게 아니라 S3 에서 바로 흘려 쓴다.
+    그래서 실물을 재는 자리가 없었는데, 그러면 '원본이 흐리다' 를 확인할 방법도 없다 —
+    유튜브 쪽에서 그것 때문에 하루를 썼다. 같은 일을 업로드에서 반복하지 않는다.
+
+    ffprobe 는 moov 원자만 읽으면 되므로 통짜 전송이 일어나지 않는다(faststart 면
+    앞쪽에 있다). 그래도 느릴 수 있어 시간을 못 박고, 실패하면 빈 값을 돌려준다.
+    """
+    if not url:
+        return {}
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,codec_name,bit_rate",
+             "-of", "default=nw=1:nk=0", url],
+            capture_output=True, text=True, timeout=45,
+        ).stdout
+    except Exception:  # noqa: BLE001 - 재는 데 실패해도 재생은 된다
+        return {}
+    got = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+    def num(key):
+        try:
+            return int(float(got.get(key, "")))
+        except (TypeError, ValueError):
+            return None
+
+    info = {"width": num("width"), "height": num("height"),
+            "codec": got.get("codec_name") or None, "bitrate": num("bit_rate")}
+    return {k: v for k, v in info.items() if v is not None}
+
+
 def youtube_pot_health() -> str:
     """토큰 발급기가 살아 있나. 한 줄로.
 

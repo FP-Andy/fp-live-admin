@@ -89,6 +89,7 @@ from .highlight_jobs import (
     download_link_for_job,
     fetch_youtube_sources_for_job,
     fineplay_youtube_path,
+    probe_video_info_url,
     youtube_cookie_health,
     youtube_pot_health,
     YT_HEIGHT_CHOICES,
@@ -12212,6 +12213,8 @@ def fineplay_source_url(
         raise HTTPException(status_code=503, detail="HIGHLIGHT_S3_BUCKET 이 설정되지 않았습니다.")
 
     videos = []
+    # 이번에 새로 잰 것들. 다 돌고 나서 한 번에 저장한다(영상마다 쓰면 DB 를 두드린다).
+    newly_probed: dict = {}
     for v in manifest.videos:
         if v.is_youtube:
             # 유튜브는 presign 할 S3 키가 없다. 받아 둔 파일을 우리 서버가 흘려준다.
@@ -12248,13 +12251,29 @@ def fineplay_source_url(
                 "resolution": v.resolution,
             })
             continue
+        signed = storage.presigned_get(v.s3_key, expires=21600)
+        # 업로드 원본의 실물. 매번 재면 느리므로 한 번 재고 잡에 남긴다.
+        # 이게 없으면 '원본이 흐리다' 를 파일을 직접 열어 보기 전까지 확인할 수 없다.
+        probed = dict((job.job_metadata or {}).get("source_probe") or {})
+        info = probed.get(v.video_id)
+        if info is None:
+            info = probe_video_info_url(signed)
+            probed[v.video_id] = info
+            newly_probed[v.video_id] = info
         videos.append({
             "videoId": v.video_id,
-            "url": storage.presigned_get(v.s3_key, expires=21600),
+            "url": signed,
             "source": "UPLOAD",
+            "downloaded": info or None,
+            "s3Key": v.s3_key,
             "durationSeconds": v.duration_seconds,
             "resolution": v.resolution,
         })
+    if newly_probed:
+        meta = dict(job.job_metadata or {})
+        meta["source_probe"] = {**(meta.get("source_probe") or {}), **newly_probed}
+        update_job(db, job_id, job_metadata=meta)
+        db.commit()
     return {
         "url": videos[0]["url"],
         "videoId": videos[0]["videoId"],
