@@ -1236,6 +1236,16 @@ def _mix_music(video: Path, music: Path, volume: float, original: float, out: Pa
     return out
 
 
+def template_asset(name: str) -> Path | None:
+    """세트가 가리키는 영상·그림 파일. 내장은 assets/brand 이름, 에디터 것은 절대 경로다."""
+    if not name:
+        return None
+    p = Path(name)
+    if p.is_absolute():
+        return p if p.exists() else None
+    return brand_asset(name)
+
+
 def _video_segment(path: Path | None, label: str) -> tuple[Path, float, bool] | None:
     """영상 파일 하나를 합본 조각으로 쓸 수 있게 (경로, 길이, 소리있음) 으로 만든다.
 
@@ -1828,10 +1838,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         if cards_on and template is not None:
             if template.first_half_video:
                 half_first = _video_segment(
-                    brand_asset(template.first_half_video), "전반 효과 영상")
+                    template_asset(template.first_half_video), "전반 효과 영상")
             if template.second_half_video:
                 half_second = _video_segment(
-                    brand_asset(template.second_half_video), "후반 효과 영상")
+                    template_asset(template.second_half_video), "후반 효과 영상")
 
         # 카드(정지화면)와 클립을 **같은 종류의 조각**으로 본다. 그래야 이음매마다
         # 페이드를 따로 정할 수 있다 — 클립끼리는 하드컷, 카드가 맞닿는 곳은 디졸브.
@@ -1868,7 +1878,11 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         # 마무리 영상 — 켜져 있고 파일이 있을 때만. 길이는 파일이 정한다(설정 없음).
         outro: tuple[Path, float, bool] | None = None
         if cards_on and (cards_cfg.get("outro") or {}).get("enabled"):
-            outro = _video_segment(brand_asset(OUTRO_ASSET), "마무리 영상")
+            # 세트가 자기 마무리 영상을 들고 있으면 그걸 쓴다. 없으면 기본 아웃트로.
+            outro_name = template.outro_video if template is not None else ""
+            outro = _video_segment(
+                template_asset(outro_name) if outro_name else brand_asset(OUTRO_ASSET),
+                "마무리 영상")
         if outro is not None:
             timeline.append(("video", outro[0], outro[1], outro[2]))
 

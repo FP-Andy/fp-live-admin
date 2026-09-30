@@ -15,8 +15,11 @@ from pathlib import Path
 
 from .highlight_card_templates import (
     DEFAULT_TEMPLATE_ID,
+    PRETENDARD,
     TEMPLATES,
+    CardField,
     CardTemplate,
+    ColorZone,
     get_template,
 )
 from .models import HighlightCardTemplate
@@ -37,12 +40,81 @@ def template_dir() -> Path:
     return CARD_TEMPLATE_DIR
 
 
+def _field_from_spec(raw: dict) -> CardField:
+    """에디터 명세의 항목 하나 → CardField. 모르는 키는 버린다(명세가 자라도 안 터지게)."""
+    box = raw.get("box") or [0, 0, 100, 40]
+    return CardField(
+        id=str(raw.get("id") or "field"),
+        label=str(raw.get("label") or raw.get("id") or "항목"),
+        kind="logo" if raw.get("kind") == "logo" else "text",
+        box=tuple(float(v) for v in box[:4]),
+        font=str(raw.get("font") or PRETENDARD),
+        size=int(raw.get("size") or 40),
+        tracking=int(raw.get("tracking") or 0),
+        color=str(raw.get("color") or "#FFFFFF"),
+        placeholder=str(raw.get("placeholder") or ""),
+        default=str(raw.get("default") or ""),
+        max_len=int(raw.get("max_len") or 48),
+        ui_width=int(raw.get("ui_width") or 160),
+        empty=str(raw.get("empty") or ""),
+    )
+
+
+def _zone_from_spec(raw: dict) -> ColorZone:
+    box = raw.get("box") or [0, 0, 10, 10]
+    return ColorZone(
+        id=str(raw.get("id") or "zone"),
+        label=str(raw.get("label") or "팀 색"),
+        box=tuple(float(v) for v in box[:4]),
+        source=str(raw.get("source") or "#000000"),
+        tolerance=int(raw.get("tolerance") or 14),
+    )
+
+
+def _template_from_spec(row: HighlightCardTemplate) -> CardTemplate:
+    """에디터가 만든 전체 명세 → CardTemplate. 파일 이름은 전부 절대 경로로 푼다."""
+    spec = row.spec or {}
+
+    def asset(name) -> str:
+        return str(template_dir() / str(name)) if name else ""
+
+    start_fields = tuple(_field_from_spec(f) for f in (spec.get("start_fields") or []))
+    board_fields = tuple(_field_from_spec(f) for f in (spec.get("board_fields") or []))
+    design = spec.get("design") or [1920, 1080]
+    board_design = spec.get("board_design")
+    return CardTemplate(
+        id=f"{USER_PREFIX}{row.id}",
+        name=row.name,
+        design=(int(design[0]), int(design[1])),
+        base_color=row.base_color or "#FF7400",
+        start_bg=asset(spec.get("start_bg")),
+        section_bg=asset(spec.get("section_bg") or spec.get("start_bg")),
+        start_fields=start_fields,
+        # 구간 카드 시안이 따로 없으면 시작 카드와 같은 판을 쓴다(SUFA 와 같은 규칙).
+        section_fields=start_fields,
+        note=row.note or "",
+        backdrop=asset(spec.get("backdrop")),
+        board_bg=asset(spec.get("board_bg")),
+        board_design=(int(board_design[0]), int(board_design[1])) if board_design else None,
+        board_fields=board_fields,
+        board_zones=tuple(_zone_from_spec(z) for z in (spec.get("board_zones") or [])),
+        board_defaults=dict(spec.get("board_defaults") or {}),
+        first_half_video=asset(spec.get("first_half_video")),
+        second_half_video=asset(spec.get("second_half_video")),
+        outro_video=asset(spec.get("outro_video")),
+        outro_default=bool(spec.get("outro_default", False)),
+    )
+
+
 def to_template(row: HighlightCardTemplate) -> CardTemplate:
     """DB 행 → CardTemplate.
 
     배경은 절대 경로로 넣는다. 렌더러가 `assets/brand / 이름` 으로 합치는데,
     pathlib 은 오른쪽이 절대 경로면 그것을 쓰므로 그대로 동작한다.
     """
+    if row.spec:
+        # 에디터가 만든 템플릿 — 명세로 통째로 짓는다. base_id 상속은 안 쓴다.
+        return _template_from_spec(row)
     base = get_template(row.base_id)
     boxes = row.boxes if isinstance(row.boxes, dict) else {}
     start_bg = (str(template_dir() / row.start_bg) if row.start_bg else base.start_bg)

@@ -176,6 +176,9 @@ class CardTemplate:
     second_half_video: str = ""
     """전반·후반 효과 영상. 글자를 얹지 않고 그대로 끼워 넣는다."""
 
+    outro_video: str = ""
+    """마무리 영상 교체본. 비어 있으면 기본(파인플레이 아웃트로)을 쓴다."""
+
     def fields(self, kind: str) -> tuple[CardField, ...]:
         if kind == "board":
             return self.board_fields

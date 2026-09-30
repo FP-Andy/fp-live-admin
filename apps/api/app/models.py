@@ -495,6 +495,9 @@ class HighlightCardTemplate(Base):
     section_bg: Mapped[str | None] = mapped_column(String(120), nullable=True)
     #: 항목별로 옮긴 자리·크기. {필드id: {left, top, width, height, size}} 꼴.
     boxes: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: 템플릿 에디터가 만든 전체 명세. 있으면 base_id 상속 대신 이것으로 템플릿을
+    #: 통째로 짓는다 — 항목·점수판·팀색 영역·효과 영상까지 전부 들어 있다.
+    spec: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -18,7 +18,7 @@ const SUB_TABS: SubTab[] = [
   { href: '/admin/highlight/fineplay', label: 'FinePlay 작업', roles: ['SUPERADMIN'] },
   { href: '/admin/highlight/clips', label: '클립 결과' },
   { href: '/admin/highlight/archive', label: '아카이브', roles: ['SUPERADMIN'] },
-  { href: '/admin/highlight/editroom', label: '편집룸', roles: ['SUPERADMIN'] },
+  { href: '/admin/highlight/template-editor', label: '템플릿 에디터', roles: ['SUPERADMIN'] },
 ];
 
 // 농구에서 여는 두 화면. 사이드바(AdminShell 의 BASKETBALL_FHL_ITEMS)와 같은 목록이어야
