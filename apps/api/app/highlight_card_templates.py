@@ -316,17 +316,16 @@ _SUFA_START_FIELDS: tuple[CardField, ...] = (
         box=(289.0, 210.0, 1002.0, 54.0), font=PRETENDARD, size=60, color="#101115",
         placeholder="2026 SUFA ADVANCED LEAGUE 5R", max_len=48, ui_width=260,
     ),
-    # 판이 기울어진 평행사변형이라 **높이마다 중심이 다르다.** 로고 높이(y390~670)의
-    # 판 중심은 왼쪽 408.7 · 오른쪽 1115.7, 팀명 높이(y730~790)는 387.4 · 1094.4 —
-    # 픽셀로 잰 값이다. 예전 상자는 캔버스 눈대중이라 왼쪽 로고가 68px 왼쪽으로,
-    # 오른쪽 로고가 34px 오른쪽으로 치우쳐 대칭이 안 맞았다.
+    # 로고 기본 자리는 운영에서 눈으로 맞춘 값이다(2026-09-30 지정: 220·1030, y 400).
+    # 판 중심 실측(408.7·1115.7)으로 잡았던 것을 화면에서 보며 다시 고른 값이라
+    # 이쪽이 정본이다.
     CardField(
         id="home_logo", label="홈 로고", kind="logo",
-        box=(259.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
+        box=(220.0, 400.0, 300.0, 285.0), empty="mark", ui_width=120,
     ),
     CardField(
         id="away_logo", label="어웨이 로고", kind="logo",
-        box=(966.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
+        box=(1030.0, 400.0, 300.0, 285.0), empty="mark", ui_width=120,
     ),
     CardField(
         id="home_name", label="홈 팀명", kind="text",
