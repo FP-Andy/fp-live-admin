@@ -4,11 +4,11 @@ export const REPORT_WIDTH = 900;
 export const REPORT_HEIGHT = REPORT_WIDTH * 297 / 210;
 let fonts:Promise<string>|null=null;
 export function reportFontCSS(){
-  return fonts??=fetch('/scene/Giants-Bold.ttf').then(async r=>{
+  return fonts??=fetch('/fonts/giants/Giants-Inline.woff2').then(async r=>{
     if(!r.ok)throw Error('리포트 글꼴을 불러오지 못했습니다.');
     const bytes=new Uint8Array(await r.arrayBuffer());let binary='';
     for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-    return `@font-face{font-family:Giants;src:url(data:font/ttf;base64,${btoa(binary)}) format('truetype');font-weight:700;}`;
+    return `@font-face{font-family:'Giants Inline';src:url(data:font/woff2;base64,${btoa(binary)}) format('woff2');font-weight:400;}`;
   }).catch(e=>{fonts=null;throw e;});
 }
 
