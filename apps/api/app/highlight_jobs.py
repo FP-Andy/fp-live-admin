@@ -30,7 +30,12 @@ from .highlight_storage import default_storage
 from .highlight_storage import output_prefix as storage_output_prefix
 from .scene_motion import attach_scene_motions
 from . import highlight_card_store as card_store
-from .highlight_cards import get_template, render_card, render_card_file
+from .highlight_cards import (
+    get_template,
+    render_board_file,
+    render_card,
+    render_card_file,
+)
 from .scoreboard import board_placement, render_scoreboard_file
 from .watermark import (
     DEFAULT_OPACITY as WM_DEFAULT_OPACITY,
@@ -1265,6 +1270,29 @@ def _mix_music(video: Path, music: Path, volume: float, original: float, out: Pa
     return out
 
 
+def _video_segment(path: Path | None, label: str) -> tuple[Path, float, bool] | None:
+    """영상 파일 하나를 합본 조각으로 쓸 수 있게 (경로, 길이, 소리있음) 으로 만든다.
+
+    길이는 파일이 정한다 — 설정으로 받지 않는다. 못 읽으면 조용히 빼고 계속한다.
+    효과 영상 하나 때문에 하이라이트 자체를 못 만들 이유는 없다.
+    """
+    if path is None:
+        logger.warning("%s 자산을 찾지 못했습니다", label)
+        return None
+    try:
+        length = float(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip())
+    except (subprocess.CalledProcessError, ValueError):
+        logger.warning("%s 길이를 읽지 못했습니다 (%s)", label, path)
+        return None
+    if length <= 0:
+        return None
+    return (path, length, _has_audio(path))
+
+
 def _has_audio(path: Path) -> bool:
     """클립에 오디오 트랙이 있는가. 없으면 무음을 만들어 붙여야 조각 규격이 맞는다."""
     try:
@@ -1508,6 +1536,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         # 계산하면 원본이 여러 개일 때(파일이 바뀌면 초가 도로 작아진다) 어긋난다.
         cards_cfg = metadata.get("cards") if isinstance(metadata.get("cards"), dict) else {}
         cards_on = bool(cards_cfg.get("enabled"))
+        # 대회 세트는 점수판·카드·효과 영상을 한꺼번에 들고 있다. 그래서 **점수판을 잡기
+        # 전에** 먼저 정해 둔다 — 카드 만드는 자리에서 뒤늦게 찾으면 점수판이 못 본다.
+        # 모르는 id 는 내장으로 떨어진다(결과물은 나와야 한다).
+        template = card_store.resolve(db, cards_cfg.get("template")) if cards_on else None
 
         def _card_dur(key: str) -> float:
             # 시작 카드와 구간 카드는 머무는 시간을 따로 잡는다 — 읽을 거리가 다르다.
@@ -1616,6 +1648,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         sb_dir = work / "sb"
         sb_cache: dict[tuple[int, int], Path] = {}
         sb_logo: Path | None = None
+        # 대회 세트가 자기 점수판 그림을 들고 있으면 그걸 쓴다. 없으면 코드로 그린다.
+        sb_template = None
+        if sb and cards_on and template is not None and template.has_board:
+            sb_template = template
         if sb:
             sb_cfg, sb_pre, sb_post, sb_goal = sb
             sb_logo = _decode_logo(sb_cfg.get("logo_url"), sb_dir)
@@ -1684,15 +1720,36 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             """그 점수의 점수판 PNG. 같은 점수는 한 번만 굽고 돌려 쓴다."""
             path = sb_cache.get(score)
             if path is None:
-                path = render_scoreboard_file(
-                    sb_dir / f"sb_{score[0]}_{score[1]}.png",
-                    str(sb_cfg.get("home_name") or ""),
-                    str(sb_cfg.get("away_name") or ""),
-                    score[0], score[1], sb_board_w,
-                    sb_cfg.get("home_color"), sb_cfg.get("away_color"),
-                    sb_logo, sb_logo_scale,
-                    float(sb_cfg.get("name_size_pct") or 100) / 100.0,
-                )
+                dest = sb_dir / f"sb_{score[0]}_{score[1]}.png"
+                if sb_template is not None:
+                    # 대회 세트가 자기 점수판을 들고 있으면 그것으로 그린다.
+                    # 팀명·점수는 여기서 넣고, 팀 색은 시안에 구워진 색을 갈아끼운다.
+                    path = render_board_file(
+                        dest, sb_template, sb_board_w,
+                        values={
+                            "round_label": str(sb_cfg.get("round_label") or ""),
+                            "home_name": str(sb_cfg.get("home_name") or ""),
+                            "away_name": str(sb_cfg.get("away_name") or ""),
+                            "home_score": str(score[0]),
+                            "away_score": str(score[1]),
+                        },
+                        boxes=(sb_cfg.get("boxes") if isinstance(sb_cfg.get("boxes"), dict)
+                               else None),
+                        colors={
+                            "home_color": str(sb_cfg.get("home_color") or ""),
+                            "away_color": str(sb_cfg.get("away_color") or ""),
+                        },
+                    )
+                else:
+                    path = render_scoreboard_file(
+                        dest,
+                        str(sb_cfg.get("home_name") or ""),
+                        str(sb_cfg.get("away_name") or ""),
+                        score[0], score[1], sb_board_w,
+                        sb_cfg.get("home_color"), sb_cfg.get("away_color"),
+                        sb_logo, sb_logo_scale,
+                        float(sb_cfg.get("name_size_pct") or 100) / 100.0,
+                    )
                 sb_cache[score] = path
             return path
 
@@ -1765,11 +1822,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         card_dir = job_dir(job_id) / "cards"
         intro_card: Path | None = None
         section_card: dict[int, Path] = {}
-        if cards_on:
-            # 어떤 항목을 어디에 그릴지는 템플릿이 들고 있다. 여기서는 값만 건넨다.
-            # 모르는 템플릿 id 는 내장으로 떨어진다 — 결과물은 나와야 한다.
-            # 운영자가 콘솔에서 만든 템플릿도 같은 자리에서 찾는다(card_store).
-            template = card_store.resolve(db, cards_cfg.get("template"))
+        if cards_on and template is not None:
             # 배경을 갈아입힐 색. 비어 있으면 시안 색 그대로다.
             card_color = str(cards_cfg.get("color") or "")
             intro_cfg = cards_cfg.get("intro")
@@ -1795,40 +1848,51 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 )
 
         # ── 합본에 놓일 조각들을 먼저 늘어놓는다 ─────────────────────────
+        # 대회 세트가 들고 있는 전후반 효과 영상. 글자를 얹지 않고 그대로 끼운다.
+        #
+        # 자리는 운영자가 이미 정해 둔 것을 쓴다 — 시작 카드 뒤에 전반, 구간 마커(T)
+        # 자리에 후반. 마커를 여러 번 찍었으면 **첫 마커에만** 후반 효과를 넣는다.
+        # 하프타임은 한 경기에 한 번뿐이라, 나머지 마커는 원래대로 구간 카드가 간다.
+        # 효과 영상이 없는 세트가 보통이다(파인플레이 기본). 없는 것은 조용히 넘어간다 —
+        # 경고는 '세트가 들고 있다고 했는데 파일이 없을 때' 만 뜻이 있다.
+        half_first = half_second = None
+        if cards_on and template is not None:
+            if template.first_half_video:
+                half_first = _video_segment(
+                    brand_asset(template.first_half_video), "전반 효과 영상")
+            if template.second_half_video:
+                half_second = _video_segment(
+                    brand_asset(template.second_half_video), "후반 효과 영상")
+
         # 카드(정지화면)와 클립을 **같은 종류의 조각**으로 본다. 그래야 이음매마다
         # 페이드를 따로 정할 수 있다 — 클립끼리는 하드컷, 카드가 맞닿는 곳은 디졸브.
         #
         #   ("still", PNG, 길이, 워터마크여부, 이름)  또는  ("clip", 클립번호)
+        #   ("video", 경로, 길이, 소리있음)
         timeline: list[tuple] = []
         if intro_card is not None:
             # 카드에는 워터마크를 얹지 않는다 — 시안에 이미 'Fine Play' 가 들어 있다.
             timeline.append(("still", intro_card, intro_card_dur, False, "start"))
+        if half_first is not None:
+            timeline.append(("video", half_first[0], half_first[1], half_first[2]))
         if has_intro:
             timeline.append(("still", intro_path, intro_dur, True, "intro"))
+        second_used = False
         for k in range(used):
             card = section_card.get(k)
             if card is not None:
-                timeline.append(("still", card, section_card_dur, False, f"sec{k:03d}"))
+                if half_second is not None and not second_used:
+                    # 세트에 후반 효과가 있으면 첫 구간 마커는 그 영상이 대신한다.
+                    timeline.append(("video", half_second[0], half_second[1], half_second[2]))
+                    second_used = True
+                else:
+                    timeline.append(("still", card, section_card_dur, False, f"sec{k:03d}"))
             timeline.append(("clip", k))
 
         # 마무리 영상 — 켜져 있고 파일이 있을 때만. 길이는 파일이 정한다(설정 없음).
         outro: tuple[Path, float, bool] | None = None
         if cards_on and (cards_cfg.get("outro") or {}).get("enabled"):
-            path = brand_asset(OUTRO_ASSET)
-            if path is None:
-                logger.warning("마무리 영상 자산을 찾지 못했습니다 (%s)", OUTRO_ASSET)
-            else:
-                try:
-                    length = float(subprocess.run(
-                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                         "-of", "csv=p=0", str(path)],
-                        check=True, capture_output=True, text=True,
-                    ).stdout.strip())
-                except (subprocess.CalledProcessError, ValueError):
-                    logger.warning("마무리 영상 길이를 읽지 못했습니다 (%s)", path)
-                else:
-                    if length > 0:
-                        outro = (path, length, _has_audio(path))
+            outro = _video_segment(brand_asset(OUTRO_ASSET), "마무리 영상")
         if outro is not None:
             timeline.append(("video", outro[0], outro[1], outro[2]))
 
