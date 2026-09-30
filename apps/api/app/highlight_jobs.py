@@ -906,6 +906,10 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
                     logger.warning("쿠키 없는 재시도 실패 %s/%s: %s",
                                    job_id, video.video_id, exc.detail[:200])
                     retry_dest.unlink(missing_ok=True)
+                    # 왜 실패했는지도 남긴다 — 첫 시도 경고만 남기면 '쿠키를 뺐을 때
+                    # 무슨 일이 났는지' 를 영영 모른다(실제로 그래서 한 번 막혔다).
+                    fetch_warnings = ((fetch_warnings + " ∥ ") if fetch_warnings else "") \
+                        + f"[무쿠키 재시도 실패] {exc.detail[-200:]}"
                 else:
                     retry_info = probe_video_info(retry_dest) if retry_dest.exists() else {}
                     retry_got = int(retry_info.get("height") or 0)
@@ -918,6 +922,11 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
                                     job_id, video.video_id, retry_got)
                     else:
                         retry_dest.unlink(missing_ok=True)
+                        # 재시도도 저화질 — 그쪽 경고를 같이 남긴다. 무엇이 그쪽을
+                        # 막았는지가 다음 진단의 전부다.
+                        if retry_warn:
+                            fetch_warnings = ((fetch_warnings + " ∥ ") if fetch_warnings else "") \
+                                + f"[무쿠키 재시도({retry_got}p)] {retry_warn[-300:]}"
             fields = {
                 "status": "done", "percent": 100, "path": str(dest),
                 "size": dest.stat().st_size if dest.exists() else 0,
