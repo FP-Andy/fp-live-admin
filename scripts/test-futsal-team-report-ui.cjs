@@ -21,8 +21,9 @@ let current=source;
  assert.match(await page.locator('.mr-preview .mr-map-panel small').first().innerText(),/25.6%/);
  assert.match(await page.locator('.mr-preview .mr-sheet-footer').innerText(),/AI 기반 풋살 분석/);assert.doesNotMatch(await page.locator('.mr-preview .mr-sheet-footer').innerText(),/CV|확정|40 ×/);
  const brand=await page.locator('.mr-preview .mr-brand').evaluate(n=>({color:getComputedStyle(n).color,font:getComputedStyle(n).fontFamily}));assert.equal(brand.color,'rgb(255, 116, 0)');assert.match(brand.font,/Giants/);
+ assert.equal(await page.getByLabel('FC 서울 포인트 색상',{exact:true}).inputValue(),'#d6000f');assert.equal(await page.getByLabel('FC 안양 포인트 색상',{exact:true}).inputValue(),'#4a227a');
  await page.getByRole('button',{name:'최신 FLA 기록 불러오기',exact:true}).click();await page.getByText('같은 경기의 대시보드 FLA를 연결했습니다. 공격 방향·점유율·슈팅·경기 흐름을 반영했습니다.',{exact:true}).waitFor();
- assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/아군 66.7%/);
+ assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/아군 66.7%/);assert((await page.locator('.mr-preview .tr-review p').innerText()).length>400);
  assert.equal(await page.locator('.mr-phases>div').count(),3);assert.match(await page.locator('.mr-preview .tr-review').innerText(),/중앙/);assert.match(await page.locator('.mr-preview .mr-score').innerText(),/3\s*:\s*1/);assert.match(await page.getByLabel('경기 총평',{exact:true}).getAttribute('placeholder'),/중앙/);
  await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/home.png'});
  await page.getByLabel('리포트 기준 팀',{exact:true}).selectOption('away');
@@ -30,14 +31,17 @@ let current=source;
  assert.match(await page.locator('.mr-preview .mr-own-team').innerText(),/안양/);
  assert.match(await page.locator('.mr-preview .tr-review').innerText(),/왼쪽 측면/);
  await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/away.png'});
- await page.getByLabel('서울 포인트 색상',{exact:true}).fill('#ba1234');
+ await page.getByRole('button',{name:'개인 리포트',exact:true}).click();assert.doesNotMatch(await page.locator('.mr-preview .mr-sheet').innerText(),/양 팀 기록|좌표 없음|이 선수 0건/);await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/player.png'});
+ await page.getByLabel('FC 서울 포인트 색상',{exact:true}).fill('#ba1234');
  const pending=page.waitForEvent('download',{timeout:120000});await page.getByRole('button',{name:'팀 리포트 PDF · 6페이지',exact:true}).click();
  const bounds=await page.locator('.mr-bundle-output .mr-sheet').evaluateAll(nodes=>nodes.map(n=>({height:n.getBoundingClientRect().height,footer:n.querySelector('footer').getBoundingClientRect().bottom-n.getBoundingClientRect().top})));assert(bounds.every(b=>b.footer<=b.height));
 
  const download=await Promise.race([pending,page.waitForFunction(()=>document.querySelector('.mr-notice')?.textContent?.startsWith('내보내기 실패')).then(async()=>{throw Error(await page.locator('.mr-notice').innerText());})]);await download.saveAs(out+'/team-six-pages.pdf');const pdf=await PDFDocument.load(fs.readFileSync(out+'/team-six-pages.pdf'));assert.equal(pdf.getPageCount(),6);assert(pdf.getPages().every(p=>Math.abs(p.getWidth()-595.28)<1&&Math.abs(p.getHeight()-841.89)<1));
  await page.getByRole('button',{name:'리포트 JSON 저장',exact:true}).click();
  await page.getByText('이 브라우저에 저장됨',{exact:true}).waitFor();await page.reload({waitUntil:'networkidle'});assert.equal(await page.getByLabel('리포트 기준 팀',{exact:true}).inputValue(),'away');assert.equal(await page.getByLabel('선수 이름',{exact:true}).inputValue(),'직접 수정한 이름');
- assert.equal(await page.getByLabel('서울 포인트 색상',{exact:true}).inputValue(),'#ba1234');
+ assert.equal(await page.getByLabel('FC 서울 포인트 색상',{exact:true}).inputValue(),'#ba1234');
+ // Every player receives a complete generated story that must fit one A4 page.
+ for(const id of heat.players.map(p=>p.id)){await page.getByLabel('히트맵 선수',{exact:true}).selectOption(id);await page.waitForTimeout(50);const over=await page.locator('.mr-preview [data-report-text]').evaluateAll(ns=>ns.filter(n=>n.scrollHeight>n.clientHeight+1||n.scrollWidth>n.clientWidth+1).map(n=>n.dataset.reportText));assert.deepEqual(over,[],id+' automatic text overflow');}
  await page.setViewportSize({width:760,height:1000});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
  assert.deepEqual(errors,[]);console.log('PASS: snapshot refresh preserves edits; branded footer; true team inversion; FLA summary/comment; six A4 pages; restore and narrow screen. '+out);
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});

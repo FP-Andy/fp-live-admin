@@ -10,6 +10,6 @@ assert.equal(r.spatialSummary(h,h.players[0],'right').longitudinal[2],.75);asser
 const d=r.attachHeatmap(r.emptyDraft(),h);d.fpa=source;d.matchId='match-one';d.players['home-1'].name='테스트';d.players['home-1'].position='ALA';d.players['home-1'].heatComment='직접 수정';assert.deepEqual(r.restoreDraft(JSON.parse(JSON.stringify(d))),d);
 const different=r.attachHeatmap(d,{...h,datasetId:'two'});assert.equal(different.fpa,null);assert.equal(different.matchId,'');assert.equal(different.players['home-1'].heatComment,'');
 assert.throws(()=>r.restoreDraft({...d,players:{}}));assert.throws(()=>r.parseFpaSource({rows:[{Player:{bad:true}}]}));
-const draft=r.commentDraft(h,h.players[0],p,events,'right');assert.match(draft.heatComment,/눈에 띄어요/);assert(draft.strengths[0].length>0);assert.equal(r.commentDraft(null,undefined,p,[],'right').heatComment,'');
+const draft=r.commentDraft(h,h.players[0],p,events,'right');assert.match(draft.heatComment,/오른쪽 측면/);assert(draft.strengths[0].length>0);assert.equal(r.commentDraft(null,undefined,p,[],'right').heatComment,'');
 console.log('PASS: strict heatmap import, team+jersey filtering, explicit recovery outcomes, direction/coordinate alignment, independent display edits, draft roundtrip, match isolation and grounded low-coverage comments.');
 if(process.argv[2]){r.validateHeatmap(JSON.parse(fs.readFileSync(process.argv[2],'utf8')));console.log('PASS: supplied real heatmap export validates.');}

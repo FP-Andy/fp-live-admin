@@ -39,3 +39,10 @@
 .mr-sheet:not(.tr-sheet) .mr-match-band{padding:10px 20px}
 .mr-sheet:not(.tr-sheet) .mr-map-section{grid-template-columns:53% minmax(0,1fr)}
 .mr-review li>span{flex:none;min-width:15px;white-space:nowrap}
+
+/* Give the analyst's narrative room while keeping the same one-page A4 sheet. */
+.tr-sheet{grid-template-rows:28px 70px 94px 230px 105px 200px minmax(0,1fr) 36px}
+.tr-lanes svg{height:140px}.tr-flow svg{height:136px}
+.tr-review>p{font-size:14px;line-height:1.8}
+.mr-sheet:not(.tr-sheet) .mr-map-section{grid-template-columns:50% minmax(0,1fr)}
+.mr-comment{padding:14px 16px;gap:7px}.mr-comment p{font-size:12.5px;line-height:1.68;word-break:normal}

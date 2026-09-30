@@ -1,7 +1,8 @@
+import {clubName} from '../../lib/futsal-clubs';
 import {useId} from 'react';
 import {continuousPath,arrowSize,type Lanes,type Dominance} from './graphics';
 import {teamLogo} from '../../lib/futsal-team-logos';
-import {teamReportView,matchComment,defaultTeamReport} from '../../lib/futsal-team-report';
+import {teamReportView,matchComment,reportTeamOptions} from '../../lib/futsal-team-report';
 import type {ReportDraft} from '../../lib/futsal-report';
 import ReportBrand from './ReportBrand';
 
@@ -31,7 +32,7 @@ function Flow({bins,own,other}:{bins:Dominance['bins'];own:string;other:string})
  </svg>;
 }
 export default function TeamReportSheet({draft}:{draft:ReportDraft}){
- const o=draft.teamReport||defaultTeamReport(),side=o.side,ours=side==='home',ownName=ours?draft.homeName:draft.awayName,otherName=ours?draft.awayName:draft.homeName;
+ const o=reportTeamOptions(draft),side=o.side,ours=side==='home',ownName=clubName(ours?draft.homeName:draft.awayName),otherName=clubName(ours?draft.awayName:draft.homeName);
  const own=ours?o.homeColor:o.awayColor,other=ours?o.awayColor:o.homeColor,ownScore=ours?draft.homeScore:draft.awayScore,otherScore=ours?draft.awayScore:draft.homeScore;
  const data=draft.fla?.matchId===draft.matchId?draft.fla:null,v=data?teamReportView(data,side):null;
  const blank={left_count:0,center_count:0,right_count:0,total_count:0};
