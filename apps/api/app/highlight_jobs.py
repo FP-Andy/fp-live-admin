@@ -1804,6 +1804,9 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     template, "start", iw, ih, values=values, logos=logos, boxes=boxes,
                     color=card_color,
                 ))
+            # 효과 영상 세트에서도 구간 카드를 굽기는 한다 — 타임라인이 'T 자리' 를
+            # 이 카드의 존재로 알아내기 때문이다. 안 구우면 후반 영상 자리도 사라진다
+            # (한 번 그렇게 깨뜨렸다). 카드 자체는 아래에서 타임라인에 넣지 않는다.
             for slot, label in section_at.items():
                 # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
                 text_fields = [f for f in template.fields("section") if f.kind == "text"]
@@ -1847,10 +1850,14 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         for k in range(used):
             card = section_card.get(k)
             if card is not None:
-                if half_second is not None and not second_used:
-                    # 세트에 후반 효과가 있으면 첫 구간 마커는 그 영상이 대신한다.
-                    timeline.append(("video", half_second[0], half_second[1], half_second[2]))
-                    second_used = True
+                if half_second is not None:
+                    # 세트에 후반 효과가 있으면 **구간 카드는 아예 안 쓴다** — 첫 T 는
+                    # 후반 영상이 대신하고, 그 뒤의 T 는 아무것도 넣지 않는다.
+                    # 하프타임은 한 경기에 한 번이고, 이 세트의 구간 카드 시안은
+                    # 따로 없다(파인플레이 기본의 카드가 여기 끼면 안 된다).
+                    if not second_used:
+                        timeline.append(("video", half_second[0], half_second[1], half_second[2]))
+                        second_used = True
                 else:
                     timeline.append(("still", card, section_card_dur, False, f"sec{k:03d}"))
             timeline.append(("clip", k))

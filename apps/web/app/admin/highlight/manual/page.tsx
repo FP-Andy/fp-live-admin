@@ -1120,8 +1120,12 @@ export default function ManualHighlightPage() {
     if (!cards.enabled) return 0;
     const introFilled = (cardTemplate?.start_fields ?? [])
       .some((spec) => (cardValues[spec.id] || '').trim());
+    // 효과 영상 세트는 구간 카드가 없다 — 대신 전반·후반 영상(각 3초쯤)이 들어간다.
+    const sectionSeconds = cardTemplate?.has_half_videos
+      ? (sectionCount ? 6 : 3)
+      : sectionCount * cards.sectionDurationSec;
     return (introFilled ? cards.introDurationSec : 0)
-      + sectionCount * cards.sectionDurationSec
+      + sectionSeconds
       + (cards.outro ? OUTRO_SEC : 0);
   })();
 
@@ -1735,8 +1739,10 @@ export default function ManualHighlightPage() {
                 </label>
                 <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                   {cards.enabled
-                    ? `맨 앞에 시작 카드, T(ㅅ)로 찍은 자리마다 ${
-                      sectionCount ? `구간 카드 ${sectionCount}장` : '구간 카드'}가 들어갑니다.`
+                    ? (cardTemplate?.has_half_videos
+                      ? '맨 앞에 시작 카드 → 전반전 영상, 첫 T(ㅅ) 자리에 후반전 영상이 들어갑니다. 구간 카드는 없습니다.'
+                      : `맨 앞에 시작 카드, T(ㅅ)로 찍은 자리마다 ${
+                        sectionCount ? `구간 카드 ${sectionCount}장` : '구간 카드'}가 들어갑니다.`)
                     : '영상 사이에 시작 정보·구간 카드를 넣습니다.'}
                 </span>
                 {/* 전후반 효과 영상 — 실제로 어떤 mp4 가 끼는지 여기서 재생해 본다.
@@ -1966,6 +1972,8 @@ export default function ManualHighlightPage() {
                       {tags.filter((tag) => tag.kind === 'section').map((tag) => {
                         const entry = sectionPlan.get(tag.id);
                         if (!entry) return null;
+                        // 효과 영상 세트는 구간 카드가 없다 — 첫 T(후반 영상)만 보여 준다.
+                        if (cardTemplate?.has_half_videos && tag.id !== firstSectionId) return null;
                         return (
                           <button
                             key={tag.id}
@@ -1996,8 +2004,8 @@ export default function ManualHighlightPage() {
                                    border: '1px solid var(--border-ghost, #2c2c32)' }}
                         />
                         <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted, #999)' }}>
-                          첫 T 자리에는 구간 카드 대신 이 후반전 효과 영상이 들어갑니다.
-                          두 번째 T 부터는 구간 카드가 들어갑니다.
+                          첫 T 자리에 이 후반전 효과 영상이 들어갑니다. 이 세트에는
+                          구간 카드가 없습니다 — 두 번째 이후의 T 는 무시됩니다.
                         </p>
                       </div>
                     ) : cardPreviewUrl ? (
