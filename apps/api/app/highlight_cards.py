@@ -207,7 +207,15 @@ def _white_mark() -> Image.Image | None:
     return mark
 
 
-def _fit_font(text: str, filename: str, size: int, max_width: float):
+def _tracked_width(probe, text: str, font, size: int, tracking: int) -> float:
+    """자간을 포함한 글줄 폭. 자간은 포토샵 단위(1/1000 em)라 크기에 비례한다."""
+    base = probe.textlength(text, font=font)
+    if tracking and len(text) > 1:
+        base += (len(text) - 1) * size * tracking / 1000.0
+    return base
+
+
+def _fit_font(text: str, filename: str, size: int, max_width: float, tracking: int = 0):
     """배정된 폭에 들어갈 때까지 글자 크기를 줄인다.
 
     12 아래로는 줄이지 않는다(읽을 수 없다). 다만 **처음부터 그보다 작게 달라고**
@@ -218,33 +226,46 @@ def _fit_font(text: str, filename: str, size: int, max_width: float):
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     while size > floor:
         font = _font(filename, size)
-        if probe.textlength(text, font=font) <= max_width:
-            return font
+        if _tracked_width(probe, text, font, size, tracking) <= max_width:
+            return font, size
         size -= 2
-    return _font(filename, floor)
+    return _font(filename, floor), floor
+
+
+def _draw_tracked(draw, xy, text: str, font, size: int, tracking: int, fill) -> None:
+    """자간을 두고 한 자씩 그린다. 자간이 0 이면 통짜로 그린다(빠르고 커닝도 산다)."""
+    if not tracking or len(text) <= 1:
+        draw.text(xy, text, font=font, fill=fill)
+        return
+    x, y = xy
+    step = size * tracking / 1000.0
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += draw.textlength(ch, font=font) + step
 
 
 def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: str,
              filename: str, size: int, max_width: float | None = None,
-             shadow: float = 0.0, color: str = "") -> None:
+             shadow: float = 0.0, color: str = "", tracking: int = 0) -> None:
     """상자 한가운데에 한 줄. 시안의 text-shadow 는 옅은 검정 번짐이다."""
     text = (text or "").strip()
     if not text:
         return
     left, top, width, height = box
     cx, cy = left + width / 2, top + height / 2
-    font = _fit_font(text, filename, size, max_width if max_width else width)
+    font, fitted = _fit_font(text, filename, size, max_width if max_width else width, tracking)
     draw = ImageDraw.Draw(layer)
     bbox = draw.textbbox((0, 0), text, font=font)
-    x = cx - (bbox[2] - bbox[0]) / 2 - bbox[0]
+    track_extra = (len(text) - 1) * fitted * tracking / 1000.0 if tracking and len(text) > 1 else 0
+    x = cx - ((bbox[2] - bbox[0]) + track_extra) / 2 - bbox[0]
     y = cy - (bbox[3] - bbox[1]) / 2 - bbox[1]
     if shadow > 0:
         blur = Image.new("RGBA", layer.size, (0, 0, 0, 0))
-        ImageDraw.Draw(blur).text((x, y), text, font=font, fill=(0, 0, 0, 26))
+        _draw_tracked(ImageDraw.Draw(blur), (x, y), text, font, fitted, tracking, (0, 0, 0, 26))
         layer.alpha_composite(blur.filter(ImageFilter.GaussianBlur(shadow)))
         draw = ImageDraw.Draw(layer)
     rgb = _hex_rgb(color) if color else None
-    draw.text((x, y), text, font=font, fill=(*rgb, 255) if rgb else WHITE)
+    _draw_tracked(draw, (x, y), text, font, fitted, tracking, (*rgb, 255) if rgb else WHITE)
 
 
 def _paste_contained(layer: Image.Image, box: tuple[float, float, float, float],
@@ -329,7 +350,7 @@ def _draw_field(layer: Image.Image, spec: CardField, value: str,
     _text_in(layer, box, value, spec.font,
              max(1, round(spec.size * factor)),
              (spec.max_width if spec.max_width else box[2]) * factor,
-             spec.shadow, spec.color)
+             spec.shadow, spec.color, spec.tracking)
 
 
 def _compose(template: CardTemplate, kind: str, layer: Image.Image,

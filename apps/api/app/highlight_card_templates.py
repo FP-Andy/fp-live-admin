@@ -20,6 +20,9 @@ from dataclasses import dataclass, field, replace
 # 글꼴 파일 — assets/fonts 안의 이름.
 GIANTS = "Giants-Bold.ttf"
 WANTED = "WantedSans-ExtraBold.otf"
+# SUFA 시안의 실제 글꼴 — PSD 글자 레이어에서 읽었다(전부 Pretendard-Bold).
+# 무료(OFL) 배포본이라 그대로 넣었다. WantedSans 로 흉내내면 굵기가 더 나간다.
+PRETENDARD = "Pretendard-Bold.otf"
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,10 @@ class CardField:
 
     shadow: float = 0.0
     """시안의 text-shadow 번짐 반경. 0 이면 안 그린다."""
+
+    tracking: int = 0
+    """자간 — 포토샵 Tracking 단위(1/1000 em). SUFA 점수판 제목이 200 이다.
+    이걸 빼먹으면 같은 글꼴이라도 제목이 눈에 띄게 좁아 보인다."""
 
     placeholder: str = ""
     """설정 화면에 흐리게 보일 예시."""
@@ -264,29 +271,36 @@ FINEPLAY = CardTemplate(
 
 #: 점수판 — 제목·팀명은 검정, 점수는 흰색. 상자는 원래 글자의 한가운데에 맞췄다.
 _SUFA_BOARD_FIELDS: tuple[CardField, ...] = (
+    # 크기·자간은 PSD 글자 스타일에서 그대로 — 제목 60pt x 배율 0.465 = 28pt · 자간 200,
+    # 팀명 35pt · 점수 60pt · 자간 25. 눈대중으로 맞춘 값(26/32/48)은 전부 작았다.
     CardField(
         id="round_label", label="대회·라운드", kind="text",
-        box=(167.0, 139.0, 611.0, 41.0), font=WANTED, size=26, color="#101115",
+        box=(167.0, 139.0, 611.0, 41.0), font=PRETENDARD, size=28, tracking=200,
+        color="#101115",
         placeholder="2026 SUFA ADVANCED LEAGUE 4R", max_len=48, ui_width=260,
     ),
     CardField(
         id="home_name", label="홈 팀명", kind="text",
-        box=(222.0, 200.0, 211.0, 55.0), font=WANTED, size=32, color="#101115",
+        box=(222.0, 200.0, 211.0, 55.0), font=PRETENDARD, size=35, tracking=25,
+        color="#101115",
         placeholder="KWPE", max_len=20, ui_width=150,
     ),
     CardField(
         id="away_name", label="어웨이 팀명", kind="text",
-        box=(655.0, 200.0, 201.0, 58.0), font=WANTED, size=32, color="#101115",
+        box=(648.0, 200.0, 215.0, 58.0), font=PRETENDARD, size=35, tracking=25,
+        color="#101115",
         placeholder="아마추어축구부", max_len=20, ui_width=150,
     ),
     CardField(
         id="home_score", label="홈 점수", kind="text",
-        box=(465.0, 200.0, 61.0, 56.0), font=WANTED, size=48, color="#FFFFFF",
+        box=(465.0, 200.0, 61.0, 56.0), font=PRETENDARD, size=60, tracking=25,
+        color="#FFFFFF",
         placeholder="0", max_len=3, ui_width=70,
     ),
     CardField(
         id="away_score", label="어웨이 점수", kind="text",
-        box=(559.0, 200.0, 61.0, 56.0), font=WANTED, size=48, color="#FFFFFF",
+        box=(559.0, 200.0, 61.0, 56.0), font=PRETENDARD, size=60, tracking=25,
+        color="#FFFFFF",
         placeholder="0", max_len=3, ui_width=70,
     ),
 )
@@ -295,25 +309,29 @@ _SUFA_BOARD_FIELDS: tuple[CardField, ...] = (
 _SUFA_START_FIELDS: tuple[CardField, ...] = (
     CardField(
         id="round_label", label="대회·라운드", kind="text",
-        box=(289.0, 210.0, 1002.0, 54.0), font=WANTED, size=58, color="#101115",
+        box=(289.0, 210.0, 1002.0, 54.0), font=PRETENDARD, size=60, color="#101115",
         placeholder="2026 SUFA ADVANCED LEAGUE 5R", max_len=48, ui_width=260,
     ),
+    # 판이 기울어진 평행사변형이라 **높이마다 중심이 다르다.** 로고 높이(y390~670)의
+    # 판 중심은 왼쪽 408.7 · 오른쪽 1115.7, 팀명 높이(y730~790)는 387.4 · 1094.4 —
+    # 픽셀로 잰 값이다. 예전 상자는 캔버스 눈대중이라 왼쪽 로고가 68px 왼쪽으로,
+    # 오른쪽 로고가 34px 오른쪽으로 치우쳐 대칭이 안 맞았다.
     CardField(
         id="home_logo", label="홈 로고", kind="logo",
-        box=(190.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
+        box=(259.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
     ),
     CardField(
         id="away_logo", label="어웨이 로고", kind="logo",
-        box=(1000.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
+        box=(966.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
     ),
     CardField(
         id="home_name", label="홈 팀명", kind="text",
-        box=(150.0, 730.0, 361.0, 58.0), font=WANTED, size=40, color="#FFFFFF",
+        box=(207.0, 730.0, 361.0, 58.0), font=PRETENDARD, size=45, color="#FFFFFF",
         placeholder="서울대 SNUWFC", max_len=24, ui_width=170,
     ),
     CardField(
         id="away_name", label="어웨이 팀명", kind="text",
-        box=(910.0, 730.0, 408.0, 58.0), font=WANTED, size=40, color="#FFFFFF",
+        box=(890.0, 730.0, 408.0, 58.0), font=PRETENDARD, size=45, color="#FFFFFF",
         placeholder="국민대 한마음 레이디스", max_len=24, ui_width=170,
     ),
 )
