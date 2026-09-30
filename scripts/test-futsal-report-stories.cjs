@@ -1,0 +1,19 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('../apps/web/node_modules/typescript');
+const cache=new Map();function load(file){file=path.resolve(file);if(cache.has(file))return cache.get(file);const m={exports:{}};cache.set(file,m.exports);Function('exports','require','module',ts.transpile(fs.readFileSync(file,'utf8'),{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}))(m.exports,id=>id.startsWith('.')?load(path.resolve(path.dirname(file),id)+(path.extname(id)?'':'.ts')):require(id),m);return m.exports;}
+const r=load('apps/web/lib/futsal-report.ts'),e=load('apps/web/lib/futsal-report-events.ts');
+const p={id:'home-1',group:'home',jersey:'7',grid:[180],positions:[{t:50,x:.1,y:.2,seconds:60},{t:350,x:.5,y:.5,seconds:60},{t:650,x:.9,y:.8,seconds:60}],coverage:.2,observed:180};
+const heat={schema:'fpa-heatmaps/v1',datasetId:'one',video:'one',from:20,to:950,width:1,height:1,scale:1,players:[p]};
+let d=r.attachHeatmap(r.emptyDraft(),heat);d.matchStartSeconds=50;d.matchId='same';
+const phases=r.phaseSummary(heat,p,'right',50);assert.deepEqual(phases.map(p=>p.seconds),[60,60,60]);assert.deepEqual(phases.map(p=>p.zone),[0,1,2]);assert(phases.every(p=>p.reliable));assert.deepEqual(r.phaseSummary(heat,p,'left',50).map(p=>p.zone),[2,1,0]);
+const split=r.phaseSummary(heat,{...p,positions:[{t:349,x:.5,y:.5,seconds:2}]},'right',50);assert.deepEqual(split.map(p=>p.seconds),[1,1,0]);assert(split.every(p=>!p.reliable));
+const story=r.commentDraft(heat,p,d.players[p.id],[],'right',50);assert.match(story.heatComment,/초반보다 후반/);assert.match(story.heatComment,/상대 골문/);assert(!story.heatComment.includes('%'));assert.match(story.eventComment,/연결된 이벤트가 없어요/);
+const shot=(id,team,num,x=38,y=3)=>({id,type:'XG',team,player_number:num,player_name:'',is_goal:false,shot_x:x,shot_y:y,xg:.2,clock_ms:10000});
+d.fla={matchId:'same',events:[shot('a','HOME','7'),shot('b','AWAY','7'),shot('c','HOME',''),shot('missing','HOME','7',null,null)]};
+let mapped=e.eventMapData(d,d.players[p.id]);assert.equal(mapped.personal.length,0,'Initial CV jersey cannot silently identify a FLA shirt number');assert.deepEqual(mapped.markers.slice(0,2).map(m=>[m.x,m.y]),[[38,17],[2,3]]);assert.equal(mapped.missing,1);
+d.players[p.id].flaNumber='07';mapped=e.eventMapData(d,d.players[p.id]);assert.equal(mapped.personal.length,2);assert(mapped.markers.filter(m=>m.personal).every(m=>m.side==='home'));
+d.homeDirection='left';assert.deepEqual(e.eventMapData(d,d.players[p.id]).markers.slice(0,2).map(m=>[m.x,m.y]),[[2,3],[38,17]]);d.homeDirection='right';
+d.fpa={rows:[{Team:'home',Player:'7',Action:'Shot',Time:'0:10',StartX:'38',StartY:'3',Direction:'right'},{Team:'home',Player:'7',Action:'Acquisition',StartX:'12',StartY:'4',Direction:'right'},{Team:'home',Player:'7',Action:'Block',StartX:'5',StartY:'6',Direction:'right'},{Team:'home',Player:'7',Action:'Tackle',Tags:'Fail'}],logs:[]};
+mapped=e.eventMapData(d,d.players[p.id]);assert.equal(mapped.markers.length,5,'Same FPA and FLA shot is not doubled');assert.equal(mapped.markers.filter(m=>m.kind==='recovery').length,1);assert.equal(mapped.markers.filter(m=>m.kind==='defense').length,1);
+d.players[p.id].heatComment='직접 쓴 활동 이야기';d.players[p.id].strengths[0]='내가 쓴 장점';const rendered=e.reportPlayer(d);assert.equal(rendered.person.heatComment,'직접 쓴 활동 이야기');assert.equal(rendered.person.strengths[0],'내가 쓴 장점');assert.match(rendered.person.eventComment,/공을 되찾은/);assert.match(rendered.person.strengths[2],/슈팅/);assert.match(rendered.person.improvements[1],/동료/);
+d.fla.matchId='other';assert(e.eventMapData(d,d.players[p.id]).markers.every(m=>m.source==='fpa'));
+console.log('PASS: five-minute clipping and coverage gates; warm grounded stories; explicit FLA shirt binding; both-team orientation; no-coordinate exclusion; shot deduplication; defense vs recovery; manual edits preserved.');
