@@ -29,6 +29,7 @@ from .highlight_produce_job import ProduceSpec, run_produce
 from .highlight_storage import default_storage
 from .highlight_storage import output_prefix as storage_output_prefix
 from .scene_motion import attach_scene_motions
+from . import highlight_card_store as card_store
 from .highlight_cards import get_template, render_card, render_card_file
 from .scoreboard import board_placement, render_scoreboard_file
 from .watermark import (
@@ -1733,7 +1734,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         if cards_on:
             # 어떤 항목을 어디에 그릴지는 템플릿이 들고 있다. 여기서는 값만 건넨다.
             # 모르는 템플릿 id 는 내장으로 떨어진다 — 결과물은 나와야 한다.
-            template = get_template(cards_cfg.get("template"))
+            # 운영자가 콘솔에서 만든 템플릿도 같은 자리에서 찾는다(card_store).
+            template = card_store.resolve(db, cards_cfg.get("template"))
             # 배경을 갈아입힐 색. 비어 있으면 시안 색 그대로다.
             card_color = str(cards_cfg.get("color") or "")
             intro_cfg = cards_cfg.get("intro")
