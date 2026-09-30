@@ -190,6 +190,7 @@ type SourceVideo = {
   downloaded?: { width?: number; height?: number; codec?: string; bitrate?: number } | null;
   requestedHeight?: number | null;
   sizeBytes?: number | null;
+  s3Key?: string | null;
   /** 요청보다 한참 낮게 받아졌나. 유튜브가 서버를 막았을 때 이렇게 된다. */
   lowQuality?: boolean;
   lowQualityDetail?: string | null;
@@ -2084,6 +2085,36 @@ export default function FineplayJobsPage() {
                 </p>
               ))}
             </div>
+          ) : null}
+
+          {/* 원본 실물 — 유튜브든 업로드든, 지금 이 작업이 무슨 영상을 쓰고 있는지.
+              매니페스트가 UPLOAD 로 바뀌면 유튜브 상자가 사라지는데, 그때도 원본이
+              무엇인지는 봐야 한다 — 그게 안 보여서 '흐리다' 의 원인을 또 못 짚었다. */}
+          {sourceVideos.length ? (
+            <p style={{
+              margin: '0 0 8px', display: 'flex', alignItems: 'center',
+              gap: 8, flexWrap: 'wrap', fontSize: 11, color: 'var(--muted, #888)',
+            }}>
+              {sourceVideos.map((v) => {
+                const label = downloadedLabel(v);
+                const low = (v.downloaded?.height ?? 0) > 0 && (v.downloaded?.height ?? 0) < 720;
+                return (
+                  <span
+                    key={`src-${v.videoId}`}
+                    title={v.s3Key || v.youtubeUrl || ''}
+                    style={{
+                      padding: '2px 8px', borderRadius: 999,
+                      background: low ? '#3b1d1d' : 'var(--surface, #101014)',
+                      color: low ? '#fca5a5' : 'inherit',
+                      border: '1px solid var(--border-ghost, #2c2c32)',
+                    }}
+                  >
+                    원본 {v.source === 'YOUTUBE' ? '유튜브' : '업로드'}
+                    {' · '}{label || '실물 미측정'}
+                  </span>
+                );
+              })}
+            </p>
           ) : null}
 
           {/* FinePlay 가 원본을 바꿨을 때 — 태깅을 살린 채 원본만 갈아끼운다.
