@@ -41,6 +41,8 @@ __all__ = [
     "TEMPLATES",
     "describe",
     "get_template",
+    "render_board",
+    "render_board_file",
     "render_card",
     "render_card_file",
 ]
@@ -201,7 +203,7 @@ def _fit_font(text: str, filename: str, size: int, max_width: float):
 
 def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: str,
              filename: str, size: int, max_width: float | None = None,
-             shadow: float = 0.0) -> None:
+             shadow: float = 0.0, color: str = "") -> None:
     """상자 한가운데에 한 줄. 시안의 text-shadow 는 옅은 검정 번짐이다."""
     text = (text or "").strip()
     if not text:
@@ -218,7 +220,8 @@ def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: s
         ImageDraw.Draw(blur).text((x, y), text, font=font, fill=(0, 0, 0, 26))
         layer.alpha_composite(blur.filter(ImageFilter.GaussianBlur(shadow)))
         draw = ImageDraw.Draw(layer)
-    draw.text((x, y), text, font=font, fill=WHITE)
+    rgb = _hex_rgb(color) if color else None
+    draw.text((x, y), text, font=font, fill=(*rgb, 255) if rgb else WHITE)
 
 
 def _paste_contained(layer: Image.Image, box: tuple[float, float, float, float],
@@ -296,14 +299,14 @@ def _draw_field(layer: Image.Image, spec: CardField, value: str,
             # 같이 줄어야 한다 — 로고를 뺐다고 글자만 커다랗게 남으면 이상하다.
             _text_in(layer, box, "VS", spec.font,
                      max(1, round((spec.empty_size or spec.size) * factor)),
-                     box[2] * factor, shadow=10.0)
+                     box[2] * factor, shadow=10.0, color=spec.color)
         return
     # 글꼴 크기와 **들어갈 폭**을 같이 키운다. 폭을 그대로 두면 _fit_font 가 도로
     # 줄여 놓아 크기를 올려도 꿈쩍하지 않는다.
     _text_in(layer, box, value, spec.font,
              max(1, round(spec.size * factor)),
              (spec.max_width if spec.max_width else box[2]) * factor,
-             spec.shadow)
+             spec.shadow, spec.color)
 
 
 def _compose(template: CardTemplate, kind: str, layer: Image.Image,
@@ -375,6 +378,90 @@ def render_card(
     for spec in spec_owner.fields(kind):
         _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), merged)
     return _compose(spec_owner, kind, layer, width, height, color)
+
+
+def _board_base(template: CardTemplate) -> Image.Image:
+    """점수판 배경. **투명도를 지킨다** — 영상 위에 얹을 것이라 배경을 채우면 안 된다."""
+    design = template.design_for("board")
+    path = _brand_dir() / template.background("board")
+    if path.exists():
+        try:
+            return Image.open(path).convert("RGBA").resize(design, Image.LANCZOS)
+        except OSError:
+            pass
+    return Image.new("RGBA", design, (0, 0, 0, 0))
+
+
+def _swap_zone_color(image: Image.Image, zone, target: str) -> None:
+    """상자 안에서 zone.source 색인 픽셀만 target 으로 바꾼다(제자리).
+
+    상자로 한 번, 색으로 또 한 번 거르는 이유는 같은 색이 그림의 다른 곳에도 쓰이기
+    때문이다 — SUFA 점수판은 왼쪽 팀 블록과 가운데 점수판이 같은 파랑이라, 색만 보고
+    바꾸면 점수판까지 팀 색이 된다. 반대로 상자만 보고 칠하면 그 안의 로고가 덮인다.
+    """
+    src = _hex_rgb(zone.source)
+    dst = _hex_rgb(target)
+    if src is None or dst is None or src == dst:
+        return
+    left, top, width, height = zone.box
+    x0, y0 = max(0, int(left)), max(0, int(top))
+    x1 = min(image.width, int(left + width))
+    y1 = min(image.height, int(top + height))
+    if x1 <= x0 or y1 <= y0:
+        return
+    tol = max(0, int(zone.tolerance))
+    px = image.load()
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            r, g, b, a = px[x, y]
+            if a == 0:
+                continue
+            if (abs(r - src[0]) <= tol and abs(g - src[1]) <= tol
+                    and abs(b - src[2]) <= tol):
+                px[x, y] = (dst[0], dst[1], dst[2], a)
+
+
+def render_board(
+    template: CardTemplate,
+    board_width: int,
+    values: dict | None = None,
+    logos: dict | None = None,
+    boxes: dict | None = None,
+    colors: dict | None = None,
+) -> Image.Image:
+    """대회 템플릿의 점수판 한 장(RGBA).
+
+    코드로 그리는 기본 점수판(scoreboard.py)과 달리, 배경 그림 위에 **고칠 수 있는
+    항목만** 얹는다. 대회마다 도형이 다른데 그걸 전부 코드로 옮길 수는 없다.
+
+    colors 는 {영역 id: '#RRGGBB'} — 팀 색처럼 그림에 구워진 색을 갈아끼운다.
+    """
+    values = values or {}
+    logos = logos or {}
+    colors = colors or {}
+    base = _board_base(template)
+    for zone in template.board_zones:
+        picked = str(colors.get(zone.id) or "").strip()
+        if picked:
+            _swap_zone_color(base, zone, picked)
+
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    merged = {**template.boxes_for("board"), **(boxes or {})}
+    for spec in template.fields("board"):
+        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), merged)
+    out = Image.alpha_composite(base, layer)
+
+    width = max(80, int(board_width))
+    height = max(1, round(width * out.height / out.width))
+    return out.resize((width, height), Image.LANCZOS)
+
+
+def render_board_file(path: Path, template: CardTemplate, board_width: int,
+                      values: dict | None = None, logos: dict | None = None,
+                      boxes: dict | None = None, colors: dict | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    render_board(template, board_width, values, logos, boxes, colors).save(path, format="PNG")
+    return path
 
 
 def render_card_file(path: Path, image: Image.Image) -> Path:

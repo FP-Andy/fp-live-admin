@@ -63,6 +63,34 @@ class CardField:
     empty_size: int = 0
     """empty='vs' 일 때 쓸 글자 크기."""
 
+    color: str = "#FFFFFF"
+    """글자 색. 우리 카드는 전부 흰 글자였지만 대회 시안은 그렇지 않다 — SUFA 점수판은
+    제목과 팀명이 검정, 점수만 흰색이다."""
+
+
+@dataclass(frozen=True)
+class ColorZone:
+    """배경 그림에 **구워져 있는 색**을 갈아끼울 자리.
+
+    대회 점수판은 팀 색이 그림에 박혀 있다. 그렇다고 전체를 색상 회전시키면(카드 배경이
+    쓰는 방법) 같은 색을 쓰는 다른 부분까지 같이 돈다 — 실제로 SUFA 점수판은 왼쪽 팀
+    블록과 **가운데 점수판이 같은 파랑**이라 통째로 돌리면 점수판까지 팀 색이 된다.
+
+    그래서 '이 상자 안에서, 이 색인 픽셀만' 갈아끼운다. 평평한 단색 도형이라 이 방법이
+    정확하고, 상자 안에 있어도 색이 다른 것(로고·글자)은 건드리지 않는다.
+    """
+
+    id: str
+    label: str
+    box: tuple[float, float, float, float]
+    """(left, top, width, height) — 그 템플릿의 시안 좌표."""
+
+    source: str
+    """배경에 구워져 있는 색(#RRGGBB)."""
+
+    tolerance: int = 14
+    """이 값만큼 어긋난 픽셀까지 같은 색으로 본다(가장자리 안티앨리어싱)."""
+
 
 @dataclass(frozen=True)
 class CardTemplate:
@@ -109,11 +137,39 @@ class CardTemplate:
     색과의 **차이만큼** 돌린다.
     """
 
+    board_bg: str = ""
+    """점수판 배경 PNG. 비어 있으면 이 템플릿엔 점수판 면이 없다(코드로 그리는 기본 점수판을 쓴다)."""
+
+    board_design: tuple[int, int] | None = None
+    """점수판 시안 규격. 카드와 다를 수 있다(SUFA 는 1215x605)."""
+
+    board_fields: tuple[CardField, ...] = ()
+    board_zones: tuple[ColorZone, ...] = ()
+    """점수판에서 색을 갈아끼울 자리 — 보통 홈·어웨이 팀 색."""
+
+    first_half_video: str = ""
+    second_half_video: str = ""
+    """전반·후반 효과 영상. 글자를 얹지 않고 그대로 끼워 넣는다."""
+
     def fields(self, kind: str) -> tuple[CardField, ...]:
+        if kind == "board":
+            return self.board_fields
         return self.section_fields if kind == "section" else self.start_fields
 
     def background(self, kind: str) -> str:
+        if kind == "board":
+            return self.board_bg
         return self.section_bg if kind == "section" else self.start_bg
+
+    def design_for(self, kind: str) -> tuple[int, int]:
+        if kind == "board" and self.board_design:
+            return self.board_design
+        return self.design
+
+    @property
+    def has_board(self) -> bool:
+        """이 템플릿이 자기 점수판 그림을 들고 있나."""
+        return bool(self.board_bg)
 
 
 # ── 내장 템플릿 — 우리가 만든 것 ────────────────────────────────────────
@@ -186,7 +242,116 @@ FINEPLAY = CardTemplate(
     ),
 )
 
-TEMPLATES: tuple[CardTemplate, ...] = (FINEPLAY,)
+# ── SUFA 대학축구연맹 — 리그 4종 ──────────────────────────────────────────
+#
+# 자리·색은 **PSD 레이어에서 직접 읽은 값**이다(psd-tools). 글자 레이어의 경계가 곧
+# 그 항목의 자리이고, '왼쪽팀 컬러'·'오른쪽팀 컬러' 도형의 경계가 곧 팀 색 자리다.
+# 픽셀을 눈대중으로 재다가 한 번 틀렸다 — 큰 파란 블록을 팀 색으로 봤는데, 실제로는
+# 그 옆의 **얇은 세로 바**가 팀 색이었다. 레이어 이름이 그걸 바로잡아 줬다.
+#
+# 배경 PNG 는 **글자와 팀 로고(누끼)를 숨기고** 합성한 것이다 — 그 자리는 우리가 채운다.
+# 네 리그는 판이 완전히 같고 그림·색만 다르다(점수판 1215x605, 팀 소개 1510x1080).
+
+#: 점수판 — 제목·팀명은 검정, 점수는 흰색. 상자는 원래 글자의 한가운데에 맞췄다.
+_SUFA_BOARD_FIELDS: tuple[CardField, ...] = (
+    CardField(
+        id="round_label", label="대회·라운드", kind="text",
+        box=(167.0, 139.0, 611.0, 41.0), font=WANTED, size=26, color="#101115",
+        placeholder="2026 SUFA ADVANCED LEAGUE 4R", max_len=48, ui_width=260,
+    ),
+    CardField(
+        id="home_name", label="홈 팀명", kind="text",
+        box=(222.0, 200.0, 211.0, 55.0), font=WANTED, size=32, color="#101115",
+        placeholder="KWPE", max_len=20, ui_width=150,
+    ),
+    CardField(
+        id="away_name", label="어웨이 팀명", kind="text",
+        box=(655.0, 200.0, 201.0, 58.0), font=WANTED, size=32, color="#101115",
+        placeholder="아마추어축구부", max_len=20, ui_width=150,
+    ),
+    CardField(
+        id="home_score", label="홈 점수", kind="text",
+        box=(465.0, 200.0, 61.0, 56.0), font=WANTED, size=48, color="#FFFFFF",
+        placeholder="0", max_len=3, ui_width=70,
+    ),
+    CardField(
+        id="away_score", label="어웨이 점수", kind="text",
+        box=(559.0, 200.0, 61.0, 56.0), font=WANTED, size=48, color="#FFFFFF",
+        placeholder="0", max_len=3, ui_width=70,
+    ),
+)
+
+#: 시작 전 팀 소개 — 라운드 한 줄, 팀 로고 둘, 팀명 둘.
+_SUFA_START_FIELDS: tuple[CardField, ...] = (
+    CardField(
+        id="round_label", label="대회·라운드", kind="text",
+        box=(289.0, 210.0, 1002.0, 54.0), font=WANTED, size=58, color="#101115",
+        placeholder="2026 SUFA ADVANCED LEAGUE 5R", max_len=48, ui_width=260,
+    ),
+    CardField(
+        id="home_logo", label="홈 로고", kind="logo",
+        box=(190.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
+    ),
+    CardField(
+        id="away_logo", label="어웨이 로고", kind="logo",
+        box=(1000.0, 385.0, 300.0, 285.0), empty="mark", ui_width=120,
+    ),
+    CardField(
+        id="home_name", label="홈 팀명", kind="text",
+        box=(150.0, 730.0, 361.0, 58.0), font=WANTED, size=40, color="#FFFFFF",
+        placeholder="서울대 SNUWFC", max_len=24, ui_width=170,
+    ),
+    CardField(
+        id="away_name", label="어웨이 팀명", kind="text",
+        box=(910.0, 730.0, 408.0, 58.0), font=WANTED, size=40, color="#FFFFFF",
+        placeholder="국민대 한마음 레이디스", max_len=24, ui_width=170,
+    ),
+)
+
+#: 팀 색 자리 — 레이어 '왼쪽팀 컬러'(194,191,18,75)·'오른쪽팀 컬러'(866,191,20,75).
+#: 한 칸씩 넉넉히 잡아 가장자리 안티앨리어싱까지 함께 갈린다.
+_SUFA_HOME_BOX = (192.0, 189.0, 22.0, 79.0)
+_SUFA_AWAY_BOX = (864.0, 189.0, 24.0, 79.0)
+
+
+def _sufa(key: str, name: str, home_src: str, away_src: str,
+          base_color: str) -> CardTemplate:
+    """리그 하나. 판은 같고 그림·색만 다르다."""
+    low = key.lower()
+    return CardTemplate(
+        id=f"sufa-{low}",
+        name=name,
+        design=(1510, 1080),
+        base_color=base_color,
+        start_bg=f"sufa-{low}-intro.png",
+        # 구간 카드 시안은 따로 없다 — 시작 카드와 같은 판을 쓴다.
+        section_bg=f"sufa-{low}-intro.png",
+        start_fields=_SUFA_START_FIELDS,
+        section_fields=_SUFA_START_FIELDS,
+        board_bg=f"sufa-{low}-board.png",
+        board_design=(1215, 605),
+        board_fields=_SUFA_BOARD_FIELDS,
+        board_zones=(
+            ColorZone(id="home_color", label="홈 팀 색",
+                      box=_SUFA_HOME_BOX, source=home_src),
+            ColorZone(id="away_color", label="어웨이 팀 색",
+                      box=_SUFA_AWAY_BOX, source=away_src),
+        ),
+        first_half_video=f"sufa-{low}-first.mp4",
+        second_half_video=f"sufa-{low}-second.mp4",
+        note="점수판·시작 카드·전후반 효과 영상이 한 세트입니다."
+             " 효과 영상은 글자를 얹지 않고 그대로 들어갑니다.",
+    )
+
+
+# 팀 색의 '바탕에 구워진 색' 은 리그마다 다르다(실측).
+SUFA_A = _sufa("A", "SUFA A리그", "#000000", "#99001B", "#14038F")
+SUFA_B = _sufa("B", "SUFA B리그", "#EBEBEB", "#000000", "#026840")
+SUFA_L = _sufa("L", "SUFA L리그", "#FF8F00", "#173FE3", "#9F43E6")
+SUFA_S = _sufa("S", "SUFA S리그", "#FFF000", "#173FE3", "#99001C")
+
+
+TEMPLATES: tuple[CardTemplate, ...] = (FINEPLAY, SUFA_A, SUFA_B, SUFA_L, SUFA_S)
 DEFAULT_TEMPLATE_ID = FINEPLAY.id
 
 _BY_ID = {template.id: template for template in TEMPLATES}
