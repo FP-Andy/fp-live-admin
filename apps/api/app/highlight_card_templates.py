@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # 글꼴 파일 — assets/fonts 안의 이름.
 GIANTS = "Giants-Bold.ttf"
@@ -51,6 +51,11 @@ class CardField:
 
     placeholder: str = ""
     """설정 화면에 흐리게 보일 예시."""
+
+    default: str = ""
+    """칸이 **이 값으로 채워진 채** 시작한다(고칠 수 있다). 안내글(placeholder)은
+    안 치면 빈칸으로 나가지만, 기본값은 안 쳐도 그대로 나간다 — 시안에 박혀 있던
+    문구('2026 SUFA ADVANCED LEAGUE 4R')는 이쪽이 맞다. 지우면 지운 대로 나간다."""
 
     max_len: int = 40
     ui_width: int = 150
@@ -319,10 +324,23 @@ _SUFA_HOME_BOX = (192.0, 189.0, 22.0, 79.0)
 _SUFA_AWAY_BOX = (864.0, 189.0, 24.0, 79.0)
 
 
+#: 리그별 대회명 — 시안에 박혀 있던 문구다. 라운드 숫자만 갈아 쓰면 된다.
+_SUFA_LEAGUE_WORD = {"A": "ADVANCED", "B": "BASIC", "L": "LADIES", "S": "SUPREME"}
+
+
+def _with_round_default(fields: tuple[CardField, ...], text: str) -> tuple[CardField, ...]:
+    """라운드 항목에만 리그별 기본 문구를 박는다. 나머지는 경기마다 다르니 비워 둔다."""
+    return tuple(
+        replace(f, default=text, placeholder=text) if f.id == "round_label" else f
+        for f in fields
+    )
+
+
 def _sufa(key: str, name: str, home_src: str, away_src: str,
           base_color: str) -> CardTemplate:
     """리그 하나. 판은 같고 그림·색만 다르다."""
     low = key.lower()
+    round_text = f"2026 SUFA {_SUFA_LEAGUE_WORD[key]} LEAGUE 1R"
     return CardTemplate(
         id=f"sufa-{low}",
         name=name,
@@ -331,11 +349,11 @@ def _sufa(key: str, name: str, home_src: str, away_src: str,
         start_bg=f"sufa-{low}-intro.png",
         # 구간 카드 시안은 따로 없다 — 시작 카드와 같은 판을 쓴다.
         section_bg=f"sufa-{low}-intro.png",
-        start_fields=_SUFA_START_FIELDS,
-        section_fields=_SUFA_START_FIELDS,
+        start_fields=_with_round_default(_SUFA_START_FIELDS, round_text),
+        section_fields=_with_round_default(_SUFA_START_FIELDS, round_text),
         board_bg=f"sufa-{low}-board.png",
         board_design=(1215, 605),
-        board_fields=_SUFA_BOARD_FIELDS,
+        board_fields=_with_round_default(_SUFA_BOARD_FIELDS, round_text),
         board_zones=(
             ColorZone(id="home_color", label="홈 팀 색",
                       box=_SUFA_HOME_BOX, source=home_src),
@@ -383,6 +401,7 @@ def describe(template: CardTemplate) -> dict:
             "label": field_.label,
             "kind": field_.kind,
             "placeholder": field_.placeholder,
+            "default": field_.default,
             "max_len": field_.max_len,
             "ui_width": field_.ui_width,
             "empty": field_.empty,

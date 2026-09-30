@@ -52,6 +52,8 @@ type CardFieldSpec = {
   label: string;
   kind: 'text' | 'logo';
   placeholder: string;
+  /** 칸이 이 값으로 채워진 채 시작한다(고칠 수 있다). 안내글과 달리 안 쳐도 그대로 나간다. */
+  default?: string;
   max_len: number;
   ui_width: number;
   /** 비었을 때 서버가 무엇으로 채우나 — '' / 'mark' / 'vs'. 안내에만 쓴다. */
@@ -358,6 +360,34 @@ export default function ManualHighlightPage() {
 
   const cardTemplate = cardTemplates.find((t) => t.id === cards.template) ?? null;
   const cardValues = cards.values[cards.template] ?? {};
+
+  // 기본값 채우기 — 시안에 박혀 있던 문구('2026 SUFA ADVANCED LEAGUE 1R')는 안내글이
+  // 아니라 **시작값**이어야 한다. 안내글은 안 치면 빈칸으로 나가서, 라운드 숫자만
+  // 바꾸면 되는 걸 통째로 다시 쳐야 했다. undefined(한 번도 안 만짐)에만 채우므로
+  // 지운 칸('')은 지운 대로 남는다.
+  useEffect(() => {
+    if (!cardTemplate) return;
+    const current = cards.values[cards.template] ?? {};
+    const fill: Record<string, string> = {};
+    for (const spec of cardTemplate.start_fields) {
+      if (spec.default && current[spec.id] === undefined) fill[spec.id] = spec.default;
+    }
+    if (Object.keys(fill).length) {
+      setCards((prev) => ({
+        ...prev,
+        values: { ...prev.values,
+                  [prev.template]: { ...fill, ...(prev.values[prev.template] ?? {}) } },
+      }));
+    }
+    // 점수판의 대회·라운드도 같은 규칙 — 세트 점수판이 있을 때, 안 만졌으면 채운다.
+    const boardRound = (cardTemplate.board_fields || []).find((f) => f.id === 'round_label');
+    if (cardTemplate.has_board && boardRound?.default) {
+      setScoreboard((prev) => (
+        prev.roundLabel === undefined ? { ...prev, roundLabel: boardRound.default } : prev
+      ));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards.template, cardTemplate?.id]);
   const setCardValue = (fieldId: string, value: string) => setCards((prev) => ({
     ...prev,
     values: {
