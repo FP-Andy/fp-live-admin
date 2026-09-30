@@ -8,7 +8,7 @@ if(!dir)throw Error('Supply the experiment results directory.');
 const files=new Map([
   ['/',[path.join(here,'fpa-cv-heatmap-reconstruction-preview.html'),'text/html; charset=utf-8']],
   ['/heatmap-render.mjs',[path.join(here,'../apps/web/public/fpa-cv/heatmap-render.mjs'),'text/javascript']],
-  ...['results.json','training-preview.json','heldout-preview.json'].map(name=>['/'+name,[path.join(dir,name),'application/json']])
+  ...['results.json','augmentation-results.json','training-preview.json','heldout-preview.json'].map(name=>['/'+name,[path.join(dir,name),'application/json']])
 ]);
 http.createServer((req,res)=>{
   const entry=files.get(new URL(req.url,'http://127.0.0.1').pathname);

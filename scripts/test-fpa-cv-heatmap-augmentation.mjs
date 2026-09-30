@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import {augmentPlayerActivity,estimateActivityGap} from '../apps/web/public/fpa-cv/heatmap-augmentation.mjs';
+const sum=a=>a.reduce((s,v)=>s+v,0),near=(a,b)=>assert(Math.abs(a-b)<1e-6,`${a} != ${b}`);
+const point=t=>({t,x:.2+.001*t,y:.4,seconds:1,trackId:t<50?1:2,source:'manual'});
+const make=times=>({id:'test',positions:times.map(point),coverage:.4,grid:[7],blockedIntervals:[]});
+const player=make([...Array.from({length:20},(_,i)=>i),...Array.from({length:20},(_,i)=>80+i)]),before=JSON.stringify(player);
+const result=augmentPlayerActivity(player,{from:0,to:100});
+near(result.observedSeconds,40);near(result.requestedSeconds,20);near(result.inferredSeconds,20);near(result.addedCoverage,.2);near(sum(result.estimatedGrid),20);
+assert.equal(result.parameters.targetBasis,'duration');assert(result.byKind.activityPattern>0);assert(result.targetReached);assert.equal(JSON.stringify(player),before);
+near(augmentPlayerActivity(player,{from:0,to:100,targetBasis:'observed'}).inferredSeconds,8,'Relative target remains an explicit alternative');
+const nearlyFull=make(Array.from({length:95},(_,i)=>i));const capped=augmentPlayerActivity(nearlyFull,{from:0,to:100});near(capped.inferredSeconds,5);assert(!capped.targetReached);
+const absent=augmentPlayerActivity({...player,inactiveIntervals:[{from:20,to:80}]},{from:0,to:100});near(absent.inferredSeconds,0);near(absent.knownAbsentSeconds,60);
+const outside=augmentPlayerActivity({...player,blockedIntervals:[{from:20,to:60,reason:'outside'},{from:40,to:80,reason:'outside'}]},{from:0,to:100});near(outside.inferredSeconds,0);near(outside.knownAbsentSeconds,60);
+const zero=augmentPlayerActivity({positions:[]},{from:0,to:100});near(zero.inferredSeconds,0);
+const sparse=augmentPlayerActivity({positions:[{...point(0),seconds:.1}]},{from:0,to:100});near(sparse.inferredSeconds,0);
+near(augmentPlayerActivity(player,{from:0,to:100,targetRatio:0}).inferredSeconds,0);
+assert.throws(()=>augmentPlayerActivity(player,{from:0,to:100,targetRatio:2}));
+assert.throws(()=>augmentPlayerActivity({positions:[point(1),point(1.5)]},{from:0,to:100}));
+assert.throws(()=>estimateActivityGap(player,{from:5,to:10,left:point(4),right:point(10)}),'Known observations cannot be used as a missing interval');
+// No pitch-wide constant or borrowing another player's locations: a stationary
+// player's density remains local even with a long leading/trailing gap.
+const stationary={positions:Array.from({length:10},(_,i)=>({...point(40+i),x:.2,y:.2}))};
+const local=augmentPlayerActivity(stationary,{from:0,to:100});near(local.inferredSeconds,20);
+for(let y=0;y<40;y++)for(let x=0;x<80;x++)if(x>40||y>25)near(local.estimatedGrid[y*80+x],0);
+assert(local.gaps.every(g=>g.inferredSeconds<=g.intervalSeconds+1e-8));
+console.log('PASS: +20 percentage points, relative alternative, duration cap, known exits/substitutions, zero evidence, immutable observations, local personal support, no overlap or hidden-reference leakage.');
