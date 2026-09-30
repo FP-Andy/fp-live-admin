@@ -32,3 +32,10 @@ test('physical shortcuts work independent of focused element and ignore repeats/
  for(const code of ['Space','KeyQ','KeyW','KeyE','KeyA','KeyS','KeyD','Enter'])assert.equal(videoHotkey({code}),code);
  assert.equal(videoHotkey({code:'KeyQ',repeat:true}),null);assert.equal(videoHotkey({code:'KeyW',metaKey:true}),null);
 });
+test('buffer stalls and source reconnection add no wall-time possession',()=>{
+ const c=new VideoClock({duration_ms:900000,offset_ms:5000,started:true,possession_team:'HOME'});
+ c.playing=true;c.tick(15000);c.playing=false;
+ for(let i=0;i<30;i++)c.tick(15000);
+ c.playing=true;c.tick(16000);
+ assert.equal(c.state.cursor_ms,11000);assert.deepEqual(segments(c),[{start_ms:0,end_ms:11000,team:'HOME'}]);
+});

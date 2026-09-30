@@ -35,8 +35,8 @@ class FpaStorage:
 
     @property
     def upload_client(self):
-        # Only browser PUTs cross continents. GPU transfers and GETs keep the
-        # regional endpoint, avoiding acceleration fees for internal traffic.
+        # Browser uploads and explicitly requested browser playback use the edge.
+        # Internal worker downloads keep the regional endpoint.
         if os.getenv('FPA_CV_S3_ACCELERATE')!='1':return self.client
         if self._accelerated is None:self._accelerated=self._make_client(accelerate=True)
         return self._accelerated
@@ -49,8 +49,11 @@ class FpaStorage:
     def head(self, key):
         return self.client.head_object(Bucket=self.bucket, Key=self.key(key))
 
-    def url(self, key, expires=21600):
-        return self.client.generate_presigned_url('get_object',Params={'Bucket':self.bucket,'Key':self.key(key)},ExpiresIn=expires)
+    def url(self, key, expires=21600, *, browser=False):
+        # Browser playback crosses regions just like uploads. Worker downloads
+        # retain the regional endpoint; acceleration is used only when enabled.
+        client = self.upload_client if browser else self.client
+        return client.generate_presigned_url('get_object',Params={'Bucket':self.bucket,'Key':self.key(key)},ExpiresIn=expires)
 
     def download(self, key, path):
         from boto3.s3.transfer import TransferConfig

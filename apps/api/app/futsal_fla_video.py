@@ -290,7 +290,7 @@ def create_router(dominance_builder=None):
             return RedirectResponse(f'/api/tracking/jobs/{job.id}/source',headers={'Cache-Control':'private, no-store'})
         store=storage()
         if not store:raise HTTPException(503,'영상 저장소 설정을 확인하세요.')
-        return RedirectResponse(store.url(upload.payload['key']),headers={'Cache-Control':'private, no-store'})
+        return RedirectResponse(store.url(upload.payload['key'],browser=True),headers={'Cache-Control':'private, no-store'})
 
     @router.post('/matches/{id}/recording')
     def recording(id: UUID,body: Update,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
