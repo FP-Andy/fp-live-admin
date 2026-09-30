@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>히트맵 보강 실험 · Fine Play</title>
+<style>
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;background:#0d1016;color:#e9edf3}*{box-sizing:border-box}body{margin:0}main{max-width:1460px;margin:auto;padding:28px 32px 60px}h1{font-size:26px;margin:8px 0}h2{font-size:17px;margin:0 0 10px}p{line-height:1.65}header{display:flex;justify-content:space-between;align-items:start;border-bottom:1px solid #303642;padding-bottom:16px}.brand{color:#ff7400;font-size:12px;font-weight:800;letter-spacing:.12em}.pill{font-size:12px;border:1px solid #594029;background:#281e16;color:#ffc38f;padding:7px 10px;border-radius:20px}.muted{color:#99a5b7;font-size:13px}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:22px 0}label{display:grid;gap:6px;font-size:12px;color:#adb7c7}select,button{font:inherit;font-size:14px;padding:10px 12px;background:#191e28;border:1px solid #3a4557;border-radius:8px;color:#eef1f5;cursor:pointer}button:hover{border-color:#ff7400}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0}.metric{padding:17px 20px;background:#171c25;border:1px solid #2c3440;border-radius:12px}.metric strong{display:block;font-size:26px;margin-bottom:5px}.metric span{font-size:13px;color:#adb7c7}.metric.add strong{color:#ffba87}.compare{display:grid;grid-template-columns:1fr 1fr;gap:18px}.map-card{border:1px solid #323947;border-radius:12px;background:#171c25;overflow:hidden}.map-card>div{padding:16px 18px}.map-card p{margin:4px 0 0;font-size:12px;color:#99a5b7}canvas{width:100%;display:block;background:white}.map-card.aug{border-color:#92532a}.details{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:24px}.panel{background:#171c25;border:1px solid #2c3440;border-radius:12px;padding:20px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:right;padding:10px 8px;border-bottom:1px solid #2d3542}th:first-child,td:first-child{text-align:left}th{color:#9eabba;font-weight:500}.notice{border-left:3px solid #ff7400;padding:0 14px;margin:24px 0;color:#c5cedb;font-size:14px}.legend{display:flex;gap:10px;align-items:center;color:#99a5b7;font-size:12px;margin:14px 0}.gradient{height:10px;width:160px;background:linear-gradient(90deg,#fff7b7,#ffcd3e,#ff7400,#f1231c,#ffa6bb);border-radius:6px}#status{font-size:14px;color:#ffc38f}li{line-height:1.7;color:#b0bccf;font-size:14px}.sub{font-size:12px;color:#8e9aaf}#export{margin-left:auto}@media(max-width:800px){main{padding:20px 14px}.compare,.details{grid-template-columns:1fr}.metrics{gap:6px}.metric{padding:12px}.metric strong{font-size:21px}header{gap:12px}#export{margin:0}}
+</style>
+<main>
+<header><div><div class="brand">FINE PLAY / RESEARCH</div><h1>히트맵 보강 실험</h1><div class="muted">원래 관측을 보존하고, 앞뒤 움직임으로 짧은 공백만 연결합니다.</div></div><span class="pill">로컬 · 검증용</span></header>
+<div class="toolbar"><label>경기<select id="match"><option value="training">광주–경남 · 9차</option><option value="heldout">울산–전북 · 6차</option></select></label><label>선수<select id="player"></select></label><button id="export" disabled>실험 JSON 저장</button></div>
+<p id="status" role="status">실험 결과를 불러오는 중…</p>
+<div id="content" hidden>
+<div class="metrics"><div class="metric"><strong id="observed"></strong><span>실제 유효 관측 · 변경 없음</span></div><div class="metric add"><strong id="inferred"></strong><span id="inferred-time"></span></div><div class="metric"><strong id="unfilled"></strong><span>보강하지 않은 시간 비율</span></div></div>
+<div class="compare"><article class="map-card"><div><h2>관측만</h2><p>기존 히트맵</p></div><canvas id="before" width="1320" aria-label="기존 관측 히트맵"></canvas></article><article class="map-card aug"><div><h2>관측 + 추정 보강</h2><p>동일 트랙 · 최대 3초 · 앞뒤 이동 방향 반영</p></div><canvas id="after" width="1320" aria-label="짧은 공백을 보강한 실험 히트맵"></canvas></article></div>
+<div class="legend">적은 체류 <span class="gradient"></span> 많은 체류 · 두 지도와 같은 경기의 모든 선수에 동일한 색 강도 기준</div>
+<p class="notice">유효 관측률은 보강 전 수치 그대로입니다. 추정 좌표는 이동 거리·이벤트·선수 연결 판정에 사용하지 않으며, 이 결과는 운영 스냅샷에 반영되지 않습니다.</p>
+<div class="details"><section class="panel"><h2>가린 좌표 복원 결과</h2><p class="muted">다른 경기인 울산–전북으로 검증 · 각 길이 120개 구간</p><table><thead><tr><th>가린 시간</th><th>평균 위치 오차</th><th>분포 오차 감소</th></tr></thead><tbody id="scores"></tbody></table><p class="sub">분포 오차 감소는 해당 구간을 비워둔 지도와 비교한 값입니다. 기준 좌표도 CV 결과이므로 실제 선수 신원 정확도를 뜻하지 않습니다.</p></section><section class="panel"><h2>이 선수의 보강 판단</h2><p id="gap-summary"></p><ul id="rejections"></ul><p class="sub">보강에는 원래 관측만 사용합니다. 앞부분·끝부분을 외삽하거나, 추정한 좌표를 다시 보강 근거로 쓰지 않습니다.</p></section></div>
+<p class="muted">실험 범위: 2경기·20명. 광주–경남 전반부로 방식을 선택하고 울산–전북으로 별도 검증했습니다. 실제 가림·경합·선수 연결 오류에 대한 영상 대조가 추가로 필요합니다.</p>
+</div>
+</main>
+<script type="module">
+import {paintHeatmap} from '/heatmap-render.mjs';
+const $=id=>document.getElementById(id),cache=new Map();let current=null,revision=0,summary;
+const pct=x=>`${(x*100).toFixed(2)}%`,seconds=x=>`${x.toFixed(1)}초`;
+const reasonNames={longGap:'3초보다 긴 공백',identityBoundary:'트랙 ID 변경',shortContext:'앞뒤 관측 부족',unstableAnchor:'관측 위치 흔들림',blockedInterval:'신원 충돌·코트 이탈 등',implausibleMotion:'이동 속도 불일치',outsidePath:'코트 밖 경로',uncertainPath:'불확실성 과다',brokenContext:'앞뒤 관측 단절'};
+function smoothPeak(players,w,h){let peak=0;for(const p of players)for(let y=0;y<h;y++)for(let x=0;x<w;x++){let value=0;for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++){const xx=x+dx,yy=y+dy;if(xx>=0&&yy>=0&&xx<w&&yy<h)value+=p.grid[yy*w+xx]*Math.exp(-(dx*dx+dy*dy)/8);}peak=Math.max(peak,value);}return peak;}
+function paint(){
+ if(!current)return;const p=current.players.find(p=>p.id===$('player').value),e=p.reconstruction;
+ if(!p||!e)throw Error('검증된 보강 프로필이 없습니다.');
+ $('observed').textContent=pct(p.coverage);$('inferred').textContent=pct(e.inferredSeconds/current.duration);
+ $('inferred-time').textContent=`추정 보강 · ${seconds(e.inferredSeconds)}`;$('unfilled').textContent=pct(e.unfilledSeconds/current.duration);
+ paintHeatmap($('before'),current,p);paintHeatmap($('after'),current,{...p,grid:p.grid.map((n,i)=>n+e.estimatedGrid[i])});
+ $('gap-summary').textContent=`${e.gaps.length}개 공백에 ${seconds(e.inferredSeconds)}를 보강했습니다.`;
+ $('rejections').replaceChildren(...Object.entries(e.rejected).sort((a,b)=>b[1].seconds-a[1].seconds).map(([key,v])=>{const li=document.createElement('li');li.textContent=`${reasonNames[key]||key}: ${seconds(v.seconds)} 보류 (${v.gaps}구간)`;return li;}));
+}
+async function load(){
+ const ticket=++revision,key=$('match').value;$('status').hidden=false;$('status').textContent='관측·보강 결과를 불러오는 중…';$('content').hidden=true;$('export').disabled=true;
+ try{
+  if(!cache.has(key)){const response=await fetch(`/${key}-preview.json`);if(!response.ok)throw Error('실험 결과 파일을 찾지 못했습니다.');const data=await response.json();data.scale=smoothPeak(data.players.map(p=>({...p,grid:p.grid.map((v,i)=>v+(p.reconstruction?.estimatedGrid[i]||0))})),data.width,data.height);cache.set(key,data);}
+  if(ticket!==revision)return;current=cache.get(key);
+  $('player').replaceChildren(...current.players.map(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=`${p.group==='home'?'홈':'원정'} #${p.jersey}${p.name?' · '+p.name:''}`;return o;}));
+  paint();$('content').hidden=false;$('status').hidden=true;$('export').disabled=false;
+ }catch(error){$('status').textContent=error.message;}
+}
+$('match').onchange=load;$('player').onchange=paint;
+$('export').onclick=()=>{if(!current)return;const blob=new Blob([JSON.stringify(current)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='fpa-heatmap-reconstruction-experiment.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);};
+try{
+ summary=await(await fetch('/results.json')).json();const selected=summary.heldout.find(r=>r.parameters.method===summary.selected?.method&&r.parameters.diffusion===summary.selected?.diffusion);
+ if(!summary.holdoutPass)throw Error('별도 경기 검증 기준을 통과하지 못했습니다.');
+ $('scores').replaceChildren(...selected.bins.filter(b=>b.duration>=1&&b.duration<=summary.selected.maxGapSeconds).map(b=>{const tr=document.createElement('tr');for(const value of [`${b.duration}초`,`${b.meanGapRMSEM.toFixed(2)}m`,`${(100*b.relativeImprovement).toFixed(1)}%`]){const td=document.createElement('td');td.textContent=value;tr.append(td);}return tr;}));
+ await load();
+}catch(error){$('status').textContent=error.message;}
+</script></html>
