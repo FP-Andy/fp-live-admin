@@ -76,6 +76,8 @@ type CardTemplateSpec = {
   section_fields: CardFieldSpec[];
   /** 이 세트가 자기 점수판을 들고 있나 — 있으면 '대회·라운드' 칸이 뜬다. */
   has_board?: boolean;
+  /** 점수판 기본 크기·자리. 세트를 고르는 순간 적용되고, 그 뒤엔 자유. */
+  board_defaults?: { size_pct?: number; pos_x?: number; pos_y?: number };
   /** 전후반 효과 영상을 들고 있나. */
   has_half_videos?: boolean;
   board_fields?: CardFieldSpec[];
@@ -379,6 +381,21 @@ export default function ManualHighlightPage() {
                   [prev.template]: { ...fill, ...(prev.values[prev.template] ?? {}) } },
       }));
     }
+    // 세트가 점수판 기본 크기·자리를 들고 있으면, **다른 템플릿에서 넘어온 순간**
+    // 그 자리로 잡는다. 처음 열 때(저장본 복원 직후)는 건드리지 않는다 — 지난번에
+    // 옮겨 둔 자리를 템플릿 기본값이 되살려 덮으면 안 된다.
+    const bd = cardTemplate.board_defaults;
+    if (bd && lastTemplateRef.current !== null && lastTemplateRef.current !== cards.template) {
+      setScoreboard((prev) => ({
+        ...prev,
+        sizePct: bd.size_pct ?? prev.sizePct,
+        posX: bd.pos_x ?? prev.posX,
+        posY: bd.pos_y ?? prev.posY,
+        posPxX: null, posPxY: null,
+      }));
+    }
+    lastTemplateRef.current = cards.template;
+
     // 점수판의 대회·라운드도 같은 규칙 — 세트 점수판이 있을 때, 안 만졌으면 채운다.
     const boardRound = (cardTemplate.board_fields || []).find((f) => f.id === 'round_label');
     if (cardTemplate.has_board && boardRound?.default) {
@@ -498,6 +515,8 @@ export default function ManualHighlightPage() {
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
   // 세트 점수판 미리보기 — 서버가 합치기와 같은 함수로 그린 PNG. 세트가 아닐 때는 빈 값.
   const [boardPreviewUrl, setBoardPreviewUrl] = useState('');
+  // 직전에 골라져 있던 템플릿 — 세트 기본 자리는 '갈아탄 순간' 에만 적용한다.
+  const lastTemplateRef = useRef<string | null>(null);
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
   // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 신청 태깅과 통일).

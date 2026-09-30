@@ -160,6 +160,10 @@ class CardTemplate:
     board_design: tuple[int, int] | None = None
     """점수판 시안 규격. 카드와 다를 수 있다(SUFA 는 1215x605)."""
 
+    board_defaults: dict = field(default_factory=dict)
+    """점수판의 기본 크기·자리 — {'size_pct', 'pos_x', 'pos_y'}(화면 비율 좌표).
+    세트를 고르는 순간 이 값으로 잡히고, 그 뒤에는 자유롭게 옮길 수 있다."""
+
     board_fields: tuple[CardField, ...] = ()
     board_zones: tuple[ColorZone, ...] = ()
     """점수판에서 색을 갈아끼울 자리 — 보통 홈·어웨이 팀 색."""
@@ -372,6 +376,8 @@ def _sufa(key: str, name: str, home_src: str, away_src: str,
         board_bg=f"sufa-{low}-board.png",
         board_design=(1215, 605),
         board_fields=_with_round_default(_SUFA_BOARD_FIELDS, round_text),
+        # 운영에서 맞춰 본 자리 — 크기 27%, 위로 붙여(74, 80).
+        board_defaults={"size_pct": 27, "pos_x": 74, "pos_y": 80},
         board_zones=(
             ColorZone(id="home_color", label="홈 팀 색",
                       box=_SUFA_HOME_BOX, source=home_src),
@@ -444,6 +450,7 @@ def describe(template: CardTemplate) -> dict:
                   "section": template.boxes_for("section")},
         # 이 세트가 자기 점수판·효과 영상을 들고 있나. 화면이 칸을 보일지 정한다.
         "has_board": template.has_board,
+        "board_defaults": dict(template.board_defaults),
         "has_half_videos": bool(template.first_half_video or template.second_half_video),
         "board_fields": [one(f) for f in template.board_fields],
     }
