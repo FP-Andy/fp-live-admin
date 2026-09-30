@@ -36,7 +36,7 @@ export default function TeamReportSheet({draft}:{draft:ReportDraft}){
  const own=ours?o.homeColor:o.awayColor,other=ours?o.awayColor:o.homeColor,ownScore=ours?draft.homeScore:draft.awayScore,otherScore=ours?draft.awayScore:draft.homeScore;
  const data=draft.fla?.matchId===draft.matchId?draft.fla:null,v=data?teamReportView(data,side):null;
  const blank={left_count:0,center_count:0,right_count:0,total_count:0};
- const comment=(ours?o.homeComment:o.awayComment)||(data?matchComment(data,side):'');
+ const comment=(ours?o.homeComment:o.awayComment)||(data?matchComment(data,side,draft):'');
  return <div className="mr-sheet tr-sheet">
   <header className="mr-sheet-top"><span>FINE PLAY · QUEEN CUP</span><span>TEAM MATCH REPORT</span></header>
   <div className="tr-heading"><small>MATCH SUMMARY</small><h1 data-report-text="경기 요약 제목">{ownName||'아군'} 경기 리포트</h1><p data-report-text="경기 이름">{draft.matchName||'경기를 선택하세요'}</p></div>

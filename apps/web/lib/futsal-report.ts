@@ -127,7 +127,8 @@ export function commentDraft(source:HeatSource|null,p:HeatPlayer|undefined,perso
  }else texts.eventComment='아직 이 선수에게 연결된 이벤트가 없어요. 팀의 슈팅 위치와 내 활동 구역을 함께 보며, 공격에 나설 때와 수비로 돌아설 때 지원할 공간을 살펴봐요.';
  if(spatial){
   const first=usable[0],last=usable.at(-1),delta=first&&last?last.forward-first.forward:0;
-  const review=roleReview({position:person.position,zone:spatial.longitudinal.indexOf(Math.max(...spatial.longitudinal)),side:spatial.lateral.indexOf(Math.max(...spatial.lateral)),broad:spatial.longitudinal[0]>=.2&&spatial.longitudinal[2]>=.2,shots:shots.length,goals:shots.filter(e=>e.goal).length,recoveries:recoveries.length,defense:defense.length,phaseChange:usable.length<2?undefined:delta>=.1?'forward':delta<=-.1?'back':first.side!==last!.side?'side':'steady',lastPhase:last?.label});
+  const zones=[...spatial.longitudinal].sort((a,b)=>b-a),lanes=[...spatial.lateral].sort((a,b)=>b-a);
+  const review=roleReview({position:person.position,zone:spatial.longitudinal.indexOf(Math.max(...spatial.longitudinal)),side:spatial.lateral.indexOf(Math.max(...spatial.lateral)),broad:spatial.longitudinal[0]>=.2&&spatial.longitudinal[2]>=.2,shots:shots.length,goals:shots.filter(e=>e.goal).length,recoveries:recoveries.length,defense:defense.length,phaseChange:usable.length<2?undefined:delta>=.1?'forward':delta<=-.1?'back':first.side!==last!.side?'side':'steady',firstPhase:first?.label,lastPhase:last?.label,distinctZone:zones[0]-zones[1]>=.08,distinctSide:lanes[0]-lanes[1]>=.08});
   if(review){texts.strengths=review.strengths;texts.improvements=review.improvements;}
  }
  return texts;

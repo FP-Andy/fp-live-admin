@@ -33,12 +33,16 @@ const setup=initial?.setup||{preparationId:prep,time:0,roster:[...heat.players.m
  await page.getByRole('button',{name:'최신 FLA 기록 불러오기',exact:true}).click();await page.getByText('같은 경기의 대시보드 FLA를 연결했습니다. 공격 방향·점유율·슈팅·경기 흐름을 반영했습니다.',{exact:true}).waitFor();
  assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/아군 66.7%/);assert((await page.locator('.mr-preview .tr-review p').innerText()).length>400);
  assert.equal(await page.locator('.mr-phases>div').count(),3);assert.match(await page.locator('.mr-preview .tr-review').innerText(),/중앙/);assert.match(await page.locator('.mr-preview .mr-score').innerText(),/3\s*:\s*1/);assert.match(await page.getByLabel('경기 총평',{exact:true}).getAttribute('placeholder'),/중앙/);
+ assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/3:1 승리/);
+ await page.getByLabel('어웨이 스코어',{exact:true}).fill('3');assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/3:3 무승부/);
+ await page.getByLabel('경기 총평',{exact:true}).fill('직접 편집한 총평');await page.getByLabel('어웨이 스코어',{exact:true}).fill('1');assert.equal(await page.locator('.mr-preview .tr-review p').innerText(),'직접 편집한 총평');
+ await page.getByLabel('경기 총평',{exact:true}).fill('');assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/3:1 승리/);
  await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/home.png'});
  await page.getByLabel('리포트 기준 팀',{exact:true}).selectOption('away');
  assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/아군 33.3%/);
  assert.match(await page.locator('.mr-preview .mr-own-team').innerText(),/안양/);
  assert.match(await page.locator('.mr-preview .tr-review').innerText(),/왼쪽 측면/);
- await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/away.png'});
+ assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/1:3.*패배/s);await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/away.png'});
  await page.getByRole('button',{name:'개인 리포트',exact:true}).click();assert.doesNotMatch(await page.locator('.mr-preview .mr-sheet').innerText(),/양 팀 기록|좌표 없음|이 선수 0건/);await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/player.png'});
  await page.getByLabel('FC 서울 포인트 색상',{exact:true}).fill('#ba1234');
  const pending=page.waitForEvent('download',{timeout:120000});await page.getByRole('button',{name:'팀 리포트 PDF · 7페이지',exact:true}).click();
@@ -53,5 +57,5 @@ const setup=initial?.setup||{preparationId:prep,time:0,roster:[...heat.players.m
  // Position-aware generation works without names, including the 5-player batch.
  await page.getByLabel('선수 이름',{exact:true}).fill('');assert(!await page.getByRole('button',{name:'A4 PDF 다운로드',exact:true}).isDisabled());assert.equal(await page.getByLabel('포지션 (자동)',{exact:true}).inputValue(),'FW · PIVO');await page.getByLabel('히트맵 기준 홈 공격 방향',{exact:true}).selectOption('left');assert.equal(await page.getByLabel('포지션 (자동)',{exact:true}).inputValue(),'DF · FIXO');await page.getByRole('button',{name:'개인 리포트 생성',exact:true}).click();await page.getByLabel('히트맵 선수',{exact:true}).selectOption('away-5');assert.match(await page.getByLabel('히트맵 코멘트',{exact:true}).inputValue(),/DF · FIXO/);assert.match(await page.getByLabel('이벤트맵 코멘트',{exact:true}).inputValue(),/DF · FIXO/);assert(!await page.getByRole('button',{name:'A4 PDF 다운로드',exact:true}).isDisabled());
  await page.setViewportSize({width:760,height:1000});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);
- assert.deepEqual(errors,[]);console.log('PASS: assignment frame + 12-player table; names optional; automatic positions and role-specific generation; snapshot refresh preserves edits; branded footer; true team inversion; FLA summary/comment; seven A4 pages; restore and narrow screen. '+out);
+ assert.deepEqual(errors,[]);console.log('PASS: assignment frame + 12-player table; names optional; automatic positions and role-specific generation; snapshot refresh preserves edits; branded footer; true team inversion; score-aware FLA assessment and preserved manual text; seven A4 pages; restore and narrow screen. '+out);
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
