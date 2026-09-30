@@ -160,6 +160,10 @@ class CardTemplate:
     board_design: tuple[int, int] | None = None
     """점수판 시안 규격. 카드와 다를 수 있다(SUFA 는 1215x605)."""
 
+    outro_default: bool = True
+    """마무리 영상 기본 켬/끔. 파인플레이 기본은 켬 — 마무리 영상이 파인플레이
+    브랜딩이라, 대회 세트(SUFA)에서는 기본으로 끈다(원하면 켤 수 있다)."""
+
     board_defaults: dict = field(default_factory=dict)
     """점수판의 기본 크기·자리 — {'size_pct', 'pos_x', 'pos_y'}(화면 비율 좌표).
     세트를 고르는 순간 이 값으로 잡히고, 그 뒤에는 자유롭게 옮길 수 있다."""
@@ -375,6 +379,8 @@ def _sufa(key: str, name: str, home_src: str, away_src: str,
         board_bg=f"sufa-{low}-board.png",
         board_design=(1215, 605),
         board_fields=_with_round_default(_SUFA_BOARD_FIELDS, round_text),
+        # 마무리 영상은 파인플레이 브랜딩이라 대회 세트에서는 기본으로 끈다.
+        outro_default=False,
         # 운영에서 맞춰 본 자리 — 크기 27%, 영상 픽셀 (74, 80). 비율(%)이 아니라
         # **픽셀**이다 — 화면의 위치 숫자 칸이 픽셀이라 그 값이 그대로 보여야 한다.
         board_defaults={"size_pct": 27, "pos_px_x": 74, "pos_px_y": 80},
@@ -451,6 +457,7 @@ def describe(template: CardTemplate) -> dict:
         # 이 세트가 자기 점수판·효과 영상을 들고 있나. 화면이 칸을 보일지 정한다.
         "has_board": template.has_board,
         "board_defaults": dict(template.board_defaults),
+        "outro_default": template.outro_default,
         "has_half_videos": bool(template.first_half_video or template.second_half_video),
         "board_fields": [one(f) for f in template.board_fields],
     }

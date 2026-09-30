@@ -78,6 +78,8 @@ type CardTemplateSpec = {
   has_board?: boolean;
   /** 점수판 기본 크기·자리(픽셀). 세트를 고르는 순간 적용되고, 그 뒤엔 자유. */
   board_defaults?: { size_pct?: number; pos_px_x?: number; pos_px_y?: number };
+  /** 마무리 영상 기본 켬/끔 — 파인플레이 브랜딩이라 대회 세트는 기본 끔. */
+  outro_default?: boolean;
   /** 전후반 효과 영상을 들고 있나. */
   has_half_videos?: boolean;
   board_fields?: CardFieldSpec[];
@@ -370,9 +372,23 @@ export default function ManualHighlightPage() {
   useEffect(() => {
     if (!cardTemplate) return;
     const current = cards.values[cards.template] ?? {};
+    // 갈아타기 전 템플릿에서 채웠던 값. 값은 템플릿별로 따로 저장되는데(항목 구성이
+    // 달라서), 같은 id 의 항목(팀명·대회명·로고)은 넘겨받는다 — 안 그러면 갈아탄
+    // 직후 전부 빈칸이고, 빈 채로 합치면 시작 카드가 통째로 빠진다(실제로 그랬다).
+    // **파인플레이 계열(점수판·효과 영상 없는 세트)로 갈아탈 때만** 넘겨받는다.
+    // SUFA 쪽은 이 수정의 영향이 없어야 한다 — 그쪽은 종전대로 시안 기본 문구만 채운다.
+    const plainTarget = !cardTemplate.has_board && !cardTemplate.has_half_videos;
+    const carried = (plainTarget
+        && lastTemplateRef.current && lastTemplateRef.current !== cards.template)
+      ? (cards.values[lastTemplateRef.current] ?? {})
+      : {};
     const fill: Record<string, string> = {};
     for (const spec of cardTemplate.start_fields) {
-      if (spec.default && current[spec.id] === undefined) fill[spec.id] = spec.default;
+      if (current[spec.id] !== undefined) continue;
+      const inherited = carried[spec.id];
+      // 사용자가 친 값이 시안 기본 문구보다 우선이다.
+      if (inherited !== undefined && String(inherited).trim()) fill[spec.id] = inherited;
+      else if (spec.default) fill[spec.id] = spec.default;
     }
     if (Object.keys(fill).length) {
       setCards((prev) => ({
@@ -385,7 +401,9 @@ export default function ManualHighlightPage() {
     // 그 자리로 잡는다. 처음 열 때(저장본 복원 직후)는 건드리지 않는다 — 지난번에
     // 옮겨 둔 자리를 템플릿 기본값이 되살려 덮으면 안 된다.
     const bd = cardTemplate.board_defaults;
-    if (bd && lastTemplateRef.current !== null && lastTemplateRef.current !== cards.template) {
+    const switched = lastTemplateRef.current !== null
+      && lastTemplateRef.current !== cards.template;
+    if (bd && switched) {
       setScoreboard((prev) => ({
         ...prev,
         sizePct: bd.size_pct ?? prev.sizePct,
@@ -393,6 +411,10 @@ export default function ManualHighlightPage() {
         posPxX: bd.pos_px_x ?? prev.posPxX,
         posPxY: bd.pos_px_y ?? prev.posPxY,
       }));
+    }
+    if (switched && cardTemplate.outro_default !== undefined) {
+      // 마무리 영상(파인플레이 브랜딩)은 세트 기본을 따른다 — 파인플레이 켬, SUFA 끔.
+      setCards((prev) => ({ ...prev, outro: cardTemplate.outro_default ?? prev.outro }));
     }
     lastTemplateRef.current = cards.template;
 
