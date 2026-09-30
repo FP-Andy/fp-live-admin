@@ -473,3 +473,33 @@ class HighlightClipAction(Base):
     fpa_scene_action_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     extra: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # Tags, Receiver 등 부가 정보
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class HighlightCardTemplate(Base):
+    """운영자가 콘솔에서 만든 하이라이트 카드 템플릿.
+
+    내장 템플릿(highlight_card_templates.py)은 코드로 박혀 있어 디자인이 새로 생길 때마다
+    배포가 필요하다. 이 표는 그걸 배포 없이 늘리기 위한 것이다 — 배경 그림을 올리고
+    기존 템플릿의 자리·크기·색을 손본 결과를 이름 붙여 저장하면 드롭다운에 바로 뜬다.
+    """
+
+    __tablename__ = "highlight_card_templates"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: 어느 내장 템플릿을 밑그림으로 삼았나. 항목 구성(글자·이미지 칸)을 여기서 물려받는다.
+    base_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    base_color: Mapped[str] = mapped_column(String(16), nullable=False, default="#FF7400")
+    #: 배경 그림 파일명(runtime 디렉터리 안). 비우면 밑그림의 배경을 그대로 쓴다.
+    start_bg: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    section_bg: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    #: 항목별로 옮긴 자리·크기. {필드id: {left, top, width, height, size}} 꼴.
+    boxes: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: 템플릿 에디터가 만든 전체 명세. 있으면 base_id 상속 대신 이것으로 템플릿을
+    #: 통째로 짓는다 — 항목·점수판·팀색 영역·효과 영상까지 전부 들어 있다.
+    spec: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

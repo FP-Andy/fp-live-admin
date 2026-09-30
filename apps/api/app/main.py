@@ -63,6 +63,9 @@ from .fpa import (
 from .fpa_model_baselines import build_fpa_model_room_baseline_artifacts, canonicalize_xfp_weights_payload
 from . import record_sheet
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
+from . import highlight_card_store as card_store
+from . import highlight_template_editor as template_editor
+from .highlight_cards import render_board
 from .highlight_cards import (
     DEFAULT_TEMPLATE_ID,
     TEMPLATES,
@@ -71,6 +74,8 @@ from .highlight_cards import (
     render_card,
 )
 from .highlight_jobs import (
+    brand_asset,
+    template_asset,
     CARD_MAX_SEC,
     CARD_MIN_SEC,
     CARD_SEC,
@@ -133,7 +138,7 @@ from .broadcast_assets import (
     render_live_coder_asset_pairs,
     store_asset_pair,
 )
-from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, MatchHighlight, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject
+from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, MatchHighlight, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject, HighlightCardTemplate
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -408,6 +413,12 @@ def _ensure_runtime_schema() -> None:
         statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN source_download_url TEXT")
     if "broadcast_overlay_projects" in table_names and "output_upload_url" not in broadcast_overlay_project_columns:
         statements.append("ALTER TABLE broadcast_overlay_projects ADD COLUMN output_upload_url TEXT")
+
+    # 템플릿 에디터: 기존 표에 전체 명세(spec) 자리를 더한다.
+    if "highlight_card_templates" in table_names:
+        card_template_columns = {c["name"] for c in inspector.get_columns("highlight_card_templates")}
+        if "spec" not in card_template_columns:
+            statements.append("ALTER TABLE highlight_card_templates ADD COLUMN spec JSONB")
 
     if "highlight_clip_actions" in table_names and "start_offset" not in clip_action_columns:
         statements.append("ALTER TABLE highlight_clip_actions ADD COLUMN start_offset DOUBLE PRECISION")
@@ -9431,20 +9442,293 @@ def remove_manual_music(
 
 
 @app.get("/api/highlight/card-templates")
-def list_highlight_card_templates(user: User = Depends(_require_superuser)):
+def list_highlight_card_templates(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
     """고를 수 있는 카드 템플릿과, 각 템플릿에서 **고칠 수 있는 항목** 목록.
 
     설정 화면은 이 응답으로 칸을 만든다. 새 템플릿을 들여도 화면을 다시 짤 일이 없다.
+    내장 템플릿과 운영자가 만든 템플릿을 같은 모양으로 함께 준다 — 화면은 둘을
+    구별하지 않고, `custom` 표시만 보고 '삭제' 버튼을 붙일지 정한다.
     """
-    return {
-        "templates": [describe_card_template(template) for template in TEMPLATES],
-        "default": DEFAULT_TEMPLATE_ID,
-    }
+    out = []
+    for template in card_store.all_templates(db):
+        spec = describe_card_template(template)
+        spec["custom"] = str(template.id).startswith(card_store.USER_PREFIX)
+        out.append(spec)
+    return {"templates": out, "default": DEFAULT_TEMPLATE_ID}
+
+
+@app.post("/api/highlight/card-templates")
+async def create_highlight_card_template(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """지금 손본 설정을 새 템플릿으로 저장한다(배포 없이 늘리기).
+
+    밑그림이 될 내장 템플릿의 **항목 구성**을 물려받고, 거기에 배경 그림·색·자리를
+    덮어쓴다. 항목 구성을 물려받는 이유는 그게 렌더러가 아는 유일한 구조이기 때문이다 —
+    칸을 새로 만드는 일까지 콘솔에서 하게 하면 렌더러도 같이 고쳐야 한다.
+
+    multipart 로 받는다: name, base_id, base_color, boxes(JSON), note,
+    start_bg(파일, 선택), section_bg(파일, 선택).
+    """
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="템플릿 이름은 필수입니다.")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="템플릿 이름은 80자까지입니다.")
+    base_id = str(form.get("base_id") or DEFAULT_TEMPLATE_ID).strip()
+    if base_id not in {t.id for t in TEMPLATES}:
+        raise HTTPException(status_code=400, detail=f"모르는 밑그림 템플릿입니다: {base_id}")
+
+    base_color = str(form.get("base_color") or "").strip() or None
+    if base_color and not re.fullmatch(r"#[0-9a-fA-F]{6}", base_color):
+        raise HTTPException(status_code=400, detail="색은 #RRGGBB 꼴이어야 합니다.")
+
+    raw_boxes = form.get("boxes")
+    boxes: dict = {}
+    if raw_boxes:
+        try:
+            boxes = json.loads(str(raw_boxes))
+        except Exception:
+            raise HTTPException(status_code=400, detail="boxes 를 읽을 수 없습니다(JSON).")
+        if not isinstance(boxes, dict):
+            raise HTTPException(status_code=400, detail="boxes 는 객체여야 합니다.")
+
+    row = HighlightCardTemplate(
+        name=name,
+        base_id=base_id,
+        base_color=base_color or card_store.get_template(base_id).base_color,
+        boxes=boxes,
+        note=str(form.get("note") or "").strip() or None,
+        created_by=getattr(user, "username", None) or getattr(user, "email", None),
+    )
+    db.add(row)
+    db.flush()   # id 를 받아 파일 이름에 쓴다
+
+    # 배경 그림. 없으면 밑그림의 배경을 그대로 쓴다(색만 바꾼 템플릿이 그런 경우다).
+    saved = []
+    for key in ("start_bg", "section_bg"):
+        upload = form.get(key)
+        if upload is None or not getattr(upload, "filename", ""):
+            continue
+        data = await upload.read()
+        if not data:
+            continue
+        if len(data) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"{key} 가 너무 큽니다(20MB 제한).")
+        suffix = Path(str(upload.filename)).suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise HTTPException(status_code=400, detail="배경은 png·jpg·webp 만 됩니다.")
+        # 실제로 그림인지 확인한다 — 아니면 렌더 때 터진다.
+        try:
+            with Image.open(io.BytesIO(data)) as probe:
+                probe.verify()
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{key} 를 그림으로 읽을 수 없습니다.")
+        filename = f"{row.id}-{key}{suffix}"
+        (card_store.template_dir() / filename).write_bytes(data)
+        setattr(row, key, filename)
+        saved.append(filename)
+
+    _audit(db, "HIGHLIGHT_CARD_TEMPLATE_CREATE", "highlight", actor=user,
+           target_id=str(row.id), severity="INFO",
+           details={"name": name, "base_id": base_id, "backgrounds": saved})
+    db.commit()
+    return {"ok": True, "id": f"{card_store.USER_PREFIX}{row.id}", "name": name,
+            "backgrounds": saved}
+
+
+@app.delete("/api/highlight/card-templates/{template_id}")
+def delete_highlight_card_template(
+    template_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """운영자가 만든 템플릿을 지운다. 내장은 못 지운다.
+
+    지워도 그걸로 이미 만든 결과물은 그대로다 — 카드는 렌더 때 이미 구워졌다.
+    지운 템플릿을 고른 설정이 남아 있으면 렌더가 내장 기본으로 떨어진다(결과물은 나온다).
+    """
+    key = str(template_id or "").strip()
+    if not key.startswith(card_store.USER_PREFIX):
+        raise HTTPException(status_code=400, detail="내장 템플릿은 지울 수 없습니다.")
+    try:
+        row = db.get(HighlightCardTemplate, uuid.UUID(key[len(card_store.USER_PREFIX):]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="템플릿 id 가 올바르지 않습니다.")
+    if row is None:
+        raise HTTPException(status_code=404, detail="없는 템플릿입니다.")
+    name = row.name
+    for key_ in ("start_bg", "section_bg"):
+        filename = getattr(row, key_, None)
+        if filename:
+            (card_store.template_dir() / str(filename)).unlink(missing_ok=True)
+    db.delete(row)
+    _audit(db, "HIGHLIGHT_CARD_TEMPLATE_DELETE", "highlight", actor=user,
+           target_id=key, severity="INFO", details={"name": name})
+    db.commit()
+    return {"ok": True, "name": name}
+
+
+@app.post("/api/highlight/card-templates/analyze")
+async def analyze_card_template_file(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """올린 PSD/이미지를 분석해 '고칠 수 있는 항목' 후보를 돌려준다(템플릿 에디터 1단계).
+
+    PSD 는 글자 레이어에서 내용·자리·크기·자간·색을, 도형·오브젝트 레이어에서 로고
+    자리·팀 색 후보를 읽는다. 어느 후보가 팀명인지는 화면에서 사람이 정한다.
+    일반 이미지는 배경으로만 받는다 — 항목은 손으로 놓는다.
+    """
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not getattr(upload, "filename", ""):
+        raise HTTPException(status_code=400, detail="파일이 없습니다.")
+    data = await upload.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+    if len(data) > 80 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="80MB 를 넘습니다.")
+    try:
+        result = template_editor.analyze(data, str(upload.filename))
+    except Exception as exc:  # noqa: BLE001 - 깨진 PSD 는 사용자 입력 문제다
+        raise HTTPException(status_code=400, detail=f"파일을 읽을 수 없습니다: {exc}")
+    return result
+
+
+@app.post("/api/highlight/card-templates/custom")
+async def create_custom_card_template(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """역할을 정해 보낸 명세로 템플릿을 만든다(템플릿 에디터 2단계).
+
+    multipart: name, spec(JSON), 그리고 선택 영상 first_half/second_half/outro(mp4).
+    spec 의 start/board 는 분석 때 받은 token 과 항목 목록·숨길 레이어를 담는다.
+    배경 PNG 는 여기서 굽는다 — 글자 레이어와 로고로 지정된 레이어를 숨긴 합성본이다.
+    """
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="템플릿 이름은 필수입니다.")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="템플릿 이름은 80자까지입니다.")
+    try:
+        spec_in = template_editor.spec_from_request(form.get("spec"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    row = HighlightCardTemplate(
+        name=name, base_id=DEFAULT_TEMPLATE_ID,
+        base_color=str(spec_in.get("base_color") or "#FF7400"),
+        boxes={}, note=str(spec_in.get("note") or "").strip() or None,
+        created_by=getattr(user, "username", None) or getattr(user, "email", None),
+    )
+    db.add(row)
+    db.flush()
+
+    spec: dict = {"outro_default": bool(spec_in.get("outro_default", False))}
+    used_tokens: list[str] = []
+
+    def build_side(key: str, bg_name: str) -> None:
+        """start/board 한 면 — 배경을 굽고 항목·영역을 명세로 옮긴다."""
+        side = spec_in.get(key)
+        if not isinstance(side, dict) or not side.get("token"):
+            return
+        token = str(side["token"])
+        hide = [int(i) for i in (side.get("hide_layers") or [])]
+        dest = card_store.template_dir() / f"{row.id}-{bg_name}.png"
+        try:
+            size = template_editor.compose_background(token, hide, dest)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"{key} 배경을 굽지 못했습니다: {exc}")
+        used_tokens.append(token)
+        spec[f"{key}_bg"] = dest.name
+        spec[f"{key}_design" if key == "board" else "design"] = list(size)
+        fields = side.get("fields") or []
+        if not isinstance(fields, list):
+            raise HTTPException(status_code=400, detail=f"{key}.fields 는 목록이어야 합니다.")
+        spec[f"{key}_fields"] = fields
+        if key == "board":
+            spec["board_zones"] = side.get("zones") or []
+            if isinstance(side.get("defaults"), dict):
+                spec["board_defaults"] = side["defaults"]
+
+    build_side("start", "start")
+    build_side("board", "board")
+    if "design" not in spec:
+        raise HTTPException(status_code=400, detail="시작 카드는 필수입니다.")
+
+    # 영상들 — 그대로 저장해 세트에 문다. 글자를 얹지 않으므로 검사도 영상인지만 본다.
+    for key, spec_key in (("first_half", "first_half_video"),
+                          ("second_half", "second_half_video"),
+                          ("outro", "outro_video")):
+        upload = form.get(key)
+        if upload is None or not getattr(upload, "filename", ""):
+            continue
+        data = await upload.read()
+        if not data:
+            continue
+        if len(data) > 100 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"{key} 가 100MB 를 넘습니다.")
+        suffix = Path(str(upload.filename)).suffix.lower()
+        if suffix not in {".mp4", ".mov", ".webm"}:
+            raise HTTPException(status_code=400, detail=f"{key} 는 영상 파일이어야 합니다.")
+        filename = f"{row.id}-{key}{suffix}"
+        (card_store.template_dir() / filename).write_bytes(data)
+        spec[spec_key] = filename
+
+    row.spec = spec
+    for token in used_tokens:
+        template_editor.discard_pending(token)
+    _audit(db, "HIGHLIGHT_CARD_TEMPLATE_CREATE", "highlight", actor=user,
+           target_id=str(row.id), severity="INFO",
+           details={"name": name, "editor": True,
+                    "has_board": bool(spec.get("board_bg")),
+                    "videos": [k for k in ("first_half_video", "second_half_video",
+                                            "outro_video") if spec.get(k)]})
+    db.commit()
+    return {"ok": True, "id": f"{card_store.USER_PREFIX}{row.id}", "name": name,
+            "spec": spec}
+
+
+@app.get("/api/highlight/card-templates/{template_id}/half/{which}")
+def get_template_half_video(
+    template_id: str,
+    which: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """세트에 든 전·후반 효과 영상을 재생용으로 흘려준다.
+
+    합본에 어떤 영상이 끼는지 **콘솔에서 재생해 확인**할 수 있어야 한다 — 이게 없으면
+    'mp4 가 물려 있긴 한 건가' 를 결과물을 구워 보기 전까지 알 수 없다(실제로 그랬다).
+    """
+    if which not in {"first", "second"}:
+        raise HTTPException(status_code=404, detail="first 또는 second 만 있습니다.")
+    template = card_store.resolve(db, template_id)
+    name = template.first_half_video if which == "first" else template.second_half_video
+    if not name:
+        raise HTTPException(status_code=404, detail="이 세트에는 효과 영상이 없습니다.")
+    path = template_asset(name)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail=f"효과 영상 파일이 없습니다: {name}")
+    return _serve_file_with_range(path, request, "video/mp4")
 
 
 @app.post("/api/highlight/card-preview")
 def preview_highlight_card(
     body: dict = Body(default={}),
+    db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
     """카드 한 장을 PNG 로 그려 돌려준다.
@@ -9453,19 +9737,38 @@ def preview_highlight_card(
     시안이 바뀔 때 두 곳이 어긋나고, 미리보기는 맞는데 결과물은 다른 일이 생긴다.
     합치기가 쓰는 함수를 그대로 호출하므로 어긋날 수가 없다.
     """
-    template = get_template(body.get("template"))
-    kind = "section" if str(body.get("kind") or "start") == "section" else "start"
+    template = card_store.resolve(db, body.get("template"))
+    raw_kind = str(body.get("kind") or "start")
+    kind = raw_kind if raw_kind in {"start", "section", "board"} else "start"
     try:
         width = int(body.get("width") or 960)
     except (TypeError, ValueError):
         width = 960
     # 미리보기는 화면에 작게 들어가므로 크게 그릴 이유가 없다(그릴 때마다 왕복한다).
     width = max(320, min(1920, width))
+
+    # 세트 점수판 — 합치기가 쓰는 render_board 를 그대로 부른다. 화면에 다른 그림을
+    # 두면 시안이 바뀔 때 미리보기는 맞는데 결과물은 다른 일이 생긴다.
+    if kind == "board":
+        if not template.has_board:
+            raise HTTPException(status_code=400, detail="이 템플릿에는 점수판 시안이 없습니다.")
+        raw_values = body.get("values") if isinstance(body.get("values"), dict) else {}
+        values = {
+            spec.id: str(raw_values.get(spec.id) or "").strip()[:spec.max_len]
+            for spec in template.fields("board") if spec.kind == "text"
+        }
+        raw_colors = body.get("colors") if isinstance(body.get("colors"), dict) else {}
+        colors = {z.id: str(raw_colors.get(z.id) or "").strip() for z in template.board_zones}
+        image = render_board(template, width, values=values, colors=colors)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return Response(content=buffer.getvalue(), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
     design_w, design_h = template.design
     height = max(1, round(width * design_h / design_w))
 
     # 합치기와 같은 손질을 거친 값으로 그린다 — 미리보기만 관대하면 결과물과 달라진다.
-    settings = _card_settings({
+    settings = _card_settings(db, {
         "enabled": True, "template": template.id, "color": body.get("color"),
         "intro": {"values": body.get("values") or {}, "boxes": body.get("boxes") or {}},
     })
@@ -9495,7 +9798,7 @@ def preview_highlight_card(
     )
 
 
-def _card_settings(cards: dict) -> dict:
+def _card_settings(db, cards: dict) -> dict:
     """화면이 보낸 카드 설정을 다듬는다. 잡 메타에 통째로 들어가므로 길이를 못 박는다."""
 
     def _logo(value: Any) -> str:
@@ -9506,7 +9809,7 @@ def _card_settings(cards: dict) -> dict:
 
     # 무엇을 받을지는 템플릿이 정한다 — 항목을 여기 박으면 템플릿을 들일 때마다 고쳐야
     # 한다. 템플릿에 없는 값은 버린다(옛 저장본에 남은 값이 조용히 흘러들지 않게).
-    template = get_template(cards.get("template"))
+    template = card_store.resolve(db, cards.get("template"))
     intro_raw = cards.get("intro") if isinstance(cards.get("intro"), dict) else {}
     raw_values = intro_raw.get("values") if isinstance(intro_raw.get("values"), dict) else intro_raw
     values: dict[str, str] = {}
@@ -9732,7 +10035,7 @@ def merge_manual_job(
     cards = body.get("cards") if isinstance(body, dict) else None
     if isinstance(cards, dict) and cards.get("enabled"):
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
-        metadata["cards"] = _card_settings(cards)
+        metadata["cards"] = _card_settings(db, cards)
         update_job(db, job_id, job_metadata=metadata)
 
     background_tasks.add_task(merge_manual_clips_for_job, job_id)

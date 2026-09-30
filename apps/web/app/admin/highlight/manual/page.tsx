@@ -52,6 +52,8 @@ type CardFieldSpec = {
   label: string;
   kind: 'text' | 'logo';
   placeholder: string;
+  /** 칸이 이 값으로 채워진 채 시작한다(고칠 수 있다). 안내글과 달리 안 쳐도 그대로 나간다. */
+  default?: string;
   max_len: number;
   ui_width: number;
   /** 비었을 때 서버가 무엇으로 채우나 — '' / 'mark' / 'vs'. 안내에만 쓴다. */
@@ -72,6 +74,15 @@ type CardTemplateSpec = {
   base_color: string;
   start_fields: CardFieldSpec[];
   section_fields: CardFieldSpec[];
+  /** 이 세트가 자기 점수판을 들고 있나 — 있으면 '대회·라운드' 칸이 뜬다. */
+  has_board?: boolean;
+  /** 점수판 기본 크기·자리(픽셀). 세트를 고르는 순간 적용되고, 그 뒤엔 자유. */
+  board_defaults?: { size_pct?: number; pos_px_x?: number; pos_px_y?: number };
+  /** 마무리 영상 기본 켬/끔 — 파인플레이 브랜딩이라 대회 세트는 기본 끔. */
+  outro_default?: boolean;
+  /** 전후반 효과 영상을 들고 있나. */
+  has_half_videos?: boolean;
+  board_fields?: CardFieldSpec[];
 };
 
 type CardSettings = {
@@ -353,6 +364,69 @@ export default function ManualHighlightPage() {
 
   const cardTemplate = cardTemplates.find((t) => t.id === cards.template) ?? null;
   const cardValues = cards.values[cards.template] ?? {};
+
+  // 기본값 채우기 — 시안에 박혀 있던 문구('2026 SUFA ADVANCED LEAGUE 1R')는 안내글이
+  // 아니라 **시작값**이어야 한다. 안내글은 안 치면 빈칸으로 나가서, 라운드 숫자만
+  // 바꾸면 되는 걸 통째로 다시 쳐야 했다. undefined(한 번도 안 만짐)에만 채우므로
+  // 지운 칸('')은 지운 대로 남는다.
+  useEffect(() => {
+    if (!cardTemplate) return;
+    const current = cards.values[cards.template] ?? {};
+    // 갈아타기 전 템플릿에서 채웠던 값. 값은 템플릿별로 따로 저장되는데(항목 구성이
+    // 달라서), 같은 id 의 항목(팀명·대회명·로고)은 넘겨받는다 — 안 그러면 갈아탄
+    // 직후 전부 빈칸이고, 빈 채로 합치면 시작 카드가 통째로 빠진다(실제로 그랬다).
+    // **파인플레이 계열(점수판·효과 영상 없는 세트)로 갈아탈 때만** 넘겨받는다.
+    // SUFA 쪽은 이 수정의 영향이 없어야 한다 — 그쪽은 종전대로 시안 기본 문구만 채운다.
+    const plainTarget = !cardTemplate.has_board && !cardTemplate.has_half_videos;
+    const carried = (plainTarget
+        && lastTemplateRef.current && lastTemplateRef.current !== cards.template)
+      ? (cards.values[lastTemplateRef.current] ?? {})
+      : {};
+    const fill: Record<string, string> = {};
+    for (const spec of cardTemplate.start_fields) {
+      if (current[spec.id] !== undefined) continue;
+      const inherited = carried[spec.id];
+      // 사용자가 친 값이 시안 기본 문구보다 우선이다.
+      if (inherited !== undefined && String(inherited).trim()) fill[spec.id] = inherited;
+      else if (spec.default) fill[spec.id] = spec.default;
+    }
+    if (Object.keys(fill).length) {
+      setCards((prev) => ({
+        ...prev,
+        values: { ...prev.values,
+                  [prev.template]: { ...fill, ...(prev.values[prev.template] ?? {}) } },
+      }));
+    }
+    // 세트가 점수판 기본 크기·자리를 들고 있으면, **다른 템플릿에서 넘어온 순간**
+    // 그 자리로 잡는다. 처음 열 때(저장본 복원 직후)는 건드리지 않는다 — 지난번에
+    // 옮겨 둔 자리를 템플릿 기본값이 되살려 덮으면 안 된다.
+    const bd = cardTemplate.board_defaults;
+    const switched = lastTemplateRef.current !== null
+      && lastTemplateRef.current !== cards.template;
+    if (bd && switched) {
+      setScoreboard((prev) => ({
+        ...prev,
+        sizePct: bd.size_pct ?? prev.sizePct,
+        // 픽셀 좌표로 잡는다 — 위치 숫자 칸이 픽셀이라, 적은 값이 그대로 보인다.
+        posPxX: bd.pos_px_x ?? prev.posPxX,
+        posPxY: bd.pos_px_y ?? prev.posPxY,
+      }));
+    }
+    if (switched && cardTemplate.outro_default !== undefined) {
+      // 마무리 영상(파인플레이 브랜딩)은 세트 기본을 따른다 — 파인플레이 켬, SUFA 끔.
+      setCards((prev) => ({ ...prev, outro: cardTemplate.outro_default ?? prev.outro }));
+    }
+    lastTemplateRef.current = cards.template;
+
+    // 점수판의 대회·라운드도 같은 규칙 — 세트 점수판이 있을 때, 안 만졌으면 채운다.
+    const boardRound = (cardTemplate.board_fields || []).find((f) => f.id === 'round_label');
+    if (cardTemplate.has_board && boardRound?.default) {
+      setScoreboard((prev) => (
+        prev.roundLabel === undefined ? { ...prev, roundLabel: boardRound.default } : prev
+      ));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards.template, cardTemplate?.id]);
   const setCardValue = (fieldId: string, value: string) => setCards((prev) => ({
     ...prev,
     values: {
@@ -461,6 +535,10 @@ export default function ManualHighlightPage() {
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
   // 배치 화면에서 지금 만지고 있는 오버레이. 겹칠 때 원하는 걸 집으려면 하나만 잡혀야 한다.
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
+  // 세트 점수판 미리보기 — 서버가 합치기와 같은 함수로 그린 PNG. 세트가 아닐 때는 빈 값.
+  const [boardPreviewUrl, setBoardPreviewUrl] = useState('');
+  // 직전에 골라져 있던 템플릿 — 세트 기본 자리는 '갈아탄 순간' 에만 적용한다.
+  const lastTemplateRef = useRef<string | null>(null);
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
   // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 신청 태깅과 통일).
@@ -787,7 +865,10 @@ export default function ManualHighlightPage() {
       if (tag.kind === 'section') { taggedFirst = true; break; }
       if (makesClip(tag.kind)) break;
     }
-    const auto = !taggedFirst && tags.some((tag) => makesClip(tag.kind));
+    // 효과 영상 세트는 전반전을 영상이 맡는다 — 자동 '전반전' 구간을 만들면
+    // 그게 '첫 T' 로 잡혀 후반 영상이 전반 영상 바로 뒤에 붙는다(실제로 그랬다).
+    const auto = !taggedFirst && tags.some((tag) => makesClip(tag.kind))
+      && !cardTemplate?.has_half_videos;
     let clipsSoFar = 0;
     let ordinal = auto ? 1 : 0;
     if (auto) {
@@ -810,7 +891,7 @@ export default function ManualHighlightPage() {
       }
     }
     return plan;
-  }, [tags, sport, cards.firstSectionLabel]);
+  }, [tags, sport, cards.firstSectionLabel, cardTemplate?.has_half_videos]);
 
   // 카드 미리보기는 **서버가 그린다**. 브라우저에 같은 그림을 한 벌 더 두면 시안이
   // 바뀔 때 두 곳이 어긋나 '미리보기는 맞는데 결과물은 다른' 일이 생긴다. 합치기가
@@ -820,8 +901,23 @@ export default function ManualHighlightPage() {
   const previewLabel = cardPreviewOf === 'start'
     ? ''
     : (sectionPlan.get(cardPreviewOf)?.label ?? '');
+
+  // 세트에 효과 영상이 있으면 **첫 T 자리는 구간 카드 대신 후반전 영상**이 들어간다
+  // (합치기와 같은 규칙 — 하프타임은 한 경기에 한 번). 미리보기가 카드를 그려 주면
+  // 실제 결과와 달라서 '카드가 뜨면 안 되는데' 가 된다. 그 자리는 영상을 보여 준다.
+  const firstSectionId = useMemo(() => {
+    let best: string | null = null;
+    let bestOrder = Infinity;
+    for (const [id, entry] of sectionPlan) {
+      if (entry.beforeOrder < bestOrder) { best = id; bestOrder = entry.beforeOrder; }
+    }
+    return best;
+  }, [sectionPlan]);
+  const previewIsHalfVideo = Boolean(
+    cardTemplate?.has_half_videos && cardPreviewOf !== 'start' && cardPreviewOf === firstSectionId,
+  );
   useEffect(() => {
-    if (!cards.enabled) {
+    if (!cards.enabled || previewIsHalfVideo) {
       setCardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
       return undefined;
     }
@@ -856,7 +952,7 @@ export default function ManualHighlightPage() {
       }
     }, 400);
     return () => { alive = false; clearTimeout(timer); };
-  }, [cards, cardPreviewOf, previewLabel]);
+  }, [cards, cardPreviewOf, previewLabel, previewIsHalfVideo]);
 
   // 보고 있던 구간 태그가 지워지면 시작 카드로 돌아간다.
   useEffect(() => {
@@ -897,6 +993,46 @@ export default function ManualHighlightPage() {
   const finalScore = runningScores.length
     ? runningScores[runningScores.length - 1]
     : ([scoreboard.startHome, scoreboard.startAway] as [number, number]);
+
+  // 세트 점수판 미리보기. 화면에 코드로 그린 판을 두면 세트를 골라도 옛 판이 보여서
+  // '점수판이 템플릿에 안 물렸다' 로 읽힌다 — 실제로 그렇게 읽혔다. 서버가 합치기와
+  // 같은 함수(render_board)로 그린 그림을 받아 보여 준다.
+  const hasSetBoard = Boolean(cards.enabled && cardTemplate?.has_board);
+  useEffect(() => {
+    if (!hasSetBoard || !scoreboard.enabled) {
+      setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
+      return undefined;
+    }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/highlight/card-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            template: cards.template, kind: 'board', width: 960,
+            values: {
+              round_label: scoreboard.roundLabel || '',
+              home_name: scoreboard.homeName, away_name: scoreboard.awayName,
+              home_score: String(finalScore[0]), away_score: String(finalScore[1]),
+            },
+            colors: { home_color: scoreboard.homeColor, away_color: scoreboard.awayColor },
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const url = URL.createObjectURL(await res.blob());
+        if (!alive) { URL.revokeObjectURL(url); return; }
+        setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+      } catch {
+        if (alive) setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
+      }
+    }, 400);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [hasSetBoard, scoreboard.enabled, cards.template, scoreboard.roundLabel,
+      scoreboard.homeName, scoreboard.awayName, scoreboard.homeColor,
+      scoreboard.awayColor, finalScore]);
+
 
   /** 이 태그로 만들어질 클립 구간 [시작, 끝] — 이어붙인 좌표. 원본 경계에서 잘린다. */
   const clipRange = (tag: Tag): [number, number] => {
@@ -1028,8 +1164,12 @@ export default function ManualHighlightPage() {
     if (!cards.enabled) return 0;
     const introFilled = (cardTemplate?.start_fields ?? [])
       .some((spec) => (cardValues[spec.id] || '').trim());
+    // 효과 영상 세트는 구간 카드가 없다 — 대신 전반·후반 영상(각 3초쯤)이 들어간다.
+    const sectionSeconds = cardTemplate?.has_half_videos
+      ? (sectionCount ? 6 : 3)
+      : sectionCount * cards.sectionDurationSec;
     return (introFilled ? cards.introDurationSec : 0)
-      + sectionCount * cards.sectionDurationSec
+      + sectionSeconds
       + (cards.outro ? OUTRO_SEC : 0);
   })();
 
@@ -1237,6 +1377,8 @@ export default function ManualHighlightPage() {
             logo_size_pct: scoreboard.logoSizePct,
             // 팀명 글자 크기(%). 점수는 그대로다.
             name_size_pct: scoreboard.nameSizePct,
+            // 대회 세트 점수판의 맨 윗줄. 기본 점수판은 이 값을 쓰지 않는다.
+            round_label: scoreboard.roundLabel || '',
             // 적어 넣은 픽셀 좌표. 없으면 null 이고 그때는 비율을 쓴다.
             pos_px_x: scoreboard.posPxX ?? null,
             pos_px_y: scoreboard.posPxY ?? null,
@@ -1641,10 +1783,31 @@ export default function ManualHighlightPage() {
                 </label>
                 <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                   {cards.enabled
-                    ? `맨 앞에 시작 카드, T(ㅅ)로 찍은 자리마다 ${
-                      sectionCount ? `구간 카드 ${sectionCount}장` : '구간 카드'}가 들어갑니다.`
+                    ? (cardTemplate?.has_half_videos
+                      ? '맨 앞에 시작 카드 → 전반전 영상, 첫 T(ㅅ) 자리에 후반전 영상이 들어갑니다. 구간 카드는 없습니다.'
+                      : `맨 앞에 시작 카드, T(ㅅ)로 찍은 자리마다 ${
+                        sectionCount ? `구간 카드 ${sectionCount}장` : '구간 카드'}가 들어갑니다.`)
                     : '영상 사이에 시작 정보·구간 카드를 넣습니다.'}
                 </span>
+                {/* 전후반 효과 영상 — 실제로 어떤 mp4 가 끼는지 여기서 재생해 본다.
+                    이게 없으면 'mp4 가 물려 있긴 한 건가' 를 합본을 구워 보기 전까지
+                    알 수 없다. 시작 카드 뒤 = 전반, 첫 구간 마커(T) = 후반. */}
+                {cards.enabled && cardTemplate?.has_half_videos ? (
+                  <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
+                    {([['first', '전반전 효과'], ['second', '후반전 효과']] as const).map(([w, label]) => (
+                      <span key={w} style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                        <video
+                          src={`${API_BASE}/highlight/card-templates/${cards.template}/half/${w}`}
+                          controls muted preload="metadata"
+                          style={{ width: 168, borderRadius: 6, background: '#000' }}
+                        />
+                        <span style={{ fontSize: 10, color: 'var(--muted, #888)', textAlign: 'center' }}>
+                          {label} (mp4)
+                        </span>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
                 {cards.enabled && cardTemplates.length ? (
                   <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     템플릿
@@ -1658,6 +1821,18 @@ export default function ManualHighlightPage() {
                       ))}
                     </select>
                   </label>
+                ) : null}
+                {/* 세트가 무엇을 들고 있는지 — 점수판은 모든 세트에 있다(파인플레이
+                    기본은 기본형 판). 고르는 순간 합본이 달라지는데 표시가 없으면 모른다. */}
+                {cards.enabled && cardTemplate ? (
+                  <span style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                    background: 'var(--surface, #101014)', color: 'var(--muted, #999)',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}>
+                    세트 포함: 점수판{cardTemplate?.has_board ? '(시안)' : '(기본형)'}
+                    {cardTemplate?.has_half_videos ? ' · 전후반 효과 영상' : ''}
+                  </span>
                 ) : null}
                 {cards.enabled ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
@@ -1841,6 +2016,8 @@ export default function ManualHighlightPage() {
                       {tags.filter((tag) => tag.kind === 'section').map((tag) => {
                         const entry = sectionPlan.get(tag.id);
                         if (!entry) return null;
+                        // 효과 영상 세트는 구간 카드가 없다 — 첫 T(후반 영상)만 보여 준다.
+                        if (cardTemplate?.has_half_videos && tag.id !== firstSectionId) return null;
                         return (
                           <button
                             key={tag.id}
@@ -1849,7 +2026,9 @@ export default function ManualHighlightPage() {
                               : smallBtn}
                             onClick={() => setCardPreviewOf(tag.id)}
                           >
-                            {entry.label}
+                            {cardTemplate?.has_half_videos && tag.id === firstSectionId
+                              ? `${entry.label} → 후반전 영상`
+                              : entry.label}
                           </button>
                         );
                       })}
@@ -1860,7 +2039,20 @@ export default function ManualHighlightPage() {
                     {cardPreviewError ? (
                       <p style={{ margin: 0, fontSize: 12, color: '#f87171' }}>{cardPreviewError}</p>
                     ) : null}
-                    {cardPreviewUrl ? (
+                    {previewIsHalfVideo ? (
+                      <div style={{ maxWidth: 520 }}>
+                        <video
+                          src={`${API_BASE}/highlight/card-templates/${cards.template}/half/second`}
+                          controls muted preload="metadata"
+                          style={{ width: '100%', borderRadius: 8, background: '#000',
+                                   border: '1px solid var(--border-ghost, #2c2c32)' }}
+                        />
+                        <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted, #999)' }}>
+                          첫 T 자리에 이 후반전 효과 영상이 들어갑니다. 이 세트에는
+                          구간 카드가 없습니다 — 두 번째 이후의 T 는 무시됩니다.
+                        </p>
+                      </div>
+                    ) : cardPreviewUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- 서버가 방금 그려 준 blob 이라 최적화 대상이 아니다
                       <img
                         src={cardPreviewUrl}
@@ -2012,6 +2204,26 @@ export default function ManualHighlightPage() {
                 )}
               </div>
 
+              {/* 대회·라운드 — 대회 세트 점수판이 맨 위에 그린다. 세트를 안 고르면
+                  기본 점수판이 이 값을 쓰지 않으므로 그때는 보여 주지 않는다. */}
+              {scoreboard.enabled && cardTemplate?.has_board ? (
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap',
+                }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>대회·라운드</span>
+                  <input
+                    value={scoreboard.roundLabel || ''}
+                    onChange={(e) => setScoreboard((p) => ({ ...p, roundLabel: e.target.value }))}
+                    placeholder="2026 SUFA ADVANCED LEAGUE 4R"
+                    maxLength={48}
+                    style={{ ...smallBtn, width: 300, fontSize: 12, textAlign: 'left' }}
+                  />
+                  <span style={{ fontSize: 11, color: 'var(--muted, #777)' }}>
+                    점수판 맨 윗줄에 들어갑니다
+                  </span>
+                </label>
+              ) : null}
+
               {scoreboard.enabled ? (
                 <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 12 }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -2145,10 +2357,20 @@ export default function ManualHighlightPage() {
                   </div>
 
                   <div>
-                    {/* 프레임 안 점수판은 실제 비율이라 작다. 글자·색 확인용으로 크게도 보여준다. */}
-                    <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                    {/* 프레임 안 점수판은 실제 비율이라 작다. 글자·색 확인용으로 크게도 보여준다.
+                        세트를 골랐으면 그 세트의 점수판을 — 기존 판은 파인플레이 기본의 것이다. */}
+                    {hasSetBoard ? (
+                      boardPreviewUrl ? (
+                        <img src={boardPreviewUrl} alt="세트 점수판"
+                             style={{ width: 420, maxWidth: '100%', display: 'block' }} />
+                      ) : (
+                        <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>점수판 그리는 중…</span>
+                      )
+                    ) : (
+                      <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                    )}
                     <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: '6px 0 10px' }}>
-                      새겨질 점수판 (최종 점수 기준)
+                      새겨질 점수판 (최종 점수 기준{hasSetBoard ? ` · ${cardTemplate?.name} 세트` : ''})
                     </p>
                     <OverlayPlacer
                       videoW={boardVideo.w}
@@ -2179,12 +2401,17 @@ export default function ManualHighlightPage() {
                           onResize: (sizePct: number, posX: number, posY: number) =>
                             setScoreboard((p) => ({ ...p, sizePct, posX, posY, posPxX: null, posPxY: null })),
                           render: (width: number) => (
-                            <ScoreboardPreview
-                              config={scoreboard}
-                              home={finalScore[0]}
-                              away={finalScore[1]}
-                              width={width}
-                            />
+                            hasSetBoard && boardPreviewUrl ? (
+                              <img src={boardPreviewUrl} alt="점수판"
+                                   style={{ width, display: 'block' }} />
+                            ) : (
+                              <ScoreboardPreview
+                                config={scoreboard}
+                                home={finalScore[0]}
+                                away={finalScore[1]}
+                                width={width}
+                              />
+                            )
                           ),
                         },
                         ...(watermark.enabled ? [{

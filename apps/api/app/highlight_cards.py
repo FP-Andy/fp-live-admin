@@ -41,6 +41,8 @@ __all__ = [
     "TEMPLATES",
     "describe",
     "get_template",
+    "render_board",
+    "render_board_file",
     "render_card",
     "render_card_file",
 ]
@@ -92,15 +94,38 @@ def _gradient(width: int, height: int,
     return strip.resize((max(1, width), max(1, height)), Image.NEAREST)
 
 
-def _base(template: CardTemplate, kind: str) -> Image.Image:
+def _base(template: CardTemplate, kind: str, keep_alpha: bool = False) -> Image.Image:
     design = template.design
     path = _brand_dir() / template.background(kind)
     if path.exists():
         try:
-            return Image.open(path).convert("RGB").resize(design, Image.LANCZOS)
+            mode = "RGBA" if keep_alpha else "RGB"
+            return Image.open(path).convert(mode).resize(design, Image.LANCZOS)
         except OSError:
             pass
-    return _gradient(design[0], design[1], template.gradient)
+    base = _gradient(design[0], design[1], template.gradient)
+    return base.convert("RGBA") if keep_alpha else base
+
+
+def _backdrop(template: CardTemplate, width: int, height: int) -> Image.Image | None:
+    """카드 뒤에 깔 사진을 화면 크기로 덮어 자른다. 없으면 None."""
+    if not template.backdrop:
+        return None
+    path = _brand_dir() / template.backdrop
+    if not path.exists():
+        return None
+    try:
+        photo = Image.open(path).convert("RGBA")
+    except OSError:
+        return None
+    cover = max(width / photo.width, height / photo.height)
+    grown = photo.resize(
+        (max(width, round(photo.width * cover)), max(height, round(photo.height * cover))),
+        Image.LANCZOS,
+    )
+    left = (grown.width - width) // 2
+    top = (grown.height - height) // 2
+    return grown.crop((left, top, left + width, top + height))
 
 
 def _hex_rgb(value: str) -> tuple[int, int, int] | None:
@@ -182,7 +207,15 @@ def _white_mark() -> Image.Image | None:
     return mark
 
 
-def _fit_font(text: str, filename: str, size: int, max_width: float):
+def _tracked_width(probe, text: str, font, size: int, tracking: int) -> float:
+    """자간을 포함한 글줄 폭. 자간은 포토샵 단위(1/1000 em)라 크기에 비례한다."""
+    base = probe.textlength(text, font=font)
+    if tracking and len(text) > 1:
+        base += (len(text) - 1) * size * tracking / 1000.0
+    return base
+
+
+def _fit_font(text: str, filename: str, size: int, max_width: float, tracking: int = 0):
     """배정된 폭에 들어갈 때까지 글자 크기를 줄인다.
 
     12 아래로는 줄이지 않는다(읽을 수 없다). 다만 **처음부터 그보다 작게 달라고**
@@ -193,32 +226,46 @@ def _fit_font(text: str, filename: str, size: int, max_width: float):
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     while size > floor:
         font = _font(filename, size)
-        if probe.textlength(text, font=font) <= max_width:
-            return font
+        if _tracked_width(probe, text, font, size, tracking) <= max_width:
+            return font, size
         size -= 2
-    return _font(filename, floor)
+    return _font(filename, floor), floor
+
+
+def _draw_tracked(draw, xy, text: str, font, size: int, tracking: int, fill) -> None:
+    """자간을 두고 한 자씩 그린다. 자간이 0 이면 통짜로 그린다(빠르고 커닝도 산다)."""
+    if not tracking or len(text) <= 1:
+        draw.text(xy, text, font=font, fill=fill)
+        return
+    x, y = xy
+    step = size * tracking / 1000.0
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += draw.textlength(ch, font=font) + step
 
 
 def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: str,
              filename: str, size: int, max_width: float | None = None,
-             shadow: float = 0.0) -> None:
+             shadow: float = 0.0, color: str = "", tracking: int = 0) -> None:
     """상자 한가운데에 한 줄. 시안의 text-shadow 는 옅은 검정 번짐이다."""
     text = (text or "").strip()
     if not text:
         return
     left, top, width, height = box
     cx, cy = left + width / 2, top + height / 2
-    font = _fit_font(text, filename, size, max_width if max_width else width)
+    font, fitted = _fit_font(text, filename, size, max_width if max_width else width, tracking)
     draw = ImageDraw.Draw(layer)
     bbox = draw.textbbox((0, 0), text, font=font)
-    x = cx - (bbox[2] - bbox[0]) / 2 - bbox[0]
+    track_extra = (len(text) - 1) * fitted * tracking / 1000.0 if tracking and len(text) > 1 else 0
+    x = cx - ((bbox[2] - bbox[0]) + track_extra) / 2 - bbox[0]
     y = cy - (bbox[3] - bbox[1]) / 2 - bbox[1]
     if shadow > 0:
         blur = Image.new("RGBA", layer.size, (0, 0, 0, 0))
-        ImageDraw.Draw(blur).text((x, y), text, font=font, fill=(0, 0, 0, 26))
+        _draw_tracked(ImageDraw.Draw(blur), (x, y), text, font, fitted, tracking, (0, 0, 0, 26))
         layer.alpha_composite(blur.filter(ImageFilter.GaussianBlur(shadow)))
         draw = ImageDraw.Draw(layer)
-    draw.text((x, y), text, font=font, fill=WHITE)
+    rgb = _hex_rgb(color) if color else None
+    _draw_tracked(draw, (x, y), text, font, fitted, tracking, (*rgb, 255) if rgb else WHITE)
 
 
 def _paste_contained(layer: Image.Image, box: tuple[float, float, float, float],
@@ -296,14 +343,14 @@ def _draw_field(layer: Image.Image, spec: CardField, value: str,
             # 같이 줄어야 한다 — 로고를 뺐다고 글자만 커다랗게 남으면 이상하다.
             _text_in(layer, box, "VS", spec.font,
                      max(1, round((spec.empty_size or spec.size) * factor)),
-                     box[2] * factor, shadow=10.0)
+                     box[2] * factor, shadow=10.0, color=spec.color)
         return
     # 글꼴 크기와 **들어갈 폭**을 같이 키운다. 폭을 그대로 두면 _fit_font 가 도로
     # 줄여 놓아 크기를 올려도 꿈쩍하지 않는다.
     _text_in(layer, box, value, spec.font,
              max(1, round(spec.size * factor)),
              (spec.max_width if spec.max_width else box[2]) * factor,
-             spec.shadow)
+             spec.shadow, spec.color, spec.tracking)
 
 
 def _compose(template: CardTemplate, kind: str, layer: Image.Image,
@@ -322,26 +369,43 @@ def _compose(template: CardTemplate, kind: str, layer: Image.Image,
     """
     width, height = max(1, width), max(1, height)
     design_w, design_h = template.design
-    base = _base(template, kind)
-    if color:
-        base = _recolor(base, template.base_color, color)
-
-    cover = max(width / design_w, height / design_h)
-    grown = base.resize(
-        (max(width, round(design_w * cover)), max(height, round(design_h * cover))),
-        Image.LANCZOS,
-    )
-    left = (grown.width - width) // 2
-    top = (grown.height - height) // 2
-    card = grown.crop((left, top, left + width, top + height))
-
     contain = min(width / design_w, height / design_h)
+
+    photo = _backdrop(template, width, height)
+    if photo is not None:
+        # 뒤에 깔 사진이 있으면 시안은 **통째로**(contain) 얹는다. 시안의 투명 여백으로
+        # 사진이 비친다 — 예전에는 그 여백의 저장색(흰색)이 그대로 화면이 됐다.
+        # 배경까지 덮게(cover) 늘리면 시안 위아래가 잘려 제목·팀명이 화면 밖으로 나간다.
+        base = _base(template, kind, keep_alpha=True)
+        if color:
+            base = _recolor(base, template.base_color, color)
+        fitted = base.resize(
+            (max(1, round(design_w * contain)), max(1, round(design_h * contain))),
+            Image.LANCZOS,
+        )
+        card = photo
+        card.alpha_composite(fitted, ((width - fitted.width) // 2,
+                                      (height - fitted.height) // 2))
+    else:
+        base = _base(template, kind)
+        if color:
+            base = _recolor(base, template.base_color, color)
+
+        cover = max(width / design_w, height / design_h)
+        grown = base.resize(
+            (max(width, round(design_w * cover)), max(height, round(design_h * cover))),
+            Image.LANCZOS,
+        )
+        left = (grown.width - width) // 2
+        top = (grown.height - height) // 2
+        card = grown.crop((left, top, left + width, top + height))
+
     inner = layer.resize(
         (max(1, round(design_w * contain)), max(1, round(design_h * contain))),
         Image.LANCZOS,
     )
     card.paste(inner, ((width - inner.width) // 2, (height - inner.height) // 2), inner)
-    return card
+    return card.convert("RGB") if photo is not None else card
 
 
 def render_card(
@@ -368,10 +432,110 @@ def render_card(
     spec_owner = template if isinstance(template, CardTemplate) else get_template(template)
     values = values or {}
     logos = logos or {}
+    # 템플릿이 들고 있는 배치를 밑에 깔고, 잡에 저장된 것으로 덮는다 — 항목 단위로
+    # 나중 것이 이긴다. 운영자가 템플릿을 고른 뒤 그 판에서 또 옮겼으면 그게 우선이다.
+    merged = {**spec_owner.boxes_for(kind), **(boxes or {})}
     layer = Image.new("RGBA", spec_owner.design, (0, 0, 0, 0))
     for spec in spec_owner.fields(kind):
-        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), boxes)
+        # 빈 값은 시안 기본 문구로 떨어진다. 화면이 기본값을 못 채워 보내는 경우가
+        # 있는데(저장본 복원과 경합), 그때 제목 자리가 흰 띠로 비어 나갔다.
+        value = str(values.get(spec.id) or "").strip() or spec.default
+        _draw_field(layer, spec, value, logos.get(spec.id), merged)
     return _compose(spec_owner, kind, layer, width, height, color)
+
+
+def _board_base(template: CardTemplate) -> Image.Image:
+    """점수판 배경. **투명도를 지킨다** — 영상 위에 얹을 것이라 배경을 채우면 안 된다."""
+    design = template.design_for("board")
+    path = _brand_dir() / template.background("board")
+    if path.exists():
+        try:
+            return Image.open(path).convert("RGBA").resize(design, Image.LANCZOS)
+        except OSError:
+            pass
+    return Image.new("RGBA", design, (0, 0, 0, 0))
+
+
+def _swap_zone_color(image: Image.Image, zone, target: str) -> None:
+    """상자 안에서 zone.source 색인 픽셀만 target 으로 바꾼다(제자리).
+
+    상자로 한 번, 색으로 또 한 번 거르는 이유는 같은 색이 그림의 다른 곳에도 쓰이기
+    때문이다 — SUFA 점수판은 왼쪽 팀 블록과 가운데 점수판이 같은 파랑이라, 색만 보고
+    바꾸면 점수판까지 팀 색이 된다. 반대로 상자만 보고 칠하면 그 안의 로고가 덮인다.
+    """
+    src = _hex_rgb(zone.source)
+    dst = _hex_rgb(target)
+    if src is None or dst is None or src == dst:
+        return
+    left, top, width, height = zone.box
+    x0, y0 = max(0, int(left)), max(0, int(top))
+    x1 = min(image.width, int(left + width))
+    y1 = min(image.height, int(top + height))
+    if x1 <= x0 or y1 <= y0:
+        return
+    tol = max(0, int(zone.tolerance))
+    px = image.load()
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            r, g, b, a = px[x, y]
+            if a == 0:
+                continue
+            if (abs(r - src[0]) <= tol and abs(g - src[1]) <= tol
+                    and abs(b - src[2]) <= tol):
+                px[x, y] = (dst[0], dst[1], dst[2], a)
+
+
+def render_board(
+    template: CardTemplate,
+    board_width: int,
+    values: dict | None = None,
+    logos: dict | None = None,
+    boxes: dict | None = None,
+    colors: dict | None = None,
+) -> Image.Image:
+    """대회 템플릿의 점수판 한 장(RGBA).
+
+    코드로 그리는 기본 점수판(scoreboard.py)과 달리, 배경 그림 위에 **고칠 수 있는
+    항목만** 얹는다. 대회마다 도형이 다른데 그걸 전부 코드로 옮길 수는 없다.
+
+    colors 는 {영역 id: '#RRGGBB'} — 팀 색처럼 그림에 구워진 색을 갈아끼운다.
+    """
+    values = values or {}
+    logos = logos or {}
+    colors = colors or {}
+    base = _board_base(template)
+    for zone in template.board_zones:
+        picked = str(colors.get(zone.id) or "").strip()
+        if picked:
+            _swap_zone_color(base, zone, picked)
+
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    merged = {**template.boxes_for("board"), **(boxes or {})}
+    for spec in template.fields("board"):
+        # 빈 값은 시안 기본 문구로 — 제목이 흰 띠로 비어 나가는 것보다 낫다.
+        value = str(values.get(spec.id) or "").strip() or spec.default
+        _draw_field(layer, spec, value, logos.get(spec.id), merged)
+    out = Image.alpha_composite(base, layer)
+
+    # 시안 캔버스(1215x605)는 대부분 투명 여백이고 보이는 판은 가운데 띠뿐이다.
+    # 통짜로 내보내면 얹는 쪽이 캔버스 크기로 자리를 잡아 배치 상자가 실물보다
+    # 훨씬 커지고, 위아래로 옮길 수 있는 폭이 그만큼 좁아진다 — 실제로 그랬다.
+    # 자르는 기준은 **배경**의 알파다. 글자는 배경 띠 안에만 들어가므로 함께 남는다.
+    bbox = base.getchannel("A").getbbox()
+    if bbox:
+        out = out.crop(bbox)
+
+    width = max(80, int(board_width))
+    height = max(1, round(width * out.height / out.width))
+    return out.resize((width, height), Image.LANCZOS)
+
+
+def render_board_file(path: Path, template: CardTemplate, board_width: int,
+                      values: dict | None = None, logos: dict | None = None,
+                      boxes: dict | None = None, colors: dict | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    render_board(template, board_width, values, logos, boxes, colors).save(path, format="PNG")
+    return path
 
 
 def render_card_file(path: Path, image: Image.Image) -> Path:
