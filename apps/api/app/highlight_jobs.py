@@ -1851,11 +1851,14 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             card = section_card.get(k)
             if card is not None:
                 if half_second is not None:
-                    # 세트에 후반 효과가 있으면 **구간 카드는 아예 안 쓴다** — 첫 T 는
-                    # 후반 영상이 대신하고, 그 뒤의 T 는 아무것도 넣지 않는다.
-                    # 하프타임은 한 경기에 한 번이고, 이 세트의 구간 카드 시안은
-                    # 따로 없다(파인플레이 기본의 카드가 여기 끼면 안 된다).
-                    if not second_used:
+                    # 세트에 후반 효과가 있으면 **구간 카드는 아예 안 쓴다** — 클립 뒤
+                    # 첫 T 는 후반 영상이 대신하고, 그 밖의 T 는 아무것도 넣지 않는다.
+                    #
+                    # k > 0 인 이유: 화면은 첫 클립 앞에 T 가 없으면 '전반전' 구간을
+                    # 자동으로 만들어 보낸다(파인플레이 카드용). 그게 여기 걸리면
+                    # 후반 영상이 **전반 영상 바로 뒤**에 붙는다 — 실제로 그렇게 나갔다.
+                    # 하프타임이 첫 클립보다 앞일 수는 없다.
+                    if k > 0 and not second_used:
                         timeline.append(("video", half_second[0], half_second[1], half_second[2]))
                         second_used = True
                 else:

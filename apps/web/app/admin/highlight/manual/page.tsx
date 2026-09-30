@@ -824,7 +824,10 @@ export default function ManualHighlightPage() {
       if (tag.kind === 'section') { taggedFirst = true; break; }
       if (makesClip(tag.kind)) break;
     }
-    const auto = !taggedFirst && tags.some((tag) => makesClip(tag.kind));
+    // 효과 영상 세트는 전반전을 영상이 맡는다 — 자동 '전반전' 구간을 만들면
+    // 그게 '첫 T' 로 잡혀 후반 영상이 전반 영상 바로 뒤에 붙는다(실제로 그랬다).
+    const auto = !taggedFirst && tags.some((tag) => makesClip(tag.kind))
+      && !cardTemplate?.has_half_videos;
     let clipsSoFar = 0;
     let ordinal = auto ? 1 : 0;
     if (auto) {
@@ -847,7 +850,7 @@ export default function ManualHighlightPage() {
       }
     }
     return plan;
-  }, [tags, sport, cards.firstSectionLabel]);
+  }, [tags, sport, cards.firstSectionLabel, cardTemplate?.has_half_videos]);
 
   // 카드 미리보기는 **서버가 그린다**. 브라우저에 같은 그림을 한 벌 더 두면 시안이
   // 바뀔 때 두 곳이 어긋나 '미리보기는 맞는데 결과물은 다른' 일이 생긴다. 합치기가

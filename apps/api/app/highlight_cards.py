@@ -437,7 +437,10 @@ def render_card(
     merged = {**spec_owner.boxes_for(kind), **(boxes or {})}
     layer = Image.new("RGBA", spec_owner.design, (0, 0, 0, 0))
     for spec in spec_owner.fields(kind):
-        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), merged)
+        # 빈 값은 시안 기본 문구로 떨어진다. 화면이 기본값을 못 채워 보내는 경우가
+        # 있는데(저장본 복원과 경합), 그때 제목 자리가 흰 띠로 비어 나갔다.
+        value = str(values.get(spec.id) or "").strip() or spec.default
+        _draw_field(layer, spec, value, logos.get(spec.id), merged)
     return _compose(spec_owner, kind, layer, width, height, color)
 
 
@@ -509,7 +512,9 @@ def render_board(
     layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
     merged = {**template.boxes_for("board"), **(boxes or {})}
     for spec in template.fields("board"):
-        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), merged)
+        # 빈 값은 시안 기본 문구로 — 제목이 흰 띠로 비어 나가는 것보다 낫다.
+        value = str(values.get(spec.id) or "").strip() or spec.default
+        _draw_field(layer, spec, value, logos.get(spec.id), merged)
     out = Image.alpha_composite(base, layer)
 
     # 시안 캔버스(1215x605)는 대부분 투명 여백이고 보이는 판은 가운데 띠뿐이다.
