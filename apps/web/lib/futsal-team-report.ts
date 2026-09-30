@@ -1,7 +1,7 @@
-import type {Summary,Dominance} from '../components/futsal/graphics';
+import type {Summary,Dominance,Shot} from '../components/futsal/graphics';
 import type {Side} from './futsal-report';
 
-export type MatchReportData={matchId:string;loadedAt:string;summary:Summary;dominance:Dominance;started:boolean;ended:boolean};
+export type MatchReportData={matchId:string;loadedAt:string;summary:Summary;dominance:Dominance;started:boolean;ended:boolean;sourceKind?:'video'|'dashboard'|'none';events?:Array<Shot&{clock_ms?:number}>;videoStartSeconds?:number};
 export type TeamReportOptions={side:Side;homeColor:string;awayColor:string;homeComment:string;awayComment:string;homePlayers?:string[];awayPlayers?:string[]};
 export const defaultTeamReport=():TeamReportOptions=>({side:'home',homeColor:'#FF7400',awayColor:'#2158E8',homeComment:'',awayComment:''});
 export function teamReportView(data:MatchReportData,side:Side){
@@ -28,6 +28,9 @@ export function validateTeamReport(value:unknown):TeamReportOptions {
 export function validateMatchReportData(value:unknown):MatchReportData {
  const d=value as MatchReportData,nonnegative=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0;
  if(!d||typeof d.matchId!=='string'||typeof d.loadedAt!=='string'||typeof d.started!=='boolean'||typeof d.ended!=='boolean'||!d.summary?.possession||!d.summary.lanes||!Array.isArray(d.dominance?.bins)||d.dominance.bins.length>10000)throw Error('FLA 경기 기록을 확인하세요.');
+ if(d.sourceKind&&!['video','dashboard','none'].includes(d.sourceKind))throw Error('FLA 기록 출처를 확인하세요.');
+ if(d.videoStartSeconds!==undefined&&!nonnegative(d.videoStartSeconds))throw Error('영상 시작 시점을 확인하세요.');
+ if(d.events&&(!Array.isArray(d.events)||d.events.length>200000||d.events.some(e=>typeof e.id!=='string'||!['HOME','AWAY'].includes(e.team)||e.type!=='XG'||[e.shot_x,e.shot_y,e.xg].some(n=>n!==null&&!Number.isFinite(n)))))throw Error('FLA 슈팅 기록을 확인하세요.');
  if(![d.summary.possession.home_ms,d.summary.possession.away_ms].every(nonnegative))throw Error('점유 시간을 확인하세요.');
  for(const side of ['home','away'] as const){const l=d.summary.lanes[side];if(!l||![l.left_count,l.center_count,l.right_count,l.total_count].every(n=>Number.isInteger(n)&&n>=0)||l.total_count!==l.left_count+l.center_count+l.right_count)throw Error('공격 방향 기록을 확인하세요.');}
  for(const b of d.dominance.bins)if(!nonnegative(b.start_ms)||!nonnegative(b.end_ms)||b.end_ms<=b.start_ms||!Number.isFinite(b.dominance)||Math.abs(b.dominance)>1||[b.chart_start_ms,b.chart_end_ms,b.display_end_ms].some(v=>v!==undefined&&!nonnegative(v)))throw Error('경기 흐름 기록을 확인하세요.');
