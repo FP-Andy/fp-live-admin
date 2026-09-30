@@ -18,7 +18,7 @@ const source={schema:'fpc-analysis-snapshot/v1',id,jobId,version:1,title:'스냅
  await page.getByText('이 브라우저에 저장됨',{exact:true}).waitFor();
  await page.reload({waitUntil:'networkidle'});assert.equal(await page.getByLabel('리포트 등번호',{exact:true}).inputValue(),'77');
  assert.equal(source.heatmap.players[0].jersey,'2');
- assert.match(await page.locator('.mr-sheet-footer').innerText(),/확정 v1/);
+ assert.match(await page.locator('.mr-sheet-footer').innerText(),/AI 기반 풋살 분석/);
  fs.mkdirSync('/tmp/analysis-snapshots-qa',{recursive:true});await page.screenshot({path:'/tmp/analysis-snapshots-qa/report.png'});
  // Run the real heatmap controller against a small synthetic dataset.
  const html=fs.readFileSync(path.join(__dirname,'../apps/web/public/fpa-cv/index.html'),'utf8');
