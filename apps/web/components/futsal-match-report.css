@@ -46,3 +46,11 @@
 .tr-review>p{font-size:14px;line-height:1.8}
 .mr-sheet:not(.tr-sheet) .mr-map-section{grid-template-columns:50% minmax(0,1fr)}
 .mr-comment{padding:14px 16px;gap:7px}.mr-comment p{font-size:12.5px;line-height:1.68;word-break:normal}
+
+/* The reference still sits between the match overview and the five players. */
+.mr-sheet.ar-sheet{grid-template-rows:28px 82px 470px 28px minmax(0,1fr) 36px}
+.ar-heading{padding:4px}.ar-heading small{font-size:11px;letter-spacing:1.8px;color:#A83977}.ar-heading h1{font-size:27px;margin:4px 0}.ar-heading p{font-size:12px;color:#94637F;white-space:nowrap;overflow:hidden}
+.ar-frame{position:relative;width:100%;align-self:center;justify-self:center;border-radius:9px;overflow:hidden;background:#F8EEF4;aspect-ratio:16/9}.ar-frame>img{width:100%;height:100%;display:block}.ar-frame>svg{position:absolute;inset:0;width:100%;height:100%}.ar-frame>p{padding:30px;font-size:14px}
+.ar-instruction{text-align:center;font-size:12px;color:#94637F!important;align-self:center}
+.ar-teams{display:grid;grid-template-columns:1fr 1fr;gap:18px;min-height:0}.ar-team{border:1px solid #E162A7;border-radius:10px;overflow:hidden}.ar-team h2{height:67px;display:flex;align-items:center;gap:12px;padding:10px 17px;font-size:17px;border-bottom:1px solid #EFCADE}.ar-team h2 img{width:36px;height:44px;object-fit:contain}.ar-team h2 small{display:block;font-size:10px;font-weight:400;color:#94637F}.ar-team table{border-collapse:collapse;width:100%;table-layout:fixed;text-align:left;font-size:11px}.ar-team th,.ar-team td{padding:12px 10px;border-bottom:1px solid #F4E2ED}.ar-team thead th{background:#FCF3F8;font-size:10px;color:#94637F;font-weight:400}.ar-team th:first-child{width:23%;padding-left:17px}.ar-team tbody th{font-size:13px;color:#963767}.ar-team tbody tr:last-child>*{border-bottom:0}
+.ar-editor-team{margin:16px 0}.ar-editor-team .mr-field{display:grid;grid-template-columns:58px minmax(0,1fr);align-items:center;gap:6px;margin-bottom:7px}.ar-editor-team select{padding:7px 5px;font-size:11px}.ar-editor-team .mr-field>span{font-size:10px}

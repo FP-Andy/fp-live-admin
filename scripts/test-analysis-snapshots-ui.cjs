@@ -10,7 +10,7 @@ const source={schema:'fpc-analysis-snapshot/v1',id,jobId,version:1,title:'스냅
  await page.context().addCookies([{name:'live_admin_session',value:'local-test',url:origin}]);
  await page.goto(origin+'/admin/fcm/futsal/reports?snapshot='+id,{waitUntil:'networkidle'});
  await page.getByLabel('선수 이름',{exact:true}).waitFor();assert.equal(await page.getByLabel('선수 이름',{exact:true}).inputValue(),'테스트 선수');
- assert.equal(await page.getByLabel('포지션',{exact:true}).inputValue(),'ALA');
+ assert.equal(await page.getByLabel('포지션',{exact:true}).inputValue(),'MF');
  assert.match(await page.locator('.mr-controls').innerText(),/연결된 수비·슈팅 1건/);
  assert(await page.getByLabel('히트맵 좌표·품질 JSON',{exact:true}).isDisabled());
  await page.getByLabel('히트맵 코멘트',{exact:true}).fill('스냅샷의 관측 자료를 바탕으로 수정한 문구');
