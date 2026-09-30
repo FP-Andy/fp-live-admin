@@ -466,6 +466,8 @@ export default function ManualHighlightPage() {
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
   // 배치 화면에서 지금 만지고 있는 오버레이. 겹칠 때 원하는 걸 집으려면 하나만 잡혀야 한다.
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
+  // 세트 점수판 미리보기 — 서버가 합치기와 같은 함수로 그린 PNG. 세트가 아닐 때는 빈 값.
+  const [boardPreviewUrl, setBoardPreviewUrl] = useState('');
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
   // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 신청 태깅과 통일).
@@ -902,6 +904,46 @@ export default function ManualHighlightPage() {
   const finalScore = runningScores.length
     ? runningScores[runningScores.length - 1]
     : ([scoreboard.startHome, scoreboard.startAway] as [number, number]);
+
+  // 세트 점수판 미리보기. 화면에 코드로 그린 판을 두면 세트를 골라도 옛 판이 보여서
+  // '점수판이 템플릿에 안 물렸다' 로 읽힌다 — 실제로 그렇게 읽혔다. 서버가 합치기와
+  // 같은 함수(render_board)로 그린 그림을 받아 보여 준다.
+  const hasSetBoard = Boolean(cards.enabled && cardTemplate?.has_board);
+  useEffect(() => {
+    if (!hasSetBoard || !scoreboard.enabled) {
+      setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
+      return undefined;
+    }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/highlight/card-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            template: cards.template, kind: 'board', width: 960,
+            values: {
+              round_label: scoreboard.roundLabel || '',
+              home_name: scoreboard.homeName, away_name: scoreboard.awayName,
+              home_score: String(finalScore[0]), away_score: String(finalScore[1]),
+            },
+            colors: { home_color: scoreboard.homeColor, away_color: scoreboard.awayColor },
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const url = URL.createObjectURL(await res.blob());
+        if (!alive) { URL.revokeObjectURL(url); return; }
+        setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+      } catch {
+        if (alive) setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
+      }
+    }, 400);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [hasSetBoard, scoreboard.enabled, cards.template, scoreboard.roundLabel,
+      scoreboard.homeName, scoreboard.awayName, scoreboard.homeColor,
+      scoreboard.awayColor, finalScore]);
+
 
   /** 이 태그로 만들어질 클립 구간 [시작, 끝] — 이어붙인 좌표. 원본 경계에서 잘린다. */
   const clipRange = (tag: Tag): [number, number] => {
@@ -1652,6 +1694,25 @@ export default function ManualHighlightPage() {
                       sectionCount ? `구간 카드 ${sectionCount}장` : '구간 카드'}가 들어갑니다.`
                     : '영상 사이에 시작 정보·구간 카드를 넣습니다.'}
                 </span>
+                {/* 전후반 효과 영상 — 실제로 어떤 mp4 가 끼는지 여기서 재생해 본다.
+                    이게 없으면 'mp4 가 물려 있긴 한 건가' 를 합본을 구워 보기 전까지
+                    알 수 없다. 시작 카드 뒤 = 전반, 첫 구간 마커(T) = 후반. */}
+                {cards.enabled && cardTemplate?.has_half_videos ? (
+                  <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
+                    {([['first', '전반전 효과'], ['second', '후반전 효과']] as const).map(([w, label]) => (
+                      <span key={w} style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                        <video
+                          src={`${API_BASE}/highlight/card-templates/${cards.template}/half/${w}`}
+                          controls muted preload="metadata"
+                          style={{ width: 168, borderRadius: 6, background: '#000' }}
+                        />
+                        <span style={{ fontSize: 10, color: 'var(--muted, #888)', textAlign: 'center' }}>
+                          {label} (mp4)
+                        </span>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
                 {cards.enabled && cardTemplates.length ? (
                   <label style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     템플릿
@@ -1666,16 +1727,16 @@ export default function ManualHighlightPage() {
                     </select>
                   </label>
                 ) : null}
-                {/* 세트가 점수판·효과 영상까지 들고 있으면 알려 준다 — 고르는 순간
-                    합본이 달라지는데 화면에 아무 표시가 없으면 모른다. */}
-                {cards.enabled && (cardTemplate?.has_board || cardTemplate?.has_half_videos) ? (
+                {/* 세트가 무엇을 들고 있는지 — 점수판은 모든 세트에 있다(파인플레이
+                    기본은 기본형 판). 고르는 순간 합본이 달라지는데 표시가 없으면 모른다. */}
+                {cards.enabled && cardTemplate ? (
                   <span style={{
                     fontSize: 11, padding: '2px 8px', borderRadius: 999,
                     background: 'var(--surface, #101014)', color: 'var(--muted, #999)',
                     border: '1px solid var(--border-ghost, #2c2c32)',
                   }}>
-                    세트 포함:{cardTemplate?.has_board ? ' 점수판' : ''}
-                    {cardTemplate?.has_half_videos ? ' 전후반 효과 영상' : ''}
+                    세트 포함: 점수판{cardTemplate?.has_board ? '(시안)' : '(기본형)'}
+                    {cardTemplate?.has_half_videos ? ' · 전후반 효과 영상' : ''}
                   </span>
                 ) : null}
                 {cards.enabled ? (
@@ -2184,10 +2245,20 @@ export default function ManualHighlightPage() {
                   </div>
 
                   <div>
-                    {/* 프레임 안 점수판은 실제 비율이라 작다. 글자·색 확인용으로 크게도 보여준다. */}
-                    <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                    {/* 프레임 안 점수판은 실제 비율이라 작다. 글자·색 확인용으로 크게도 보여준다.
+                        세트를 골랐으면 그 세트의 점수판을 — 기존 판은 파인플레이 기본의 것이다. */}
+                    {hasSetBoard ? (
+                      boardPreviewUrl ? (
+                        <img src={boardPreviewUrl} alt="세트 점수판"
+                             style={{ width: 420, maxWidth: '100%', display: 'block' }} />
+                      ) : (
+                        <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>점수판 그리는 중…</span>
+                      )
+                    ) : (
+                      <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                    )}
                     <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: '6px 0 10px' }}>
-                      새겨질 점수판 (최종 점수 기준)
+                      새겨질 점수판 (최종 점수 기준{hasSetBoard ? ` · ${cardTemplate?.name} 세트` : ''})
                     </p>
                     <OverlayPlacer
                       videoW={boardVideo.w}
@@ -2218,12 +2289,17 @@ export default function ManualHighlightPage() {
                           onResize: (sizePct: number, posX: number, posY: number) =>
                             setScoreboard((p) => ({ ...p, sizePct, posX, posY, posPxX: null, posPxY: null })),
                           render: (width: number) => (
-                            <ScoreboardPreview
-                              config={scoreboard}
-                              home={finalScore[0]}
-                              away={finalScore[1]}
-                              width={width}
-                            />
+                            hasSetBoard && boardPreviewUrl ? (
+                              <img src={boardPreviewUrl} alt="점수판"
+                                   style={{ width, display: 'block' }} />
+                            ) : (
+                              <ScoreboardPreview
+                                config={scoreboard}
+                                home={finalScore[0]}
+                                away={finalScore[1]}
+                                width={width}
+                              />
+                            )
                           ),
                         },
                         ...(watermark.enabled ? [{

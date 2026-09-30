@@ -64,6 +64,7 @@ from .fpa_model_baselines import build_fpa_model_room_baseline_artifacts, canoni
 from . import record_sheet
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
 from . import highlight_card_store as card_store
+from .highlight_cards import render_board
 from .highlight_cards import (
     DEFAULT_TEMPLATE_ID,
     TEMPLATES,
@@ -72,6 +73,7 @@ from .highlight_cards import (
     render_card,
 )
 from .highlight_jobs import (
+    brand_asset,
     CARD_MAX_SEC,
     CARD_MIN_SEC,
     CARD_SEC,
@@ -9563,6 +9565,31 @@ def delete_highlight_card_template(
     return {"ok": True, "name": name}
 
 
+@app.get("/api/highlight/card-templates/{template_id}/half/{which}")
+def get_template_half_video(
+    template_id: str,
+    which: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """세트에 든 전·후반 효과 영상을 재생용으로 흘려준다.
+
+    합본에 어떤 영상이 끼는지 **콘솔에서 재생해 확인**할 수 있어야 한다 — 이게 없으면
+    'mp4 가 물려 있긴 한 건가' 를 결과물을 구워 보기 전까지 알 수 없다(실제로 그랬다).
+    """
+    if which not in {"first", "second"}:
+        raise HTTPException(status_code=404, detail="first 또는 second 만 있습니다.")
+    template = card_store.resolve(db, template_id)
+    name = template.first_half_video if which == "first" else template.second_half_video
+    if not name:
+        raise HTTPException(status_code=404, detail="이 세트에는 효과 영상이 없습니다.")
+    path = brand_asset(name)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail=f"효과 영상 파일이 없습니다: {name}")
+    return _serve_file_with_range(path, request, "video/mp4")
+
+
 @app.post("/api/highlight/card-preview")
 def preview_highlight_card(
     body: dict = Body(default={}),
@@ -9576,13 +9603,32 @@ def preview_highlight_card(
     합치기가 쓰는 함수를 그대로 호출하므로 어긋날 수가 없다.
     """
     template = card_store.resolve(db, body.get("template"))
-    kind = "section" if str(body.get("kind") or "start") == "section" else "start"
+    raw_kind = str(body.get("kind") or "start")
+    kind = raw_kind if raw_kind in {"start", "section", "board"} else "start"
     try:
         width = int(body.get("width") or 960)
     except (TypeError, ValueError):
         width = 960
     # 미리보기는 화면에 작게 들어가므로 크게 그릴 이유가 없다(그릴 때마다 왕복한다).
     width = max(320, min(1920, width))
+
+    # 세트 점수판 — 합치기가 쓰는 render_board 를 그대로 부른다. 화면에 다른 그림을
+    # 두면 시안이 바뀔 때 미리보기는 맞는데 결과물은 다른 일이 생긴다.
+    if kind == "board":
+        if not template.has_board:
+            raise HTTPException(status_code=400, detail="이 템플릿에는 점수판 시안이 없습니다.")
+        raw_values = body.get("values") if isinstance(body.get("values"), dict) else {}
+        values = {
+            spec.id: str(raw_values.get(spec.id) or "").strip()[:spec.max_len]
+            for spec in template.fields("board") if spec.kind == "text"
+        }
+        raw_colors = body.get("colors") if isinstance(body.get("colors"), dict) else {}
+        colors = {z.id: str(raw_colors.get(z.id) or "").strip() for z in template.board_zones}
+        image = render_board(template, width, values=values, colors=colors)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return Response(content=buffer.getvalue(), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
     design_w, design_h = template.design
     height = max(1, round(width * design_h / design_w))
 
