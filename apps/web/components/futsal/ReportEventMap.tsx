@@ -2,9 +2,9 @@ import {useEffect,useRef} from 'react';
 import {paintHeatmap} from '../../public/fpa-cv/heatmap-render.mjs';
 import {attackDirection,type ReportDraft,type PlayerText} from '../../lib/futsal-report';
 import {eventMapData} from '../../lib/futsal-report-events';
-import {defaultTeamReport} from '../../lib/futsal-team-report';
+import {reportTeamOptions} from '../../lib/futsal-team-report';
 export default function ReportEventMap({draft,person}:{draft:ReportDraft;person:PlayerText}){
- const ref=useRef<HTMLCanvasElement>(null),map=eventMapData(draft,person),colors=draft.teamReport||defaultTeamReport();
+ const ref=useRef<HTMLCanvasElement>(null),map=eventMapData(draft,person),colors=reportTeamOptions(draft);
  useEffect(()=>{
   const c=ref.current;if(!c)return;c.width=1320;paintHeatmap(c,{width:80,height:40,scale:1},{grid:Array(3200).fill(0)});
   const ctx=c.getContext('2d')!,u=c.width/44,teamColor=(side:string)=>side==='home'?colors.homeColor:colors.awayColor;
@@ -14,7 +14,11 @@ export default function ReportEventMap({draft,person}:{draft:ReportDraft;person:
   for(const side of ['home','away'] as const){const dir=attackDirection(draft,{...person,side}),right=dir==='right',color=teamColor(side),lanes=draft.fla?.summary.lanes[side];
    if(lanes?.total_count){[lanes.left_count,lanes.center_count,lanes.right_count].forEach((count,i)=>{const ratio=count/lanes.total_count;if(!ratio)return;
     const x=(right?6:34)*u+2*u,y=(2+(right?i:2-i)*6+4)*u,sign=right?1:-1,len=(2+ratio*6)*u;
-    ctx.save();ctx.globalAlpha=.13;ctx.strokeStyle=color;ctx.lineWidth=22;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+sign*len,y);ctx.stroke();ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(x+sign*(len+25),y);ctx.lineTo(x+sign*(len-12),y-30);ctx.lineTo(x+sign*(len-12),y+30);ctx.closePath();ctx.fill();ctx.restore();
+    // One filled outline: shaft and head share an edge, with no translucent overlap.
+    ctx.save();ctx.globalAlpha=.18;ctx.fillStyle=color;ctx.beginPath();
+    ctx.moveTo(x,y-11);ctx.lineTo(x+sign*len,y-11);ctx.lineTo(x+sign*len,y-30);
+    ctx.lineTo(x+sign*(len+37),y);ctx.lineTo(x+sign*len,y+30);ctx.lineTo(x+sign*len,y+11);ctx.lineTo(x,y+11);
+    ctx.closePath();ctx.fill();ctx.restore();
     ctx.fillStyle='#94637F';ctx.font='22px Arial';ctx.fillText(`${Math.round(ratio*100)}%`,x-sign*35,y+7);
    });}
    ctx.fillStyle=color;ctx.font='600 23px Arial';ctx.fillText(`${side===person.side?'아군':'상대'} 공격 ${right?'→':'←'}`,(right?12:32)*u,23.35*u);

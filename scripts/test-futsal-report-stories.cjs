@@ -17,3 +17,13 @@ mapped=e.eventMapData(d,d.players[p.id]);assert.equal(mapped.markers.length,5,'S
 d.players[p.id].heatComment='직접 쓴 활동 이야기';d.players[p.id].strengths[0]='내가 쓴 장점';const rendered=e.reportPlayer(d);assert.equal(rendered.person.heatComment,'직접 쓴 활동 이야기');assert.equal(rendered.person.strengths[0],'내가 쓴 장점');assert.match(rendered.person.eventComment,/공을 되찾은/);assert.match(rendered.person.strengths[2],/슈팅/);assert.match(rendered.person.improvements[1],/동료/);
 d.fla.matchId='other';assert(e.eventMapData(d,d.players[p.id]).markers.every(m=>m.source==='fpa'));
 console.log('PASS: five-minute clipping and coverage gates; warm grounded stories; explicit FLA shirt binding; both-team orientation; no-coordinate exclusion; shot deduplication; defense vs recovery; manual edits preserved.');
+
+const clubs=load('apps/web/lib/futsal-clubs.ts'),teams=load('apps/web/lib/futsal-team-report.ts'),logos=load('apps/web/lib/futsal-team-logos.ts');
+assert.equal(clubs.FUTSAL_CLUBS.length,29);assert.equal(clubs.clubName('수원fc'),'수원 FC');assert.equal(clubs.clubName('수원삼성'),'수원 삼성');assert.equal(clubs.clubName('FC서울'),'FC 서울');assert.equal(clubs.clubName('서울E'),'서울 이랜드');assert.equal(clubs.clubName('연맹연합'),'연맹연합');
+assert(clubs.FUTSAL_CLUBS.every(c=>logos.teamLogo(c.name)),'Every full club name resolves its existing logo');
+let options=teams.reportTeamOptions({homeName:'안양',awayName:'대전',teamReport:teams.defaultTeamReport()});assert.equal(options.homeColor,'#4A227A');assert.equal(options.awayColor,'#992941');
+options=teams.reportTeamOptions({homeName:'안양',awayName:'대전',teamReport:{...options,homeColor:'#FF7400',homeColorCustom:true}});assert.equal(options.homeColor,'#FF7400','Explicit custom colors, even legacy defaults, are kept');
+d.fpa=null;d.fla={matchId:'same',summary:{lanes:{home:{left_count:0,center_count:0,right_count:0,total_count:0}}},events:[shot('a','AWAY',''),shot('b','AWAY','')]};d.players[p.id].heatComment='';
+const awayOnly=e.eventMapData(d,d.players[p.id]);assert.equal(awayOnly.markers.length,2);assert(awayOnly.markers.every(m=>m.side==='away'&&m.x<20),'Away-only source stays away-only, no invented home shots');
+const narrative=e.reportPlayer(d).generated.eventComment;assert.match(narrative,/상대의 슈팅/);assert.doesNotMatch(narrative,/공격에 직접 참여|볼을 되찾/);assert(narrative.length>200);
+console.log('PASS: full club names/logos and colors; explicit color overrides; honest one-team shot map and activity/event contextual story.');

@@ -1,4 +1,5 @@
 'use client';
+import {clubName,futsalClub} from '../lib/futsal-clubs';
 
 import { toPng } from 'html-to-image';
 import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type ReactElement } from 'react';
@@ -12,7 +13,7 @@ import { REPORT_WIDTH, REPORT_HEIGHT, reportPDF, reportOverflow, reportFontCSS }
 import { safeName } from './futsal/graphics';
 import PlayerReportSheet from './futsal/PlayerReportSheet';
 import TeamReportSheet from './futsal/TeamReportSheet';
-import {defaultTeamReport,matchComment,validateMatchReportData,type TeamReportOptions} from '../lib/futsal-team-report';
+import {reportTeamOptions,matchComment,validateMatchReportData,type TeamReportOptions} from '../lib/futsal-team-report';
 import type {Summary,Dominance,Shot} from './futsal/graphics';
 import {reportPlayer} from '../lib/futsal-report-events';
 import './futsal-match-report.css';
@@ -35,7 +36,7 @@ export default function FutsalMatchReportPage(){
  const preview=useRef<HTMLDivElement>(null),sheet=useRef<HTMLDivElement>(null),latest=useRef<ReportDraft|null>(null),loadTicket=useRef(0);
  latest.current=draft;
  useEffect(()=>{if(sport!=='FUTSAL')setSport('FUTSAL');},[sport,setSport]);
- function activate(d:ReportDraft){setDraft(d);setMatchChoice(d.matchId);setSnapshotChoice(d.sourceSnapshot?.id||'');const u=new URL(location.href);u.searchParams.delete('snapshot');u.searchParams.set('report',d.id);history.replaceState(history.state,'',u);}
+ function activate(d:ReportDraft){d={...d,homeName:clubName(d.homeName),awayName:clubName(d.awayName)};setDraft(d);setMatchChoice(d.matchId);setSnapshotChoice(d.sourceSnapshot?.id||'');const u=new URL(location.href);u.searchParams.delete('snapshot');u.searchParams.set('report',d.id);history.replaceState(history.state,'',u);}
  async function openSnapshot(id:string){
   const source=await loadAnalysisSnapshot(id);let d=attachHeatmap(emptyDraft(),validateHeatmap(source.heatmap));
   d={...d,title:`${source.title} · 확정 v${source.version}`,fpa:parseFpaSource(source.fpa),fpaLabel:`분석 완료 스냅샷 v${source.version}`,matchId:source.matchId||'',matchName:source.matchName,homeName:source.homeName,awayName:source.awayName,
@@ -77,8 +78,8 @@ export default function FutsalMatchReportPage(){
  const spatial=useMemo(()=>spatialSummary(draft?.heatmap||null,heatPlayer,direction),[draft?.heatmap,heatPlayer,direction]);
  const patch=(value:Partial<ReportDraft>)=>setDraft(d=>d?{...d,...value}:d);
  const patchPlayer=(value:Partial<PlayerText>)=>setDraft(d=>d?{...d,players:{...d.players,[d.selected]:{...d.players[d.selected],...value}}}:d);
- const teamOptions=draft?.teamReport||defaultTeamReport();
- const patchTeam=(value:Partial<TeamReportOptions>)=>setDraft(d=>d?{...d,teamReport:{...(d.teamReport||defaultTeamReport()),...value}}:d);
+ const teamOptions=reportTeamOptions(draft||{homeName:'',awayName:''});
+ const patchTeam=(value:Partial<TeamReportOptions>)=>setDraft(d=>d?{...d,teamReport:{...reportTeamOptions(d),...value}}:d);
  const teamPlayers=draft?.heatmap?.players.filter(p=>p.group===teamOptions.side)||[];
  const chosenPlayers=(teamOptions.side==='home'?teamOptions.homePlayers:teamOptions.awayPlayers)??teamPlayers.slice(0,5).map(p=>p.id);
  const selectedPlayers=teamPlayers.filter(p=>chosenPlayers.includes(p.id));
@@ -92,7 +93,7 @@ export default function FutsalMatchReportPage(){
    const hasRecords=summary.possession.home_ms+summary.possession.away_ms>0||summary.lanes.home.total_count+summary.lanes.away.total_count>0||!!video.events?.length;
    const fla=validateMatchReportData({matchId:id,loadedAt:new Date().toISOString(),summary,dominance,started:!!video.state.started||hasRecords,ended:!!video.state.ended|| (!!video.match?.archived&&hasRecords),sourceKind:video.state.started?'video':hasRecords?'dashboard':'none',events:(video.events||[]).filter(e=>e.type==='XG'),videoStartSeconds:video.state.configured&&video.state.started?(video.state.offset_ms||0)/1000:undefined});
    if(ticket!==loadTicket.current||latest.current?.id!==target)return;
-   setDraft(d=>d?.id===target?{...d,matchId:id,matchName:d.matchName||match.name,homeName:d.homeName||match.metadata?.home_team||'',awayName:d.awayName||match.metadata?.away_team||'',
+   setDraft(d=>d?.id===target?{...d,matchId:id,matchName:d.matchName||match.name,homeName:clubName(d.homeName||match.metadata?.home_team||''),awayName:clubName(d.awayName||match.metadata?.away_team||''),
     homeScore:hasRecords&&score?String(score.match.home.score):d.homeScore,awayScore:hasRecords&&score?String(score.match.away.score):d.awayScore,fla}:d);
    if(!automatic)setReportView('team');setNotice(hasRecords?`같은 경기의 ${fla.sourceKind==='video'?'영상 기록':'대시보드'} FLA를 연결했습니다. 공격 방향·점유율·슈팅·경기 흐름을 반영했습니다.`:'아직 이 경기에 FLA 기록이 없습니다.');
   }catch(e){setNotice(errorText(e));}finally{if(ticket===loadTicket.current)setBusy(false);}
@@ -162,7 +163,8 @@ export default function FutsalMatchReportPage(){
   <div className="mr-workspace"><aside className="mr-controls">
    <section className="card card-panel"><h2>팀 리포트 · 6페이지</h2>
     <Field label="리포트 기준 팀"><select value={teamOptions.side} disabled={exporting} onChange={e=>patchTeam({side:e.target.value as 'home'|'away'})}><option value="home">{draft.homeName||'홈 팀'} 기준</option><option value="away">{draft.awayName||'어웨이 팀'} 기준</option></select></Field>
-    <div className="mr-two"><Field label={`${draft.homeName||'홈 팀'} 포인트 색상`}><input type="color" value={teamOptions.homeColor} onChange={e=>patchTeam({homeColor:e.target.value})}/></Field><Field label={`${draft.awayName||'어웨이 팀'} 포인트 색상`}><input type="color" value={teamOptions.awayColor} onChange={e=>patchTeam({awayColor:e.target.value})}/></Field></div>
+    <div className="mr-two"><Field label={`${draft.homeName||'홈 팀'} 포인트 색상`}><input type="color" value={teamOptions.homeColor} onChange={e=>patchTeam({homeColor:e.target.value,homeColorCustom:true})}/></Field><Field label={`${draft.awayName||'어웨이 팀'} 포인트 색상`}><input type="color" value={teamOptions.awayColor} onChange={e=>patchTeam({awayColor:e.target.value,awayColorCustom:true})}/></Field></div>
+    <button type="button" onClick={()=>patch({homeName:clubName(draft.homeName),awayName:clubName(draft.awayName),teamReport:{...teamOptions,homeColor:futsalClub(draft.homeName)?.colors[0]||teamOptions.homeColor,awayColor:futsalClub(draft.awayName)?.colors[0]||teamOptions.awayColor,homeColorCustom:false,awayColorCustom:false}})}>구단 이름·컬러 적용</button>
     <button type="button" disabled={busy||exporting||!(draft.matchId||matchChoice)} onClick={()=>void loadFla()}>최신 FLA 기록 불러오기</button>
     <p className="field-help">{draft.fla?`${draft.fla.sourceKind==='dashboard'?'대시보드':draft.fla.sourceKind==='video'?'영상 기록':'FLA'} · ${draft.fla.started?'기록 연결됨':'기록 없음'} · ${new Date(draft.fla.loadedAt).toLocaleString('ko-KR')}`:'영상 기록 경기를 연결한 뒤 FLA 기록을 불러오세요.'}</p>
     <Field label="경기 총평"><textarea rows={5} maxLength={1400} value={teamOptions.side==='home'?teamOptions.homeComment:teamOptions.awayComment} placeholder={draft.fla?matchComment(draft.fla,teamOptions.side):'FLA 기록을 불러오면 데이터 기반 총평이 들어갑니다.'} onChange={e=>patchTeam({[teamOptions.side==='home'?'homeComment':'awayComment']:e.target.value})}/></Field>
