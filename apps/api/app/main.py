@@ -65,7 +65,7 @@ from . import record_sheet
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
 from . import highlight_card_store as card_store
 from . import highlight_template_editor as template_editor
-from .highlight_cards import render_board
+from .highlight_cards import CardTemplate, render_board
 from .highlight_cards import (
     DEFAULT_TEMPLATE_ID,
     TEMPLATES,
@@ -9604,6 +9604,82 @@ async def analyze_card_template_file(
     return result
 
 
+@app.get("/api/highlight/card-templates/pending/{token}")
+def get_pending_template_preview(
+    token: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """분석해 둔 시안의 미리보기 그림. 화면이 이 위에 후보 상자를 겹쳐 그린다."""
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(status_code=404, detail="잘못된 토큰입니다.")
+    path = template_editor.pending_dir() / f"{token}.full.png"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="분석 기록이 없습니다. 다시 올려 주세요.")
+    return Response(content=path.read_bytes(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/highlight/card-templates/preview-draft")
+def preview_draft_card_template(
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """저장하기 전에, 역할을 정한 그대로 한 장 그려 보여 준다.
+
+    저장 후에만 보이면 역할을 바꿀 때마다 만들고-지우고를 반복하게 된다. 합치기가
+    쓰는 렌더러(render_card/render_board)를 그대로 부르므로 결과와 어긋나지 않는다.
+    """
+    token = str(body.get("token") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(status_code=400, detail="token 이 없습니다.")
+    kind = "board" if str(body.get("kind")) == "board" else "start"
+    hide = [int(i) for i in (body.get("hide_layers") or [])]
+    fields_raw = body.get("fields") or []
+    if not isinstance(fields_raw, list):
+        raise HTTPException(status_code=400, detail="fields 는 목록이어야 합니다.")
+    try:
+        bg = template_editor.cached_background(token, hide)
+    except Exception as exc:  # noqa: BLE001 - 깨진 토큰/PSD 는 입력 문제다
+        raise HTTPException(status_code=400, detail=f"배경을 굽지 못했습니다: {exc}")
+
+    from PIL import Image as PILImage2
+    with PILImage2.open(bg) as im:
+        design = im.size
+
+    fields = tuple(card_store._field_from_spec(f) for f in fields_raw)
+    zones = tuple(card_store._zone_from_spec(z) for z in (body.get("zones") or []))
+    # 초안 전용 임시 템플릿 — 저장되지 않고 이 요청 안에서만 산다.
+    draft = CardTemplate(
+        id="draft", name="draft", design=design,
+        start_bg=str(bg), section_bg=str(bg),
+        start_fields=fields, section_fields=fields,
+        board_bg=str(bg) if kind == "board" else "",
+        board_design=design if kind == "board" else None,
+        board_fields=fields if kind == "board" else (),
+        board_zones=zones if kind == "board" else (),
+        backdrop="",
+    )
+    values = body.get("values") if isinstance(body.get("values"), dict) else {}
+    values = {str(k): str(v) for k, v in values.items()}
+    try:
+        width = max(320, min(1600, int(body.get("width") or 900)))
+    except (TypeError, ValueError):
+        width = 900
+    if kind == "board":
+        colors = body.get("colors") if isinstance(body.get("colors"), dict) else {}
+        image = render_board(draft, width, values=values,
+                             colors={str(k): str(v) for k, v in colors.items()})
+    else:
+        height = max(1, round(width * design[1] / design[0]))
+        image = render_card(draft, "start", width, height, values=values)
+    buffer = io.BytesIO()
+    image.convert("RGBA").save(buffer, format="PNG")
+    return Response(content=buffer.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/highlight/card-templates/custom")
 async def create_custom_card_template(
     request: Request,
@@ -9667,6 +9743,25 @@ async def create_custom_card_template(
     build_side("board", "board")
     if "design" not in spec:
         raise HTTPException(status_code=400, detail="시작 카드는 필수입니다.")
+
+    # 뒤에 깔 사진(선택) — 시안 여백이 투명일 때 흰 화면 대신 이 사진이 비친다.
+    backdrop = form.get("backdrop")
+    if backdrop is not None and getattr(backdrop, "filename", ""):
+        data = await backdrop.read()
+        if data:
+            if len(data) > 30 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="배경 사진이 30MB 를 넘습니다.")
+            try:
+                with Image.open(io.BytesIO(data)) as probe:
+                    probe.verify()
+            except Exception:
+                raise HTTPException(status_code=400, detail="배경 사진을 그림으로 읽을 수 없습니다.")
+            filename = f"{row.id}-backdrop.png"
+            with Image.open(io.BytesIO(data)) as im:
+                im = im.convert("RGB")
+                im.thumbnail((1920, 1920), Image.LANCZOS)
+                im.save(card_store.template_dir() / filename, format="PNG")
+            spec["backdrop"] = filename
 
     # 영상들 — 그대로 저장해 세트에 문다. 글자를 얹지 않으므로 검사도 영상인지만 본다.
     for key, spec_key in (("first_half", "first_half_video"),
