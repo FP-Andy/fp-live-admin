@@ -43,7 +43,7 @@ let ad=r.attachHeatmap(r.emptyDraft(),{...heat,from:0,to:900,players:Array.from(
 let ar=auto.automaticPositions(ad);assert.deepEqual(Object.values(ar).map(a=>a.position),['DF','DF','MF','FW','FW','DF','DF','MF','FW','FW']);
 const reflected=auto.automaticPositions({...ad,homeDirection:'left'});assert.equal(reflected['home-0'].position,'FW');assert.equal(reflected['away-0'].position,'FW');
 ad.players['home-0'].position='PIVO';ad.players['home-0'].heatComment='직접 쓴 문구';const normalized=auto.applyAutomaticPositions(ad);assert.equal(normalized.players['home-0'].position,'DF');assert.equal(normalized.players['home-0'].heatComment,'직접 쓴 문구');
-const weighted=structuredClone(ad);weighted.heatmap.players[0].positions=[{t:0,x:.1,y:.5,seconds:100},{t:100,x:.9,y:.5,seconds:1}];assert(Math.abs(auto.automaticPositions(weighted)['home-0'].forward-10.9/101)<1e-9);
+const weighted=structuredClone(ad);weighted.heatmap.players[0].positions=[{t:0,x:.1,y:.5,seconds:100},{t:100,x:.9,y:.5,seconds:1}];assert(Math.abs(auto.automaticPositions(weighted)['home-0'].forward-.1)<.02,'A brief excursion cannot pull the dense activity point toward the mean');
 weighted.heatmap.players[0].augmentation={inferredSeconds:600,grid:[900]};assert.equal(auto.automaticPositions(weighted)['home-0'].position,'DF');
 const short=structuredClone(ad);short.heatmap.players[0].positions[0].seconds=3;assert.equal(auto.automaticPositions(short)['home-0'].position,'');
 const ties=structuredClone(ad);ties.heatmap.players.forEach(p=>p.positions[0].x=.5);assert(Object.values(auto.automaticPositions(ties)).every(a=>a.position==='MF'),'No forced defender/forward quota for tied centers');
@@ -54,4 +54,17 @@ for(const [id,role] of [['home-0','DF · FIXO'],['home-2','MF · ALA'],['home-4'
 const withEvents=structuredClone(ad);withEvents.fpa={rows:[{Team:'home',Player:'7',Action:'Shot',Tags:'Goal',StartX:'35',StartY:'10'},{Team:'home',Player:'7',Action:'Acquisition',StartX:'10',StartY:'10'}],logs:[]};
 const phrases=['home-0','home-2','home-4'].map(id=>e.reportPlayer(ad,id).generated);assert.equal(new Set(phrases.map(c=>c.strengths[0])).size,3);assert.equal(new Set(phrases.map(c=>c.improvements[0])).size,3);
 assert.notDeepEqual(e.reportPlayer(withEvents,'home-0').generated.strengths,phrases[0].strengths);assert.doesNotMatch(phrases.map(c=>c.strengths.join(' ')).join(' '),/어시스트|득점으로|스프린트/);
-console.log('PASS: time-weighted team-relative roles, direction reflection, tied centers, sparse data, keeper preservation, kickoff clipping, no inferred density, role-specific prose/review variation and manual text preservation.');
+console.log('PASS: initial-formation and modal-density roles, direction reflection, tied centers, sparse data, keeper preservation, kickoff clipping, no inferred density, role-specific prose/review variation and manual text preservation.');
+
+const seeded=structuredClone(ad);seeded.assignment={...d.assignment,court:[[0,0],[1,0],[1,1],[0,1]],geometryVersion:1,players:seeded.heatmap.players.map((p,i)=>{const x=i<5?.15+.065*(i%5):.85-.065*(i%5);return {id:p.id,group:p.group,number:p.jersey,box:[x-.01,.48,x+.01,.5]};})};
+// Entire home formation is in its own half. A forward is still identified.
+assert.equal(auto.automaticPositions(seeded)['home-4'].position,'FW');assert.equal(auto.automaticPositions(seeded)['home-0'].position,'DF');
+const conflict=structuredClone(seeded);conflict.heatmap.players[0].positions[0].x=.9;conflict.heatmap.players[4].positions[0].x=.1;
+assert.equal(auto.automaticPositions(conflict)['home-0'].position,'DF','Initial rear position has precedence over a forward hotspot');assert.equal(auto.automaticPositions(conflict)['home-4'].position,'FW');
+const noHeat=structuredClone(seeded);noHeat.heatmap.players.forEach(p=>p.positions=[]);assert.equal(auto.automaticPositions(noHeat)['home-4'].position,'FW');assert.equal(auto.automaticPositions(noHeat)['home-4'].basis,'initial');
+const bimodal={...p,positions:[{t:0,x:.2,y:.2,seconds:60},{t:60,x:.8,y:.8,seconds:40}]};const mode=auto.observedHotspot(bimodal,0,100);assert(Math.abs(mode.point[0]-.2)<.02&&Math.abs(mode.point[1]-.2)<.03,'Mode lies at the dense region, not the empty mean between regions');
+const equal={...p,positions:[{t:0,x:.2,y:.2,seconds:50},{t:50,x:.8,y:.8,seconds:50}]};assert(auto.observedHotspot(equal,0,100,[.8,.8]).point[0]>.75,'Initial formation breaks equally dense distant peaks');
+const lateral=structuredClone(ad);lateral.heatmap.players[3].positions[0].y=.05;lateral.heatmap.players[2].positions[0].y=.95;assert.equal(auto.automaticPositions(lateral)['home-3'].position,'MF','Advanced wide support differs from the central forward');
+const rotated=auto.automaticPositions({...seeded,heatmap:{...seeded.heatmap,turn:2}});assert(rotated['home-0'].initial[0]>.8);assert.equal(rotated['home-0'].position,'FW');
+assert.throws(()=>assignment.validateAssignment({...seeded.assignment,court:[[0,0],[1,1],[1,0],[0,1]]}));
+console.log('PASS: initial formation precedence; forwards in own half; modal vs mean location; tied-peak anchors; lateral roles; keeper preservation; rotated court calibration.');

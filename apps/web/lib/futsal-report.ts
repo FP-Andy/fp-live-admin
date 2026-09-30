@@ -9,7 +9,7 @@ import {validateTeamReport,validateMatchReportData} from './futsal-team-report';
 export type Side='home'|'away';
 export type Direction='right'|'left';
 export type HeatPlayer={id:string;group:Side;jersey:string;name?:string;grid:number[];coverage:number;observed:number;positions:Array<{x:number;y:number;t:number;seconds:number}>;augmentation?:ActivityDensity};
-export type HeatSource={schema:'fpa-heatmaps/v1';datasetId:string;video:string;resultVersion?:number;from:number;to:number;width:number;height:number;scale:number;players:HeatPlayer[];augmentation?:ActivityPolicy};
+export type HeatSource={schema:'fpa-heatmaps/v1';datasetId:string;video:string;resultVersion?:number;from:number;to:number;width:number;height:number;scale:number;point?:'bottom'|'center';turn?:number;players:HeatPlayer[];augmentation?:ActivityPolicy};
 export type PlayerText={name:string;jersey:string;position:string;context:string;heatComment:string;eventComment:string;strengths:string[];improvements:string[];eventNumber:string;flaNumber?:string;side:Side};
 export type ReportDraft={schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>;sourceSnapshot?:{id:string;version:number;createdAt:string;jobId:string};teamReport?:TeamReportOptions;fla?:MatchReportData;matchStartSeconds?:number;assignment?:ReportAssignment;assignmentPositions?:Record<string,string>};
 export const POSITIONS=['','DF','MF','FW','GK','FIXO','ALA','PIVO','GOLEIRO'];
@@ -19,6 +19,8 @@ export const emptyDraft=():ReportDraft=>({schema:'fpc-futsal-report/v1',id:crypt
 export function validateHeatmap(raw:unknown):HeatSource {
  const h=raw as HeatSource;
  if(!h||h.schema!=='fpa-heatmaps/v1'||typeof h.datasetId!=='string'||typeof h.video!=='string'||!Number.isFinite(h.from)||!Number.isFinite(h.to)||!(h.to>h.from)||!Number.isInteger(h.width)||!Number.isInteger(h.height)||h.width<1||h.height<1||h.width*h.height>20000||!Number.isFinite(h.scale)||h.scale<=0||!Array.isArray(h.players)||!h.players.length||h.players.length>100)throw Error('FPA의 좌표·품질 JSON 파일을 선택하세요.');
+ if(h.turn!==undefined&&(!Number.isInteger(h.turn)||h.turn<0||h.turn>3))throw Error('히트맵 회전 방향을 확인하세요.');
+ if(h.point!==undefined&&!['bottom','center'].includes(h.point))throw Error('히트맵 기준점을 확인하세요.');
  const ids=new Set();
  for(const p of h.players){
   if(!p||typeof p.id!=='string'||ids.has(p.id)||!['home','away'].includes(p.group)||!['string','number'].includes(typeof p.jersey)||!Array.isArray(p.grid)||p.grid.length!==h.width*h.height||!p.grid.every(n=>Number.isFinite(n)&&n>=0)||!Array.isArray(p.positions))throw Error('히트맵 선수 정보가 올바르지 않습니다.');

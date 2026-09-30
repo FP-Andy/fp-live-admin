@@ -13,13 +13,13 @@ export default function ReportEventMap({draft,person}:{draft:ReportDraft;person:
   ctx.fillText(ownDirection==='right'?'아군 진영':'상대 진영',u*12,u*1.22);ctx.fillText(ownDirection==='right'?'상대 진영':'아군 진영',u*32,u*1.22);
   for(const side of ['home','away'] as const){const dir=attackDirection(draft,{...person,side}),right=dir==='right',color=teamColor(side),lanes=draft.fla?.summary.lanes[side];
    if(lanes?.total_count){[lanes.left_count,lanes.center_count,lanes.right_count].forEach((count,i)=>{const ratio=count/lanes.total_count;if(!ratio)return;
-    const x=(right?6:34)*u+2*u,y=(2+(right?i:2-i)*6+4)*u,sign=right?1:-1,len=(2+ratio*6)*u;
+    const x=(right?6:34)*u+2*u,y=(2+(right?i:2-i)*6+4)*u,sign=right?1:-1,len=(3+ratio*8)*u;
     // One filled outline: shaft and head share an edge, with no translucent overlap.
-    ctx.save();ctx.globalAlpha=.18;ctx.fillStyle=color;ctx.beginPath();
-    ctx.moveTo(x,y-11);ctx.lineTo(x+sign*len,y-11);ctx.lineTo(x+sign*len,y-30);
-    ctx.lineTo(x+sign*(len+37),y);ctx.lineTo(x+sign*len,y+30);ctx.lineTo(x+sign*len,y+11);ctx.lineTo(x,y+11);
+    ctx.save();ctx.globalAlpha=.24;ctx.fillStyle=color;ctx.beginPath();
+    ctx.moveTo(x,y-18);ctx.lineTo(x+sign*len,y-18);ctx.lineTo(x+sign*len,y-45);
+    ctx.lineTo(x+sign*(len+54),y);ctx.lineTo(x+sign*len,y+45);ctx.lineTo(x+sign*len,y+18);ctx.lineTo(x,y+18);
     ctx.closePath();ctx.fill();ctx.restore();
-    ctx.fillStyle='#94637F';ctx.font='22px Arial';ctx.fillText(`${Math.round(ratio*100)}%`,x-sign*35,y+7);
+    ctx.fillStyle='#94637F';ctx.font='24px Arial';ctx.fillText(`${Math.round(ratio*100)}%`,x-sign*42,y+8);
    });}
    ctx.fillStyle=color;ctx.font='600 23px Arial';ctx.fillText(`${side===person.side?'아군':'상대'} 공격 ${right?'→':'←'}`,(right?12:32)*u,23.35*u);
   }
