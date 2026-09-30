@@ -40,6 +40,8 @@ export type Scoreboard = {
   logoSizePct: number;
   /** 팀명 글자 크기(%). 점수는 그대로 두고 이름만 줄인다. */
   nameSizePct: number;
+  /** 대회·라운드 한 줄. 대회 세트 점수판이 맨 위에 그린다(기본 점수판은 안 쓴다). */
+  roundLabel?: string;
   /** 영상 픽셀 좌표. 적어 넣었으면 비율(posX/posY) 대신 이것을 쓴다.
    *  끌거나 9칸을 누르면 비워진다 — 그것들은 비율로 잡는 몸짓이다. */
   posPxX?: number | null;
