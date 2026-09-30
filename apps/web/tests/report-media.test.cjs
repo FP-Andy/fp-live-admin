@@ -8,7 +8,7 @@ test('all 39 fixture teams map to supplied assets, with explicit missing clubs',
  const fixtures=JSON.parse(fs.readFileSync(path.join(__dirname,'../../api/app/data/queen-cup-fla-2026.json')));
  const missing=new Set();
  for(const f of fixtures)for(const name of [f.home,f.away]){const logo=teamLogo(name);if(logo)assert.ok(fs.existsSync(path.join(__dirname,'../public',logo)),name);else missing.add(name);}
- assert.deepEqual([...missing].sort(),['연맹연합','용인','파주']);
+ assert.deepEqual([...missing].sort(),['연맹연합','파주']);
  assert.notEqual(teamLogo('서울'),teamLogo('서울E'));
  assert.equal(teamLogo('FC 서울'),teamLogo('서울'));
  assert.equal(teamLogo('수원FC'),teamLogo('수원fc'));
