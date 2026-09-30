@@ -137,6 +137,11 @@ class CardTemplate:
     색과의 **차이만큼** 돌린다.
     """
 
+    backdrop: str = ""
+    """카드 뒤에 깔 사진(assets/brand 안의 이름). 시안의 **투명 여백**으로 이 사진이
+    비친다. 비어 있으면 시안 여백의 저장색(보통 흰색)이 그대로 화면이 된다 —
+    파인플레이 기본이 그렇고, 그쪽은 시안이 화면을 꽉 채우므로 애초에 여백이 없다."""
+
     board_bg: str = ""
     """점수판 배경 PNG. 비어 있으면 이 템플릿엔 점수판 면이 없다(코드로 그리는 기본 점수판을 쓴다)."""
 
@@ -337,6 +342,8 @@ def _sufa(key: str, name: str, home_src: str, away_src: str,
             ColorZone(id="away_color", label="어웨이 팀 색",
                       box=_SUFA_AWAY_BOX, source=away_src),
         ),
+        # 시안(1510x1080)이 16:9 화면보다 좁고 여백이 투명이라, 뒤에 깔 사진이 필요하다.
+        backdrop="sufa-backdrop.jpg",
         first_half_video=f"sufa-{low}-first.mp4",
         second_half_video=f"sufa-{low}-second.mp4",
         note="점수판·시작 카드·전후반 효과 영상이 한 세트입니다."

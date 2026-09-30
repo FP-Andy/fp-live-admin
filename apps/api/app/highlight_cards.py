@@ -94,15 +94,38 @@ def _gradient(width: int, height: int,
     return strip.resize((max(1, width), max(1, height)), Image.NEAREST)
 
 
-def _base(template: CardTemplate, kind: str) -> Image.Image:
+def _base(template: CardTemplate, kind: str, keep_alpha: bool = False) -> Image.Image:
     design = template.design
     path = _brand_dir() / template.background(kind)
     if path.exists():
         try:
-            return Image.open(path).convert("RGB").resize(design, Image.LANCZOS)
+            mode = "RGBA" if keep_alpha else "RGB"
+            return Image.open(path).convert(mode).resize(design, Image.LANCZOS)
         except OSError:
             pass
-    return _gradient(design[0], design[1], template.gradient)
+    base = _gradient(design[0], design[1], template.gradient)
+    return base.convert("RGBA") if keep_alpha else base
+
+
+def _backdrop(template: CardTemplate, width: int, height: int) -> Image.Image | None:
+    """카드 뒤에 깔 사진을 화면 크기로 덮어 자른다. 없으면 None."""
+    if not template.backdrop:
+        return None
+    path = _brand_dir() / template.backdrop
+    if not path.exists():
+        return None
+    try:
+        photo = Image.open(path).convert("RGBA")
+    except OSError:
+        return None
+    cover = max(width / photo.width, height / photo.height)
+    grown = photo.resize(
+        (max(width, round(photo.width * cover)), max(height, round(photo.height * cover))),
+        Image.LANCZOS,
+    )
+    left = (grown.width - width) // 2
+    top = (grown.height - height) // 2
+    return grown.crop((left, top, left + width, top + height))
 
 
 def _hex_rgb(value: str) -> tuple[int, int, int] | None:
@@ -325,26 +348,43 @@ def _compose(template: CardTemplate, kind: str, layer: Image.Image,
     """
     width, height = max(1, width), max(1, height)
     design_w, design_h = template.design
-    base = _base(template, kind)
-    if color:
-        base = _recolor(base, template.base_color, color)
-
-    cover = max(width / design_w, height / design_h)
-    grown = base.resize(
-        (max(width, round(design_w * cover)), max(height, round(design_h * cover))),
-        Image.LANCZOS,
-    )
-    left = (grown.width - width) // 2
-    top = (grown.height - height) // 2
-    card = grown.crop((left, top, left + width, top + height))
-
     contain = min(width / design_w, height / design_h)
+
+    photo = _backdrop(template, width, height)
+    if photo is not None:
+        # 뒤에 깔 사진이 있으면 시안은 **통째로**(contain) 얹는다. 시안의 투명 여백으로
+        # 사진이 비친다 — 예전에는 그 여백의 저장색(흰색)이 그대로 화면이 됐다.
+        # 배경까지 덮게(cover) 늘리면 시안 위아래가 잘려 제목·팀명이 화면 밖으로 나간다.
+        base = _base(template, kind, keep_alpha=True)
+        if color:
+            base = _recolor(base, template.base_color, color)
+        fitted = base.resize(
+            (max(1, round(design_w * contain)), max(1, round(design_h * contain))),
+            Image.LANCZOS,
+        )
+        card = photo
+        card.alpha_composite(fitted, ((width - fitted.width) // 2,
+                                      (height - fitted.height) // 2))
+    else:
+        base = _base(template, kind)
+        if color:
+            base = _recolor(base, template.base_color, color)
+
+        cover = max(width / design_w, height / design_h)
+        grown = base.resize(
+            (max(width, round(design_w * cover)), max(height, round(design_h * cover))),
+            Image.LANCZOS,
+        )
+        left = (grown.width - width) // 2
+        top = (grown.height - height) // 2
+        card = grown.crop((left, top, left + width, top + height))
+
     inner = layer.resize(
         (max(1, round(design_w * contain)), max(1, round(design_h * contain))),
         Image.LANCZOS,
     )
     card.paste(inner, ((width - inner.width) // 2, (height - inner.height) // 2), inner)
-    return card
+    return card.convert("RGB") if photo is not None else card
 
 
 def render_card(
