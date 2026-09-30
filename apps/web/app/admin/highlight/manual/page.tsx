@@ -857,8 +857,23 @@ export default function ManualHighlightPage() {
   const previewLabel = cardPreviewOf === 'start'
     ? ''
     : (sectionPlan.get(cardPreviewOf)?.label ?? '');
+
+  // 세트에 효과 영상이 있으면 **첫 T 자리는 구간 카드 대신 후반전 영상**이 들어간다
+  // (합치기와 같은 규칙 — 하프타임은 한 경기에 한 번). 미리보기가 카드를 그려 주면
+  // 실제 결과와 달라서 '카드가 뜨면 안 되는데' 가 된다. 그 자리는 영상을 보여 준다.
+  const firstSectionId = useMemo(() => {
+    let best: string | null = null;
+    let bestOrder = Infinity;
+    for (const [id, entry] of sectionPlan) {
+      if (entry.beforeOrder < bestOrder) { best = id; bestOrder = entry.beforeOrder; }
+    }
+    return best;
+  }, [sectionPlan]);
+  const previewIsHalfVideo = Boolean(
+    cardTemplate?.has_half_videos && cardPreviewOf !== 'start' && cardPreviewOf === firstSectionId,
+  );
   useEffect(() => {
-    if (!cards.enabled) {
+    if (!cards.enabled || previewIsHalfVideo) {
       setCardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
       return undefined;
     }
@@ -893,7 +908,7 @@ export default function ManualHighlightPage() {
       }
     }, 400);
     return () => { alive = false; clearTimeout(timer); };
-  }, [cards, cardPreviewOf, previewLabel]);
+  }, [cards, cardPreviewOf, previewLabel, previewIsHalfVideo]);
 
   // 보고 있던 구간 태그가 지워지면 시작 카드로 돌아간다.
   useEffect(() => {
@@ -1959,7 +1974,9 @@ export default function ManualHighlightPage() {
                               : smallBtn}
                             onClick={() => setCardPreviewOf(tag.id)}
                           >
-                            {entry.label}
+                            {cardTemplate?.has_half_videos && tag.id === firstSectionId
+                              ? `${entry.label} → 후반전 영상`
+                              : entry.label}
                           </button>
                         );
                       })}
@@ -1970,7 +1987,20 @@ export default function ManualHighlightPage() {
                     {cardPreviewError ? (
                       <p style={{ margin: 0, fontSize: 12, color: '#f87171' }}>{cardPreviewError}</p>
                     ) : null}
-                    {cardPreviewUrl ? (
+                    {previewIsHalfVideo ? (
+                      <div style={{ maxWidth: 520 }}>
+                        <video
+                          src={`${API_BASE}/highlight/card-templates/${cards.template}/half/second`}
+                          controls muted preload="metadata"
+                          style={{ width: '100%', borderRadius: 8, background: '#000',
+                                   border: '1px solid var(--border-ghost, #2c2c32)' }}
+                        />
+                        <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted, #999)' }}>
+                          첫 T 자리에는 구간 카드 대신 이 후반전 효과 영상이 들어갑니다.
+                          두 번째 T 부터는 구간 카드가 들어갑니다.
+                        </p>
+                      </div>
+                    ) : cardPreviewUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- 서버가 방금 그려 준 blob 이라 최적화 대상이 아니다
                       <img
                         src={cardPreviewUrl}
