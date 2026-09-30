@@ -173,8 +173,17 @@
             <label class="check"><input id="heatmap-manual" type="checkbox"> 수동 지정만</label>
             <button id="heatmap-build" class="primary">히트맵 만들기</button>
             <button id="heatmap-report" disabled>10명 PNG 저장</button><button id="heatmap-json" disabled>좌표·품질 JSON</button><button id="heatmap-fcm" disabled>FCM 리포트 만들기</button>
+            <button id="heatmap-complete" class="analysis-complete" disabled>분석 완료 판정</button>
           </div>
           <p id="heatmap-status" role="status">선수 연결을 계산한 뒤 히트맵 만들기를 누르세요.</p>
+          <a id="analysis-snapshot-link" class="button" hidden target="_blank" rel="noopener"></a>
+          <dialog id="analysis-complete-dialog">
+            <h2>분석 완료 판정</h2><p id="analysis-complete-summary"></p><ul id="analysis-complete-players"></ul>
+            <p class="muted">유효 관측률은 선수 식별 정확도가 아닙니다. 번호·긴 공백·교체와 FPA 기록을 확인하세요.</p>
+            <p>현재 히트맵·이벤트 기록·선수 정보를 서버에 고정합니다. 이후 수정해도 이 버전은 유지됩니다.</p>
+            <label class="check"><input type="checkbox" id="analysis-complete-checked"> 결과를 검수했으며 이 버전을 리포트 원본으로 사용합니다.</label>
+            <div class="heatmap-controls"><button id="analysis-complete-cancel">취소</button><button id="analysis-complete-confirm" class="analysis-complete" disabled>완료 판정 · 스냅샷 저장</button></div>
+          </dialog>
           <p class="muted">색 농도 = 체류 시간 · 10명 공통 눈금 · PNG에는 퀸컵 색상의 히트맵만 저장됩니다.</p>
           <p class="muted">고정 카메라·교체 없는 명단 기준. 겹침·색상 충돌·코트 밖 좌표는 제외합니다. <a href="./guide.html#heatmaps">히트맵 안내 ↗</a></p>
           <div id="heatmap-cards"></div>

@@ -167,6 +167,9 @@ html.console-embed{overflow:hidden}
 #review-workspace .reconnect-row>div{min-width:0;overflow-wrap:anywhere}
 #review-workspace #reconnect-panel{margin-top:14px}
 .heatmap-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+.analysis-complete{background:#167544;color:#fff;border-color:#27915a}.analysis-complete:hover{background:#1c8a51}
+#analysis-complete-dialog{max-width:min(560px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:#111b27;color:#e9eef5;border:1px solid #415066;border-radius:12px;padding:24px;line-height:1.65}
+#analysis-complete-dialog::backdrop{background:#0009}#analysis-complete-dialog .heatmap-controls{margin-top:18px}#analysis-complete-players{padding-left:20px;font-size:12px}
 .heatmap-controls label{font-size:11px;display:grid;gap:5px}.heatmap-controls label.check{display:flex;align-items:center}
 #heatmap-status{color:#ffac70;font-size:13px;margin:14px 0 8px}
 #heatmap-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}

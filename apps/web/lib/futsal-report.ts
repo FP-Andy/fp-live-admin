@@ -5,7 +5,7 @@ export type Direction='right'|'left';
 export type HeatPlayer={id:string;group:Side;jersey:string;name?:string;grid:number[];coverage:number;observed:number;positions:Array<{x:number;y:number;t:number;seconds:number}>};
 export type HeatSource={schema:'fpa-heatmaps/v1';datasetId:string;video:string;resultVersion?:number;from:number;to:number;width:number;height:number;scale:number;players:HeatPlayer[]};
 export type PlayerText={name:string;jersey:string;position:string;context:string;heatComment:string;eventComment:string;strengths:string[];improvements:string[];eventNumber:string;side:Side};
-export type ReportDraft={schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>};
+export type ReportDraft={schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>;sourceSnapshot?:{id:string;version:number;createdAt:string;jobId:string}};
 export const POSITIONS=['','DF','MF','FW','GK','FIXO','ALA','PIVO','GOLEIRO'];
 export const POSITION_LABEL:Record<string,string>={'':'미지정',DF:'DF',MF:'MF',FW:'FW',GK:'GK',FIXO:'FIXO · 픽소',ALA:'ALA · 알라',PIVO:'PIVO · 피보',GOLEIRO:'GOLEIRO · 골레이로'};
 export const blankPlayer=(p?:HeatPlayer):PlayerText=>({name:p?.name||'',jersey:p?.jersey||'',position:'',context:'',heatComment:'',eventComment:'',strengths:['','',''],improvements:['','',''],eventNumber:p?.jersey||'',side:p?.group||'home'});
@@ -33,6 +33,7 @@ export function restoreDraft(raw:unknown):ReportDraft {
  if(!d||d.schema!=='fpc-futsal-report/v1'||typeof d.id!=='string'||!d.players||typeof d.players!=='object'||Array.isArray(d.players)||!d.players[d.selected]||!['right','left'].includes(d.homeDirection))throw Error('지원하지 않는 리포트 파일입니다.');
  if(d.heatmap)validateHeatmap(d.heatmap);
  if(d.fpa)d.fpa=parseFpaSource(d.fpa);
+ if(d.sourceSnapshot&&(!/^[a-f0-9]{32}$/.test(d.sourceSnapshot.id)||!Number.isInteger(d.sourceSnapshot.version)||d.sourceSnapshot.version<1||typeof d.sourceSnapshot.createdAt!=='string'||typeof d.sourceSnapshot.jobId!=='string'))throw Error('분석 스냅샷 참조를 확인하세요.');
  for(const field of ['title','updatedAt','fpaLabel','matchId','matchName','homeName','awayName','homeScore','awayScore','selected'] as const)if(typeof d[field]!=='string'||d[field].length>2000)throw Error('리포트 경기 정보를 확인하세요.');
  for(const p of Object.values(d.players)){
   if(!p||!['home','away'].includes(p.side)||!POSITIONS.includes(p.position)||!['name','jersey','context','heatComment','eventComment','eventNumber'].every(k=>typeof p[k as keyof PlayerText]==='string')||!Array.isArray(p.strengths)||!Array.isArray(p.improvements)||p.strengths.length!==3||p.improvements.length!==3||![...p.strengths,...p.improvements].every(v=>typeof v==='string'&&v.length<=2000))throw Error('리포트 선수 정보를 확인하세요.');

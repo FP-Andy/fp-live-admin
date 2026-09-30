@@ -4,7 +4,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-KEY = re.compile(r'^fpa-cv/(uploads|jobs)/[0-9a-f]{32}/[\w.-]+$')
+KEY = re.compile(r'^fpa-cv/(uploads|jobs|snapshots)/[0-9a-f]{32}/[\w.-]+$')
 
 class FpaStorage:
     def __init__(self, client=None):

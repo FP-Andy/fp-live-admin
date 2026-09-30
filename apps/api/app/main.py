@@ -178,6 +178,8 @@ app = FastAPI(title="Live Match Admin API")
 app.include_router(auth_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
+from .futsal_analysis_snapshots import router as analysis_snapshots_router
+app.include_router(analysis_snapshots_router)
 
 origins = [v.strip() for v in os.getenv("CORS_ORIGINS", "*").split(",") if v.strip()]
 app.add_middleware(
