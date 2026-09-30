@@ -35,7 +35,14 @@ const setup = setupUI({getData:()=>data,getReview:()=>review,getWorking:()=>work
 const lineup=lineupUI({holder:$('lineup-content'),getReview:()=>review,commit,message});
 
 const fpa=fpaUI({getData:()=>data,getReview:()=>review,getWorking:()=>working,commit:next=>commit(next,false),saveDraft:next=>{review=next;if(working)working={...working,events:next.events,links:next.links,fpa:next.fpa};persist();},seek,time:sourceTime,pause:()=>video.pause(),message,canUndo:()=>undo.length>0,undo:()=>$('undo').click()});
-const heatmaps=heatmapUI({getData:()=>data,getWorking:()=>working,getRecovery:()=>recovery,message});
+const heatmaps=heatmapUI({getData:()=>data,getWorking:()=>working,getRecovery:()=>recovery,message,
+  prepareSnapshot:async()=>{
+    if(!serverReview)throw Error('FPC 분석 목록에서 작업을 열어 서버에 저장하세요.');
+    const cloud=serverReview,before=JSON.stringify(review);
+    await cloud.flush();
+    if(cloud!==serverReview||before!==JSON.stringify(review)||recovery?.status!=='complete')throw Error('작업이 변경되었습니다. 히트맵을 확인한 뒤 다시 확정하세요.');
+    return {jobId:cloud.id,reviewVersion:cloud.version};
+  }});
 const checkpoints=checkpointUI({getData:()=>data,getReview:()=>review,getWorking:()=>working,getRecovery:()=>recovery,commit,seek,time:sourceTime,video,message,onChange:render,apply:applyReview,isPending:()=>!!batch?.dirty});
 let workMode='fpa';
 $('review-workspace').append($('player-inspector'),$('reconnect-panel'));
