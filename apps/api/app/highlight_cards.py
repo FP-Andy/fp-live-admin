@@ -368,9 +368,12 @@ def render_card(
     spec_owner = template if isinstance(template, CardTemplate) else get_template(template)
     values = values or {}
     logos = logos or {}
+    # 템플릿이 들고 있는 배치를 밑에 깔고, 잡에 저장된 것으로 덮는다 — 항목 단위로
+    # 나중 것이 이긴다. 운영자가 템플릿을 고른 뒤 그 판에서 또 옮겼으면 그게 우선이다.
+    merged = {**spec_owner.boxes_for(kind), **(boxes or {})}
     layer = Image.new("RGBA", spec_owner.design, (0, 0, 0, 0))
     for spec in spec_owner.fields(kind):
-        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), boxes)
+        _draw_field(layer, spec, str(values.get(spec.id) or ""), logos.get(spec.id), merged)
     return _compose(spec_owner, kind, layer, width, height, color)
 
 

@@ -85,6 +85,22 @@ class CardTemplate:
     note: str = ""
     """설정 화면에 띄울 한 줄 안내."""
 
+    boxes: dict = field(default_factory=dict)
+    """이 템플릿이 기본으로 쓸 자리·배율 — {'start': {항목id: {x, y, scale}}, 'section': …}.
+
+    운영자가 콘솔에서 만든 템플릿이 여기에 자기 배치를 담는다. **굽지 않고 넘기는**
+    이유는 로고의 배율이다 — 상자를 키워 흉내내려 하면 맞춤 단계가 원본보다 키우지
+    않아서 작은 로고는 꿈쩍하지 않는다. 그리는 쪽의 규칙(_moved)을 그대로 쓰는 게
+    유일하게 어긋나지 않는 길이다.
+
+    잡에 저장된 자리값이 있으면 **그쪽이 이긴다**(같은 항목 기준). 운영자가 템플릿을
+    고른 뒤 그 판에서 다시 옮긴 것이니 당연히 나중 것이 우선이다.
+    """
+
+    def boxes_for(self, kind: str) -> dict:
+        got = self.boxes.get("section" if kind == "section" else "start")
+        return got if isinstance(got, dict) else {}
+
     base_color: str = "#FF7400"
     """배경 그림의 바탕색. **색만 바꾸기**의 기준점이다.
 
@@ -188,7 +204,7 @@ def describe(template: CardTemplate) -> dict:
     하려는 것이다. 시안 좌표계(design) 안의 절대값이라 화면도 같은 기준으로 다룬다.
     """
 
-    def one(field_: CardField) -> dict:
+    def one(field_: CardField) -> dict:  # noqa: D401
         left, top, width, height = field_.box
         return {
             "id": field_.id,
@@ -214,4 +230,7 @@ def describe(template: CardTemplate) -> dict:
         "base_color": template.base_color,
         "start_fields": [one(f) for f in template.start_fields],
         "section_fields": [one(f) for f in template.section_fields],
+        # 이 템플릿이 기본으로 쓸 배치. 설정 화면은 여기서 시작해 더 옮길 수 있다.
+        "boxes": {"start": template.boxes_for("start"),
+                  "section": template.boxes_for("section")},
     }

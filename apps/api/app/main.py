@@ -63,6 +63,7 @@ from .fpa import (
 from .fpa_model_baselines import build_fpa_model_room_baseline_artifacts, canonicalize_xfp_weights_payload
 from . import record_sheet
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
+from . import highlight_card_store as card_store
 from .highlight_cards import (
     DEFAULT_TEMPLATE_ID,
     TEMPLATES,
@@ -134,7 +135,7 @@ from .broadcast_assets import (
     render_live_coder_asset_pairs,
     store_asset_pair,
 )
-from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, MatchHighlight, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject
+from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, MatchHighlight, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject, HighlightCardTemplate
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -9430,20 +9431,143 @@ def remove_manual_music(
 
 
 @app.get("/api/highlight/card-templates")
-def list_highlight_card_templates(user: User = Depends(_require_superuser)):
+def list_highlight_card_templates(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
     """고를 수 있는 카드 템플릿과, 각 템플릿에서 **고칠 수 있는 항목** 목록.
 
     설정 화면은 이 응답으로 칸을 만든다. 새 템플릿을 들여도 화면을 다시 짤 일이 없다.
+    내장 템플릿과 운영자가 만든 템플릿을 같은 모양으로 함께 준다 — 화면은 둘을
+    구별하지 않고, `custom` 표시만 보고 '삭제' 버튼을 붙일지 정한다.
     """
-    return {
-        "templates": [describe_card_template(template) for template in TEMPLATES],
-        "default": DEFAULT_TEMPLATE_ID,
-    }
+    out = []
+    for template in card_store.all_templates(db):
+        spec = describe_card_template(template)
+        spec["custom"] = str(template.id).startswith(card_store.USER_PREFIX)
+        out.append(spec)
+    return {"templates": out, "default": DEFAULT_TEMPLATE_ID}
+
+
+@app.post("/api/highlight/card-templates")
+async def create_highlight_card_template(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """지금 손본 설정을 새 템플릿으로 저장한다(배포 없이 늘리기).
+
+    밑그림이 될 내장 템플릿의 **항목 구성**을 물려받고, 거기에 배경 그림·색·자리를
+    덮어쓴다. 항목 구성을 물려받는 이유는 그게 렌더러가 아는 유일한 구조이기 때문이다 —
+    칸을 새로 만드는 일까지 콘솔에서 하게 하면 렌더러도 같이 고쳐야 한다.
+
+    multipart 로 받는다: name, base_id, base_color, boxes(JSON), note,
+    start_bg(파일, 선택), section_bg(파일, 선택).
+    """
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="템플릿 이름은 필수입니다.")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="템플릿 이름은 80자까지입니다.")
+    base_id = str(form.get("base_id") or DEFAULT_TEMPLATE_ID).strip()
+    if base_id not in {t.id for t in TEMPLATES}:
+        raise HTTPException(status_code=400, detail=f"모르는 밑그림 템플릿입니다: {base_id}")
+
+    base_color = str(form.get("base_color") or "").strip() or None
+    if base_color and not re.fullmatch(r"#[0-9a-fA-F]{6}", base_color):
+        raise HTTPException(status_code=400, detail="색은 #RRGGBB 꼴이어야 합니다.")
+
+    raw_boxes = form.get("boxes")
+    boxes: dict = {}
+    if raw_boxes:
+        try:
+            boxes = json.loads(str(raw_boxes))
+        except Exception:
+            raise HTTPException(status_code=400, detail="boxes 를 읽을 수 없습니다(JSON).")
+        if not isinstance(boxes, dict):
+            raise HTTPException(status_code=400, detail="boxes 는 객체여야 합니다.")
+
+    row = HighlightCardTemplate(
+        name=name,
+        base_id=base_id,
+        base_color=base_color or card_store.get_template(base_id).base_color,
+        boxes=boxes,
+        note=str(form.get("note") or "").strip() or None,
+        created_by=getattr(user, "username", None) or getattr(user, "email", None),
+    )
+    db.add(row)
+    db.flush()   # id 를 받아 파일 이름에 쓴다
+
+    # 배경 그림. 없으면 밑그림의 배경을 그대로 쓴다(색만 바꾼 템플릿이 그런 경우다).
+    saved = []
+    for key in ("start_bg", "section_bg"):
+        upload = form.get(key)
+        if upload is None or not getattr(upload, "filename", ""):
+            continue
+        data = await upload.read()
+        if not data:
+            continue
+        if len(data) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"{key} 가 너무 큽니다(20MB 제한).")
+        suffix = Path(str(upload.filename)).suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise HTTPException(status_code=400, detail="배경은 png·jpg·webp 만 됩니다.")
+        # 실제로 그림인지 확인한다 — 아니면 렌더 때 터진다.
+        try:
+            with Image.open(io.BytesIO(data)) as probe:
+                probe.verify()
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{key} 를 그림으로 읽을 수 없습니다.")
+        filename = f"{row.id}-{key}{suffix}"
+        (card_store.template_dir() / filename).write_bytes(data)
+        setattr(row, key, filename)
+        saved.append(filename)
+
+    _audit(db, "HIGHLIGHT_CARD_TEMPLATE_CREATE", "highlight", actor=user,
+           target_id=str(row.id), severity="INFO",
+           details={"name": name, "base_id": base_id, "backgrounds": saved})
+    db.commit()
+    return {"ok": True, "id": f"{card_store.USER_PREFIX}{row.id}", "name": name,
+            "backgrounds": saved}
+
+
+@app.delete("/api/highlight/card-templates/{template_id}")
+def delete_highlight_card_template(
+    template_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """운영자가 만든 템플릿을 지운다. 내장은 못 지운다.
+
+    지워도 그걸로 이미 만든 결과물은 그대로다 — 카드는 렌더 때 이미 구워졌다.
+    지운 템플릿을 고른 설정이 남아 있으면 렌더가 내장 기본으로 떨어진다(결과물은 나온다).
+    """
+    key = str(template_id or "").strip()
+    if not key.startswith(card_store.USER_PREFIX):
+        raise HTTPException(status_code=400, detail="내장 템플릿은 지울 수 없습니다.")
+    try:
+        row = db.get(HighlightCardTemplate, uuid.UUID(key[len(card_store.USER_PREFIX):]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="템플릿 id 가 올바르지 않습니다.")
+    if row is None:
+        raise HTTPException(status_code=404, detail="없는 템플릿입니다.")
+    name = row.name
+    for key_ in ("start_bg", "section_bg"):
+        filename = getattr(row, key_, None)
+        if filename:
+            (card_store.template_dir() / str(filename)).unlink(missing_ok=True)
+    db.delete(row)
+    _audit(db, "HIGHLIGHT_CARD_TEMPLATE_DELETE", "highlight", actor=user,
+           target_id=key, severity="INFO", details={"name": name})
+    db.commit()
+    return {"ok": True, "name": name}
 
 
 @app.post("/api/highlight/card-preview")
 def preview_highlight_card(
     body: dict = Body(default={}),
+    db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
     """카드 한 장을 PNG 로 그려 돌려준다.
@@ -9452,7 +9576,7 @@ def preview_highlight_card(
     시안이 바뀔 때 두 곳이 어긋나고, 미리보기는 맞는데 결과물은 다른 일이 생긴다.
     합치기가 쓰는 함수를 그대로 호출하므로 어긋날 수가 없다.
     """
-    template = get_template(body.get("template"))
+    template = card_store.resolve(db, body.get("template"))
     kind = "section" if str(body.get("kind") or "start") == "section" else "start"
     try:
         width = int(body.get("width") or 960)
@@ -9464,7 +9588,7 @@ def preview_highlight_card(
     height = max(1, round(width * design_h / design_w))
 
     # 합치기와 같은 손질을 거친 값으로 그린다 — 미리보기만 관대하면 결과물과 달라진다.
-    settings = _card_settings({
+    settings = _card_settings(db, {
         "enabled": True, "template": template.id, "color": body.get("color"),
         "intro": {"values": body.get("values") or {}, "boxes": body.get("boxes") or {}},
     })
@@ -9494,7 +9618,7 @@ def preview_highlight_card(
     )
 
 
-def _card_settings(cards: dict) -> dict:
+def _card_settings(db, cards: dict) -> dict:
     """화면이 보낸 카드 설정을 다듬는다. 잡 메타에 통째로 들어가므로 길이를 못 박는다."""
 
     def _logo(value: Any) -> str:
@@ -9505,7 +9629,7 @@ def _card_settings(cards: dict) -> dict:
 
     # 무엇을 받을지는 템플릿이 정한다 — 항목을 여기 박으면 템플릿을 들일 때마다 고쳐야
     # 한다. 템플릿에 없는 값은 버린다(옛 저장본에 남은 값이 조용히 흘러들지 않게).
-    template = get_template(cards.get("template"))
+    template = card_store.resolve(db, cards.get("template"))
     intro_raw = cards.get("intro") if isinstance(cards.get("intro"), dict) else {}
     raw_values = intro_raw.get("values") if isinstance(intro_raw.get("values"), dict) else intro_raw
     values: dict[str, str] = {}
@@ -9731,7 +9855,7 @@ def merge_manual_job(
     cards = body.get("cards") if isinstance(body, dict) else None
     if isinstance(cards, dict) and cards.get("enabled"):
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
-        metadata["cards"] = _card_settings(cards)
+        metadata["cards"] = _card_settings(db, cards)
         update_job(db, job_id, job_metadata=metadata)
 
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
