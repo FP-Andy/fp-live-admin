@@ -3,6 +3,7 @@ import {useEffect,useRef,useState,type MouseEvent} from 'react';
 import Link from 'next/link';
 import {apiJson} from '../../lib/api';
 import {VideoClock,formatVideoTime as fmt,videoHotkey,type Team} from '../../lib/fla-video-clock';
+import {bufferedSeconds,sameVideoFile} from '../../lib/video-buffer';
 import {futsalPitchPoint} from '../../lib/futsal-pitch';
 import {futsalShotThreat} from './FutsalShotPitch';
 import {MatchPossessionCard,MatchAttackCard,MatchShotCard,MatchRecentRecords,MatchPossessionTimeline,MatchFlowCard} from './MatchControlCards';
@@ -25,6 +26,17 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const resetDialog=useRef<HTMLDialogElement>(null);
   useEffect(()=>{const dialog=resetDialog.current;if(!dialog)return;if(pendingReset&&!dialog.open)dialog.showModal();else if(!pendingReset&&dialog.open)dialog.close();},[pendingReset]);
   const [goal,setGoal]=useState(false),[ownGoal,setOwnGoal]=useState(false),[player,setPlayer]=useState(''),[buffering,setBuffering]=useState(false);
+  const [localSource,setLocalSource]=useState(''),[mediaError,setMediaError]=useState(''),[sourceRetry,setSourceRetry]=useState(0),[bufferAhead,setBufferAhead]=useState(0);
+  const resumeAt=useRef<number|null>(null),localPicker=useRef<HTMLInputElement>(null);
+  useEffect(()=>()=>{if(localSource)URL.revokeObjectURL(localSource);},[localSource]);
+  function switchPlayback(file?:File){
+    if(file&&!sameVideoFile(file,uploads.find(u=>u.id===uploadId)||{})){setNotice('연결된 원본과 파일명·용량이 같은 영상을 선택하세요. 편집본은 시간 기준이 달라 사용할 수 없습니다.');return;}
+    const v=video.current;if(v){sample();resumeAt.current=v.currentTime*1000;v.pause();}clock.current.playing=false;
+    if(clock.current.state.started)void flush().catch(()=>{});
+    setMediaError('');setBuffering(false);setBufferAhead(0);setLocalSource(file?URL.createObjectURL(file):'');setSourceRetry(n=>n+1);
+    setNotice(file?'내 컴퓨터 원본으로 전환했습니다. 재생을 누르면 같은 시각에서 이어집니다.':'S3 원본을 다시 연결합니다.');
+  }
+  function updateBuffer(){const v=video.current;if(v)setBufferAhead(bufferedSeconds(v.buffered,v.currentTime,v.playbackRate));}
   const controlBusy=useRef(false);
   const setBusy=(value:boolean)=>{controlBusy.current=value;setBusyState(value);};
   const lastPaint=useRef(0);
@@ -54,7 +66,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     };
     const observer=new ResizeObserver(fit);observer.observe(media);fit();
     return()=>{observer.disconnect();column.style.removeProperty('--fv-media-width');column.style.removeProperty('--fv-media-ratio');};
-  },[uploadId]);
+  },[uploadId,localSource,sourceRetry]);
 
   function sample(){
     const v=video.current;if(!v||v.seeking)return;
@@ -107,7 +119,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     setBusy(true);try{v.pause();clock.current.state.cursor_ms=0;restoring.current=clock.current.state.offset_ms;v.currentTime=restoring.current/1000;await flush('start');setShowSetup(false);await v.play();}catch(e){fail(e);}finally{setBusy(false);}
   }
   async function toggle(){
-    const v=video.current;if(!v||busy||error)return;
+    const v=video.current;if(!v||busy||error||mediaError)return;
     try{if(v.paused)await v.play();else v.pause();}catch(e){fail(e);}
   }
   function choose(team:Team){
@@ -179,8 +191,8 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const players=data?.match.lineups?.teams?.[shotTeam]||[];
   const totals={HOME:0,AWAY:0,NONE:0,...data?.possession};for(const seg of clock.current.pending)totals[seg.team]+=seg.end_ms-seg.start_ms;
   const total=totals.HOME+totals.AWAY,homePct=total?100*totals.HOME/total:0,awayPct=total?100*totals.AWAY/total:0;
-  const status=error?'저장 확인 필요':buffering?'영상 불러오는 중':!s.started?'경기 시작 준비':s.ended?'기록 완료 · 이벤트 보완':review?'이벤트 추가 · 점유 기록 안 함':playing?'기록 중':'일시정지';
-  const glow=s.started&&!error&&!buffering?(playing&&!s.ended?'recording':'paused'):'idle';
+  const status=error?'저장 확인 필요':mediaError?'영상 연결 확인':buffering?'영상 불러오는 중':!s.started?'경기 시작 준비':s.ended?'기록 완료 · 이벤트 보완':review?'이벤트 추가 · 점유 기록 안 함':playing?'기록 중':'일시정지';
+  const glow=s.started&&!error&&!mediaError&&!buffering?(playing&&!s.ended?'recording':'paused'):'idle';
   const csv=()=>{const rows=['start_ms,end_ms,team',...(data?.segments||[]).map((p:any)=>`${p.start_ms},${p.end_ms},${p.team}`)];const url=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='fla-possession.csv';a.click();URL.revokeObjectURL(url);};
   const summary={events:data?.events||[],possession:{home_pct:homePct,away_pct:awayPct},lanes:Object.fromEntries((['HOME','AWAY'] as const).map(team=>{
     const events=(data?.events||[]).filter((e:any)=>e.type==='ATTACK_LANE'&&e.team===team);
@@ -204,7 +216,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     {showSetup?<section id="fv-start-settings" className="fv-start-settings" aria-label="경기 시작 시각 설정">
       <div className="row"><strong>{s.configured?`영상 ${mediaLabel(s.offset_ms)} → 경기 00:00`:'킥오프 장면을 지정하고 저장하세요'}</strong>{s.started?<small>기록 중 · 시작 기준 고정</small>:null}</div>
       <div className="fv-start-fields">
-        <label>{process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?'로컬 샘플 영상':'경기 영상'}<select aria-label="경기 영상 선택" value={uploadId} onChange={e=>{video.current?.pause();setUploadId(e.target.value);setDuration(0);setStartTime('00:00.000');}} disabled={!canWrite||s.started}><option value="">영상을 선택하세요</option>{uploads.map(u=><option key={u.id} value={u.id}>{u.name}{u.legacy?' · 기존 분석 원본':''}</option>)}</select></label>
+        <label>{process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?'로컬 샘플 영상':'경기 영상'}<select aria-label="경기 영상 선택" value={uploadId} onChange={e=>{video.current?.pause();setLocalSource('');resumeAt.current=null;setMediaError('');setBufferAhead(0);setUploadId(e.target.value);setDuration(0);setStartTime('00:00.000');}} disabled={!canWrite||s.started}><option value="">영상을 선택하세요</option>{uploads.map(u=><option key={u.id} value={u.id}>{u.name}{u.legacy?' · 기존 분석 원본':''}</option>)}</select></label>
         <label>경기 시작 영상 시각<input aria-label="경기 시작 영상 시각" value={startTime} onChange={e=>setStartTime(e.target.value)} placeholder="00:30.000 또는 30" disabled={!canWrite||s.started}/></label>
         <button className="btn-secondary" disabled={!duration||s.started} onClick={()=>{video.current?.pause();setStartTime(mediaLabel(video.current!.currentTime*1000));}}>현재 영상 시각 가져오기</button>
         <button className="btn-primary" onClick={configure} disabled={!canWrite||!duration||s.started||busy}>시작 시각 저장</button>
@@ -213,18 +225,22 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     </section>:null}
     <div className="fv-body"><section className="fv-video-column" aria-label="경기 영상">
 
-      <div className="fv-player">{uploadId?<video key={uploadId} ref={video} src={`/api/futsal/fla-video/uploads/${uploadId}/source`} playsInline preload="metadata"
-        onLoadedMetadata={()=>{const v=video.current!;setDuration(v.duration*1000);clock.current.state.duration_ms=Math.floor(v.duration*1000);const target=s.upload_id===uploadId?s.offset_ms+s.cursor_ms:0;restoring.current=target;lastMedia.current=target;v.currentTime=target/1000;v.playbackRate=s.rate;setMediaTime(target);setBuffering(false);}}
-        onPlay={()=>{clock.current.playing=true;redraw();}}
+      <div className="fv-player">{uploadId?<video key={`${uploadId}:${sourceRetry}:${localSource}`} ref={video} src={localSource||`/api/futsal/fla-video/uploads/${uploadId}/source?retry=${sourceRetry}`} playsInline preload="auto"
+        onLoadedMetadata={()=>{const v=video.current!;setDuration(v.duration*1000);clock.current.state.duration_ms=Math.floor(v.duration*1000);const target=resumeAt.current??(s.upload_id===uploadId?s.offset_ms+s.cursor_ms:0);resumeAt.current=null;restoring.current=target;lastMedia.current=target;v.currentTime=target/1000;v.playbackRate=s.rate;setMediaTime(target);setBuffering(false);}}
+        onPlay={()=>{setMediaError('');redraw();}}
         onPlaying={()=>{setBuffering(false);clock.current.playing=true;redraw();}}
         onPause={()=>{sample();clock.current.playing=false;redraw();if(s.started)void flush().catch(()=>{});}}
-        onWaiting={()=>setBuffering(true)}
+        onWaiting={()=>{sample();clock.current.playing=false;setBuffering(true);redraw();}}
+        onCanPlay={()=>{setBuffering(false);updateBuffer();}} onProgress={updateBuffer} onTimeUpdate={updateBuffer}
+        onStalled={()=>{const v=video.current;if(v&&!v.paused&&v.readyState<3)setBuffering(true);}}
         onSeeking={()=>{const v=video.current!;const target=v.currentTime*1000;if(restoring.current!==null&&Math.abs(target-restoring.current)<3)return;if(s.started&&target>lastMedia.current+3){restoring.current=lastMedia.current;v.currentTime=lastMedia.current/1000;setNotice('앞으로 이동할 수 없습니다.');return;}v.pause();clock.current.seek(target);lastMedia.current=target;redraw();}}
-        onSeeked={()=>{restoring.current=null;sample();setBuffering(false);}}
+        onSeeked={()=>{restoring.current=null;sample();setBuffering(false);updateBuffer();}}
         onEnded={()=>{clock.current.playing=false;void flush(s.started&&!s.ended?'finish':'save').catch(()=>{});redraw();}}
-        onError={()=>{setBuffering(false);setError('영상을 재생하지 못했습니다. 연결을 다시 불러오거나 영상 형식을 확인하세요.');}} />:<div className="fv-video-empty"><span>▷</span><strong>기록할 영상을 선택하세요</strong><p>S3 업로드 영상을 경기와 연결합니다.</p></div>}</div>
-      <div className="fv-player-controls"><button aria-label="영상 재생 정지" onClick={toggle} disabled={!uploadId||Boolean(error)}>{playing?'Ⅱ':'▶'}</button><button aria-label="5초 뒤로" onClick={()=>rewind(mediaTime-5000)}>−5초</button><span>{fmt(mediaTime)}</span><input aria-label="영상 탐색" type="range" min={s.started?s.offset_ms:0} max={duration||1} value={Math.min(mediaTime,duration||1)} step={33} onChange={e=>rewind(Number(e.target.value))}/><span>{fmt(duration)}</span><select aria-label="재생 배속" value={s.rate} onChange={e=>{sample();s.rate=Number(e.target.value);if(video.current)video.current.playbackRate=s.rate;redraw();}}>{[.5,.75,1,1.25,1.5,2,3,4].map(r=><option key={r} value={r}>{r}×</option>)}</select></div>
+        onError={()=>{clock.current.playing=false;setBuffering(false);setMediaError('영상 연결이 끊겼습니다. 다시 연결하거나 내 컴퓨터 원본을 선택하세요.');redraw();}} />:<div className="fv-video-empty"><span>▷</span><strong>기록할 영상을 선택하세요</strong><p>S3 업로드 영상을 경기와 연결합니다.</p></div>}</div>
+      <div className="fv-player-controls"><button aria-label="영상 재생 정지" onClick={toggle} disabled={!uploadId||Boolean(error||mediaError)}>{playing?'Ⅱ':'▶'}</button><button aria-label="5초 뒤로" onClick={()=>rewind(mediaTime-5000)}>−5초</button><span>{fmt(mediaTime)}</span><input aria-label="영상 탐색" type="range" min={s.started?s.offset_ms:0} max={duration||1} value={Math.min(mediaTime,duration||1)} step={33} onChange={e=>rewind(Number(e.target.value))}/><span>{fmt(duration)}</span><select aria-label="재생 배속" value={s.rate} onChange={e=>{sample();s.rate=Number(e.target.value);if(video.current)video.current.playbackRate=s.rate;updateBuffer();redraw();}}>{[.5,.75,1,1.25,1.5,2,3,4].map(r=><option key={r} value={r}>{r}×</option>)}</select></div>
       <div className="fv-player-note"><span><kbd>Space</kbd> 재생/정지 · <kbd>Q W E</kbd> 점유 · <kbd>A S D</kbd> 공격 위치</span><span>{s.started?'앞으로 탐색 잠금':'시작 장면을 지정하세요'}</span></div>
+      {uploadId&&<div className="fv-source-controls"><small role="status">{localSource?'내 컴퓨터 원본':`S3 원본 · ${buffering?'버퍼링 중 · ':''}재생 준비 ${Math.floor(bufferAhead)}초`}</small><input ref={localPicker} type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" aria-label="내 컴퓨터 원본 선택" hidden onChange={e=>{const file=e.target.files?.[0];if(file)switchPlayback(file);e.target.value='';}}/><button disabled={busy} onClick={()=>localPicker.current?.click()}>내 컴퓨터 원본 사용</button>{(localSource||mediaError)&&<button disabled={busy} onClick={()=>switchPlayback()}>S3 다시 연결</button>}</div>}
+      {mediaError&&<div className="fv-error" role="alert">{mediaError}</div>}
       <div className="fv-notice" role="status">{notice}</div>
     </section>
     <aside className="fv-inputs fla-video-match-controls" aria-label="FLA 기록 입력" tabIndex={-1}>
