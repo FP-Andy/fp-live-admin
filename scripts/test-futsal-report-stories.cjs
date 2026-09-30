@@ -27,3 +27,13 @@ d.fpa=null;d.fla={matchId:'same',summary:{lanes:{home:{left_count:0,center_count
 const awayOnly=e.eventMapData(d,d.players[p.id]);assert.equal(awayOnly.markers.length,2);assert(awayOnly.markers.every(m=>m.side==='away'&&m.x<20),'Away-only source stays away-only, no invented home shots');
 const narrative=e.reportPlayer(d).generated.eventComment;assert.match(narrative,/상대의 슈팅/);assert.doesNotMatch(narrative,/공격에 직접 참여|볼을 되찾/);assert(narrative.length>200);
 console.log('PASS: full club names/logos and colors; explicit color overrides; honest one-team shot map and activity/event contextual story.');
+
+const assignment=load('apps/web/lib/futsal-report-assignment.ts'),roles=load('apps/web/lib/futsal-report-positions.ts');
+const people=assignment.assignmentPlayers([{id:p.id,group:'home',jersey:'4',box:[.1,.1,.2,.2]},{id:'home_gk-1',group:'home_gk',jersey:'1',box:[.01,.4,.04,.5]}]);
+assert.throws(()=>assignment.assignmentPlayers([{id:'bad',group:'home',jersey:'4',box:[.1,.1,.05,.2]}]));
+d.sourceSnapshot={id:'a'.repeat(32),jobId:'b'.repeat(32),version:1,createdAt:'now'};d.assignment={jobId:'b'.repeat(32),time:0,width:1600,height:900,image:'data:image/png;base64,aQ==',players:people};
+assert.equal(assignment.assignmentNumber(d,p.id),'4','Report reference uses the actual initial number, not an edited shirt label');assert.equal(assignment.assignmentRows(d,'home')[0].id,'home_gk-1');assert.equal(assignment.assignmentRows(d,'home')[0].role.value,'GK');
+assert.equal(roles.reportRole('PIVO').value,'FW');assert.equal(roles.reportRole('FIXO').value,'DF');assert.equal(roles.reportRole('ALA').value,'MF');
+for(const role of roles.REPORT_ROLES){d.players[p.id].position=role.value;const comments=e.reportPlayer(d).generated;assert(comments.heatComment.includes(role.short));assert(comments.eventComment.includes(role.short));assert.equal(comments.improvements[0],role.next);}
+d.players[p.id].name='';assert.equal(e.reportPlayer(d).person.name,'');assert.throws(()=>assignment.validateAssignment({...d.assignment,image:'https://example.com/frame.png'}));
+console.log('PASS: validated initial frame coordinates; immutable analysis numbers; keeper-inclusive roster; paired football/futsal roles personalize stories without player names.');

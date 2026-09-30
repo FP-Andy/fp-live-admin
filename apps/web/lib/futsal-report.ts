@@ -1,3 +1,5 @@
+import {validateAssignment,type ReportAssignment} from './futsal-report-assignment';
+import {reportRole} from './futsal-report-positions';
 import { parseFpa, isShot, isDefense, type FpaEvent, type SavedFpa } from '../components/futsal/fpaGraphics';
 import { validateHeatmapAugmentation, type ActivityPolicy, type ActivityDensity } from '../public/fpa-cv/heatmap-augmentation-schema.mjs';
 import type { AnalysisSnapshot } from '../public/fpa-cv/analysis-snapshots.mjs';
@@ -9,7 +11,7 @@ export type Direction='right'|'left';
 export type HeatPlayer={id:string;group:Side;jersey:string;name?:string;grid:number[];coverage:number;observed:number;positions:Array<{x:number;y:number;t:number;seconds:number}>;augmentation?:ActivityDensity};
 export type HeatSource={schema:'fpa-heatmaps/v1';datasetId:string;video:string;resultVersion?:number;from:number;to:number;width:number;height:number;scale:number;players:HeatPlayer[];augmentation?:ActivityPolicy};
 export type PlayerText={name:string;jersey:string;position:string;context:string;heatComment:string;eventComment:string;strengths:string[];improvements:string[];eventNumber:string;flaNumber?:string;side:Side};
-export type ReportDraft={schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>;sourceSnapshot?:{id:string;version:number;createdAt:string;jobId:string};teamReport?:TeamReportOptions;fla?:MatchReportData;matchStartSeconds?:number};
+export type ReportDraft={schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>;sourceSnapshot?:{id:string;version:number;createdAt:string;jobId:string};teamReport?:TeamReportOptions;fla?:MatchReportData;matchStartSeconds?:number;assignment?:ReportAssignment;assignmentPositions?:Record<string,string>};
 export const POSITIONS=['','DF','MF','FW','GK','FIXO','ALA','PIVO','GOLEIRO'];
 export const POSITION_LABEL:Record<string,string>={'':'미지정',DF:'DF',MF:'MF',FW:'FW',GK:'GK',FIXO:'FIXO · 픽소',ALA:'ALA · 알라',PIVO:'PIVO · 피보',GOLEIRO:'GOLEIRO · 골레이로'};
 export const blankPlayer=(p?:HeatPlayer):PlayerText=>({name:p?.name||'',jersey:p?.jersey||'',position:'',context:'',heatComment:'',eventComment:'',strengths:['','',''],improvements:['','',''],eventNumber:p?.jersey||'',side:p?.group||'home'});
@@ -37,6 +39,8 @@ export function restoreDraft(raw:unknown):ReportDraft {
  const d=raw as ReportDraft;
  if(!d||d.schema!=='fpc-futsal-report/v1'||typeof d.id!=='string'||!d.players||typeof d.players!=='object'||Array.isArray(d.players)||!d.players[d.selected]||!['right','left'].includes(d.homeDirection))throw Error('지원하지 않는 리포트 파일입니다.');
  if(d.heatmap)validateHeatmap(d.heatmap);
+ if(d.assignment){validateAssignment(d.assignment);if(d.sourceSnapshot&&d.assignment.jobId!==d.sourceSnapshot.jobId)throw Error('선수 배정표와 분석 결과가 다릅니다.');}
+ if(d.assignmentPositions&&(!Object.values(d.assignmentPositions).every(v=>POSITIONS.includes(v))))throw Error('배정표 포지션을 확인하세요.');
  if(d.fpa)d.fpa=parseFpaSource(d.fpa);
  if(d.matchStartSeconds!==undefined&&(!Number.isFinite(d.matchStartSeconds)||d.matchStartSeconds<0))throw Error('경기 시작 시점을 확인하세요.');
  if(d.teamReport)validateTeamReport(d.teamReport);
@@ -108,6 +112,7 @@ export function commentDraft(source:HeatSource|null,p:HeatPlayer|undefined,perso
    texts.improvements[2]='시간대별 활동 위치가 달라진 순간을 돌아봐요. 공을 연결한 뒤 지원할 공간을 하나 더 찾아보세요.';
   }else if(usable.length===1)activity.push(`${usable[0].label}에는 ${zoneNames[usable[0].zone]}에서의 움직임이 가장 잘 남아 있어요. 이 시간대에 공을 연결한 뒤 어디로 움직였는지 돌아보면 다음 플레이를 구체적으로 준비할 수 있어요.`);
   else activity.push('현재 남아 있는 위치를 중심으로 읽었어요. 자주 찾은 공간에서 공을 연결한 뒤, 다시 공을 받을 자리를 찾는 움직임도 함께 돌아보면 좋아요.');
+  const role=reportRole(person.position);if(role)activity[1]=`${role.short} 관점에서는 ${role.focus}을 살펴볼 만해요. 자주 활동한 공간에서 그 역할을 어떻게 준비했는지 함께 읽어 봐요.`;
   texts.heatComment=activity.slice(0,2).join(' ')+'\n\n'+activity.slice(2).join(' ');
   if(spatial.coverage>=.2){texts.strengths[0] ||= `${mainZone}에서 활동을 이어 갔어요. 자주 찾은 공간을 다음 경기에도 활용해 봐요.`;texts.strengths[1]=`${mainSide}에서의 움직임이 눈에 띄어요. 익숙한 통로를 바탕으로 다음 선택을 준비해 봐요.`;texts.improvements[1]=hasSide?`${mainSide}에서 움직인 뒤 반대편 동료도 살펴보세요. 다음 연결의 선택지가 넓어질 거예요.`:'서로 다른 공간으로 이동할 때 동료와의 간격도 살펴봐요. 지원할 위치를 더 쉽게 찾을 수 있어요.';}
   texts.improvements[0]=zone===2?'전방에서 플레이한 뒤에는 동료와의 간격을 살펴보세요. 다음 공격과 수비를 함께 준비해 봐요.':zone===0?'후방에서 공을 연결한 다음, 한 걸음 앞으로 지원해 볼까요? 다시 공을 받을 선택지를 만들어 봐요.':'가운데서 공을 연결한 뒤 옆 공간으로 한 번 더 움직여 보세요. 새로운 연결을 준비할 수 있어요.';
@@ -120,6 +125,6 @@ export function commentDraft(source:HeatSource|null,p:HeatPlayer|undefined,perso
   if(recoveries.length||defense.length)texts.improvements[1]='공을 되찾거나 수비한 뒤 가까운 동료를 찾아보세요. 다음 연결을 미리 준비해 봐요.';
   if(shots.length)texts.improvements[2]='슈팅 전 동료와 골문을 함께 살펴보세요. 직접 마무리할 때와 연결할 때의 선택을 비교해 봐요.';
  }else texts.eventComment='아직 이 선수에게 연결된 이벤트가 없어요. 팀의 슈팅 위치와 내 활동 구역을 함께 보며, 공격에 나설 때와 수비로 돌아설 때 지원할 공간을 살펴봐요.';
- if(person.position&&spatial)texts.improvements[0]=['DF','FIXO'].includes(person.position)?'전진 뒤에는 동료와의 간격을 살펴보세요. 뒤쪽 공간까지 함께 준비하면 다음 선택이 편해져요.':['FW','PIVO'].includes(person.position)?'공을 받기 전에 주변을 보고, 연결한 뒤 새 공간을 찾아보세요. 다음 마무리 기회를 준비해 봐요.':['GK','GOLEIRO'].includes(person.position)?'공이 움직일 때 골문과 동료의 위치를 함께 살펴보세요. 다음 연결을 차분하게 준비해 봐요.':texts.improvements[0];
+ const role=reportRole(person.position);if(role&&spatial)texts.improvements[0]=role.next;
  return texts;
 }
