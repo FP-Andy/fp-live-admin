@@ -80,8 +80,10 @@ type CardTemplateSpec = {
   board_defaults?: { size_pct?: number; pos_px_x?: number; pos_px_y?: number };
   /** 마무리 영상 기본 켬/끔 — 파인플레이 브랜딩이라 대회 세트는 기본 끔. */
   outro_default?: boolean;
-  /** 전후반 효과 영상을 들고 있나. */
+  /** 전후반 효과(영상 또는 이미지)를 들고 있나. */
   has_half_videos?: boolean;
+  /** 각 효과가 영상인지 그림인지 — 재생기/그림 중 무엇을 보여줄지 정한다. */
+  half_media?: { first?: 'video' | 'image' | null; second?: 'video' | 'image' | null };
   board_fields?: CardFieldSpec[];
 };
 
@@ -1794,18 +1796,26 @@ export default function ManualHighlightPage() {
                     알 수 없다. 시작 카드 뒤 = 전반, 첫 구간 마커(T) = 후반. */}
                 {cards.enabled && cardTemplate?.has_half_videos ? (
                   <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
-                    {([['first', '전반전 효과'], ['second', '후반전 효과']] as const).map(([w, label]) => (
-                      <span key={w} style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
-                        <video
-                          src={`${API_BASE}/highlight/card-templates/${cards.template}/half/${w}`}
-                          controls muted preload="metadata"
-                          style={{ width: 168, borderRadius: 6, background: '#000' }}
-                        />
-                        <span style={{ fontSize: 10, color: 'var(--muted, #888)', textAlign: 'center' }}>
-                          {label} (mp4)
+                    {([['first', '전반전 효과'], ['second', '후반전 효과']] as const).map(([w, label]) => {
+                      const media = cardTemplate?.half_media?.[w];
+                      if (!media) return null;
+                      const src = `${API_BASE}/highlight/card-templates/${cards.template}/half/${w}`;
+                      return (
+                        <span key={w} style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                          {media === 'video' ? (
+                            <video src={src} controls muted preload="metadata"
+                                   style={{ width: 168, borderRadius: 6, background: '#000' }} />
+                          ) : (
+                            // eslint-disable-next-line @next/next/no-img-element -- 세트 자산
+                            <img src={src} alt={label}
+                                 style={{ width: 168, borderRadius: 6, background: '#000' }} />
+                          )}
+                          <span style={{ fontSize: 10, color: 'var(--muted, #888)', textAlign: 'center' }}>
+                            {label} ({media === 'video' ? 'mp4' : '이미지'})
+                          </span>
                         </span>
-                      </span>
-                    ))}
+                      );
+                    })}
                   </span>
                 ) : null}
                 {cards.enabled && cardTemplates.length ? (
@@ -2041,12 +2051,20 @@ export default function ManualHighlightPage() {
                     ) : null}
                     {previewIsHalfVideo ? (
                       <div style={{ maxWidth: 520 }}>
+                        {cardTemplate?.half_media?.second === 'image' ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- 세트 자산
+                          <img src={`${API_BASE}/highlight/card-templates/${cards.template}/half/second`}
+                               alt="후반전 효과"
+                               style={{ width: '100%', borderRadius: 8, background: '#000',
+                                        border: '1px solid var(--border-ghost, #2c2c32)' }} />
+                        ) : (
                         <video
                           src={`${API_BASE}/highlight/card-templates/${cards.template}/half/second`}
                           controls muted preload="metadata"
                           style={{ width: '100%', borderRadius: 8, background: '#000',
                                    border: '1px solid var(--border-ghost, #2c2c32)' }}
                         />
+                        )}
                         <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted, #999)' }}>
                           첫 T 자리에 이 후반전 효과 영상이 들어갑니다. 이 세트에는
                           구간 카드가 없습니다 — 두 번째 이후의 T 는 무시됩니다.

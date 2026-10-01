@@ -9763,10 +9763,13 @@ async def create_custom_card_template(
                 im.save(card_store.template_dir() / filename, format="PNG")
             spec["backdrop"] = filename
 
-    # 영상들 — 그대로 저장해 세트에 문다. 글자를 얹지 않으므로 검사도 영상인지만 본다.
-    for key, spec_key in (("first_half", "first_half_video"),
-                          ("second_half", "second_half_video"),
-                          ("outro", "outro_video")):
+    # 전·후반은 영상(mp4)도 그림도 된다 — 그림이면 그 자리에 정지 카드로 들어간다.
+    # 마무리는 영상만(길이를 파일이 정하는 구조라 그림은 뜻이 없다).
+    VIDEO_SUFFIXES = {".mp4", ".mov", ".webm"}
+    IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+    for key, video_key, image_key in (("first_half", "first_half_video", "first_half_image"),
+                                      ("second_half", "second_half_video", "second_half_image"),
+                                      ("outro", "outro_video", None)):
         upload = form.get(key)
         if upload is None or not getattr(upload, "filename", ""):
             continue
@@ -9776,11 +9779,23 @@ async def create_custom_card_template(
         if len(data) > 100 * 1024 * 1024:
             raise HTTPException(status_code=400, detail=f"{key} 가 100MB 를 넘습니다.")
         suffix = Path(str(upload.filename)).suffix.lower()
-        if suffix not in {".mp4", ".mov", ".webm"}:
-            raise HTTPException(status_code=400, detail=f"{key} 는 영상 파일이어야 합니다.")
-        filename = f"{row.id}-{key}{suffix}"
-        (card_store.template_dir() / filename).write_bytes(data)
-        spec[spec_key] = filename
+        if suffix in VIDEO_SUFFIXES:
+            filename = f"{row.id}-{key}{suffix}"
+            (card_store.template_dir() / filename).write_bytes(data)
+            spec[video_key] = filename
+        elif image_key and suffix in IMAGE_SUFFIXES:
+            try:
+                with Image.open(io.BytesIO(data)) as probe:
+                    probe.verify()
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"{key} 그림을 읽을 수 없습니다.")
+            filename = f"{row.id}-{key}.png"
+            with Image.open(io.BytesIO(data)) as im:
+                im.convert("RGBA").save(card_store.template_dir() / filename, format="PNG")
+            spec[image_key] = filename
+        else:
+            raise HTTPException(status_code=400,
+                                detail=f"{key} 는 영상(mp4)이나 그림(png/jpg) 파일이어야 합니다.")
 
     row.spec = spec
     for token in used_tokens:
@@ -9812,13 +9827,15 @@ def get_template_half_video(
     if which not in {"first", "second"}:
         raise HTTPException(status_code=404, detail="first 또는 second 만 있습니다.")
     template = card_store.resolve(db, template_id)
-    name = template.first_half_video if which == "first" else template.second_half_video
+    video = template.first_half_video if which == "first" else template.second_half_video
+    image = template.first_half_image if which == "first" else template.second_half_image
+    name = video or image
     if not name:
-        raise HTTPException(status_code=404, detail="이 세트에는 효과 영상이 없습니다.")
+        raise HTTPException(status_code=404, detail="이 세트에는 효과가 없습니다.")
     path = template_asset(name)
     if path is None or not path.exists():
-        raise HTTPException(status_code=404, detail=f"효과 영상 파일이 없습니다: {name}")
-    return _serve_file_with_range(path, request, "video/mp4")
+        raise HTTPException(status_code=404, detail=f"효과 파일이 없습니다: {name}")
+    return _serve_file_with_range(path, request, "video/mp4" if video else "image/png")
 
 
 @app.post("/api/highlight/card-preview")

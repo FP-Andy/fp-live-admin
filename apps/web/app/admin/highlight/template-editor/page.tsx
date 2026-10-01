@@ -61,32 +61,48 @@ const OBJ_ROLES_BOARD = [
   ['hide', '지움'],
 ] as const;
 
-/** 팔레트 — 손으로 추가할 수 있는 항목. once=true 는 하나만. */
+/** 팔레트 — **종류만** 고른다(텍스트/이미지, 점수판은 팀 색까지). 그 상자가 무엇인지
+ *  (대회명인지 팀명인지)는 옆 목록의 역할 칸에서 고친다. */
 const PALETTE_START = [
-  { role: 'round_label', label: '대회·라운드', kind: 'text', once: true },
-  { role: 'home_name', label: '홈 팀명', kind: 'text', once: true },
-  { role: 'away_name', label: '어웨이 팀명', kind: 'text', once: true },
-  { role: 'home_logo', label: '홈 로고', kind: 'logo', once: true },
-  { role: 'away_logo', label: '어웨이 로고', kind: 'logo', once: true },
-  { role: 'free', label: '자유 글자', kind: 'text', once: false },
+  { label: '텍스트', kind: 'text' },
+  { label: '이미지', kind: 'logo' },
 ] as const;
 const PALETTE_BOARD = [
-  { role: 'round_label', label: '대회·라운드', kind: 'text', once: true },
-  { role: 'home_name', label: '홈 팀명', kind: 'text', once: true },
-  { role: 'away_name', label: '어웨이 팀명', kind: 'text', once: true },
-  { role: 'home_score', label: '홈 점수', kind: 'text', once: true },
-  { role: 'away_score', label: '어웨이 점수', kind: 'text', once: true },
-  { role: 'home_color', label: '홈 팀 색', kind: 'zone', once: true },
-  { role: 'away_color', label: '어웨이 팀 색', kind: 'zone', once: true },
-  { role: 'free', label: '자유 글자', kind: 'text', once: false },
+  { label: '텍스트', kind: 'text' },
+  { label: '이미지', kind: 'logo' },
+  { label: '팀 색', kind: 'zone' },
+] as const;
+
+/** 목록에서 고를 수 있는 역할 — 종류별로. free 계열만 여러 개 놓을 수 있다. */
+const MANUAL_TEXT_ROLES_START = [
+  ['free', '자유 글자'], ['round_label', '대회·라운드'],
+  ['home_name', '홈 팀명'], ['away_name', '어웨이 팀명'],
+] as const;
+const MANUAL_TEXT_ROLES_BOARD = [
+  ['free', '자유 글자'], ['round_label', '대회·라운드'],
+  ['home_name', '홈 팀명'], ['away_name', '어웨이 팀명'],
+  ['home_score', '홈 점수'], ['away_score', '어웨이 점수'],
+] as const;
+const MANUAL_LOGO_ROLES = [
+  ['free_image', '교체 가능한 이미지'], ['home_logo', '홈 로고'], ['away_logo', '어웨이 로고'],
+] as const;
+const MANUAL_ZONE_ROLES = [
+  ['home_color', '홈 팀 색'], ['away_color', '어웨이 팀 색'],
 ] as const;
 
 const ROLE_COLORS: Record<string, string> = {
   round_label: '#4ade80', home_name: '#4ade80', away_name: '#4ade80',
   home_score: '#4ade80', away_score: '#4ade80', free: '#4ade80',
-  home_logo: '#60a5fa', away_logo: '#60a5fa',
+  home_logo: '#60a5fa', away_logo: '#60a5fa', free_image: '#60a5fa',
   home_color: '#fb923c', away_color: '#fb923c',
   hide: '#f87171',
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  round_label: '대회·라운드', home_name: '홈 팀명', away_name: '어웨이 팀명',
+  home_score: '홈 점수', away_score: '어웨이 점수', free: '자유 글자',
+  home_logo: '홈 로고', away_logo: '어웨이 로고', free_image: '이미지',
+  home_color: '홈 팀 색', away_color: '어웨이 팀 색',
 };
 
 // 초안에 넣을 표본 값 — 자리를 눈으로 확인하는 용도라 그럴듯한 글이면 된다.
@@ -137,14 +153,17 @@ function sideSpec(a: Analyzed, roles: Record<number, string>,
   }
   for (const m of manual) {
     if (m.kind === 'zone') {
-      zones.push({ id: m.role, label: m.label, box: m.box, source: m.source });
+      zones.push({ id: m.role, label: ROLE_LABELS[m.role] ?? m.label,
+                   box: m.box, source: m.source });
       continue;
     }
-    const id = m.role === 'free' ? `free_${freeSeq++}` : m.role;
+    const isFree = m.role === 'free' || m.role === 'free_image';
+    const id = isFree ? `free_${freeSeq++}` : m.role;
     if (m.kind === 'logo') {
-      fields.push({ id, label: m.label, kind: 'logo', box: m.box, empty: 'mark' });
+      fields.push({ id, label: isFree ? m.label : (ROLE_LABELS[m.role] ?? m.label),
+                    kind: 'logo', box: m.box, empty: 'mark' });
     } else {
-      fields.push({ id, label: m.role === 'free' ? m.label : undefined, kind: 'text',
+      fields.push({ id, label: isFree ? m.label : undefined, kind: 'text',
                     box: m.box, size: m.size, color: m.color,
                     placeholder: SAMPLE[m.role] ?? m.label,
                     default: m.role === 'round_label' ? SAMPLE.round_label : '' });
@@ -168,6 +187,7 @@ function sampleValues(a: Analyzed, roles: Record<number, string>, manual: Manual
     const id = m.role === 'free' ? `free_${freeSeq++}` : m.role;
     values[id] = SAMPLE[m.role] ?? m.label;
   }
+  // 이미지 항목의 free id 는 글자 순번과 이어진다 — sideSpec 과 같은 순서로 센다.
   return values;
 }
 
@@ -195,14 +215,15 @@ function sampleColor(img: HTMLImageElement, design: [number, number],
 
 let manualSeq = 1;
 
-function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
+function Slot({ title, hint, analyzed, roles, objRoles, palette, manualTextRoles, onFile,
                 roleOf, setRole, objRoleOf, setObjRole,
                 manual, setManual, draftUrl, draftBusy }: {
   title: string; hint: string;
   analyzed: Analyzed | null;
   roles: readonly (readonly [string, string])[];
   objRoles: readonly (readonly [string, string])[];
-  palette: readonly { role: string; label: string; kind: string; once: boolean }[];
+  palette: readonly { label: string; kind: string }[];
+  manualTextRoles: readonly (readonly [string, string])[];
   onFile: (f: File) => void;
   roleOf: (layer: number) => string; setRole: (layer: number, role: string) => void;
   objRoleOf: (layer: number) => string; setObjRole: (layer: number, role: string) => void;
@@ -210,6 +231,9 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
   draftUrl: string; draftBusy: boolean;
 }) {
   const [hover, setHover] = useState<number | string | null>(null);
+  // 끌는 동안 뜨는 정렬 가이드(시안 좌표). 캔버스 가운데나 다른 상자의 중심과
+  // 맞아떨어지는 순간 선이 뜨고 자석처럼 붙는다 — 디자인 툴의 그 동작이다.
+  const [guides, setGuides] = useState<{ v: number | null; h: number | null }>({ v: null, h: null });
   const imgRef = useRef<HTMLImageElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   // 끌기 상태 — 리렌더를 피하려고 ref 에 든다. 놓을 때만 상태를 확정한다.
@@ -231,15 +255,19 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
     return design[0] / w;   // 화면 px → 시안 px
   };
 
-  const addManual = (p: { role: string; label: string; kind: string }) => {
+  const addManual = (p: { label: string; kind: string }) => {
     const isZone = p.kind === 'zone';
     const isLogo = p.kind === 'logo';
     const w = isLogo ? Math.round(design[0] * 0.2) : Math.round(design[0] * (isZone ? 0.04 : 0.4));
     const h = isLogo ? w : Math.round(design[1] * (isZone ? 0.1 : 0.06));
     const boxNew: [number, number, number, number] = [
       Math.round((design[0] - w) / 2), Math.round((design[1] - h) / 2), w, h];
+    // 종류만 정해 놓는다 — 무엇인지(역할)는 목록에서 고친다. 팀 색은 홈부터.
+    const role = isZone
+      ? (manual.some((m) => m.role === 'home_color') ? 'away_color' : 'home_color')
+      : isLogo ? 'free_image' : 'free';
     const field: ManualField = {
-      uid: manualSeq++, role: p.role, kind: p.kind as ManualField['kind'],
+      uid: manualSeq++, role, kind: p.kind as ManualField['kind'],
       label: p.label, box: boxNew,
       size: Math.max(12, Math.round(h * 0.7)), color: '#FFFFFF',
       source: isZone && imgRef.current
@@ -265,8 +293,23 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
     setManual((prev) => prev.map((m) => {
       if (m.uid !== d.uid) return m;
       if (d.mode === 'move') {
-        const l = Math.round(Math.min(design[0] - m.box[2], Math.max(0, d.box[0] + dx)));
-        const t = Math.round(Math.min(design[1] - m.box[3], Math.max(0, d.box[1] + dy)));
+        let l = Math.round(Math.min(design[0] - m.box[2], Math.max(0, d.box[0] + dx)));
+        let t = Math.round(Math.min(design[1] - m.box[3], Math.max(0, d.box[1] + dy)));
+        // 스냅 후보: 캔버스 가운데 + 다른 상자들의 중심. 화면 8px 안이면 붙는다.
+        const thr = 8 * k;
+        const xCands = [design[0] / 2,
+                        ...prev.filter((x) => x.uid !== m.uid).map((x) => x.box[0] + x.box[2] / 2)];
+        const yCands = [design[1] / 2,
+                        ...prev.filter((x) => x.uid !== m.uid).map((x) => x.box[1] + x.box[3] / 2)];
+        let gv: number | null = null;
+        let gh: number | null = null;
+        for (const c of xCands) {
+          if (Math.abs(l + m.box[2] / 2 - c) <= thr) { l = Math.round(c - m.box[2] / 2); gv = c; break; }
+        }
+        for (const c of yCands) {
+          if (Math.abs(t + m.box[3] / 2 - c) <= thr) { t = Math.round(c - m.box[3] / 2); gh = c; break; }
+        }
+        setGuides({ v: gv, h: gh });
         return { ...m, box: [l, t, m.box[2], m.box[3]] };
       }
       const w = Math.round(Math.max(16, d.box[2] + dx));
@@ -278,6 +321,7 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
   const onPointerUp = () => {
     const d = drag.current;
     drag.current = null;
+    setGuides({ v: null, h: null });
     if (!d) return;
     // 영역(팀 색)은 놓은 자리에서 바탕색을 다시 뽑는다 — 자리가 색을 정한다.
     setManual((prev) => prev.map((m) => (
@@ -308,12 +352,15 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
                 항목 추가:
               </span>
               {palette.map((p) => {
-                const disabled = p.once && usedRoles.has(p.role);
+                // 팀 색만 개수 제한(홈·어웨이 둘) — 텍스트·이미지는 얼마든지.
+                const disabled = p.kind === 'zone'
+                  && usedRoles.has('home_color') && usedRoles.has('away_color');
+                const swatch = p.kind === 'zone' ? '#fb923c'
+                  : p.kind === 'logo' ? '#60a5fa' : '#4ade80';
                 return (
-                  <button key={p.role} disabled={disabled}
+                  <button key={p.kind} disabled={disabled}
                           style={{ ...btn, fontSize: 11, padding: '3px 8px',
-                                   opacity: disabled ? 0.35 : 1,
-                                   borderColor: ROLE_COLORS[p.role] ?? '#3c3c42' }}
+                                   opacity: disabled ? 0.35 : 1, borderColor: swatch }}
                           onClick={() => addManual(p)}>
                     + {p.label}
                   </button>
@@ -358,6 +405,17 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
                                 pointerEvents: 'none', borderRadius: 3 }} />
                 );
               })}
+              {/* 정렬 가이드 — 스냅되는 순간만 보인다 */}
+              {guides.v !== null ? (
+                <div style={{ position: 'absolute', top: 0, bottom: 0,
+                              left: pct(guides.v, 0), width: 1,
+                              background: '#f472b6', pointerEvents: 'none' }} />
+              ) : null}
+              {guides.h !== null ? (
+                <div style={{ position: 'absolute', left: 0, right: 0,
+                              top: pct(guides.h, 1), height: 1,
+                              background: '#f472b6', pointerEvents: 'none' }} />
+              ) : null}
               {/* 손으로 놓은 상자 — 끌어서 옮기고, 오른쪽 아래 손잡이로 키운다 */}
               {manual.map((m) => {
                 const color = ROLE_COLORS[m.role] ?? '#4ade80';
@@ -372,7 +430,8 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
                                 boxShadow: hover === `m${m.uid}` ? `0 0 0 3px ${color}66` : undefined }}>
                     <span style={{ position: 'absolute', top: -18, left: 0, fontSize: 10,
                                    color, whiteSpace: 'nowrap', pointerEvents: 'none' }}>
-                      {m.label}
+                      {(m.role === 'free' || m.role === 'free_image')
+                        ? m.label : (ROLE_LABELS[m.role] ?? m.label)}
                     </span>
                     <span onPointerDown={(e) => onPointerDown(e, m.uid, 'resize')}
                           style={{ position: 'absolute', right: -6, bottom: -6, width: 12,
@@ -418,7 +477,25 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
                         <span style={{ display: 'inline-block', width: 10, height: 10, marginRight: 6,
                                        borderRadius: 2, verticalAlign: 'middle',
                                        background: ROLE_COLORS[m.role] ?? '#4ade80' }} />
-                        {m.label}
+                        <select style={{ ...sel, fontSize: 11 }} value={m.role}
+                                onChange={(e) => setManual((prev) => prev.map((x) =>
+                                  x.uid === m.uid ? { ...x, role: e.target.value } : x))}>
+                          {(m.kind === 'zone' ? MANUAL_ZONE_ROLES
+                            : m.kind === 'logo' ? MANUAL_LOGO_ROLES
+                            : manualTextRoles).map(([v, l]) => {
+                            // '하나만' 인 역할이 다른 상자에 이미 쓰였으면 잠근다.
+                            const taken = v !== 'free' && v !== 'free_image'
+                              && v !== m.role && usedRoles.has(v);
+                            return <option key={v} value={v} disabled={taken}>{l}</option>;
+                          })}
+                        </select>
+                        {(m.role === 'free' || m.role === 'free_image') ? (
+                          <input value={m.label} placeholder="이름"
+                                 onChange={(e) => setManual((prev) => prev.map((x) =>
+                                   x.uid === m.uid ? { ...x, label: e.target.value } : x))}
+                                 style={{ ...btn, width: 90, padding: '2px 6px', fontSize: 11,
+                                          marginLeft: 6, textAlign: 'left' }} />
+                        ) : null}
                       </td>
                       <td>
                         {m.kind === 'text' ? (
@@ -457,8 +534,8 @@ function Slot({ title, hint, analyzed, roles, objRoles, palette, onFile,
             ) : (
               <p style={{ margin: '0 0 8px', fontSize: 12, color: 'var(--muted, #999)' }}>
                 {analyzed.kind === 'image'
-                  ? '위 팔레트에서 항목을 추가해 배경 위에 끌어 놓으세요.'
-                  : 'PSD 후보에 역할을 정하거나, 팔레트에서 직접 추가할 수도 있습니다.'}
+                  ? "'+ 텍스트' '+ 이미지' 로 상자를 추가해 배경 위에 끌어 놓고, 여기서 무엇인지 고르세요."
+                  : 'PSD 후보에 역할을 정하거나, 위 버튼으로 직접 추가할 수도 있습니다.'}
               </p>
             )}
 
@@ -716,7 +793,7 @@ export default function TemplateEditorPage() {
       <Slot
         title="① 시작 카드 (필수)" hint="시작 전 팀 소개 배경 — 이미지면 직접 배치, PSD 면 자동 후보"
         analyzed={start} roles={TEXT_ROLES_START} objRoles={OBJ_ROLES_START}
-        palette={PALETTE_START}
+        palette={PALETTE_START} manualTextRoles={MANUAL_TEXT_ROLES_START}
         onFile={(f) => void analyze(f, 'start')}
         roleOf={(l) => startRoles[l] || ''} setRole={(l, r) => setStartRoles((p) => ({ ...p, [l]: r }))}
         objRoleOf={(l) => startObj[l] || 'keep'} setObjRole={(l, r) => setStartObj((p) => ({ ...p, [l]: r }))}
@@ -739,7 +816,7 @@ export default function TemplateEditorPage() {
       <Slot
         title="② 점수판 (선택)" hint="영상에 얹는 오버레이 — 안 올리면 기본 점수판을 씁니다"
         analyzed={board} roles={TEXT_ROLES_BOARD} objRoles={OBJ_ROLES_BOARD}
-        palette={PALETTE_BOARD}
+        palette={PALETTE_BOARD} manualTextRoles={MANUAL_TEXT_ROLES_BOARD}
         onFile={(f) => void analyze(f, 'board')}
         roleOf={(l) => boardRoles[l] || ''} setRole={(l, r) => setBoardRoles((p) => ({ ...p, [l]: r }))}
         objRoleOf={(l) => boardObj[l] || 'keep'} setObjRole={(l, r) => setBoardObj((p) => ({ ...p, [l]: r }))}
@@ -766,14 +843,19 @@ export default function TemplateEditorPage() {
       <div style={box}>
         <strong style={{ fontSize: 14 }}>③ 영상 (선택)</strong>
         <span style={{ fontSize: 12, color: 'var(--muted, #999)', marginLeft: 8 }}>
-          전·후반 효과는 글자 없이 그대로 들어갑니다 — 전반은 시작 카드 뒤, 후반은 첫 T 자리
+          전·후반 효과는 글자 없이 그대로 들어갑니다 — 전반은 시작 카드 뒤, 후반은 첫 T 자리.
+          영상이면 그 길이만큼, 이미지면 구간 카드 길이만큼 나옵니다
         </span>
         <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-          {([['first', '전반전 효과'], ['second', '후반전 효과'], ['outro', '마무리 영상']] as const)
-            .map(([k, label]) => (
+          {([['first', '전반전 효과', true], ['second', '후반전 효과', true],
+             ['outro', '마무리 영상', false]] as const)
+            .map(([k, label, allowImage]) => (
               <label key={k} style={{ ...btn, fontSize: 12 }}>
-                {label}{videos[k] ? ` ✓ ${videos[k]!.name}` : ' (mp4)'}
-                <input type="file" accept="video/mp4,video/quicktime,video/webm"
+                {label}{videos[k] ? ` ✓ ${videos[k]!.name}` : allowImage ? ' (mp4/이미지)' : ' (mp4)'}
+                <input type="file"
+                       accept={allowImage
+                         ? 'video/mp4,video/quicktime,video/webm,image/*'
+                         : 'video/mp4,video/quicktime,video/webm'}
                        style={{ display: 'none' }}
                        onChange={(e) => {
                          const f = e.target.files?.[0];
