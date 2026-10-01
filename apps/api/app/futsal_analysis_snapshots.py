@@ -35,7 +35,8 @@ def validate_source(heat, job, version):
         raise HTTPException(409, '검수 내용이 변경되었습니다. 저장 후 다시 확정하세요.')
     batch = review.get('batch') or {}
     applied = batch.get('applied')
-    if not applied or any(review.get(k) != applied.get(k) for k in INPUTS):
+    if (not applied or any(review.get(k) != applied.get(k) for k in INPUTS)
+            or review.get('shadowCorrection', False) != applied.get('shadowCorrection', False)):
         raise HTTPException(409, '미반영 검수가 있습니다. 검수 반영 후 히트맵을 다시 만드세요.')
     if not isinstance(heat, dict) or heat.get('schema') != 'fpa-heatmaps/v1' or heat.get('datasetId') != job.payload.get('datasetId'):
         raise HTTPException(400, '이 분석의 히트맵을 선택하세요.')

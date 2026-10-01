@@ -23,7 +23,7 @@ export class ReviewBatch {
   constructor({data,getReview,saveState,compute,hydrate,onChange=()=>{},cancel=()=>{}}){
     Object.assign(this,{data,getReview,saveState,compute,hydrate,onChange,cancelWorker:cancel});
     const saved=getReview().batch;
-    this.applied=structuredClone(saved?.applied||recoveryInputs(getReview()));
+    this.applied=structuredClone(recoveryInputs(saved?.applied||getReview()));
     this.round=saved?.round||0;this.completedAt=saved?.completedAt||null;
     this.history=structuredClone(saved?.history||[]);
     this.result=null;this.running=false;this.error=null;this.ticket=0;
@@ -31,7 +31,7 @@ export class ReviewBatch {
   get dirty(){return recoverySignature(this.getReview())!==recoverySignature(this.applied);}
   get view(){return {...(this.result||emptyRecovery(this.data)),status:this.running?'pending':this.error?'error':!this.result?'cancelled':this.dirty?'staged':'complete',hasResult:!!this.result};}
   get changes(){
-    const current=recoveryInputs(this.getReview()),names={segments:'번호·구간',roster:'명단',uniforms:'유니폼',setup:'초기 설정',autoReconnect:'연결 설정',rejections:'연결 거절',checkpoints:'확인 장면'};
+    const current=recoveryInputs(this.getReview()),names={segments:'번호·구간',roster:'명단',uniforms:'유니폼',setup:'초기 설정',autoReconnect:'연결 설정',rejections:'연결 거절',checkpoints:'확인 장면',shadowCorrection:'몸·그림자 정리'};
     return Object.keys(names).filter(k=>JSON.stringify(current[k])!==JSON.stringify(this.applied[k])).map(k=>names[k]);
   }
   state(){return {applied:structuredClone(this.applied),round:this.round,completedAt:this.completedAt,history:structuredClone(this.history)};}

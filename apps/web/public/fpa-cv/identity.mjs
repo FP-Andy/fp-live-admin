@@ -6,6 +6,7 @@ import { consolidate } from './continuity.mjs';
 import {recoverCheckpoints,mergeCheckpointRecovery} from './checkpoint-recovery.mjs';
 import {lockedTeamConflicts} from './team-review.mjs';
 import {planCheckpoints} from './checkpoint-plan.mjs';
+import {normalizeShadowBodies} from './shadow-bodies.mjs';
 
 export function setupIssues(review,data,time,{allowPartial=false}={}) {
   const issues=[];
@@ -54,6 +55,8 @@ const MOTION_MEMORY_SECONDS=8; // Motion precision decays; roster identities do 
  * Manual labels win; only missing members of the fixed roster can reconnect.
  */
 function reconnectBase(data,review,onProgress=()=>{},options={}) {
+  const shadow=normalizeShadowBodies(data,{...review,shadowCorrection:review.shadowCorrection&&!options.reversePass},onProgress);
+  data=shadow.data;
   // Older server results left setup null when a single seed was missing.
   // Recover only from existing human anchors on the reviewed initial frame.
   // Never infer the missing person's identity or modify the saved review.
@@ -64,20 +67,21 @@ function reconnectBase(data,review,onProgress=()=>{},options={}) {
   const keeperContext=options.keeperContext||buildKeeperContext(data,review,(completed,total)=>onProgress({phase:'골키퍼 위치·이동 이력 확인',completed,total}));
   data={...data,keeperContext};
   const classify=(box,time,appearance=box?.appearance)=>classifyKit(box,time,review.uniforms,keeperContext,appearance);
-  const result={segments:[],suggestions:[],warnings:[],issues:[],waiting:[],masks:[],duplicates:[],data,keeperContext,hasAppearance:data.frames.some(f=>f.boxes.some(b=>b.appearance?.length))};
+  const result={segments:shadow.segments,suggestions:[],warnings:[],issues:[],waiting:[],masks:shadow.masks,duplicates:shadow.duplicates,shadowBodies:shadow.shadowBodies,data,keeperContext,hasAppearance:data.frames.some(f=>f.boxes.some(b=>b.appearance?.length))};
   const report=(phase,completed,total)=>onProgress({phase,completed,total});
   const timeline=uniformTimeline(data,review.uniforms,(completed,total)=>report('1/3 · 유니폼 색상 확인',completed,total),classify);
   result.timeline=timeline;
   result.lockedConflicts=lockedTeamConflicts(data,review,timeline,classify);
-  result.masks=identityMasks(review,timeline);
-  for(const m of result.masks)result.warnings.push({trackId:m.trackId,personId:m.personId,time:m.from,reason:'유니폼과 지정 팀이 달라 기존 번호 연결을 보류했습니다.'});
+  const colorMasks=identityMasks(review,timeline);
+  result.masks=[...shadow.masks,...colorMasks];
+  for(const m of colorMasks)result.warnings.push({trackId:m.trackId,personId:m.personId,time:m.from,reason:'유니폼과 지정 팀이 달라 기존 번호 연결을 보류했습니다.'});
   for(const s of review.segments.filter(s=>s.locked)) {
     const conflict=timeline.get(s.trackId)?.find(run=>run.from<s.to&&run.to>s.from&&teamConflict(s,run));
     if(conflict)result.warnings.push({trackId:s.trackId,personId:s.personId,time:Math.max(s.from,conflict.from),reason:'유니폼과 팀이 다릅니다. 작업자 확정은 유지했으니 확인해 주세요.'});
   }
   report('2/3 · 중복 트랙 정리',0,0);
   const continuity=options.reversePass?{data,duplicates:[],segments:[]}:consolidate(data,review,timeline,result.masks);
-  result.data=continuity.data;result.duplicates=continuity.duplicates;result.segments=continuity.segments;
+  result.data=continuity.data;result.duplicates=[...shadow.duplicates,...continuity.duplicates];result.segments=[...shadow.segments,...continuity.segments];
   if(!review.setup)return result;
   result.issues=options.reversePass?[]:setupIssues(review,data,review.setup.time,{allowPartial:true});
   if(result.issues.length||!review.autoReconnect||!result.hasAppearance)return result;
@@ -301,7 +305,7 @@ export function reconnect(data,review,onProgress=()=>{},options={}) {
   // The worker may reuse the exact initial-only result for unchanged inputs.
   // A manually selected hidden/raw BB needs fresh duplicate consolidation.
   const keeperCheckpoint=(review.checkpoints||[]).some(c=>c.assignments.some(a=>review.roster.find(p=>p.id===a.personId)?.group.endsWith('_gk')));
-  const reusable=options.baseline&&!keeperCheckpoint&&(review.checkpoints||[]).every(c=>{
+  const reusable=options.baseline&&!keeperCheckpoint&&!(review.shadowCorrection&&review.checkpoints?.length)&&(review.checkpoints||[]).every(c=>{
     const frame=checkpointFrame(options.baseline.data,c.time).frame;
     return c.assignments.every(a=>frame.boxes.some(b=>b.id===a.trackId));
   });
