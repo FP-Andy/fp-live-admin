@@ -1912,14 +1912,25 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         # 하프타임은 한 경기에 한 번뿐이라, 나머지 마커는 원래대로 구간 카드가 간다.
         # 효과 영상이 없는 세트가 보통이다(파인플레이 기본). 없는 것은 조용히 넘어간다 —
         # 경고는 '세트가 들고 있다고 했는데 파일이 없을 때' 만 뜻이 있다.
-        half_first = half_second = None
+        half_first = half_second = None       # ("video", 경로, 길이, 소리) 또는 ("still", 경로)
         if cards_on and template is not None:
-            if template.first_half_video:
-                half_first = _video_segment(
-                    template_asset(template.first_half_video), "전반 효과 영상")
-            if template.second_half_video:
-                half_second = _video_segment(
-                    template_asset(template.second_half_video), "후반 효과 영상")
+            def _half(video_name: str, image_name: str, label: str):
+                """전·후반 한 쪽 — 영상이면 그대로, 그림이면 정지 카드로."""
+                if video_name:
+                    seg = _video_segment(template_asset(video_name), label)
+                    return ("video", *seg) if seg else None
+                if image_name:
+                    path = template_asset(image_name)
+                    if path is None:
+                        logger.warning("%s 그림 자산을 찾지 못했습니다", label)
+                        return None
+                    return ("still", path)
+                return None
+
+            half_first = _half(template.first_half_video, template.first_half_image,
+                               "전반 효과")
+            half_second = _half(template.second_half_video, template.second_half_image,
+                                "후반 효과")
 
         # 카드(정지화면)와 클립을 **같은 종류의 조각**으로 본다. 그래야 이음매마다
         # 페이드를 따로 정할 수 있다 — 클립끼리는 하드컷, 카드가 맞닿는 곳은 디졸브.
@@ -1931,7 +1942,11 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 카드에는 워터마크를 얹지 않는다 — 시안에 이미 'Fine Play' 가 들어 있다.
             timeline.append(("still", intro_card, intro_card_dur, False, "start"))
         if half_first is not None:
-            timeline.append(("video", half_first[0], half_first[1], half_first[2]))
+            if half_first[0] == "still":
+                # 그림 효과 — 구간 카드와 같은 정지 조각. 길이도 그 설정을 따른다.
+                timeline.append(("still", half_first[1], section_card_dur, False, "half1"))
+            else:
+                timeline.append(("video", half_first[1], half_first[2], half_first[3]))
         if has_intro:
             timeline.append(("still", intro_path, intro_dur, True, "intro"))
         second_used = False
@@ -1947,7 +1962,12 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     # 후반 영상이 **전반 영상 바로 뒤**에 붙는다 — 실제로 그렇게 나갔다.
                     # 하프타임이 첫 클립보다 앞일 수는 없다.
                     if k > 0 and not second_used:
-                        timeline.append(("video", half_second[0], half_second[1], half_second[2]))
+                        if half_second[0] == "still":
+                            timeline.append(("still", half_second[1], section_card_dur,
+                                             False, "half2"))
+                        else:
+                            timeline.append(("video", half_second[1], half_second[2],
+                                             half_second[3]))
                         second_used = True
                 else:
                     timeline.append(("still", card, section_card_dur, False, f"sec{k:03d}"))

@@ -88,6 +88,9 @@ def analyze(data: bytes, filename: str) -> dict:
         with Image.open(io.BytesIO(data)) as im:
             im = im.convert("RGBA")
             im.save(pending_dir() / f"{token}.png")
+            preview = im.copy()
+            preview.thumbnail((1200, 1200), Image.LANCZOS)
+            preview.save(pending_dir() / f"{token}.full.png")
             return {"token": token, "kind": "image", "design": list(im.size),
                     "texts": [], "objects": [],
                     "note": "이미지는 글자가 픽셀로 구워져 있어 항목을 자동으로 못 읽습니다."
@@ -102,6 +105,11 @@ def analyze(data: bytes, filename: str) -> dict:
 
     texts, objects = [], []
     composite = psd.composite(force=True).convert("RGBA")
+    # 후보 상자를 시안 위에 겹쳐 보여 주려면 시안 자체가 화면에 있어야 한다.
+    # 원본 합성본을 미리보기용으로 줄여 같이 저장한다(긴 변 1200 — 화면용이다).
+    preview = composite.copy()
+    preview.thumbnail((1200, 1200), Image.LANCZOS)
+    preview.save(pending_dir() / f"{token}.full.png")
     for idx, layer in enumerate(_walk(psd)):
         if layer.is_group() or not layer.visible:
             continue
@@ -164,8 +172,21 @@ def compose_background(token: str, hide_layers: list[int], dest: Path) -> tuple[
 
 
 def discard_pending(token: str) -> None:
-    for suffix in (".psd", ".png"):
-        (pending_dir() / f"{token}{suffix}").unlink(missing_ok=True)
+    for path in pending_dir().glob(f"{token}*"):
+        path.unlink(missing_ok=True)
+
+
+def cached_background(token: str, hide_layers: list[int]) -> Path:
+    """숨김 조합별로 배경을 한 번만 굽는다.
+
+    초안 미리보기는 역할을 바꿀 때마다 다시 그리는데, PSD 합성은 몇 초짜리 일이다.
+    같은 숨김 조합이면 파일을 다시 안 굽는다 — 항목 값·자리만 바뀌는 경우가 대부분이다.
+    """
+    key = "-".join(str(i) for i in sorted(set(int(i) for i in hide_layers))) or "none"
+    dest = pending_dir() / f"{token}.bg.{key}.png"
+    if not dest.exists():
+        compose_background(token, hide_layers, dest)
+    return dest
 
 
 def spec_from_request(raw) -> dict:

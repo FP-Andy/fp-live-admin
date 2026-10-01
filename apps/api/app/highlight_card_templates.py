@@ -176,6 +176,12 @@ class CardTemplate:
     second_half_video: str = ""
     """전반·후반 효과 영상. 글자를 얹지 않고 그대로 끼워 넣는다."""
 
+    first_half_image: str = ""
+    second_half_image: str = ""
+    """전반·후반 효과가 그림일 때. 같은 자리(시작 카드 뒤 / 첫 T)에 **정지 카드**로
+    들어가고, 길이는 구간 카드 길이 설정을 따른다. 영상과 그림이 둘 다 있으면
+    영상이 이긴다 — 세트를 만들 때 한쪽만 받으므로 실제로는 겹치지 않는다."""
+
     outro_video: str = ""
     """마무리 영상 교체본. 비어 있으면 기본(파인플레이 아웃트로)을 쓴다."""
 
@@ -461,6 +467,14 @@ def describe(template: CardTemplate) -> dict:
         "has_board": template.has_board,
         "board_defaults": dict(template.board_defaults),
         "outro_default": template.outro_default,
-        "has_half_videos": bool(template.first_half_video or template.second_half_video),
+        "has_half_videos": bool(template.first_half_video or template.second_half_video
+                                or template.first_half_image or template.second_half_image),
+        # 화면이 재생기(영상)와 그림 중 무엇을 보여줄지 정한다.
+        "half_media": {
+            "first": ("video" if template.first_half_video
+                      else "image" if template.first_half_image else None),
+            "second": ("video" if template.second_half_video
+                       else "image" if template.second_half_image else None),
+        },
         "board_fields": [one(f) for f in template.board_fields],
     }
