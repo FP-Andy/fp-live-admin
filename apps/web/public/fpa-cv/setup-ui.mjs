@@ -42,6 +42,7 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
     $('jersey').value=current?.jersey||'';$('jersey').disabled=$('person').value==='ignore';
     $('jersey').inputMode=current?.group==='referee'?'text':'numeric';
     $('auto-reconnect').checked=review.autoReconnect;
+    $('shadow-correction').checked=review.shadowCorrection===true;
     const groups=$('uniforms');groups.replaceChildren();
     const board=$('roster-board');board.replaceChildren();rosterNodes=new Map();
     for(const [group,info] of Object.entries(GROUPS)) {
@@ -94,6 +95,7 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
   };
   document.addEventListener('keydown',e=>{if(e.key==='Escape')stopPick();});
   $('auto-reconnect').onchange=()=>commit({...getReview(),autoReconnect:$('auto-reconnect').checked});
+  $('shadow-correction').onchange=()=>commit({...getReview(),shadowCorrection:$('shadow-correction').checked});
   $('anchor-frame').onclick=()=>{video.pause();seek(getReview()?.setup?.time??getData()?.video.clipStart??0);};
   $('finish-setup').onclick=()=>{
     video.pause();const review=getReview(),at=readyTime??time(),issues=setupIssues(review,getData(),at);
@@ -164,7 +166,7 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
       // Browsers quantize media time. Seek inside the half-open interval,
       // at an observed frame, so a rounded-down boundary is not unassigned.
       go.onclick=()=>viewRecovery(s.trackId,Math.min(s.to-.0001,Math.max(s.from,s.time)+.0001));
-      const desc=node('small',`${clock(s.from)}–${clock(s.to)} · ${modeName(s)} · ${Math.round(s.score*100)}점 · 공백 ${s.gap.toFixed(2)}초 · 색상 ${GROUPS[s.uniform].label}`);
+      const desc=node('small',s.mode==='body-representative'?`${clock(s.from)}–${clock(s.to)} · 몸·그림자 중복에서 몸 박스로 번호 승계`:`${clock(s.from)}–${clock(s.to)} · ${modeName(s)} · ${Math.round(s.score*100)}점 · 공백 ${s.gap.toFixed(2)}초 · 색상 ${GROUPS[s.uniform].label}`);
       const accept=node('button','연결 확정'),no=node('button','거절');accept.onclick=()=>confirm(s);no.onclick=()=>reject(s);row.append(go,desc,accept,no);holder.append(row);
     }
     for(const s of recovery.suggestions) {
@@ -214,7 +216,7 @@ export function setupUI({getData,getReview,getWorking,getRecovery,commit,seek,ti
       const release=node('button','이 충돌 구간 재검토');release.disabled=recovery.status!=='complete';release.onclick=()=>releaseConflicts([lockedConflict]);detail.append(release);
     }
     if(identity?.source==='auto') {
-      detail.append(node('b',`자동 재연결 · ${Math.round(identity.score*100)}점`),node('p',`${modeName(identity)} · ${identity.mode==='backward'?'이후':'이전'} #${identity.previousTrack} · ${identity.gap.toFixed(2)}초 공백 · ${GROUPS[identity.group].label}`));
+      detail.append(node('b',identity.mode==='body-representative'?'몸 박스로 번호 승계':`자동 재연결 · ${Math.round(identity.score*100)}점`),node('p',identity.mode==='body-representative'?`몸·그림자 중복 관측 · #${identity.previousTrack} → #${identity.trackId}`:`${modeName(identity)} · ${identity.mode==='backward'?'이후':'이전'} #${identity.previousTrack} · ${identity.gap.toFixed(2)}초 공백 · ${GROUPS[identity.group].label}`));
       const accept=node('button','이 연결 확정'),no=node('button','이 연결 거절');accept.onclick=()=>confirm(identity);no.onclick=()=>reject(identity);detail.append(accept,no);
     }
   }

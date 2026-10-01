@@ -88,6 +88,17 @@ class Snapshots(unittest.TestCase):
         self.assertEqual(self.client.get(self.url + '/' + 'c'*32).status_code, 404)
         self.assertEqual(self.save().status_code, 404)
         self.assertEqual(self.client.put(self.url + '/' + 'c'*32, json={}).status_code, 405)
+
+    def test_shadow_setting_requires_batch_application_but_legacy_false_is_compatible(self):
+        with self.Session() as db:
+            job = db.get(FpaCvResource, self.job_id); review = copy.deepcopy(job.review)
+            review['shadowCorrection'] = True; job.review = review; db.commit()
+        self.assertEqual(self.save().status_code, 409)
+        self.assertEqual(self.objects, {})
+        with self.Session() as db:
+            job = db.get(FpaCvResource, self.job_id); review = copy.deepcopy(job.review)
+            review['shadowCorrection'] = False; job.review = review; db.commit()
+        self.assertEqual(self.save().status_code, 201)
     def test_changed_retry_payload_cannot_silently_reuse_original(self):
         self.assertEqual(self.save().status_code, 201)
         self.body['heatmap']['scale'] = 20

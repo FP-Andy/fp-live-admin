@@ -65,7 +65,7 @@ export function boxesAt(data, time) {
 
 export function emptyReview(data) {
   return { schema: 'fpa-review/v1', datasetId: data.datasetId, segments: [], events: [], links: {}, offsets: {},
-    roster:defaultRoster(),uniforms:Object.fromEntries(Object.keys(GROUPS).map(g=>[g,[]])),setup:null,autoReconnect:true,rejections:[],checkpoints:[],checkpointBudget:5 };
+    roster:defaultRoster(),uniforms:Object.fromEntries(Object.keys(GROUPS).map(g=>[g,[]])),setup:null,autoReconnect:true,shadowCorrection:false,rejections:[],checkpoints:[],checkpointBudget:5 };
 }
 // Human checkpoints refer to one actual observation, never an interpolated BB
 // or the entire lifetime of a raw tracker ID. Their end is derived on import.
@@ -149,6 +149,8 @@ export function validateReview(value, data) {
     result.setup={time:value.setup.time};
   }
   result.autoReconnect=value.autoReconnect!==false;
+  if(value.shadowCorrection!==undefined)assert(typeof value.shadowCorrection==='boolean','몸·그림자 정리 설정이 올바르지 않습니다.');
+  result.shadowCorrection=value.shadowCorrection===true;
   if(value.checkpointBudget!==undefined){assert([5,10,15].includes(value.checkpointBudget),'확인 장면 예산은 5·10·15 중 선택하세요.');result.checkpointBudget=value.checkpointBudget;}
   if(value.checkpoints!==undefined){
     assert(Array.isArray(value.checkpoints)&&value.checkpoints.length<=1000,'확인 장면 형식이 올바르지 않습니다.');
@@ -181,11 +183,11 @@ export function validateReview(value, data) {
     const b=value.batch;
     assert(b&&Number.isSafeInteger(b.round)&&b.round>=0&&b.applied&&typeof b.applied==='object','검수 반영 이력이 올바르지 않습니다.');
     assert(b.completedAt===null||typeof b.completedAt==='string'&&Number.isFinite(Date.parse(b.completedAt)),'검수 반영 시각이 올바르지 않습니다.');
-    const {segments,roster,uniforms,setup,autoReconnect,rejections,checkpoints}=b.applied;
-    const valid=validateReview({...emptyReview(data),segments,roster,uniforms,setup,autoReconnect,rejections,checkpoints},data);
+    const {segments,roster,uniforms,setup,autoReconnect,rejections,checkpoints,shadowCorrection}=b.applied;
+    const valid=validateReview({...emptyReview(data),segments,roster,uniforms,setup,autoReconnect,rejections,checkpoints,shadowCorrection},data);
     const history=b.history||[];
     assert(Array.isArray(history)&&history.length<=100&&history.every(h=>integer(h.version)&&h.version>0&&h.version<=b.round+1&&typeof h.completedAt==='string'&&Number.isFinite(Date.parse(h.completedAt))&&integer(h.checkpoints)&&integer(h.manualIntervals)&&Array.isArray(h.changes)&&h.changes.every(c=>typeof c==='string'&&c.length<50))&&new Set(history.map(h=>h.version)).size===history.length,'검수 회차 이력이 올바르지 않습니다.');
-    result.batch={round:b.round,completedAt:b.completedAt,history:clone(history),applied:Object.fromEntries(['segments','roster','uniforms','setup','autoReconnect','rejections','checkpoints'].map(k=>[k,valid[k]]))};
+    result.batch={round:b.round,completedAt:b.completedAt,history:clone(history),applied:Object.fromEntries(['segments','roster','uniforms','setup','autoReconnect','rejections','checkpoints','shadowCorrection'].map(k=>[k,valid[k]]))};
   }
   return { ...result, events, offsets: clone(value.offsets), links: clone(value.links) };
 }

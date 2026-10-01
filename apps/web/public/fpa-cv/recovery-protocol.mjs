@@ -1,9 +1,9 @@
 // Bump when identity/colour/continuity rules or this compact format change.
-export const RECOVERY_VERSION = 'identity-v5-initial-recovery-1';
+export const RECOVERY_VERSION = 'identity-v6-body-shadow-1';
 
 export function recoveryInputs(review) {
   const {segments, roster, uniforms, setup, autoReconnect, rejections,checkpoints} = review;
-  return {segments, roster, uniforms, setup, autoReconnect, rejections,checkpoints};
+  return {segments, roster, uniforms, setup, autoReconnect, rejections,checkpoints,shadowCorrection:review.shadowCorrection===true};
 }
 export const recoverySignature = review => JSON.stringify(recoveryInputs(review));
 
@@ -15,22 +15,27 @@ export function emptyRecovery(data, status = 'pending') {
 // on each side of the worker, and transfer/cache just the removed IDs and labels.
 export function packRecovery(result, original) {
   const {data, ...labels} = result;
-  const hidden = [];
+  const hidden = [],appearancePatches=[];
   for (let i=0; i<original.frames.length; i++) {
     const before=original.frames[i].boxes, after=data.frames[i].boxes;
+    const originals=new Map(before.map(b=>[b.id,b]));
+    for(const box of after)if(box.appearance!==originals.get(box.id)?.appearance)appearancePatches.push([i,box.id,box.appearance,box.shadowColourMuted===true]);
     if (before.length === after.length) continue;
     const keep=new Set(after.map(b=>b.id));
     hidden.push([i,before.filter(b=>!keep.has(b.id)).map(b=>b.id)]);
   }
-  return {...labels,hidden};
+  return {...labels,hidden,appearancePatches};
 }
 
 export function hydrateRecovery(packed, data) {
-  const {hidden, ...labels} = packed;
+  const {hidden,appearancePatches=[], ...labels} = packed;
   const frames = data.frames.slice();
   for (const [index, ids] of hidden) {
     const removed=new Set(ids), frame=frames[index];
     frames[index]={...frame,boxes:frame.boxes.filter(b=>!removed.has(b.id))};
+  }
+  for(const [index,id,appearance,shadowColourMuted] of appearancePatches){
+    const frame=frames[index];frames[index]={...frame,boxes:frame.boxes.map(b=>b.id===id?{...b,appearance,shadowColourMuted}:b)};
   }
   return {...labels,data:{...data,frames,keeperContext:labels.keeperContext},status:'complete'};
 }
