@@ -24,7 +24,9 @@ export default function FutsalSubstitutionLog(props:Props){
       const validated=validateSubstitutionLog(next,props.video||undefined),key=JSON.stringify([saved.revision,validated]);
       if(attempted.current?.key!==key)attempted.current={key,requestId:crypto.randomUUID()};
       const result=await props.save(validated,saved.revision,attempted.current.requestId);
-      setSaved(result);attempted.current=null;setMessage('교체 시각 저장됨');return true;
+      setSaved(result);attempted.current=null;
+      try{localStorage.setItem('fpc-substitutions-updated',JSON.stringify({matchId:props.matchId,revision:result.revision,at:Date.now()}));const channel=new BroadcastChannel('fpc-substitutions');channel.postMessage({matchId:props.matchId,revision:result.revision});channel.close();}catch{}
+      setMessage('교체 시각 저장됨 · 리포트 자동 갱신');return true;
     }catch(e){setError(e instanceof Error?e.message:String(e));return false;}finally{pending.current=false;setSaving(false);}
   }
   const safely=(action:()=>void|Promise<void>)=>{setError('');Promise.resolve().then(action).catch(e=>setError(e.message||String(e)));};
@@ -60,7 +62,7 @@ export default function FutsalSubstitutionLog(props:Props){
         <form onSubmit={e=>{e.preventDefault();safely(async()=>{
           const at=parseLogTime(time),old=log?.substitutions.find(e=>e.id===editing);
           // Time or team changes invalidate previous identity evidence.
-          const pair=old&&old.time===at&&old.team===team&&hasPlayerPair(old)?{outId:old.outId,inId:old.inId}:{};
+          const unchanged=old&&old.time===at&&old.team===team;const pair=unchanged?{...(hasPlayerPair(old)?{outId:old.outId,inId:old.inId}:{}),...(old.tracking?{tracking:old.tracking}:{})}:{};
           if(await commit(saveSubstitution(workingLog(),{id:editing||crypto.randomUUID(),time:at,team,note:note.trim(),...pair}))){resetEvent();if(editor.current)editor.current.open=false;}
         });}}><fieldset disabled={disabled} className="fv-log-form">
           <button type="button" className="btn-secondary" onClick={()=>safely(()=>setTime(fmt(props.capture())))}>현재 시각 가져오기</button>
@@ -81,7 +83,8 @@ export default function FutsalSubstitutionLog(props:Props){
         <div className="row"><button disabled={disabled} onClick={()=>{setEditing(e.id);setTime(fmt(e.time));setTeam(e.team);setNote(e.note);if(editor.current)editor.current.open=true;}}>수정</button><button disabled={disabled} onClick={()=>safely(async()=>{if(await commit(removeSubstitution(workingLog(),e.id))&&editing===e.id)resetEvent();})}>삭제</button></div>
       </article>)}</div>
       </details>}
-      {unresolved>0&&<p className="muted">선수 판정 대기 {unresolved}건 · 하단 경계의 출입·추적 기록과 대조할 시각입니다. 히트맵 분리는 아직 적용되지 않았습니다.</p>}
+      {unresolved>0&&<p className="muted">리포트에서 교체 시각과 출입 경로를 자동 대조합니다. 연결이 불확실한 장면만 확인한 뒤 PDF를 추출하세요.</p>}
+      {events.length>0&&<a className="btn-primary" href={`/admin/fcm/futsal/reports?match=${props.matchId}`}>교체 반영 리포트 열기</a>}
       {events.length>0&&<div className="row"><button onClick={()=>download('csv')}>교체 CSV</button><button onClick={()=>download('json')}>JSON 백업</button></div>}
     </>}
     <input ref={importer} type="file" hidden accept=".json" aria-label="교체 타임로그 JSON" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;safely(async()=>{if(file.size>5*1024*1024)throw Error('5MB 이하 JSON을 선택하세요.');const value=JSON.parse(await file.text());if(value.matchId&&value.matchId!==props.matchId)throw Error('다른 경기의 타임로그입니다.');const imported=value.sourceVideo?{...value,video:value.sourceVideo}:value;const next=validateSubstitutionLog(imported,props.video||undefined);if(log&&!confirm('현재 교체 타임로그를 이 파일로 바꿀까요?'))return;await commit(next);});}}/>

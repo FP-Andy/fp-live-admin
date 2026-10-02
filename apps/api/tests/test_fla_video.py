@@ -75,6 +75,21 @@ class FlaVideoTests(unittest.TestCase):
         r=self.client.put(self.base+'/config',json=dict(upload_id='upload',offset_ms=12000,duration_ms=90000,version=self.version));self.assertEqual(r.status_code,200,r.text)
         self.assertEqual(r.json()['state']['offset_ms'],12000)
 
+    def test_tracking_resolution_is_snapshot_scoped_and_versioned(self):
+        sid='a'*32
+        with self.Session() as db:
+            db.add(FpaCvResource(id=sid,kind='analysis_snapshot',owner_id=self.user.id,payload={'matchId':str(self.id),'uploadId':'upload'}));db.commit()
+        log=self.substitution_log();log.update(schema='fpa-substitution-log/v2',players=[],initialPlayers=[])
+        link={'snapshotId':sid,'outPersonId':'home-1','outTrackId':10,'inTrackId':20}
+        log['substitutions']=[dict(id='change',time=25,team='home',note='',tracking=link)]
+        r=self.save_log(log);self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['substitutions']['log']['substitutions'][0]['tracking'],link)
+        with self.Session() as db:
+            row=db.get(FpaCvResource,sid);row.payload={**row.payload,'matchId':str(uuid4())};db.commit()
+        self.assertEqual(self.save_log(log).status_code,400)
+        log['substitutions'][0]['tracking']['inTrackId']=10
+        self.assertEqual(self.save_log(log).status_code,400)
+
     def substitution_log(self):
         return {'schema':'fpa-substitution-log/v1','video':{'name':'test.mp4','duration':90,'from':5,'to':90},
                 'players':[{'id':'a','team':'home','name':'A','jersey':'7'},{'id':'b','team':'home','name':'B','jersey':'8'}],

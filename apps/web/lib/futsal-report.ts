@@ -8,10 +8,10 @@ import {validateTeamReport,validateMatchReportData} from './futsal-team-report';
 
 export type Side='home'|'away';
 export type Direction='right'|'left';
-export type HeatPlayer={id:string;group:Side;jersey:string;name?:string;grid:number[];coverage:number;observed:number;positions:Array<{x:number;y:number;t:number;seconds:number}>;augmentation?:ActivityDensity};
+export type HeatPlayer={activeFrom?:number;activeTo?:number;renderScale?:number;substitutionStint?:{kind:string;from:number;to:number};id:string;group:Side;jersey:string;name?:string;grid:number[];coverage:number;observed:number;positions:Array<{x:number;y:number;t:number;seconds:number}>;augmentation?:ActivityDensity};
 export type HeatSource={schema:'fpa-heatmaps/v1';datasetId:string;video:string;resultVersion?:number;from:number;to:number;width:number;height:number;scale:number;point?:'bottom'|'center';turn?:number;players:HeatPlayer[];augmentation?:ActivityPolicy};
-export type PlayerText={name:string;jersey:string;position:string;context:string;heatComment:string;eventComment:string;strengths:string[];improvements:string[];eventNumber:string;flaNumber?:string;side:Side};
-export type ReportDraft={schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>;sourceSnapshot?:{id:string;version:number;createdAt:string;jobId:string};teamReport?:TeamReportOptions;fla?:MatchReportData;matchStartSeconds?:number;assignment?:ReportAssignment;assignmentPositions?:Record<string,string>};
+export type PlayerText={appearanceFrom?:number;appearanceTo?:number;name:string;jersey:string;position:string;context:string;heatComment:string;eventComment:string;strengths:string[];improvements:string[];eventNumber:string;flaNumber?:string;side:Side};
+export type ReportDraft={substitutionReport?:Omit<import('../public/fpa-cv/substitution-report.mjs').SubstitutionReport,'heatmap'>;schema:'fpc-futsal-report/v1';id:string;title:string;updatedAt:string;heatmap:HeatSource|null;fpa:SavedFpa|null;fpaLabel:string;matchId:string;matchName:string;homeName:string;awayName:string;homeScore:string;awayScore:string;homeDirection:Direction;selected:string;players:Record<string,PlayerText>;sourceSnapshot?:{id:string;version:number;createdAt:string;jobId:string};teamReport?:TeamReportOptions;fla?:MatchReportData;matchStartSeconds?:number;assignment?:ReportAssignment;assignmentPositions?:Record<string,string>};
 export const POSITIONS=['','DF','MF','FW','GK','FIXO','ALA','PIVO','GOLEIRO'];
 export const POSITION_LABEL:Record<string,string>={'':'미지정',DF:'DF',MF:'MF',FW:'FW',GK:'GK',FIXO:'FIXO · 픽소',ALA:'ALA · 알라',PIVO:'PIVO · 피보',GOLEIRO:'GOLEIRO · 골레이로'};
 export const blankPlayer=(p?:HeatPlayer):PlayerText=>({name:p?.name||'',jersey:p?.jersey||'',position:'',context:'',heatComment:'',eventComment:'',strengths:['','',''],improvements:['','',''],eventNumber:p?.jersey||'',side:p?.group||'home'});
@@ -24,6 +24,9 @@ export function validateHeatmap(raw:unknown):HeatSource {
  const ids=new Set();
  for(const p of h.players){
   if(!p||typeof p.id!=='string'||ids.has(p.id)||!['home','away'].includes(p.group)||!['string','number'].includes(typeof p.jersey)||!Array.isArray(p.grid)||p.grid.length!==h.width*h.height||!p.grid.every(n=>Number.isFinite(n)&&n>=0)||!Array.isArray(p.positions))throw Error('히트맵 선수 정보가 올바르지 않습니다.');
+  if(p.activeFrom!==undefined||p.activeTo!==undefined){if(!Number.isFinite(p.activeFrom)||!Number.isFinite(p.activeTo)||p.activeFrom!<h.from||p.activeTo!>h.to||p.activeTo!<=p.activeFrom!)throw Error('출전 구간을 확인하세요.');}
+  if(p.renderScale!==undefined&&(!Number.isFinite(p.renderScale)||p.renderScale<=0))throw Error('히트맵 색상 기준을 확인하세요.');
+  if(p.activeFrom!==undefined&&p.positions.some(o=>o.t<p.activeFrom!-.002||o.t+o.seconds>p.activeTo!+.002))throw Error('출전 구간 밖 좌표가 있습니다.');
   ids.add(p.id);let end=h.from;
   for(const o of p.positions){if(!o||![o.x,o.y,o.t,o.seconds].every(Number.isFinite)||o.x<0||o.x>1||o.y<0||o.y>1||o.seconds<=0||o.t<end-.002||o.t+o.seconds>h.to+.002)throw Error('히트맵 관측 좌표가 올바르지 않습니다.');end=o.t+o.seconds;}
  }
@@ -77,7 +80,7 @@ export function heatmapDisplayCoverage(source:HeatSource,p:HeatPlayer){
 export function updateSnapshotSource(d:ReportDraft,s:AnalysisSnapshot):ReportDraft {
  if(d.sourceSnapshot?.jobId!==s.jobId||s.version<=d.sourceSnapshot.version)return d;
  const h=validateHeatmap(s.heatmap);
- return {...d,heatmap:h,fpa:parseFpaSource(s.fpa),fpaLabel:`분석 완료 스냅샷 v${s.version}`,
+ return {...d,substitutionReport:undefined,heatmap:h,fpa:parseFpaSource(s.fpa),fpaLabel:`분석 완료 스냅샷 v${s.version}`,
   matchId:d.matchId||s.matchId||'',matchName:d.matchName||s.matchName,homeName:d.homeName||s.homeName,awayName:d.awayName||s.awayName,
   selected:h.players.some(p=>p.id===d.selected)?d.selected:h.players[0].id,
   players:Object.fromEntries(h.players.map(p=>[p.id,d.players[p.id]||blankPlayer(p)])),

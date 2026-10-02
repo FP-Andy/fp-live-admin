@@ -52,6 +52,7 @@ export function validateSubstitutionLog(value, context) {
   const sorted = [...substitutions].sort((a, b) => a?.time - b?.time);
   for (const e of sorted) {
     assert(e && string(e.id, 160) && e.id && !eventIds.has(e.id) && finite(e.time) && e.time >= video.from && e.time < video.to && ['home','away'].includes(e.team) && string(e.note, 500), '교체 시각·팀·메모를 확인하세요. 시각은 영상 구간 안이어야 합니다.');
+    if(e.tracking)assert(/^[a-f0-9]{32}$/.test(e.tracking.snapshotId)&&string(e.tracking.outPersonId,160)&&e.tracking.outPersonId&&[e.tracking.outTrackId,e.tracking.inTrackId].every(v=>Number.isSafeInteger(v)&&v>=0)&&e.tracking.outTrackId!==e.tracking.inTrackId,'교체 객체 연결을 확인하세요.');
     const paired=hasPlayerPair(e);
     assert(paired || (!e.outId && !e.inId && value.schema === LOG_SCHEMA), 'OUT·IN 연결은 두 선수 모두 지정하거나 비워두세요.');
     eventIds.add(e.id);

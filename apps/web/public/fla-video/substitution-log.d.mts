@@ -1,7 +1,7 @@
 export type LogTeam='home'|'away';
 export type LogVideo={name:string;duration:number;from:number;to:number};
 export type LogPlayer={id:string;team:LogTeam;name:string;jersey:string;sourceSlotId?:string};
-export type Substitution={id:string;time:number;team:LogTeam;outId?:string;inId?:string;note:string};
+export type Substitution={id:string;time:number;team:LogTeam;outId?:string;inId?:string;note:string;tracking?:{snapshotId:string;outPersonId:string;outTrackId:number;inTrackId:number}};
 export type SubstitutionLog={schema:'fpa-substitution-log/v1'|'fpa-substitution-log/v2';video:LogVideo;players:LogPlayer[];initialPlayers:string[];substitutions:Substitution[]};
 export function validateSubstitutionLog(log:unknown,context?:LogVideo):SubstitutionLog;
 export function saveSubstitution(log:SubstitutionLog,event:Substitution):SubstitutionLog;

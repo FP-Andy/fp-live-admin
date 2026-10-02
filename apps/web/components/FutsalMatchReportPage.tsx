@@ -20,6 +20,10 @@ import TeamReportSheet from './futsal/TeamReportSheet';
 import {reportTeamOptions,matchComment,validateMatchReportData,type TeamReportOptions} from '../lib/futsal-team-report';
 import type {Summary,Dominance,Shot} from './futsal/graphics';
 import {reportPlayer} from '../lib/futsal-report-events';
+import {useSubstitutionReport} from './futsal/useSubstitutionReport';
+import SubstitutionReportPanel from './futsal/SubstitutionReportPanel';
+import SubstitutionGuideSheet from './futsal/SubstitutionGuideSheet';
+import {applySubstitutionReport,substitutionGuidePages,captureSubstitutionFrames} from '../lib/futsal-report-substitutions';
 import './futsal-match-report.css';
 
 type Fixture={key:string;match_id:string|null;home:string;away:string;stage:string;round:number;court:string;date:string;video?:{started?:boolean;ended?:boolean}};
@@ -41,6 +45,13 @@ export default function FutsalMatchReportPage(){
  const [saved,setSaved]=useState<Array<{id:string;title:string;updatedAt:string}>>([]),[notice,setNotice]=useState(''),[saveState,setSaveState]=useState(''),[busy,setBusy]=useState(false),[exporting,setExporting]=useState(false),[scale,setScale]=useState(1),[overflow,setOverflow]=useState<string[]>([]);
  const preview=useRef<HTMLDivElement>(null),sheet=useRef<HTMLDivElement>(null),latest=useRef<ReportDraft|null>(null),loadTicket=useRef(0);
  latest.current=draft;
+ const substitutions=useSubstitutionReport(draft,async result=>{
+  const current=latest.current;if(!current||current.sourceSnapshot?.id!==result.provenance.snapshotId)return;
+  const previous=current.substitutionReport;
+
+  if(previous?.provenance.logRevision!==result.provenance.logRevision&&result.events.length&&current.heatmap&&Object.values(current.players).some(p=>p.heatComment||p.eventComment))await saveReport({...current,id:crypto.randomUUID(),title:current.title+' · 교체 갱신 전',updatedAt:new Date().toISOString()});
+  setDraft(d=>d?.id===current.id&&d.sourceSnapshot?.id===result.provenance.snapshotId?applySubstitutionReport(d,result):d);
+ });
  useEffect(()=>{if(sport!=='FUTSAL')setSport('FUTSAL');},[sport,setSport]);
  function activate(d:ReportDraft){d={...d,homeName:clubName(d.homeName),awayName:clubName(d.awayName)};setDraft(d);setMatchChoice(d.matchId);setSnapshotChoice(d.sourceSnapshot?.id||'');const u=new URL(location.href);u.searchParams.delete('snapshot');u.searchParams.set('report',d.id);history.replaceState(history.state,'',u);}
  async function openSnapshot(id:string){
@@ -54,7 +65,7 @@ export default function FutsalMatchReportPage(){
   if(raw.kind==='source'){let d=attachHeatmap(emptyDraft(),validateHeatmap(raw.heatmap));d={...d,id:raw.id,fpa:raw.fpa?parseFpaSource(raw.fpa):null,fpaLabel:'트래킹 작업 화면의 FPA 로그',homeName:String((raw.fpa as Record<string,unknown>)?.teamid_h||''),awayName:String((raw.fpa as Record<string,unknown>)?.teamid_a||'')};activate(d);}else activate(restoreDraft(raw));
  }
  useEffect(()=>{let active=true;(async()=>{
-  try{const items=await listReports();if(active)setSaved(items);const params=new URLSearchParams(location.search),id=params.get('report'),snapshot=params.get('snapshot');if(snapshot){if(active)await openSnapshot(snapshot);}else if(id){if(active)await openSaved(id);}else if(active)activate(emptyDraft());}
+  try{const items=await listReports();if(active)setSaved(items);const params=new URLSearchParams(location.search),id=params.get('report'),snapshot=params.get('snapshot'),match=params.get('match');if(match&&!snapshot&&!id){const rows=await listAnalysisSnapshots(),source=rows.filter(s=>s.matchId===match).sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0];if(!source)throw Error('이 경기의 분석 완료 스냅샷을 먼저 저장하세요.');if(active)await openSnapshot(source.id);}else if(snapshot){if(active)await openSnapshot(snapshot);}else if(id){if(active)await openSaved(id);}else if(active)activate(emptyDraft());}
   catch(e){if(active){setNotice(errorText(e));activate(emptyDraft());}}
  })();return()=>{active=false;};},[]);
  useEffect(()=>{let active=true,running=false;
@@ -88,8 +99,9 @@ export default function FutsalMatchReportPage(){
  const teamOptions=reportTeamOptions(draft||{homeName:'',awayName:''});
  const patchTeam=(value:Partial<TeamReportOptions>)=>setDraft(d=>d?{...d,teamReport:{...reportTeamOptions(d),...value}}:d);
  const teamPlayers=draft?.heatmap?.players.filter(p=>p.group===teamOptions.side)||[];
- const chosenPlayers=(teamOptions.side==='home'?teamOptions.homePlayers:teamOptions.awayPlayers)??teamPlayers.slice(0,5).map(p=>p.id);
+ const chosenPlayers=(teamOptions.side==='home'?teamOptions.homePlayers:teamOptions.awayPlayers)??teamPlayers.map(p=>p.id);
  const selectedPlayers=teamPlayers.filter(p=>chosenPlayers.includes(p.id));
+ const guidePages=draft?substitutionGuidePages(draft,teamOptions.side):[],bundlePageCount=2+guidePages.length+selectedPlayers.length;
  async function loadFla(automatic=false){
   if(!draft)return;const id=draft.matchId||matchChoice;if(!id)return;const target=draft.id,ticket=++loadTicket.current;setBusy(true);
   try{
@@ -120,23 +132,26 @@ export default function FutsalMatchReportPage(){
   patch({players,selected:selectedPlayers[0].id});setReportView('player');setNotice(`선수 ${selectedPlayers.length}명의 초기 대형과 주 활동 지점의 제안 포지션을 반영해 개인 리포트를 만들었습니다.`);
  }
  async function exportBundle(){
-  if(!draft||exporting||selectedPlayers.length!==5||!draft.assignment||!draft.fla||draft.fla.matchId!==draft.matchId)return;
-  exportPlayers.current=selectedPlayers.map(p=>p.id);
-  setExportDraft(draft);setExporting(true);setNotice('팀 리포트 7페이지를 만드는 중…');
+  if(!draft||exporting||!selectedPlayers.length||!draft.assignment||!draft.fla||draft.fla.matchId!==draft.matchId)return;
+  if(substitutions.blocked)return;
+  exportPlayers.current=selectedPlayers.map(p=>p.id);setExporting(true);setNotice('교체로그 최신 상태 확인 중…');
   try{
+   await substitutions.assertFresh(draft);
+   const prepared=await captureSubstitutionFrames(draft,(n,total)=>setNotice(`교체 장면 ${n}/${total} 준비 중…`));
+   await substitutions.assertFresh(draft);setDraft(d=>d?.id===prepared.id&&d.substitutionReport?.provenance.logRevision===prepared.substitutionReport?.provenance.logRevision?{...d,substitutionReport:prepared.substitutionReport}:d);setExportDraft(prepared);
    await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));
    await document.fonts.ready;const fontEmbedCSS=await reportFontCSS();
    if(!bundle.current)throw Error('리포트 페이지를 준비하지 못했습니다. 다시 시도하세요.');
-   const pages=Array.from(bundle.current.querySelectorAll<HTMLElement>('.mr-sheet'));if(pages.length!==7)throw Error('선수 5명을 선택하세요.');
+   const pages=Array.from(bundle.current.querySelectorAll<HTMLElement>('.mr-sheet'));if(pages.length!==bundlePageCount)throw Error('리포트 페이지가 변경되었습니다. 다시 추출하세요.');
    const pngs=[];
    for(const [i,node] of pages.entries()){
     const problems=reportOverflow(node);if(problems.length)throw Error(`${i+1}페이지의 문구를 줄여 주세요: ${problems.join(', ')}`);
     await Promise.all(Array.from(node.querySelectorAll('img')).map(img=>img.decode()));
     pngs.push(await toPng(node,{backgroundColor:'#FFFFFF',width:REPORT_WIDTH,height:REPORT_HEIGHT,pixelRatio:3,style:{zoom:'1',width:`${REPORT_WIDTH}px`,height:`${REPORT_HEIGHT}px`,maxWidth:'none'},fontEmbedCSS}));
-    setNotice(`팀 리포트 ${i+1}/7페이지 생성`);
+    setNotice(`팀 리포트 ${i+1}/${bundlePageCount}페이지 생성`);
    }
    const name=`${safeName(draft.matchName||draft.title)}-${safeName(teamOptions.side==='home'?draft.homeName:draft.awayName)}-team-report`;
-   const bytes=await reportPDF(pngs,name),url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})),a=document.createElement('a');a.href=url;a.download=name+'.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);setNotice('경기 요약·선수 배정표·개인 리포트 5장을 PDF로 저장했습니다.');
+   await substitutions.assertFresh(draft);const bytes=await reportPDF(pngs,name),url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})),a=document.createElement('a');a.href=url;a.download=name+'.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);setNotice(`교체 반영 팀 리포트 ${bundlePageCount}페이지를 PDF로 저장했습니다.`);
   }catch(e){setNotice(`내보내기 실패: ${errorText(e)}`);}finally{setExporting(false);setExportDraft(null);}
  }
  async function importFile(file:File|undefined,kind:'heat'|'fpa'|'draft'){
@@ -161,7 +176,7 @@ export default function FutsalMatchReportPage(){
   if(!sheet.current||!draft)return;
   const node=sheet.current.querySelector<HTMLElement>('.mr-sheet');if(!node)return;setExporting(true);setNotice('');
   try{
-   await document.fonts.ready;
+   await substitutions.assertFresh(draft);await document.fonts.ready;
    const problems=reportOverflow(node);
    if(problems.length)throw Error(`A4 한 장을 넘는 문구를 줄여 주세요: ${problems.join(', ')}`);
    await Promise.all(Array.from(node.querySelectorAll('img')).map(async img=>{try{await img.decode();}catch{throw Error(`${img.alt}를 불러오지 못했습니다. 다시 시도하세요.`);}}));
@@ -171,17 +186,17 @@ export default function FutsalMatchReportPage(){
    if(format==='pdf'){
     const bytes=await reportPDF(png,name);const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));a.href=url;setTimeout(()=>URL.revokeObjectURL(url),30000);
    }else a.href=png;
-   a.download=`${name}.${format}`;a.click();
+   await substitutions.assertFresh(draft);a.download=`${name}.${format}`;a.click();
   }catch(e){setNotice(`내보내기 실패: ${errorText(e)}`);}finally{setExporting(false);setExportDraft(null);}
  }
  if(!draft)return <p role="status">리포트 작업실을 여는 중입니다.</p>;
  const reviews=[{key:'strengths' as const,title:'좋았던 장면',en:'STRENGTHS'},{key:'improvements' as const,title:'다음 경기를 위한 제안',en:'NEXT STEP'}];
  const fileInput=(kind:'heat'|'fpa'|'draft',label:string)=><Field label={label}><input aria-label={label} type="file" disabled={kind!=='draft'&&!!draft.sourceSnapshot} accept=".json,application/json" onChange={e=>{void importFile(e.target.files?.[0],kind);e.target.value='';}} /></Field>;
  return <main className="page-stack mr-page">
-  <header className="mr-header"><div><div className="sidebar-eyebrow">FCM · FUTSAL</div><h1>매치 리포트</h1><p className="muted">데이터를 연결하고, 선수에게 전할 이야기를 완성하세요.</p></div><div className="mr-actions"><button type="button" onClick={()=>downloadJSON(draft,`${safeName(draft.title)}-report.json`)}>리포트 JSON 저장</button><button type="button" disabled={exporting||!!overflow.length||(reportView==='player'&&!assignmentNumber(draft,draft.selected))} onClick={()=>void exportReport('png')}>PNG</button><button type="button" className="btn-primary" disabled={exporting||!!overflow.length||(reportView==='player'&&!assignmentNumber(draft,draft.selected))} onClick={()=>void exportReport('pdf')}>{exporting?'파일 생성 중…':'A4 PDF 다운로드'}</button></div></header>
+  <header className="mr-header"><div><div className="sidebar-eyebrow">FCM · FUTSAL</div><h1>매치 리포트</h1><p className="muted">데이터를 연결하고, 선수에게 전할 이야기를 완성하세요.</p></div><div className="mr-actions"><button type="button" onClick={()=>downloadJSON(draft,`${safeName(draft.title)}-report.json`)}>리포트 JSON 저장</button><button type="button" disabled={exporting||substitutions.blocked||!!overflow.length||(reportView==='player'&&!assignmentNumber(draft,draft.selected))} onClick={()=>void exportReport('png')}>PNG</button><button type="button" className="btn-primary" disabled={exporting||substitutions.blocked||!!overflow.length||(reportView==='player'&&!assignmentNumber(draft,draft.selected))} onClick={()=>void exportReport('pdf')}>{exporting?'파일 생성 중…':'A4 PDF 다운로드'}</button></div></header>
   {notice&&<p role="status" className="mr-notice">{notice}</p>}
   <div className="mr-workspace"><aside className="mr-controls">
-   <section className="card card-panel"><h2>팀 리포트 · 7페이지</h2>
+   <section className="card card-panel"><h2>팀 리포트 · {bundlePageCount}페이지</h2>
     <Field label="리포트 기준 팀"><select value={teamOptions.side} disabled={exporting} onChange={e=>patchTeam({side:e.target.value as 'home'|'away'})}><option value="home">{draft.homeName||'홈 팀'} 기준</option><option value="away">{draft.awayName||'어웨이 팀'} 기준</option></select></Field>
     <div className="mr-two"><Field label={`${draft.homeName||'홈 팀'} 포인트 색상`}><input type="color" value={teamOptions.homeColor} onChange={e=>patchTeam({homeColor:e.target.value,homeColorCustom:true})}/></Field><Field label={`${draft.awayName||'어웨이 팀'} 포인트 색상`}><input type="color" value={teamOptions.awayColor} onChange={e=>patchTeam({awayColor:e.target.value,awayColorCustom:true})}/></Field></div>
     <button type="button" onClick={()=>patch({homeName:clubName(draft.homeName),awayName:clubName(draft.awayName),teamReport:{...teamOptions,homeColor:futsalClub(draft.homeName)?.colors[0]||teamOptions.homeColor,awayColor:futsalClub(draft.awayName)?.colors[0]||teamOptions.awayColor,homeColorCustom:false,awayColorCustom:false}})}>구단 이름·컬러 적용</button>
@@ -189,14 +204,15 @@ export default function FutsalMatchReportPage(){
     <p className="field-help">{draft.fla?`${draft.fla.sourceKind==='dashboard'?'대시보드':draft.fla.sourceKind==='video'?'영상 기록':'FLA'} · ${draft.fla.started?'기록 연결됨':'기록 없음'} · ${new Date(draft.fla.loadedAt).toLocaleString('ko-KR')}`:'영상 기록 경기를 연결한 뒤 FLA 기록을 불러오세요.'}</p>
     <Field label="경기 총평"><textarea rows={5} maxLength={1400} value={teamOptions.side==='home'?teamOptions.homeComment:teamOptions.awayComment} placeholder={draft.fla?matchComment(draft.fla,teamOptions.side,draft):'FLA 기록을 불러오면 데이터 기반 총평이 들어갑니다.'} onChange={e=>patchTeam({[teamOptions.side==='home'?'homeComment':'awayComment']:e.target.value})}/></Field>
     <button type="button" disabled={!draft.fla} onClick={()=>draft.fla&&patchTeam({[teamOptions.side==='home'?'homeComment':'awayComment']:matchComment(draft.fla,teamOptions.side,draft)})}>데이터 기반 총평 넣기</button>
-    <h3>함께 내보낼 선수 · {selectedPlayers.length}/5</h3><div className="mr-player-picks">{teamPlayers.map(p=><label key={p.id}><input type="checkbox" checked={chosenPlayers.includes(p.id)} disabled={exporting||(!chosenPlayers.includes(p.id)&&selectedPlayers.length>=5)} onChange={e=>patchTeam({[teamOptions.side==='home'?'homePlayers':'awayPlayers']:e.target.checked?[...chosenPlayers,p.id]:chosenPlayers.filter(id=>id!==p.id)})}/>{draft.assignment?`#${assignmentNumber(draft,p.id)}`:draft.players[p.id]?.name||`#${draft.players[p.id]?.jersey||p.jersey}`}</label>)}</div>
-    <button type="button" className="btn-primary" disabled={exporting||!draft.fla||!draft.assignment||selectedPlayers.length!==5} onClick={()=>void exportBundle()}>{exporting?'PDF 만드는 중…':'팀 리포트 PDF · 7페이지'}</button>
+    <h3>함께 내보낼 선수 · {selectedPlayers.length}명</h3><div className="mr-player-picks">{teamPlayers.map(p=><label key={p.id}><input type="checkbox" checked={chosenPlayers.includes(p.id)} disabled={exporting} onChange={e=>patchTeam({[teamOptions.side==='home'?'homePlayers':'awayPlayers']:e.target.checked?[...chosenPlayers,p.id]:chosenPlayers.filter(id=>id!==p.id)})}/>{draft.assignment?`#${assignmentNumber(draft,p.id)}`:draft.players[p.id]?.name||`#${draft.players[p.id]?.jersey||p.jersey}`}</label>)}</div>
+    <button type="button" className="btn-primary" disabled={exporting||substitutions.blocked||!draft.fla||!draft.assignment||!selectedPlayers.length} onClick={()=>void exportBundle()}>{exporting?'PDF 만드는 중…':`팀 리포트 PDF · ${bundlePageCount}페이지`}</button>
    </section>
+   <SubstitutionReportPanel draft={draft} control={substitutions}/>
    <section className="card card-panel"><h2>선수 배정표 · 자동 포지션</h2><p className="field-help">초기 장면의 분석번호로 개인 리포트를 찾습니다. 이름을 입력하지 않아도 됩니다.</p>
     <button type="button" disabled={assignmentBusy||!draft.sourceSnapshot} onClick={()=>void prepareAssignment()}>{assignmentBusy?'초기 장면 불러오는 중…':draft.assignment?'초기 장면 다시 불러오기':'초기 장면 불러오기'}</button>{assignmentError&&<p role="status" className="field-help">{assignmentError}</p>}
     {draft.assignment&&<button type="button" onClick={()=>setReportView('assignment')}>선수 배정표 보기</button>}
     {(['home','away'] as const).map(side=><div className="ar-editor-team" key={side}><h3>{clubName(side==='home'?draft.homeName:draft.awayName)||side}</h3>{assignmentRows(draft,side).map(p=><div className="ar-auto-position" key={p.id}><strong>#{p.number}</strong><div><span>{p.role?`${p.role.football} / ${p.role.futsal}`:'관측 부족 · 배정 대기'}</span><small>{p.automatic?.reason||'관측 정보 없음'}</small></div></div>)}</div>)}
-    <button type="button" className="btn-primary" disabled={exporting||!draft.assignment||selectedPlayers.length!==5} onClick={generatePlayers}>개인 리포트 생성</button><p className="field-help">초기 대형을 우선하고 히트맵의 가장 밀집된 지점을 함께 봅니다. 같은 팀 안의 앞뒤·측면 배치와 공격 방향으로 포지션을 제안합니다. 생성 버튼을 누르면 이야기에 반영됩니다.</p>
+    <button type="button" className="btn-primary" disabled={exporting||!draft.assignment||!selectedPlayers.length} onClick={generatePlayers}>개인 리포트 생성</button><p className="field-help">초기 대형을 우선하고 히트맵의 가장 밀집된 지점을 함께 봅니다. 같은 팀 안의 앞뒤·측면 배치와 공격 방향으로 포지션을 제안합니다. 생성 버튼을 누르면 이야기에 반영됩니다.</p>
    </section>
    <section className="card card-panel"><h2>완료된 분석</h2><Field label="완료된 분석 스냅샷"><select value={snapshotChoice} disabled={busy} onChange={e=>setSnapshotChoice(e.target.value)}><option value="">확정 결과 선택</option>{snapshots.filter(s=>!snapshots.some(other=>other.jobId===s.jobId&&other.version>s.version)).map(s=><option key={s.id} value={s.id}>{s.title} · v{s.version} · 유효 {(s.meanCoverage*100).toFixed(1)}% · FPA {s.eventCount}건</option>)}</select></Field><button type="button" disabled={!snapshotChoice||busy} onClick={()=>{setBusy(true);void (async()=>{if(draft)await saveReport({...draft,updatedAt:new Date().toISOString()});await openSnapshot(snapshotChoice);})().catch(e=>setNotice(errorText(e))).finally(()=>setBusy(false));}}>히트맵·이벤트맵 함께 불러오기</button>{snapshotError&&<p role="status" className="field-help">{snapshotError}</p>}{draft.sourceSnapshot?<p className="field-help">확정 v{draft.sourceSnapshot.version} · {new Date(draft.sourceSnapshot.createdAt).toLocaleString('ko-KR')}<br/>새 스냅샷 저장 시 지도가 자동 갱신됩니다. 활동 위치와 제안 포지션이 갱신됩니다. 작성한 코멘트는 유지되며 생성 버튼으로 다시 만들 수 있습니다.</p>:<p className="field-help">FPA 히트맵에서 ‘분석 완료 판정’한 결과가 표시됩니다.</p>}</section>
    <section className="card card-panel"><h2>리포트 작업</h2><Field label="저장된 작업"><select value={saved.some(s=>s.id===draft.id)?draft.id:''} onChange={e=>{const id=e.target.value;if(id)void saveReport({...draft,updatedAt:new Date().toISOString()}).then(()=>openSaved(id)).catch(err=>setNotice(errorText(err)));}}><option value="">새 작업</option>{saved.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></Field><Field label="작업 이름"><input value={draft.title} maxLength={120} onChange={e=>patch({title:e.target.value})}/></Field><div className="mr-actions"><button type="button" onClick={()=>void saveReport({...draft,updatedAt:new Date().toISOString()}).then(()=>activate(emptyDraft())).catch(e=>setNotice(errorText(e)))}>새 리포트</button><small>{saveState}</small></div><p className="field-help">작업은 이 브라우저에 저장됩니다. 다른 기기로 옮길 때는 리포트 JSON을 사용하세요.</p>{fileInput('draft','리포트 JSON 불러오기')}</section>
@@ -207,6 +223,6 @@ export default function FutsalMatchReportPage(){
    <section className="card card-panel"><h2>코멘트 편집</h2><Field label="포지션·전술 추가 메모 (리포트 미표시)"><textarea rows={2} maxLength={1000} value={person.context} onChange={e=>patchPlayer({context:e.target.value})} placeholder="예: 왼쪽 알라, 후반에는 픽소 역할"/></Field><button type="button" onClick={makeComments} disabled={!spatial&&!events.length}>데이터 기반 초안 만들기</button><p className="field-help">활동·플레이 이야기와 좋았던 장면·다음 제안은 데이터로 자동 채워집니다. 직접 수정한 문구는 유지됩니다. 팀 기록은 개인 성과로 쓰지 않습니다.</p><Field label="히트맵 코멘트"><textarea rows={5} maxLength={650} value={person.heatComment} onChange={e=>patchPlayer({heatComment:e.target.value})}/></Field><Field label="이벤트맵 코멘트"><textarea rows={5} maxLength={650} value={person.eventComment} onChange={e=>patchPlayer({eventComment:e.target.value})}/></Field>{reviews.map(r=><div key={r.key}><h3>{r.title}</h3>{person[r.key].map((v,i)=><Field key={i} label={`${r.title} ${i+1}`}><textarea rows={2} maxLength={220} value={v} onChange={e=>patchPlayer({[r.key]:person[r.key].map((old,n)=>n===i?e.target.value:old)})}/></Field>)}</div>)}</section>
   </aside>
   <section className="mr-preview" aria-label="리포트 미리보기"><div className="mr-preview-bar"><div className="mr-actions"><button type="button" aria-pressed={reportView==='assignment'} onClick={()=>setReportView('assignment')}>선수 배정표</button><button type="button" aria-pressed={reportView==='player'} onClick={()=>setReportView('player')}>개인 리포트</button><button type="button" aria-pressed={reportView==='team'} onClick={()=>setReportView('team')}>경기 요약</button></div><small>A4 세로 · 210 × 297mm · 1페이지</small></div>{!!overflow.length&&<p className="mr-overflow" role="alert">A4 영역을 넘는 문구를 줄여 주세요: {overflow.join(', ')}. 수정 후 다운로드할 수 있습니다.</p>}<div ref={preview} className="mr-preview-viewport"><div ref={sheet} style={{zoom:scale} as CSSProperties}>{reportView==='team'?<TeamReportSheet draft={draft}/>:reportView==='assignment'?<PlayerAssignmentSheet draft={draft}/>:<PlayerReportSheet draft={draft}/>}</div></div></section></div>
-  {exportDraft&&<div ref={bundle} className="mr-bundle-output" aria-hidden="true"><TeamReportSheet draft={exportDraft}/><PlayerAssignmentSheet draft={exportDraft}/>{exportPlayers.current.map(id=><PlayerReportSheet key={id} draft={exportDraft} selected={id}/>)}</div>}
+  {exportDraft&&<div ref={bundle} className="mr-bundle-output" aria-hidden="true"><TeamReportSheet draft={exportDraft}/><PlayerAssignmentSheet draft={exportDraft}/>{substitutionGuidePages(exportDraft,teamOptions.side).map((events,i)=><SubstitutionGuideSheet key={i} draft={exportDraft} events={events}/>)}{exportPlayers.current.map(id=><PlayerReportSheet key={id} draft={exportDraft} selected={id}/>)}</div>}
  </main>;
 }
