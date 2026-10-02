@@ -8,14 +8,15 @@ export class VideoClock {
   state:VideoState;
   pending:Segment[]=[];
   playing=false;
-  constructor(state:Partial<VideoState>={}) {this.state={...emptyVideoState(),...state,configured:state.configured??Boolean(state.upload_id&&(state.duration_ms||0)>0)};}
+  constructor(state:Partial<VideoState>={},public archived=false) {this.state={...emptyVideoState(),...state,configured:state.configured??Boolean(state.upload_id&&(state.duration_ms||0)>0)};}
+  get readOnly(){return this.archived||this.state.ended;}
   get reviewing(){return this.state.started&&this.state.cursor_ms<this.state.frontier_ms;}
   tick(mediaMs:number){
     const s=this.state;
-    const cursor=Math.max(0,Math.min(s.ended?s.frontier_ms:s.duration_ms-s.offset_ms,Math.round(mediaMs)-s.offset_ms));
+    const cursor=Math.max(0,Math.min(s.duration_ms-s.offset_ms,Math.round(mediaMs)-s.offset_ms));
     const wasReview=this.reviewing;
     s.cursor_ms=cursor;
-    if(this.playing&&s.started&&!s.ended&&cursor>s.frontier_ms){
+    if(this.playing&&s.started&&!this.readOnly&&cursor>s.frontier_ms){
       const last=this.pending[this.pending.length-1];
       if(last&&last.team===s.possession_team&&last.end_ms===s.frontier_ms)last.end_ms=cursor;
       else this.pending.push({start_ms:s.frontier_ms,end_ms:cursor,team:s.possession_team});
@@ -25,12 +26,12 @@ export class VideoClock {
   }
   seek(mediaMs:number){
     const s=this.state;const cursor=Math.max(0,Math.round(mediaMs)-s.offset_ms);
-    if(s.started&&cursor>s.cursor_ms)return false;
+    if(s.started&&!this.readOnly&&cursor>s.cursor_ms)return false;
     this.playing=false;s.cursor_ms=Math.min(Math.max(0,s.duration_ms-s.offset_ms),cursor);return true;
   }
   choose(team:Team){
     if(team!=='NONE')this.state.selected_team=team;
-    if(!this.reviewing&&!this.state.ended)this.state.possession_team=team;
+    if(!this.reviewing&&!this.readOnly)this.state.possession_team=team;
   }
   acknowledge(version:number,through:number){
     this.state.version=version;

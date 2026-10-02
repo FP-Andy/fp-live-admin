@@ -26,7 +26,8 @@ test('in-flight save acknowledgement retains new intervals and finish freezes pr
  const c=new VideoClock({duration_ms:100000,started:true,possession_team:'HOME'});
  c.playing=true;c.tick(1000);c.tick(2000);c.choose('AWAY');c.tick(3000);c.acknowledge(2,1000);
  assert.deepEqual(segments(c),[{start_ms:1000,end_ms:2000,team:'HOME'},{start_ms:2000,end_ms:3000,team:'AWAY'}]);
- c.state.ended=true;c.tick(10000);assert.equal(c.state.cursor_ms,3000);assert.equal(c.state.frontier_ms,3000);
+ c.state.ended=true;c.tick(10000);assert.equal(c.state.cursor_ms,10000);assert.equal(c.state.frontier_ms,3000);
+ assert.equal(c.seek(25000),true);c.tick(26000);assert.equal(c.state.cursor_ms,26000);assert.equal(c.state.frontier_ms,3000);
 });
 test('physical shortcuts work independent of focused element and ignore repeats/modifiers',()=>{
  for(const code of ['Space','KeyQ','KeyW','KeyE','KeyA','KeyS','KeyD','Enter'])assert.equal(videoHotkey({code}),code);
@@ -38,4 +39,11 @@ test('buffer stalls and source reconnection add no wall-time possession',()=>{
  for(let i=0;i<30;i++)c.tick(15000);
  c.playing=true;c.tick(16000);
  assert.equal(c.state.cursor_ms,11000);assert.deepEqual(segments(c),[{start_ms:0,end_ms:11000,team:'HOME'}]);
+});
+
+test('archived review allows forward seeking without recording possession or changing its team',()=>{
+ const c=new VideoClock({duration_ms:90000,offset_ms:5000,started:true,frontier_ms:2000,possession_team:'HOME'},true);
+ assert.equal(c.seek(45000),true);c.playing=true;c.tick(48000);c.choose('AWAY');
+ assert.equal(c.state.cursor_ms,43000);assert.equal(c.state.frontier_ms,2000);
+ assert.equal(c.state.possession_team,'HOME');assert.deepEqual(segments(c),[]);
 });

@@ -2,7 +2,7 @@
 import {useRef,useState,useEffect} from 'react';
 import {validateSubstitutionLog,saveSubstitution,removeSubstitution,exportSubstitutionLog,substitutionCsv,parseLogTime,hasPlayerPair,formatLogTime as fmt,type SubstitutionLog,type LogVideo,type LogTeam} from '../../public/fla-video/substitution-log.mjs';
 export type SavedSubstitutions={revision:number;log:SubstitutionLog|null};
-type Props={matchId:string;video:LogVideo|null;saved:SavedSubstitutions;names:{home:string;away:string};canWrite:boolean;busy:boolean;started:boolean;observedTo:number;ended:boolean;
+type Props={matchId:string;video:LogVideo|null;saved:SavedSubstitutions;names:{home:string;away:string};canWrite:boolean;busy:boolean;gameClockKnown:boolean;observedTo:number;ended:boolean;
   capture:()=>number;seek:(seconds:number)=>void;save:(log:SubstitutionLog,revision:number,requestId:string)=>Promise<SavedSubstitutions>};
 
 export default function FutsalSubstitutionLog(props:Props){
@@ -14,7 +14,7 @@ export default function FutsalSubstitutionLog(props:Props){
   const log=saved.log,disabled=!props.canWrite||props.busy||saving;
   const label=(id?:string)=>{const p=log?.players.find(p=>p.id===id);return p?`${p.name}${p.jersey?` · No.${p.jersey}`:''}`:id||'';};
   const workingLog=():SubstitutionLog=>{
-    if(!props.video)throw Error('경기 영상과 시작 시각을 먼저 저장하세요.');
+    if(!props.video)throw Error('연결된 경기 영상을 불러온 뒤 기록하세요.');
     return {...(log||{video:props.video,players:[],initialPlayers:[],substitutions:[]}),schema:'fpa-substitution-log/v2'};
   };
   async function commit(next:SubstitutionLog){
@@ -32,36 +32,37 @@ export default function FutsalSubstitutionLog(props:Props){
   async function record(side:LogTeam){
     const at=props.capture();
     if(await commit(saveSubstitution(workingLog(),{id:crypto.randomUUID(),time:at,team:side,note:''}))){
-      resetEvent();setMessage(`${props.names[side]} · 경기 ${fmt(at-props.video!.from)} 교체 기록됨`);
+      resetEvent();setMessage(`${props.names[side]} · 영상 ${fmt(at)} 교체 기록됨`);
     }
   }
   function download(kind:'json'|'csv'){
     if(!log)return;
     const exported=exportSubstitutionLog(log);
     // Do not expose full-source appearance estimates as confirmed playing time.
-    const content=kind==='json'?JSON.stringify({...exported,appearances:[],matchId:props.matchId,reviewedThrough:props.observedTo,recordingComplete:props.ended},null,2):substitutionCsv(log);
+    const content=kind==='json'?JSON.stringify({...exported,appearances:[],matchId:props.matchId,reviewedThrough:props.observedTo,recordingComplete:props.ended,gameClockKnown:props.gameClockKnown},null,2):substitutionCsv(log);
     const url=URL.createObjectURL(new Blob([content],{type:kind==='json'?'application/json':'text/csv;charset=utf-8'})),a=document.createElement('a');
     a.href=url;a.download=`${props.names.home}-${props.names.away}-교체타임로그.${kind==='json'?'json':'csv'}`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
     setMessage('교체 타임로그를 내보냈습니다.');
   }
-  let matchTime='';try{if(time&&props.video)matchTime=fmt(Math.max(0,parseLogTime(time)-props.video.from));}catch{}
+  let matchTime='';try{if(time&&props.video&&props.gameClockKnown)matchTime=fmt(Math.max(0,parseLogTime(time)-props.video.from));}catch{}
   const events=log?.substitutions||[],unresolved=events.filter(e=>!hasPlayerPair(e)).length;
   return <section className="card card-panel fv-substitutions" aria-label="교체 타임로그" data-fla-text-edit={textEditing?'true':undefined}
     onFocusCapture={e=>{const target=e.target;setTextEditing(target instanceof HTMLElement&&(target.matches('input,select,textarea')||!!target.closest('form')));}}
     onBlurCapture={e=>{const next=e.relatedTarget;setTextEditing(next instanceof HTMLElement&&e.currentTarget.contains(next)&&(next.matches('input,select,textarea')||!!next.closest('form')));}}>
     <div className="row"><h3>교체 타임로그</h3><span className="muted">{events.length}건</span></div>
     <p className="muted">교체 장면에서 팀 버튼을 누르세요. 현재 영상 시각을 저장합니다.</p>
-    {!props.video?<p className="muted">경기 영상과 시작 시각을 먼저 저장하세요.</p>:<>
-      <div className="fv-log-quick"><button className="btn-primary" aria-label="홈 교체 기록" disabled={disabled||!props.started} onClick={()=>safely(()=>record('home'))}><small>HOME</small>{props.names.home} 교체 기록</button><button className="btn-secondary" aria-label="어웨이 교체 기록" disabled={disabled||!props.started} onClick={()=>safely(()=>record('away'))}><small>AWAY</small>{props.names.away} 교체 기록</button></div>
+    {!props.video?<p className="muted">연결된 경기 영상을 불러온 뒤 기록하세요.</p>:<>
+      <div className="fv-log-quick"><button className="btn-primary" aria-label="홈 교체 기록" disabled={disabled} onClick={()=>safely(()=>record('home'))}><small>HOME</small>{props.names.home} 교체 기록</button><button className="btn-secondary" aria-label="어웨이 교체 기록" disabled={disabled} onClick={()=>safely(()=>record('away'))}><small>AWAY</small>{props.names.away} 교체 기록</button></div>
       <small className="muted">선수 선택 없이 기록 · 촬영 화면 하단 경계 기준</small>
-      {!props.started&&<small className="muted">경기 시작 후 사용할 수 있습니다.</small>}
+      {props.ended&&<small className="muted">완료 상태 유지 · 교체 로그만 보완</small>}
+      {!props.gameClockKnown&&<small className="muted">경기 시작 설정 없이 원본 영상 시각으로 저장합니다.</small>}
       <details ref={editor} className="fv-log-editor"><summary>{editing?'교체 로그 수정':'시각 직접 입력 · 메모'}</summary>
         <form onSubmit={e=>{e.preventDefault();safely(async()=>{
           const at=parseLogTime(time),old=log?.substitutions.find(e=>e.id===editing);
           // Time or team changes invalidate previous identity evidence.
           const pair=old&&old.time===at&&old.team===team&&hasPlayerPair(old)?{outId:old.outId,inId:old.inId}:{};
           if(await commit(saveSubstitution(workingLog(),{id:editing||crypto.randomUUID(),time:at,team,note:note.trim(),...pair}))){resetEvent();if(editor.current)editor.current.open=false;}
-        });}}><fieldset disabled={disabled||!props.started} className="fv-log-form">
+        });}}><fieldset disabled={disabled} className="fv-log-form">
           <button type="button" className="btn-secondary" onClick={()=>safely(()=>setTime(fmt(props.capture())))}>현재 시각 가져오기</button>
           <label>원본 영상 시각<input aria-label="교체 원본 시각" placeholder="분:초.000" value={time} onChange={e=>setTime(e.target.value)} required/></label>{matchTime&&<small>경기 시각 {matchTime}</small>}
           <label>팀<select aria-label="교체 팀" value={team} onChange={e=>setTeam(e.target.value as LogTeam)}><option value="home">홈 · {props.names.home}</option><option value="away">어웨이 · {props.names.away}</option></select></label>
@@ -75,7 +76,7 @@ export default function FutsalSubstitutionLog(props:Props){
         <summary>기록된 교체 <span>{events.length}건</span>{unresolved>0&&<small> · 선수 판정 대기 {unresolved}건</small>}</summary>
         <div className="fv-log-events" role="region" aria-label="기록된 교체 목록" tabIndex={0}>{events.map(e=><article key={e.id}>
         <div className="fv-log-event-head"><strong>{e.team==='home'?'홈':'어웨이'} · {props.names[e.team]}</strong><span className="fv-log-pending">{hasPlayerPair(e)?'기존 선수 연결':'선수 판정 대기'}</span></div>
-        <button type="button" onClick={()=>props.seek(e.time)} title="이 장면으로 이동">경기 {fmt(e.time-log!.video.from)}<small>영상 {fmt(e.time)}</small></button>
+        <button type="button" onClick={()=>props.seek(e.time)} title="이 장면으로 이동">영상 {fmt(e.time)}{props.gameClockKnown&&<small>경기 {fmt(e.time-log!.video.from)}</small>}</button>
         {hasPlayerPair(e)&&<small>{label(e.outId)} → {label(e.inId)}</small>}{e.note&&<small>{e.note}</small>}
         <div className="row"><button disabled={disabled} onClick={()=>{setEditing(e.id);setTime(fmt(e.time));setTeam(e.team);setNote(e.note);if(editor.current)editor.current.open=true;}}>수정</button><button disabled={disabled} onClick={()=>safely(async()=>{if(await commit(removeSubstitution(workingLog(),e.id))&&editing===e.id)resetEvent();})}>삭제</button></div>
       </article>)}</div>
