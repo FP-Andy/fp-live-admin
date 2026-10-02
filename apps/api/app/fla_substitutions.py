@@ -21,6 +21,13 @@ class Player(BaseModel):
     sourceSlotId: str | None = Field(default=None, max_length=160)
 
 
+class TrackingResolution(BaseModel):
+    snapshotId: str = Field(pattern=r'^[a-f0-9]{32}$')
+    outPersonId: str = Field(min_length=1, max_length=160)
+    outTrackId: int = Field(ge=0, strict=True)
+    inTrackId: int = Field(ge=0, strict=True)
+
+
 class Substitution(BaseModel):
     id: str = Field(min_length=1, max_length=160)
     time: float = Field(ge=0, allow_inf_nan=False)
@@ -28,6 +35,7 @@ class Substitution(BaseModel):
     outId: str | None = Field(default=None, min_length=1, max_length=160)
     inId: str | None = Field(default=None, min_length=1, max_length=160)
     note: str = Field(default='', max_length=500)
+    tracking: TrackingResolution | None = None
 
 
 class Log(BaseModel):
@@ -86,6 +94,8 @@ def validate_log(log, state, upload_name, *, review_only=False, saved_video=None
                 '재생하여 확인한 시각에 교체를 기록하세요.')
         require(video.from_<=e.time<video.to, '교체 시각이 영상 범위 밖입니다.')
         require(e.id not in ids, '교체 ID가 중복되었습니다.')
+        if e.tracking:
+            require(e.tracking.outTrackId != e.tracking.inTrackId, '입장·퇴장은 서로 다른 객체를 선택하세요.')
         paired=e.outId is not None and e.inId is not None
         require(paired or (e.outId is None and e.inId is None and log.schema_name=='fpa-substitution-log/v2'),
                 'OUT·IN 연결은 두 선수 모두 지정하거나 비워두세요.')

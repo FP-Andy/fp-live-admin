@@ -1,0 +1,21 @@
+const fs=require('fs'),assert=require('assert/strict');const {chromium}=require('../apps/web/node_modules/playwright-core');const{PDFDocument}=require('../apps/web/node_modules/pdf-lib');
+const root='/tmp/substitution-web-ui-qa';fs.mkdirSync(root,{recursive:true});
+(async()=>{const browser=await chromium.launch({executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});try{
+ const page=await browser.newPage({viewport:{width:1600,height:1100},serviceWorkers:'block'});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('http://127.0.0.1:5452/preview',{waitUntil:'domcontentloaded'});
+ await page.getByText('최신 교체로그 2건 반영됨',{exact:true}).waitFor({timeout:120000});
+ await page.getByLabel('리포트 기준 팀',{exact:true}).selectOption('away');await page.getByRole('button',{name:'팀 리포트 PDF · 10페이지',exact:true}).waitFor();
+ const options=await page.getByLabel('히트맵 선수',{exact:true}).locator('option').allTextContents();assert(options.includes('어웨이 #7')&&options.includes('어웨이 #8'));
+ const value=await page.getByLabel('히트맵 선수',{exact:true}).locator('option').filter({hasText:'어웨이 #8'}).getAttribute('value');await page.getByLabel('히트맵 선수',{exact:true}).selectOption(value);
+ assert.match(await page.locator('.mr-preview .mr-comment').first().innerText(),/약 11초/);assert.equal(await page.locator('.mr-preview .mr-position').count(),0);
+ await page.screenshot({path:root+'/workspace.png',fullPage:false});await page.locator('.mr-preview .mr-sheet').screenshot({path:root+'/short-stint.png'});
+ const downloading=page.waitForEvent('download',{timeout:180000});await page.getByRole('button',{name:'팀 리포트 PDF · 10페이지',exact:true}).click();
+ const download=await Promise.race([downloading,page.waitForFunction(()=>document.querySelector('.mr-notice')?.textContent?.startsWith('내보내기 실패'),{},{timeout:180000}).then(async()=>{throw Error(await page.locator('.mr-notice').innerText());})]);await download.saveAs(root+'/away.pdf');
+ const pdf=await PDFDocument.load(fs.readFileSync(root+'/away.pdf'));assert.equal(pdf.getPageCount(),10);assert(pdf.getPages().every(p=>Math.abs(p.getWidth()-595.28)<1&&Math.abs(p.getHeight()-841.89)<1));
+ const match=new URL(page.url()).searchParams.get('match')||'3b2e8d21-fd06-517c-a8bf-4cf893d4238b';const url='http://127.0.0.1:5452/api/futsal/fla-video/matches/'+match;
+ const old=await(await page.request.get(url)).json();let saved=old.substitutions;const log=structuredClone(saved.log);log.substitutions[0].note='UI regression update';
+ await page.request.put(url+'/substitutions',{data:{revision:saved.revision,log}});
+ await page.getByRole('button',{name:'팀 리포트 PDF · 10페이지',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.mr-notice')?.textContent?.includes('교체로그가 변경되었습니다.'),{},{timeout:20000});
+ await page.getByText('최신 교체로그 2건 반영됨',{exact:true}).waitFor({timeout:120000});
+ assert.deepEqual(errors,[]);console.log('PASS: real automatic pairing, 12 stints, 11-second scope, source-video entry images, 10 A4 pages, stale-log export guard. '+root);
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1});
