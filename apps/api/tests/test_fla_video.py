@@ -98,17 +98,18 @@ class FlaVideoTests(unittest.TestCase):
         self.assertEqual(restored['events'],[])
         self.assertEqual(restored['state']['version'],self.version)
         self.assertEqual(self.save_log(log,revision).status_code,409)
-    def test_substitution_validation_future_wrong_video_and_writer(self):
+    def test_substitution_validation_future_wrong_video_and_revision(self):
         log=self.substitution_log();self.update(action='start')
         self.update(cursor_ms=2000,frontier_ms=2000,segments=[dict(start_ms=0,end_ms=2000,team='HOME')])
         for event in [dict(id='future',time=7.001,team='home',outId='a',inId='b',note=''),dict(id='bench',time=6,team='home',outId='b',inId='a',note=''),dict(id='self',time=6,team='home',outId='a',inId='a',note='')]:
             log['substitutions']=[event];self.assertEqual(self.save_log(log).status_code,400)
         log['substitutions']=[];log['video']['name']='other.mp4';self.assertEqual(self.save_log(log).status_code,400)
         log['video']['name']='test.mp4'
-        self.assertEqual(self.save_log(log,client_id=str(uuid4())).status_code,409)
+        self.assertEqual(self.save_log(log,client_id=str(uuid4())).status_code,200)
+        self.assertEqual(self.save_log(log,revision=0).status_code,409)
         log['initialPlayers']=['a','a'];self.assertEqual(self.save_log(log).status_code,400)
         log['initialPlayers']=['a'];log['players'][1]['jersey']='007';self.assertEqual(self.save_log(log).status_code,400)
-        self.assertIsNone(self.client.get(self.base).json()['substitutions']['log'])
+        self.assertEqual(self.client.get(self.base).json()['substitutions']['log']['substitutions'],[])
     def test_substitution_reset_and_config_invalidate_old_log_revisions(self):
         log=self.substitution_log();r=self.save_log(log);self.assertEqual(r.status_code,200,r.text)
         revision=r.json()['substitutions']['revision']
@@ -149,10 +150,74 @@ class FlaVideoTests(unittest.TestCase):
         log['substitutions']=original;log['schema']='fpa-substitution-log/v1'
         self.assertEqual(self.save_log(log).status_code,400,'Legacy malformed pairs must not be silently converted')
 
-    def test_read_only_match_cannot_save_substitutions(self):
+    def test_completed_recording_can_add_edit_delete_substitutions_without_reopening(self):
+        self.update(action='start')
+        self.update(cursor_ms=2000,frontier_ms=2000,segments=[dict(start_ms=0,end_ms=2000,team='HOME')])
+        self.update(action='finish',cursor_ms=2000,frontier_ms=2000)
+        before=self.client.get(self.base).json()
         with self.Session() as db:
-            match=db.get(Match,self.id);match.archived=True;db.commit()
-        self.assertEqual(self.save_log(self.substitution_log()).status_code,403)
+            metadata=dict(db.get(Match,self.id).metadata_json)
+            state_count=db.query(State).count()
+        log=self.substitution_log();log.update(schema='fpa-substitution-log/v2',players=[],initialPlayers=[])
+        # Final whistle/archival frontier need not span the entire source clip.
+        log['substitutions']=[dict(id='h',time=25,team='home',note='')]
+        for note in ['', '시각 검수 완료']:
+            log['substitutions'][0]['note']=note
+            self.assertEqual(self.save_log(log,client_id=str(uuid4())).status_code,200)
+        restored=self.client.get(self.base).json()
+        self.assertTrue(restored['state']['ended'])
+        for key in ['state','events','segments','possession']:
+            self.assertEqual(restored[key],before[key])
+        log['substitutions']=[];self.assertEqual(self.save_log(log).status_code,200)
+        with self.Session() as db:
+            self.assertEqual(db.get(Match,self.id).metadata_json['fla_video'],metadata['fla_video'])
+            self.assertEqual(db.query(State).count(),state_count)
+
+    def test_archived_dashboard_match_can_log_source_time_without_video_start(self):
+        with self.Session() as db:
+            match=db.get(Match,self.id);match.archived=True
+            match.metadata_json={**match.metadata_json,'fla_video':{'upload_id':'upload','configured':False,'duration_ms':0,'offset_ms':0,'started':False,'ended':False}}
+            db.add(Event(id=uuid4(),match_id=self.id,type='XG',clock_ms=1000,team='HOME',xg=.4))
+            db.commit()
+        before=self.client.get(self.base).json()
+        self.assertFalse(before['can_write']);self.assertTrue(before['can_write_substitutions'])
+        log=self.substitution_log();log.update(schema='fpa-substitution-log/v2',players=[],initialPlayers=[]);log['video']['from']=0
+        log['substitutions']=[dict(id='a',time=35,team='away',note='교체')]
+        self.assertEqual(self.save_log(log).status_code,200)
+        restored=self.client.get(self.base).json()
+        for key in ['match','state','events','segments','possession']:
+            self.assertEqual(restored[key],before[key])
+        self.assertEqual(restored['substitutions']['log'],log)
+        log['substitutions'][0]['time']=40
+        self.assertEqual(self.save_log(log).status_code,200)
+        log['substitutions']=[]
+        self.assertEqual(self.save_log(log).status_code,200)
+        self.assertEqual(self.update(action='start')[0].status_code,403)
+        self.assertEqual(self.client.post(self.base+'/events',json=dict(event_id=str(uuid4()),client_id=self.client_id,type='ATTACK_LANE',clock_ms=1000,team='HOME',lane='CENTER')).status_code,403)
+        self.assertEqual(self.client.post(self.base+'/reset',json=dict(request_id=str(uuid4()),client_id=self.client_id,version=self.version,kind='recording')).status_code,403)
+
+    def test_source_only_log_locks_video_bounds_and_retains_write_permissions(self):
+        self.client.put(self.base+'/video',json={'upload_id':'upload','version':self.version})
+        log=self.substitution_log();log.update(schema='fpa-substitution-log/v2',players=[],initialPlayers=[]);log['video']['from']=0
+        log['substitutions']=[dict(id='h',time=25,team='home',note='')]
+        self.assertEqual(self.save_log(log).status_code,200)
+        for key,value in [('name','other.mp4'),('duration',91),('from',1),('to',80)]:
+            old=log['video'][key];log['video'][key]=value
+            self.assertEqual(self.save_log(log).status_code,400)
+            log['video'][key]=old
+        for time in [90,91]:
+            log['substitutions'][0]['time']=time
+            self.assertEqual(self.save_log(log).status_code,400)
+        log['substitutions'][0]['time']=25
+        with self.Session() as db:
+            db.add(User(id='owner',role='OPERATOR',name='owner'))
+            match=db.get(Match,self.id);match.archived=True;match.operator_id='owner';db.commit()
+        self.user=User(id='other',role='OPERATOR',name='other')
+        self.assertFalse(self.client.get(self.base).json()['can_write_substitutions'])
+        self.assertEqual(self.save_log(log).status_code,403)
+        self.user=User(id='owner',role='OPERATOR',name='owner')
+        self.assertTrue(self.client.get(self.base).json()['can_write_substitutions'])
+        self.assertEqual(self.save_log(log).status_code,404,'Source-video access is still required')
 
     def test_fixtures_and_strict_ordered_filename_matching(self):
         self.assertEqual(len(FIXTURES),39);self.assertEqual(sum(f['stage']=='정규' for f in FIXTURES),17)

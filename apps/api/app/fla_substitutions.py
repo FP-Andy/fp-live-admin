@@ -55,13 +55,18 @@ def clear_substitutions(match):
     match.metadata_json={**(match.metadata_json or {}), 'fla_substitutions':{'revision':current['revision']+1,'log':None}}
 
 
-def validate_log(log, state, upload_name):
+def validate_log(log, state, upload_name, *, review_only=False, saved_video=None):
     def require(ok, message):
         if not ok: raise HTTPException(400,message)
     video=log.video
-    require(state.get('configured') and state.get('duration_ms',0)>0, '경기 영상과 시작 시각을 먼저 저장하세요.')
-    require(video.name==upload_name and abs(video.duration*1000-state['duration_ms'])<.001
-            and abs(video.from_*1000-state['offset_ms'])<.001 and abs(video.to-video.duration)<1e-6,
+    configured=bool(state.get('duration_ms',0)>0 and state.get('configured',True))
+    require(configured or review_only, '경기 영상과 시작 시각을 먼저 저장하세요.')
+    # Dashboard-completed games may have no FLA video clock. Capture source time
+    # independently, locking the media duration on the first log save.
+    duration=state['duration_ms']/1000 if configured else (saved_video or {}).get('duration',video.duration)
+    start=state.get('offset_ms',0)/1000 if configured else 0
+    require(video.name==upload_name and abs(video.duration-duration)<1e-6
+            and abs(video.from_-start)<1e-6 and abs(video.to-video.duration)<1e-6,
             '현재 경기 영상·시작 기준과 다른 타임로그입니다.')
     require(video.from_<video.to, '영상 범위를 확인하세요.')
     people={p.id:p for p in log.players}
@@ -77,7 +82,7 @@ def validate_log(log, state, upload_name):
     events=sorted(log.substitutions,key=lambda e:e.time)
     ids=set();participants=set();previous=None;uncertain_teams=set();marker_times=set()
     for e in events:
-        require(state.get('started') and e.time*1000<=state['offset_ms']+state.get('frontier_ms',0)+.001,
+        require(review_only or (state.get('started') and e.time*1000<=state['offset_ms']+state.get('frontier_ms',0)+.001),
                 '재생하여 확인한 시각에 교체를 기록하세요.')
         require(video.from_<=e.time<video.to, '교체 시각이 영상 범위 밖입니다.')
         require(e.id not in ids, '교체 ID가 중복되었습니다.')

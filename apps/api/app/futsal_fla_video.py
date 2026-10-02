@@ -63,12 +63,12 @@ def candidates(fixture, uploads):
     return found
 
 
-def get_match(db, id, user, write=False):
+def get_match(db, id, user, write=False, substitutions=False):
     query=db.query(Match).filter(Match.id==id)
     if write:query=query.with_for_update()
     match=query.first()
     if not match or match.sport!='FUTSAL':raise HTTPException(404,'풋살 경기를 찾지 못했습니다.')
-    if write and (match.archived or (match.operator_id and match.operator_id!=user.id and user.role!='SUPERADMIN')):
+    if write and ((match.archived and not substitutions) or (match.operator_id and match.operator_id!=user.id and user.role!='SUPERADMIN')):
         raise HTTPException(403,'이 경기의 기록 권한을 확인하세요.')
     return match
 
@@ -253,7 +253,8 @@ def create_router(dominance_builder=None):
     @router.get('/matches/{id}')
     def get(id: UUID,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
         m=get_match(db,id,user)
-        return {**serialize(db,m,dominance_builder),'can_write':not m.archived and (not m.operator_id or m.operator_id==user.id or user.role=='SUPERADMIN')}
+        allowed=not m.operator_id or m.operator_id==user.id or user.role=='SUPERADMIN'
+        return {**serialize(db,m,dominance_builder),'can_write':not m.archived and allowed,'can_write_substitutions':allowed}
 
     @router.put('/matches/{id}/config')
     def configure(id: UUID,body: Config,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
@@ -327,15 +328,17 @@ def create_router(dominance_builder=None):
 
     @router.put('/matches/{id}/substitutions')
     def substitutions(id: UUID,body: SaveSubstitutions,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
-        m=get_match(db,id,user,True);state=video_state(m)
+        # Completed matches stay closed to FLA writes; only this independent log is editable.
+        m=get_match(db,id,user,True,substitutions=True);state=video_state(m)
         current=(m.metadata_json or {}).get('fla_substitutions',{})
         if current.get('last_request')==str(body.request_id):return {'substitutions':saved_substitutions(m)}
         if current.get('revision',0)!=body.revision:raise HTTPException(409,'교체 기록이 다른 창에서 변경되었습니다. 새로고침 후 다시 확인하세요.')
         upload=allowed_upload(db,state.get('upload_id'),user)
-        log=validate_log(body.log,state,upload.payload.get('name',''))
-        claim(state,body.client_id)
-        save_metadata(m,state)
-        m.metadata_json={**m.metadata_json,'fla_substitutions':{'revision':body.revision+1,'log':log,'last_request':str(body.request_id),'upload_id':state['upload_id']}}
+        review_only=m.archived or state.get('ended') or not state.get('started')
+        log=validate_log(body.log,state,upload.payload.get('name',''),review_only=review_only,
+                         saved_video=(current.get('log') or {}).get('video'))
+        # Row lock + independent revision serialize edits without renewing a FLA recording lease.
+        m.metadata_json={**(m.metadata_json or {}),'fla_substitutions':{'revision':body.revision+1,'log':log,'last_request':str(body.request_id),'upload_id':state['upload_id']}}
         db.commit();return {'substitutions':saved_substitutions(m)}
 
     @router.post('/matches/{id}/events')
