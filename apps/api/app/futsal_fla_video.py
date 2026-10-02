@@ -23,6 +23,7 @@ from .services import apply_possession_segment, apply_attack_event, apply_xg_eve
 from .xgot import estimate_xgot
 from .fpa_cv import same_origin
 from .fpa_cv_storage import storage
+from .fla_substitutions import SaveSubstitutions, saved_substitutions, clear_substitutions, validate_log
 
 FIXTURES = json.loads((Path(__file__).parent/'data/queen-cup-fla-2026.json').read_text())
 PREFIX = '/api/futsal/fla-video'
@@ -103,7 +104,7 @@ def serialize(db, match, dominance_builder=None):
     state.pop('writer',None);state.pop('writer_at',None);state.pop('last_request',None)
     return {'match':{'id':str(match.id),'name':match.name,'home':meta.get('home_team','Home'),'away':meta.get('away_team','Away'),
                      'fixture':meta.get('fla_fixture'),'lineups':meta.get('lineups',{}),'archived':match.archived},
-            'state':state,'possession':totals,
+            'state':state,'possession':totals,'substitutions':saved_substitutions(match),
             'segments':[{'start_ms':s.start_ms,'end_ms':s.end_ms,'team':s.team} for s in segments],
             'events':[dict(id=str(e.id),created_at=e.created_at.isoformat(),**{k:getattr(e,k) for k in keys}) for e in events],
             'flow':dominance_builder(match.id,60,db)['bins'] if dominance_builder else []}
@@ -262,6 +263,7 @@ def create_router(dominance_builder=None):
         if db.query(State).filter_by(match_id=id).first() or db.query(Event).filter_by(match_id=id).first():raise HTTPException(409,'기존 FLA 기록이 있는 경기에는 새 시간 기준을 적용할 수 없습니다.')
         allowed_upload(db,body.upload_id,user)
         if body.offset_ms>=body.duration_ms:raise HTTPException(400,'영상 안의 시작 장면을 선택하세요.')
+        if any(state.get(key)!=value for key,value in [('upload_id',body.upload_id),('offset_ms',body.offset_ms),('duration_ms',body.duration_ms)]):clear_substitutions(m)
         save_metadata(m,{'version':body.version+1,'upload_id':body.upload_id,'offset_ms':body.offset_ms,'duration_ms':body.duration_ms,'configured':True,
                          'cursor_ms':0,'frontier_ms':0,'started':False,'ended':False,'possession_team':'NONE','selected_team':'HOME','direction':'L2R','rate':1})
         db.commit();return serialize(db,m,dominance_builder)
@@ -275,6 +277,7 @@ def create_router(dominance_builder=None):
         allowed_upload(db,body.upload_id,user)
         # Match a source without guessing kickoff. The operator must save the
         # actual media start frame before this game can begin recording.
+        clear_substitutions(m)
         save_metadata(m,{'version':body.version+1,'upload_id':body.upload_id,'offset_ms':0,'duration_ms':0,'configured':False,
                          'cursor_ms':0,'frontier_ms':0,'started':False,'ended':False,'possession_team':'NONE','selected_team':'HOME','direction':'L2R','rate':1})
         db.commit();return serialize(db,m,dominance_builder)
@@ -314,12 +317,26 @@ def create_router(dominance_builder=None):
             if body.kind in ('events','recording'):b.home_xg=b.away_xg=b.home_attack_score=b.away_attack_score=0
             recompute_dominance(b)
         if body.kind=='recording':
+            clear_substitutions(m)
             db.query(State).filter_by(match_id=id).delete(synchronize_session=False)
             state.update(started=False,ended=False,cursor_ms=0,frontier_ms=0)
         state.update(version=body.version+1,last_reset_request=str(body.request_id))
         state.pop('last_request',None)
         save_metadata(m,state);db.commit()
         return serialize(db,m,dominance_builder)
+
+    @router.put('/matches/{id}/substitutions')
+    def substitutions(id: UUID,body: SaveSubstitutions,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
+        m=get_match(db,id,user,True);state=video_state(m)
+        current=(m.metadata_json or {}).get('fla_substitutions',{})
+        if current.get('last_request')==str(body.request_id):return {'substitutions':saved_substitutions(m)}
+        if current.get('revision',0)!=body.revision:raise HTTPException(409,'교체 기록이 다른 창에서 변경되었습니다. 새로고침 후 다시 확인하세요.')
+        upload=allowed_upload(db,state.get('upload_id'),user)
+        log=validate_log(body.log,state,upload.payload.get('name',''))
+        claim(state,body.client_id)
+        save_metadata(m,state)
+        m.metadata_json={**m.metadata_json,'fla_substitutions':{'revision':body.revision+1,'log':log,'last_request':str(body.request_id),'upload_id':state['upload_id']}}
+        db.commit();return {'substitutions':saved_substitutions(m)}
 
     @router.post('/matches/{id}/events')
     def event(id: UUID,body: VideoEvent,user: User=Depends(require_session_user),db: Session=Depends(get_db)):

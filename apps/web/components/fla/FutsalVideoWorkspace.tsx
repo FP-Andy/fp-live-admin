@@ -7,6 +7,8 @@ import {bufferedSeconds,sameVideoFile} from '../../lib/video-buffer';
 import {futsalPitchPoint} from '../../lib/futsal-pitch';
 import {futsalShotThreat} from './FutsalShotPitch';
 import {MatchPossessionCard,MatchAttackCard,MatchShotCard,MatchRecentRecords,MatchPossessionTimeline,MatchFlowCard} from './MatchControlCards';
+import FutsalSubstitutionLog, {type SavedSubstitutions} from './FutsalSubstitutionLog';
+import type {SubstitutionLog} from '../../public/fla-video/substitution-log.mjs';
 import './fla-video.css';
 
 type Lane='LEFT'|'CENTER'|'RIGHT';
@@ -144,6 +146,14 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     try{await flush();const next=await request(`/matches/${id}/events`,payload);merge(next);setNotice(`${fmt(payload.clock_ms)} · ${type==='XG'?'슈팅':'공격'} 기록 저장`);if(type==='XG'){setShot(null);setGoal(false);setOwnGoal(false);setGoalmouth(null);setPlayer('');setXgValue('0.10');setEstimateNotice('');}}
     catch(e){fail(e);}finally{eventBusy.current=false;setBusy(false);}
   }
+  async function saveSubstitutions(log:SubstitutionLog,revision:number,requestId:string):Promise<SavedSubstitutions>{
+    video.current?.pause();sample();setBusy(true);
+    try{
+      await flush();
+      const next=await request(`/matches/${id}/substitutions`,{log,revision,request_id:requestId,client_id:client.current},'PUT');
+      merge(next);return next.substitutions;
+    }finally{setBusy(false);}
+  }
   function reset(kind:ResetKind){
     if(!canWrite||busy)return;
     video.current?.pause();setPendingReset(kind);
@@ -252,6 +262,12 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
         shotPoint={shot} goalmouthPoint={goalmouth} canWrite={canWrite} canRecord={canWrite&&s.started&&!busy} xgValue={xgValue} setXgValue={setXgValue} xgotValue="0.000" estimateXgFromPitch={estimate} estimateXgotFromGoalmouth={()=>{}} submitXg={()=>void addEvent('XG')} isSavingShot={busy}
         onGoalmouthClick={e=>{const r=e.currentTarget.getBoundingClientRect();setGoalmouth({x:Number(Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)).toFixed(3)),y:Number(Math.max(0,Math.min(1,1-(e.clientY-r.top)/r.height)).toFixed(3))});}}
         onPitchClick={(e:MouseEvent<HTMLDivElement>)=>{if(!canWrite)return;const r=e.currentTarget.getBoundingClientRect();setShot(futsalPitchPoint((e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height));setEstimateNotice('');}} xgEstimateMeta={estimateNotice} xgotEstimateMeta=""/>
+      <FutsalSubstitutionLog key={id} matchId={id}
+        video={s.configured&&uploadId===s.upload_id?{name:uploads.find(u=>u.id===s.upload_id)?.name||'',duration:(data.state.duration_ms||0)/1000,from:s.offset_ms/1000,to:(data.state.duration_ms||0)/1000}:null}
+        saved={data.substitutions||{revision:0,log:null}} names={{home:names.HOME,away:names.AWAY}}
+        canWrite={canWrite} busy={busy} started={s.started} observedTo={(s.offset_ms+s.frontier_ms)/1000} ended={s.ended}
+        capture={()=>{const v=video.current;if(!v||v.readyState<1||v.seeking)throw Error('영상 재생 상태를 확인하세요.');v.pause();sample();return Math.round(v.currentTime*1000)/1000;}}
+        seek={seconds=>rewind(seconds*1000)} save={saveSubstitutions}/>
       <MatchRecentRecords summary={summary} canWrite={canWrite} isResettingEvents={busy} resetEvents={()=>void reset('events')} displayClockLabel={fmt}/>
       <MatchPossessionTimeline possessionLogs={timeline} downloadPossessionCsv={csv} resetPossessionLogView={()=>setTimelineFrom(s.frontier_ms)}/>
       <MatchFlowCard isFutsal={true} dominanceChartData={chart} dominanceXAxisTicks={(data.flow||[]).map((b:any)=>b.start_ms/60000)} formatDominanceTick={v=>String(Math.round(v))} dominanceMeta={null} dominanceSeriesData={series}/>
@@ -259,7 +275,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     <dialog ref={resetDialog} className="fv-reset-dialog" role="alertdialog" aria-labelledby="fv-reset-title" aria-describedby="fv-reset-description" data-fla-text-edit={pendingReset?'true':undefined} onCancel={()=>setPendingReset(null)}>
       <h2 id="fv-reset-title">{pendingReset==='recording'?'전체 기록을 초기화할까요?':pendingReset==='possession'?'점유율을 초기화할까요?':'이벤트 기록을 초기화할까요?'}</h2>
       <strong>{names.HOME} vs {names.AWAY}</strong>
-      <p id="fv-reset-description">{pendingReset==='recording'?'점유율, 공격 방향, 슈팅·골, 경기 진행 기록을 모두 삭제합니다. 영상과 경기 시작 시각 설정은 유지됩니다.':pendingReset==='possession'?'점유율 기록을 삭제하고 0:0부터 다시 집계합니다. 공격 방향과 슈팅·골 기록은 유지됩니다.':'공격 방향과 슈팅·골 기록을 모두 삭제합니다. 점유율 기록은 유지됩니다.'}<br/>삭제한 기록은 되돌릴 수 없습니다.</p>
+      <p id="fv-reset-description">{pendingReset==='recording'?'점유율, 공격 방향, 슈팅·골, 교체 타임로그, 경기 진행 기록을 모두 삭제합니다. 영상과 경기 시작 시각 설정은 유지됩니다.':pendingReset==='possession'?'점유율 기록을 삭제하고 0:0부터 다시 집계합니다. 공격 방향과 슈팅·골 기록은 유지됩니다.':'공격 방향과 슈팅·골 기록을 모두 삭제합니다. 점유율 기록은 유지됩니다.'}<br/>삭제한 기록은 되돌릴 수 없습니다.</p>
       <div className="fv-reset-actions"><button className="btn-secondary" onClick={()=>setPendingReset(null)}>취소</button><button className="btn-danger fv-reset-button" onClick={()=>void confirmReset()}>{pendingReset==='recording'?'전체 기록 초기화':'초기화'}</button></div>
     </dialog>
   </div>;
