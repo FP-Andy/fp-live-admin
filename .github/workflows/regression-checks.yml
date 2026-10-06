@@ -56,8 +56,11 @@ jobs:
       - name: Production web build
         run: npm run build --prefix apps/web
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: node apps/web/node_modules/playwright-core/cli.js install --with-deps chromium
+      # Match the supported operator browser, including H.264 MP4 decoding.
+      - run: node apps/web/node_modules/playwright-core/cli.js install --with-deps chrome
       - name: Browser failure and recovery contracts (fixture APIs only)
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
         shell: bash
         run: |
           set -euo pipefail
@@ -77,6 +80,17 @@ jobs:
           FPC_BASKETBALL_QA_OUTPUT="$RUNNER_TEMP/fpc-basketball-qa" node scripts/test-basketball-recovery-ui.cjs
           CLIP_QA_ORIGIN=http://127.0.0.1:4354 CLIP_QA_OUTPUT="$RUNNER_TEMP/fpc-clips-qa" node scripts/test-manual-clip-results-ui.cjs
           FPC_DIALOG_QA_OUTPUT="$RUNNER_TEMP/fpc-dialog-qa" node scripts/test-completion-dialog-ui.cjs
+      - name: Browser regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpc-browser-regression
+          path: |
+            ${{ runner.temp }}/fpc-ui.log
+            ${{ runner.temp }}/fpc-*-qa/*.json
+            ${{ runner.temp }}/fpc-*-qa/*.txt
+            ${{ runner.temp }}/fpc-*-qa/*.png
+          retention-days: 7
 
   postgres-contracts:
     runs-on: ubuntu-latest

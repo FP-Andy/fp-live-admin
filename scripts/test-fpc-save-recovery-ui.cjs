@@ -77,7 +77,13 @@ async function pageIn(c, path) {
 }
 async function loadVideo(page) {
   await page.locator('input[type=file]').first().setInputFiles(mediaFile);
-  await page.getByRole('button', { name: /＋ 태깅/ }).waitFor();
+  try {
+    await page.getByRole('button', { name: /＋ 태깅/ }).waitFor();
+  } catch (error) {
+    await page.screenshot({ path: output + '/video-load-failure.png', fullPage: true });
+    fs.writeFileSync(output + '/video-load-failure.txt', await page.locator('body').innerText());
+    throw error;
+  }
   await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2);
 }
 async function exportDraft(page, name) {
@@ -94,6 +100,10 @@ async function tagKey(page, code, key, time) {
 (async () => {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : chromium.executablePath()), headless: true });
   try {
+    const codecPage = await browser.newPage();
+    const mp4Support = await codecPage.evaluate(() => document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01E"'));
+    await codecPage.close();
+    assert(mp4Support, 'Browser must support H.264 MP4 fixtures; set CHROME_PATH to Google Chrome');
     phase = 'highlight HTTP failure and persisted retry';
     const c = await context('FOOTBALL');
     const page = await pageIn(c, `/admin/match/${matchId}`);
