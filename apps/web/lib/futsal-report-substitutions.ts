@@ -1,12 +1,38 @@
 import {blankPlayer,type ReportDraft,type HeatSource,type HeatPlayer} from './futsal-report';
 import type {SubstitutionReport} from '../public/fpa-cv/substitution-report.mjs';
+function samePlayer(before:HeatPlayer|undefined,after:HeatPlayer){
+ if(!before||before.id!==after.id||before.group!==after.group)return false;
+ const a=before.substitutionStint,b=after.substitutionStint;
+ if((a?.kind||'starter')!==(b?.kind||'starter'))return false;
+ if(b?.kind==='substitute')return !!a?.eventId&&a.eventId===b.eventId&&a.entryTrackId!==undefined&&a.entryTrackId===b.entryTrackId&&a.sourceId===b.sourceId;
+ return (a?.sourceId||before.id)===(b?.sourceId||after.id);
+}
 export function applySubstitutionReport(d:ReportDraft,result:SubstitutionReport):ReportDraft{
  if(result.provenance.snapshotId!==d.sourceSnapshot?.id||result.provenance.matchId!==d.matchId)throw Error('현재 리포트와 교체 분석 원본이 다릅니다.');
- const {heatmap:h,...metadata}=result;const players=Object.fromEntries(h.players.map(p=>{const old=d.players[p.id],before=d.heatmap?.players.find(q=>q.id===p.id),changed=!!old&&(before?.activeFrom!==p.activeFrom||before?.activeTo!==p.activeTo);
-  // A replaced analysis slot is not an independently known shirt identity.
-  return [p.id,old&&!changed?old:{...blankPlayer(p),eventNumber:'',flaNumber:''}];}));
+ const {heatmap:h,...metadata}=result;const players=Object.fromEntries(h.players.map(p=>{const old=d.players[p.id],before=d.heatmap?.players.find(q=>q.id===p.id);
+  // Changed boundaries do not change identity. A different incoming track does.
+  return [p.id,old&&samePlayer(before,p)?old:{...blankPlayer(p),eventNumber:'',flaNumber:''}];}));
  const all=(side:'home'|'away')=>h.players.filter(p=>p.group===side).map(p=>p.id);
  return {...d,heatmap:h,players,substitutionReport:{...metadata,images:d.substitutionReport?.provenance.logRevision===metadata.provenance.logRevision?d.substitutionReport.images:undefined},selected:players[d.selected]?d.selected:h.players[0].id,teamReport:d.teamReport?{...d.teamReport,homePlayers:all('home'),awayPlayers:all('away')}:d.teamReport};
+}
+/** Back up the latest edit, including removal of the final substitution. Edits
+ * made while IDB is writing must reach the backup before the result is applied. */
+export async function preserveAndApplySubstitutions(getLatest:()=>ReportDraft|null,apply:(draft:ReportDraft)=>void,save:(draft:ReportDraft)=>Promise<unknown>,result:SubstitutionReport){
+ const initial=getLatest();if(!initial)return;
+ const backupId=crypto.randomUUID();
+ const matches=(d:ReportDraft|null):d is ReportDraft=>!!d&&d.id===initial.id&&d.sourceSnapshot?.id===result.provenance.snapshotId&&d.matchId===result.provenance.matchId;
+ let current=getLatest(),backedUp=false;
+ while(matches(current)){
+  if(current.heatmap&&(current.substitutionReport?.provenance.logRevision!==result.provenance.logRevision||current.substitutionReport?.provenance.snapshotId!==result.provenance.snapshotId)){
+   await save({...current,id:backupId,title:current.title+' · 교체 갱신 전',updatedAt:new Date().toISOString()});
+   backedUp=true;
+   if(getLatest()!==current){current=getLatest();continue;}
+  }
+  const next=applySubstitutionReport(current,result),before=current;
+  const reset=Object.keys(next.players).filter(id=>next.players[id]!==before.players[id]).length;
+  const removed=Object.keys(current.players).filter(id=>!next.players[id]).length;
+  apply(next);return {reset,removed,backedUp};
+ }
 }
 export function appearanceSource(source:HeatSource|null,p?:HeatPlayer):HeatSource|null{
  if(!source||p?.activeFrom===undefined||p.activeTo===undefined)return source;
