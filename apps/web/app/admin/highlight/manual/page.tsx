@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { parseManualWork, storeManualWork, type SavedWork, type Tag, type TagKind, type CardSettings } from '../../../../lib/manual-draft';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import {
@@ -26,25 +27,6 @@ type JobStatus = {
 
 // 태그 종류. 골이면 점수판 점수가 그 시점에 올라가고, 하이라이트면 점수는 그대로다.
 // 없으면(undefined) 팀 구분 없는 일반 태그 — 점수판에는 영향을 주지 않는다.
-type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal'
-  // 장면은 넣지 않고 점수판만 올리는 골. 신청팀 하이라이트에서 상대 골이 이것이다.
-  | 'home_goal_only' | 'away_goal_only'
-  // 농구 — 한 번에 1·2·3점이 오른다. 축구의 '골' 은 늘 1점이라 구분이 없었다.
-  | 'bb_home_1' | 'bb_home_2' | 'bb_home_3'
-  | 'bb_away_1' | 'bb_away_2' | 'bb_away_3'
-  // 클립 없이 점수판만 올린다. 경기 내내 점수를 따라가되 하이라이트로는 안 쓰는 득점.
-  | 'bb_home_1_only' | 'bb_home_2_only' | 'bb_home_3_only'
-  | 'bb_away_1_only' | 'bb_away_2_only' | 'bb_away_3_only'
-  // 구간 경계. 클립을 만들지 않고, 합본에서 그 자리에 전체화면 카드를 세운다.
-  | 'section';
-
-// before/after 는 이 태그만의 개별 앞/뒤 초. 없으면(undefined) 전역 padBefore/padAfter 를 따른다.
-type Tag = {
-  id: string; t: number; before?: number; after?: number; kind?: TagKind;
-  /** 구간 태그일 때 카드에 찍힐 이름. 비어 있으면 순서대로 붙는 기본 이름을 쓴다. */
-  label?: string;
-};
-
 /** 합본 사이에 끼는 전체화면 카드. 시작 카드는 맨 앞, 구간 카드는 T 자리마다. */
 /** 템플릿이 알려주는 '고칠 수 있는 항목' 하나. 좌표·글꼴은 서버만 알면 된다. */
 type CardFieldSpec = {
@@ -85,30 +67,6 @@ type CardTemplateSpec = {
   board_fields?: CardFieldSpec[];
 };
 
-type CardSettings = {
-  enabled: boolean;
-  /** 고른 템플릿. 대회마다 시안이 달라 여러 벌 중에서 고른다. */
-  template: string;
-  /** 시작 카드가 머무는 시간(초). */
-  introDurationSec: number;
-  /** 구간 카드가 머무는 시간(초). 읽을 거리가 달라 따로 잡는다. */
-  sectionDurationSec: number;
-  /** 템플릿별로 따로 보관한다 — 템플릿을 바꿨다 돌아와도 적어둔 게 남아 있어야 하고,
-   *  항목 id 가 겹쳐도 서로 섞이면 안 된다. {템플릿id: {항목id: 값}} */
-  values: Record<string, Record<string, string>>;
-  /** 항목을 옮긴 자리와 크기. 값과 같은 이유로 템플릿별로 나눠 둔다.
-   *  {템플릿id: {항목id: {x, y, scale}}} — x·y 는 시안 좌표, scale 은 % 다.
-   *  안 건드린 항목은 아예 없다. */
-  boxes: Record<string, Record<string, { x: number; y: number; scale?: number }>>;
-  /** 배경 색(#RRGGBB). 비우면 시안 색 그대로. 템플릿별로 따로 둔다 —
-   *  시안이 다르면 어울리는 색도 다르다. {템플릿id: 색} */
-  colors: Record<string, string>;
-  /** 자동으로 서는 첫 구간 카드의 이름. 비우면 종목 기본값(1쿼터·전반전). */
-  firstSectionLabel: string;
-  /** 합본 맨 끝에 파인플레이 로고 영상을 붙인다. 내장 자산이라 켜고 끄기만 한다. */
-  outro: boolean;
-};
-
 const CARD_SEC_DEFAULT = 3;
 
 /** 마무리 카드(파인플레이 로고 영상)의 길이. 레포에 든 고정 자산이라 바뀌지 않는다. */
@@ -130,11 +88,6 @@ const DEFAULT_CARDS: CardSettings = {
   colors: {},
   firstSectionLabel: '',
   outro: true,
-};
-
-type SavedWork = {
-  tags: Tag[]; padBefore: number; padAfter: number;
-  scoreboard?: Scoreboard; cards?: CardSettings;
 };
 
 /** 이어붙일 원본 하나. 길이·해상도는 파일을 고른 직후 메타데이터에서 읽어 채운다. */
@@ -166,7 +119,7 @@ const FOOTBALL_TAG_KINDS: TagKindSpec[] = [
  *  홈 q·w·e / 어웨이 a·s·d 로 **손이 좌우로 갈린다**(2026-09-19 합의). 축구처럼
  *  q·w·e·r 한 줄로 두면 홈/어웨이를 헷갈린다.
  *
- *  장면(득점 없는 하이라이트)은 **z** 다. 축구의 s 자리를 여기서는 어웨이 2점이 쓴다.
+ *  장면(득점 없는 하이라이트)은 **X** 다. 축구의 s 자리를 여기서는 어웨이 2점이 쓴다.
  *
  *  '점수만'(클립 없이 점수판만)은 오른손 u·i·o / j·k·l 이다. 득점이 잦은 종목이라
  *  전부 클립으로 만들면 합본이 쓸모없이 길어지는데, 점수판은 그것까지 따라가야 한다.
@@ -191,7 +144,7 @@ const BASKETBALL_TAG_KINDS: TagKindSpec[] = [
   { key: 'bb_away_3_only', code: 'KeyL', letter: 'l', hangul: 'ㅣ', label: '원정 3점(점수만)', badge: '원정 +3·점수만', color: '#E8452F', side: 'away', goal: true, points: 3, clip: false },
 ];
 
-/** 종류 없는 일반 태그를 찍는 키. 농구는 s 를 어웨이 2점이 쓰므로 z 로 옮겼다. */
+/** 종류 없는 일반 태그를 찍는 키. 농구는 S 를 원정 2점이 쓰므로 X 로 옮겼다. */
 // 득점 없는 장면을 찍는 키. 안내 문구와 버튼 라벨이 여기서 나온다 — 한 곳만 고치면 된다.
 // 농구가 S 를 못 쓰는 이유: 그 자리는 원정 2점이 쓴다.
 const PLAIN_TAG_HOTKEY: Record<'FOOTBALL' | 'BASKETBALL',
@@ -551,6 +504,11 @@ export default function ManualHighlightPage() {
   const [padBefore, setPadBefore] = useState(10);
   const [padAfter, setPadAfter] = useState(3);
   const [status, setStatus] = useState('');
+  const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saved' | 'partial' | 'failed'>('idle');
+  const [loadedDraftKey, setLoadedDraftKey] = useState('');
+  const [saveAttempt, setSaveAttempt] = useState(0);
+  const [recoveryMessage, setRecoveryMessage] = useState('');
+  const recoveryInputRef = useRef<HTMLInputElement | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [cutting, setCutting] = useState(false);
   const [cutProgress, setCutProgress] = useState<CutProgress | null>(null);
@@ -630,6 +588,7 @@ export default function ManualHighlightPage() {
   useEffect(() => revoke, [revoke]);
 
   const pickFiles = async (list: FileList | null) => {
+    if ((draftSaveState === 'failed' || draftSaveState === 'partial') && !window.confirm('브라우저에 저장되지 않은 내용이 있습니다. 복구 파일을 받지 않고 영상을 바꿀까요?')) return;
     revoke();
     setTags([]);
     setCurrent(0);
@@ -700,66 +659,95 @@ export default function ManualHighlightPage() {
     if (introUrlRef.current) URL.revokeObjectURL(introUrlRef.current);
   }, []);
 
-  // 이전에 태깅하던 파일이면 저장해둔 작업을 되살린다.
-  // 패딩도 함께 복원해야 한다. 태그만 돌아오고 패딩이 기본값으로 리셋되면
-  // 같은 태그인데 클립 구간이 조용히 달라진다.
+  const draftWork = useMemo<SavedWork>(() => ({ tags, padBefore, padAfter, scoreboard, cards, watermark }),
+    [tags, padBefore, padAfter, scoreboard, cards, watermark]);
+
+  const applyDraft = (saved: SavedWork) => {
+    setTags(saved.tags);
+    setPadBefore(saved.padBefore);
+    setPadAfter(saved.padAfter);
+    setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
+    setCards({ ...DEFAULT_CARDS, ...saved.cards });
+    setWatermark({ ...DEFAULT_WATERMARK, ...saved.watermark });
+    setClips([]);
+    setCutProgress(null);
+  };
+
+  // Complete restoration before the saving effect can touch the new file key.
   useEffect(() => {
+    setLoadedDraftKey('');
+    setDraftSaveState('idle');
+    setRecoveryMessage('');
     if (!storageKey) return;
     try {
       const raw = localStorage.getItem(storageKey);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Tag[] | SavedWork;
-      const saved: SavedWork = Array.isArray(parsed)
-        ? { tags: parsed, padBefore: 10, padAfter: 2 } // 패딩을 저장하기 전 형식
-        : parsed;
-      if (!saved?.tags?.length) return;
-      setTags(saved.tags);
-      setPadBefore(saved.padBefore ?? 10);
-      setPadAfter(saved.padAfter ?? 3);
-      // 팀명·색까지 같이 돌아와야 한다. 태그만 복원되고 점수판이 초기화되면
-      // 같은 태그인데 결과물의 점수판이 조용히 달라진다.
-      if (saved.scoreboard) setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
-      if (saved.cards) setCards({ ...DEFAULT_CARDS, ...saved.cards });
-      setStatus(
-        `이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore ?? 10}초 / 뒤 ${saved.padAfter ?? 3}초`,
-      );
+      if (raw) {
+        const saved = parseManualWork(raw, kindsForSport(sport).map((kind) => kind.key));
+        applyDraft(saved);
+        setStatus(`이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore}초 / 뒤 ${saved.padAfter}초`);
+      } else {
+        setTags([]);
+      }
+      setLoadedDraftKey(storageKey);
     } catch {
-      /* 손상된 저장값은 무시하고 새로 시작한다 */
+      setDraftSaveState('failed');
+      setRecoveryMessage('기존 저장 내용을 읽지 못했습니다. 원본 저장값은 유지했습니다. 현재 작업은 복구 파일로 보관하세요.');
     }
-  }, [storageKey]);
+  }, [storageKey, sport]);
 
   useEffect(() => {
-    if (!storageKey) return;
-    if (!tags.length) { localStorage.removeItem(storageKey); return; }
+    if (!storageKey || loadedDraftKey !== storageKey) return;
+    try { setDraftSaveState(storeManualWork(localStorage, storageKey, draftWork)); }
+    catch { setDraftSaveState('failed'); }
+  }, [draftWork, storageKey, loadedDraftKey, saveAttempt]);
 
-    const work: SavedWork = { tags, padBefore, padAfter, scoreboard, cards };
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(work));
-      return;
-    } catch {
-      /* 저장 칸이 넘쳤다. 아래에서 그림만 빼고 다시 해 본다. */
-    }
-    // 브라우저 저장 칸은 5MB 남짓인데 로고는 dataURL 이라 한 장에 몇 MB 가 된다.
-    // **여기서 터지면 화면이 통째로 죽는다** — 태깅한 것까지 날아간다.
-    // 그림을 뺀 나머지(태그·구간·설정)라도 남기는 편이 훨씬 낫다.
-    const drop = (value: string) => (String(value).startsWith('data:') ? '' : value);
-    const lean: SavedWork = {
-      ...work,
-      scoreboard: { ...scoreboard, logoUrl: '' },
-      cards: {
-        ...cards,
-        values: Object.fromEntries(Object.entries(cards.values).map(([tid, fields]) => [
-          tid, Object.fromEntries(Object.entries(fields).map(([id, v]) => [id, drop(v)])),
-        ])),
-      },
+  const unsafeDraft = !!storageKey && (draftSaveState === 'failed' || draftSaveState === 'partial');
+  useEffect(() => {
+    if (!unsafeDraft) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    const leave = (event: MouseEvent) => {
+      const anchor = (event.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!anchor || anchor.download || anchor.target === '_blank' || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      const target = new URL(anchor.href, location.href);
+      if (target.pathname === location.pathname && target.search === location.search) return;
+      if (!window.confirm('브라우저에 저장되지 않은 내용이 있습니다. 복구 파일을 받지 않고 이동할까요?')) {
+        event.preventDefault(); event.stopPropagation();
+      }
     };
+    window.addEventListener('beforeunload', warn);
+    document.addEventListener('click', leave, true);
+    return () => { window.removeEventListener('beforeunload', warn); document.removeEventListener('click', leave, true); };
+  }, [unsafeDraft]);
+
+  const sourceIdentity = () => sources.map((source) => ({ name: source.file.name, size: source.file.size }));
+  const exportDraft = () => {
+    const payload = { format: 'fpc-manual-draft', version: 1, sport, sources: sourceIdentity(), work: draftWork };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = `manual-tags-${sport.toLowerCase()}.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const importDraft = async (file: File | undefined) => {
+    if (!file) return;
+    const expectedKey = storageKey;
     try {
-      localStorage.setItem(storageKey, JSON.stringify(lean));
-      setStatus('로고가 커서 작업 저장에는 로고를 뺐습니다 — 새로 고치면 로고만 다시 넣으세요.');
-    } catch {
-      /* 그래도 안 들어가면 저장을 포기한다. 태깅은 계속할 수 있어야 한다. */
+      const payload = JSON.parse(await file.text());
+      if (payload.format !== 'fpc-manual-draft' || payload.version !== 1 || payload.sport !== sport
+        || JSON.stringify(payload.sources) !== JSON.stringify(sourceIdentity())) {
+        throw new Error('종목과 원본 영상의 이름·크기·순서가 같은 복구 파일을 선택하세요.');
+      }
+      const saved = parseManualWork(JSON.stringify(payload.work), tagKinds.map((kind) => kind.key));
+      if (saved.tags.some((tag) => tag.t > duration + 0.1)) throw new Error('영상 길이를 벗어난 태그가 있습니다.');
+      if (currentDraftKeyRef.current !== expectedKey) return;
+      if (tags.length && !window.confirm('현재 태그와 출력 설정을 복구 파일의 내용으로 바꿀까요?')) return;
+      applyDraft(saved);
+      setLoadedDraftKey(storageKey);
+      setRecoveryMessage(`복구 파일에서 태그 ${saved.tags.length}개와 출력 설정을 불러왔습니다.`);
+    } catch (error) {
+      if (currentDraftKeyRef.current === expectedKey) setRecoveryMessage(error instanceof Error ? error.message : '복구 파일을 읽지 못했습니다.');
     }
-  }, [tags, padBefore, padAfter, scoreboard, cards, storageKey]);
+  };
+  const currentDraftKeyRef = useRef(storageKey);
+  currentDraftKeyRef.current = storageKey;
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed;
@@ -1568,6 +1556,20 @@ export default function ManualHighlightPage() {
 
       {videoUrl && !unsupported ? (
         <>
+          <div style={card} data-testid="manual-draft-status" role={unsafeDraft ? 'alert' : 'status'}>
+            <strong>{draftSaveState === 'saved' ? '이 브라우저에 저장됨' : draftSaveState === 'partial' ? '그림을 제외하고 저장됨' : draftSaveState === 'failed' ? '브라우저에 저장하지 못함' : '작업 복원 중…'}</strong>
+            {unsafeDraft ? <p>현재 입력은 화면에 남아 있습니다. 이동 전에 복구 파일을 받으세요.{draftSaveState === 'partial' ? ' 로고와 카드 그림은 복구 파일에 포함됩니다.' : ''}</p> : null}
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              <button style={smallBtn} onClick={exportDraft}>작업 복구 파일 저장</button>
+              <button style={smallBtn} onClick={() => recoveryInputRef.current?.click()}>복구 파일 불러오기</button>
+              {unsafeDraft && loadedDraftKey === storageKey ? <button style={smallBtn} onClick={() => setSaveAttempt((value) => value + 1)}>브라우저 저장 다시 시도</button> : null}
+              <input ref={recoveryInputRef} type="file" accept="application/json,.json" aria-label="수동 태깅 복구 파일" hidden onChange={(event) => {
+                const file = event.target.files?.[0]; event.target.value = ''; void importDraft(file);
+              }} />
+            </div>
+            <p style={{ fontSize: 12, marginBottom: 0 }}>복구 파일: 태그·패딩·점수판·카드·워터마크 설정. 원본 영상·인트로·음악 파일은 다시 선택해야 합니다.</p>
+            {recoveryMessage ? <p role="status">{recoveryMessage}</p> : null}
+          </div>
           <div style={card}>
             <video
               ref={videoRef}
@@ -2529,14 +2531,15 @@ export default function ManualHighlightPage() {
 
             {tags.length === 0 ? (
               <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
-                아직 태그가 없습니다. 재생하며 하이라이트 지점에서 <strong>S</strong>(일반)나
-                {' '}<strong>Q·W·E·R</strong>(홈 골·홈 장면·원정 장면·원정 골)을 누르세요.
+                아직 태그가 없습니다. 일반 장면은 <strong>{plainHotkey.label}</strong>({plainHotkey.hangul})로 태깅하세요.
+                {' '}{tagKinds.filter((kind) => kind.clip !== false).map((kind) => `${kind.letter.toUpperCase()} ${kind.label}`).join(' · ')}.
+                {isBasketball ? ' 일반 장면 태그는 점수를 올리지 않습니다.' : ''}
               </p>
             ) : (
               <>
               <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '0 0 10px' }}>
-                태그와 패딩은 자동 저장됩니다. 다른 페이지에 다녀와도 같은 파일을 다시 고르면 복원되지만,
-                추출해둔 클립은 남지 않아 다시 뽑아야 합니다.
+                {draftSaveState === 'saved' ? '태그와 출력 설정을 이 브라우저에 저장했습니다.' : '저장 상태를 확인하고 미저장 내용은 복구 파일로 보관하세요.'}
+                {' '}같은 원본 영상을 다시 선택하면 저장된 작업을 복원합니다. 추출한 클립은 다시 만들어야 합니다.
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {tags.map((tag, i) => {
