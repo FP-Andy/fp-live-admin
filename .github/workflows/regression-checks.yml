@@ -26,6 +26,9 @@ jobs:
         run: |
           python apps/api/tests/test_auth.py -v
           python apps/api/tests/test_match_write_access.py -v
+          python apps/api/tests/test_outbox_recovery.py -v
+          PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_fla_video.py -v
+          PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_analysis_snapshots.py -v
       - name: Individual manual clips and scene downloads
         run: python apps/api/tests/test_manual_clip_results.py -v
 
@@ -45,6 +48,7 @@ jobs:
           node apps/web/node_modules/typescript/bin/tsc --noEmit --incremental false -p apps/web/tsconfig.json
           node scripts/test-manual-draft.cjs
           node scripts/test-report-recovery.cjs
+          node scripts/test-basketball-persistence.cjs
           node scripts/test-futsal-match-report.cjs
           node scripts/test-futsal-team-report.cjs
           node scripts/test-futsal-report-stories.cjs
@@ -68,4 +72,32 @@ jobs:
           if [ "$ready" != true ]; then cat "$RUNNER_TEMP/fpc-ui.log"; exit 1; fi
           FPC_QA_OUTPUT="$RUNNER_TEMP/fpc-save-qa" node scripts/test-fpc-save-recovery-ui.cjs
           FPC_REPORT_QA_OUTPUT="$RUNNER_TEMP/fpc-report-qa" node scripts/test-report-recovery-ui.cjs
+          FPC_OWNER_QA_OUTPUT="$RUNNER_TEMP/fpc-owner-qa" node scripts/test-draft-ownership-ui.cjs
+          FPC_FLA_QA_OUTPUT="$RUNNER_TEMP/fpc-fla-qa" node scripts/test-fla-recording-recovery-ui.cjs
+          FPC_BASKETBALL_QA_OUTPUT="$RUNNER_TEMP/fpc-basketball-qa" node scripts/test-basketball-recovery-ui.cjs
           FPC_DIALOG_QA_OUTPUT="$RUNNER_TEMP/fpc-dialog-qa" node scripts/test-completion-dialog-ui.cjs
+
+  postgres-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: fpc_local_test_only
+          POSTGRES_DB: fpc_release_qa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r apps/api/requirements.txt
+      - name: Actual application and PostgreSQL ownership/revision contention
+        env:
+          FPC_TEST_DATABASE_URL: postgresql+psycopg2://postgres:fpc_local_test_only@127.0.0.1:5432/fpc_release_qa
+        run: python apps/api/tests/test_match_write_access.py -v

@@ -188,6 +188,8 @@ class ReleaseLockRequest(BaseModel):
 
 class StateRequest(BaseModel):
     state_id: UUID
+    update_kind: Literal['sample','command'] = 'sample'
+    command_revision: int | None = Field(default=None, ge=0)
     clock_ms: int = Field(ge=0)
     running: bool
     possession_team: PossessionTeam

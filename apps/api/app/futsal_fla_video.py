@@ -1,6 +1,7 @@
 """Futsal video coding: media time and monotonic possession progress are separate."""
 from copy import deepcopy
 import json
+import hashlib
 import math
 import os
 import re
@@ -180,8 +181,11 @@ def update_recording(db, match, body):
     state=video_state(match)
     if not state.get('upload_id'):raise HTTPException(409,'영상과 경기 시작 장면을 먼저 저장하세요.')
     if state.get('configured') is False or not state.get('duration_ms'):raise HTTPException(409,'경기 시작 시각을 먼저 확인하고 저장하세요.')
-    if state.get('last_request')==str(body.request_id):return
-    if state.get('version',0)!=body.version:raise HTTPException(409,'다른 변경이 저장되었습니다. 새로고침 후 이어서 기록하세요.')
+    request_hash=hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+    if state.get('last_request')==str(body.request_id):
+        if state.get('last_request_hash') and state['last_request_hash']!=request_hash:raise HTTPException(409,'같은 요청 ID의 기록 내용이 다릅니다.')
+        return
+    if state.get('version',0)!=body.version:raise HTTPException(409,'다른 창의 변경이 저장되었습니다. 현재 입력을 복구 JSON으로 보관하고 서버 기록과 대조하세요.')
     claim(state,body.client_id)
     frontier=state.get('frontier_ms',0)
     if body.action=='start':
@@ -206,7 +210,7 @@ def update_recording(db, match, body):
         apply_possession_segment(db,match.id,seg.team,seg.start_ms,seg.end_ms)
     state.update(version=body.version+1,frontier_ms=body.frontier_ms,cursor_ms=body.cursor_ms,
                  possession_team=body.possession_team,selected_team=body.selected_team,direction=body.direction,rate=body.rate,
-                 last_request=str(body.request_id),saved_at=time.time(),ended=state.get('ended',False) or body.action=='finish')
+                 last_request=str(body.request_id),last_request_hash=request_hash,saved_at=time.time(),ended=state.get('ended',False) or body.action=='finish')
     save_metadata(match,state)
     # Existing FLA summaries use this monotonic clock; replay never rewinds it.
     db.add(State(id=body.request_id,match_id=match.id,clock_ms=body.frontier_ms,running=False,

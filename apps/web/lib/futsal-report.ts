@@ -27,8 +27,9 @@ export function validateHeatmap(raw:unknown):HeatSource {
   if(p.activeFrom!==undefined||p.activeTo!==undefined){if(!Number.isFinite(p.activeFrom)||!Number.isFinite(p.activeTo)||p.activeFrom!<h.from||p.activeTo!>h.to||p.activeTo!<=p.activeFrom!)throw Error('출전 구간을 확인하세요.');}
   if(p.renderScale!==undefined&&(!Number.isFinite(p.renderScale)||p.renderScale<=0))throw Error('히트맵 색상 기준을 확인하세요.');
   if(p.activeFrom!==undefined&&p.positions.some(o=>o.t<p.activeFrom!-.002||o.t+o.seconds>p.activeTo!+.002))throw Error('출전 구간 밖 좌표가 있습니다.');
-  ids.add(p.id);let end=h.from;
-  for(const o of p.positions){if(!o||![o.x,o.y,o.t,o.seconds].every(Number.isFinite)||o.x<0||o.x>1||o.y<0||o.y>1||o.seconds<=0||o.t<end-.002||o.t+o.seconds>h.to+.002)throw Error('히트맵 관측 좌표가 올바르지 않습니다.');end=o.t+o.seconds;}
+  ids.add(p.id);let end=h.from,observed=0;const expectedGrid=new Float64Array(h.width*h.height);
+  for(const o of p.positions){if(!o||![o.x,o.y,o.t,o.seconds].every(Number.isFinite)||o.x<0||o.x>1||o.y<0||o.y>1||o.seconds<=0||o.t<end-.002||o.t+o.seconds>h.to+.002)throw Error('히트맵 관측 좌표가 올바르지 않습니다.');end=o.t+o.seconds;observed+=o.seconds;expectedGrid[Math.min(h.height-1,Math.floor(o.y*h.height))*h.width+Math.min(h.width-1,Math.floor(o.x*h.width))]+=o.seconds;}
+  if(Math.abs(p.grid.reduce((a,b)=>a+b,0)-observed)>Math.max(.05,observed*.00001)||p.grid.some((v,i)=>Math.abs(v-expectedGrid[i])>Math.max(.05,expectedGrid[i]*.00001)))throw Error('히트맵 눈금별 시간과 관측 좌표가 다릅니다. 원본 JSON을 보관하고 다시 생성하세요.');
  }
  validateHeatmapAugmentation(h);
  return h;

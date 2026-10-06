@@ -432,23 +432,32 @@ export default function MatchPage() {
     clockSpeedRef.current = 1;
   }, [sessionUser, match, canUseX2, clockSpeed]);
 
+  const clockRevision=useRef(0),stateQueue=useRef<Promise<unknown>>(Promise.resolve());
+  const applyServerClock=(state:any,revision?:number)=>{
+    if(typeof revision==='number')clockRevision.current=revision;
+    if(!state)return;
+    const ms=state.clock_ms||0;baseRef.current=ms;clockRef.current=ms;perfRef.current=state.running?performance.now():null;
+    runningRef.current=!!state.running;setRunning(!!state.running);setClockMs(ms);
+    setPossessionTeam(state.possession_team||'NONE');setSelectedTeam(state.selected_team||'HOME');setAttackLR(state.attack_lr||'L2R');
+  };
   const saveState = async (
-    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>
+    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>,sample=false
   ) => {
-    const effectiveClockMs = next?.clockMs ?? getCurrentClockMs();
-    const payload = {
-      state_id: makeId(),
-      clock_ms: effectiveClockMs,
-      running: next?.running ?? running,
-      possession_team: next?.possessionTeam ?? possessionTeam,
-      selected_team: next?.selectedTeam ?? selectedTeam,
-      attack_lr: next?.attackLR ?? attackLR,
-      allow_clock_rewind: Boolean(next?.allowClockRewind),
-    };
-    await apiJson(`/matches/${id}/state`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    const captured={clock_ms:next?.clockMs??getCurrentClockMs(),running:next?.running??running,
+      possession_team:next?.possessionTeam??possessionTeam,selected_team:next?.selectedTeam??selectedTeam,
+      attack_lr:next?.attackLR??attackLR,allow_clock_rewind:!!next?.allowClockRewind};
+    const run=stateQueue.current.catch(()=>{}).then(async()=>{
+      try{
+        const result=await apiJson<any>(`/matches/${id}/state`,{method:'POST',body:JSON.stringify({...captured,state_id:makeId(),update_kind:sample?'sample':'command',command_revision:clockRevision.current})});
+        if(result.command_revision!==undefined)clockRevision.current=result.command_revision;
+        if(result.ignored){applyServerClock(result.state,result.command_revision);if(!sample)throw Error('시간 명령이 적용되지 않았습니다. 서버 상태를 다시 확인하세요.');}
+        else if(!sample)applyServerClock(result.state,result.command_revision);
+        return result;
+      }catch(e){
+        try{const [m,s]=await Promise.all([apiJson<any>(`/matches/${id}`),apiJson<any>(`/matches/${id}/summary`)]);applyServerClock(s.state,m.metadata?.fla_clock_revision||0);}catch{}
+        setControlNotice('시간·점유 변경의 저장을 확인하지 못했습니다. 서버 상태를 다시 불러왔습니다. 연결을 확인한 뒤 재시도하세요.');throw e;
+      }
+    });stateQueue.current=run;return run;
   };
 
   const fetchAll = async () => {
@@ -465,8 +474,10 @@ export default function MatchPage() {
     setDominance(d.bins || []);
     setDominanceMeta(d);
 
+    if(!initializedRef.current)clockRevision.current=m.metadata?.fla_clock_revision||0;
     if (s?.state && !initializedRef.current) {
       initializedRef.current = true;
+      clockRevision.current=m.metadata?.fla_clock_revision||0;
       setClockMs(s.state.clock_ms || 0);
       setRunning(Boolean(s.state.running));
       setPossessionTeam(s.state.possession_team || 'NONE');
@@ -538,7 +549,7 @@ export default function MatchPage() {
   useEffect(() => {
     const t = setInterval(() => {
       if (canWrite && runningRef.current) {
-        saveState({ clockMs: clockRef.current }).catch(() => undefined);
+        saveState({ clockMs: clockRef.current },true).catch(() => undefined);
       }
     }, 3000);
     return () => clearInterval(t);
@@ -550,10 +561,11 @@ export default function MatchPage() {
     const wasRunning = runningRef.current;
     const frozen = getCurrentClockMs();
     try {
-      await saveState({clockMs: frozen, running: !wasRunning});
-      baseRef.current = frozen;
+      const applied=await saveState({clockMs: frozen, running: !wasRunning});
+      const accepted=applied.state?.clock_ms??frozen;
+      baseRef.current = accepted;
       perfRef.current = wasRunning ? null : performance.now();
-      setClockMs(frozen);
+      setClockMs(accepted);
       setRunning(!wasRunning);
       runningRef.current = !wasRunning;
     } catch { setControlNotice('시간 변경을 저장하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.'); }

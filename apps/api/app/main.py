@@ -177,6 +177,8 @@ from .schemas import (
     XGEventRequest,
     XGOTEstimateRequest,
 )
+from .basketball_state import apply_patch as apply_basketball_patch
+from .match_request_policy import require_sport, require_same_request, state_response
 from .services import apply_attack_event, apply_possession_segment, apply_xg_event, backfill_attack_scores, enqueue_outbox, latest_outbox, outbox_worker, recompute_dominance
 from .xg import estimate_xg as shared_estimate_xg, is_in_penalty_area as shared_is_in_penalty_area, normalize_shot_x as shared_normalize_shot_x
 
@@ -3513,6 +3515,7 @@ def _build_basketball_state(match_obj: Match) -> dict:
         "event_count": len(events),
         "last_event": last_event,
         "updated_at": _basketball_fla_state(match_obj).get("updated_at"),
+        "revision": int(_basketball_fla_state(match_obj).get("revision") or 0),
     }
 
 
@@ -4617,7 +4620,10 @@ def _require_partner_auth(x_api_key: str | None = Header(default=None, alias="X-
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "time": datetime.utcnow().isoformat()}
+    from .outbox_delivery import HEALTH
+    return {"ok": True, "time": datetime.utcnow().isoformat(), "workers": {"outbox": {
+        **HEALTH, "task_alive": bool(worker_task and not worker_task.done()),
+    }}}
 
 
 @app.post("/api/xg/estimate")
@@ -5987,6 +5993,7 @@ def get_basketball_state(
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
+    require_sport(match_obj, 'BASKETBALL')
     metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
     state = metadata.get("basketball_fla") if isinstance(metadata.get("basketball_fla"), dict) else {}
     return {
@@ -5994,6 +6001,7 @@ def get_basketball_state(
         "lineups": state.get("lineups") if isinstance(state.get("lineups"), dict) else None,
         "timer": state.get("timer") if isinstance(state.get("timer"), dict) else None,
         "updated_at": state.get("updated_at"),
+        "revision": int(state.get("revision") or 0),
     }
 
 
@@ -6004,51 +6012,40 @@ def put_basketball_state(
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
+    require_sport(match_obj, 'BASKETBALL')
     _require_match_not_archived(match_obj)
     _require_write_lock(match_obj, user)
 
-    events = body.get("events")
-    lineups = body.get("lineups")
-    timer = body.get("timer")
-    if not isinstance(events, list):
-        raise HTTPException(status_code=400, detail="events must be a list")
-    if lineups is not None and not isinstance(lineups, dict):
-        raise HTTPException(status_code=400, detail="lineups must be an object")
-    if timer is not None and not isinstance(timer, dict):
-        raise HTTPException(status_code=400, detail="timer must be an object")
-
-    metadata = dict(match_obj.metadata_json or {})
-    previous_state = metadata.get("basketball_fla") if isinstance(metadata.get("basketball_fla"), dict) else {}
-    previous_event_ids = {
-        str(event.get("id"))
-        for event in previous_state.get("events", [])
-        if isinstance(event, dict) and event.get("id")
-    }
-    metadata["basketball_fla"] = {
-        **previous_state,
-        "events": events,
-        "lineups": lineups,
-        "timer": timer,
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    match_obj.metadata_json = metadata
-    has_new_events = False
+    previous_state, state, result = apply_basketball_patch(match_obj, body)
+    if result.get('idempotent'):
+        return result
+    events = state.get('events') or []
+    previous_events = {str(e.get('id')): e for e in previous_state.get('events', []) if isinstance(e, dict)}
+    current_events = {str(e.get('id')): e for e in events if isinstance(e, dict)}
     for sequence, event in enumerate(events, start=1):
-        if not isinstance(event, dict) or not event.get("id") or str(event.get("id")) in previous_event_ids:
+        if str(event.get('id')) in previous_events:
             continue
-        has_new_events = True
         try:
-            ref_id = UUID(str(event.get("id")))
+            ref_id = UUID(str(event.get('id')))
         except ValueError:
             ref_id = uuid.uuid4()
-        _enqueue_webhook_fanout(db, "BASKETBALL_EVENT", ref_id, _serialize_basketball_event(match_obj.id, event, sequence))
-    if has_new_events:
-        _enqueue_webhook_fanout(db, "BASKETBALL_STATE", match_obj.id, _build_basketball_state(match_obj))
+        event_payload = _serialize_basketball_event(match_obj.id, event, sequence)
+        event_payload['revision'] = state['revision']
+        _enqueue_webhook_fanout(db, 'BASKETBALL_EVENT', ref_id, event_payload)
+    # Existing create-event consumers retain their contract. State consumers
+    # receive an authoritative versioned snapshot on edits and deletions too.
+    if previous_events != current_events or previous_state.get('lineups') != state.get('lineups') or previous_state.get('timer') != state.get('timer'):
+        snapshot = _build_basketball_state(match_obj)
+        snapshot.update(schema='fpc-basketball-state/v2', revision=state['revision'],
+                        event_changes={'upsert':[e for key,e in current_events.items() if previous_events.get(key)!=e],
+                                       'deleted':[key for key in previous_events if key not in current_events]},
+                        resync_url=f'/api/v1/basketball/matches/{match_obj.id}/snapshot')
+        _enqueue_webhook_fanout(db, 'BASKETBALL_STATE', match_obj.id, snapshot)
     db.commit()
-    return {"ok": True, "match_id": str(match_obj.id), "event_count": len(events), "updated_at": metadata["basketball_fla"]["updated_at"]}
+    return {**result, 'match_id':str(match_obj.id), 'event_count':len(events)}
 
 
 @app.post("/api/competition-classes", response_model=CompetitionClassResponse)
@@ -7901,23 +7898,39 @@ def post_state(
     _resolve_user_id(body.user_id, session_user)
     _require_write_lock(match_obj, session_user)
 
+    metadata = dict(match_obj.metadata_json or {})
+    command_revision = int(metadata.get('fla_clock_revision') or 0)
+    receipts = dict(metadata.get('fla_clock_receipts') or {})
+    request_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude={'user_id'}), sort_keys=True).encode()).hexdigest()
     existing = db.get(State, body.state_id)
-    if existing:
-        return {"ok": True, "idempotent": True, "state_id": existing.id}
-
     prev = _latest_state(match_id, db)
-    if prev and body.clock_ms < prev.clock_ms and not body.allow_clock_rewind:
-        # Ignore stale state packets arriving out-of-order to keep possession segments monotonic.
-        return {
-            "ok": True,
-            "ignored": True,
-            "reason": "stale_clock",
-            "state_id": body.state_id,
-            "latest_clock_ms": prev.clock_ms,
-        }
+    if existing:
+        receipt = receipts.get(str(body.state_id))
+        if receipt:
+            if existing.match_id != match_id or receipt != request_hash:
+                raise HTTPException(409, 'State request ID belongs to different content')
+        else:
+            require_same_request(existing, match_id, {'clock_ms':body.clock_ms, 'running':body.running, 'possession_team':body.possession_team, 'selected_team':body.selected_team, 'attack_lr':body.attack_lr})
+        return {'ok':True,'idempotent':True,'state_id':existing.id,**state_response(prev,command_revision)}
+    if body.command_revision is None and command_revision:
+        raise HTTPException(428, 'Reload the updated console before changing this match clock')
+    if body.command_revision is not None and body.command_revision != command_revision:
+        reply={'reason':'stale_command_revision',**state_response(prev,command_revision)}
+        if body.update_kind=='sample':return {'ok':True,'ignored':True,**reply}
+        raise HTTPException(409, reply)
+    effective_clock = body.clock_ms
+    if body.update_kind=='command' and body.command_revision is not None:
+        if prev and not body.allow_clock_rewind:
+            effective_clock=max(effective_clock,prev.clock_ms)
+        command_revision+=1
+    elif prev and body.clock_ms < prev.clock_ms and not body.allow_clock_rewind:
+        return {'ok':True,'ignored':True,'reason':'stale_clock','state_id':body.state_id,
+                'latest_clock_ms':prev.clock_ms,**state_response(prev,command_revision)}
+    elif body.command_revision is not None and prev and any(getattr(body,k)!=getattr(prev,k) for k in ('running','possession_team','selected_team','attack_lr')):
+        return {'ok':True,'ignored':True,'reason':'sample_cannot_change_controls',**state_response(prev,command_revision)}
 
     prev_team = prev.possession_team if prev else "NONE"
-    if prev and body.clock_ms < prev.clock_ms and body.allow_clock_rewind:
+    if prev and effective_clock < prev.clock_ms and body.allow_clock_rewind:
         # Controlled rewind (e.g., 2H starts at 45:00 after 1H stoppage). Close open segments
         # at previous clock to keep durations non-negative, then restart segmentation from clean state.
         open_segments = (
@@ -7945,20 +7958,20 @@ def post_state(
             .all()
         )
         for seg in open_segments:
-            if body.clock_ms >= seg.start_ms:
-                seg.end_ms = body.clock_ms
+            if effective_clock >= seg.start_ms:
+                seg.end_ms = effective_clock
                 apply_possession_segment(db, match_id, seg.team, seg.start_ms, seg.end_ms)
 
         if new_team in ("HOME", "AWAY"):
-            db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=body.clock_ms, end_ms=None))
+            db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=effective_clock, end_ms=None))
 
     elif prev is None and new_team in ("HOME", "AWAY"):
-        db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=body.clock_ms, end_ms=None))
+        db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=effective_clock, end_ms=None))
 
     state = State(
         id=body.state_id,
         match_id=match_id,
-        clock_ms=body.clock_ms,
+        clock_ms=effective_clock,
         running=body.running,
         possession_team=body.possession_team,
         selected_team=body.selected_team,
@@ -7971,7 +7984,7 @@ def post_state(
         "state_id": str(body.state_id),
         "idempotency_key": str(body.state_id),
         "match_id": str(match_id),
-        "clock_ms": body.clock_ms,
+        "clock_ms": effective_clock,
         "running": body.running,
         "possession_team": body.possession_team,
         "selected_team": body.selected_team,
@@ -7980,8 +7993,11 @@ def post_state(
     }
     _enqueue_webhook_fanout(db, "STATE", body.state_id, payload)
 
+    if body.command_revision is not None:
+        receipts[str(body.state_id)]=request_hash
+        match_obj.metadata_json={**metadata,'fla_clock_revision':command_revision,'fla_clock_receipts':dict(list(receipts.items())[-128:])}
     db.commit()
-    return {"ok": True, "state_id": body.state_id}
+    return {'ok':True,'state_id':body.state_id,**state_response(state,command_revision)}
 
 
 @app.post("/api/matches/{match_id}/markers")
@@ -8304,6 +8320,7 @@ def post_attack_lane(
 
     existing = db.get(Event, body.event_id)
     if existing:
+        require_same_request(existing, match_id, {'type': 'ATTACK_LANE', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'lane': body.lane})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
 
     clock_ms = body.clock_ms
@@ -8363,6 +8380,7 @@ def post_xg(
 
     existing = db.get(Event, body.event_id)
     if existing:
+        require_same_request(existing, match_id, {'type': 'XG', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'xg': body.xg, 'player_name': (body.player_name or "").strip() or None, 'player_number': (body.player_number or "").strip() or None, 'is_goal': body.is_goal, 'is_own_goal': body.is_own_goal, 'is_on_target': body.is_on_target, 'shot_x': body.shot_x, 'shot_y': body.shot_y, 'goalmouth_x': body.goalmouth_x, 'goalmouth_y': body.goalmouth_y, 'is_header': body.is_header, 'is_weak_foot': body.is_weak_foot, 'under_pressure': body.under_pressure, 'one_on_one': body.one_on_one, 'shot_pace_band': body.shot_pace_band})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
 
     clock_ms = body.clock_ms
@@ -8903,6 +8921,12 @@ def get_basketball_match_v1(match_id: UUID, _auth: None = Depends(_require_partn
 def basketball_state_v1(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
     row = _require_basketball_match_for_partner(match_id, db)
     return _build_basketball_state(row)
+
+
+@app.get("/api/v1/basketball/matches/{match_id}/snapshot")
+def basketball_snapshot_v2(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = _require_basketball_match_for_partner(match_id, db)
+    return {**_build_basketball_state(row), "schema":"fpc-basketball-state/v2", "events":_basketball_events(row)}
 
 
 @app.get("/api/v1/basketball/matches/{match_id}/events")
@@ -14601,6 +14625,9 @@ def cut_operator_clips(
     job = _require_operator_job(db, job_id, user)
     if not job.upload_path or not Path(job.upload_path).exists():
         raise HTTPException(status_code=409, detail="원본 영상이 아직 준비되지 않았습니다.")
+    job=db.query(HighlightJob).filter(HighlightJob.id==job_id).with_for_update().populate_existing().one()
+    if job.status in ('processing','merging'):
+        raise HTTPException(409,'이 작업은 이미 처리 중입니다.')
     labels = body.get("labels")
     if not isinstance(labels, list) or not labels:
         raise HTTPException(status_code=400, detail="라벨이 없습니다.")
@@ -14610,6 +14637,7 @@ def cut_operator_clips(
         raise HTTPException(status_code=400, detail="라벨 형식이 올바르지 않습니다.") from exc
     before = float(body.get("before", 7.0))
     after = float(body.get("after", 4.0))
+    update_job(db,job_id,status='processing',error_message=None)
     background_tasks.add_task(cut_clips_for_job, job_id, label_secs, before, after)
     return {"status": "processing", "count": len(label_secs)}
 

@@ -1,7 +1,10 @@
 'use client';
 import {useEffect,useRef,useState,type MouseEvent} from 'react';
 import Link from 'next/link';
-import {apiJson} from '../../lib/api';
+import {useRouter} from 'next/navigation';
+import {registerWorkspaceLeave} from '../../lib/workspace-leave';
+import {recordingJournal,recoverRecording,type PendingRecording} from '../../lib/fla-recording-recovery';
+import {apiJson,fetchSessionUser} from '../../lib/api';
 import {VideoClock,formatVideoTime as fmt,videoHotkey,type Team} from '../../lib/fla-video-clock';
 import {bufferedSeconds,sameVideoFile} from '../../lib/video-buffer';
 import {futsalPitchPoint} from '../../lib/futsal-pitch';
@@ -15,6 +18,9 @@ type Lane='LEFT'|'CENTER'|'RIGHT';
 type ResetKind='possession'|'events'|'recording';
 const base='/futsal/fla-video';
 export default function FutsalVideoWorkspace({id}:{id:string}){
+  const router=useRouter();
+  const recoveryKey=useRef(''),unconfirmed=useRef<PendingRecording|null>(null),failed=useRef(false);
+  const [storageWarning,setStorageWarning]=useState(false);
   const video=useRef<HTMLVideoElement>(null),workspace=useRef<HTMLDivElement>(null),clock=useRef(new VideoClock());
   const [data,setData]=useState<any>(null),[uploads,setUploads]=useState<any[]>([]),[uploadId,setUploadId]=useState('');
   const [error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusyState]=useState(false),[mediaTime,setMediaTime]=useState(0),[duration,setDuration]=useState(0);
@@ -46,14 +52,18 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const request=async(path:string,body?:unknown,method='POST')=>apiJson<any>(`${base}${path}`,body===undefined?undefined:{method,body:JSON.stringify(body)});
   const redraw=()=>render(n=>n+1);
   const merge=(next:any)=>setData((old:any)=>({...old,...next}));
-  const fail=(e:unknown)=>{video.current?.pause();clock.current.playing=false;setError(e instanceof Error?e.message:String(e));redraw();};
+  function journal(){const c=clock.current;const record=unconfirmed.current||c.pending.length?{client:client.current,state:{...c.state},segments:c.pending.map(p=>({...p})),request:unconfirmed.current}:null;setStorageWarning(!recordingJournal(recoveryKey.current,record));}
+  const fail=(e:unknown)=>{failed.current=true;journal();video.current?.pause();clock.current.playing=false;setError(e instanceof Error?e.message:String(e));redraw();};
   useEffect(()=>{
-    let alive=true;client.current=sessionStorage.getItem('fla-video-client:'+id)||crypto.randomUUID();sessionStorage.setItem('fla-video-client:'+id,client.current);
-    Promise.all([request(`/matches/${id}`),request('/fixtures')]).then(([match,list])=>{
+    let alive=true;
+    Promise.all([request(`/matches/${id}`),request('/fixtures'),fetchSessionUser()]).then(([match,list,user])=>{
+      if(!alive)return;recoveryKey.current='fpc.fla-recording.v1.'+encodeURIComponent(user.id)+'.'+id;
+      const recovery=recoverRecording(recoveryKey.current);client.current=recovery?.client||crypto.randomUUID();
       if(!alive)return;writable.current=match.can_write;clock.current=new VideoClock(match.state,Boolean(match.match.archived));setData(match);setUploads(list.uploads);setShowSetup(!match.state.started&&!match.match.archived);setStartTime(mediaLabel(match.state.offset_ms||0));setShotTeam(match.state.selected_team||'HOME');
+      if(recovery&&(recovery.request||recovery.segments.length)){clock.current=new VideoClock(recovery.state,Boolean(match.match.archived));clock.current.pending=recovery.segments;unconfirmed.current=recovery.request;failed.current=true;setError('이 탭에 저장 확인이 필요한 기록이 있습니다. 같은 요청을 다시 확인하세요. 다른 창의 변경과 충돌하면 복구 JSON을 보관하세요.');}
       const candidate=new URLSearchParams(location.search).get('upload');setUploadId(match.state.upload_id||(list.uploads.some((u:any)=>u.id===candidate)?candidate:''));redraw();
     }).catch(fail);
-    return()=>{alive=false;video.current?.pause();};
+    return()=>{alive=false;sample();video.current?.pause();journal();};
   },[id]);
 
   // Match the existing transport to the video's intrinsic box, including when
@@ -73,28 +83,39 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   function sample(){
     const v=video.current;if(!v||v.seeking)return;
     lastMedia.current=v.currentTime*1000;clock.current.tick(lastMedia.current);
-    if(v.paused||performance.now()-lastPaint.current>100){setMediaTime(v.currentTime*1000);redraw();lastPaint.current=performance.now();}
+    if(v.paused||performance.now()-lastPaint.current>100){setMediaTime(v.currentTime*1000);redraw();lastPaint.current=performance.now();journal();}
   }
   async function flush(action:'start'|'save'|'finish'='save'){
     while(saving.current){await saving.current;}
-    if(!writable.current||clock.current.readOnly||(!clock.current.state.started&&action==='save'))return;
+    if(!writable.current||(!unconfirmed.current&&(clock.current.readOnly||(!clock.current.state.started&&action==='save'))))return;
     const captured=clock.current.snapshot();
-    const payload={request_id:crypto.randomUUID(),client_id:client.current,version:captured.version,action,cursor_ms:captured.cursor_ms,frontier_ms:captured.frontier_ms,
+    const payload=unconfirmed.current||{request_id:crypto.randomUUID(),client_id:client.current,version:captured.version,action,cursor_ms:captured.cursor_ms,frontier_ms:captured.frontier_ms,
       possession_team:captured.possession_team,selected_team:captured.selected_team,direction:captured.direction,rate:captured.rate,segments:captured.segments};
+    unconfirmed.current=payload;journal();
     const run=(async()=>{
-      // Repeat the same ID on a transport failure; the server deduplicates it.
-      let next;try{next=await request(`/matches/${id}/recording`,payload);}catch(e){if(e instanceof TypeError)next=await request(`/matches/${id}/recording`,payload);else throw e;}
-      clock.current.acknowledge(next.state.version,captured.frontier_ms);clock.current.state.started=next.state.started;clock.current.state.ended=next.state.ended;merge(next);redraw();
+      const next=await request(`/matches/${id}/recording`,payload);
+      clock.current.acknowledge(next.state.version,payload.frontier_ms);clock.current.state.started=next.state.started;clock.current.state.ended=next.state.ended;
+      unconfirmed.current=null;failed.current=false;setError('');journal();merge(next);redraw();
     })();saving.current=run;
     try{await run;}catch(e){fail(e);throw e;}finally{if(saving.current===run)saving.current=null;}
+    if(clock.current.pending.length||action!==payload.action&&action!=='save')await flush(action);
   }
   const actions=useRef({flush,sample});actions.current={flush,sample};
   useEffect(()=>{
     let frame=0;const tick=()=>{if(video.current&&!video.current.paused&&!video.current.seeking){actions.current.sample();}frame=requestAnimationFrame(tick);};frame=requestAnimationFrame(tick);
-    const timer=setInterval(()=>{if(clock.current.state.started&&!clock.current.readOnly&&!saving.current&&!controlBusy.current&&!document.hidden&&writable.current)void actions.current.flush().catch(()=>{});},2000);
+    const timer=setInterval(()=>{if(clock.current.state.started&&!clock.current.readOnly&&!saving.current&&!controlBusy.current&&!document.hidden&&writable.current&&!failed.current)void actions.current.flush().catch(()=>{});},2000);
     const hidden=()=>{if(document.hidden)video.current?.pause();};document.addEventListener('visibilitychange',hidden);
-    const leaving=(e:BeforeUnloadEvent)=>{if(clock.current.pending.length){e.preventDefault();e.returnValue='';}};window.addEventListener('beforeunload',leaving);
-    return()=>{cancelAnimationFrame(frame);clearInterval(timer);document.removeEventListener('visibilitychange',hidden);window.removeEventListener('beforeunload',leaving);};
+    const leaving=(e:BeforeUnloadEvent)=>{actions.current.sample();journal();if(clock.current.pending.length||unconfirmed.current){e.preventDefault();e.returnValue='';}};window.addEventListener('beforeunload',leaving);
+    const leave=async()=>{actions.current.sample();video.current?.pause();journal();try{await actions.current.flush();return true;}catch{setError('이동 전에 저장하지 못했습니다. 입력은 보관했습니다. 같은 요청을 다시 시도하거나 복구 JSON을 저장하세요.');return false;}};
+    const unregister=registerWorkspaceLeave(leave);
+    const navigate=(event:globalThis.MouseEvent)=>{
+      const a=(event.target as Element)?.closest?.('a[href]') as HTMLAnchorElement|null;
+      if(event.defaultPrevented||event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey||!a||a.download||a.target&&a.target!=='_self'||a.origin!==location.origin||a.href===location.href)return;
+      event.preventDefault();event.stopImmediatePropagation();void leave().then(ok=>{if(ok)router.push(a.pathname+a.search+a.hash);});
+    };
+    const pageHide=()=>{actions.current.sample();video.current?.pause();journal();};
+    document.addEventListener('click',navigate,true);window.addEventListener('pagehide',pageHide);
+    return()=>{unregister();document.removeEventListener('click',navigate,true);window.removeEventListener('pagehide',pageHide);cancelAnimationFrame(frame);clearInterval(timer);document.removeEventListener('visibilitychange',hidden);window.removeEventListener('beforeunload',leaving);};
   },[]);
 
   function mediaLabel(ms:number){const value=Math.round(ms);return `${fmt(value)}.${String(value%1000).padStart(3,'0')}`;}
@@ -121,7 +142,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     try{if(v.paused)await v.play();else v.pause();}catch(e){fail(e);}
   }
   function choose(team:Team){
-    if(!writable.current||clock.current.readOnly||controlBusy.current)return;sample();clock.current.choose(team);if(team!=='NONE')setShotTeam(team);setPlayer('');redraw();
+    if(!writable.current||clock.current.readOnly||controlBusy.current||failed.current)return;sample();clock.current.choose(team);if(team!=='NONE')setShotTeam(team);setPlayer('');redraw();
     if(clock.current.state.started)void flush().catch(()=>{});
   }
   function rewind(targetMs:number){
@@ -132,7 +153,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
     v.pause();clock.current.seek(target);restoring.current=target;lastMedia.current=target;v.currentTime=target/1000;setMediaTime(target);redraw();
   }
   async function addEvent(type:'ATTACK_LANE'|'XG'){
-    if(eventBusy.current||!writable.current||clock.current.readOnly||!clock.current.state.started)return;
+    if(failed.current||eventBusy.current||!writable.current||clock.current.readOnly||!clock.current.state.started)return;
     if(type==='XG'&&ownGoal&&!shot){setEstimateNotice('피치에서 자책골 위치를 선택하세요.');return;}
     if(type==='XG'&&!ownGoal&&(!Number.isFinite(Number(xgValue))||xgValue.trim()===''||Number(xgValue)<0||Number(xgValue)>1)){setEstimateNotice('Shot Threat는 0~1 사이의 숫자로 입력해 주세요.');return;}
     if(type==='XG'&&goal&&!ownGoal&&!goalmouth){setEstimateNotice('골문에서 슈팅 도착 위치를 선택해 주세요.');return;}
@@ -200,6 +221,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const players=data?.match.lineups?.teams?.[shotTeam]||[];
   const totals={HOME:0,AWAY:0,NONE:0,...data?.possession};for(const seg of clock.current.pending)totals[seg.team]+=seg.end_ms-seg.start_ms;
   const total=totals.HOME+totals.AWAY,homePct=total?100*totals.HOME/total:0,awayPct=total?100*totals.AWAY/total:0;
+  const exportRecovery=()=>{journal();const value=recoverRecording(recoveryKey.current);const url=URL.createObjectURL(new Blob([JSON.stringify({matchId:id,recording:value})],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='fpc-recording-recovery.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   const status=error?'저장 확인 필요':mediaError?'영상 연결 확인':buffering?'영상 불러오는 중':reviewOnly?'기록 완료 · 교체 로그 보완':!s.started?'경기 시작 준비':review?'이벤트 추가 · 점유 기록 안 함':playing?'기록 중':'일시정지';
   const glow=s.started&&!reviewOnly&&!error&&!mediaError&&!buffering?(playing?'recording':'paused'):'idle';
   const csv=()=>{const rows=['start_ms,end_ms,team',...(data?.segments||[]).map((p:any)=>`${p.start_ms},${p.end_ms},${p.team}`)];const url=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='fla-possession.csv';a.click();URL.revokeObjectURL(url);};
@@ -221,7 +243,8 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
       <div className="fv-timer"><strong aria-label={s.configured?"경기 시간":"영상 시간"}>{fmt(s.configured?s.cursor_ms:mediaTime)}</strong><div><span role="status">{status}</span>{review?<small>마지막 기록 {fmt(s.frontier_ms)}</small>:null}</div></div>
       <div className="fv-top-actions">{!s.started&&!reviewOnly?<button className="btn-primary" onClick={start} disabled={!canWrite||!s.upload_id||!s.configured||uploadId!==s.upload_id||parseStart(startTime)!==s.offset_ms||busy}>경기 시작</button>:<><button onClick={toggle} disabled={Boolean(error)} className="btn-primary">{playing?'일시정지':'재생'} <kbd>Space</kbd></button><button className="btn-success" disabled={busy||reviewOnly} onClick={async()=>{video.current?.pause();try{await flush('finish');setNotice('경기 기록을 마쳤습니다. 영상을 탐색하며 교체 로그를 보완할 수 있습니다.');}catch{}}}>{reviewOnly?'기록 완료됨':'기록 완료'}</button></>}<button className="btn-danger fv-reset-button" disabled={!canWrite||busy} onClick={()=>reset('recording')}>기록 초기화</button><button className="btn-secondary" aria-label="작업 전체화면" onClick={()=>void fullscreen()}>⛶</button></div>
     </header>
-    {error?<div className="fv-error" role="alert">{error}<button onClick={()=>{setError('');void flush().catch(()=>{});}}>저장 다시 시도</button></div>:null}
+    {error?<div className="fv-error" role="alert">{error}<button onClick={()=>void flush().catch(()=>{})}>저장 다시 시도</button><button onClick={exportRecovery}>기록 복구 JSON 저장</button></div>:null}
+    {storageWarning?<p role="alert">브라우저 복구 저장소를 사용하지 못합니다. 서버 저장 상태를 확인하고 실패 시 기록 복구 JSON을 저장하세요.</p>:null}
     {showSetup?<section id="fv-start-settings" className="fv-start-settings" aria-label="경기 시작 시각 설정">
       <div className="row"><strong>{s.configured?`영상 ${mediaLabel(s.offset_ms)} → 경기 00:00`:'킥오프 장면을 지정하고 저장하세요'}</strong>{s.started?<small>기록 중 · 시작 기준 고정</small>:null}</div>
       <div className="fv-start-fields">

@@ -109,6 +109,34 @@ class ManualClipTests(unittest.TestCase):
             (self.root / info['name']).write_bytes(b'fixture; media renderer mocked')
         self.add_job('manual-one')
 
+    def test_legacy_cuts_report_zero_partial_full_and_retry_only_failures(self):
+        from app import highlight_jobs as jobs
+        source=self.root/'source.mp4';source.write_bytes(b'synthetic source')
+        for succeeds,expected in [(0,'error'),(1,'clips_partial'),(2,'clips_ready')]:
+            jid='operator-'+str(succeeds);folder=self.root/jid
+            with self.Session() as db:
+                db.add(HighlightJob(id=jid,mode='operator',status='ready',original_filename='source.mp4',upload_path=str(source),job_metadata={}))
+                db.commit()
+            calls=[]
+            def cut(src,out,start,duration):
+                calls.append(str(out))
+                if len(calls)<=succeeds:out.write_bytes(b'preserve '+str(start).encode());return True
+                return False
+            with patch.object(jobs,'SessionLocal',self.Session),patch.object(jobs,'clips_dir',return_value=folder),patch.object(jobs,'_ffmpeg_cut',side_effect=cut):
+                jobs.cut_clips_for_job(jid,[5,10],2.,2.)
+            with self.Session() as db:
+                job=db.get(HighlightJob,jid);self.assertEqual(job.status,expected)
+                self.assertEqual(len(job.job_metadata['clips']),succeeds)
+                self.assertEqual(len(job.job_metadata['clip_failures']),2-succeeds)
+                saved={name:(folder/name).read_bytes() for name in job.job_metadata['clips']}
+            retry=[]
+            def success(src,out,start,duration):retry.append(out);out.write_bytes(b'retried');return True
+            with patch.object(jobs,'SessionLocal',self.Session),patch.object(jobs,'clips_dir',return_value=folder),patch.object(jobs,'_ffmpeg_cut',side_effect=success):
+                jobs.cut_clips_for_job(jid,[5,10],2.,2.)
+            self.assertEqual(len(retry),2-succeeds)
+            for name,content in saved.items():self.assertEqual((folder/name).read_bytes(),content)
+            with self.Session() as db:self.assertEqual(db.get(HighlightJob,jid).status,'clips_ready')
+
     def add_job(self, job_id, **metadata):
         with self.Session() as db:
             db.add(HighlightJob(id=job_id, mode='manual', status='done', original_filename='Fixture match.mp4',

@@ -14,13 +14,19 @@ from unittest.mock import patch
 from uuid import uuid4
 
 ROOT = tempfile.TemporaryDirectory(prefix="fpc-match-write-tests-")
-os.environ.update(DATABASE_URL="sqlite:///" + str(Path(ROOT.name) / "test.sqlite"),
+QA_DATABASE=os.getenv('FPC_TEST_DATABASE_URL')
+if QA_DATABASE:
+    from urllib.parse import urlparse
+    parsed=urlparse(QA_DATABASE)
+    assert parsed.hostname in ('127.0.0.1','localhost') and parsed.path=='/fpc_release_qa', 'Only isolated loopback fpc_release_qa is allowed'
+os.environ.update(DATABASE_URL=QA_DATABASE or "sqlite:///" + str(Path(ROOT.name) / "test.sqlite"),
                   AWS_EC2_METADATA_DISABLED="true", MPLCONFIGDIR=str(Path(ROOT.name) / "mpl"),
                   XDG_CACHE_HOME=str(Path(ROOT.name) / "cache"),
                   HIGHLIGHT_RUNTIME_DIR=str(Path(ROOT.name) / "highlight"))
 sys.path.insert(0, os.getenv('FPC_API_SOURCE', str(Path(__file__).resolve().parents[1])))
 NETWORK = patch.object(socket.socket, "connect", side_effect=AssertionError("No network in API regression tests"))
-NETWORK.start()
+if not QA_DATABASE:
+    NETWORK.start()
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from fastapi.testclient import TestClient
@@ -109,6 +115,7 @@ class MatchWriteAccess(unittest.TestCase):
         basketball = f'/api/matches/{self.other}/basketball-state'
         body = {'events': [], 'lineups': {'HOME': [], 'AWAY': []}, 'timer': {'running': False}}
         for persona, expected in [('anonymous', 401), ('other', 403), ('owner', 200), ('admin', 200)]:
+            body.update(request_id=str(uuid4()),revision=self.clients['owner'].get(basketball).json().get('revision',0))
             self.assertEqual(self.clients[persona].put(basketball, json=body).status_code, expected)
         player = {'side': 'HOME', 'number': '7', 'name': 'Synthetic player'}
         path = self.url + '/lineup/manual/player'
@@ -160,6 +167,122 @@ class MatchWriteAccess(unittest.TestCase):
         self.assertEqual(self.clients["anonymous"].delete(path).status_code, 401)
         self.assertEqual(self.clients["other"].delete(path).status_code, 403)
         self.assertEqual(self.clients["owner"].delete(path).status_code, 200)
+
+    def test_basketball_rejects_other_sports_without_mutating_metadata(self):
+        for verb in ('get', 'put'):
+            kwargs = {'json': {'events': []}} if verb == 'put' else {}
+            response = getattr(self.clients['owner'], verb)(self.url + '/basketball-state', **kwargs)
+            self.assertEqual(response.status_code, 409)
+        with SessionLocal() as db:
+            self.assertEqual(db.get(Match, self.mid).metadata_json, {})
+
+    def test_request_id_reuse_compares_match_action_and_normalized_content(self):
+        owner = self.clients['owner']
+        for suffix, body in self.writes()[:3]:
+            self.assertEqual(owner.post(self.url + suffix, json=body).status_code, 200)
+            before = self.counts()
+            self.assertTrue(owner.post(self.url + suffix, json=body).json()['idempotent'])
+            self.assertEqual(owner.post(self.url + suffix, json={**body, 'clock_ms': 5000}).status_code, 409)
+            self.assertEqual(owner.post(f'/api/matches/{self.other}' + suffix, json=body).status_code, 409)
+            self.assertEqual(self.counts(), before)
+        body = {'event_id': str(uuid4()), 'clock_ms': 1600, 'team': 'HOME', 'xg': .3, 'player_name': '  Player  '}
+        self.assertEqual(owner.post(self.url + '/events/xg', json=body).status_code, 200)
+        self.assertTrue(owner.post(self.url + '/events/xg', json={**body, 'player_name': 'Player'}).json()['idempotent'])
+        self.assertEqual(owner.post(self.url + '/events/attack_lane', json={**body, 'lane': 'LEFT'}).status_code, 409)
+
+    def test_basketball_versions_retries_deletion_and_timer_patch(self):
+        with SessionLocal() as db:
+            db.get(Match,self.mid).sport='BASKETBALL'; db.commit()
+        client=self.clients['owner']; path=self.url+'/basketball-state'
+        first={'request_id':str(uuid4()),'revision':0,'events':[{'id':str(uuid4()),'type':'SHOT','team':'HOME','points':2,'homeScoreAfter':2}]}
+        self.assertEqual(client.put(path,json={'events':[]}).status_code,428)
+        self.assertEqual(client.put(path,json=first).json()['revision'],1)
+        self.assertTrue(client.put(path,json=first).json()['idempotent'])
+        self.assertEqual(client.put(path,json={**first,'events':[]}).status_code,409)
+        self.assertEqual(client.put(path,json={**first,'request_id':str(uuid4())}).status_code,409)
+        timer={'request_id':str(uuid4()),'revision':1,'timer':{'clock':'09:55','period':1}}
+        self.assertEqual(client.put(path,json=timer).json()['revision'],2)
+        self.assertEqual(client.get(path).json()['events'],first['events'])
+        self.assertEqual(client.put(path,json={'request_id':str(uuid4()),'revision':2,'events':[]}).json()['revision'],3)
+        self.assertEqual(client.get(path).json()['events'],[])
+        self.assertEqual(client.put(path,json=first).json()['current_revision'],3)
+        self.assertEqual(client.get(path).json()['events'],[])
+
+    def test_basketball_webhook_state_covers_edit_and_delete_with_revision(self):
+        with SessionLocal() as db:
+            db.get(Match,self.mid).sport='BASKETBALL'; db.commit()
+        client=self.clients['owner']; path=self.url+'/basketball-state'; eid=str(uuid4())
+        versions=[[{'id':eid,'type':'SHOT','team':'HOME','points':2,'homeScoreAfter':2}],
+                  [{'id':eid,'type':'SHOT','team':'HOME','points':3,'homeScoreAfter':3}],[]]
+        with patch.dict(os.environ,{'WEBHOOK_EVENT_URL':'https://fixture.invalid/events'}):
+            for revision,events in enumerate(versions):
+                response=client.put(path,json={'request_id':str(uuid4()),'revision':revision,'events':events})
+                self.assertEqual(response.status_code,200,response.text)
+        with SessionLocal() as db:
+            snapshots=db.query(Outbox).filter_by(kind='BASKETBALL_STATE').order_by(Outbox.created_at).all()
+            self.assertEqual([r.payload['revision'] for r in snapshots],[1,2,3])
+            self.assertEqual(snapshots[1].payload['event_changes']['upsert'],versions[1])
+            self.assertEqual(snapshots[2].payload['event_changes']['deleted'],[eid])
+            self.assertEqual(db.query(Outbox).filter_by(kind='BASKETBALL_EVENT').count(),1)
+            # Receiver contract: discard duplicated/stale revisions; reload on gaps.
+            received_revision=0; received={}
+            for row in [snapshots[0],snapshots[0],snapshots[1],snapshots[2],snapshots[1]]:
+                p=row.payload
+                if p['revision']<=received_revision:continue
+                self.assertEqual(p['revision'],received_revision+1)
+                for e in p['event_changes']['upsert']:received[e['id']]=e
+                for ident in p['event_changes']['deleted']:received.pop(ident,None)
+                received_revision=p['revision']
+            self.assertEqual(received,{})
+
+    @unittest.skipUnless(QA_DATABASE, 'Requires isolated PostgreSQL row locks')
+    def test_postgres_two_writers_and_ownership_lock(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        with SessionLocal() as db:
+            db.get(Match,self.mid).sport='BASKETBALL';db.commit()
+        barrier=threading.Barrier(2)
+        def write(person):
+            barrier.wait()
+            return self.clients[person].put(self.url+'/basketball-state',json={'request_id':str(uuid4()),'revision':0,'events':[{'id':person}]}).status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(write,['owner','admin']))
+        self.assertEqual(sorted(results),[200,409])
+        with SessionLocal() as db:
+            self.assertEqual(db.get(Match,self.mid).metadata_json['basketball_fla']['revision'],1)
+        # Hold the row, change ownership, then release the waiting write. The
+        # request must evaluate ownership after the database lock is acquired.
+        started=threading.Event()
+        with SessionLocal() as db, ThreadPoolExecutor(max_workers=1) as pool:
+            row=db.query(Match).filter_by(id=self.mid).with_for_update().one()
+            def pending():
+                started.set()
+                return self.clients['owner'].post(self.url+'/state',json=self.state()).status_code
+            future=pool.submit(pending);started.wait(2)
+            row.operator_id='admin';db.commit()
+            self.assertEqual(future.result(timeout=5),403)
+
+    def test_clock_commands_survive_newer_samples_and_reject_delayed_controls(self):
+        client=self.clients['owner']; path=self.url+'/state'
+        def command(revision,clock,running,**extra):
+            return {**self.state(),'command_revision':revision,'update_kind':'command','clock_ms':clock,'running':running,**extra}
+        start=client.post(path,json=command(0,1000,True));self.assertEqual(start.json()['command_revision'],1)
+        sample={**self.state(),'command_revision':1,'update_kind':'sample','clock_ms':1400}
+        self.assertEqual(client.post(path,json=sample).status_code,200)
+        stop=command(1,1200,False)
+        response=client.post(path,json=stop)
+        self.assertEqual(response.json()['state']['clock_ms'],1400)
+        self.assertFalse(response.json()['state']['running'])
+        self.assertEqual(response.json()['command_revision'],2)
+        self.assertTrue(client.post(path,json=stop).json()['idempotent'])
+        stale=client.post(path,json={**sample,'state_id':str(uuid4()),'clock_ms':2000}).json()
+        self.assertTrue(stale['ignored']);self.assertFalse(stale['state']['running'])
+        self.assertEqual(client.post(path,json=command(1,1500,True)).status_code,409)
+        self.assertEqual(client.post(path,json=command(2,1450,True)).json()['command_revision'],3)
+        reset=client.post(path,json=command(3,0,False,allow_clock_rewind=True,possession_team='NONE'))
+        self.assertEqual(reset.json()['state']['clock_ms'],0)
+        self.assertEqual(reset.json()['command_revision'],4)
+        self.assertEqual(client.post(path,json=self.state()).status_code,428)
 
     def test_real_cors_middleware_and_routes(self):
         response = self.clients["anonymous"].options(self.url + "/state", headers={

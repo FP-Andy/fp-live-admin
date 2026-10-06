@@ -18,7 +18,7 @@ type OperatorJob = {
   source_url: string | null;
   export_path: string | null;
   owner_name?: string | null;
-  job_metadata?: { clip_info?: ClipInfo[]; progress?: { detail?: string; percent?: number } };
+  job_metadata?: { clip_failures?: unknown[]; clip_info?: ClipInfo[]; progress?: { detail?: string; percent?: number } };
   stage?: string | null;
   progress?: number | null;
 };
@@ -221,7 +221,7 @@ export default function ProcessJobPage() {
       const data = await loadJob();
       if (!active || !data) return;
       if (data.source_type === 'link' && (data.status === 'queued' || data.status === 'error')) {
-        await apiFetch(`/highlight/operator-jobs/${jobId}/fetch`, { method: 'POST' });
+        await apiJson(`/highlight/operator-jobs/${jobId}/fetch`, { method: 'POST' });
       }
     })();
     return () => { active = false; };
@@ -260,14 +260,14 @@ export default function ProcessJobPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const videoReady = job && ['ready', 'processing', 'clips_ready', 'merging', 'done'].includes(job.status) && job.status !== 'queued';
+  const videoReady = job && (['ready', 'processing', 'clips_ready', 'clips_partial', 'merging', 'done'].includes(job.status)||!!job.job_metadata?.clip_failures?.length) && job.status !== 'queued';
   const clips = job?.job_metadata?.clip_info || [];
 
   const generateClips = async () => {
     if (labels.length === 0) { setBusy('라벨이 없습니다. 영상 재생 중 t 키로 표시하세요.'); return; }
     setBusy('클립 생성 요청 중...');
     try {
-      await apiFetch(`/highlight/operator-jobs/${jobId}/clips`, {
+      await apiJson(`/highlight/operator-jobs/${jobId}/clips`, {
         method: 'POST',
         body: JSON.stringify({ labels, before, after }),
       });
@@ -282,7 +282,7 @@ export default function ProcessJobPage() {
     if (end <= start) { setBusy('종료 시점이 시작보다 커야 합니다.'); return; }
     setBusy('트림 저장 중...');
     try {
-      await apiFetch(`/highlight/operator-jobs/${jobId}/clips/${name}/trim`, {
+      await apiJson(`/highlight/operator-jobs/${jobId}/clips/${name}/trim`, {
         method: 'POST',
         body: JSON.stringify({ start, end }),
       });
@@ -303,7 +303,7 @@ export default function ProcessJobPage() {
   const mergeClips = async () => {
     setBusy('합치는 중...');
     try {
-      await apiFetch(`/highlight/operator-jobs/${jobId}/merge`, { method: 'POST' });
+      await apiJson(`/highlight/operator-jobs/${jobId}/merge`, { method: 'POST' });
       await loadJob();
     } catch (e) {
       setBusy(e instanceof Error ? e.message : '합치기 실패');
@@ -323,6 +323,7 @@ export default function ProcessJobPage() {
 
       {error ? <p style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</p> : null}
 
+      {!!job?.job_metadata?.clip_failures?.length&&<p role="alert">{job.job_metadata.progress?.detail||"일부 클립을 생성하지 못했습니다. 생성된 클립은 보존했습니다."}</p>}
       {!videoReady ? (
         <div style={{ ...card, textAlign: 'center', color: 'var(--muted, #999)' }}>
           {job?.status === 'downloading' || job?.source_type === 'link' && job?.status === 'queued'
@@ -419,7 +420,7 @@ export default function ProcessJobPage() {
             </div>
 
             <button onClick={generateClips} disabled={job?.status === 'processing'} style={{ ...primaryBtn, marginTop: 2 }}>
-              {job?.status === 'processing' ? '클립 생성 중...' : '클립 생성'}
+              {job?.status === 'processing' ? '클립 생성 중...' : job?.job_metadata?.clip_failures?.length?'실패 구간 다시 생성':'클립 생성'}
             </button>
             </div>
           </div>

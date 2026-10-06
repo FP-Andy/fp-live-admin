@@ -1,0 +1,90 @@
+/* Shared browser profile: two verified accounts, real IndexedDB/localStorage. */
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const {chromium}=require('../apps/web/node_modules/playwright-core');
+const origin=process.env.FPC_QA_ORIGIN||'http://127.0.0.1:4354';
+assert(['127.0.0.1','localhost'].includes(new URL(origin).hostname));
+const output=process.env.FPC_OWNER_QA_OUTPUT||'/tmp/fpc-draft-ownership-qa';fs.mkdirSync(output,{recursive:true});
+const media=output+'/synthetic.mp4';require('node:child_process').execFileSync(process.env.FFMPEG||'ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=green:s=320x180:r=25:d=4','-c:v','libx264','-threads','1','-pix_fmt','yuv420p',media]);
+let user={id:'account-a',name:'사용자 A',role:'SUPERADMIN'},browser,page;
+const cases=[],errors=[];const pass=name=>{cases.push(name);console.log('PASS:',name);};
+const reportPath='/admin/fcm/futsal/reports';
+const comment=()=>page.getByLabel('히트맵 코멘트',{exact:true});
+const store=(method,...args)=>page.evaluate(async({method,args})=>(await import('/fpa-cv/report-store.mjs'))[method](...args),{method,args});
+async function account(id,role='SUPERADMIN'){
+ user=id?{id,name:id==='account-a'?'사용자 A':'사용자 B',role}:null;
+ await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+ if(id)await page.getByText(new RegExp('^'+user.name+' ·')).first().waitFor();
+}
+(async()=>{browser=await chromium.launch({executablePath:process.env.CHROME_PATH||(process.platform==='darwin'?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':chromium.executablePath()),headless:true});
+ const context=await browser.newContext({serviceWorkers:'block',viewport:{width:1366,height:768}});
+ await context.addCookies([{name:'live_admin_session',value:'synthetic',url:origin}]);
+ await context.addInitScript(()=>localStorage.setItem('fineplay.selectedSport','FUTSAL'));
+ await context.route('**/*',route=>{
+  const u=new URL(route.request().url());if(u.origin!==origin)return route.abort();
+  if(!u.pathname.startsWith('/api/'))return route.continue();
+  if(u.pathname==='/api/session/me')return route.fulfill(user?{json:user}:{status:401,json:{detail:'expired'}});
+  if(u.pathname==='/api/futsal/analysis-snapshots')return route.fulfill({json:{snapshots:[]}});
+  if(u.pathname==='/api/futsal/fla-video/fixtures')return route.fulfill({json:{fixtures:[]}});
+  if(u.pathname==='/api/outbox')return route.fulfill({json:[]});
+  return route.fulfill({status:404,json:{detail:'No synthetic fixture'}});
+ });
+ try{
+  page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
+  await page.goto(origin+reportPath);await comment().waitFor();
+  const urlA=page.url(),idA=new URL(urlA).searchParams.get('report');
+  await comment().fill('계정 A의 보존할 원문');await page.getByRole('button',{name:'지금 저장',exact:true}).click();
+  await page.waitForFunction(async id=>(await (await import('/fpa-cv/report-store.mjs')).loadReport(id))?.players.manual.heatComment==='계정 A의 보존할 원문',idA);
+  await account('account-b');await comment().waitFor();
+  assert.equal(await comment().inputValue(),'');assert.equal(await store('loadReport',idA),undefined);
+  assert(!(await store('listReports')).some(r=>r.id===idA));
+  await page.goto(urlA);await comment().waitFor();assert.equal(await comment().inputValue(),'');
+  assert.equal(await store('loadReport',idA),undefined);
+  const rejected=await page.evaluate(async()=>{try{await(await import('/fpa-cv/report-store.mjs')).saveReport({id:'wrong-owner',updatedAt:'now'},'account-a');return false;}catch(e){return e.code==='DRAFT_SESSION';}});assert(rejected);
+  pass('A→B account switch and direct report URL never auto-open A; pending A writes reject under B');
+  await account('account-a');await page.goto(urlA);await comment().waitFor();assert.equal(await comment().inputValue(),'계정 A의 보존할 원문');
+  pass('Returning to A restores the original input');
+  for(const viewport of [{width:1440,height:1000},{width:1366,height:768}]){
+   await page.setViewportSize(viewport);
+   await page.getByRole('button',{name:'팀 편집',exact:true}).click();
+   await page.getByLabel('경기 총평',{exact:true}).fill('팀 편집 보존 확인');
+   await page.getByRole('button',{name:'개인 편집',exact:true}).click();
+   assert.equal(await comment().inputValue(),'계정 A의 보존할 원문');
+   await page.getByRole('button',{name:'팀 편집',exact:true}).click();
+   assert.equal(await page.getByLabel('경기 총평',{exact:true}).inputValue(),'팀 편집 보존 확인');
+   await page.getByRole('button',{name:'개인 편집',exact:true}).click();
+   await page.evaluate(()=>window.scrollTo(0,0));
+   await page.getByRole('region',{name:'현재 리포트 작업'}).waitFor();
+   assert.equal(await page.getByRole('navigation',{name:'같은 경기 작업 이동'}).locator('a').count(),0);
+   await page.screenshot({path:output+'/report-layout-'+viewport.width+'.png'});
+  }
+  pass('Two viewport sizes expose context and edit tabs; personal/team text survives switching; absent match links stay unavailable');
+  const record=await store('loadReport',idA);
+  await page.evaluate(record=>new Promise((resolve,reject)=>{const r=indexedDB.open('fpc-futsal-reports-v1',1);r.onupgradeneeded=()=>{r.result.createObjectStore('reports',{keyPath:'id'});r.result.createObjectStore('summaries',{keyPath:'id'});};r.onsuccess=()=>{const db=r.result,tx=db.transaction(['reports','summaries'],'readwrite');const legacy={...record,id:'legacy-shared',title:'공용 원문'};delete legacy.ownerId;tx.objectStore('reports').put(legacy);tx.objectStore('summaries').put({id:legacy.id,title:legacy.title,updatedAt:legacy.updatedAt});tx.oncomplete=()=>{db.close();resolve();};tx.onerror=reject;};}),record);
+  assert.equal(await store('loadReport','legacy-shared'),undefined);
+  await account('account-b','OPERATOR');
+  assert(await page.evaluate(async()=>{try{await(await import('/fpa-cv/report-store.mjs')).listLegacyReports();return false;}catch{return true;}}));
+  await account('account-a');await page.reload();await comment().waitFor();
+  assert.equal((await store('listLegacyReports')).length,1);
+  const copied=await store('copyLegacyReport','legacy-shared');assert.notEqual(copied,'legacy-shared');
+  assert.equal((await store('loadReport',copied)).players.manual.heatComment,record.players.manual.heatComment);
+  assert.equal((await store('listLegacyReports'))[0].id,'legacy-shared');
+  pass('Unowned legacy reports stay isolated; explicit admin copy preserves the original');
+  await account(null);await page.waitForURL('**/login?next=*');assert.equal(await comment().count(),0);
+  pass('Expired session removes the report workspace');
+  user={id:'account-a',name:'사용자 A',role:'SUPERADMIN'};
+  await page.goto(origin+'/admin/highlight/manual');await page.locator('input[type=file]').first().setInputFiles(media);
+  await page.getByRole('button',{name:/＋ 태깅/}).waitFor();
+  await page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);
+  await page.getByRole('button',{name:/＋ 태깅/}).click();
+  await page.getByText('태그 1개',{exact:true}).waitFor();
+  await page.getByText('이 브라우저에 저장됨',{exact:true}).waitFor();
+  await account('account-b');await page.locator('input[type=file]').first().setInputFiles(media);
+  await page.getByRole('button',{name:/＋ 태깅/}).waitFor();
+  await page.getByText('아직 태그가 없습니다.',{exact:false}).waitFor();
+  await account('account-a');await page.locator('input[type=file]').first().setInputFiles(media);
+  await page.getByText('태그 1개',{exact:true}).waitFor();
+  pass('Same video under B starts clean; A restores its own manual tags');
+  await page.screenshot({path:output+'/scoped-manual-draft.png'});
+  assert.deepEqual(errors,[]);fs.writeFileSync(output+'/results.json',JSON.stringify({cases,errors},null,2));
+ }catch(e){if(page)await page.screenshot({path:output+'/failure.png',fullPage:true}).catch(()=>{});throw e;}finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

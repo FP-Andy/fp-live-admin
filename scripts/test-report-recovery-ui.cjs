@@ -99,10 +99,12 @@ async function showNavigation(page) {
     // A real snapshot fetch is held while the user selects an existing IDB report.
     await page.evaluate(async id => { const store = await import('/fpa-cv/report-store.mjs'); const original = await store.loadReport(id); await store.saveReport({ ...original, id: 'fixture-report-b', title: '최종 선택 B' }); }, reportId);
     await page.reload(); await comment().waitFor();
+    await page.getByText('작업 전환·JSON 복구',{exact:true}).click();
     for (const fails of [false, true]) {
       let release; snapshotFails = fails;
       snapshotGate = new Promise(resolve => { release = resolve; });
       const requested = new Promise(resolve => { snapshotStarted = resolve; });
+      await page.getByRole('button',{name:'자료 연결',exact:true}).click();
       await page.getByLabel('완료된 분석 스냅샷', { exact: true }).selectOption(snapshotId);
       await page.getByRole('button', { name: '히트맵·이벤트맵 함께 불러오기', exact: true }).click();
       await requested;

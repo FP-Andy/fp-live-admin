@@ -1,0 +1,23 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('../apps/web/node_modules/typescript');
+const m={exports:{}};Function('exports','module',ts.transpile(fs.readFileSync('apps/web/lib/basketball-persistence.ts','utf8'),{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}))(m.exports,m);
+const {createBasketballPersistence:create}=m.exports;
+const values=new Map(),storage={getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)};
+const base={events:[],lineups:{HOME:[],AWAY:[]},timer:{period:1,clock:'10:00'}};
+(async()=>{
+ const sent=[];let fail=true,serverRevision=0;
+ const send=async p=>{sent.push(structuredClone(p));if(fail)throw Error('lost response');return {revision:++serverRevision};};
+ let writer=create('retry',base,0,send,()=>storage,60000);writer.stage({...base,events:[{id:'first'}]});await assert.rejects(writer.flush());await assert.rejects(writer.flush());assert.deepEqual(sent[0],sent[1]);writer.dispose();
+ writer=create('retry',base,0,send,()=>storage,60000);assert.equal(writer.state().value.events[0].id,'first');fail=false;await writer.flush();assert.deepEqual(sent[0],sent[2]);assert.equal(writer.state().dirty,false);
+ console.log('PASS: Same-ID retries survive repeated failures and reload, preserving unsent events');
+ let release;const gate=new Promise(r=>release=r);const packets=[];
+ writer=create('tail',base,0,async p=>{packets.push(p);if(packets.length===1)await gate;return {revision:packets.length};},()=>storage,60000);
+ writer.stage({...base,events:[{id:'first'}]});const pending=writer.flush();writer.stage({...base,events:[{id:'first'},{id:'second'}]});release();await pending;
+ assert.equal(packets.length,2);assert.equal(packets[1].events.length,2);assert.equal(writer.state().dirty,false);
+ console.log('PASS: Input added during an acknowledgement is sent as the next revision');
+ const many={...base,events:Array.from({length:10000},(_,i)=>({id:String(i),text:'x'.repeat(100)}))};let timerPacket;
+ writer=create('timer',many,8,async p=>{timerPacket=p;return {revision:9};},()=>storage,60000);writer.stage({...many,timer:{period:1,clock:'09:59'}});await writer.flush();
+ assert(!('events' in timerPacket));assert(JSON.stringify(timerPacket).length<180);
+ console.log('PASS: Timer packet stays below 180 bytes with 10,000 events');
+ writer=create('conflict',base,0,async()=>{throw Error('revision conflict');},()=>storage,60000);writer.stage({...base,events:[{id:'keep'}]});await assert.rejects(writer.flush());assert(writer.state().dirty);assert.match(writer.state().error,/conflict/);writer.dispose();
+ console.log('PASS: Real competing revision never silently clears the pending draft');
+})().catch(e=>{console.error(e);process.exitCode=1;});

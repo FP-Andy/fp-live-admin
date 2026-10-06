@@ -7,6 +7,7 @@ export type SessionUser = {
 };
 
 const SESSION_USER_CACHE_KEY = 'fpc.session-user.v1';
+let lastPublishedId:string|null|undefined;
 let sessionUserRequest: Promise<SessionUser> | null = null;
 
 function isSessionUser(value: unknown): value is SessionUser {
@@ -30,12 +31,21 @@ export function readCachedSessionUser(): SessionUser | null {
 
 export function primeSessionUser(user: SessionUser): void {
   if (typeof window === 'undefined') return;
-  window.sessionStorage.setItem(SESSION_USER_CACHE_KEY, JSON.stringify(user));
+  const previous=lastPublishedId===undefined?readCachedSessionUser()?.id:lastPublishedId;
+  lastPublishedId=user.id;
+  try{window.sessionStorage.setItem(SESSION_USER_CACHE_KEY, JSON.stringify(user));}catch{}
+  if(previous!==user.id)publishSessionChange(user.id);
 }
 
 export function clearCachedSessionUser(): void {
   if (typeof window === 'undefined') return;
-  window.sessionStorage.removeItem(SESSION_USER_CACHE_KEY);
+  try{window.sessionStorage.removeItem(SESSION_USER_CACHE_KEY);}catch{}
+  if(lastPublishedId!==null){lastPublishedId=null;publishSessionChange(null);}
+}
+
+function publishSessionChange(id:string|null){
+ window.dispatchEvent(new CustomEvent('fpc-session-changed',{detail:{id}}));
+ if(typeof BroadcastChannel!=='undefined'){const channel=new BroadcastChannel('fpc-session');channel.postMessage({id});channel.close();}
 }
 
 export function displayRole(role: SessionUser['role'] | string | null | undefined) {

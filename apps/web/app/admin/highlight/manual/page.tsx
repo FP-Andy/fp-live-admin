@@ -9,7 +9,9 @@ import {
   OverlayPlacer, POS_PRESETS, ScoreboardPreview, boardPlacement, markPlacement, readLogoDataUrl,
   type PlacedItem, type Scoreboard, type Watermark,
 } from '../../../../components/HighlightOverlay';
-import { API_BASE, apiJson } from '../../../../lib/api';
+import { API_BASE, apiJson, fetchSessionUser, type SessionUser } from '../../../../lib/api';
+import {manualOwnerKey,rememberManualWork,recoverManualWork} from '../../../../lib/manual-recovery';
+import {registerWorkspaceLeave} from '../../../../lib/workspace-leave';
 import type { CutClip, CutProgress } from '../../../../lib/localCut';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 import { fitTagRange, parseClock } from '../../../../lib/tagRange';
@@ -281,6 +283,9 @@ const fmtBytes = (bytes: number) => {
 
 
 export default function ManualHighlightPage() {
+  const [draftOwner,setDraftOwner]=useState<SessionUser|null>(null);
+  const [legacyAvailable,setLegacyAvailable]=useState(false);
+  useEffect(()=>{let active=true;void fetchSessionUser().then(user=>{if(active)setDraftOwner(user);}).catch(()=>{});return()=>{active=false;};},[]);
   // 원본을 여러 개 고르면 고른 순서대로 이어붙인 '하나의 타임라인' 처럼 다룬다.
   // 태그·클립 구간은 전부 이 이어붙인 좌표(글로벌 초)이고, 실제로 자를 때만 파일별 좌표로 되돌린다.
   const [sources, setSources] = useState<Source[]>([]);
@@ -573,12 +578,13 @@ export default function ManualHighlightPage() {
   // **스포츠도 키에 넣는다.** 같은 영상으로 축구와 농구를 오가면 태그가 섞인다 —
   // 농구로 찍은 3점 태그가 축구 화면에 남아 점수판이 한 번에 3점씩 오른다. 종류
   // 선택칸에는 없는 값이라 화면으로는 고칠 수도 없다. 키를 나누면 애초에 안 섞인다.
-  const storageKey = useMemo(
+  const legacyStorageKey = useMemo(
     () => (sources.length
       ? `${AUTOSAVE_PREFIX}${sport}:${sources.map((src) => `${src.file.name}:${src.file.size}`).join('|')}`
       : ''),
     [sources, sport],
   );
+  const storageKey=manualOwnerKey(draftOwner?.id||'',legacyStorageKey);
 
   const revoke = useCallback(() => {
     for (const url of urlsRef.current) URL.revokeObjectURL(url);
@@ -678,30 +684,34 @@ export default function ManualHighlightPage() {
     setLoadedDraftKey('');
     setDraftSaveState('idle');
     setRecoveryMessage('');
+    setLegacyAvailable(false);
     if (!storageKey) return;
     try {
-      const raw = localStorage.getItem(storageKey);
+      const pending=recoverManualWork(storageKey);
+      const raw = pending?JSON.stringify(pending):localStorage.getItem(storageKey);
       if (raw) {
         const saved = parseManualWork(raw, kindsForSport(sport).map((kind) => kind.key));
         applyDraft(saved);
         setStatus(`이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore}초 / 뒤 ${saved.padAfter}초`);
       } else {
-        setTags([]);
+        setTags([]);setScoreboard(DEFAULT_SCOREBOARD);setCards(DEFAULT_CARDS);setWatermark(DEFAULT_WATERMARK);setPadBefore(10);setPadAfter(3);
       }
+      setLegacyAvailable(!!localStorage.getItem(legacyStorageKey));
       setLoadedDraftKey(storageKey);
     } catch {
       setDraftSaveState('failed');
       setRecoveryMessage('기존 저장 내용을 읽지 못했습니다. 원본 저장값은 유지했습니다. 현재 작업은 복구 파일로 보관하세요.');
     }
-  }, [storageKey, sport]);
+  }, [storageKey, sport,legacyStorageKey]);
 
   useEffect(() => {
     if (!storageKey || loadedDraftKey !== storageKey) return;
-    try { setDraftSaveState(storeManualWork(localStorage, storageKey, draftWork)); }
-    catch { setDraftSaveState('failed'); }
+    try { const result=storeManualWork(localStorage, storageKey, draftWork);rememberManualWork(storageKey,draftWork,result==='saved');setDraftSaveState(result); }
+    catch { rememberManualWork(storageKey,draftWork,false);setDraftSaveState('failed'); }
   }, [draftWork, storageKey, loadedDraftKey, saveAttempt]);
 
   const unsafeDraft = !!storageKey && (draftSaveState === 'failed' || draftSaveState === 'partial');
+  useEffect(()=>registerWorkspaceLeave(()=>!unsafeDraft||window.confirm('브라우저에 저장되지 않은 내용이 있습니다. 복구 파일을 받지 않고 이동할까요?')),[unsafeDraft]);
   useEffect(() => {
     if (!unsafeDraft) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
@@ -721,7 +731,7 @@ export default function ManualHighlightPage() {
 
   const sourceIdentity = () => sources.map((source) => ({ name: source.file.name, size: source.file.size }));
   const exportDraft = () => {
-    const payload = { format: 'fpc-manual-draft', version: 1, sport, sources: sourceIdentity(), work: draftWork };
+    const payload = { format: 'fpc-manual-draft', version: 1, ownerId:draftOwner?.id, sport, sources: sourceIdentity(), work: draftWork };
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
     const link = document.createElement('a'); link.href = url; link.download = `manual-tags-${sport.toLowerCase()}.json`; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -748,6 +758,15 @@ export default function ManualHighlightPage() {
   };
   const currentDraftKeyRef = useRef(storageKey);
   currentDraftKeyRef.current = storageKey;
+  const restoreLegacyDraft=async()=>{
+    const expectedKey=currentDraftKeyRef.current;
+    try{
+      const user=await fetchSessionUser();if(user.id!==draftOwner?.id||user.role!=='SUPERADMIN')throw Error('관리자가 기존 작업의 소유자를 확인해야 합니다.');
+      const key=currentDraftKeyRef.current;if(key!==expectedKey)return;if(!key||!window.confirm('기존 공용 초안의 소유자를 확인했으며 현재 계정으로 복사할까요? 원본은 유지됩니다.'))return;
+      const raw=localStorage.getItem(legacyStorageKey);if(!raw)throw Error('이전 초안이 없습니다.');
+      applyDraft(parseManualWork(raw,tagKinds.map(k=>k.key)));setLoadedDraftKey(key);setRecoveryMessage('이전 공용 초안을 현재 계정으로 복사했습니다. 원본은 보존했습니다.');
+    }catch(error){setRecoveryMessage(error instanceof Error?error.message:'이전 초안을 복구하지 못했습니다.');}
+  };
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed;
@@ -1568,6 +1587,8 @@ export default function ManualHighlightPage() {
               }} />
             </div>
             <p style={{ fontSize: 12, marginBottom: 0 }}>복구 파일: 태그·패딩·점수판·카드·워터마크 설정. 원본 영상·인트로·음악 파일은 다시 선택해야 합니다.</p>
+            <p style={{fontSize:12}}>초안 소유자: {draftOwner?.name||'로그인 확인 중'}. 같은 계정과 원본 영상을 선택하면 복원됩니다.</p>
+            {legacyAvailable?<div><p>이 영상의 이전 공용 초안은 원본을 보존하고 별도로 보관했습니다. 관리자에게 소유자 확인 후 복구를 요청하세요.</p>{draftOwner?.role==='SUPERADMIN'?<button style={smallBtn} onClick={()=>void restoreLegacyDraft()}>이전 공용 태그를 내 계정으로 복사</button>:null}</div>:null}
             {recoveryMessage ? <p role="status">{recoveryMessage}</p> : null}
           </div>
           <div style={card}>
