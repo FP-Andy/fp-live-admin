@@ -2973,8 +2973,11 @@ export default function ManualHighlightPage() {
                         합본 다운로드
                       </a>
                       <Link href="/admin/highlight/results" style={{ ...smallBtn, textDecoration: 'none' }}>
-                        결과물 목록
+                        {sport === 'FOOTBALL' ? '결과물 · 클립결과 연결 확인' : '결과물 목록'}
                       </Link>
+                      {sport === 'FOOTBALL' ? <span style={{ width: '100%', color: 'var(--muted, #999)' }}>
+                        개별 클립을 클립결과에 연결하고 있습니다. 결과물 목록에서 진행 상태를 확인하고, 연결된 클립마다 FPA dual 분석을 시작할 수 있습니다.
+                      </span> : null}
                     </div>
                   ) : null}
                 </div>

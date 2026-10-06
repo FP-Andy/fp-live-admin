@@ -2223,12 +2223,24 @@ def merge_manual_clips_for_job(job_id: str) -> None:
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
+        if str(metadata.get("sport") or "FOOTBALL").upper() == "FOOTBALL":
+            metadata["clip_results"] = {**(metadata.get("clip_results") or {}),
+                                        "status": "queued", "error": None}
         update_job(
             db, job_id,
             status="done",
             export_path=str(export_path),
             job_metadata=_json_safe(metadata),
         )
+        # Individual football clips share the existing clip/dual workspace.
+        # Registration has its own status; failure must not fail the finished montage.
+        if str(metadata.get("sport") or "FOOTBALL").upper() == "FOOTBALL":
+            try:
+                from .manual_clip_results import publish_manual_clip_results
+                db.close()
+                publish_manual_clip_results(job_id)
+            except Exception as exc:
+                print(f"manual clip registration failed for {job_id}: {exc}")
     except Exception as exc:
         update_job(db, job_id, status="error", error_message=str(exc))
     finally:

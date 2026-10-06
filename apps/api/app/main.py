@@ -9283,7 +9283,9 @@ async def upload_manual_clip(
     합칠 때 이 사이드카들을 order(=index) 순으로 모아 순서를 잡는다(list_manual_clip_info).
     무거운 디스크 복사는 스레드풀로 넘겨 이벤트 루프(다른 사용자의 요청)를 막지 않는다.
     """
-    _require_manual_job(db, job_id, user)
+    job = _require_manual_job(db, job_id, user)
+    if job.status not in {"collecting", "error"} or (job.job_metadata or {}).get("clip_results"):
+        raise HTTPException(status_code=409, detail="완료되었거나 분석에 연결한 클립은 덮어쓸 수 없습니다. 새 수동 작업을 만드세요.")
     if requested_end <= requested_start:
         raise HTTPException(status_code=400, detail="클립 구간이 올바르지 않습니다.")
     if index < 1:
@@ -9341,6 +9343,24 @@ async def upload_manual_clip(
         await clip.close()
 
     return {"name": name}
+
+
+@app.post("/api/highlight/manual-jobs/{job_id}/clip-results", status_code=202)
+def register_manual_clip_results(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    from .manual_clip_results import queue_publication, publish_manual_clip_results
+    job = _require_manual_job(db, job_id, user)
+    try:
+        state = queue_publication(db, job)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if state.get("status") != "ready":
+        background_tasks.add_task(publish_manual_clip_results, job_id)
+    return {"job_id": job_id, "clip_results": state}
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/intro")
@@ -12845,6 +12865,10 @@ def _clip_job_context(db: Session, clip: HighlightClip) -> tuple[HighlightJob | 
             saved = None
     if saved is not None and (saved.teamid_h or saved.teamid_a):
         labels = {"home": saved.teamid_h or "", "away": saved.teamid_a or ""}
+    elif job is not None and job.mode == "manual":
+        scoreboard = metadata.get("scoreboard") or {}
+        labels = {"home": str(scoreboard.get("home_name") or "홈"),
+                  "away": str(scoreboard.get("away_name") or "원정")}
     else:
         team_name = str((manifest.get("team") or {}).get("teamName") or "")
         opp_name = str((manifest.get("opponent") or {}).get("name") or "")
@@ -12899,9 +12923,10 @@ def clip_result_matches(
             "job_id": g["job_id"],
             # 산출 지시 — basic 매치는 채점 열·xFP 배지를 숨기고 전송도 영상만 나간다.
             "plan": fineplay_resolve_plan(metadata),
-            "name": name or metadata.get("display_name") or g["job_id"],
-            "home_team": home,
-            "away_team": away,
+            "name": name or metadata.get("display_name") or (job.original_filename if job else None) or g["job_id"],
+            "source_mode": job.mode if job else None,
+            "home_team": home or str((metadata.get("scoreboard") or {}).get("home_name") or ""),
+            "away_team": away or str((metadata.get("scoreboard") or {}).get("away_name") or ""),
             "clip_count": g["clip_count"],
             "callback_status": metadata.get("callback_status"),
             # 대회 인입은 뒤에서 도는 작업이라, 화면이 이 값을 보고 끝난 것을 안다.
@@ -12943,7 +12968,7 @@ def rename_clip_result(
     if len(name) > 200:
         raise HTTPException(status_code=400, detail="이름이 너무 깁니다 (200자 이내).")
 
-    job = db.get(HighlightJob, job_id)
+    job = db.query(HighlightJob).filter_by(id=job_id).with_for_update().one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
 
@@ -13045,6 +13070,25 @@ def clip_result_clips(
             item["thumbnail_url"] = storage.presigned_get(c.thumbnail_s3_key, expires=3600)
         out.append(item)
     return {"clips": out}
+
+
+@app.get("/api/highlight/clip-results/jobs/{job_id}/clips")
+def clip_result_job_clips(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """Job-scoped results, including manual work without a live Match."""
+    if db.get(HighlightJob, job_id) is None:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    clips = db.query(HighlightClip).filter_by(job_id=job_id).order_by(HighlightClip.order_index).all()
+    return {"clips": [{
+        "id": clip.id, "order_index": clip.order_index, "team_side": clip.team_side,
+        "start_sec": clip.start_sec, "end_sec": clip.end_sec,
+        "duration_seconds": clip.duration_seconds, "main_action": clip.main_action,
+        "title": clip.title,
+        "action_count": db.query(HighlightClipAction).filter_by(clip_id=clip.id).count(),
+    } for clip in clips]}
 
 
 @app.get("/api/highlight/clip-results/clips/{clip_id}")
@@ -13176,6 +13220,36 @@ def clip_result_scene_motions(
         _render_scene_motions_bg, actions, clip.id, storage, motion_prefix,
     )
     return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
+
+
+@app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions/{seq}/download")
+def download_clip_scene_motion(
+    clip_id: str,
+    seq: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """Sign the current scene's MP4 as an attachment; never download stale coordinates."""
+    clip = db.get(HighlightClip, clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=409, detail="영상 저장소가 설정되지 않았습니다.")
+    actions = [_serialize_clip_action(action) for action in db.query(HighlightClipAction)
+               .filter_by(clip_id=clip_id).order_by(HighlightClipAction.seq).all()]
+    prefix = (clip.horizontal_s3_key.rsplit("/", 1)[0]
+              if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key else highlight_output_prefix())
+    attach_scene_motions(actions, None, clip_key=clip.id, storage=None, prefix=prefix)
+    action = next((a for a in actions if a.get("seq") == seq and a.get("sceneData")), None)
+    if action is None:
+        raise HTTPException(status_code=404, detail="이 액션의 씬모션이 없습니다.")
+    key = scene_motion_key(prefix, clip.id, seq, action["sceneData"])
+    if not storage.exists(key):
+        raise HTTPException(status_code=409, detail="현재 장면의 MP4를 준비 중입니다. 모션 새로고침 후 다시 다운로드하세요.")
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", clip.id)[:100]
+    filename = f"scene-motion-{safe_id}-action-{seq}.mp4"
+    return {"url": storage.presigned_download(key, filename, expires=600), "filename": filename}
 
 
 def _clip_team_metadata(job: HighlightJob, clip: HighlightClip, team: str | None) -> dict | None:
@@ -13454,7 +13528,16 @@ def clip_result_delete_clip(
     clip = db.get(HighlightClip, clip_id)
     if not clip:
         raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
-    job = db.get(HighlightJob, clip.job_id)
+    job = db.query(HighlightJob).filter_by(id=clip.job_id).with_for_update().one_or_none()
+    if job is not None and job.mode == "manual":
+        from .manual_clip_results import registration_state
+        state = registration_state(job)
+        removed = set(state.get("removed_clips") or [])
+        removed.add(clip.source_video_id)
+        job.job_metadata = {**(job.job_metadata or {}), "clip_results": {
+            **state, "removed_clips": sorted(removed),
+            "completed": max(0, db.query(HighlightClip).filter_by(job_id=job.id).count() - 1),
+        }}
     db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == clip_id).delete(
         synchronize_session=False
     )
@@ -14992,9 +15075,15 @@ def delete_highlight_job(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = db.get(HighlightJob, job_id)
+    # Serialize deletion with manual publication before collecting child rows.
+    job = db.query(HighlightJob).filter_by(id=job_id).with_for_update().one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.mode == "manual":
+        clip_ids = [clip.id for clip in db.query(HighlightClip).filter_by(job_id=job_id).all()]
+        if clip_ids:
+            db.query(HighlightClipAction).filter(HighlightClipAction.clip_id.in_(clip_ids)).delete(synchronize_session=False)
+            db.query(HighlightClip).filter(HighlightClip.id.in_(clip_ids)).delete(synchronize_session=False)
     delete_job_files(job)
     db.delete(job)
     db.commit()

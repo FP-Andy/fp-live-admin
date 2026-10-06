@@ -98,6 +98,19 @@ class S3Storage:
             ExpiresIn=expires,
         )
 
+    def presigned_download(self, key: str, filename: str, expires: int = 3600) -> str:
+        """Download across origins without fetching the whole video into browser memory."""
+        from urllib.parse import quote
+
+        disposition = "attachment; filename*=UTF-8''" + quote(filename, safe="")
+        return self._client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": key,
+                    "ResponseContentType": "video/mp4",
+                    "ResponseContentDisposition": disposition},
+            ExpiresIn=expires,
+        )
+
     def delete_object(self, key: str) -> None:
         """보관비 정리용 — 제작이 끝난 사전 작업 원본 등을 지운다."""
         self._client().delete_object(Bucket=self.bucket, Key=key)
