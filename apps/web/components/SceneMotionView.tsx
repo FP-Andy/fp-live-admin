@@ -8,10 +8,8 @@
  * 앱(xfp_scene_view.dart)도 같은 문서에서 이식됐다. 여기서 규칙을 바꾸면 앱과 갈라지므로
  * 좌표 변환·크기·색은 핸드오프 숫자를 그대로 쓴다.
  *
- * mp4(scene_motion.py)는 폴백 겸 검수용으로 계속 나가는데, 콘솔이 mp4 만 보여주면
- * 앱 화면과 다른 걸 검수하게 된다. 그래서 이 뷰가 기본이고 mp4 는 토글로 남긴다.
- *
- * 애니메이션 타이밍·이징은 mp4 렌더러와 맞춘다(scene_motion.py:38 FPS 이하).
+ * MP4도 이 컴포넌트를 frameTime으로 캡처한다. 피치·에셋·좌표·타이밍을
+ * 별도 렌더러로 복제하지 않아 화면과 다운로드가 같은 장면을 보여준다.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -83,7 +81,7 @@ export type ScenePlayer = {
   number?: string | number;
   gk?: boolean;
 };
-export type ScenePass = { kind?: 'pass' | 'defense'; x1: number; y1: number; x2: number; y2: number };
+export type ScenePass = { kind?: 'pass' | 'defense' | 'fail'; x1: number; y1: number; x2: number; y2: number };
 export type SceneMove = { type: 'dribble' | 'penetrate'; x: number; y: number; deg: number };
 export type SceneShot = {
   gx: number; gy: number;
@@ -187,64 +185,57 @@ type Props = {
   width: number;
   /** false 면 after 상태로 정지(썸네일 용도). */
   animate?: boolean;
+  /** Deterministic capture uses the exact same frame calculation as playback. */
+  frameTime?: number;
 };
 
-export default function SceneMotionView({ data, width, animate = true }: Props) {
-  const height = width / PITCH_ASPECT;
-  const k = width / REF_WIDTH; // 마커 스케일
-  const hasShot = Boolean(data.shot);
-  // 슛이면 피치 모션 → 골대 등장 → 아크 순으로 이어 붙인다.
-  const hasClearExit = Boolean(data.ball?.exit) && !hasShot;
-  const exitSec = hasClearExit ? CLEAR_EXIT : 0;
-  const cycle = HOLD_BEFORE + MOVE + exitSec + (hasShot ? PANEL_IN + SHOT : 0) + HOLD_AFTER;
+export function sceneMotionDuration(data: SceneData): number {
+  return HOLD_BEFORE + MOVE + (data.shot ? PANEL_IN + SHOT : data.ball?.exit ? CLEAR_EXIT : 0) + HOLD_AFTER;
+}
 
-  // 한 덩어리로 들고 있다가 값이 실제로 바뀔 때만 리렌더한다.
-  // 사이클의 1.2초가 정지 구간이라, 프레임마다 setState 하면 그동안 헛돈다
-  // (클립 하나에 장면 카드가 여러 개 붙는 화면이다).
-  type Anim = { phase: number; exitT: number; panelIn: number; shotT: number; armed: boolean };
-  const [anim, setAnim] = useState<Anim>(
-    animate ? { phase: 0, exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: false }
-            : { phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true },
-  );
+type Anim = { phase: number; exitT: number; panelIn: number; shotT: number; moveOpacity: number };
+const finalFrame: Anim = { phase: 1, exitT: 1, panelIn: 1, shotT: 1, moveOpacity: 0.9 };
+
+export function sceneMotionFrame(data: SceneData, seconds: number): Anim {
+  const hasShot = Boolean(data.shot);
+  const hasClearExit = Boolean(data.ball?.exit) && !hasShot;
+  const t = Math.max(0, seconds) % sceneMotionDuration(data);
+  // An absolute timeline replaces the wall-clock CSS transition, so seeking
+  // and MP4 capture reproduce the same early chevron fade as live playback.
+  const moveOpacity = 0.9 * Math.min(1, Math.max(0, (t - HOLD_BEFORE * 0.5) / 0.2));
+  if (t < HOLD_BEFORE) return { phase: 0, exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, moveOpacity };
+  if (t < HOLD_BEFORE + MOVE) return { phase: ease((t - HOLD_BEFORE) / MOVE), exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, moveOpacity };
+  if (hasClearExit && t < HOLD_BEFORE + MOVE + CLEAR_EXIT) return { phase: 1, exitT: ease((t - HOLD_BEFORE - MOVE) / CLEAR_EXIT), panelIn: 1, shotT: 0, moveOpacity };
+  if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN) return { phase: 1, exitT: 1, panelIn: ease((t - HOLD_BEFORE - MOVE) / PANEL_IN), shotT: 0, moveOpacity };
+  if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN + SHOT) return { phase: 1, exitT: 1, panelIn: 1, shotT: ease((t - HOLD_BEFORE - MOVE - PANEL_IN) / SHOT), moveOpacity };
+  return finalFrame;
+}
+
+export default function SceneMotionView({ data, width, animate = true, frameTime }: Props) {
+  const height = width / PITCH_ASPECT;
+  const k = width / REF_WIDTH;
+  const [anim, setAnim] = useState<Anim>(() => animate ? sceneMotionFrame(data, 0) : finalFrame);
   const last = useRef<Anim | null>(null);
   const raf = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!animate) { setAnim({ phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true }); return; }
+    if (frameTime !== undefined) return;
+    if (!animate) { setAnim(finalFrame); return; }
     const start = performance.now();
+    last.current = null;
     const tick = (now: number) => {
-      const t = ((now - start) / 1000) % cycle;
-      let next: Anim;
-      if (t < HOLD_BEFORE) {
-        next = { phase: 0, exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: t >= HOLD_BEFORE * 0.5 };
-      } else if (t < HOLD_BEFORE + MOVE) {
-        next = { phase: ease((t - HOLD_BEFORE) / MOVE), exitT: 0, panelIn: hasShot ? 0 : 1, shotT: 0, armed: true };
-      } else if (hasClearExit && t < HOLD_BEFORE + MOVE + exitSec) {
-        // 공과 수비가 함께 도착한 뒤 — 공만 라인 밖으로.
-        next = { phase: 1, exitT: ease((t - HOLD_BEFORE - MOVE) / exitSec), panelIn: 1, shotT: 0, armed: true };
-      } else if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN) {
-        // 공이 골라인에 닿은 순간 — 골대가 반대편 하프에서 밀려 들어온다.
-        next = { phase: 1, exitT: 1, panelIn: ease((t - HOLD_BEFORE - MOVE) / PANEL_IN), shotT: 0, armed: true };
-      } else if (hasShot && t < HOLD_BEFORE + MOVE + PANEL_IN + SHOT) {
-        next = { phase: 1, exitT: 1, panelIn: 1, shotT: ease((t - HOLD_BEFORE - MOVE - PANEL_IN) / SHOT), armed: true };
-      } else {
-        next = { phase: 1, exitT: 1, panelIn: 1, shotT: 1, armed: true };
-      }
+      const next = sceneMotionFrame(data, (now - start) / 1000);
       const p = last.current;
-      const moved = !p
-        || p.armed !== next.armed
-        || Math.abs(p.phase - next.phase) > 0.002
-        || Math.abs(p.exitT - next.exitT) > 0.002
-        || Math.abs(p.panelIn - next.panelIn) > 0.002
-        || Math.abs(p.shotT - next.shotT) > 0.002;
-      if (moved) { last.current = next; setAnim(next); }
+      if (!p || Object.keys(next).some(key => Math.abs(next[key as keyof Anim] - p[key as keyof Anim]) > 0.002)) {
+        last.current = next; setAnim(next);
+      }
       raf.current = requestAnimationFrame(tick);
     };
     raf.current = requestAnimationFrame(tick);
     return () => { if (raf.current !== null) cancelAnimationFrame(raf.current); };
-  }, [animate, data, cycle, hasShot]);
+  }, [animate, data, frameTime]);
 
-  const { phase, exitT, panelIn, shotT, armed } = anim;
+  const { phase, exitT, panelIn, shotT, moveOpacity } = frameTime === undefined ? anim : sceneMotionFrame(data, frameTime);
 
   const players = data.players || [];
   const passes = data.passes || [];
@@ -317,8 +308,7 @@ export default function SceneMotionView({ data, width, animate = true }: Props) 
             alt=""
             style={{
               position: 'absolute', left: c.px - w / 2, top: c.py - h / 2, width: w, height: h,
-              transform: `rotate(${m.deg}deg)`, opacity: armed ? 0.9 : 0,
-              transition: 'opacity 200ms linear', pointerEvents: 'none',
+              transform: `rotate(${m.deg}deg)`, opacity: moveOpacity, pointerEvents: 'none',
             }}
           />
         );
