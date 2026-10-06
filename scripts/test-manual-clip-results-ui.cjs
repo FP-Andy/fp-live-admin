@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const { chromium } = require('../apps/web/node_modules/playwright-core');
 const origin = process.env.CLIP_QA_ORIGIN || 'http://127.0.0.1:4352';
+assert(['127.0.0.1','localhost'].includes(new URL(origin).hostname));
 const output = process.env.CLIP_QA_OUTPUT || '/tmp/fpc-clip-feature-qa';
 fs.mkdirSync(output, { recursive: true });
 const mediaFile = output + '/synthetic.mp4';
@@ -32,7 +33,7 @@ const matches = () => [
 ];
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : chromium.executablePath()), headless: true });
   try {
     const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1500, height: 1100 } });
     await context.addCookies([{ name: 'live_admin_session', value: 'fixture-only-session', url: origin }]);

@@ -75,6 +75,7 @@ jobs:
           FPC_OWNER_QA_OUTPUT="$RUNNER_TEMP/fpc-owner-qa" node scripts/test-draft-ownership-ui.cjs
           FPC_FLA_QA_OUTPUT="$RUNNER_TEMP/fpc-fla-qa" node scripts/test-fla-recording-recovery-ui.cjs
           FPC_BASKETBALL_QA_OUTPUT="$RUNNER_TEMP/fpc-basketball-qa" node scripts/test-basketball-recovery-ui.cjs
+          CLIP_QA_ORIGIN=http://127.0.0.1:4354 CLIP_QA_OUTPUT="$RUNNER_TEMP/fpc-clips-qa" node scripts/test-manual-clip-results-ui.cjs
           FPC_DIALOG_QA_OUTPUT="$RUNNER_TEMP/fpc-dialog-qa" node scripts/test-completion-dialog-ui.cjs
 
   postgres-contracts:
