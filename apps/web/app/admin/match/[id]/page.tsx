@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
+import { useMatchHighlights } from '../../../../lib/use-match-highlights';
 import { resolveMatchTeams } from '../../dashboard/schedule-data';
 
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
@@ -704,45 +705,9 @@ export default function MatchPage() {
   //
   // 마커와 다르다 — 마커는 타입당 한 줄이라 다시 찍으면 덮어쓰지만, 하이라이트는
   // 누를 때마다 쌓인다(models.MatchHighlight).
-  const [highlights, setHighlights] = useState<{ id: string; clock_ms: number }[]>([]);
-  const [hlNotice, setHlNotice] = useState('');
-
-  const loadHighlights = useCallback(async () => {
-    try {
-      const res = await apiJson<{ highlights: { id: string; clock_ms: number }[] }>(
-        `/matches/${id}/highlights`,
-      );
-      setHighlights(res.highlights || []);
-    } catch { /* 목록을 못 읽어도 찍는 건 된다 */ }
-  }, [id]);
-
-  useEffect(() => { void loadHighlights(); }, [loadHighlights]);
-
-  const markHighlight = async () => {
-    if (!canWrite) return;
-    // 돌고 있는 시계를 그대로 쓴다 — 저장된 상태값이 아니라 지금 흐르는 값이어야
-    // 누른 순간과 맞는다.
-    const now = getCurrentClockMs();
-    try {
-      await apiFetch(`/matches/${id}/highlights`, {
-        method: 'POST',
-        body: JSON.stringify({ clock_ms: now }),
-      });
-      setHlNotice(`하이라이트 ${fmt(now)} 기록`);
-      await loadHighlights();
-    } catch {
-      setHlNotice('하이라이트를 기록하지 못했습니다.');
-    }
-  };
-
-  const removeHighlight = async (hid: string) => {
-    try {
-      await apiFetch(`/matches/${id}/highlights/${hid}`, { method: 'DELETE' });
-      await loadHighlights();
-    } catch {
-      setHlNotice('하이라이트를 지우지 못했습니다.');
-    }
-  };
+  const { highlights, pending: pendingHighlights, busy: highlightBusy, hlNotice,
+    storageError: highlightStorageError, markHighlight, removeHighlight, retryHighlight, exportPending,
+  } = useMatchHighlights(id, userId, canWrite, getCurrentClockMs);
 
   /** 로컬앱(FinePlay Highlight)이 읽는 로그 파일. 골·유효슛·슛·HL·하프타임 경계가
    *  경기 시계로 한 장에 담긴다 — 앱이 앵커 두 개로 영상 시간에 앉힌다. */
@@ -1634,7 +1599,22 @@ export default function MatchPage() {
                     로그 저장 (.json)
                   </button>
                 </div>
-                {hlNotice ? <span className="muted">{hlNotice}</span> : null}
+                {hlNotice ? <span role="status" className="muted">{hlNotice}</span> : null}
+                {pendingHighlights.length ? (
+                  <div role="alert" className="grid" style={{ gap: 6 }}>
+                    <strong>저장 미확인 {pendingHighlights.length}개</strong>
+                    {pendingHighlights.map((item) => (
+                      <div className="row" key={item.request_id}>
+                        <span>원래 시각 {fmt(item.clock_ms)}</span>
+                        <button className="btn-secondary" disabled={!canWrite || highlightBusy.includes(item.request_id)} onClick={() => void retryHighlight(item)}>
+                          {highlightBusy.includes(item.request_id) ? '저장 확인 중…' : '같은 시각으로 다시 요청'}
+                        </button>
+                      </div>
+                    ))}
+                    {highlightStorageError ? <span>브라우저에도 보관하지 못했습니다. 이동 전에 복구 파일을 저장하세요.</span> : <span className="muted">이 탭에서 다시 열면 미확인 요청을 복원합니다.</span>}
+                    <button className="btn-secondary" onClick={exportPending}>미확인 시각 복구 파일</button>
+                  </div>
+                ) : null}
                 <div
                   className="grid"
                   style={{ height: 105, overflowY: 'auto', paddingRight: 4 }}

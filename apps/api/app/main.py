@@ -1628,11 +1628,12 @@ async def shutdown() -> None:
         await broadcast_asset_task
 
 
-def _require_write_lock(match_obj: Match, user_id: User | str | None) -> None:
-    if _is_superuser(user_id):
+def _require_write_lock(match_obj: Match, user: User | None) -> None:
+    if not isinstance(user, User):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if _is_superuser(user):
         return
-    user_id = user_id.id if isinstance(user_id, User) else user_id
-    if match_obj.operator_id and match_obj.operator_id != user_id:
+    if match_obj.operator_id and match_obj.operator_id != user.id:
         raise HTTPException(status_code=403, detail="Operator lock held by another user")
 
 
@@ -1648,8 +1649,13 @@ def _require_archived_editor_access(match_obj: Match, user: User) -> None:
         raise HTTPException(status_code=409, detail="Event editor is available for archived matches only")
 
 
-def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) -> str | None:
-    return explicit_user_id or (session_user.id if session_user else None)
+def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) -> str:
+    if not session_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    # Retain the old field for callers sending their own ID, never as identity.
+    if explicit_user_id is not None and explicit_user_id != session_user.id:
+        raise HTTPException(status_code=403, detail="user_id must match the authenticated session")
+    return session_user.id
 
 
 def _is_superuser(user: User | str | None) -> bool:
@@ -6002,7 +6008,7 @@ def put_basketball_state(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, user.id)
+    _require_write_lock(match_obj, user)
 
     events = body.get("events")
     lineups = body.get("lineups")
@@ -6303,15 +6309,15 @@ def reset_match_possession(
     body: PossessionResetRequest,
     confirm_live_action: bool = Query(default=False),
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
     _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Possession reset")
     resolved_user_id = _resolve_user_id(body.user_id, session_user)
-    _require_write_lock(row, resolved_user_id)
+    _require_write_lock(row, session_user)
 
     db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).delete(synchronize_session=False)
 
@@ -6342,15 +6348,15 @@ def reset_match_events(
     body: EventsResetRequest,
     confirm_live_action: bool = Query(default=False),
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
     _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Event reset")
     resolved_user_id = _resolve_user_id(body.user_id, session_user)
-    _require_write_lock(row, resolved_user_id)
+    _require_write_lock(row, session_user)
 
     event_count = db.query(Event).filter(Event.match_id == match_id).delete(synchronize_session=False)
     db.query(LaneSegment).filter(LaneSegment.match_id == match_id).delete(synchronize_session=False)
@@ -7560,7 +7566,7 @@ async def upload_match_lineup_record_sheet(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     filename = file.filename or ""
     if not filename.lower().endswith((".xlsx", ".xlsm")):
@@ -7655,7 +7661,7 @@ def upsert_match_lineup_manual_player(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     lineup = _upsert_manual_lineup_player(match_obj, body)
     db.commit()
@@ -7678,7 +7684,7 @@ def delete_match_lineup_manual_player(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     lineup = _delete_manual_lineup_player(match_obj, body)
     db.commit()
@@ -7817,17 +7823,19 @@ def acquire_lock(
     match_id: UUID,
     body: AcquireLockRequest | None = None,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
+    if admin_takeover and not _is_superuser(session_user):
+        raise HTTPException(status_code=403, detail="Administrator takeover required")
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(session_user):
+    if row.operator_id and row.operator_id != user_id and not _is_superuser(session_user):
         raise HTTPException(status_code=409, detail="Lock already acquired")
     row.operator_id = user_id
     db.commit()
@@ -7850,16 +7858,18 @@ def release_lock(
     match_id: UUID,
     body: ReleaseLockRequest | None = None,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
 
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
-    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(session_user):
+    if admin_takeover and not _is_superuser(session_user):
+        raise HTTPException(status_code=403, detail="Administrator takeover required")
+    if row.operator_id and row.operator_id != user_id and not _is_superuser(session_user):
         raise HTTPException(status_code=403, detail="Not lock owner")
     row.operator_id = None
     db.commit()
@@ -7882,13 +7892,14 @@ def post_state(
     match_id: UUID,
     body: StateRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
     existing = db.get(State, body.state_id)
     if existing:
@@ -7978,13 +7989,14 @@ def post_match_marker(
     match_id: UUID,
     body: MatchMarkerRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8043,12 +8055,18 @@ def _serialize_highlight(row: MatchHighlight) -> dict:
     }
 
 
+def _highlight_retry_result(row: MatchHighlight, match_id: UUID, clock_ms: int, user: User) -> dict:
+    if row.match_id != match_id or row.clock_ms != clock_ms or row.created_by != user.id:
+        raise HTTPException(status_code=409, detail="Highlight request ID already has different content")
+    return {"ok": True, "idempotent": True, "highlight": _serialize_highlight(row)}
+
+
 @app.post("/api/matches/{match_id}/highlights")
 def post_match_highlight(
     match_id: UUID,
     body: MatchHighlightRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
     """'지금이 하이라이트' 를 경기 시계와 함께 남긴다.
 
@@ -8058,11 +8076,19 @@ def post_match_highlight(
     clock_ms 를 안 주면 마지막 저장 상태의 시계를 쓴다(마커와 같은 규칙). 화면이 시계를
     들고 있으므로 보통은 실어 보내지만, 그게 없을 때 400 으로 떨구는 것보다 낫다.
     """
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
+
+    if body.request_id:
+        if body.clock_ms is None:
+            raise HTTPException(status_code=400, detail="clock_ms is required with request_id")
+        existing = db.get(MatchHighlight, body.request_id)
+        if existing:
+            return _highlight_retry_result(existing, match_id, body.clock_ms, session_user)
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8072,12 +8098,20 @@ def post_match_highlight(
         clock_ms = last_state.clock_ms
 
     row = MatchHighlight(
+        id=body.request_id or uuid.uuid4(),
         match_id=match_id,
         clock_ms=clock_ms,
         created_by=_resolve_user_id(body.user_id, session_user),
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.get(MatchHighlight, body.request_id) if body.request_id else None
+        if existing:
+            return _highlight_retry_result(existing, match_id, clock_ms, session_user)
+        raise
     db.refresh(row)
     _audit(
         db,
@@ -8222,14 +8256,14 @@ def delete_match_highlight(
     match_id: UUID,
     highlight_id: UUID,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
     """잘못 찍은 하이라이트를 지운다 — 단축키가 있어 오타가 나기 쉽다."""
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     row = (
         db.query(MatchHighlight)
@@ -8259,13 +8293,14 @@ def post_attack_lane(
     match_id: UUID,
     body: AttackLaneEventRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
     existing = db.get(Event, body.event_id)
     if existing:
@@ -8317,13 +8352,14 @@ def post_xg(
     match_id: UUID,
     body: XGEventRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
     existing = db.get(Event, body.event_id)
     if existing:
