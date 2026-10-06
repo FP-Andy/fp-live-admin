@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import math
 import binascii
 import io
 import json
@@ -1052,39 +1054,44 @@ def _ffmpeg_cut(src: Path, out: Path, start: float, duration: float) -> bool:
 
 
 def cut_clips_for_job(job_id: str, labels: list[float], before: float, after: float) -> None:
-    """Cut one clip per label timestamp from the operator's source video."""
+    """Preserve successful outputs and retry only failed cuts of the same plan."""
     db = SessionLocal()
     try:
         job = db.get(HighlightJob, job_id)
         if not job or not job.upload_path or not Path(job.upload_path).exists():
             update_job(db, job_id, status="error", error_message="원본 영상을 찾을 수 없습니다.")
             return
-        src = Path(job.upload_path)
-        out_dir = clips_dir(job_id)
-        if out_dir.exists():
-            shutil.rmtree(out_dir, ignore_errors=True)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        ordered = sorted(float(x) for x in labels)
-        total = len(ordered) or 1
-        clip_info: list[dict[str, Any]] = []
-        for i, label in enumerate(ordered):
-            start = max(0.0, label - float(before))
-            end = label + float(after)
-            name = f"clip_{i + 1:03d}.mp4"
-            metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
-            metadata["progress"] = _progress_payload("cutting", int(i / total * 100), f"클립 {i + 1}/{len(ordered)} 생성 중")
-            update_job(db, job_id, status="processing", job_metadata=_json_safe(metadata))
-            if _ffmpeg_cut(src, out_dir / name, start, end - start):
-                clip_info.append({"name": name, "start": round(start, 2), "end": round(end, 2), "label": round(label, 2)})
-
-        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
-        metadata["clips"] = [c["name"] for c in clip_info]
-        metadata["clip_info"] = clip_info
-        metadata["progress"] = _progress_payload("clips_ready", 100, "클립 생성 완료")
-        update_job(db, job_id, status="clips_ready", clips_dir=str(out_dir), job_metadata=_json_safe(metadata))
+        ordered=sorted(float(x) for x in labels)
+        if not ordered or not all(math.isfinite(x) and x>=0 for x in ordered) or not all(math.isfinite(x) and x>=0 for x in (before,after)) or before+after<=0:
+            raise ValueError('태그 시각과 앞뒤 길이를 확인하세요.')
+        src=Path(job.upload_path);out_dir=clips_dir(job_id);out_dir.mkdir(parents=True,exist_ok=True)
+        stamp=src.stat()
+        spec=hashlib.sha256(json.dumps([ordered,before,after,str(src),stamp.st_size,stamp.st_mtime_ns]).encode()).hexdigest()[:16]
+        metadata=dict(job.job_metadata or {})
+        same=metadata.get('cut_spec')==spec
+        previous={c['name']:c for c in metadata.get('clip_info',[]) if isinstance(c,dict) and c.get('name')} if same else {}
+        if not same and metadata.get('clips'):
+            metadata['cut_history']=[*metadata.get('cut_history',[]),{'cut_spec':metadata.get('cut_spec'),'clips':metadata['clips'],'clip_info':metadata.get('clip_info',[])}]
+        metadata['cut_spec']=spec
+        clip_info=[];failures=[];total=len(ordered)
+        for i,label in enumerate(ordered):
+            start=max(0.,label-float(before));end=label+float(after);name=f'clip_{spec}_{i+1:03d}.mp4';target=out_dir/name
+            existing=previous.get(name)
+            if existing and target.is_file() and target.stat().st_size>0:
+                clip_info.append(existing)
+            elif _ffmpeg_cut(src,target,start,end-start):
+                clip_info.append({'name':name,'start':round(start,2),'end':round(end,2),'label':round(label,2)})
+            else:
+                failures.append({'index':i+1,'label':label,'start':start,'end':end})
+            metadata.update(clips=[c['name'] for c in clip_info],clip_info=clip_info,clip_failures=failures)
+            metadata['progress']=_progress_payload('cutting',int((i+1)/total*100),f'{i+1}/{total} 확인 · 성공 {len(clip_info)} · 실패 {len(failures)}')
+            update_job(db,job_id,status='processing',clips_dir=str(out_dir),job_metadata=_json_safe(metadata))
+        status='clips_ready' if not failures else 'clips_partial' if clip_info else 'error'
+        detail=f'클립 {len(clip_info)}/{total}개 생성'+(' · 같은 태그로 다시 생성하면 실패 구간만 재시도합니다.' if failures else ' 완료')
+        metadata['progress']=_progress_payload(status,int(len(clip_info)/total*100),detail)
+        update_job(db,job_id,status=status,clips_dir=str(out_dir),error_message=detail if failures else None,job_metadata=_json_safe(metadata))
     except Exception as exc:
-        update_job(db, job_id, status="error", error_message=str(exc))
+        update_job(db,job_id,status='error',error_message=str(exc))
     finally:
         db.close()
 
@@ -2223,12 +2230,24 @@ def merge_manual_clips_for_job(job_id: str) -> None:
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
+        if str(metadata.get("sport") or "FOOTBALL").upper() == "FOOTBALL":
+            metadata["clip_results"] = {**(metadata.get("clip_results") or {}),
+                                        "status": "queued", "error": None}
         update_job(
             db, job_id,
             status="done",
             export_path=str(export_path),
             job_metadata=_json_safe(metadata),
         )
+        # Individual football clips share the existing clip/dual workspace.
+        # Registration has its own status; failure must not fail the finished montage.
+        if str(metadata.get("sport") or "FOOTBALL").upper() == "FOOTBALL":
+            try:
+                from .manual_clip_results import publish_manual_clip_results
+                db.close()
+                publish_manual_clip_results(job_id)
+            except Exception as exc:
+                print(f"manual clip registration failed for {job_id}: {exc}")
     except Exception as exc:
         update_job(db, job_id, status="error", error_message=str(exc))
     finally:

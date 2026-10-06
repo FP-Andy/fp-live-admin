@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BasketballRecording from './BasketballRecording';
-import { apiJson } from '../../lib/api';
+import {useRouter} from 'next/navigation';
+import {registerWorkspaceLeave} from '../../lib/workspace-leave';
+import {createBasketballPersistence,type BasketballDraft} from '../../lib/basketball-persistence';
+import { apiJson,fetchSessionUser } from '../../lib/api';
 
 type Team = 'HOME' | 'AWAY';
 type ShotResult = 'MADE' | 'MISSED';
@@ -42,6 +45,7 @@ type Match = {
 };
 
 type BasketballStoredState = {
+  revision?:number;
   events?: GameEvent[];
   lineups?: Partial<Record<Team, LineupPlayer[]>> | null;
   timer?: {
@@ -146,6 +150,9 @@ function formatElapsedAxis(totalSeconds: number) {
 }
 
 export default function BasketballMatchPage({ params }: { params: { id: string } }) {
+  const router=useRouter();
+  const writer=useRef<ReturnType<typeof createBasketballPersistence>|null>(null);
+  const [saveStatus,setSaveStatus]=useState('불러오는 중'),[saveFailed,setSaveFailed]=useState(false);
   const [match, setMatch] = useState<Match | null>(null);
   const [events, setEvents] = useState<GameEvent[]>([]);
   const [selectedTeam, setSelectedTeam] = useState<Team>('HOME');
@@ -159,7 +166,6 @@ export default function BasketballMatchPage({ params }: { params: { id: string }
     AWAY: fallbackLineup('AWAY'),
   });
   const [eventsLoaded, setEventsLoaded] = useState(false);
-  const [lineupsLoaded, setLineupsLoaded] = useState(false);
   const [isLineupEditorOpen, setIsLineupEditorOpen] = useState(false);
   const [period, setPeriod] = useState(1);
   const [clock, setClock] = useState('10:00');
@@ -169,9 +175,6 @@ export default function BasketballMatchPage({ params }: { params: { id: string }
   const [marginTooltip, setMarginTooltip] = useState<{ id: string; x: number; y: number; lines: string[] } | null>(null);
   const [error, setError] = useState('');
 
-  const storageKey = `fineplay.basketball.events.${params.id}`;
-  const lineupStorageKey = `fineplay.basketball.lineups.${params.id}`;
-  const timerStorageKey = `fineplay.basketball.timer.${params.id}`;
   const homeName = match?.metadata?.home_team || 'HOME';
   const awayName = match?.metadata?.away_team || 'AWAY';
   const periodCount = match?.metadata?.period_count || 4;
@@ -182,84 +185,32 @@ export default function BasketballMatchPage({ params }: { params: { id: string }
   const periodCountRef = useRef(periodCount);
   const periodMinutesRef = useRef(periodMinutes);
 
-  useEffect(() => {
-    Promise.all([
-      apiJson<Match>(`/matches/${params.id}`),
-      apiJson<BasketballStoredState>(`/matches/${params.id}/basketball-state`).catch(() => null),
-    ])
-      .then(([data, storedState]) => {
-        setMatch(data);
-        const nextClock = `${String(data.metadata?.period_minutes || 10).padStart(2, '0')}:00`;
-        const rawTimer = window.localStorage.getItem(timerStorageKey);
-        let localTimer: { period?: number; clock?: string } | null = null;
-        if (rawTimer) {
-          try {
-            const parsed = JSON.parse(rawTimer);
-            if (parsed && typeof parsed === 'object') localTimer = parsed;
-          } catch {
-            localTimer = null;
-          }
-        }
-        const storedTimer = storedState?.timer;
-        const restoredPeriod = Number(storedTimer?.period || localTimer?.period || 1);
-        const restoredClock = storedTimer?.clock || localTimer?.clock || nextClock;
-        setPeriod(Number.isFinite(restoredPeriod) ? Math.min(Math.max(1, restoredPeriod), data.metadata?.period_count || 4) : 1);
-        setClock(restoredClock);
-        const fallback = lineupsFromMatch(data);
-        const storedLineups = storedState?.lineups;
-        const rawLineups = window.localStorage.getItem(lineupStorageKey);
-        if (Array.isArray(storedLineups?.HOME) && Array.isArray(storedLineups?.AWAY)) {
-          setBasketballLineups({ HOME: storedLineups.HOME, AWAY: storedLineups.AWAY });
-        } else if (rawLineups) {
-          try {
-            const parsed = JSON.parse(rawLineups);
-            if (Array.isArray(parsed?.HOME) && Array.isArray(parsed?.AWAY)) {
-              setBasketballLineups(parsed);
-            } else {
-              setBasketballLineups(fallback);
-            }
-          } catch {
-            setBasketballLineups(fallback);
-          }
-        } else {
-          setBasketballLineups(fallback);
-        }
-        const rawEvents = window.localStorage.getItem(storageKey);
-        if (Array.isArray(storedState?.events) && storedState.events.length > 0) {
-          setEvents(storedState.events);
-        } else if (rawEvents) {
-          try {
-            const parsed = JSON.parse(rawEvents);
-            setEvents(Array.isArray(parsed) ? parsed : []);
-          } catch {
-            setEvents([]);
-          }
-        } else {
-          setEvents([]);
-        }
-        setEventsLoaded(true);
-        setLineupsLoaded(true);
-      })
-      .catch((loadError) => {
-        setEventsLoaded(true);
-        setError(loadError instanceof Error ? loadError.message : 'Failed to load match');
-      });
-  }, [lineupStorageKey, params.id, storageKey]);
-
-  useEffect(() => {
-    if (!eventsLoaded) return;
-    window.localStorage.setItem(storageKey, JSON.stringify(events));
-    window.localStorage.setItem(timerStorageKey, JSON.stringify({ period, clock }));
-    apiJson<{ ok: boolean }>(`/matches/${params.id}/basketball-state`, {
-      method: 'PUT',
-      body: JSON.stringify({ events, lineups: basketballLineups, timer: { period, clock } }),
-    }).catch(() => undefined);
-  }, [basketballLineups, clock, events, eventsLoaded, params.id, period, storageKey, timerStorageKey]);
-
-  useEffect(() => {
-    if (!lineupsLoaded) return;
-    window.localStorage.setItem(lineupStorageKey, JSON.stringify(basketballLineups));
-  }, [basketballLineups, lineupStorageKey, lineupsLoaded]);
+  const applyStored=(value:BasketballDraft)=>{setEvents(value.events);setBasketballLineups(value.lineups);setPeriod(value.timer.period);setClock(value.timer.clock);};
+  const normalized=(value:BasketballStoredState,data:Match):BasketballDraft=>({events:Array.isArray(value.events)?value.events:[],lineups:value.lineups?.HOME&&value.lineups?.AWAY?value.lineups:lineupsFromMatch(data),timer:{period:value.timer?.period||1,clock:value.timer?.clock||`${String(data.metadata?.period_minutes||10).padStart(2,'0')}:00`}});
+  useEffect(()=>{
+    let active=true,unsubscribe=()=>{};
+    setEventsLoaded(false);
+    Promise.all([apiJson<Match>(`/matches/${params.id}`),apiJson<BasketballStoredState>(`/matches/${params.id}/basketball-state`),fetchSessionUser()]).then(([data,remote,user])=>{
+      if(!active)return;setMatch(data);
+      const key=`fpc.basketball.pending.v1.${encodeURIComponent(user.id)}.${params.id}`;
+      const instance=createBasketballPersistence(key,normalized(remote,data),remote.revision||0,body=>apiJson(`/matches/${params.id}/basketball-state`,{method:'PUT',body:JSON.stringify(body)}),()=>sessionStorage);
+      writer.current=instance;applyStored(instance.state().value);
+      const update=()=>{if(!active)return;const status=instance.state();setSaveFailed(!!status.error);if(status.error)setTimerRunning(false);setSaveStatus(status.error?'저장 확인 필요 · '+status.error:status.dirty?'서버 저장 중…':`서버 저장됨 · v${status.revision}`);if(status.journalFailed)setSaveStatus(text=>text+' · 브라우저 복구 저장 실패, JSON을 보관하세요.');};
+      unsubscribe=instance.subscribe(update);update();setEventsLoaded(true);
+    }).catch(e=>{if(active){setError(e instanceof Error?e.message:'경기 불러오기 실패');setSaveStatus('서버 기록을 불러오지 못했습니다. 새로고침 후 다시 확인하세요.');}});
+    return()=>{active=false;unsubscribe();writer.current?.dispose();writer.current=null;};
+  },[params.id]);
+  useEffect(()=>{if(eventsLoaded)writer.current?.stage({events,lineups:basketballLineups,timer:{period,clock}});},[events,basketballLineups,period,clock,eventsLoaded]);
+  useEffect(()=>{
+    const leave=async()=>{setTimerRunning(false);try{await writer.current?.flush();return true;}catch{return false;}};
+    const unregister=registerWorkspaceLeave(leave);
+    const unload=(e:BeforeUnloadEvent)=>{if(writer.current?.state().dirty){e.preventDefault();e.returnValue='';}};
+    const navigate=(e:MouseEvent)=>{const a=(e.target as Element)?.closest?.('a[href]') as HTMLAnchorElement|null;if(!writer.current?.state().dirty||e.defaultPrevented||e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||!a||a.download||a.target&&a.target!=='_self'||a.origin!==location.origin||a.href===location.href)return;e.preventDefault();e.stopImmediatePropagation();void leave().then(ok=>{if(ok)router.push(a.pathname+a.search+a.hash);});};
+    window.addEventListener('beforeunload',unload);document.addEventListener('click',navigate,true);
+    return()=>{unregister();window.removeEventListener('beforeunload',unload);document.removeEventListener('click',navigate,true);};
+  },[router]);
+  const exportPending=()=>{const value=writer.current?.state();const url=URL.createObjectURL(new Blob([JSON.stringify({matchId:params.id,...value})],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='fpc-basketball-recovery.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+  const loadServer=async()=>{if(!match||!window.confirm('현재 미확인 입력을 JSON으로 보관했나요? 이 화면을 서버의 최신 기록으로 바꿉니다.'))return;try{const next=await apiJson<BasketballStoredState>(`/matches/${params.id}/basketball-state`);const value=normalized(next,match);writer.current?.server(value,next.revision||0);applyStored(value);}catch(e){setError(e instanceof Error?e.message:'서버 기록 조회 실패');}};
 
   useEffect(() => {
     clockRef.current = clock;
@@ -577,6 +528,8 @@ export default function BasketballMatchPage({ params }: { params: { id: string }
 
   return (
     <main className="page-stack basketball-page">
+      <div role="status" aria-label="농구 저장 상태" className="card card-panel"><strong>{saveStatus}</strong>{saveFailed?<><button onClick={()=>void writer.current?.flush().catch(()=>{})}>저장 다시 시도</button><button onClick={exportPending}>농구 기록 JSON 보관</button><button onClick={()=>void loadServer()}>서버 기록 불러오기</button></>:null}</div>
+      <fieldset disabled={!eventsLoaded} style={{border:0,padding:0,margin:0,minWidth:0,display:'contents'}}>
       <section className="basketball-scoreboard">
         <div className="basketball-score-team">
           <span>{homeName}</span>
@@ -1016,6 +969,7 @@ export default function BasketballMatchPage({ params }: { params: { id: string }
           </svg>
         </div>
       </section>
+      </fieldset>
     </main>
   );
 }

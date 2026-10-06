@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
+import { useMatchHighlights } from '../../../../lib/use-match-highlights';
 import { resolveMatchTeams } from '../../dashboard/schedule-data';
 
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
@@ -431,23 +432,32 @@ export default function MatchPage() {
     clockSpeedRef.current = 1;
   }, [sessionUser, match, canUseX2, clockSpeed]);
 
+  const clockRevision=useRef(0),stateQueue=useRef<Promise<unknown>>(Promise.resolve());
+  const applyServerClock=(state:any,revision?:number)=>{
+    if(typeof revision==='number')clockRevision.current=revision;
+    if(!state)return;
+    const ms=state.clock_ms||0;baseRef.current=ms;clockRef.current=ms;perfRef.current=state.running?performance.now():null;
+    runningRef.current=!!state.running;setRunning(!!state.running);setClockMs(ms);
+    setPossessionTeam(state.possession_team||'NONE');setSelectedTeam(state.selected_team||'HOME');setAttackLR(state.attack_lr||'L2R');
+  };
   const saveState = async (
-    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>
+    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>,sample=false
   ) => {
-    const effectiveClockMs = next?.clockMs ?? getCurrentClockMs();
-    const payload = {
-      state_id: makeId(),
-      clock_ms: effectiveClockMs,
-      running: next?.running ?? running,
-      possession_team: next?.possessionTeam ?? possessionTeam,
-      selected_team: next?.selectedTeam ?? selectedTeam,
-      attack_lr: next?.attackLR ?? attackLR,
-      allow_clock_rewind: Boolean(next?.allowClockRewind),
-    };
-    await apiJson(`/matches/${id}/state`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    const captured={clock_ms:next?.clockMs??getCurrentClockMs(),running:next?.running??running,
+      possession_team:next?.possessionTeam??possessionTeam,selected_team:next?.selectedTeam??selectedTeam,
+      attack_lr:next?.attackLR??attackLR,allow_clock_rewind:!!next?.allowClockRewind};
+    const run=stateQueue.current.catch(()=>{}).then(async()=>{
+      try{
+        const result=await apiJson<any>(`/matches/${id}/state`,{method:'POST',body:JSON.stringify({...captured,state_id:makeId(),update_kind:sample?'sample':'command',command_revision:clockRevision.current})});
+        if(result.command_revision!==undefined)clockRevision.current=result.command_revision;
+        if(result.ignored){applyServerClock(result.state,result.command_revision);if(!sample)throw Error('시간 명령이 적용되지 않았습니다. 서버 상태를 다시 확인하세요.');}
+        else if(!sample)applyServerClock(result.state,result.command_revision);
+        return result;
+      }catch(e){
+        try{const [m,s]=await Promise.all([apiJson<any>(`/matches/${id}`),apiJson<any>(`/matches/${id}/summary`)]);applyServerClock(s.state,m.metadata?.fla_clock_revision||0);}catch{}
+        setControlNotice('시간·점유 변경의 저장을 확인하지 못했습니다. 서버 상태를 다시 불러왔습니다. 연결을 확인한 뒤 재시도하세요.');throw e;
+      }
+    });stateQueue.current=run;return run;
   };
 
   const fetchAll = async () => {
@@ -464,8 +474,10 @@ export default function MatchPage() {
     setDominance(d.bins || []);
     setDominanceMeta(d);
 
+    if(!initializedRef.current)clockRevision.current=m.metadata?.fla_clock_revision||0;
     if (s?.state && !initializedRef.current) {
       initializedRef.current = true;
+      clockRevision.current=m.metadata?.fla_clock_revision||0;
       setClockMs(s.state.clock_ms || 0);
       setRunning(Boolean(s.state.running));
       setPossessionTeam(s.state.possession_team || 'NONE');
@@ -537,7 +549,7 @@ export default function MatchPage() {
   useEffect(() => {
     const t = setInterval(() => {
       if (canWrite && runningRef.current) {
-        saveState({ clockMs: clockRef.current }).catch(() => undefined);
+        saveState({ clockMs: clockRef.current },true).catch(() => undefined);
       }
     }, 3000);
     return () => clearInterval(t);
@@ -549,10 +561,11 @@ export default function MatchPage() {
     const wasRunning = runningRef.current;
     const frozen = getCurrentClockMs();
     try {
-      await saveState({clockMs: frozen, running: !wasRunning});
-      baseRef.current = frozen;
+      const applied=await saveState({clockMs: frozen, running: !wasRunning});
+      const accepted=applied.state?.clock_ms??frozen;
+      baseRef.current = accepted;
       perfRef.current = wasRunning ? null : performance.now();
-      setClockMs(frozen);
+      setClockMs(accepted);
       setRunning(!wasRunning);
       runningRef.current = !wasRunning;
     } catch { setControlNotice('시간 변경을 저장하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.'); }
@@ -704,45 +717,9 @@ export default function MatchPage() {
   //
   // 마커와 다르다 — 마커는 타입당 한 줄이라 다시 찍으면 덮어쓰지만, 하이라이트는
   // 누를 때마다 쌓인다(models.MatchHighlight).
-  const [highlights, setHighlights] = useState<{ id: string; clock_ms: number }[]>([]);
-  const [hlNotice, setHlNotice] = useState('');
-
-  const loadHighlights = useCallback(async () => {
-    try {
-      const res = await apiJson<{ highlights: { id: string; clock_ms: number }[] }>(
-        `/matches/${id}/highlights`,
-      );
-      setHighlights(res.highlights || []);
-    } catch { /* 목록을 못 읽어도 찍는 건 된다 */ }
-  }, [id]);
-
-  useEffect(() => { void loadHighlights(); }, [loadHighlights]);
-
-  const markHighlight = async () => {
-    if (!canWrite) return;
-    // 돌고 있는 시계를 그대로 쓴다 — 저장된 상태값이 아니라 지금 흐르는 값이어야
-    // 누른 순간과 맞는다.
-    const now = getCurrentClockMs();
-    try {
-      await apiFetch(`/matches/${id}/highlights`, {
-        method: 'POST',
-        body: JSON.stringify({ clock_ms: now }),
-      });
-      setHlNotice(`하이라이트 ${fmt(now)} 기록`);
-      await loadHighlights();
-    } catch {
-      setHlNotice('하이라이트를 기록하지 못했습니다.');
-    }
-  };
-
-  const removeHighlight = async (hid: string) => {
-    try {
-      await apiFetch(`/matches/${id}/highlights/${hid}`, { method: 'DELETE' });
-      await loadHighlights();
-    } catch {
-      setHlNotice('하이라이트를 지우지 못했습니다.');
-    }
-  };
+  const { highlights, pending: pendingHighlights, busy: highlightBusy, hlNotice,
+    storageError: highlightStorageError, markHighlight, removeHighlight, retryHighlight, exportPending,
+  } = useMatchHighlights(id, userId, canWrite, getCurrentClockMs);
 
   /** 로컬앱(FinePlay Highlight)이 읽는 로그 파일. 골·유효슛·슛·HL·하프타임 경계가
    *  경기 시계로 한 장에 담긴다 — 앱이 앵커 두 개로 영상 시간에 앉힌다. */
@@ -1634,7 +1611,22 @@ export default function MatchPage() {
                     로그 저장 (.json)
                   </button>
                 </div>
-                {hlNotice ? <span className="muted">{hlNotice}</span> : null}
+                {hlNotice ? <span role="status" className="muted">{hlNotice}</span> : null}
+                {pendingHighlights.length ? (
+                  <div role="alert" className="grid" style={{ gap: 6 }}>
+                    <strong>저장 미확인 {pendingHighlights.length}개</strong>
+                    {pendingHighlights.map((item) => (
+                      <div className="row" key={item.request_id}>
+                        <span>원래 시각 {fmt(item.clock_ms)}</span>
+                        <button className="btn-secondary" disabled={!canWrite || highlightBusy.includes(item.request_id)} onClick={() => void retryHighlight(item)}>
+                          {highlightBusy.includes(item.request_id) ? '저장 확인 중…' : '같은 시각으로 다시 요청'}
+                        </button>
+                      </div>
+                    ))}
+                    {highlightStorageError ? <span>브라우저에도 보관하지 못했습니다. 이동 전에 복구 파일을 저장하세요.</span> : <span className="muted">이 탭에서 다시 열면 미확인 요청을 복원합니다.</span>}
+                    <button className="btn-secondary" onClick={exportPending}>미확인 시각 복구 파일</button>
+                  </div>
+                ) : null}
                 <div
                   className="grid"
                   style={{ height: 105, overflowY: 'auto', paddingRight: 4 }}

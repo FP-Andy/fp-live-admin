@@ -7,6 +7,13 @@ export function connectConsole() {
   const loopback = url => url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname);
   if (parent.origin !== location.origin && !(loopback(parent) && loopback(new URL(location.href)))) return;
   document.documentElement.classList.add('console-embed');
+  window.addEventListener('message',event=>{
+    if(event.source!==window.parent||event.origin!==parent.origin||event.data?.type!=='fpa-cv:viewport')return;
+    const {top,height}=event.data;
+    if(!Number.isFinite(top)||!Number.isFinite(height)||top<0||top>25000||height<=0||height>25000)return;
+    document.documentElement.style.setProperty('--console-visible-top',`${top}px`);
+    document.documentElement.style.setProperty('--console-visible-height',`${height}px`);
+  });
   let scheduled = false;
   function publish() {
     if (scheduled) return;

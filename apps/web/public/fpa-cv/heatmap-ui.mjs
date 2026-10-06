@@ -63,14 +63,15 @@ export function heatmapUI({getData,getWorking,getRecovery,prepareSnapshot,messag
       const players=result.players,eventCount=getWorking().events.length;
       $('analysis-complete-summary').textContent=`${result.resultVersion}차 · 평균 ${(players.reduce((s,p)=>s+p.coverage,0)/players.length*100).toFixed(1)}% · 최저 ${(Math.min(...players.map(p=>p.coverage))*100).toFixed(1)}% · FPA ${eventCount}건${eventCount?'':' (이벤트맵 비어 있음)'}`;
       $('analysis-complete-players').replaceChildren(...players.map(p=>{const row=document.createElement('li');row.textContent=`${p.group==='home'?'홈':'원정'} #${p.jersey} · 관측 ${(p.coverage*100).toFixed(1)}%${p.augmentation?` · 추정 +${(p.augmentation.inferredSeconds/result.duration*100).toFixed(1)}%p`:''} · 최장 공백 ${gapTime(p.longestMissing)}`;return row;}));
-      $('analysis-complete-checked').checked=false;confirm.disabled=true;dialog.showModal();
+      $('analysis-complete-checked').checked=false;confirm.disabled=true;$('analysis-complete-error').hidden=true;dialog.showModal();
     };
     $('analysis-complete-checked').onchange=e=>{confirm.disabled=!e.target.checked||saving;};
     $('analysis-complete-cancel').onclick=()=>dialog.close();
+    dialog.addEventListener('cancel',event=>{if(saving)event.preventDefault();});
     confirm.onclick=async()=>{
       if(!result||computing||saving||!$('analysis-complete-checked').checked||getRecovery()?.status!=='complete')return;
       const captured=result,ticket=revision;requestId=requestId||crypto.randomUUID().replaceAll('-','');
-      saving=true;confirm.disabled=true;completion.disabled=true;confirm.textContent='저장 중…';
+      saving=true;confirm.disabled=true;completion.disabled=true;confirm.textContent='저장 중…';$('analysis-complete-cancel').disabled=true;$('analysis-complete-error').hidden=true;
       try{
         if(!prepareSnapshot)throw Error('FPC 분석 목록에서 작업을 열어 주세요.');
         const source=await prepareSnapshot();
@@ -80,8 +81,8 @@ export function heatmapUI({getData,getWorking,getRecovery,prepareSnapshot,messag
         requestId=null;dialog.close();
         const link=$('analysis-snapshot-link');link.href=`/admin/fcm/futsal/reports?snapshot=${encodeURIComponent(saved.id)}`;link.textContent=`확정 v${saved.version} · FCM 리포트 열기`;link.hidden=false;
         message(`분석 완료 · 스냅샷 v${saved.version} 서버 저장됨. 이후 수정은 새 버전으로 확정할 수 있습니다.`);
-      }catch(error){message(error.message,true);}
-      finally{saving=false;confirm.textContent='완료 판정 · 스냅샷 저장';confirm.disabled=!$('analysis-complete-checked').checked;completion.disabled=!result;}
+      }catch(error){$('analysis-complete-error').textContent=error.message;$('analysis-complete-error').hidden=false;message(error.message,true);}
+      finally{saving=false;confirm.textContent='완료 판정 · 스냅샷 저장';confirm.disabled=!$('analysis-complete-checked').checked;completion.disabled=!result;$('analysis-complete-cancel').disabled=false;}
     };
   }
   $('heatmap-build').onclick=compute;

@@ -44,6 +44,7 @@ type RecordSheetMeta = {
 type MatchRow = {
   match_id: string | null;
   job_id: string;
+  source_mode?: string;
   // 산출 지시 — basic(하이라이트만) 이면 전송에 채점·액션이 실리지 않는다.
   plan?: { tier: 'xfp' | 'basic'; options?: string[]; source?: string } | null;
   name: string;
@@ -273,6 +274,17 @@ export default function ClipResultsPage() {
   const [busy, setBusy] = useState(false);
   const [motions, setMotions] = useState<{ seq: number; url: string | null; sceneData?: SceneData | null }[]>([]);
   const [motionMsg, setMotionMsg] = useState('');
+  const [downloadingMotion, setDownloadingMotion] = useState<number | null>(null);
+  const activeClipId = useRef<string | null>(null);
+  const motionRequest = useRef(0);
+  const matchRequest = useRef(0);
+  const closeDetail = () => {
+    activeClipId.current = null;
+    motionRequest.current += 1;
+    setDetail(null);
+    setMotions([]);
+    setDownloadingMotion(null);
+  };
   // 기본은 앱과 같은 네이티브 렌더. mp4 는 폴백으로 계속 나가는 산출물이라 토글로 남긴다.
   const [motionAsMp4, setMotionAsMp4] = useState(false);
   // 클립 팀(홈/어웨이) 수정 — 관리자 전용. 되돌리기 어려운 값이라 팝업으로 한 번 확인받는다.
@@ -314,19 +326,26 @@ export default function ClipResultsPage() {
 
   const loadMatches = useCallback(async () => {
     // 딥링크 진입은 대상이 아카이브된 잡일 수 있으므로 항상 포함해서 받아온다 (표시는 아래에서 거른다).
-    const target = deepLinkDone.current
-      ? null
-      : new URLSearchParams(window.location.search).get('matchId');
-    const include = showArchived || !!target;
+    const params = new URLSearchParams(window.location.search);
+    const target = deepLinkDone.current ? null : params.get('matchId');
+    const targetJob = deepLinkDone.current ? null : params.get('jobId');
+    const include = showArchived || !!target || !!targetJob;
     try {
       const rows = await apiJson<MatchRow[]>(
         `/highlight/clip-results/matches${include ? '?include_archived=1' : ''}`,
       );
       setMatches(rows);
       if (!deepLinkDone.current) {
-        deepLinkDone.current = true;
-        const m = target ? rows.find((r) => r.match_id === target) : null;
-        if (m) void openMatch(m);
+        const m = targetJob ? rows.find((r) => r.job_id === targetJob)
+          : target ? rows.find((r) => r.match_id === target) : null;
+        if (m) {
+          deepLinkDone.current = true;
+          void openMatch(m);
+        } else if (targetJob) {
+          setMsg('아직 등록된 클립이 없습니다. 수동 결과물에서 연결 상태를 확인한 뒤 새로고침하세요.');
+        } else {
+          deepLinkDone.current = true;
+        }
       }
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
@@ -337,22 +356,32 @@ export default function ClipResultsPage() {
   useEffect(() => { void loadMatches(); }, [loadMatches]);
 
   const openMatch = async (m: MatchRow) => {
-    if (!m.match_id) { setMsg('매치 연결이 없는 잡입니다.'); return; }
+    const request = ++matchRequest.current;
     setSelectedMatch(m);
-    setDetail(null);
+    closeDetail();
+    setClips([]);
     setMsg('');
     try {
-      const res = await apiJson<{ clips: ClipRow[] }>(`/highlight/clip-results/matches/${m.match_id}/clips`);
+      const path = m.match_id ? `matches/${m.match_id}` : `jobs/${m.job_id}`;
+      const res = await apiJson<{ clips: ClipRow[] }>(`/highlight/clip-results/${path}/clips`);
+      if (request !== matchRequest.current) return;
       setClips(res.clips);
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      if (request === matchRequest.current) setMsg(err instanceof Error ? err.message : String(err));
     }
   };
 
   const openClip = useCallback(async (clipId: string) => {
+    if (activeClipId.current !== clipId) {
+      setDetail(null);
+      setMotions([]);
+      setDownloadingMotion(null);
+    }
+    activeClipId.current = clipId;
     setMsg('');
     try {
       const d = await apiJson<ClipDetail>(`/highlight/clip-results/clips/${clipId}`);
+      if (activeClipId.current !== clipId) return;
       setDetail(d);
       setActions(d.actions);
       // 구간 경계 되유도 — 액션에 찍힌 start/end 가 곧 경계다. 여기에, 아직 액션을 안 넣어
@@ -393,6 +422,7 @@ export default function ClipResultsPage() {
   // 다 기다리다 장면 많은 클립에서 504 가 났다. 그래서 이 호출 자체는 빠르지만, mp4 는 첫
   // 조회 때 아직 없을 수 있다('모션 새로고침' 으로 다시 부르면 찬다).
   const loadMotions = useCallback(async (clipId: string) => {
+    const request = ++motionRequest.current;
     setMotions([]);
     setMotionMsg('장면 모션 불러오는 중…');
     try {
@@ -402,14 +432,39 @@ export default function ClipResultsPage() {
       }>(
         `/highlight/clip-results/clips/${clipId}/scene-motions`,
       );
+      if (activeClipId.current !== clipId || request !== motionRequest.current) return;
       setMotions(res.motions);
       setMotionMsg(res.motions.length === 0
         ? '장면 모션 없음 — FPA dual 로 찍어 저장한 액션만 모션이 생성됩니다.'
         : (res.warnings?.length ? `일부 실패: ${res.warnings.join(' / ')}` : ''));
     } catch (err) {
-      setMotionMsg(err instanceof Error ? err.message : String(err));
+      if (activeClipId.current === clipId && request === motionRequest.current) {
+        setMotionMsg(err instanceof Error ? err.message : String(err));
+      }
     }
   }, []);
+
+  const downloadMotion = async (clipId: string, seq: number) => {
+    setDownloadingMotion(seq);
+    setMotionMsg('');
+    try {
+      const result = await apiJson<{ url: string; filename: string }>(
+        `/highlight/clip-results/clips/${clipId}/scene-motions/${seq}/download`,
+      );
+      if (activeClipId.current !== clipId) return;
+      // S3 supplies attachment headers. Navigating avoids cross-origin blob/CORS limits.
+      const link = document.createElement('a');
+      link.href = result.url;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      if (activeClipId.current === clipId) setMotionMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (activeClipId.current === clipId) setDownloadingMotion(null);
+    }
+  };
 
   // 영상 URL 은 S3 프리사인이라 조회할 때마다 서명이 달라진다. 액션을 새로 읽을 때마다(창 포커스,
   // dual 저장 알림, 새로고침 버튼) 새 URL 이 <video src> 에 꽂히면 브라우저가 미디어를 통째로 다시
@@ -654,8 +709,10 @@ export default function ClipResultsPage() {
     setMsg('');
     try {
       await apiJson(`/highlight/clip-results/clips/${clip.id}`, { method: 'DELETE' });
-      setMsg(`클립 ${clip.order_index + 1}번을 지웠습니다 — 다시 만들려면 FinePlay 작업 탭에서 태깅 후 클립 생성하세요.`);
-      setDetail(null);
+      setMsg(selectedMatch?.source_mode === 'manual'
+        ? `클립 ${clip.order_index + 1}번과 해당 분석을 클립결과에서 지웠습니다. 수동 결과물의 합본과 원본 클립은 유지됩니다.`
+        : `클립 ${clip.order_index + 1}번을 지웠습니다 — 다시 만들려면 FinePlay 작업 탭에서 태깅 후 클립 생성하세요.`);
+      closeDetail();
       if (selectedMatch) await openMatch(selectedMatch);
       await loadMatches();
     } catch (err) {
@@ -953,7 +1010,7 @@ export default function ClipResultsPage() {
   const visibleMatches = showArchived ? matches : matches.filter((m) => !m.archived);
   // 오른쪽 버튼 묶음(전체삭제·작업완료·아카이브)에서 'marginLeft: auto'(묶음을 오른쪽으로
   // 밀기)는 **맨 앞 하나만** 가져야 한다. 전체삭제가 보이면 그쪽이, 아니면 작업완료가 가진다.
-  const showDeleteAll = Boolean(clips.length) && !selectedMatch?.archived;
+  const showDeleteAll = Boolean(clips.length) && Boolean(selectedMatch?.match_id) && !selectedMatch?.archived;
 
   return (
     <div style={{ width: '100%' }}>
@@ -965,7 +1022,7 @@ export default function ClipResultsPage() {
           {selectedMatch ? (
             <>
               <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>›</span>
-              <button style={smallBtn} onClick={() => { setSelectedMatch(null); setDetail(null); }}>매치 목록</button>
+              <button style={smallBtn} onClick={() => { matchRequest.current += 1; setSelectedMatch(null); closeDetail(); }}>매치 목록</button>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{selectedMatch.name}</span>
               {selectedMatch.archived ? <ArchivedBadge /> : null}
               {role === 'SUPERADMIN' ? (
@@ -973,6 +1030,7 @@ export default function ClipResultsPage() {
                   <button style={smallBtn} onClick={renameMatch} disabled={busy} title="클립 결과 제목 바꾸기">
                     ✎ 이름 수정
                   </button>
+                  {selectedMatch.source_mode !== 'manual' ? <>
                   {/* 처음부터 다시 만들 때 — 클립만 비우고 원본·작업은 남는다. */}
                   {showDeleteAll ? (
                     <button
@@ -1056,6 +1114,7 @@ export default function ClipResultsPage() {
                         전송 취소
                       </button>
                     ) : null}
+                  </> : <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>수동 태깅 · 개별 클립 FPA dual 분석</span>}
                 </>
               ) : null}
             </>
@@ -1184,7 +1243,7 @@ export default function ClipResultsPage() {
           {visibleMatches.length === 0 ? (
             <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
               {matches.length === 0
-                ? '추출된 클립이 없습니다. FinePlay 작업 탭에서 클립을 생성하면 여기에 매치별로 쌓입니다.'
+                ? '추출된 클립이 없습니다. FinePlay 작업이나 축구 수동 태깅에서 만든 개별 클립이 여기에 쌓입니다.'
                 : "진행 중인 작업이 없습니다 — 모두 아카이브됨. '아카이브 포함'을 켜거나 '아카이브' 탭에서 볼 수 있습니다."}
             </p>
           ) : (
@@ -1195,7 +1254,9 @@ export default function ClipResultsPage() {
                   padding: '8px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
                 }}>
                   <span style={{ fontWeight: 600 }}>{m.name}</span>
-                  <PlanBadge plan={m.plan} />
+                  {m.source_mode === 'manual'
+                    ? <span style={{ fontSize: 12, color: '#93c5fd' }}>수동 태깅</span>
+                    : <PlanBadge plan={m.plan} />}
                   {m.archived ? <ArchivedBadge /> : null}
                   {/* 아카이브 안 해도 어디까지 했는지 목록에서 보인다 — 여럿이 나눠 맡을 때 쓴다. */}
                   {m.work_done && !m.archived ? (
@@ -1207,7 +1268,7 @@ export default function ClipResultsPage() {
                       }}
                     >✓ 완료</span>
                   ) : null}
-                  <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span>
+                  {m.analysis_request_id != null ? <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span> : null}
                   <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>클립 {m.clip_count}개</span>
                   {m.competition_callback_status ? (
                     <span style={{ fontSize: 12, color: '#f59e0b' }}>
@@ -1234,8 +1295,10 @@ export default function ClipResultsPage() {
         <div style={card}>
           <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '0 0 10px' }}>
             제목(<span style={{ borderBottom: '1px dashed var(--border-ghost, #3a3a42)' }}>밑줄 ✎</span>)을 눌러
-            클립 이름을 고칠 수 있습니다 — 앱 카드에 이 제목이 뜹니다. 비워서 저장하면 FPA 자동 제목으로 돌아갑니다.
-            고친 뒤 <strong>FinePlay로 전송</strong>해야 앱에 반영됩니다.
+            클립 이름을 고칠 수 있습니다. 비워서 저장하면 FPA 자동 제목으로 돌아갑니다.
+            {selectedMatch.source_mode === 'manual'
+              ? ' 상세에서 각 클립을 열어 FPA dual로 분석하세요.'
+              : <> 고친 뒤 <strong>FinePlay로 전송</strong>해야 앱에 반영됩니다.</>}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {clips.map((c) => (
@@ -1287,7 +1350,7 @@ export default function ClipResultsPage() {
       {detail ? (
         <div style={card}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-            <button style={smallBtn} onClick={() => setDetail(null)}>← 클립 목록</button>
+            <button style={smallBtn} onClick={closeDetail}>← 클립 목록</button>
             {/* 클립을 열어 보면서 바로 제목을 붙일 수 있어야 한다 — 목록으로
                 되돌아가 고치게 만들면 검수 흐름이 끊긴다. */}
             {renderTitle(detail)}
@@ -1581,12 +1644,12 @@ export default function ClipResultsPage() {
               <h3 style={{ fontSize: 14, margin: 0 }}>장면 모션 ({motions.length})</h3>
               <button style={smallBtn} onClick={() => void loadMotions(detail.id)}>모션 새로고침</button>
               <button style={smallBtn} onClick={() => setMotionAsMp4((v) => !v)}>
-                {motionAsMp4 ? '앱 화면으로' : 'mp4 로'}
+                {motionAsMp4 ? '앱 화면으로' : 'MP4로 보기'}
               </button>
               <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                 {motionAsMp4
-                  ? 'mp4 = sceneData 를 못 읽는 구버전 앱용 폴백입니다.'
-                  : '앱이 실제로 그리는 화면(sceneData 네이티브 렌더)입니다.'}
+                  ? '영상으로 재생합니다. 준비된 장면은 MP4로 다운로드할 수 있습니다.'
+                  : '분석한 장면을 재생합니다. MP4 준비 후 다운로드할 수 있습니다.'}
               </span>
             </div>
             {motionMsg ? (
@@ -1617,6 +1680,15 @@ export default function ClipResultsPage() {
                         <span style={{ color: 'var(--muted, #999)' }}>액션 {m.seq}</span>
                         <span style={{ fontWeight: 600 }}>{a?.actionLabel || ''}</span>
                         {a?.jersey ? <span style={{ color: 'var(--muted, #999)' }}>#{a.jersey}</span> : null}
+                      </div>
+                      <div style={{ padding: '0 10px 10px' }}>
+                        <button style={smallBtn}
+                          disabled={!m.url || downloadingMotion !== null}
+                          onClick={() => void downloadMotion(detail.id, m.seq)}
+                          title={m.url ? '이 장면을 MP4 파일로 저장' : '잠시 뒤 모션 새로고침을 눌러 준비 상태를 확인하세요'}
+                        >
+                          {downloadingMotion === m.seq ? '다운로드 준비 중…' : m.url ? 'MP4 다운로드' : 'MP4 준비 중'}
+                        </button>
                       </div>
                     </div>
                   );

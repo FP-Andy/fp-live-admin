@@ -177,6 +177,8 @@ from .schemas import (
     XGEventRequest,
     XGOTEstimateRequest,
 )
+from .basketball_state import apply_patch as apply_basketball_patch
+from .match_request_policy import require_sport, require_same_request, state_response
 from .services import apply_attack_event, apply_possession_segment, apply_xg_event, backfill_attack_scores, enqueue_outbox, latest_outbox, outbox_worker, recompute_dominance
 from .xg import estimate_xg as shared_estimate_xg, is_in_penalty_area as shared_is_in_penalty_area, normalize_shot_x as shared_normalize_shot_x
 
@@ -1628,11 +1630,12 @@ async def shutdown() -> None:
         await broadcast_asset_task
 
 
-def _require_write_lock(match_obj: Match, user_id: User | str | None) -> None:
-    if _is_superuser(user_id):
+def _require_write_lock(match_obj: Match, user: User | None) -> None:
+    if not isinstance(user, User):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if _is_superuser(user):
         return
-    user_id = user_id.id if isinstance(user_id, User) else user_id
-    if match_obj.operator_id and match_obj.operator_id != user_id:
+    if match_obj.operator_id and match_obj.operator_id != user.id:
         raise HTTPException(status_code=403, detail="Operator lock held by another user")
 
 
@@ -1648,8 +1651,13 @@ def _require_archived_editor_access(match_obj: Match, user: User) -> None:
         raise HTTPException(status_code=409, detail="Event editor is available for archived matches only")
 
 
-def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) -> str | None:
-    return explicit_user_id or (session_user.id if session_user else None)
+def _resolve_user_id(explicit_user_id: str | None, session_user: User | None) -> str:
+    if not session_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    # Retain the old field for callers sending their own ID, never as identity.
+    if explicit_user_id is not None and explicit_user_id != session_user.id:
+        raise HTTPException(status_code=403, detail="user_id must match the authenticated session")
+    return session_user.id
 
 
 def _is_superuser(user: User | str | None) -> bool:
@@ -3507,6 +3515,7 @@ def _build_basketball_state(match_obj: Match) -> dict:
         "event_count": len(events),
         "last_event": last_event,
         "updated_at": _basketball_fla_state(match_obj).get("updated_at"),
+        "revision": int(_basketball_fla_state(match_obj).get("revision") or 0),
     }
 
 
@@ -4611,7 +4620,10 @@ def _require_partner_auth(x_api_key: str | None = Header(default=None, alias="X-
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "time": datetime.utcnow().isoformat()}
+    from .outbox_delivery import HEALTH
+    return {"ok": True, "time": datetime.utcnow().isoformat(), "workers": {"outbox": {
+        **HEALTH, "task_alive": bool(worker_task and not worker_task.done()),
+    }}}
 
 
 @app.post("/api/xg/estimate")
@@ -5981,6 +5993,7 @@ def get_basketball_state(
     match_obj = db.get(Match, match_id)
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
+    require_sport(match_obj, 'BASKETBALL')
     metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
     state = metadata.get("basketball_fla") if isinstance(metadata.get("basketball_fla"), dict) else {}
     return {
@@ -5988,6 +6001,7 @@ def get_basketball_state(
         "lineups": state.get("lineups") if isinstance(state.get("lineups"), dict) else None,
         "timer": state.get("timer") if isinstance(state.get("timer"), dict) else None,
         "updated_at": state.get("updated_at"),
+        "revision": int(state.get("revision") or 0),
     }
 
 
@@ -5998,51 +6012,40 @@ def put_basketball_state(
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
+    require_sport(match_obj, 'BASKETBALL')
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, user.id)
+    _require_write_lock(match_obj, user)
 
-    events = body.get("events")
-    lineups = body.get("lineups")
-    timer = body.get("timer")
-    if not isinstance(events, list):
-        raise HTTPException(status_code=400, detail="events must be a list")
-    if lineups is not None and not isinstance(lineups, dict):
-        raise HTTPException(status_code=400, detail="lineups must be an object")
-    if timer is not None and not isinstance(timer, dict):
-        raise HTTPException(status_code=400, detail="timer must be an object")
-
-    metadata = dict(match_obj.metadata_json or {})
-    previous_state = metadata.get("basketball_fla") if isinstance(metadata.get("basketball_fla"), dict) else {}
-    previous_event_ids = {
-        str(event.get("id"))
-        for event in previous_state.get("events", [])
-        if isinstance(event, dict) and event.get("id")
-    }
-    metadata["basketball_fla"] = {
-        **previous_state,
-        "events": events,
-        "lineups": lineups,
-        "timer": timer,
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    match_obj.metadata_json = metadata
-    has_new_events = False
+    previous_state, state, result = apply_basketball_patch(match_obj, body)
+    if result.get('idempotent'):
+        return result
+    events = state.get('events') or []
+    previous_events = {str(e.get('id')): e for e in previous_state.get('events', []) if isinstance(e, dict)}
+    current_events = {str(e.get('id')): e for e in events if isinstance(e, dict)}
     for sequence, event in enumerate(events, start=1):
-        if not isinstance(event, dict) or not event.get("id") or str(event.get("id")) in previous_event_ids:
+        if str(event.get('id')) in previous_events:
             continue
-        has_new_events = True
         try:
-            ref_id = UUID(str(event.get("id")))
+            ref_id = UUID(str(event.get('id')))
         except ValueError:
             ref_id = uuid.uuid4()
-        _enqueue_webhook_fanout(db, "BASKETBALL_EVENT", ref_id, _serialize_basketball_event(match_obj.id, event, sequence))
-    if has_new_events:
-        _enqueue_webhook_fanout(db, "BASKETBALL_STATE", match_obj.id, _build_basketball_state(match_obj))
+        event_payload = _serialize_basketball_event(match_obj.id, event, sequence)
+        event_payload['revision'] = state['revision']
+        _enqueue_webhook_fanout(db, 'BASKETBALL_EVENT', ref_id, event_payload)
+    # Existing create-event consumers retain their contract. State consumers
+    # receive an authoritative versioned snapshot on edits and deletions too.
+    if previous_events != current_events or previous_state.get('lineups') != state.get('lineups') or previous_state.get('timer') != state.get('timer'):
+        snapshot = _build_basketball_state(match_obj)
+        snapshot.update(schema='fpc-basketball-state/v2', revision=state['revision'],
+                        event_changes={'upsert':[e for key,e in current_events.items() if previous_events.get(key)!=e],
+                                       'deleted':[key for key in previous_events if key not in current_events]},
+                        resync_url=f'/api/v1/basketball/matches/{match_obj.id}/snapshot')
+        _enqueue_webhook_fanout(db, 'BASKETBALL_STATE', match_obj.id, snapshot)
     db.commit()
-    return {"ok": True, "match_id": str(match_obj.id), "event_count": len(events), "updated_at": metadata["basketball_fla"]["updated_at"]}
+    return {**result, 'match_id':str(match_obj.id), 'event_count':len(events)}
 
 
 @app.post("/api/competition-classes", response_model=CompetitionClassResponse)
@@ -6303,15 +6306,15 @@ def reset_match_possession(
     body: PossessionResetRequest,
     confirm_live_action: bool = Query(default=False),
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
     _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Possession reset")
     resolved_user_id = _resolve_user_id(body.user_id, session_user)
-    _require_write_lock(row, resolved_user_id)
+    _require_write_lock(row, session_user)
 
     db.query(PossessionSegment).filter(PossessionSegment.match_id == match_id).delete(synchronize_session=False)
 
@@ -6342,15 +6345,15 @@ def reset_match_events(
     body: EventsResetRequest,
     confirm_live_action: bool = Query(default=False),
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
     _guard_live_dangerous_action(row, db, confirm_live_action=confirm_live_action, action_label="Event reset")
     resolved_user_id = _resolve_user_id(body.user_id, session_user)
-    _require_write_lock(row, resolved_user_id)
+    _require_write_lock(row, session_user)
 
     event_count = db.query(Event).filter(Event.match_id == match_id).delete(synchronize_session=False)
     db.query(LaneSegment).filter(LaneSegment.match_id == match_id).delete(synchronize_session=False)
@@ -7560,7 +7563,7 @@ async def upload_match_lineup_record_sheet(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     filename = file.filename or ""
     if not filename.lower().endswith((".xlsx", ".xlsm")):
@@ -7655,7 +7658,7 @@ def upsert_match_lineup_manual_player(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     lineup = _upsert_manual_lineup_player(match_obj, body)
     db.commit()
@@ -7678,7 +7681,7 @@ def delete_match_lineup_manual_player(
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     lineup = _delete_manual_lineup_player(match_obj, body)
     db.commit()
@@ -7817,17 +7820,19 @@ def acquire_lock(
     match_id: UUID,
     body: AcquireLockRequest | None = None,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
+    if admin_takeover and not _is_superuser(session_user):
+        raise HTTPException(status_code=403, detail="Administrator takeover required")
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(session_user):
+    if row.operator_id and row.operator_id != user_id and not _is_superuser(session_user):
         raise HTTPException(status_code=409, detail="Lock already acquired")
     row.operator_id = user_id
     db.commit()
@@ -7850,16 +7855,18 @@ def release_lock(
     match_id: UUID,
     body: ReleaseLockRequest | None = None,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    row = db.get(Match, match_id)
+    row = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(row)
 
     user_id = _resolve_user_id(body.user_id if body else None, session_user)
     admin_takeover = body.admin_takeover if body else False
-    if row.operator_id and row.operator_id != user_id and not admin_takeover and not _is_superuser(session_user):
+    if admin_takeover and not _is_superuser(session_user):
+        raise HTTPException(status_code=403, detail="Administrator takeover required")
+    if row.operator_id and row.operator_id != user_id and not _is_superuser(session_user):
         raise HTTPException(status_code=403, detail="Not lock owner")
     row.operator_id = None
     db.commit()
@@ -7882,31 +7889,48 @@ def post_state(
     match_id: UUID,
     body: StateRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
+    metadata = dict(match_obj.metadata_json or {})
+    command_revision = int(metadata.get('fla_clock_revision') or 0)
+    receipts = dict(metadata.get('fla_clock_receipts') or {})
+    request_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude={'user_id'}), sort_keys=True).encode()).hexdigest()
     existing = db.get(State, body.state_id)
-    if existing:
-        return {"ok": True, "idempotent": True, "state_id": existing.id}
-
     prev = _latest_state(match_id, db)
-    if prev and body.clock_ms < prev.clock_ms and not body.allow_clock_rewind:
-        # Ignore stale state packets arriving out-of-order to keep possession segments monotonic.
-        return {
-            "ok": True,
-            "ignored": True,
-            "reason": "stale_clock",
-            "state_id": body.state_id,
-            "latest_clock_ms": prev.clock_ms,
-        }
+    if existing:
+        receipt = receipts.get(str(body.state_id))
+        if receipt:
+            if existing.match_id != match_id or receipt != request_hash:
+                raise HTTPException(409, 'State request ID belongs to different content')
+        else:
+            require_same_request(existing, match_id, {'clock_ms':body.clock_ms, 'running':body.running, 'possession_team':body.possession_team, 'selected_team':body.selected_team, 'attack_lr':body.attack_lr})
+        return {'ok':True,'idempotent':True,'state_id':existing.id,**state_response(prev,command_revision)}
+    if body.command_revision is None and command_revision:
+        raise HTTPException(428, 'Reload the updated console before changing this match clock')
+    if body.command_revision is not None and body.command_revision != command_revision:
+        reply={'reason':'stale_command_revision',**state_response(prev,command_revision)}
+        if body.update_kind=='sample':return {'ok':True,'ignored':True,**reply}
+        raise HTTPException(409, reply)
+    effective_clock = body.clock_ms
+    if body.update_kind=='command' and body.command_revision is not None:
+        if prev and not body.allow_clock_rewind:
+            effective_clock=max(effective_clock,prev.clock_ms)
+        command_revision+=1
+    elif prev and body.clock_ms < prev.clock_ms and not body.allow_clock_rewind:
+        return {'ok':True,'ignored':True,'reason':'stale_clock','state_id':body.state_id,
+                'latest_clock_ms':prev.clock_ms,**state_response(prev,command_revision)}
+    elif body.command_revision is not None and prev and any(getattr(body,k)!=getattr(prev,k) for k in ('running','possession_team','selected_team','attack_lr')):
+        return {'ok':True,'ignored':True,'reason':'sample_cannot_change_controls',**state_response(prev,command_revision)}
 
     prev_team = prev.possession_team if prev else "NONE"
-    if prev and body.clock_ms < prev.clock_ms and body.allow_clock_rewind:
+    if prev and effective_clock < prev.clock_ms and body.allow_clock_rewind:
         # Controlled rewind (e.g., 2H starts at 45:00 after 1H stoppage). Close open segments
         # at previous clock to keep durations non-negative, then restart segmentation from clean state.
         open_segments = (
@@ -7934,20 +7958,20 @@ def post_state(
             .all()
         )
         for seg in open_segments:
-            if body.clock_ms >= seg.start_ms:
-                seg.end_ms = body.clock_ms
+            if effective_clock >= seg.start_ms:
+                seg.end_ms = effective_clock
                 apply_possession_segment(db, match_id, seg.team, seg.start_ms, seg.end_ms)
 
         if new_team in ("HOME", "AWAY"):
-            db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=body.clock_ms, end_ms=None))
+            db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=effective_clock, end_ms=None))
 
     elif prev is None and new_team in ("HOME", "AWAY"):
-        db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=body.clock_ms, end_ms=None))
+        db.add(PossessionSegment(match_id=match_id, team=new_team, start_ms=effective_clock, end_ms=None))
 
     state = State(
         id=body.state_id,
         match_id=match_id,
-        clock_ms=body.clock_ms,
+        clock_ms=effective_clock,
         running=body.running,
         possession_team=body.possession_team,
         selected_team=body.selected_team,
@@ -7960,7 +7984,7 @@ def post_state(
         "state_id": str(body.state_id),
         "idempotency_key": str(body.state_id),
         "match_id": str(match_id),
-        "clock_ms": body.clock_ms,
+        "clock_ms": effective_clock,
         "running": body.running,
         "possession_team": body.possession_team,
         "selected_team": body.selected_team,
@@ -7969,8 +7993,11 @@ def post_state(
     }
     _enqueue_webhook_fanout(db, "STATE", body.state_id, payload)
 
+    if body.command_revision is not None:
+        receipts[str(body.state_id)]=request_hash
+        match_obj.metadata_json={**metadata,'fla_clock_revision':command_revision,'fla_clock_receipts':dict(list(receipts.items())[-128:])}
     db.commit()
-    return {"ok": True, "state_id": body.state_id}
+    return {'ok':True,'state_id':body.state_id,**state_response(state,command_revision)}
 
 
 @app.post("/api/matches/{match_id}/markers")
@@ -7978,13 +8005,14 @@ def post_match_marker(
     match_id: UUID,
     body: MatchMarkerRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8043,12 +8071,18 @@ def _serialize_highlight(row: MatchHighlight) -> dict:
     }
 
 
+def _highlight_retry_result(row: MatchHighlight, match_id: UUID, clock_ms: int, user: User) -> dict:
+    if row.match_id != match_id or row.clock_ms != clock_ms or row.created_by != user.id:
+        raise HTTPException(status_code=409, detail="Highlight request ID already has different content")
+    return {"ok": True, "idempotent": True, "highlight": _serialize_highlight(row)}
+
+
 @app.post("/api/matches/{match_id}/highlights")
 def post_match_highlight(
     match_id: UUID,
     body: MatchHighlightRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
     """'지금이 하이라이트' 를 경기 시계와 함께 남긴다.
 
@@ -8058,11 +8092,19 @@ def post_match_highlight(
     clock_ms 를 안 주면 마지막 저장 상태의 시계를 쓴다(마커와 같은 규칙). 화면이 시계를
     들고 있으므로 보통은 실어 보내지만, 그게 없을 때 400 으로 떨구는 것보다 낫다.
     """
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
+
+    if body.request_id:
+        if body.clock_ms is None:
+            raise HTTPException(status_code=400, detail="clock_ms is required with request_id")
+        existing = db.get(MatchHighlight, body.request_id)
+        if existing:
+            return _highlight_retry_result(existing, match_id, body.clock_ms, session_user)
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8072,12 +8114,20 @@ def post_match_highlight(
         clock_ms = last_state.clock_ms
 
     row = MatchHighlight(
+        id=body.request_id or uuid.uuid4(),
         match_id=match_id,
         clock_ms=clock_ms,
         created_by=_resolve_user_id(body.user_id, session_user),
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.get(MatchHighlight, body.request_id) if body.request_id else None
+        if existing:
+            return _highlight_retry_result(existing, match_id, clock_ms, session_user)
+        raise
     db.refresh(row)
     _audit(
         db,
@@ -8222,14 +8272,14 @@ def delete_match_highlight(
     match_id: UUID,
     highlight_id: UUID,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
     """잘못 찍은 하이라이트를 지운다 — 단축키가 있어 오타가 나기 쉽다."""
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(None, session_user))
+    _require_write_lock(match_obj, session_user)
 
     row = (
         db.query(MatchHighlight)
@@ -8259,16 +8309,18 @@ def post_attack_lane(
     match_id: UUID,
     body: AttackLaneEventRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
     existing = db.get(Event, body.event_id)
     if existing:
+        require_same_request(existing, match_id, {'type': 'ATTACK_LANE', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'lane': body.lane})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
 
     clock_ms = body.clock_ms
@@ -8317,16 +8369,18 @@ def post_xg(
     match_id: UUID,
     body: XGEventRequest,
     db: Session = Depends(get_db),
-    session_user: User | None = Depends(_get_session_user),
+    session_user: User = Depends(_require_session_user),
 ):
-    match_obj = db.get(Match, match_id)
+    match_obj = db.query(Match).filter(Match.id == match_id).with_for_update().first()
     if not match_obj:
         raise HTTPException(status_code=404, detail="Match not found")
     _require_match_not_archived(match_obj)
-    _require_write_lock(match_obj, _resolve_user_id(body.user_id, session_user))
+    _resolve_user_id(body.user_id, session_user)
+    _require_write_lock(match_obj, session_user)
 
     existing = db.get(Event, body.event_id)
     if existing:
+        require_same_request(existing, match_id, {'type': 'XG', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'xg': body.xg, 'player_name': (body.player_name or "").strip() or None, 'player_number': (body.player_number or "").strip() or None, 'is_goal': body.is_goal, 'is_own_goal': body.is_own_goal, 'is_on_target': body.is_on_target, 'shot_x': body.shot_x, 'shot_y': body.shot_y, 'goalmouth_x': body.goalmouth_x, 'goalmouth_y': body.goalmouth_y, 'is_header': body.is_header, 'is_weak_foot': body.is_weak_foot, 'under_pressure': body.under_pressure, 'one_on_one': body.one_on_one, 'shot_pace_band': body.shot_pace_band})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
 
     clock_ms = body.clock_ms
@@ -8869,6 +8923,12 @@ def basketball_state_v1(match_id: UUID, _auth: None = Depends(_require_partner_a
     return _build_basketball_state(row)
 
 
+@app.get("/api/v1/basketball/matches/{match_id}/snapshot")
+def basketball_snapshot_v2(match_id: UUID, _auth: None = Depends(_require_partner_auth), db: Session = Depends(get_db)):
+    row = _require_basketball_match_for_partner(match_id, db)
+    return {**_build_basketball_state(row), "schema":"fpc-basketball-state/v2", "events":_basketball_events(row)}
+
+
 @app.get("/api/v1/basketball/matches/{match_id}/events")
 def basketball_events_v1(
     match_id: UUID,
@@ -9283,7 +9343,9 @@ async def upload_manual_clip(
     합칠 때 이 사이드카들을 order(=index) 순으로 모아 순서를 잡는다(list_manual_clip_info).
     무거운 디스크 복사는 스레드풀로 넘겨 이벤트 루프(다른 사용자의 요청)를 막지 않는다.
     """
-    _require_manual_job(db, job_id, user)
+    job = _require_manual_job(db, job_id, user)
+    if job.status not in {"collecting", "error"} or (job.job_metadata or {}).get("clip_results"):
+        raise HTTPException(status_code=409, detail="완료되었거나 분석에 연결한 클립은 덮어쓸 수 없습니다. 새 수동 작업을 만드세요.")
     if requested_end <= requested_start:
         raise HTTPException(status_code=400, detail="클립 구간이 올바르지 않습니다.")
     if index < 1:
@@ -9341,6 +9403,24 @@ async def upload_manual_clip(
         await clip.close()
 
     return {"name": name}
+
+
+@app.post("/api/highlight/manual-jobs/{job_id}/clip-results", status_code=202)
+def register_manual_clip_results(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    from .manual_clip_results import queue_publication, publish_manual_clip_results
+    job = _require_manual_job(db, job_id, user)
+    try:
+        state = queue_publication(db, job)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if state.get("status") != "ready":
+        background_tasks.add_task(publish_manual_clip_results, job_id)
+    return {"job_id": job_id, "clip_results": state}
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/intro")
@@ -12845,6 +12925,10 @@ def _clip_job_context(db: Session, clip: HighlightClip) -> tuple[HighlightJob | 
             saved = None
     if saved is not None and (saved.teamid_h or saved.teamid_a):
         labels = {"home": saved.teamid_h or "", "away": saved.teamid_a or ""}
+    elif job is not None and job.mode == "manual":
+        scoreboard = metadata.get("scoreboard") or {}
+        labels = {"home": str(scoreboard.get("home_name") or "홈"),
+                  "away": str(scoreboard.get("away_name") or "원정")}
     else:
         team_name = str((manifest.get("team") or {}).get("teamName") or "")
         opp_name = str((manifest.get("opponent") or {}).get("name") or "")
@@ -12899,9 +12983,10 @@ def clip_result_matches(
             "job_id": g["job_id"],
             # 산출 지시 — basic 매치는 채점 열·xFP 배지를 숨기고 전송도 영상만 나간다.
             "plan": fineplay_resolve_plan(metadata),
-            "name": name or metadata.get("display_name") or g["job_id"],
-            "home_team": home,
-            "away_team": away,
+            "name": name or metadata.get("display_name") or (job.original_filename if job else None) or g["job_id"],
+            "source_mode": job.mode if job else None,
+            "home_team": home or str((metadata.get("scoreboard") or {}).get("home_name") or ""),
+            "away_team": away or str((metadata.get("scoreboard") or {}).get("away_name") or ""),
             "clip_count": g["clip_count"],
             "callback_status": metadata.get("callback_status"),
             # 대회 인입은 뒤에서 도는 작업이라, 화면이 이 값을 보고 끝난 것을 안다.
@@ -12943,7 +13028,7 @@ def rename_clip_result(
     if len(name) > 200:
         raise HTTPException(status_code=400, detail="이름이 너무 깁니다 (200자 이내).")
 
-    job = db.get(HighlightJob, job_id)
+    job = db.query(HighlightJob).filter_by(id=job_id).with_for_update().one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
 
@@ -13045,6 +13130,25 @@ def clip_result_clips(
             item["thumbnail_url"] = storage.presigned_get(c.thumbnail_s3_key, expires=3600)
         out.append(item)
     return {"clips": out}
+
+
+@app.get("/api/highlight/clip-results/jobs/{job_id}/clips")
+def clip_result_job_clips(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """Job-scoped results, including manual work without a live Match."""
+    if db.get(HighlightJob, job_id) is None:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    clips = db.query(HighlightClip).filter_by(job_id=job_id).order_by(HighlightClip.order_index).all()
+    return {"clips": [{
+        "id": clip.id, "order_index": clip.order_index, "team_side": clip.team_side,
+        "start_sec": clip.start_sec, "end_sec": clip.end_sec,
+        "duration_seconds": clip.duration_seconds, "main_action": clip.main_action,
+        "title": clip.title,
+        "action_count": db.query(HighlightClipAction).filter_by(clip_id=clip.id).count(),
+    } for clip in clips]}
 
 
 @app.get("/api/highlight/clip-results/clips/{clip_id}")
@@ -13176,6 +13280,36 @@ def clip_result_scene_motions(
         _render_scene_motions_bg, actions, clip.id, storage, motion_prefix,
     )
     return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
+
+
+@app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions/{seq}/download")
+def download_clip_scene_motion(
+    clip_id: str,
+    seq: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """Sign the current scene's MP4 as an attachment; never download stale coordinates."""
+    clip = db.get(HighlightClip, clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
+    storage = highlight_default_storage()
+    if not storage.configured:
+        raise HTTPException(status_code=409, detail="영상 저장소가 설정되지 않았습니다.")
+    actions = [_serialize_clip_action(action) for action in db.query(HighlightClipAction)
+               .filter_by(clip_id=clip_id).order_by(HighlightClipAction.seq).all()]
+    prefix = (clip.horizontal_s3_key.rsplit("/", 1)[0]
+              if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key else highlight_output_prefix())
+    attach_scene_motions(actions, None, clip_key=clip.id, storage=None, prefix=prefix)
+    action = next((a for a in actions if a.get("seq") == seq and a.get("sceneData")), None)
+    if action is None:
+        raise HTTPException(status_code=404, detail="이 액션의 씬모션이 없습니다.")
+    key = scene_motion_key(prefix, clip.id, seq, action["sceneData"])
+    if not storage.exists(key):
+        raise HTTPException(status_code=409, detail="현재 장면의 MP4를 준비 중입니다. 모션 새로고침 후 다시 다운로드하세요.")
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", clip.id)[:100]
+    filename = f"scene-motion-{safe_id}-action-{seq}.mp4"
+    return {"url": storage.presigned_download(key, filename, expires=600), "filename": filename}
 
 
 def _clip_team_metadata(job: HighlightJob, clip: HighlightClip, team: str | None) -> dict | None:
@@ -13454,7 +13588,16 @@ def clip_result_delete_clip(
     clip = db.get(HighlightClip, clip_id)
     if not clip:
         raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
-    job = db.get(HighlightJob, clip.job_id)
+    job = db.query(HighlightJob).filter_by(id=clip.job_id).with_for_update().one_or_none()
+    if job is not None and job.mode == "manual":
+        from .manual_clip_results import registration_state
+        state = registration_state(job)
+        removed = set(state.get("removed_clips") or [])
+        removed.add(clip.source_video_id)
+        job.job_metadata = {**(job.job_metadata or {}), "clip_results": {
+            **state, "removed_clips": sorted(removed),
+            "completed": max(0, db.query(HighlightClip).filter_by(job_id=job.id).count() - 1),
+        }}
     db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == clip_id).delete(
         synchronize_session=False
     )
@@ -14482,6 +14625,9 @@ def cut_operator_clips(
     job = _require_operator_job(db, job_id, user)
     if not job.upload_path or not Path(job.upload_path).exists():
         raise HTTPException(status_code=409, detail="원본 영상이 아직 준비되지 않았습니다.")
+    job=db.query(HighlightJob).filter(HighlightJob.id==job_id).with_for_update().populate_existing().one()
+    if job.status in ('processing','merging'):
+        raise HTTPException(409,'이 작업은 이미 처리 중입니다.')
     labels = body.get("labels")
     if not isinstance(labels, list) or not labels:
         raise HTTPException(status_code=400, detail="라벨이 없습니다.")
@@ -14491,6 +14637,7 @@ def cut_operator_clips(
         raise HTTPException(status_code=400, detail="라벨 형식이 올바르지 않습니다.") from exc
     before = float(body.get("before", 7.0))
     after = float(body.get("after", 4.0))
+    update_job(db,job_id,status='processing',error_message=None)
     background_tasks.add_task(cut_clips_for_job, job_id, label_secs, before, after)
     return {"status": "processing", "count": len(label_secs)}
 
@@ -14992,9 +15139,15 @@ def delete_highlight_job(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = db.get(HighlightJob, job_id)
+    # Serialize deletion with manual publication before collecting child rows.
+    job = db.query(HighlightJob).filter_by(id=job_id).with_for_update().one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.mode == "manual":
+        clip_ids = [clip.id for clip in db.query(HighlightClip).filter_by(job_id=job_id).all()]
+        if clip_ids:
+            db.query(HighlightClipAction).filter(HighlightClipAction.clip_id.in_(clip_ids)).delete(synchronize_session=False)
+            db.query(HighlightClip).filter(HighlightClip.id.in_(clip_ids)).delete(synchronize_session=False)
     delete_job_files(job)
     db.delete(job)
     db.commit()

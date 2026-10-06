@@ -6,6 +6,7 @@ node_modules
 .next
 .next-dev
 .next-build
+.next-*
 
 # ffmpeg 코어는 prebuild 스크립트가 node_modules 에서 다시 복사한다 (31MB).
 public/ffmpeg
