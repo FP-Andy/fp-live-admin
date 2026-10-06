@@ -44,6 +44,11 @@ jobs:
         run: |
           node apps/web/node_modules/typescript/bin/tsc --noEmit --incremental false -p apps/web/tsconfig.json
           node scripts/test-manual-draft.cjs
+          node scripts/test-report-recovery.cjs
+          node scripts/test-futsal-match-report.cjs
+          node scripts/test-futsal-team-report.cjs
+          node scripts/test-futsal-report-stories.cjs
+          node scripts/test-futsal-substitution-report.mjs
       - name: Production web build
         run: npm run build --prefix apps/web
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -62,3 +67,5 @@ jobs:
           done
           if [ "$ready" != true ]; then cat "$RUNNER_TEMP/fpc-ui.log"; exit 1; fi
           FPC_QA_OUTPUT="$RUNNER_TEMP/fpc-save-qa" node scripts/test-fpc-save-recovery-ui.cjs
+          FPC_REPORT_QA_OUTPUT="$RUNNER_TEMP/fpc-report-qa" node scripts/test-report-recovery-ui.cjs
+          FPC_DIALOG_QA_OUTPUT="$RUNNER_TEMP/fpc-dialog-qa" node scripts/test-completion-dialog-ui.cjs
