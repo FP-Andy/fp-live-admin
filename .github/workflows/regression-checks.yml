@@ -30,7 +30,9 @@ jobs:
           PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_fla_video.py -v
           PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_analysis_snapshots.py -v
       - name: Individual manual clips and scene downloads
-        run: python apps/api/tests/test_manual_clip_results.py -v
+        run: |
+          python apps/api/tests/test_manual_clip_results.py -v
+          python apps/api/tests/test_scene_motion_renderer.py -v
 
   web:
     runs-on: ubuntu-latest
@@ -55,12 +57,22 @@ jobs:
           node scripts/test-futsal-substitution-report.mjs
       - name: Production web build
         run: npm run build --prefix apps/web
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install browser test media tools
+        timeout-minutes: 4
+        run: |
+          # The hosted runner's Azure HTTP mirror can throttle large codec
+          # packages for several minutes. Use Ubuntu's signed HTTPS archive.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
       # Match the supported operator browser, including H.264 MP4 decoding.
       - run: node apps/web/node_modules/playwright-core/cli.js install --with-deps chrome
       - name: Browser failure and recovery contracts (fixture APIs only)
         env:
           CHROME_PATH: /usr/bin/google-chrome
+          CHROMIUM_PATH: /usr/bin/google-chrome
+          SCENE_MOTION_RENDER_TOKEN: fixture-render-token
+          SCENE_MOTION_CAPTURE_ORIGIN: http://127.0.0.1:4354
         shell: bash
         run: |
           set -euo pipefail
@@ -80,6 +92,7 @@ jobs:
           FPC_BASKETBALL_QA_OUTPUT="$RUNNER_TEMP/fpc-basketball-qa" node scripts/test-basketball-recovery-ui.cjs
           CLIP_QA_ORIGIN=http://127.0.0.1:4354 CLIP_QA_OUTPUT="$RUNNER_TEMP/fpc-clips-qa" node scripts/test-manual-clip-results-ui.cjs
           FPC_DIALOG_QA_OUTPUT="$RUNNER_TEMP/fpc-dialog-qa" node scripts/test-completion-dialog-ui.cjs
+          SCENE_QA_OUTPUT="$RUNNER_TEMP/fpc-scene-qa" node scripts/test-scene-motion-mp4.cjs
       - name: Browser regression evidence
         if: always()
         uses: actions/upload-artifact@v4

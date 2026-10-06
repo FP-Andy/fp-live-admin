@@ -34,9 +34,16 @@ let browser,page;
  await page.waitForFunction(()=>document.querySelector('.fv-error')?.textContent.includes('Failed to fetch'));
  const first=requests[0];assert(first.segments.length);assert(requests.length>=2);requests.forEach(p=>assert.deepEqual(p,first));
  await page.reload();await page.getByRole('button',{name:'저장 다시 시도',exact:true}).waitFor();
+ const retryAt=requests.length;
  fail=false;await page.getByRole('button',{name:'저장 다시 시도',exact:true}).click();
  await page.waitForFunction(()=>!document.querySelector('.fv-error'));
- assert.deepEqual(requests.at(-1),first);assert.equal(receipts.size,1);
+ // A final player frame can arrive while the original request is unconfirmed.
+ // After its retry succeeds, that legitimate tail is saved as a new revision.
+ // Assert the retry itself, not the last request after the queue has drained.
+ assert.deepEqual(requests[retryAt],first);assert.deepEqual(receipts.get(first.request_id),first);
+ for(const p of requests.filter(p=>p.request_id===first.request_id))assert.deepEqual(p,first);
+ for(const segment of first.segments)assert.equal(segments.filter(p=>JSON.stringify(p)===JSON.stringify(segment)).length,1);
+ for(let i=1;i<segments.length;i++)assert.equal(segments[i].start_ms,segments[i-1].end_ms);
  pass('Two lost responses and reload retry retain original request ID/payload without duplicate segments');
  await page.getByRole('button',{name:'영상 재생 정지',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('video').currentTime>4);
