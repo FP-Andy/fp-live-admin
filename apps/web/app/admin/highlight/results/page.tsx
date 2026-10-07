@@ -9,12 +9,13 @@ import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
 
 // 수동 태깅으로 만든 하이라이트 목록. 전원 SUPERADMIN 이라 누가 만들었든 모두 조회·다운로드한다.
 
-type ClipInfo = { name: string; requested_start: number; requested_end: number };
+type ClipInfo = { name: string; requested_start: number; requested_end: number; kind?: string };
 
 type ManualJob = {
   id: string;
   owner_id: string | null;
   status: string;
+  render_queue?: { position: number; status: string } | null;
   original_filename: string;
   display_name?: string | null;
   export_path?: string | null;
@@ -23,6 +24,7 @@ type ManualJob = {
   created_at: string;
   job_metadata?: {
     clip_info?: ClipInfo[];
+    highlight_log?: { tag_count: number };
     progress?: { percent?: number; detail?: string; phase?: string } | null;
     clip_results?: { status?: string; completed?: number; total?: number; error?: string | null };
   } | null;
@@ -48,6 +50,7 @@ const btn: React.CSSProperties = {
 const STATUS_LABEL: Record<string, string> = {
   collecting: '클립 수신 중',
   merging: '합치는 중',
+  render_queued: '합치기 대기',
   done: '완료',
   error: '실패',
 };
@@ -92,7 +95,7 @@ export default function ManualResultsPage() {
 
   // 처리 중인 작업이 있을 때만 주기적으로 다시 읽는다.
   useEffect(() => {
-    const busy = jobs.some((j) => j.status === 'merging' || j.status === 'collecting'
+    const busy = jobs.some((j) => j.status === 'render_queued' || j.status === 'merging' || j.status === 'collecting'
       || ['queued', 'running'].includes(j.job_metadata?.clip_results?.status || ''));
     if (!busy) {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
@@ -115,6 +118,13 @@ export default function ManualResultsPage() {
     } finally {
       setRegistering(null);
     }
+  };
+
+  const retryMerge = async (job: ManualJob) => {
+    setRegistering(job.id); setError('');
+    try { await apiJson(`/highlight/manual-jobs/${job.id}/merge`, { method: 'POST', body: '{}' }); await load(); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setRegistering(null); }
   };
 
   const remove = async (job: ManualJob) => {
@@ -181,6 +191,7 @@ export default function ManualResultsPage() {
                     <span style={{ color: job.status === 'error' ? '#ef4444' : job.status === 'done' ? '#22c55e' : undefined }}>
                       {STATUS_LABEL[job.status] || job.status}
                     </span>
+                    {job.status === 'render_queued' && job.render_queue ? ` · 대기 ${job.render_queue.position}번째` : ''}
                     {job.status !== 'done' && job.stage ? ` — ${job.stage}` : ''}
                   </div>
                   {job.error_message ? (
@@ -188,6 +199,10 @@ export default function ManualResultsPage() {
                   ) : null}
                 </div>
 
+                {job.job_metadata?.highlight_log ? <a style={btn}
+                  href={`${API_BASE}/highlight/manual-jobs/${job.id}/log`}>로그 JSON 다운로드</a> : null}
+                {job.status === 'error' && clips.length ? <button style={btn} disabled={registering !== null}
+                  onClick={() => void retryMerge(job)}>합치기 다시 요청</button> : null}
                 {job.export_path ? (
                   <a
                     href={`${API_BASE}/highlight/jobs/${job.id}/export/download`}
@@ -201,7 +216,7 @@ export default function ManualResultsPage() {
                     {open ? '클립 접기' : `클립 ${clips.length}개`}
                   </button>
                 ) : null}
-                <button style={btn} onClick={() => void remove(job)}>삭제</button>
+                <button style={btn} disabled={!!job.render_queue || job.status === "merging"} onClick={() => void remove(job)}>삭제</button>
               </div>
 
               {sport === 'FOOTBALL' && job.status === 'done' && clips.length > 0 ? (
@@ -228,11 +243,11 @@ export default function ManualResultsPage() {
                 </div>
               ) : null}
 
-              {job.status === 'merging' || job.status === 'collecting' ? (
+              {job.status === 'render_queued' || job.status === 'merging' || job.status === 'collecting' ? (
                 <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>
-                      {job.status === 'merging' ? '다듬고 합치는 중' : '클립 수신 중'}
+                      {job.status === 'render_queued' ? `합치기 대기 ${job.render_queue?.position ?? 1}번째` : job.status === 'merging' ? '다듬고 합치는 중' : '클립 수신 중'}
                     </span>
                     <LeaveBadge canLeave />
                     {job.job_metadata?.progress?.detail ? (
@@ -257,6 +272,7 @@ export default function ManualResultsPage() {
                     >
                       <span style={{ color: 'var(--muted, #999)', width: 24 }}>{i + 1}</span>
                       <span>{fmtClock(clip.requested_start)} ~ {fmtClock(clip.requested_end)}</span>
+                      {clip.kind === 'substitution' ? <span style={{ color: '#A78BFA' }}>교체</span> : null}
                       <a
                         href={`${API_BASE}/highlight/jobs/${job.id}/clips/${clip.name}`}
                         style={{ ...btn, marginLeft: 'auto', textDecoration: 'none' }}

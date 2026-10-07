@@ -1,0 +1,224 @@
+"""FIFO, duplicate requests, recovery and real API log contracts; isolated DB."""
+import json
+import os
+import shutil
+import subprocess
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import test_match_write_access as fixture
+from app import highlight_jobs as jobs
+from app.highlight_render_queue import HighlightRenderTask, enqueue, exclusive_worker
+from app.highlight_render_worker import HighlightRenderWorker, RenderInterrupted
+from app.models import HighlightJob
+from app.highlight_process import ffmpeg_args
+
+
+class RenderQueueTests(fixture.MatchWriteAccess):
+    # Keep fixture setup/auth without inheriting the unrelated match test suite.
+    def setUp(self):
+        super().setUp()
+        self.mutex = threading.Lock()
+        self.client = self.clients['admin']
+
+    @contextmanager
+    def local_lock(self):
+        got = self.mutex.acquire(blocking=False)
+        try:
+            yield object() if got else None
+        finally:
+            if got:
+                self.mutex.release()
+
+    def new_job(self, name=None):
+        response = self.client.post('/api/highlight/manual-jobs', json={'source_filename': name or 'fixture.mp4', 'sport':'FOOTBALL'})
+        self.assertEqual(response.status_code, 200, response.text)
+        job_id = response.json()['job_id']
+        response = self.client.post(f'/api/highlight/manual-jobs/{job_id}/clips',
+            files={'clip': ('clip.mp4', b'synthetic clip; renderer mocked', 'video/mp4')},
+            data={'index':'1', 'requested_start':'1', 'requested_end':'3', 'kind':'substitution'})
+        self.assertEqual(response.status_code, 200, response.text)
+        return job_id
+
+    def submit(self, job_id, body=None):
+        response = self.client.post(f'/api/highlight/manual-jobs/{job_id}/merge', json=body or {})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def finish(self, queue_id, connection):
+        with fixture.SessionLocal() as db:
+            job = db.get(HighlightJob, db.get(HighlightRenderTask, queue_id).job_id)
+            job.status = 'done'
+            db.commit()
+
+    def worker(self, render=None, lock=None):
+        return HighlightRenderWorker(fixture.SessionLocal, fixture.engine,
+            lock=lock or self.local_lock, render=render or self.finish)
+
+    def test_manual_fifo_duplicate_options_and_asset_freeze(self):
+        a,b,c = [self.new_job() for _ in range(3)]
+        for i, jid in enumerate([a,b,c]):
+            self.assertEqual(self.submit(jid, {'clip_xfade_sec':.2})['render_queue']['position'], i+1)
+        repeat = self.submit(a, {'clip_xfade_sec':1.5})
+        self.assertEqual(repeat['render_queue']['position'],1)
+        with fixture.SessionLocal() as db:
+            self.assertEqual(db.query(HighlightRenderTask).count(),3)
+            self.assertEqual(db.get(HighlightJob,a).job_metadata['clip_xfade_sec'],.2)
+        self.assertEqual(self.client.delete(f'/api/highlight/jobs/{a}').status_code,409)
+        self.assertEqual(self.client.post(f'/api/highlight/manual-jobs/{a}/clips',
+            files={'clip':('clip.mp4',b'changed','video/mp4')},
+            data={'index':'1','requested_start':'1','requested_end':'3'}).status_code,409)
+        calls=[]
+        def render(qid, conn):
+            with fixture.SessionLocal() as db: calls.append(db.get(HighlightRenderTask,qid).job_id)
+            self.finish(qid,conn)
+        worker=self.worker(render)
+        while worker.run_one(): pass
+        self.assertEqual(calls,[a,b,c])
+
+    def test_busy_worker_only_claims_one(self):
+        a,b=self.new_job(),self.new_job();self.submit(a);self.submit(b)
+        started,release=threading.Event(),threading.Event()
+        def slow(qid,conn): started.set();release.wait(5);self.finish(qid,conn)
+        thread=threading.Thread(target=self.worker(slow).run_one);thread.start()
+        try:
+            self.assertTrue(started.wait(3))
+            self.assertFalse(self.worker().run_one())
+            self.assertEqual(self.submit(a)['render_queue']['status'],'running')
+        finally: release.set();thread.join(5)
+        self.assertTrue(self.worker().run_one())
+
+    def test_manual_fineplay_and_source_produce_share_one_fifo(self):
+        manual=self.new_job();self.submit(manual)
+        with fixture.SessionLocal() as db:
+            db.add(HighlightJob(id='fixture-fineplay',mode='fineplay',status='tagging',job_metadata={}))
+            db.add(HighlightJob(id='fixture-operator',mode='operator',status='clips_ready',job_metadata={'clips':['clip.mp4']}))
+            db.commit()
+        fine=self.client.post('/api/highlight/fineplay-jobs/fixture-fineplay/produce',json={'clips':[{'start':1,'end':2}]})
+        self.assertEqual(fine.status_code,200,fine.text)
+        self.assertEqual(fine.json()['render_queue']['position'],2)
+        duplicate=self.client.post('/api/highlight/fineplay-jobs/fixture-fineplay/produce',json={'clips':[{'start':10,'end':20}]})
+        self.assertEqual(duplicate.json()['render_queue']['queue_id'],fine.json()['render_queue']['queue_id'])
+        source=self.client.post('/api/highlight/produce-jobs',json={'source_key':'fixture/source.mp4','segments':[{'start':1,'end':2}]})
+        self.assertEqual(source.status_code,200,source.text)
+        self.assertEqual(source.json()['render_queue']['position'],3)
+        operator=self.client.post('/api/highlight/operator-jobs/fixture-operator/merge')
+        self.assertEqual(operator.status_code,200,operator.text)
+        self.assertEqual(operator.json()['render_queue']['position'],4)
+        with fixture.SessionLocal() as db:
+            self.assertEqual(db.get(HighlightJob,'fixture-fineplay').job_metadata['clips'][0]['start'],1)
+            self.assertEqual([r.kind for r in db.query(HighlightRenderTask).order_by(HighlightRenderTask.id)],['manual','fineplay','produce_s3','operator'])
+
+    def test_failed_render_does_not_block_and_can_be_requeued(self):
+        a,b=self.new_job(),self.new_job();self.submit(a);self.submit(b)
+        def fail(*args): raise RuntimeError('synthetic render failure')
+        with self.assertLogs('app.highlight_render_worker',level='ERROR'): self.worker(fail).run_one()
+        self.assertTrue(self.worker().run_one())
+        with fixture.SessionLocal() as db:
+            self.assertEqual(db.get(HighlightJob,a).status,'error')
+            self.assertEqual(db.get(HighlightJob,b).status,'done')
+        self.submit(a);self.worker().run_one()
+        with fixture.SessionLocal() as db: self.assertEqual(db.get(HighlightJob,a).status,'done')
+
+    def test_interrupted_render_recovers_once_before_waiting(self):
+        a,b=self.new_job(),self.new_job();self.submit(a);self.submit(b)
+        def interrupt(*args): raise RenderInterrupted()
+        self.assertFalse(self.worker(interrupt).run_one())
+        with fixture.SessionLocal() as db:
+            self.assertEqual(db.query(HighlightRenderTask).order_by(HighlightRenderTask.id).first().status,'running')
+        self.worker().run_one()
+        with fixture.SessionLocal() as db:
+            self.assertEqual(db.get(HighlightJob,a).status,'done')
+            self.assertEqual(db.get(HighlightJob,b).status,'render_queued')
+
+    def test_shutdown_and_completed_claim_do_not_rerender(self):
+        a=self.new_job();self.submit(a)
+        worker=self.worker();worker.stop.set();self.assertFalse(worker.run_one())
+        with fixture.SessionLocal() as db:
+            db.query(HighlightRenderTask).one().status='running'
+            db.get(HighlightJob,a).status='done';db.commit()
+        self.worker(lambda *_: self.fail('completed work rendered again')).run_one()
+
+    def test_log_available_before_merge_and_survives_failure(self):
+        a=self.new_job()
+        payload={'format':'fpc-highlight-log','version':1,'sport':'FOOTBALL',
+            'sources':[{'name':'fixture.mp4','size':100,'duration':10,'fingerprint':'fixture'}],
+            'work':{'tags':[{'id':'sub','t':2,'kind':'substitution'}],'padBefore':1,'padAfter':1},'attachments':{}}
+        url=f'/api/highlight/manual-jobs/{a}/log'
+        response=self.client.put(url,files={'file':('log.json',json.dumps(payload),'application/json')})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.client.get(url).json(),payload)
+        self.assertEqual(self.clients['anonymous'].get(url).status_code,401)
+        self.assertEqual(self.clients['owner'].get(url).status_code,403)
+        self.assertEqual(jobs.list_manual_clip_info(a)[0]['kind'],'substitution')
+        bad={**payload,'work':{**payload['work'],'tags':[{'id':'bad','t':99}]}}
+        self.assertEqual(self.client.put(url,files={'file':('bad.json',json.dumps(bad),'application/json')}).status_code,400)
+        self.assertEqual(self.client.get(url).json(),payload)
+        self.submit(a)
+        self.assertEqual(self.client.put(url,files={'file':('log.json',json.dumps(payload),'application/json')}).status_code,409)
+        def fail(*args): raise RuntimeError('synthetic')
+        with self.assertLogs('app.highlight_render_worker',level='ERROR'): self.worker(fail).run_one()
+        self.assertEqual(self.client.get(url).json(),payload)
+
+    def test_codec_limits_keep_filter_and_quality(self):
+        args=['ffmpeg','-y','-i','a.mp4','-i','board.png','-filter_complex','overlay=10:20',
+              '-c:v','libx264','-crf','20','-preset','medium','out.mp4']
+        bounded=ffmpeg_args(args)
+        self.assertEqual(bounded.count('-threads'),2)
+        self.assertEqual(bounded[bounded.index('-crf')+1],'20')
+        self.assertEqual(bounded[bounded.index('-filter_complex')+1],'overlay=10:20')
+        self.assertEqual(bounded[-3:],['-threads:v','2','out.mp4'])
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'requires media tools')
+    def test_real_worker_subprocess_creates_valid_video(self):
+        a=self.new_job()
+        with fixture.SessionLocal() as db:
+            job=db.get(HighlightJob,a)
+            # Futsal has no external clip publication; all media stays in the fixture.
+            job.job_metadata={**job.job_metadata,'sport':'FUTSAL','cards':{'enabled':False}}
+            db.commit()
+        source=jobs.clips_dir(a)/'clip_001.mp4'
+        subprocess.run(['ffmpeg','-y','-v','error','-f','lavfi','-i','testsrc2=s=160x90:r=25:d=4',
+                        '-c:v','libx264','-threads','1','-pix_fmt','yuv420p',str(source)],check=True)
+        self.submit(a)
+        @contextmanager
+        def lock():
+            with fixture.engine.connect() as conn:
+                yield conn
+        with patch.dict(os.environ,{'PYTHONPATH':str(Path(__file__).resolve().parents[1])+os.pathsep+os.environ.get('PYTHONPATH','')}):
+            worker=HighlightRenderWorker(fixture.SessionLocal,fixture.engine,lock=lock)
+            self.assertTrue(worker.run_one())
+        with fixture.SessionLocal() as db:
+            job=db.get(HighlightJob,a)
+            self.assertEqual(job.status,'done',job.error_message)
+            self.assertEqual(db.query(HighlightRenderTask).one().status,'completed')
+            output=job.export_path
+        probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',output]))
+        self.assertAlmostEqual(float(probe['format']['duration']),2,delta=.12)
+        self.assertEqual(probe['streams'][0]['codec_name'],'h264')
+        self.assertEqual(probe['streams'][0]['pix_fmt'],'yuv420p')
+
+    @unittest.skipUnless(fixture.QA_DATABASE,'requires isolated PostgreSQL')
+    def test_actual_postgres_simultaneous_submit_and_worker_locks(self):
+        from concurrent.futures import ThreadPoolExecutor
+        a=self.new_job()
+        def submit(_):
+            with fixture.SessionLocal() as db: return enqueue(db,a,'manual')['queue_id']
+        with ThreadPoolExecutor(max_workers=6) as pool: ids=list(pool.map(submit,range(12)))
+        self.assertEqual(len(set(ids)),1)
+        with exclusive_worker(fixture.engine) as first:
+            self.assertIsNotNone(first)
+            with exclusive_worker(fixture.engine) as second: self.assertIsNone(second)
+        self.assertTrue(self.worker(lock=lambda:exclusive_worker(fixture.engine)).run_one())
+
+
+if __name__=='__main__':
+    # The fixture supplies setup/auth only, not its inherited tests.
+    names=[name for name in RenderQueueTests.__dict__ if name.startswith('test_')]
+    result=unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(RenderQueueTests(name) for name in names))
+    sys.exit(not result.wasSuccessful())

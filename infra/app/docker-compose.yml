@@ -24,13 +24,13 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "stream.fineludens.kr:3.227.35.90"
-    volumes:
+    volumes: &api-volumes
       - ../../templetes:/app/templetes:ro
       - ../../assets/fonts:/app/assets/fonts:ro
       - ../../assets/brand:/app/assets/brand:ro
       - ../../assets/fcm/goalkeeper:/app/assets/fcm/goalkeeper:ro
       - ../../runtime:/app/runtime
-    environment:
+    environment: &api-environment
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/live_admin
       CORS_ORIGINS: "*"
       GATEWAY_API_BASE: ${GATEWAY_API_BASE:-http://host.docker.internal:8090}
@@ -61,7 +61,35 @@ services:
       FINEPLAY_API_TOKEN: ${FINEPLAY_API_TOKEN:-}
       FINEPLAY_WORKER_ID: ${FINEPLAY_WORKER_ID:-fpc-worker-1}
       FINEPLAY_PIPELINE_VERSION: ${FINEPLAY_PIPELINE_VERSION:-fpc-transport-v0.1}
-      # 유튜브 쿠키 파일 경로(컨테이너 안 기준). 유튜브가 데이터센터 IP 를 막을 때 이걸로 푼다.
+      highlight-render:
+    build:
+      context: ../../apps/api
+    container_name: app-highlight-render
+    restart: unless-stopped
+    init: true
+    command: ["python", "-m", "app.highlight_render_worker"]
+    stop_grace_period: 30s
+    cpus: ${HIGHLIGHT_RENDER_CPUS:-2}
+    mem_limit: ${HIGHLIGHT_RENDER_MEMORY:-4g}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import time; from pathlib import Path; assert time.time()-Path('/tmp/highlight-render-heartbeat').stat().st_mtime < 30"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
+    volumes: *api-volumes
+    environment:
+      <<: *api-environment
+      DB_POOL_SIZE: 2
+      DB_MAX_OVERFLOW: 1
+      HIGHLIGHT_CODEC_THREADS: 2
+      HIGHLIGHT_DECODE_THREADS: 1
+      HIGHLIGHT_FILTER_THREADS: 1
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 유튜브 쿠키 파일 경로(컨테이너 안 기준). 유튜브가 데이터센터 IP 를 막을 때 이걸로 푼다.
       # .env 에만 적어 두면 전달되지 않는다 — 이 구성은 env_file 을 쓰지 않아서, 여기 적힌
       # 키만 컨테이너로 넘어간다.
       YTDLP_COOKIES: ${YTDLP_COOKIES:-}

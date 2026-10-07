@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+from .highlight_process import run_media
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -276,7 +277,7 @@ def _delete_upload(video_path: str) -> None:
 
 def probe_video_dimensions(path: Path) -> tuple[int, int]:
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe",
                 "-v",
@@ -304,7 +305,7 @@ def make_playback_proxy(src: Path, out: Path, target_h: int = 720) -> bool:
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp.unlink(missing_ok=True)
-        subprocess.run(
+        run_media(
             [
                 "ffmpeg",
                 "-y",
@@ -445,7 +446,7 @@ def probe_video_info_url(url: str) -> dict:
     if not url:
         return {}
     try:
-        out = subprocess.run(
+        out = run_media(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height,codec_name,bit_rate",
              "-of", "default=nw=1:nk=0", url],
@@ -614,7 +615,7 @@ def youtube_available_formats(url: str) -> tuple[str, str]:
     돌려주는 것: (화질 목록, 경고 요약).
     """
     try:
-        proc = subprocess.run(
+        proc = run_media(
             ["yt-dlp", "--list-formats", *YT_JS_ARGS, *youtube_pot_args(),
              *youtube_client_args(), *youtube_cookie_args(), url],
             capture_output=True, text=True, timeout=180,
@@ -657,7 +658,7 @@ def probe_video_info(path: Path) -> dict:
     받은 뒤 한 번 재어 기록으로 남기면 화면에서 바로 보인다.
     """
     try:
-        out = subprocess.run(
+        out = run_media(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height,codec_name,bit_rate",
              "-show_entries", "format=duration",
@@ -993,7 +994,7 @@ def download_link_for_job(job_id: str) -> None:
             url,
         ]
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            run_media(cmd, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as ex:
             detail = (ex.stderr or ex.stdout or str(ex))[-2000:]
             logger.warning("yt-dlp download failed for %s: %s", job_id, detail)
@@ -1029,7 +1030,7 @@ def download_link_for_job(job_id: str) -> None:
 def _ffmpeg_cut(src: Path, out: Path, start: float, duration: float) -> bool:
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(
+        run_media(
             [
                 "ffmpeg", "-y",
                 "-ss", f"{max(0.0, start):.3f}",
@@ -1118,7 +1119,7 @@ def merge_clips_for_job(job_id: str) -> None:
         list_file.write_text("".join(f"file '{p.as_posix()}'\n" for p in paths))
         export_path = exports_dir() / f"{job_id}_export.mp4"
         try:
-            subprocess.run(
+            run_media(
                 [
                     "ffmpeg", "-y",
                     "-f", "concat", "-safe", "0",
@@ -1157,7 +1158,7 @@ def _probe_start_time(path: Path) -> float:
     그 값이 곧 ffmpeg 이 실제로 붙잡은 키프레임 위치다.
     """
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=start_time",
@@ -1183,7 +1184,7 @@ def color_args(path: Path) -> list[str]:
     추측에 맡기는 것보다 명시하는 편이 낫다. SD 는 건드리지 않는다(bt601 일 수 있다).
     """
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
                 "-show_entries",
@@ -1238,7 +1239,7 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
     읽지 못하면 720p/30fps 로 둔다 — 최악의 경우에도 인트로만 조금 어긋날 뿐이다.
     """
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
@@ -1308,7 +1309,7 @@ def _mix_music(video: Path, music: Path, volume: float, original: float, out: Pa
         graph = f"[1:a]volume={volume:.3f},aresample=async=1[a]"
         maps = ["-map", "0:v", "-map", "[a]", "-shortest"]
 
-    subprocess.run([
+    run_media([
         "ffmpeg", "-y", "-nostats",
         "-i", str(video),
         "-stream_loop", "-1", "-i", str(music),
@@ -1341,7 +1342,7 @@ def _video_segment(path: Path | None, label: str) -> tuple[Path, float, bool] | 
         logger.warning("%s 자산을 찾지 못했습니다", label)
         return None
     try:
-        length = float(subprocess.run(
+        length = float(run_media(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", str(path)],
             check=True, capture_output=True, text=True,
@@ -1357,7 +1358,7 @@ def _video_segment(path: Path | None, label: str) -> tuple[Path, float, bool] | 
 def _has_audio(path: Path) -> bool:
     """클립에 오디오 트랙이 있는가. 없으면 무음을 만들어 붙여야 조각 규격이 맞는다."""
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "a:0",
@@ -2146,7 +2147,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                         *([] if has_sound[k] else ["-shortest"]),
                         *encode, str(out),
                     ]
-                subprocess.run(args, check=True, capture_output=True, text=True)
+                run_media(args, check=True, capture_output=True, text=True)
                 pieces.append(out)
                 bump_progress()
 
@@ -2233,7 +2234,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     "-filter_complex", ";".join(chains),
                     "-map", "[vout]", "-map", "[a]", "-shortest", *encode, str(out),
                 ]
-                subprocess.run(args, check=True, capture_output=True, text=True)
+                run_media(args, check=True, capture_output=True, text=True)
                 pieces.append(out)
                 bump_progress()
 
@@ -2245,7 +2246,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             export_path = exports_dir() / f"{job_id}_export.mp4"
             metadata["progress"] = _progress_payload("merging", 92, "이어 붙이는 중")
             update_job(db, job_id, job_metadata=_json_safe(metadata))
-            subprocess.run([
+            run_media([
                 "ffmpeg", "-y", "-nostats",
                 "-f", "concat", "-safe", "0", "-i", str(list_file),
                 # 영상은 그대로 복사(재인코딩 없음). 오디오만 다시 인코딩해 조각 경계의

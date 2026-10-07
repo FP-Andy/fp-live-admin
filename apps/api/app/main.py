@@ -32,6 +32,8 @@ import httpx
 import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
+from .highlight_render_queue import HighlightRenderTask
+from .manual_highlight_log import router as manual_highlight_log_router
 from .competition_queue import (
     CompetitionSendWorker,
     cancel as cancel_competition_send,
@@ -183,6 +185,7 @@ from .services import apply_attack_event, apply_possession_segment, apply_xg_eve
 from .xg import estimate_xg as shared_estimate_xg, is_in_penalty_area as shared_is_in_penalty_area, normalize_shot_x as shared_normalize_shot_x
 
 app = FastAPI(title="Live Match Admin API")
+app.include_router(manual_highlight_log_router)
 app.include_router(auth_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
@@ -9343,7 +9346,8 @@ async def upload_manual_clip(
     합칠 때 이 사이드카들을 order(=index) 순으로 모아 순서를 잡는다(list_manual_clip_info).
     무거운 디스크 복사는 스레드풀로 넘겨 이벤트 루프(다른 사용자의 요청)를 막지 않는다.
     """
-    job = _require_manual_job(db, job_id, user)
+    from .highlight_render_queue import ensure_editable
+    job = ensure_editable(db, _require_manual_job(db, job_id, user))
     if job.status not in {"collecting", "error"} or (job.job_metadata or {}).get("clip_results"):
         raise HTTPException(status_code=409, detail="완료되었거나 분석에 연결한 클립은 덮어쓸 수 없습니다. 새 수동 작업을 만드세요.")
     if requested_end <= requested_start:
@@ -9352,7 +9356,7 @@ async def upload_manual_clip(
         raise HTTPException(status_code=400, detail="클립 index 가 올바르지 않습니다.")
 
     # 모르는 값이 사이드카에 흘러들어 점수 계산을 흔들지 않게 여기서 막는다.
-    clip_kind = kind if kind in {"home_goal", "home", "away", "away_goal"} else ""
+    clip_kind = kind if kind in {"home_goal", "home", "away", "away_goal", "substitution"} else ""
 
     def _score(raw: str) -> list[int] | None:
         """"2:1" 을 [2, 1] 로. 모양이 아니면 None — 그때는 kind 로 쌓아 계산한다."""
@@ -9432,7 +9436,8 @@ async def upload_manual_intro(
     user: User = Depends(_require_superuser),
 ):
     """하이라이트 맨 앞에 잠깐 보여줄 인트로 사진을 받는다. 합칠 때 정지영상으로 붙는다."""
-    job = _require_manual_job(db, job_id, user)
+    from .highlight_render_queue import ensure_editable
+    job = ensure_editable(db, _require_manual_job(db, job_id, user))
 
     ext = Path(image.filename or "").suffix.lower()
     if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -9472,7 +9477,8 @@ async def upload_manual_music(
     음악은 몇 MB 라 화면이 들고 있을 수 없다(작업 저장이 브라우저 5MB 에서 터진다).
     파일로 받아 잡 폴더에 두고, 합칠 때 그 파일을 쓴다.
     """
-    job = _require_manual_job(db, job_id, user)
+    from .highlight_render_queue import ensure_editable
+    job = ensure_editable(db, _require_manual_job(db, job_id, user))
 
     ext = Path(audio.filename or "").suffix.lower()
     if ext not in MUSIC_EXTS:
@@ -10103,9 +10109,21 @@ def merge_manual_job(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = _require_manual_job(db, job_id, user)
+    from .highlight_render_queue import active_task, describe, enqueue, lock_job
+    _require_manual_job(db, job_id, user)
+    job = lock_job(db, job_id)
+    existing = active_task(db, job_id)
+    if existing:
+        return {"status": job.status, "render_queue": describe(db, existing)}
+    if job.status in ("merging", "processing"):
+        raise HTTPException(409, "기존 합치기가 진행 중입니다.")
     if not list_manual_clip_info(job_id):
         raise HTTPException(status_code=409, detail="합칠 클립이 없습니다.")
+
+    metadata = dict(job.job_metadata or {})
+    for key in ("scoreboard", "cards", "watermark"):
+        if isinstance(body.get(key), dict) and not body[key].get("enabled"):
+            metadata.pop(key, None)
 
     # 점수판 설정. 팀명·색은 클립이 아니라 잡 전체에 걸리므로 여기서 한 번만 받는다.
     scoreboard = body.get("scoreboard") if isinstance(body, dict) else None
@@ -10137,7 +10155,6 @@ def merge_manual_job(
                 return None
 
         size_pct = _pct("size_pct", 24.33, 10.0, 60.0)
-        metadata = dict(job.job_metadata or {})
         metadata["scoreboard"] = {
             "enabled": True,
             "home_name": str(scoreboard.get("home_name") or "").strip()[:20],
@@ -10171,7 +10188,6 @@ def merge_manual_job(
                 else ""
             ),
         }
-        update_job(db, job_id, job_metadata=metadata)
 
     # 우리 로고(워터마크) — 점수판과 따로 켜고 끈다. 영상 내내 같은 자리에 얹힌다.
     watermark = body.get("watermark") if isinstance(body, dict) else None
@@ -10182,7 +10198,6 @@ def merge_manual_job(
             except (TypeError, ValueError):
                 return fallback
 
-        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         def _wm_px(key: str) -> float | None:
             """사람이 적어 넣은 픽셀 좌표. 안 적었으면 None — 그때는 비율을 쓴다."""
             raw = watermark.get(key)
@@ -10205,7 +10220,6 @@ def merge_manual_job(
             "pos_px_x": _wm_px("pos_px_x"),
             "pos_px_y": _wm_px("pos_px_y"),
         }
-        update_job(db, job_id, job_metadata=metadata)
 
     # 배경음악 볼륨. 파일은 따로 올라와 있고 여기서는 크기만 정한다.
     music = body.get("music") if isinstance(body, dict) else None
@@ -10216,7 +10230,7 @@ def merge_manual_job(
             except (TypeError, ValueError):
                 return fallback
 
-        current = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        current = metadata
         existing = current.get("music") if isinstance(current.get("music"), dict) else None
         if existing:
             current["music"] = {
@@ -10227,28 +10241,24 @@ def merge_manual_job(
                 # 0 으로 내리면 음악만 남는다 — 경기장 소리가 방해될 때 쓴다.
                 "original_volume": _vol("original_volume", 0.2),
             }
-            update_job(db, job_id, job_metadata=current)
 
     # 합본 사이에 끼는 전체화면 카드 — 시작 카드(맨 앞) + 구간 카드(T 로 찍은 자리).
     cards = body.get("cards") if isinstance(body, dict) else None
     if isinstance(cards, dict) and cards.get("enabled"):
-        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         metadata["cards"] = _card_settings(db, cards)
-        update_job(db, job_id, job_metadata=metadata)
 
     # 클립↔클립 전환(디졸브) 길이(초). 화면 토글이 켜지면 0.1, 꺼지면 0(하드컷)으로
     # 온다. 카드 경계 디졸브는 이 값과 무관하게 항상 유지된다.
     xfade_raw = body.get("clip_xfade_sec") if isinstance(body, dict) else None
     if xfade_raw is not None:
         try:
-            metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
             metadata["clip_xfade_sec"] = max(0.0, min(2.0, float(xfade_raw)))
-            update_job(db, job_id, job_metadata=metadata)
         except (TypeError, ValueError):
             pass
 
-    background_tasks.add_task(merge_manual_clips_for_job, job_id)
-    return {"status": "merging"}
+    job.job_metadata = metadata
+    queued = enqueue(db, job_id, "manual")
+    return {"status": "render_queued", "render_queue": queued}
 
 
 @app.post("/api/highlight/produce-jobs")
@@ -10298,7 +10308,7 @@ def create_produce_job(
     job = HighlightJob(
         id=job_id,
         owner_id=user.id,
-        status="queued",
+        status="render_queued",
         mode="produce_s3",
         original_filename=source_key.rsplit("/", 1)[-1] or "highlight.mp4",
         job_metadata=metadata,
@@ -10306,8 +10316,9 @@ def create_produce_job(
     db.add(job)
     db.commit()
 
-    background_tasks.add_task(run_produce_job, job_id)
-    return {"job_id": job_id, "status": "queued", "segments": len(segments)}
+    from .highlight_render_queue import enqueue
+    queued = enqueue(db, job_id, "produce_s3")
+    return {"job_id": job_id, "status": "render_queued", "segments": len(segments), "render_queue": queued}
 
 
 # ---------------------------------------------------------------------------
@@ -12800,6 +12811,7 @@ def produce_fineplay_job(
     fpaMatchId 를 주면 그 FPA 매치의 dual 씬을 클립에 순서 매칭해 분석 필드를
     채운다. 빈 문자열이면 연결 해제, 키 자체가 없으면 기존 연결 유지(편집룸).
     """
+    from .highlight_render_queue import active_task, describe, enqueue, lock_job
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
@@ -12807,6 +12819,11 @@ def produce_fineplay_job(
         raise HTTPException(status_code=409, detail="원본이 삭제된 작업이라 클립을 다시 만들 수 없습니다.")
 
     # 편집룸 재편집은 team 을 안 보낼 수 있다 — 같은 clipId 의 기존 태깅 팀을 승계.
+    job = lock_job(db, job_id)
+    existing = active_task(db, job_id)
+    if existing:
+        return {"job_id": job_id, "status": job.status, "render_queue": describe(db, existing)}
+
     prev_teams: dict[str, str] = {}
     for pc in (job.job_metadata or {}).get("clips") or []:
         if pc.get("clipId") and pc.get("team"):
@@ -12919,10 +12936,9 @@ def produce_fineplay_job(
                 raise HTTPException(status_code=400, detail="fpaOurSide 는 home 또는 away 여야 합니다.")
             metadata["fpa_link"] = {"match_id": str(fpa_uuid), "our_side": our_side}
 
-    update_job(db, job_id, status="queued", job_metadata=metadata)
-
-    background_tasks.add_task(run_fineplay_produce, job_id)
-    return {"job_id": job_id, "status": "queued", "clips": len(clips)}
+    job.job_metadata = metadata
+    queued = enqueue(db, job_id, "fineplay")
+    return {"job_id": job_id, "status": "render_queued", "clips": len(clips), "render_queue": queued}
 
 
 # ---------------------------------------------------------------------------
@@ -14821,8 +14837,8 @@ def merge_operator_clips(
     clips = (job.job_metadata or {}).get("clips") or []
     if not clips:
         raise HTTPException(status_code=400, detail="합칠 클립이 없습니다.")
-    background_tasks.add_task(merge_clips_for_job, job_id)
-    return {"status": "merging"}
+    from .highlight_render_queue import enqueue
+    return {"status": "render_queued", "render_queue": enqueue(db, job_id, "operator")}
 
 
 @app.post("/api/highlight/operator-jobs/{job_id}/complete")
@@ -15115,7 +15131,8 @@ def list_highlight_jobs(
         query = (query.filter(or_(column.is_(None), column == DEFAULT_SPORT))
                  if wanted == DEFAULT_SPORT else query.filter(column == wanted))
     rows = query.order_by(desc(HighlightJob.created_at)).limit(limit).all()
-    return [serialize_job(row, brief=brief) for row in rows]
+    from .highlight_render_queue import attach_queue_status
+    return attach_queue_status(db, [serialize_job(row, brief=brief) for row in rows])
 
 
 @app.get("/api/highlight/jobs/{job_id}")
@@ -15127,7 +15144,8 @@ def get_highlight_job(
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return serialize_job(job)
+    from .highlight_render_queue import attach_queue_status
+    return attach_queue_status(db, [serialize_job(job)])[0]
 
 
 @app.get("/api/highlight/jobs/{job_id}/clips/{clip_name}")
@@ -15271,6 +15289,8 @@ def delete_highlight_job(
     job = db.query(HighlightJob).filter_by(id=job_id).with_for_update().one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    from .highlight_render_queue import ensure_editable
+    ensure_editable(db, job)
     if job.mode == "manual":
         clip_ids = [clip.id for clip in db.query(HighlightClip).filter_by(job_id=job_id).all()]
         if clip_ids:

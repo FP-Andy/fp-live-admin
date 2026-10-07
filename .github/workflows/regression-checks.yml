@@ -32,6 +32,7 @@ jobs:
       - name: Individual manual clips and scene downloads
         run: |
           python apps/api/tests/test_manual_clip_results.py -v
+          python apps/api/tests/test_highlight_render_queue.py
           python apps/api/tests/test_scene_motion_renderer.py -v
 
   web:
@@ -49,6 +50,7 @@ jobs:
         run: |
           node apps/web/node_modules/typescript/bin/tsc --noEmit --incremental false -p apps/web/tsconfig.json
           node scripts/test-manual-draft.cjs
+          node scripts/test-highlight-log.cjs
           node scripts/test-report-recovery.cjs
           node scripts/test-basketball-persistence.cjs
           node scripts/test-futsal-match-report.cjs
@@ -86,6 +88,7 @@ jobs:
           done
           if [ "$ready" != true ]; then cat "$RUNNER_TEMP/fpc-ui.log"; exit 1; fi
           FPC_QA_OUTPUT="$RUNNER_TEMP/fpc-save-qa" node scripts/test-fpc-save-recovery-ui.cjs
+          FPC_LOG_QA_OUTPUT="$RUNNER_TEMP/fpc-log-qa" node scripts/test-highlight-log-ui.cjs
           FPC_REPORT_QA_OUTPUT="$RUNNER_TEMP/fpc-report-qa" node scripts/test-report-recovery-ui.cjs
           FPC_OWNER_QA_OUTPUT="$RUNNER_TEMP/fpc-owner-qa" node scripts/test-draft-ownership-ui.cjs
           FPC_SESSION_QA_OUTPUT="$RUNNER_TEMP/fpc-session-qa" node scripts/test-session-refresh-ui.cjs
@@ -130,4 +133,6 @@ jobs:
       - name: Actual application and PostgreSQL ownership/revision contention
         env:
           FPC_TEST_DATABASE_URL: postgresql+psycopg2://postgres:fpc_local_test_only@127.0.0.1:5432/fpc_release_qa
-        run: python apps/api/tests/test_match_write_access.py -v
+        run: |
+          python apps/api/tests/test_match_write_access.py -v
+          python apps/api/tests/test_highlight_render_queue.py

@@ -1,6 +1,6 @@
 import type { Scoreboard, Watermark } from '../components/HighlightOverlay';
 
-export type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal'
+export type TagKind = 'home_goal' | 'home' | 'away' | 'away_goal' | 'substitution'
   // 장면은 넣지 않고 점수판만 올리는 골. 신청팀 하이라이트에서 상대 골이 이것이다.
   | 'home_goal_only' | 'away_goal_only'
   // 농구 — 한 번에 1·2·3점이 오른다. 축구의 '골' 은 늘 1점이라 구분이 없었다.
@@ -48,6 +48,7 @@ export type CardSettings = {
 export type SavedWork = {
   tags: Tag[]; padBefore: number; padAfter: number;
   scoreboard?: Scoreboard; cards?: CardSettings; watermark?: Watermark;
+  introDuration?: number; musicVolume?: number; originalVolume?: number;
   /** 클립↔클립 전환(디졸브) 켬/끔. 없으면 켬으로 본다. */
   clipTransition?: boolean;
 };
@@ -81,6 +82,11 @@ export function parseManualWork(raw: string, allowedKinds: string[]): SavedWork 
     clipTransition: typeof value.clipTransition === 'boolean' ? value.clipTransition : true,
   };
   if (![work.padBefore, work.padAfter].every((n) => finite(n) && n >= 0)) throw new Error('패딩 값이 올바르지 않습니다.');
+  for (const key of ['introDuration', 'musicVolume', 'originalVolume']) {
+    if (value[key] !== undefined && (!finite(value[key]) || value[key] < 0 || value[key] > (key === 'introDuration' ? 15 : 200))) {
+      throw new Error('인트로 길이 또는 음악 볼륨을 확인하세요.');
+    }
+  }
   if (value.scoreboard !== undefined && !fields(value.scoreboard,
     ['homeName', 'awayName', 'homeColor', 'awayColor', 'logoUrl', 'roundLabel', 'template'],
     ['startHome', 'startAway', 'sizePct', 'posX', 'posY', 'logoSizePct', 'nameSizePct'], ['enabled'], ['posPxX', 'posPxY'])) {
