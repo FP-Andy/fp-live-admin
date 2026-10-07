@@ -7,7 +7,6 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from starlette.concurrency import run_in_threadpool
 
 from .auth import require_admin
 from .db import get_db
@@ -65,7 +64,7 @@ def require_job(db, job_id, user):
 
 
 @router.put('/api/highlight/manual-jobs/{job_id}/log')
-async def upload_log(job_id: str, file: UploadFile = File(...), db: Session = Depends(get_db),
+def upload_log(job_id: str, file: UploadFile = File(...), db: Session = Depends(get_db),
                      user: User = Depends(require_admin)):
     job = ensure_editable(db, require_job(db, job_id, user))
     folder = job_dir(job_id)
@@ -74,13 +73,13 @@ async def upload_log(job_id: str, file: UploadFile = File(...), db: Session = De
     try:
         size = 0
         with temporary.open('wb') as output:
-            while chunk := await file.read(1024 * 1024):
+            while chunk := file.file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_LOG_BYTES:
                     raise HTTPException(413, '하이라이트 로그는 100MB까지 저장할 수 있습니다.')
                 output.write(chunk)
         try:
-            payload = await run_in_threadpool(lambda: validate_log(json.loads(temporary.read_text(encoding='utf-8'))))
+            payload = validate_log(json.loads(temporary.read_text(encoding='utf-8')))
         except (ValueError, TypeError, KeyError, UnicodeError) as exc:
             raise HTTPException(400, str(exc)) from exc
         if payload['sport'] != (job.job_metadata or {}).get('sport', 'FOOTBALL'):
@@ -92,7 +91,7 @@ async def upload_log(job_id: str, file: UploadFile = File(...), db: Session = De
         return {'ok': True, 'tag_count': len(payload['work']['tags'])}
     finally:
         temporary.unlink(missing_ok=True)
-        await file.close()
+        file.file.close()
 
 
 @router.get('/api/highlight/manual-jobs/{job_id}/log')
