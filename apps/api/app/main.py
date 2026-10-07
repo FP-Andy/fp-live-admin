@@ -12571,8 +12571,15 @@ def refresh_fineplay_manifest(
     if _needs_youtube_fetch(db.get(HighlightJob, job_id)):
         background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
 
+    # 보존된 태깅 수 — FinePlay 작업의 진짜 태깅은 HighlightClip 테이블에 있다.
+    # job_metadata["clips"](수동 태깅용 이름 리스트)만 세면 FinePlay 에선 늘 0 이 나와
+    # '태깅 0건 보존' 으로 보이고, 운영자가 '다 날아갔다' 로 오해한다(실제로 그랬다).
+    # DB 클립을 먼저 세고, 없으면 메타의 리스트로 떨어진다(수동 잡).
+    kept = db.query(HighlightClip).filter(HighlightClip.job_id == job_id).count()
+    if not kept:
+        kept = len(metadata.get("clips") or [])
     return {"ok": True, "analysisRequestId": rid, "changes": changes,
-            "freedBytes": freed, "clipsKept": len(metadata.get("clips") or [])}
+            "freedBytes": freed, "clipsKept": kept}
 
 
 @app.post("/api/highlight/fineplay-jobs/{job_id}/resend-callback")
