@@ -222,6 +222,23 @@ async def action(job_id: str, operation: str, user: User = Depends(require_sessi
     return value
 
 
+@router.get('/jobs/{job_id}/report-frame')
+def report_frame(job_id: str, time: float, user: User = Depends(require_session_user), db: Session = Depends(get_db)):
+    from .fpa_cv_report_frames import extract_frame
+    from .fpa_cv_storage import storage
+    from fastapi.responses import Response
+    import math
+    row=owned(db,job_id,user)
+    if row.payload.get('status')!='completed':raise HTTPException(409,'완료된 분석에서 장면을 추출하세요.')
+    if row.payload.get('storage')!='s3':raise HTTPException(409,'S3에 저장된 영상에서 장면을 추출할 수 있습니다.')
+    upload=owned(db,row.payload['uploadId'],user,'upload')
+    duration=upload.payload.get('duration') or row.payload.get('duration')
+    if not math.isfinite(time) or time<0 or time>86400 or (duration and time>float(duration)):
+        raise HTTPException(400,'영상 안의 시각을 선택하세요.')
+    data=extract_frame(upload.id,time,lambda:storage().url(upload.payload['key'],expires=120))
+    return Response(data,media_type='image/jpeg',headers={'Cache-Control':'private, no-store'})
+
+
 @router.get('/jobs/{job_id}/{asset}')
 async def asset(job_id: str, asset: str, request: Request, user: User = Depends(require_session_user), db: Session = Depends(get_db)):
     row=owned(db, job_id, user)
@@ -234,12 +251,12 @@ async def asset(job_id: str, asset: str, request: Request, user: User = Depends(
         key=upload.payload['key'] if asset=='source' else row.payload.get('s3Assets',{}).get(asset)
         if not key:raise HTTPException(404,'분석 파일을 찾지 못했습니다.')
         return RedirectResponse(storage().url(key),headers={'Cache-Control':'private, no-store'})
-    base, headers = connection()
+    base,headers=connection();url=f'{base}/api/tracking/jobs/{job_id}/{asset}'
     if request.headers.get('range'):
         headers['Range'] = request.headers['range']
     client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5))
     try:
-        response = await client.send(client.build_request('GET', f'{base}/api/tracking/jobs/{job_id}/{asset}', headers=headers), stream=True)
+        response = await client.send(client.build_request('GET',url,headers=headers), stream=True)
     except httpx.HTTPError:
         await client.aclose()
         raise HTTPException(503, 'AWS 분석 결과를 불러오지 못했습니다.')

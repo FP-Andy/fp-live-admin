@@ -88,6 +88,17 @@ class Snapshots(unittest.TestCase):
         self.assertEqual(self.client.get(self.url + '/' + 'c'*32).status_code, 404)
         self.assertEqual(self.save().status_code, 404)
         self.assertEqual(self.client.put(self.url + '/' + 'c'*32, json={}).status_code, 405)
+
+    def test_shadow_setting_requires_batch_application_but_legacy_false_is_compatible(self):
+        with self.Session() as db:
+            job = db.get(FpaCvResource, self.job_id); review = copy.deepcopy(job.review)
+            review['shadowCorrection'] = True; job.review = review; db.commit()
+        self.assertEqual(self.save().status_code, 409)
+        self.assertEqual(self.objects, {})
+        with self.Session() as db:
+            job = db.get(FpaCvResource, self.job_id); review = copy.deepcopy(job.review)
+            review['shadowCorrection'] = False; job.review = review; db.commit()
+        self.assertEqual(self.save().status_code, 201)
     def test_changed_retry_payload_cannot_silently_reuse_original(self):
         self.assertEqual(self.save().status_code, 201)
         self.body['heatmap']['scale'] = 20
@@ -96,6 +107,49 @@ class Snapshots(unittest.TestCase):
         self.storage_mock.return_value.client.put_object = lambda **kw: (_ for _ in ()).throw(IOError('offline'))
         self.assertEqual(self.save().status_code, 503)
         self.assertEqual(self.client.get(self.url).json()['snapshots'], [])
+
+    def test_object_saved_database_failed_retry_repairs_original_reserved_version(self):
+        commit=self.Session.class_.commit
+        failed=False
+        def fail_once(db):
+            nonlocal failed
+            if not failed and any(isinstance(row,FpaCvResource) and row.kind=='analysis_snapshot' for row in db.dirty):
+                failed=True
+                raise RuntimeError('synthetic commit failure after object')
+            return commit(db)
+        original=copy.deepcopy(self.body)
+        with patch.object(self.Session.class_,'commit',fail_once):
+            with self.assertRaises(RuntimeError):self.save()
+        self.assertEqual(len(self.objects),1)
+        self.assertEqual(self.client.get(self.url).json()['snapshots'],[])
+        with self.Session() as db:
+            pending=db.get(FpaCvResource,'c'*32)
+            self.assertEqual(pending.kind,'analysis_snapshot_pending')
+            job=db.get(FpaCvResource,self.job_id);job.review_version=8;db.commit()
+        self.body.update(requestId='d'*32,reviewVersion=8)
+        self.assertEqual(self.save().json()['version'],2)
+        self.body=original
+        repaired=self.save();self.assertEqual(repaired.status_code,201,repaired.text)
+        self.assertEqual(repaired.json()['version'],1)
+        self.assertEqual(len(self.objects),2)
+        self.assertEqual(len(self.client.get(self.url).json()['snapshots']),2)
+
+    def test_object_write_timeout_reconciles_the_committed_bytes(self):
+        put=self.storage_mock.return_value.client.put_object
+        def timeout(**kw):put(**kw);raise IOError('lost S3 response')
+        self.storage_mock.return_value.client.put_object=timeout
+        result=self.save();self.assertEqual(result.status_code,201,result.text)
+        self.assertEqual(self.save().status_code,201)
+        self.assertEqual(len(self.objects),1)
+
+    def test_cell_distribution_matches_positions_not_just_total(self):
+        h=self.body['heatmap'];h.update(width=2,height=2)
+        p=h['players'][0];p['positions']=[{'t':0,'x':0,'y':0,'seconds':2},{'t':2,'x':.5,'y':.5,'seconds':3},{'t':5,'x':1,'y':0,'seconds':1}]
+        p['grid']=[2,1,0,3]
+        self.assertEqual(self.save().status_code,201)
+        self.body['requestId']='d'*32;p['grid']=[3,0,1,2]
+        self.assertEqual(self.save().status_code,400)
+        self.assertEqual(len(self.objects),1)
 
     def augmented(self):
         heat = self.body['heatmap']

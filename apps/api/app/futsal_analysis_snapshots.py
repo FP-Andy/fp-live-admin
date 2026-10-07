@@ -35,7 +35,8 @@ def validate_source(heat, job, version):
         raise HTTPException(409, '검수 내용이 변경되었습니다. 저장 후 다시 확정하세요.')
     batch = review.get('batch') or {}
     applied = batch.get('applied')
-    if not applied or any(review.get(k) != applied.get(k) for k in INPUTS):
+    if (not applied or any(review.get(k) != applied.get(k) for k in INPUTS)
+            or review.get('shadowCorrection', False) != applied.get('shadowCorrection', False)):
         raise HTTPException(409, '미반영 검수가 있습니다. 검수 반영 후 히트맵을 다시 만드세요.')
     if not isinstance(heat, dict) or heat.get('schema') != 'fpa-heatmaps/v1' or heat.get('datasetId') != job.payload.get('datasetId'):
         raise HTTPException(400, '이 분석의 히트맵을 선택하세요.')
@@ -62,14 +63,19 @@ def validate_source(heat, job, version):
         if not isinstance(grid, list) or len(grid) != width * height or not all(finite(v) and v >= 0 for v in grid) or not isinstance(positions, list) or len(positions) > 1000000:
             raise HTTPException(400, '히트맵 좌표를 확인하세요.')
         observed, until, gap = 0, start, 0
+        expected_grid = [0.] * (width * height)
         for point in positions:
             if not isinstance(point, dict) or not all(finite(point.get(k)) for k in ('t', 'x', 'y', 'seconds')) or not 0 <= point['x'] <= 1 or not 0 <= point['y'] <= 1 or point['seconds'] <= 0 or point['t'] < until - .002 or point['t'] + point['seconds'] > end + .002:
                 raise HTTPException(400, '유효 관측 시간과 좌표를 확인하세요.')
             gap = max(gap, point['t'] - until)
             until = point['t'] + point['seconds']
             observed += point['seconds']
+            cell=min(height-1,int(point['y']*height))*width+min(width-1,int(point['x']*width))
+            expected_grid[cell]+=point['seconds']
         if abs(sum(grid) - observed) > max(.05, observed * .00001):
             raise HTTPException(400, '히트맵과 관측 시간의 합계가 다릅니다.')
+        if any(abs(actual-expected)>max(.05,expected*.00001) for actual,expected in zip(grid,expected_grid)):
+            raise HTTPException(400, '히트맵 눈금별 시간과 관측 좌표가 다릅니다. 원본 JSON을 보관하고 다시 생성하세요.')
         qualities.append({'id': p['id'], 'group': p['group'], 'jersey': str(p['jersey']), 'coverage': min(1, observed / (end - start)), 'longestMissing': max(gap, end - until)})
     validate_augmentation(heat)
     if heat.get('augmentation'):
@@ -109,11 +115,27 @@ async def create_snapshot(request: Request, user: User = Depends(require_session
     previous = db.get(FpaCvResource, snapshot_id)
     request_hash = hashlib.sha256(raw).hexdigest()
     if previous:
-        if previous.kind != 'analysis_snapshot' or previous.owner_id != user.id or previous.payload.get('jobId') != job.id:
+        if previous.kind not in ('analysis_snapshot','analysis_snapshot_pending') or previous.owner_id != user.id or previous.payload.get('jobId') != job.id:
             raise HTTPException(409, '저장 요청 번호가 이미 사용되었습니다.')
         if previous.payload.get('requestHash') != request_hash:
             raise HTTPException(409, '요청 내용이 변경되었습니다. 새 완료 판정으로 저장하세요.')
-        return previous.payload
+        if previous.kind == 'analysis_snapshot':
+            return previous.payload
+        store = storage()
+        if not store:
+            raise HTTPException(503, '스냅샷 저장소를 확인하세요.')
+        try:
+            content = store.client.get_object(Bucket=store.bucket, Key=store.key(previous.payload['key']))['Body'].read()
+        except Exception as error:
+            code = getattr(error, 'response', {}).get('Error', {}).get('Code')
+            if code not in ('NoSuchKey', '404', 'NotFound') and not isinstance(error, KeyError):
+                raise HTTPException(503, '미완료 스냅샷 객체를 확인하지 못했습니다. 같은 요청으로 다시 시도하세요.') from error
+        else:
+            if hashlib.sha256(content).hexdigest() != previous.payload['sha256']:
+                raise HTTPException(409, '미완료 객체의 체크섬이 다릅니다. 원본을 보존하고 확인하세요.')
+            previous.kind = 'analysis_snapshot'
+            db.commit()
+            return previous.payload
     if value.get('confirmed') is not True:
         raise HTTPException(400, '분석 결과를 확인한 뒤 완료 판정하세요.')
     heat = value.get('heatmap')
@@ -127,7 +149,7 @@ async def create_snapshot(request: Request, user: User = Depends(require_session
     matches = [m for m in db.query(Match).filter_by(sport='FUTSAL').all()
                if (m.metadata_json or {}).get('fla_video', {}).get('upload_id') == job.payload.get('uploadId')]
     match = matches[0] if len(matches) == 1 else None
-    versions = [r.payload.get('version', 0) for r in db.query(FpaCvResource).filter_by(kind='analysis_snapshot').all() if r.payload.get('jobId') == job.id]
+    versions = [r.payload.get('version', 0) for r in db.query(FpaCvResource).filter(FpaCvResource.kind.in_(['analysis_snapshot','analysis_snapshot_pending'])).all() if r.payload.get('jobId') == job.id]
     manifest = {'id': snapshot_id, 'jobId': job.id, 'datasetId': heat['datasetId'], 'uploadId': job.payload.get('uploadId'),
                 'title': job.payload.get('name') or heat.get('video', '분석'), 'version': max(versions, default=0) + 1,
                 'createdAt': datetime.now(timezone.utc).isoformat(), 'createdBy': user.name, 'reviewVersion': job.review_version,
@@ -138,19 +160,39 @@ async def create_snapshot(request: Request, user: User = Depends(require_session
     if heat.get('augmentation'):
         manifest['augmentation'] = heat['augmentation']
         manifest['meanEstimatedCoverage'] = sum(p['estimatedCoverage'] for p in quality) / len(quality)
+    if previous:
+        manifest={k:v for k,v in previous.payload.items() if k not in ('key','sha256','requestHash')}
     metadata = (match.metadata_json or {}) if match else {}
-    document = {'schema': 'fpc-analysis-snapshot/v1', **manifest, 'heatmap': heat, 'fpa': fpa,
+    document = {'schema': 'fpc-analysis-snapshot/v1', 'ownerId':user.id, 'requestHash':request_hash, **manifest, 'heatmap': heat, 'fpa': fpa,
                 'roster': review.get('roster', []), 'matchName': match.name if match else '',
                 'homeName': metadata.get('home_team', fpa.get('teamid_h', '')), 'awayName': metadata.get('away_team', fpa.get('teamid_a', '')),
                 'review': review}
-    content = json.dumps(document, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()
+    content = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
     digest = hashlib.sha256(content).hexdigest()
     key = f'fpa-cv/snapshots/{snapshot_id}/result.json'
+    payload={**manifest, 'key': key, 'sha256': digest, 'requestHash': request_hash}
+    if previous and previous.payload['sha256'] != digest:
+        raise HTTPException(409, '예약한 확정본의 원본 검수가 변경되었습니다. 기존 요청은 보존하고 새 완료 판정을 만드세요.')
+    if not previous:
+        # Reserve the immutable version/digest before writing an object. A DB
+        # failure after S3 leaves this durable reservation available for repair.
+        previous=FpaCvResource(id=snapshot_id,kind='analysis_snapshot_pending',owner_id=user.id,payload=payload)
+        db.add(previous)
+        db.commit()
     try:
         store.client.put_object(Bucket=store.bucket, Key=store.key(key), Body=content, ContentType='application/json', IfNoneMatch='*')
     except Exception as error:
-        raise HTTPException(503, '스냅샷 저장에 실패했습니다. 다시 시도하세요.') from error
-    db.add(FpaCvResource(id=snapshot_id, kind='analysis_snapshot', owner_id=user.id, payload={**manifest, 'key': key, 'sha256': digest, 'requestHash': request_hash}))
+        # A timeout may mean the object was committed. Read and verify, never
+        # overwrite the object or invent another ID for an uncertain request.
+        try:
+            existing_content=store.client.get_object(Bucket=store.bucket, Key=store.key(key))['Body'].read()
+            if hashlib.sha256(existing_content).hexdigest()!=digest:
+                raise HTTPException(409, '이미 존재하는 확정본 객체의 체크섬이 다릅니다.')
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(503, '스냅샷 저장을 확인하지 못했습니다. 같은 요청으로 다시 시도하세요.') from error
+    previous.kind='analysis_snapshot'
     db.commit()
     return {**manifest, 'sha256': digest}
 

@@ -1,10 +1,7 @@
-"""FPA 장면 모션(before→after) 서버 렌더 — 클립 액션별 mp4 생성.
+"""FPA sceneState를 공통 sceneData로 변환하고 콘솔 화면 그대로 MP4를 만든다.
 
-SceneState(fineplay.fpa.scene_state.v0.1: beforeDots/afterDots)를 받아
-105x68 피치 위 점 이동 애니메이션 프레임을 그리고 ffmpeg 로 mp4(yuv420p)를 만든다.
-결과는 S3 에 올라가 앱 클립 상세 '장면 변화' 섹션에서 무음 루프로 재생된다.
-
-전/후 점 매칭 규칙은 /admin/fpa/replay 와 동일: id → 등번호+teamSide → 등번호 → index.
+피치·선수·공·글꼴·모션은 웹 SceneMotionView 하나가 렌더한다.
+Python은 장면 데이터, 버전별 객체 키와 캐시·업로드만 담당한다.
 """
 
 from __future__ import annotations
@@ -13,55 +10,17 @@ import hashlib
 import json
 import math
 import re
-import subprocess
 import tempfile
-from functools import lru_cache
+import threading
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from .scene_motion_renderer import SCENE_RENDER_VERSION, render_scene_data
+
+_SCENE_RENDER_LOCK = threading.Lock()
 
 FIELD_W = 105.0
 FIELD_H = 68.0
-
-# 콘솔 /admin/fpa/replay 뷰와 동일 사양 — 캔버스 1050x680(=fpa-field.png 원본 크기),
-# 홈=주황/어웨이=파랑 점 22px, 시안 화살표 4px, 3s ease-out 이동.
-OUT_W = 1050
-OUT_H = 680
-# 골대(골라인 바깥)를 그릴 여백 — 피치를 안쪽으로 스케일해 확보. 캔버스 크기는 유지.
-PITCH_MARGIN_X = 26
-_INNER_W = OUT_W - PITCH_MARGIN_X * 2
-_INNER_H = round(_INNER_W * OUT_H / OUT_W)  # 피치 원본 비율 유지
-_INNER_X0 = PITCH_MARGIN_X
-_INNER_Y0 = (OUT_H - _INNER_H) // 2
-
-# 드리블 공-행위자 점 간격 (필드 유닛). 점 반지름과 비슷하게 잡아 살짝 붙게.
-BALL_GAP = 1.42
-
-FPS = 25
-HOLD_BEFORE_SEC = 0.4
-MOVE_SEC = 3.0
-HOLD_AFTER_SEC = 0.8
-# 클리어 — 걷어낸 공이 터치라인 밖으로 나가는 **별도 구간**.
-#
-# 예전에는 이 꼬리를 공 경로 끝에 이어 붙여 MOVE_SEC 안에서 같이 돌렸다. 그러면 공이
-# 걷어낸 지점을 **먼저** 지나고(전체 길이의 앞부분이라) 수비수는 그 뒤에 도착한다 —
-# 실제로는 수비가 공에 닿아서 걷어내는 것이라 둘이 같이 도착해야 한다.
-#
-# 그래서 구간을 나눈다: MOVE 동안 공과 수비가 **함께** 걷어낸 지점에 도착하고,
-# 그 뒤 이 구간에서 **공만** 라인 밖으로 나간다. 걷어낸 직후라 빠르게 나가야 하므로
-# 이징도 강한 ease-out(_ease)을 그대로 쓴다.
-CLEAR_EXIT_SEC = 0.7
-
-BG_COLOR = (10, 14, 12)
-HOME_COLOR = (255, 146, 26)      # replay .fpa-replay-dot 주황 그라데이션 중간값
-HOME_TEXT = (28, 28, 28)
-AWAY_COLOR = (62, 122, 251)      # replay .fpa-replay-dot.away 파랑 그라데이션 중간값
-AWAY_TEXT = (247, 251, 255)
-ARROW_COLOR = (22, 194, 194)     # replay 화살표 #16c2c2
-GK_RING = (0, 0, 0)
-
-_FIELD_IMG_PATH = Path(__file__).parent / "fpa-field.png"
 
 
 def _parse_dots(value: Any) -> list[dict[str, Any]]:
@@ -174,21 +133,8 @@ def _parse_arrows(value: Any) -> list[dict[str, Any]]:
 # 마지막 프레임에서 공만 살짝 튀어 보인다.
 CLEAR_EXIT_MIN_M = 1.5
 
-# ── 클리어 공이 빨라 보이는 것에 대해 (2026-09-07 검토·현행 유지) ──────────────
-# 애니메이션 시간은 장면 길이와 무관하게 고정이다(MOVE_SEC=3.0, 네이티브 뷰
-# SceneMotionView 의 MOVE 도 3.0). 그래서 꼬리가 붙어 경로가 길어지면 **같은 시간에 더
-# 먼 거리를 지나게 되어 장면 전체가 빨라진다** — 공만이 아니라 공에 묶여 그려지는
-# 화살표까지. 중앙에서 걷어낸 클리어는 터치라인까지가 30m 를 넘어 경로가 3배가 되기도
-# 한다(실측: 본 경로 15m + 꼬리 34m → 3.27배속).
-#
-# 꼬리를 8m / 본 경로의 35% 로 묶는 안을 만들어 실제 mp4 로 비교했고(1.35배속까지 내려감),
-# **채택하지 않기로 했다.** 길이를 장면마다 다르게 하려면 sceneData 에 시간 정보를
-# 실어야 하는데 그 자리가 없고(`{v, players, ball, shot, moves}`), 앱·콘솔 네이티브 뷰의
-# 타이밍 상수가 하드코딩이라 앱까지 같이 고쳐야 한다. 길이를 고정으로 두는 한 빨라지는
-# 건 피할 수 없고, 그럴 바엔 '치워냈다' 가 끝까지 보이는 쪽이 낫다는 판단이다.
-#
-# 이 문제를 다시 손대려면 꼬리를 자르지 말고 **시간 쪽**을 손대라 — 서버가 장면 길이를
-# sceneData 로 내려주고 세 렌더러가 그걸 따르게 하는 게 근본 해결이다.
+# 공의 출구 좌표만 계산한다. 모션 구간과 타이밍은 화면·MP4 공통의
+# SceneMotionView가 담당하므로 서버에서 별도로 그리거나 시간을 분배하지 않는다.
 
 
 def _clear_exit_point(x: float, y: float) -> tuple[float, float] | None:
@@ -271,78 +217,6 @@ def _chain_spans(
     return path, spans
 
 
-def _reveal_fractions(
-    spans: list[tuple[float, float]], path: list[tuple[float, float]], t: float
-) -> list[float]:
-    """공이 지나간 만큼만 화살표를 그리기 위한 화살표별 진행률(0~1).
-
-    수비 액션의 빨간 선(상대 볼 경로)이 처음부터 다 보이면 가로채이는 흐름이
-    먼저 드러난다 — 공이 지나가면서 그려져야 한다.
-    """
-    total = sum(_path_lengths(path))
-    if total <= 0:
-        return [1.0] * len(spans)
-    travelled = min(max(t, 0.0), 1.0) * total
-    out: list[float] = []
-    for before, length in spans:
-        if length <= 0:
-            out.append(1.0 if travelled >= before else 0.0)
-        else:
-            out.append(min(max((travelled - before) / length, 0.0), 1.0))
-    return out
-
-
-def _path_lengths(path: list[tuple[float, float]]) -> list[float]:
-    return [
-        math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1])
-        for i in range(len(path) - 1)
-    ]
-
-
-def _point_on_path(path: list[tuple[float, float]], t: float) -> tuple[float, float]:
-    """진행률 t(0~1) 위치. **시간은 구간 길이에 비례**해 나눈다.
-
-    구간마다 같은 시간을 주면 짧은 구간에서 느리고 긴 구간에서 갑자기 빨라져
-    경계마다 공이 튄다(앱 xfp_scene_view._segmentAt 과 같은 규칙).
-    """
-    if len(path) == 1:
-        return path[0]
-    lengths = _path_lengths(path)
-    total = sum(lengths)
-    if total <= 0:
-        return path[0]
-    remain = min(max(t, 0.0), 1.0) * total
-    for i, length in enumerate(lengths):
-        if remain <= length or i == len(lengths) - 1:
-            f = 1.0 if length <= 0 else min(max(remain / length, 0.0), 1.0)
-            return (
-                path[i][0] + (path[i + 1][0] - path[i][0]) * f,
-                path[i][1] + (path[i + 1][1] - path[i][1]) * f,
-            )
-        remain -= length
-    return path[-1]
-
-
-def _tail_progress(path: list[tuple[float, float]], t: float) -> float | None:
-    """마지막 구간(슛 세그먼트) 안에서의 진행률 — 아직 진입 전이면 None.
-
-    골대 패널 안 공이 언제 날아갈지 결정한다. 길이 비례 배분이라 마지막 구간의
-    시작 시점도 길이로 계산해야 피치 위 공과 패널 안 공이 이어져 보인다.
-    """
-    if len(path) < 2:
-        return None
-    lengths = _path_lengths(path)
-    total = sum(lengths)
-    if total <= 0:
-        return None
-    start = (total - lengths[-1]) / total
-    if t < start:
-        return None
-    if start >= 1.0:
-        return 1.0
-    return min((t - start) / (1.0 - start), 1.0)
-
-
 def _pair_dots(before: list[dict], after: list[dict]) -> list[tuple[dict, dict]]:
     """replay 룸과 같은 매칭: id → number+teamSide → number → index. 미매칭 after 는 제자리."""
     used: set[int] = set()
@@ -391,627 +265,6 @@ def _find_actor_pair(
     return matches[0]
 
 
-def _to_px(x: float, y: float) -> tuple[float, float]:
-    return (
-        _INNER_X0 + (x / FIELD_W) * _INNER_W,
-        _INNER_Y0 + (1 - y / FIELD_H) * _INNER_H,
-    )
-
-
-LINE_COLOR = (240, 245, 242)
-LINE_W = 5
-
-_field_img_cache: Image.Image | None = None
-
-
-def _new_frame() -> Image.Image:
-    global _field_img_cache
-    if _field_img_cache is None:
-        _field_img_cache = _build_background()
-    img = Image.new("RGB", (OUT_W, OUT_H), BG_COLOR)
-    img.paste(_field_img_cache)
-    return img
-
-
-def _build_background() -> Image.Image:
-    """캔버스 전체 합성 배경 — 이음새 없는 스트라이프 잔디 + 경기장 라인 + 골대.
-
-    fpa-field.png 에서 표본한 스트라이프 색(어둠/밝음)·폭(필드/20, 하프당 5+5)·노이즈(σ≈9)로
-    잔디를 캔버스 전체에 깔고, 실측 좌표(_to_px)로 라인을 직접 그린다.
-    이미지 조각 붙이기가 아니라서 여백 이음새·AA 잔상이 원천적으로 없다.
-    """
-    import numpy as np
-
-    dark = np.array([74.0, 139.0, 52.0])
-    light = np.array([84.0, 160.0, 68.0])
-    stripe_w = _INNER_W / 20.0
-    xs = np.arange(OUT_W)
-    stripe_idx = np.floor((xs - _INNER_X0) / stripe_w).astype(int)
-    is_light = (stripe_idx % 2) == 1
-    base_row = np.where(is_light[:, None], light[None, :], dark[None, :])
-    arr = np.tile(base_row[None, :, :], (OUT_H, 1, 1))
-    # 경기장 밖(여백)은 좌우·상하 동일한 톤으로 — 스트라이프가 짝수(20)개라
-    # 좌우 여백 명암이 반대로 떨어져 골대가 비대칭으로 보이는 것을 막는다.
-    surround = dark * 0.92
-    arr[:, :_INNER_X0, :] = surround
-    arr[:, _INNER_X0 + _INNER_W:, :] = surround
-    arr[:_INNER_Y0, :, :] = surround
-    arr[_INNER_Y0 + _INNER_H:, :, :] = surround
-    rng = np.random.default_rng(20260728)  # 결정적 노이즈 — 렌더마다 동일
-    arr = arr + rng.normal(0.0, 9.0, size=arr.shape)
-    arr = np.clip(arr, 0, 255).astype("uint8")
-    img = Image.fromarray(arr, "RGB")
-    draw = ImageDraw.Draw(img)
-    _draw_pitch_lines(draw)
-    _bake_goals(draw)
-    return img
-
-
-def _draw_pitch_lines(draw: ImageDraw.ImageDraw) -> None:
-    """실측 규격 경기장 라인(미터 좌표 → _to_px)."""
-
-    def rect(x1: float, y1: float, x2: float, y2: float) -> None:
-        a = _to_px(x1, y2)
-        b = _to_px(x2, y1)
-        draw.rectangle([a, b], outline=LINE_COLOR, width=LINE_W)
-
-    rect(0, 0, FIELD_W, FIELD_H)
-    draw.line([_to_px(FIELD_W / 2, FIELD_H), _to_px(FIELD_W / 2, 0)],
-              fill=LINE_COLOR, width=LINE_W)
-    # 센터서클(9.15m) + 센터스팟
-    cx, cy = _to_px(FIELD_W / 2, FIELD_H / 2)
-    r = 9.15 / FIELD_W * _INNER_W
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=LINE_COLOR, width=LINE_W)
-    draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=LINE_COLOR)
-    # 페널티박스(16.5m)·골에어리어(5.5m)
-    rect(0, 13.84, 16.5, 54.16)
-    rect(FIELD_W - 16.5, 13.84, FIELD_W, 54.16)
-    rect(0, 24.84, 5.5, 43.16)
-    rect(FIELD_W - 5.5, 24.84, FIELD_W, 43.16)
-    # 페널티스팟(11m) + 아크(스팟 중심 9.15m, 박스 밖 ±53°)
-    for spot_x, a0, a1 in ((11.0, -53, 53), (FIELD_W - 11.0, 127, 233)):
-        sx, sy = _to_px(spot_x, FIELD_H / 2)
-        draw.ellipse([sx - 4, sy - 4, sx + 4, sy + 4], fill=LINE_COLOR)
-        draw.arc([sx - r, sy - r, sx + r, sy + r], a0, a1,
-                 fill=LINE_COLOR, width=LINE_W)
-
-
-def _bake_goals(draw: ImageDraw.ImageDraw) -> None:
-    """골라인 바깥 골대 프레임(그물 없음) — 실측 폭 7.32m(y 30.34~37.66), 깊이 ~2m."""
-    goal_depth = 2.0 / FIELD_W * _INNER_W
-    for side in ("left", "right"):
-        _, y_top = _to_px(0, 37.66)
-        _, y_bot = _to_px(0, 30.34)
-        if side == "left":
-            x_line = _INNER_X0
-            x_out = x_line - goal_depth
-        else:
-            x_line = _INNER_X0 + _INNER_W
-            x_out = x_line + goal_depth
-        # ㄷ자(경기장 쪽 개방) — 골라인 위에 겹치면 그 변만 두꺼워 보인다.
-        # draw.line 조합은 모서리 접합이 어긋나므로, 픽셀 정렬된 사각형 3조각으로 채운다.
-        half = LINE_W // 2
-        yt, yb = round(y_top), round(y_bot)
-        xo, xl = round(x_out), round(x_line)
-        post = [xo - half, yt - half, xo + half, yb + half]
-        top_bar = [min(xo - half, xl), yt - half, max(xo + half, xl), yt + half]
-        bot_bar = [min(xo - half, xl), yb - half, max(xo + half, xl), yb + half]
-        for box in (post, top_bar, bot_bar):
-            draw.rectangle(box, fill=LINE_COLOR)
-
-
-# 수비 화살표(상대 볼 경로) — dual 캔버스 ARROW_COLORS.defense 와 동일 톤.
-DEFENSE_ARROW_COLOR = (224, 82, 79)
-
-
-def _draw_arrow(
-    draw: ImageDraw.ImageDraw,
-    start: tuple[float, float],
-    end: tuple[float, float],
-    *,
-    kind: str = "pass",
-    progress: float = 1.0,
-) -> None:
-    """패스 화살표 — 콘솔 replay 의 line(#16c2c2, 4px) + 화살촉.
-
-    kind='defense' 는 수비 액션(인터셉트·태클·차단·슛블록)으로 그린 상대 볼 경로 —
-    dual 캔버스와 동일하게 빨간 선 + 화살촉 없음으로 구분한다.
-    kind='fail' 은 실패 패스/크로스 — 빨간 선 + 화살촉(어디로 보내려다 실패했는지).
-
-    progress 는 공이 이 화살표를 지나간 정도(0~1) — 지나간 만큼만 선을 그리고
-    화살촉은 다 지난 뒤에 찍는다. 미리 그리면 결과가 먼저 보인다.
-    """
-    progress = min(max(progress, 0.0), 1.0)
-    if progress <= 0:
-        return
-    color = DEFENSE_ARROW_COLOR if kind in ("defense", "fail") else ARROW_COLOR
-    tip = (
-        start[0] + (end[0] - start[0]) * progress,
-        start[1] + (end[1] - start[1]) * progress,
-    )
-    draw.line([start, tip], fill=color, width=6)
-    if kind == "defense" or progress < 1:
-        return
-    dx, dy = end[0] - start[0], end[1] - start[1]
-    length = math.hypot(dx, dy)
-    if length < 1:
-        return
-    ux, uy = dx / length, dy / length
-    head = 19.0
-    left = (end[0] - ux * head - uy * head * 0.55, end[1] - uy * head + ux * head * 0.55)
-    right = (end[0] - ux * head + uy * head * 0.55, end[1] - uy * head - ux * head * 0.55)
-    draw.polygon([end, left, right], fill=color)
-
-
-def _draw_ball(draw: ImageDraw.ImageDraw, x: float, y: float) -> None:
-    """⚽ 모사 — 흰 공 + 중앙 검은 오각형 (콘솔 replay 의 이모지 공 대응)."""
-    r = 13.0
-    draw.ellipse([x - r, y - r, x + r, y + r], fill=(250, 250, 250), outline=(25, 25, 25), width=2)
-    pent = []
-    for k in range(5):
-        ang = math.radians(-90 + k * 72)
-        pent.append((x + math.cos(ang) * r * 0.42, y + math.sin(ang) * r * 0.42))
-    draw.polygon(pent, fill=(25, 25, 25))
-
-
-def _draw_goal_inset(draw: ImageDraw.ImageDraw, gx: float, gy: float) -> None:
-    """정면 골대 인셋(우상단) — dual 골대 클릭 지점(높이 포함)에 공 마커.
-
-    gx: 0(왼쪽 포스트)~1(오른쪽 포스트), gy: 0(땅)~1(크로스바).
-    """
-    panel_w, panel_h = 300, 130
-    px0 = OUT_W - panel_w - 18
-    py0 = 18
-    draw.rounded_rectangle(
-        [px0, py0, px0 + panel_w, py0 + panel_h],
-        radius=10,
-        fill=(10, 14, 12),
-        outline=(96, 108, 102),
-        width=2,
-    )
-    # 골문(7.32:2.44 = 3:1) — 패널 안 중앙, 바닥선 위.
-    goal_w, goal_h = 240, 80
-    gx0 = px0 + (panel_w - goal_w) / 2
-    gy1 = py0 + panel_h - 22  # 바닥선
-    gy0 = gy1 - goal_h
-    # 바닥선
-    draw.line([(px0 + 12, gy1), (px0 + panel_w - 12, gy1)], fill=(150, 160, 155), width=2)
-    # 네트(은은한 격자)
-    for k in range(1, 6):
-        x = gx0 + goal_w * k / 6
-        draw.line([(x, gy0), (x, gy1)], fill=(52, 60, 56), width=1)
-    for k in range(1, 3):
-        y = gy0 + goal_h * k / 3
-        draw.line([(gx0, y), (gx0 + goal_w, y)], fill=(52, 60, 56), width=1)
-    # 골대 프레임(포스트 2 + 크로스바)
-    draw.line([(gx0, gy1), (gx0, gy0)], fill=(240, 245, 242), width=4)
-    draw.line([(gx0 + goal_w, gy1), (gx0 + goal_w, gy0)], fill=(240, 245, 242), width=4)
-    draw.line([(gx0 - 2, gy0), (gx0 + goal_w + 2, gy0)], fill=(240, 245, 242), width=4)
-    # 공 마커 — 클릭 지점(높이 반영)
-    bx = gx0 + min(max(gx, 0.0), 1.0) * goal_w
-    by = gy1 - min(max(gy, 0.0), 1.0) * goal_h
-    r = 9.0
-    draw.ellipse([bx - r, by - r, bx + r, by + r], fill=(250, 250, 250), outline=(25, 25, 25), width=2)
-    pent = []
-    for k in range(5):
-        ang = math.radians(-90 + k * 72)
-        pent.append((bx + math.cos(ang) * r * 0.42, by + math.sin(ang) * r * 0.42))
-    draw.polygon(pent, fill=(25, 25, 25))
-
-
-@lru_cache(maxsize=1)
-def _gk_glove_img() -> "Image.Image | None":
-    """골키퍼 장갑 그림(투명 배경). 없으면 None — 그때는 안 그린다."""
-    try:
-        return Image.open(_GK_GLOVE_PATH).convert("RGBA")
-    except (OSError, ValueError):
-        return None
-
-
-@lru_cache(maxsize=1)
-def _gk_glove_ratio() -> float:
-    """장갑 그림의 가로/세로 비. 그림이 없으면 대충 정사각."""
-    img = _gk_glove_img()
-    return (img.width / img.height) if img and img.height else 1.0
-
-
-def _paste_glove(draw: ImageDraw.ImageDraw, cx: float, cy: float, w: float, h: float) -> None:
-    """장갑을 (cx, cy) 중심에 붙인다. draw 가 들고 있는 이미지 위에 알파 합성."""
-    img = _gk_glove_img()
-    if img is None or w < 1 or h < 1:
-        return
-    scaled = img.resize((max(1, int(w)), max(1, int(h))), Image.LANCZOS)
-    # 프레임은 RGB 라 alpha_composite 가 안 된다 — 알파를 마스크로 써서 붙인다.
-    base = draw._image  # PIL ImageDraw 는 대상 이미지를 이 이름으로 들고 있다
-    base.paste(scaled, (int(cx - w / 2), int(cy - h / 2)), scaled)
-
-
-def _draw_goal_panel(
-    draw: ImageDraw.ImageDraw,
-    gx: float,
-    gy: float,
-    *,
-    side: str,
-    ball_t: float | None,
-    start_gx: float | None = None,
-    is_save: bool = False,
-    save_caught: bool = False,
-) -> None:
-    """공격 반대편 하프를 덮는 대형 정면 골대 뷰 — 슛 궤적(아크)과 공까지 그린다.
-
-    is_save=True 면 **골키퍼가 막는 장면**이다. 닿는 지점에 장갑을 세운다.
-    save_caught=True(sv.c)면 공이 장갑에 붙어 멈추고, False 면 골대 밖으로 쳐낸다.
-    is_save=False 면 슛 — 종전대로 아크 끝까지 날아간다.
-    세이브(Save)만 여기 온다(GK_SAVE_ACTION 주석).
-
-    side: 패널이 덮는 하프('left'|'right'). ball_t: None=공 미표시, 0~1=아크 진행률.
-    start_gx: 슈터의 골대 프레임 기준 가로 위치(0=왼쪽 포스트, 1=오른쪽 포스트).
-    정확 좌표가 아니라 방향(왼쪽/중앙/오른쪽)만 반영해 출발점이 항상 패널 안에 있게 한다.
-    None 이면 중앙에서 출발. 범위 밖 gx/gy(빗나간 슛)도 패널 안에서 골대 밖 위치로 표현된다.
-    """
-    margin = 14
-    if side == "left":
-        x0, x1 = margin, OUT_W // 2 - 8
-    else:
-        x0, x1 = OUT_W // 2 + 8, OUT_W - margin
-    y0, y1 = margin, OUT_H - margin
-    draw.rounded_rectangle(
-        [x0, y0, x1, y1], radius=14, fill=(10, 14, 12), outline=(96, 108, 102), width=2,
-    )
-
-    pw = x1 - x0
-    goal_w = pw * 0.8
-    goal_h = goal_w / 3.0  # 7.32:2.44 실제 비율
-    floor_y = y0 + (y1 - y0) * 0.5
-    gx0 = x0 + (pw - goal_w) / 2
-    gx1 = gx0 + goal_w
-    gy0p = floor_y - goal_h
-    # 바닥선
-    draw.line([(x0 + 16, floor_y), (x1 - 16, floor_y)], fill=(150, 160, 155), width=3)
-
-    # 약식 페널티 박스 — 정면 원근에서 보이는 부분만, 골대 크기에 비례.
-    # 골 에어리어는 골대보다 살짝 넓은 사다리꼴로, 페널티 박스는 좌우가 화면 밖이라
-    # 앞선(가로선)만 패널을 가로지른다. 페널티 스팟 포함.
-    box_color = (110, 122, 116)
-    cx = (gx0 + gx1) / 2
-    ghw = goal_w / 2
-    ga_top = ghw * 1.12
-    ga_bot = min(ghw * 1.24, pw / 2 - 14)
-    ga_y = floor_y + goal_h * 0.5
-    draw.line([(cx - ga_top, floor_y), (cx - ga_bot, ga_y)], fill=box_color, width=2)
-    draw.line([(cx + ga_top, floor_y), (cx + ga_bot, ga_y)], fill=box_color, width=2)
-    draw.line([(cx - ga_bot, ga_y), (cx + ga_bot, ga_y)], fill=box_color, width=2)
-    pa_y = floor_y + goal_h * 1.35
-    draw.line([(x0 + 14, pa_y), (x1 - 14, pa_y)], fill=box_color, width=2)
-    spot_y = floor_y + goal_h * 1.0
-    draw.ellipse([cx - 4, spot_y - 4, cx + 4, spot_y + 4], fill=box_color)
-
-    # 네트(은은한 격자)
-    for k in range(1, 8):
-        xx = gx0 + goal_w * k / 8
-        draw.line([(xx, gy0p), (xx, floor_y)], fill=(52, 60, 56), width=2)
-    for k in range(1, 4):
-        yy = gy0p + goal_h * k / 4
-        draw.line([(gx0, yy), (gx1, yy)], fill=(52, 60, 56), width=2)
-    # 골대 프레임(포스트 2 + 크로스바)
-    draw.line([(gx0, floor_y), (gx0, gy0p)], fill=(240, 245, 242), width=6)
-    draw.line([(gx1, floor_y), (gx1, gy0p)], fill=(240, 245, 242), width=6)
-    draw.line([(gx0 - 3, gy0p), (gx1 + 3, gy0p)], fill=(240, 245, 242), width=6)
-
-    # 도착점(골대 클릭 좌표) / 출발점(패널 하단 중앙 = 피치 쪽에서 날아오는 슛)
-    end_x = gx0 + min(max(gx, -0.35), 1.35) * goal_w
-    end_y = floor_y - min(max(gy, 0.0), 1.6) * goal_h
-    # 출발점 가로 = 슈터 방향만 3단계로 반영 (정확 좌표는 패널 밖으로 나갈 수 있음)
-    if start_gx is None or 0.35 <= start_gx <= 0.65:
-        start_x = x0 + pw * 0.5
-    elif start_gx < 0.35:
-        start_x = x0 + pw * 0.22
-    else:
-        start_x = x0 + pw * 0.78
-    start_y = y1 - 22
-    ctrl_x = (start_x + end_x) / 2
-    ctrl_y = min(start_y, end_y) - max(28.0, abs(start_x - end_x) * 0.1)
-
-    def bez(u: float) -> tuple[float, float]:
-        v = 1 - u
-        return (
-            v * v * start_x + 2 * v * u * ctrl_x + u * u * end_x,
-            v * v * start_y + 2 * v * u * ctrl_y + u * u * end_y,
-        )
-
-    # 궤적 점선 (노란 아크)
-    steps = 26
-    pts = [bez(i / steps) for i in range(steps + 1)]
-    for i in range(steps):
-        if i % 2 == 0:
-            draw.line([pts[i], pts[i + 1]], fill=(250, 204, 21), width=4)
-    if ball_t is None:
-        return
-    t = min(max(ball_t, 0.0), 1.0)
-
-    if not is_save:
-        _draw_ball(draw, *bez(t))
-        return
-
-    # ── 세이브 ────────────────────────────────────────────────────────────
-    # 닿기 전까지는 아크를 타고, 닿은 뒤에는 막은 결과를 보여준다.
-    glove_h = goal_h * GK_GLOVE_H
-    glove_w = glove_h * _gk_glove_ratio()
-    # 공은 장갑 **정면**에 놓는다 — 겹쳐 그리면 공에 가려 초록 테두리로만 보인다.
-    # 날아온 방향(아크 끝 접선)의 반대쪽으로 물린다.
-    ndx, ndy = end_x - ctrl_x, end_y - ctrl_y
-    nlen = math.hypot(ndx, ndy) or 1.0
-    face = glove_w / 2 + 7.0
-    face_x, face_y = end_x - ndx / nlen * face, end_y - ndy / nlen * face
-    if t <= GK_CONTACT_T:
-        bx, by = bez(t / GK_CONTACT_T if GK_CONTACT_T > 0 else 1.0)
-        # 장갑은 공보다 조금 먼저 나와 기다린다 — 갑자기 튀어나오면 막은 게 아니라
-        # 공이 사라진 것처럼 보인다.
-        pop = min(1.0, max(0.0, (t - GK_CONTACT_T * 0.55) / (GK_CONTACT_T * 0.45)))
-    else:
-        after = (t - GK_CONTACT_T) / (1.0 - GK_CONTACT_T)
-        pop = 1.0
-        if save_caught:
-            # 잡았다 — **장갑과 같은 자리**에 겹쳐 멈춘다. 장갑이 뒤, 공이 앞이라
-            # 손에 쥔 그림이 된다(공은 장갑 다음에 그린다 — 아래 순서 참조).
-            # 옆에 붙여 놓으면 '닿기만 하고 흘렀다' 로 보인다.
-            bx, by = end_x, end_y
-        else:
-            # 쳐냈다 — 가까운 포스트 **밖으로**, 크로스바 위로 넘겨 보낸다.
-            # 골대 안에 머물면 막았는지 흘렸는지가 안 보인다.
-            sign = 1.0 if end_x >= (gx0 + gx1) / 2 else -1.0
-            e = _ease(after)
-            bx = face_x + sign * goal_w * GK_SAVE_AWAY * e
-            by = face_y - goal_h * (GK_SAVE_AWAY + 0.25) * e
-            # 패널 안에 가둔다 — 밖으로 나가면 피치 위에 공이 떠 있는 그림이 된다.
-            pad = 16.0
-            bx = min(max(bx, x0 + pad), x1 - pad)
-            by = min(max(by, y0 + pad), y1 - pad)
-    if pop > 0:
-        _paste_glove(draw, end_x, end_y, glove_w * pop, glove_h * pop)
-    _draw_ball(draw, bx, by)
-
-
-def _ease(t: float) -> float:
-    """콘솔 replay 의 cubic-bezier(0.22,0.84,0.28,1) 근사 — 강한 ease-out."""
-    return 1 - (1 - t) ** 3
-
-
-def _load_font(size: int) -> ImageFont.ImageFont:
-    for name in ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf"):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-def _load_kr_font(size: int) -> ImageFont.ImageFont:
-    """한글 자막용 — 도커(/app)와 로컬 레포 양쪽에서 KFA 고딕을 찾는다."""
-    candidates = (
-        Path("/app/assets/fonts/KFAGothicBold.otf"),
-        Path(__file__).resolve().parents[3] / "assets" / "fonts" / "KFAGothicBold.otf",
-    )
-    for path in candidates:
-        try:
-            return ImageFont.truetype(str(path), size)
-        except OSError:
-            continue
-    return _load_font(size)
-
-
-def render_scene_motion(
-    scene_state: dict[str, Any],
-    out_path: Path,
-    *,
-    actor_jersey: str | None = None,
-    actor_side: str | None = None,
-    shot_target: tuple[float, float] | None = None,
-    goal_mouth: tuple[float, float] | None = None,
-    caption: str | None = None,
-    clear_exit: bool = False,
-    is_save: bool = False,
-    save_caught: bool = False,
-) -> bool:
-    """SceneState → mp4. 점이 하나도 없으면 False (렌더 생략).
-
-    공 경로: passArrows 가 있으면 화살표 체인, 없으면(드리블 등) 행위자 점의
-    before→after 이동을 따라간다(actor_jersey/actor_side 로 행위자 점을 찾는다).
-
-    clear_exit=True 면 이동이 끝난 **뒤에** 공만 터치라인 밖으로 굴러 나가는 구간을
-    더한다(클리어 연출 — _clear_exit_target·CLEAR_EXIT_SEC). 경로에 이어 붙이지 않는
-    이유는 CLEAR_EXIT_SEC 주석 참조. 슛이 있는 장면에는 안 붙인다: 그 장면의 끝은 슛이다.
-    """
-    before = _parse_dots(scene_state.get("beforeDots") or scene_state.get("before"))
-    after = _parse_dots(scene_state.get("afterDots") or scene_state.get("after"))
-    if not before and not after:
-        return False
-    pairs = _pair_dots(before, after)
-    arrows = _parse_arrows(scene_state.get("passArrows"))
-    ball_offset = (0.0, 0.0)
-    actor_pair = _find_actor_pair(pairs, actor_jersey, actor_side)
-    if not arrows and shot_target is None:
-        if actor_pair is not None:
-            b, a = actor_pair
-            # 이동이 사실상 없으면(제자리 액션) 공 생략.
-            move = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
-            if move > 0.8:
-                arrows = [{"x1": b["x"], "y1": b["y"], "x2": a["x"], "y2": a["y"]}]
-                # 드리블 공은 행위자 점과 겹치지 않게 **진행 방향 앞**에 붙인다.
-                # 고정 오프셋이면 어느 쪽으로 몰든 화면상 5시에 붙어 방향이 어긋난다.
-                # 1.42 필드유닛 ≈ 13.5px(9.5px/유닛) — 점 반지름 14px 언저리.
-                ball_offset = (
-                    (a["x"] - b["x"]) / move * BALL_GAP,
-                    (a["y"] - b["y"]) / move * BALL_GAP,
-                )
-    shot_origin_y: float | None = None
-    if shot_target is not None:
-        # 슛 경로 — 슈터 최종 위치(없으면 마지막 화살표 끝)에서 골라인 지점으로.
-        if actor_pair is not None:
-            sx, sy = actor_pair[1]["x"], actor_pair[1]["y"]
-        elif arrows:
-            sx, sy = arrows[-1]["x2"], arrows[-1]["y2"]
-        else:
-            sx, sy = FIELD_W / 2, FIELD_H / 2
-        arrows.append({"x1": sx, "y1": sy, "x2": shot_target[0], "y2": shot_target[1]})
-        ball_offset = (0.0, 0.0)
-        shot_origin_y = sy
-
-    # 공 이동은 패스 체인 우선 — 수비(상대 볼 경로)는 패스가 없는 장면에서만 따라간다.
-    # (드리블 폴백·슛 세그먼트가 arrows 에 더해진 뒤 계산해야 한다.)
-    # 공은 **그려지는 모든 화살표**를 순서대로 지난다 — 수비(가로채인 상대 볼 경로)도
-    # 실제로 공이 지나간 길이라 포함한다. 제외하면 그 빨간 선을 공이 영영 지나지
-    # 않아 "공이 지나가면 그려진다"가 성립하지 않고, 공도 상대 패스를 건너뛴다.
-    # 끊긴 화살표 사이는 직선으로 이어 계속 굴린다 — sceneData 와 같은 경로.
-    ball_path, arrow_spans = _chain_spans(arrows)
-    # 클리어 꼬리는 **경로에 붙이지 않는다** — 붙이면 공이 걷어낸 지점을 수비수보다
-    # 먼저 지나간다(CLEAR_EXIT_SEC 주석). 이동 구간이 끝난 뒤 따로 굴린다.
-    exit_target = (
-        _clear_exit_target(ball_path)
-        if clear_exit and shot_target is None else None
-    )
-
-    font = _load_font(15)
-    dot_r = 14.0
-
-    # 슛 장면이면 공격 반대편(비어 있는) 하프를 대형 정면 골대 뷰로 덮는다.
-    # 아크 출발점엔 슈터의 좌우 위치를 골대 프레임 좌표(gx)로 환산해 반영.
-    panel_side: str | None = None
-    panel_start_gx: float | None = None
-    if goal_mouth is not None and shot_target is not None:
-        if shot_target[0] == 0.0:
-            panel_side = "right"
-            if shot_origin_y is not None:
-                panel_start_gx = (shot_origin_y - 30.34) / 7.32
-        else:
-            panel_side = "left"
-            if shot_origin_y is not None:
-                panel_start_gx = (37.66 - shot_origin_y) / 7.32
-
-    hold_before = int(HOLD_BEFORE_SEC * FPS)
-    move = max(1, int(MOVE_SEC * FPS))
-    # 공만 라인 밖으로 나가는 구간 — 나갈 곳이 있을 때만 시간을 준다.
-    exit_frames = int(CLEAR_EXIT_SEC * FPS) if exit_target is not None else 0
-    hold_after = int(HOLD_AFTER_SEC * FPS)
-    total = hold_before + move + exit_frames + hold_after
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmpdir = Path(tmp)
-        for f in range(total):
-            # t: 선수·화살표·공(체인)의 진행률. exit_t: 걷어낸 공이 라인 밖으로
-            # 나가는 진행률 — t 가 1 에 닿은 **뒤에** 움직인다(둘이 같이 도착한 다음).
-            exit_t = 0.0
-            if f < hold_before:
-                t = 0.0
-            elif f < hold_before + move:
-                t = _ease((f - hold_before) / move)
-            else:
-                t = 1.0
-                if exit_frames:
-                    exit_t = _ease(min(1.0, (f - hold_before - move) / exit_frames))
-
-            img = _new_frame()
-            draw = ImageDraw.Draw(img)
-
-            # 패스 화살표(시안) / 수비 상대 볼 경로(빨강, 화살촉 없음) — dual 캔버스와 동일.
-            # 공이 지나간 만큼만 그린다(_reveal_fractions).
-            reveal = _reveal_fractions(arrow_spans, ball_path, t)
-            for ar, frac in zip(arrows, reveal):
-                _draw_arrow(
-                    draw,
-                    _to_px(ar["x1"], ar["y1"]),
-                    _to_px(ar["x2"], ar["y2"]),
-                    kind=str(ar.get("kind") or "pass"),
-                    progress=frac,
-                )
-
-            for b, a in pairs:
-                x = b["x"] + (a["x"] - b["x"]) * t
-                y = b["y"] + (a["y"] - b["y"]) * t
-                px, py = _to_px(x, y)
-                # 콘솔 replay 는 teamSide(home/away)로 색을 나눈다 — 없으면 ally→home 폴백.
-                side = b["teamSide"] or a["teamSide"]
-                if side is None:
-                    side = "home" if (b["team"] or a["team"]) != "opponent" else "away"
-                fill = HOME_COLOR if side == "home" else AWAY_COLOR
-                text_color = HOME_TEXT if side == "home" else AWAY_TEXT
-                draw.ellipse(
-                    [px - dot_r, py - dot_r, px + dot_r, py + dot_r],
-                    fill=fill,
-                )
-                if (b["role"] or a["role"]) == "gk":
-                    # replay .gk = 안쪽 어두운 링(inset).
-                    draw.ellipse(
-                        [px - dot_r + 1, py - dot_r + 1, px + dot_r - 1, py + dot_r - 1],
-                        outline=GK_RING,
-                        width=3,
-                    )
-                number = b["number"] or a["number"]
-                if number:
-                    draw.text((px, py), number, fill=text_color, font=font, anchor="mm")
-
-            # 공 — 화살표 체인을 이은 연속 경로를 길이 비례 속도로 따라간다.
-            # 클리어면 그 끝에 도착한 뒤(수비수와 함께) 라인 밖으로 더 굴러 나간다.
-            if ball_path:
-                bx, by = _point_on_path(ball_path, t)
-                if exit_target is not None and exit_t > 0:
-                    bx += (exit_target[0] - ball_path[-1][0]) * exit_t
-                    by += (exit_target[1] - ball_path[-1][1]) * exit_t
-                bx += ball_offset[0]
-                by += ball_offset[1]
-                bpx, bpy = _to_px(bx, by)
-                _draw_ball(draw, bpx, bpy)
-
-            # 정면 골대 뷰 — 슛이면 반대편 하프 대형 패널(궤적 포함), 궤적 정보가 없으면 기존 인셋.
-            if panel_side is not None and goal_mouth is not None:
-                # 공이 마지막(슛) 구간에 진입한 뒤부터 패널 안 공이 아크를 따라 난다.
-                ball_t_panel = _tail_progress(ball_path, t)
-                _draw_goal_panel(
-                    draw, goal_mouth[0], goal_mouth[1],
-                    side=panel_side, ball_t=ball_t_panel, start_gx=panel_start_gx,
-                    is_save=is_save, save_caught=save_caught,
-                )
-            elif goal_mouth is not None:
-                _draw_goal_inset(draw, goal_mouth[0], goal_mouth[1])
-
-            # 설명 자막(예: "골! #7") — 골대 패널이 왼쪽을 덮으면 공격 하프 쪽으로 비켜 배치.
-            if caption:
-                cfont = _load_kr_font(30)
-                bbox = draw.textbbox((0, 0), caption, font=cfont)
-                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                pad = 12
-                cx0, cy0 = (OUT_W // 2 + 26, 18) if panel_side == "left" else (18, 18)
-                draw.rounded_rectangle(
-                    [cx0, cy0, cx0 + tw + pad * 2, cy0 + th + pad * 2],
-                    radius=10,
-                    fill=(10, 14, 12),
-                    outline=(96, 108, 102),
-                    width=2,
-                )
-                draw.text(
-                    (cx0 + pad - bbox[0], cy0 + pad - bbox[1]),
-                    caption,
-                    font=cfont,
-                    fill=(250, 204, 21),
-                )
-
-            img.save(tmpdir / f"f{f:04d}.png")
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-framerate", str(FPS),
-                "-i", str(tmpdir / "f%04d.png"),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "27",
-                "-movflags", "+faststart",
-                str(out_path),
-            ],
-            check=True,
-        )
-    return True
-
-
 def _goal_mouth_xy(value: Any) -> tuple[float, float] | None:
     """extra.goalMouth("gx,gy,방향") → (gx, gy). 인셋 표시용."""
     parts = str(value or "").strip().split(",")
@@ -1047,18 +300,6 @@ GK_SAVE_ACTION = "Save"
 #   (없음) 옛 기록 — 어느 쪽인지 모른다. 쳐내기로 그린다(막았다까지만 말한다)
 GK_SAVE_CATCH_TAG = "Catch"
 GK_SAVE_PUNCH_TAG = "Punch"
-
-# 아크 전체에서 **공이 장갑에 닿는 시점**. 나머지는 막은 뒤(튕겨 나가는) 처리에 쓴다.
-GK_CONTACT_T = 0.72
-# 막은 공이 튕겨 나가는 거리 — 골 너비 대비. 잡았는지 쳐냈는지는 기록에 없으므로
-# '골대 밖으로 확실히 나간다' 까지만 말한다. 패널 밖으로는 안 나간다(아래 clamp) —
-# 나가면 피치 위에 공이 떠 있는 그림이 돼 어디로 갔는지가 안 보인다.
-GK_SAVE_AWAY = 0.34
-# 장갑 크기 — 골 높이 대비. 공(14px)보다 확실히 커야 '막는 손' 으로 읽힌다.
-# 장갑 한 쌍 그림이라 가로가 넓다 — 높이 기준으로 맞추고 가로는 원본 비율을 따른다.
-GK_GLOVE_H = 0.46
-_GK_GLOVE_PATH = Path(__file__).parent / "gk_glove.png"
-
 
 def _mirror_goal_mouth(value: Any) -> Any:
     """goalMouth 문자열의 방향만 뒤집는다 — 골키퍼 액션용(GK_MIRROR_ACTIONS 주석)."""
@@ -1173,7 +414,7 @@ def build_scene_data(
         # 클리어 — 걷어낸 자리에서 가장 가까운 터치라인까지 공만 더 굴린다.
         # **path 에 붙이지 않는다**: 붙이면 공이 그 길이까지 시간을 나눠 써서
         # 걷어낸 지점을 수비수보다 먼저 지나간다(CLEAR_EXIT_SEC 주석).
-        # mp4(render_scene_motion)와 같은 규칙이라 콘솔 검수와 앱 화면이 일치한다.
+        # 화면과 MP4가 이 sceneData를 함께 사용한다.
         exit_m = _clear_exit_target(path_m)
 
     # 이동 셰브론(핸드오프 arrow_move_*) — 드리블/돌파=공 있는 이동, 침투=공 없는 이동.
@@ -1282,11 +523,11 @@ def scene_motion_key(prefix: str, clip_key: str, seq: Any, scene_data: Any = Non
     둔다 — 한쪽만 고치면 이미 올라간 mp4 를 못 찾고 매번 다시 렌더한다.
 
     좌표 지문이 뒤에 붙는다. 좌표를 고치면 키가 달라져 옛 mp4 를 가리키지 않는다.
-    지문이 없으면(옛 호출) 예전 모양 그대로다.
+    렌더러 버전도 경로에 넣어 구형 그림으로 만든 MP4와 섞이지 않게 한다.
     """
     stamp = scene_motion_stamp(scene_data)
     tail = f"-{stamp}" if stamp else ""
-    return f"{prefix.rstrip('/')}/scene-motion/{clip_key}-a{seq}{tail}.mp4"
+    return f"{prefix.rstrip('/')}/scene-motion/{SCENE_RENDER_VERSION}/{clip_key}-a{seq}{tail}.mp4"
 
 
 def attach_scene_motions(
@@ -1391,22 +632,16 @@ def attach_scene_motions(
         # 좌표 지문을 섞는다 — 조회 쪽(main.py)도 같은 sceneData 로 같은 키를 만든다.
         key = scene_motion_key(prefix, clip_key, seq, rep.get("sceneData"))
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                out = Path(tmp) / "motion.mp4"
-                if not render_scene_motion(
-                    state,
-                    out,
-                    actor_jersey=str(rep.get("jersey") or "") or None,
-                    actor_side=str(rep.get("teamSide") or "") or None,
-                    shot_target=_shot_target_from_goal_mouth(goal_mouth_text),
-                    goal_mouth=_goal_mouth_xy(goal_mouth_text),
-                    caption=caption,
-                    clear_exit=clear_exit,
-                    is_save=is_save,
-                    save_caught=save_caught,
-                ):
-                    continue
-                storage.upload(out, key, content_type="video/mp4")
+            # Serialise expensive captures and recheck after waiting: repeated
+            # clip refreshes reuse the current MP4 instead of re-rendering it.
+            with _SCENE_RENDER_LOCK:
+                if not storage.exists(key):
+                    if not data:
+                        continue
+                    with tempfile.TemporaryDirectory() as tmp:
+                        out = Path(tmp) / "motion.mp4"
+                        render_scene_data(data, out)
+                        storage.upload(out, key, content_type="video/mp4")
             rep["sceneMotionKey"] = key
             if target is not None:
                 target["sceneMotionKey"] = key

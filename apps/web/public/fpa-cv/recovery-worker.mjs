@@ -47,7 +47,7 @@ self.onmessage=async ({data:request})=>{
         previous=now;send('progress',info);
       };
       let baseline=null;
-      if(request.review.checkpoints?.length){
+      if(request.review.checkpoints?.length&&!request.review.shadowCorrection){
         const baseReview={...request.review,checkpoints:[]},baseKey=await recoveryCacheKey(contentHash,baseReview);
         if(baselineMemo?.key===baseKey)baseline=baselineMemo.result;
         else{

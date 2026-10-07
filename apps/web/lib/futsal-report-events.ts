@@ -1,3 +1,4 @@
+import {appearanceSource} from './futsal-report-substitutions';
 import {rolePlay} from './futsal-report-positions';
 import {automaticPositions} from './futsal-report-auto-position';
 import {sameClub} from './futsal-clubs';
@@ -18,18 +19,19 @@ export function flaPlayerMatch(shot:Shot,p:PlayerText){
 const seconds=(text:string)=>{const m=text.match(/^(\d+):(\d+(?:\.\d+)?)$/);return m?Number(m[1])*60+Number(m[2]):null;};
 export function eventMapData(d:ReportDraft,person:PlayerText){
  const markers:ReportMarker[]=[],fpa=d.fpa?parseFpa(d.fpa):[];
+ const inAppearance=(t:number|null)=>person.appearanceFrom===undefined||(t!==null&&t+(d.matchStartSeconds??d.fla?.videoStartSeconds??d.heatmap?.from??0)>=person.appearanceFrom&&t+(d.matchStartSeconds??d.fla?.videoStartSeconds??d.heatmap?.from??0)<person.appearanceTo!);
  const identityPerson={...person,name:Object.values(d.players).filter(p=>p.side===person.side&&name(p.name)===name(person.name)).length===1?person.name:''};
  for(const e of fpa){const side=sideOf(e.team,d),kind=eventKind(e);if(!side||!kind||(!isShot(e)&&!isDefense(e)))continue;
   const pos=eventPoint(e,attackDirection(d,{...person,side}));
-  markers.push({id:`fpa-${e.index}`,side,kind,x:pos?.x??null,y:pos?.y??null,personal:side===person.side&&!!person.eventNumber.trim()&&number(e.player)===number(person.eventNumber),source:'fpa',event:e});
+  markers.push({id:`fpa-${e.index}`,side,kind,x:pos?.x??null,y:pos?.y??null,personal:inAppearance(seconds(e.time))&&side===person.side&&!!person.eventNumber.trim()&&number(e.player)===number(person.eventNumber),source:'fpa',event:e});
  }
  for(const shot of d.fla?.matchId===d.matchId?d.fla.events||[]:[]){
   if(shot.type!=='XG')continue;const side=shot.team.toLowerCase() as Side,direction=attackDirection(d,{...person,side}),valid=shot.shot_x!==null&&shot.shot_y!==null&&Number.isFinite(shot.shot_x)&&Number.isFinite(shot.shot_y)&&shot.shot_x>=20&&shot.shot_x<=40&&shot.shot_y>=0&&shot.shot_y<=20;
   const x=valid?(direction==='right'?shot.shot_x!:40-shot.shot_x!):null,y=valid?(direction==='right'?20-shot.shot_y!:shot.shot_y!):null,t=shot.clock_ms===undefined?null:shot.clock_ms/1000;
   const duplicate=markers.find(m=>m.source==='fpa'&&m.side===side&&m.kind==='shot'&&m.x!==null&&x!==null&&Math.hypot(m.x-x,m.y!-y!)<1.5&&t!==null&&seconds(m.event.time)!==null&&Math.abs(seconds(m.event.time)!-t)<=2);
-  if(duplicate){duplicate.personal ||= flaPlayerMatch(shot,identityPerson);continue;}
+  if(duplicate){duplicate.personal ||= inAppearance(t)&&flaPlayerMatch(shot,identityPerson);continue;}
   const e:FpaEvent={index:-1,team:side,player:shot.player_number||'',receiver:'',action:'Shot',tags:[],time:t===null?'':`${Math.floor(t/60)}:${(t%60).toFixed(2)}`,half:'',direction,points:valid?[{x:x!,y:20-y!}]:[],goal:shot.is_goal,outcome:'unknown'};
-  markers.push({id:`fla-${shot.id}`,side,kind:'shot',x,y,personal:flaPlayerMatch(shot,identityPerson),source:'fla',event:e});
+  markers.push({id:`fla-${shot.id}`,side,kind:'shot',x,y,personal:inAppearance(t)&&flaPlayerMatch(shot,identityPerson),source:'fla',event:e});
  }
  return {markers,personal:markers.filter(m=>m.personal).map(m=>m.event),missing:markers.filter(m=>m.x===null).length};
 }
@@ -60,8 +62,16 @@ export function playStory(d:ReportDraft,id:string,map:ReturnType<typeof eventMap
  return paragraphs[0]+'\n\n'+paragraphs.slice(1).join(' ');
 }
 export function reportPlayer(d:ReportDraft,id=d.selected){
- const raw={...(d.players[id]||blankPlayer()),position:automaticPositions(d)[id]?.position||''},player=d.heatmap?.players.find(p=>p.id===id),map=eventMapData(d,raw),direction=attackDirection(d,raw);
+ const matchStart=d.matchStartSeconds??d.fla?.videoStartSeconds??d.heatmap?.from??0,original=d.heatmap?.players.find(p=>p.id===id),source=appearanceSource(d.heatmap,original);d={...d,matchStartSeconds:matchStart,heatmap:source};
+ const raw={...(d.players[id]||blankPlayer()),appearanceFrom:original?.activeFrom,appearanceTo:original?.activeTo,position:automaticPositions(d)[id]?.position||''},player=d.heatmap?.players.find(p=>p.id===id),map=eventMapData(d,raw),direction=attackDirection(d,raw);
  const generated=commentDraft(d.heatmap,player,raw,map.personal,direction,d.matchStartSeconds??d.fla?.videoStartSeconds??d.heatmap?.from??0);
  generated.eventComment=playStory(d,id,map,generated.eventComment);
- return {raw,player,map,direction,generated,person:{...raw,heatComment:raw.heatComment||generated.heatComment,eventComment:raw.eventComment||generated.eventComment,strengths:raw.strengths.map((v,i)=>v||generated.strengths[i]),improvements:raw.improvements.map((v,i)=>v||generated.improvements[i])}};
+ if(original?.activeFrom!==undefined&&original.activeTo!-original.activeFrom<30){
+  raw.position='';const duration=Math.round(original.activeTo!-original.activeFrom);
+  generated.heatComment=`교체 투입 뒤 약 ${duration}초의 출전 구간이 남아 있어요. 히트맵은 이 구간에서 확인된 움직임만 담았어요. 투입 전 시간이나 앞선 선수의 활동은 합치지 않았어요.\n\n짧은 기록이므로 경기 전체의 포지션이나 활동 성향을 평가하기보다, 투입 직후 어떤 위치를 찾았는지 함께 돌아봐 주세요.`;
+  generated.eventComment='이벤트맵은 양 팀의 경기 전체 흐름을 보여줘요. 해당 선수의 출전 시간 밖에서 나온 플레이는 개인 기록으로 연결하지 않았어요. 짧게 남은 출전 장면과 팀의 흐름을 구분해서 살펴봐 주세요.';
+  generated.strengths=['투입 직후 코트 안에서 찾은 위치를 확인할 수 있어요.','짧게 남은 움직임도 다음 플레이를 돌아볼 출발점이 될 수 있어요.','개인 평가는 더 긴 출전 장면과 함께 살펴보면 좋아요.'];
+  generated.improvements=['입장 직후 동료와 어떤 간격을 만들었는지 돌아보세요.','공이 움직이는 방향에 맞춰 다음에 설 자리를 확인해 보세요.','다음 경기의 충분한 출전 기록과 함께 특징을 이어서 살펴봐요.'];
+ }
+ return {raw,player,source,map,direction,generated,person:{...raw,heatComment:raw.heatComment||generated.heatComment,eventComment:raw.eventComment||generated.eventComment,strengths:raw.strengths.map((v,i)=>v||generated.strengths[i]),improvements:raw.improvements.map((v,i)=>v||generated.improvements[i])}};
 }

@@ -1,0 +1,131 @@
+name: FPC regression checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  api-and-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+      - run: pip install -r apps/api/requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Synthetic checkout restore drill
+        run: python scripts/test_deploy_snapshot.py -v
+      - name: Session policy and full application write routes (workers disabled)
+        run: |
+          python apps/api/tests/test_auth.py -v
+          python apps/api/tests/test_match_write_access.py -v
+          python apps/api/tests/test_outbox_recovery.py -v
+          PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_fla_video.py -v
+          PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_analysis_snapshots.py -v
+      - name: Individual manual clips and scene downloads
+        run: |
+          python apps/api/tests/test_manual_clip_results.py -v
+          python apps/api/tests/test_scene_motion_renderer.py -v
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci --prefix apps/web
+      - name: Type check and draft recovery contracts
+        run: |
+          node apps/web/node_modules/typescript/bin/tsc --noEmit --incremental false -p apps/web/tsconfig.json
+          node scripts/test-manual-draft.cjs
+          node scripts/test-report-recovery.cjs
+          node scripts/test-basketball-persistence.cjs
+          node scripts/test-futsal-match-report.cjs
+          node scripts/test-futsal-team-report.cjs
+          node scripts/test-futsal-report-stories.cjs
+          node scripts/test-futsal-substitution-report.mjs
+      - name: Production web build
+        run: npm run build --prefix apps/web
+      - name: Install browser test media tools
+        timeout-minutes: 4
+        run: |
+          # The hosted runner's Azure HTTP mirror can throttle large codec
+          # packages for several minutes. Use Ubuntu's signed HTTPS archive.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
+      # Match the supported operator browser, including H.264 MP4 decoding.
+      - run: node apps/web/node_modules/playwright-core/cli.js install --with-deps chrome
+      - name: Browser failure and recovery contracts (fixture APIs only)
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          CHROMIUM_PATH: /usr/bin/google-chrome
+          SCENE_MOTION_RENDER_TOKEN: fixture-render-token
+          SCENE_MOTION_CAPTURE_ORIGIN: http://127.0.0.1:4354
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT_DIST_DIR=.next-qa node apps/web/node_modules/next/dist/bin/next dev apps/web --hostname 127.0.0.1 --port 4354 > "$RUNNER_TEMP/fpc-ui.log" 2>&1 &
+          ui_pid=$!
+          trap 'kill "$ui_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in {1..30}; do
+            if curl --silent --output /dev/null http://127.0.0.1:4354/login; then ready=true; break; fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then cat "$RUNNER_TEMP/fpc-ui.log"; exit 1; fi
+          FPC_QA_OUTPUT="$RUNNER_TEMP/fpc-save-qa" node scripts/test-fpc-save-recovery-ui.cjs
+          FPC_REPORT_QA_OUTPUT="$RUNNER_TEMP/fpc-report-qa" node scripts/test-report-recovery-ui.cjs
+          FPC_OWNER_QA_OUTPUT="$RUNNER_TEMP/fpc-owner-qa" node scripts/test-draft-ownership-ui.cjs
+          FPC_FLA_QA_OUTPUT="$RUNNER_TEMP/fpc-fla-qa" node scripts/test-fla-recording-recovery-ui.cjs
+          FPC_BASKETBALL_QA_OUTPUT="$RUNNER_TEMP/fpc-basketball-qa" node scripts/test-basketball-recovery-ui.cjs
+          CLIP_QA_ORIGIN=http://127.0.0.1:4354 CLIP_QA_OUTPUT="$RUNNER_TEMP/fpc-clips-qa" node scripts/test-manual-clip-results-ui.cjs
+          FPC_DIALOG_QA_OUTPUT="$RUNNER_TEMP/fpc-dialog-qa" node scripts/test-completion-dialog-ui.cjs
+          SCENE_QA_OUTPUT="$RUNNER_TEMP/fpc-scene-qa" node scripts/test-scene-motion-mp4.cjs
+      - name: Browser regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpc-browser-regression
+          path: |
+            ${{ runner.temp }}/fpc-ui.log
+            ${{ runner.temp }}/fpc-*-qa/*.json
+            ${{ runner.temp }}/fpc-*-qa/*.txt
+            ${{ runner.temp }}/fpc-*-qa/*.png
+          retention-days: 7
+
+  postgres-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: fpc_local_test_only
+          POSTGRES_DB: fpc_release_qa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r apps/api/requirements.txt
+      - name: Actual application and PostgreSQL ownership/revision contention
+        env:
+          FPC_TEST_DATABASE_URL: postgresql+psycopg2://postgres:fpc_local_test_only@127.0.0.1:5432/fpc_release_qa
+        run: python apps/api/tests/test_match_write_access.py -v

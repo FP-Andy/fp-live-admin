@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[1]
 RUNTIME=ROOT/'runtime/fla-video'
 RUNTIME.mkdir(parents=True,exist_ok=True)
 os.environ['DATABASE_URL']='sqlite:///'+str(RUNTIME/'preview.db')
-os.environ['FPA_CV_ALLOWED_ORIGINS']='http://127.0.0.1:4340,http://localhost:4340'
+os.environ.setdefault('FPA_CV_ALLOWED_ORIGINS','http://127.0.0.1:4340,http://localhost:4340')
 sys.path.insert(0,str(ROOT/'apps/api'))
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.dialects.postgresql import JSONB

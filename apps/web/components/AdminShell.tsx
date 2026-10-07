@@ -4,10 +4,11 @@ import Link from 'next/link';
 import ConsoleIcon from './ConsoleIcon';
 import { ThemeToggle } from './ConsoleTheme';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
-import { apiFetch, clearCachedSessionUser, displayRole, fetchSessionUser, readCachedSessionUser, type SessionUser } from '../lib/api';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { apiFetch, clearCachedSessionUser, displayRole, fetchSessionUser, type SessionUser } from '../lib/api';
 import { clearFpaDraft, FPA_DRAFT_WARNING_MESSAGE, hasFpaDraft } from './FpaDraftGuard';
 import { SportProvider, SPORTS, useSportContext, type Sport } from './SportContext';
+import {allowWorkspaceLeave} from '../lib/workspace-leave';
 
 type NavItem = {
   href: string;
@@ -363,6 +364,8 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { sport, setSport } = useSportContext();
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [checkingSession,setCheckingSession]=useState(true);
+  const ownerRef=useRef<string|null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   const pendingSportChangeRef = useRef<Sport | null>(null);
@@ -403,23 +406,19 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    const cachedUser = readCachedSessionUser();
-    if (cachedUser) setUser(cachedUser);
-
-    fetchSessionUser()
-      .then((data) => {
-        if (active) setUser(data);
-      })
-      .catch(() => {
-        if (active) {
-          setUser(null);
-          router.replace(`/login?next=${encodeURIComponent(currentPath)}`);
-        }
-      });
-
-    return () => {
-      active = false;
+    let ticket=0;
+    const verify=async()=>{
+      const current=++ticket;setCheckingSession(true);
+      try{const data=await fetchSessionUser();if(active&&current===ticket){ownerRef.current=data.id;setUser(data);setCheckingSession(false);}}
+      catch{if(active&&current===ticket){ownerRef.current=null;setUser(null);router.replace(`/login?next=${encodeURIComponent(currentPath)}`);}}
     };
+    const changed=(event:Event)=>{const id=(event as CustomEvent).detail?.id;if(id!==ownerRef.current){setCheckingSession(true);setUser(null);void verify();}};
+    const channel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('fpc-session'):null;
+    if(channel)channel.onmessage=event=>{if(event.data?.id!==ownerRef.current){setCheckingSession(true);setUser(null);void verify();}};
+    const focus=()=>{if(!document.hidden)void verify();};
+    window.addEventListener('focus',focus);window.addEventListener('fpc-session-changed',changed);
+    const timer=setInterval(focus,60000);void verify();
+    return () => {active=false;ticket++;clearInterval(timer);channel?.close();window.removeEventListener('focus',focus);window.removeEventListener('fpc-session-changed',changed);};
   }, [router, currentPath]);
 
   useEffect(() => {
@@ -437,6 +436,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
   }, [currentPath]);
 
   const logout = async () => {
+    if(!await allowWorkspaceLeave())return;
     if (currentPath.startsWith('/admin/fpa') && hasFpaDraft()) {
       const ok = window.confirm(FPA_DRAFT_WARNING_MESSAGE);
       if (!ok) return;
@@ -448,7 +448,8 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
     router.refresh();
   };
 
-  const changeSport = (nextSport: Sport) => {
+  const changeSport = async (nextSport: Sport) => {
+    if(nextSport===sport||!await allowWorkspaceLeave())return;
     pendingSportChangeRef.current = nextSport;
     setSport(nextSport);
     if (currentPath !== '/admin/dashboard') {
@@ -587,7 +588,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <div className="app-content">{children}</div>
+        <div className="app-content" style={checkingSession?{visibility:'hidden',pointerEvents:'none'}:undefined} aria-hidden={checkingSession}>{user?<Fragment key={user.id}>{children}</Fragment>:null}</div>
 
       </div>
     </div>

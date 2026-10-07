@@ -1,6 +1,7 @@
 """Futsal video coding: media time and monotonic possession progress are separate."""
 from copy import deepcopy
 import json
+import hashlib
 import math
 import os
 import re
@@ -23,6 +24,7 @@ from .services import apply_possession_segment, apply_attack_event, apply_xg_eve
 from .xgot import estimate_xgot
 from .fpa_cv import same_origin
 from .fpa_cv_storage import storage
+from .fla_substitutions import SaveSubstitutions, saved_substitutions, clear_substitutions, validate_log
 
 FIXTURES = json.loads((Path(__file__).parent/'data/queen-cup-fla-2026.json').read_text())
 PREFIX = '/api/futsal/fla-video'
@@ -62,12 +64,12 @@ def candidates(fixture, uploads):
     return found
 
 
-def get_match(db, id, user, write=False):
+def get_match(db, id, user, write=False, substitutions=False):
     query=db.query(Match).filter(Match.id==id)
     if write:query=query.with_for_update()
     match=query.first()
     if not match or match.sport!='FUTSAL':raise HTTPException(404,'풋살 경기를 찾지 못했습니다.')
-    if write and (match.archived or (match.operator_id and match.operator_id!=user.id and user.role!='SUPERADMIN')):
+    if write and ((match.archived and not substitutions) or (match.operator_id and match.operator_id!=user.id and user.role!='SUPERADMIN')):
         raise HTTPException(403,'이 경기의 기록 권한을 확인하세요.')
     return match
 
@@ -103,7 +105,7 @@ def serialize(db, match, dominance_builder=None):
     state.pop('writer',None);state.pop('writer_at',None);state.pop('last_request',None)
     return {'match':{'id':str(match.id),'name':match.name,'home':meta.get('home_team','Home'),'away':meta.get('away_team','Away'),
                      'fixture':meta.get('fla_fixture'),'lineups':meta.get('lineups',{}),'archived':match.archived},
-            'state':state,'possession':totals,
+            'state':state,'possession':totals,'substitutions':saved_substitutions(match),
             'segments':[{'start_ms':s.start_ms,'end_ms':s.end_ms,'team':s.team} for s in segments],
             'events':[dict(id=str(e.id),created_at=e.created_at.isoformat(),**{k:getattr(e,k) for k in keys}) for e in events],
             'flow':dominance_builder(match.id,60,db)['bins'] if dominance_builder else []}
@@ -179,8 +181,11 @@ def update_recording(db, match, body):
     state=video_state(match)
     if not state.get('upload_id'):raise HTTPException(409,'영상과 경기 시작 장면을 먼저 저장하세요.')
     if state.get('configured') is False or not state.get('duration_ms'):raise HTTPException(409,'경기 시작 시각을 먼저 확인하고 저장하세요.')
-    if state.get('last_request')==str(body.request_id):return
-    if state.get('version',0)!=body.version:raise HTTPException(409,'다른 변경이 저장되었습니다. 새로고침 후 이어서 기록하세요.')
+    request_hash=hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+    if state.get('last_request')==str(body.request_id):
+        if state.get('last_request_hash') and state['last_request_hash']!=request_hash:raise HTTPException(409,'같은 요청 ID의 기록 내용이 다릅니다.')
+        return
+    if state.get('version',0)!=body.version:raise HTTPException(409,'다른 창의 변경이 저장되었습니다. 현재 입력을 복구 JSON으로 보관하고 서버 기록과 대조하세요.')
     claim(state,body.client_id)
     frontier=state.get('frontier_ms',0)
     if body.action=='start':
@@ -205,7 +210,7 @@ def update_recording(db, match, body):
         apply_possession_segment(db,match.id,seg.team,seg.start_ms,seg.end_ms)
     state.update(version=body.version+1,frontier_ms=body.frontier_ms,cursor_ms=body.cursor_ms,
                  possession_team=body.possession_team,selected_team=body.selected_team,direction=body.direction,rate=body.rate,
-                 last_request=str(body.request_id),saved_at=time.time(),ended=state.get('ended',False) or body.action=='finish')
+                 last_request=str(body.request_id),last_request_hash=request_hash,saved_at=time.time(),ended=state.get('ended',False) or body.action=='finish')
     save_metadata(match,state)
     # Existing FLA summaries use this monotonic clock; replay never rewinds it.
     db.add(State(id=body.request_id,match_id=match.id,clock_ms=body.frontier_ms,running=False,
@@ -252,7 +257,8 @@ def create_router(dominance_builder=None):
     @router.get('/matches/{id}')
     def get(id: UUID,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
         m=get_match(db,id,user)
-        return {**serialize(db,m,dominance_builder),'can_write':not m.archived and (not m.operator_id or m.operator_id==user.id or user.role=='SUPERADMIN')}
+        allowed=not m.operator_id or m.operator_id==user.id or user.role=='SUPERADMIN'
+        return {**serialize(db,m,dominance_builder),'can_write':not m.archived and allowed,'can_write_substitutions':allowed}
 
     @router.put('/matches/{id}/config')
     def configure(id: UUID,body: Config,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
@@ -262,6 +268,7 @@ def create_router(dominance_builder=None):
         if db.query(State).filter_by(match_id=id).first() or db.query(Event).filter_by(match_id=id).first():raise HTTPException(409,'기존 FLA 기록이 있는 경기에는 새 시간 기준을 적용할 수 없습니다.')
         allowed_upload(db,body.upload_id,user)
         if body.offset_ms>=body.duration_ms:raise HTTPException(400,'영상 안의 시작 장면을 선택하세요.')
+        if any(state.get(key)!=value for key,value in [('upload_id',body.upload_id),('offset_ms',body.offset_ms),('duration_ms',body.duration_ms)]):clear_substitutions(m)
         save_metadata(m,{'version':body.version+1,'upload_id':body.upload_id,'offset_ms':body.offset_ms,'duration_ms':body.duration_ms,'configured':True,
                          'cursor_ms':0,'frontier_ms':0,'started':False,'ended':False,'possession_team':'NONE','selected_team':'HOME','direction':'L2R','rate':1})
         db.commit();return serialize(db,m,dominance_builder)
@@ -275,6 +282,7 @@ def create_router(dominance_builder=None):
         allowed_upload(db,body.upload_id,user)
         # Match a source without guessing kickoff. The operator must save the
         # actual media start frame before this game can begin recording.
+        clear_substitutions(m)
         save_metadata(m,{'version':body.version+1,'upload_id':body.upload_id,'offset_ms':0,'duration_ms':0,'configured':False,
                          'cursor_ms':0,'frontier_ms':0,'started':False,'ended':False,'possession_team':'NONE','selected_team':'HOME','direction':'L2R','rate':1})
         db.commit();return serialize(db,m,dominance_builder)
@@ -314,12 +322,35 @@ def create_router(dominance_builder=None):
             if body.kind in ('events','recording'):b.home_xg=b.away_xg=b.home_attack_score=b.away_attack_score=0
             recompute_dominance(b)
         if body.kind=='recording':
+            clear_substitutions(m)
             db.query(State).filter_by(match_id=id).delete(synchronize_session=False)
             state.update(started=False,ended=False,cursor_ms=0,frontier_ms=0)
         state.update(version=body.version+1,last_reset_request=str(body.request_id))
         state.pop('last_request',None)
         save_metadata(m,state);db.commit()
         return serialize(db,m,dominance_builder)
+
+    @router.put('/matches/{id}/substitutions')
+    def substitutions(id: UUID,body: SaveSubstitutions,user: User=Depends(require_session_user),db: Session=Depends(get_db)):
+        # Completed matches stay closed to FLA writes; only this independent log is editable.
+        m=get_match(db,id,user,True,substitutions=True);state=video_state(m)
+        current=(m.metadata_json or {}).get('fla_substitutions',{})
+        if current.get('last_request')==str(body.request_id):return {'substitutions':saved_substitutions(m)}
+        if current.get('revision',0)!=body.revision:raise HTTPException(409,'교체 기록이 다른 창에서 변경되었습니다. 새로고침 후 다시 확인하세요.')
+        upload=allowed_upload(db,state.get('upload_id'),user)
+        review_only=m.archived or state.get('ended') or not state.get('started')
+        log=validate_log(body.log,state,upload.payload.get('name',''),review_only=review_only,
+                         saved_video=(current.get('log') or {}).get('video'))
+        # A resolution can only reference an accessible snapshot of this match/video.
+        from .fpa_cv import owned
+        for event in body.log.substitutions:
+            if event.tracking:
+                snapshot=owned(db,event.tracking.snapshotId,user,'analysis_snapshot')
+                if snapshot.payload.get('matchId')!=str(m.id) or snapshot.payload.get('uploadId')!=state['upload_id']:
+                    raise HTTPException(400,'현재 경기의 분석 스냅샷에서 선수 연결을 확인하세요.')
+        # Row lock + independent revision serialize edits without renewing a FLA recording lease.
+        m.metadata_json={**(m.metadata_json or {}),'fla_substitutions':{'revision':body.revision+1,'log':log,'last_request':str(body.request_id),'upload_id':state['upload_id']}}
+        db.commit();return {'substitutions':saved_substitutions(m)}
 
     @router.post('/matches/{id}/events')
     def event(id: UUID,body: VideoEvent,user: User=Depends(require_session_user),db: Session=Depends(get_db)):

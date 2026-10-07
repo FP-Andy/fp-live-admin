@@ -188,6 +188,8 @@ class ReleaseLockRequest(BaseModel):
 
 class StateRequest(BaseModel):
     state_id: UUID
+    update_kind: Literal['sample','command'] = 'sample'
+    command_revision: int | None = Field(default=None, ge=0)
     clock_ms: int = Field(ge=0)
     running: bool
     possession_team: PossessionTeam
@@ -254,6 +256,7 @@ class MatchHighlightRequest(BaseModel):
     # 비워 보내면 서버가 마지막 저장 상태의 시계를 쓴다(마커와 같은 규칙).
     clock_ms: int | None = Field(default=None, ge=0)
     user_id: str | None = None
+    request_id: UUID | None = None
 
 
 class MatchMarkerRequest(BaseModel):

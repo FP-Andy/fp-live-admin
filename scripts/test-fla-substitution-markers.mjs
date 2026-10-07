@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {validateSubstitutionLog,saveSubstitution,buildAppearanceIntervals,exportSubstitutionLog,substitutionCsv,activePlayersAt,buildSubstitutionWindows} from '../apps/web/public/fla-video/substitution-log.mjs';
+const base={schema:'fpa-substitution-log/v2',video:{name:'test.mp4',duration:100,from:10,to:100},players:[],initialPlayers:[],substitutions:[]};
+const cue={id:'cue',time:50,team:'home',note:'교체'};
+const log=saveSubstitution(base,cue);
+assert.equal(log.players.length,0);assert.equal(log.substitutions[0].outId,undefined);
+assert.deepEqual(buildAppearanceIntervals(log),[]);
+assert.doesNotThrow(()=>substitutionCsv(log));
+assert.equal(exportSubstitutionLog(log).unresolvedCount,1);assert.equal(exportSubstitutionLog(log).trackingApplied,false);
+assert.deepEqual(buildSubstitutionWindows(log)[0],{eventId:'cue',team:'home',time:50,from:35,to:65,boundary:'camera-bottom',identityStatus:'pending',trackingApplied:false});
+assert.equal(buildSubstitutionWindows(saveSubstitution(base,{...cue,time:12}))[0].from,10);
+assert.throws(()=>saveSubstitution(log,{...cue,id:'double'}),/이미 있습니다/);
+assert.throws(()=>saveSubstitution(base,{...cue,outId:'only-out'}),/두 선수/);
+assert.throws(()=>validateSubstitutionLog({...log,schema:'fpa-substitution-log/v1'}),/두 선수/);
+const mixed={...log,players:[{id:'a',team:'home',name:'A',jersey:''},{id:'b',team:'away',name:'B',jersey:''}],initialPlayers:['a','b']};
+assert.deepEqual(buildAppearanceIntervals(mixed).map(p=>[p.id,p.from,p.to]),[['b',10,100],['a',10,50]]);
+assert(!activePlayersAt(mixed,70).has('a'));assert(activePlayersAt(mixed,70).has('b'));
+console.log('PASS: time-only markers without players, duplicate/partial-pair guards, pending search windows, legacy input validation and no invented appearance time after an unresolved substitution.');
