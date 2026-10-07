@@ -313,10 +313,15 @@ export default function ManualHighlightPage() {
       .then((data) => {
         if (!alive) return;
         setCardTemplates(data.templates);
-        // 저장된 템플릿이 사라졌으면(코드에서 뺐으면) 기본으로 돌린다.
-        setCards((prev) => (data.templates.some((t) => t.id === prev.template)
+        // 카드 넣기 드롭다운에 올릴 수 있는 세트 — 점수판 전용(퀸컵)은 뺀다.
+        const isCardSet = (t: CardTemplateSpec) => !(
+          t.has_board && !t.has_half_videos
+          && !(t.start_fields?.length) && !(t.section_fields?.length));
+        // 저장된 템플릿이 사라졌거나(코드에서 뺐으면) 점수판 전용으로 바뀌었으면 기본으로
+        // 돌린다 — 카드 드롭다운엔 없는 걸 고른 상태로 남으면 안 된다.
+        setCards((prev) => (data.templates.some((t) => t.id === prev.template && isCardSet(t))
           ? prev
-          : { ...prev, template: data.default || data.templates[0]?.id || prev.template }));
+          : { ...prev, template: data.templates.find(isCardSet)?.id || data.default || prev.template }));
       })
       .catch(() => {});
     return () => { alive = false; };
@@ -324,6 +329,20 @@ export default function ManualHighlightPage() {
 
   const cardTemplate = cardTemplates.find((t) => t.id === cards.template) ?? null;
   const cardValues = cards.values[cards.template] ?? {};
+
+  // 점수판 전용 세트 — 점수판만 있고 카드(시작·구간·전후반)가 없는 템플릿(퀸컵).
+  // 카드 넣기 드롭다운에서는 빼고, 점수판 섹션의 '점수판 디자인' 드롭다운에만 둔다.
+  const isBoardOnly = (t: CardTemplateSpec) => Boolean(
+    t.has_board && !t.has_half_videos
+    && !(t.start_fields?.length) && !(t.section_fields?.length));
+  const cardSetTemplates = cardTemplates.filter((t) => !isBoardOnly(t));
+  const boardOnlyTemplates = cardTemplates.filter(isBoardOnly);
+  // 점수판 그림을 어느 템플릿으로 그릴지. 점수판 섹션에서 **직접 고른 전용 점수판**이
+  // 가장 우선이다(카드를 안 켜도 점수판만 새길 수 있다). 안 골랐으면 카드 세트가 자기
+  // 점수판을 들고 있을 때 그걸 쓰고(SUFA), 둘 다 없으면 코드로 그리는 기본형이다.
+  const boardTemplate = (scoreboard.template
+    ? cardTemplates.find((t) => t.id === scoreboard.template) ?? null
+    : (cards.enabled && cardTemplate?.has_board ? cardTemplate : null));
 
   // 기본값 채우기 — 시안에 박혀 있던 문구('2026 SUFA ADVANCED LEAGUE 1R')는 안내글이
   // 아니라 **시작값**이어야 한다. 안내글은 안 치면 빈칸으로 나가서, 라운드 숫자만
@@ -387,6 +406,28 @@ export default function ManualHighlightPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards.template, cardTemplate?.id]);
+
+  // 점수판 **디자인**(점수판 섹션 드롭다운)으로 전용 점수판을 고르면, 그 템플릿의 기본
+  // 크기·자리로 잡는다 — 퀸컵은 25% · (80,60)px. 카드 세트의 board_defaults 와 같은
+  // 규칙인데, 이쪽은 cards.template 이 아니라 scoreboard.template 변화에 걸린다.
+  // 처음 열 때(저장본 복원 직후)는 건드리지 않는다 — 지난번 옮겨 둔 자리를 덮으면 안 된다.
+  useEffect(() => {
+    const tid = scoreboard.template || '';
+    const prev = lastBoardTemplateRef.current;
+    lastBoardTemplateRef.current = tid;
+    if (prev === null || prev === tid || !tid) return;
+    const bd = cardTemplates.find((t) => t.id === tid)?.board_defaults;
+    if (!bd) return;
+    setScoreboard((p) => ({
+      ...p,
+      sizePct: bd.size_pct ?? p.sizePct,
+      // 픽셀 좌표로 잡는다 — 적어 넣은 값이 비율보다 우선이라 그대로 보인다.
+      posPxX: bd.pos_px_x ?? p.posPxX,
+      posPxY: bd.pos_px_y ?? p.posPxY,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoreboard.template, cardTemplates]);
+
   const setCardValue = (fieldId: string, value: string) => setCards((prev) => ({
     ...prev,
     values: {
@@ -499,6 +540,7 @@ export default function ManualHighlightPage() {
   const [boardPreviewUrl, setBoardPreviewUrl] = useState('');
   // 직전에 골라져 있던 템플릿 — 세트 기본 자리는 '갈아탄 순간' 에만 적용한다.
   const lastTemplateRef = useRef<string | null>(null);
+  const lastBoardTemplateRef = useRef<string | null>(null);
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
   // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 신청 태깅과 통일).
@@ -1006,9 +1048,9 @@ export default function ManualHighlightPage() {
   // 세트 점수판 미리보기. 화면에 코드로 그린 판을 두면 세트를 골라도 옛 판이 보여서
   // '점수판이 템플릿에 안 물렸다' 로 읽힌다 — 실제로 그렇게 읽혔다. 서버가 합치기와
   // 같은 함수(render_board)로 그린 그림을 받아 보여 준다.
-  const hasSetBoard = Boolean(cards.enabled && cardTemplate?.has_board);
+  const hasSetBoard = Boolean(boardTemplate);
   useEffect(() => {
-    if (!hasSetBoard || !scoreboard.enabled) {
+    if (!hasSetBoard || !scoreboard.enabled || !boardTemplate) {
       setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
       return undefined;
     }
@@ -1020,7 +1062,7 @@ export default function ManualHighlightPage() {
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            template: cards.template, kind: 'board', width: 960,
+            template: boardTemplate.id, kind: 'board', width: 960,
             values: {
               round_label: scoreboard.roundLabel || '',
               home_name: scoreboard.homeName, away_name: scoreboard.awayName,
@@ -1038,7 +1080,7 @@ export default function ManualHighlightPage() {
       }
     }, 400);
     return () => { alive = false; clearTimeout(timer); };
-  }, [hasSetBoard, scoreboard.enabled, cards.template, scoreboard.roundLabel,
+  }, [hasSetBoard, scoreboard.enabled, boardTemplate?.id, scoreboard.roundLabel,
       scoreboard.homeName, scoreboard.awayName, scoreboard.homeColor,
       scoreboard.awayColor, finalScore]);
 
@@ -1388,6 +1430,9 @@ export default function ManualHighlightPage() {
             name_size_pct: scoreboard.nameSizePct,
             // 대회 세트 점수판의 맨 윗줄. 기본 점수판은 이 값을 쓰지 않는다.
             round_label: scoreboard.roundLabel || '',
+            // 점수판 전용 템플릿(카드와 별개로 고른 디자인). 서버가 이걸로 점수판을
+            // 그린다 — 비어 있으면 카드 세트 점수판이나 기본형으로 떨어진다.
+            template: scoreboard.template || '',
             // 적어 넣은 픽셀 좌표. 없으면 null 이고 그때는 비율을 쓴다.
             pos_px_x: scoreboard.posPxX ?? null,
             pos_px_y: scoreboard.posPxY ?? null,
@@ -1849,7 +1894,7 @@ export default function ManualHighlightPage() {
                       onChange={(e) => setCards((p) => ({ ...p, template: e.target.value }))}
                       style={{ ...smallBtn, padding: '3px 6px', fontSize: 12 }}
                     >
-                      {cardTemplates.map((t) => (
+                      {cardSetTemplates.map((t) => (
                         <option key={t.id} value={t.id}>{t.name}</option>
                       ))}
                     </select>
@@ -2245,9 +2290,33 @@ export default function ManualHighlightPage() {
                 )}
               </div>
 
-              {/* 대회·라운드 — 대회 세트 점수판이 맨 위에 그린다. 세트를 안 고르면
-                  기본 점수판이 이 값을 쓰지 않으므로 그때는 보여 주지 않는다. */}
-              {scoreboard.enabled && cardTemplate?.has_board ? (
+              {/* 점수판 디자인 — 카드 세트와 **따로** 고르는 전용 점수판(퀸컵처럼 카드
+                  없이 점수판만 있는 것). '기본형'은 코드로 그리는 판이거나, 카드 세트를
+                  골랐으면 그 세트의 점수판을 따른다. 전용 점수판을 고르면 카드를 안 켜도
+                  그 디자인으로 새긴다. */}
+              {scoreboard.enabled && boardOnlyTemplates.length ? (
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap',
+                }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>점수판 디자인</span>
+                  <select
+                    value={scoreboard.template || ''}
+                    onChange={(e) => setScoreboard((p) => ({ ...p, template: e.target.value }))}
+                    style={{ ...smallBtn, padding: '3px 6px', fontSize: 12 }}
+                  >
+                    <option value="">기본형{cards.enabled && cardTemplate?.has_board ? ' (세트 점수판 따름)' : ''}</option>
+                    {boardOnlyTemplates.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {/* 대회·라운드 — 점수판에 라운드 자리(round_label)가 있는 세트만 보여 준다.
+                  기본형(코드 점수판)·퀸컵처럼 그 자리가 없는 점수판에서는 숨긴다 — 떠
+                  있어도 그릴 자리가 없어 아무 효과가 없다. */}
+              {scoreboard.enabled && boardTemplate
+                && (boardTemplate.board_fields || []).some((f) => f.id === 'round_label') ? (
                 <label style={{
                   display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap',
                 }}>

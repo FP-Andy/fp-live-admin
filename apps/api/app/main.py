@@ -10142,6 +10142,11 @@ def merge_manual_job(
             "enabled": True,
             "home_name": str(scoreboard.get("home_name") or "").strip()[:20],
             "away_name": str(scoreboard.get("away_name") or "").strip()[:20],
+            # 점수판 전용 템플릿(점수판 섹션에서 고른 디자인 — 퀸컵처럼 카드와 별개). 이게
+            # 있으면 서버가 이 템플릿으로 점수판을 그린다(카드 세트와 무관). 비면 종전대로.
+            "template": str(scoreboard.get("template") or "").strip()[:64],
+            # 대회 세트 점수판 맨 윗줄(round_label 자리가 있는 템플릿만 쓴다).
+            "round_label": str(scoreboard.get("round_label") or "").strip()[:48],
             "home_color": _color("home_color", "#FF7400"),
             "away_color": _color("away_color", "#0000FF"),
             "start_home": _score("start_home"),

@@ -1709,12 +1709,21 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         sb_dir = work / "sb"
         sb_cache: dict[tuple[int, int], Path] = {}
         sb_logo: Path | None = None
-        # 대회 세트가 자기 점수판 그림을 들고 있으면 그걸 쓴다. 없으면 코드로 그린다.
+        # 점수판 그림을 어느 템플릿으로 그릴지 정한다.
         sb_template = None
-        if sb and cards_on and template is not None and template.has_board:
-            sb_template = template
         if sb:
             sb_cfg, sb_pre, sb_post, sb_goal = sb
+            # ① 점수판 섹션에서 **직접 고른 전용 점수판**(퀸컵처럼 카드 없이 점수판만
+            #    있는 세트)이 가장 우선이다 — 카드를 안 켜도 점수판만 새길 수 있다.
+            board_tid = str(sb_cfg.get("template") or "").strip()
+            if board_tid:
+                cand = card_store.resolve(db, board_tid)
+                if cand.has_board:
+                    sb_template = cand
+            # ② 안 골랐으면 카드 세트가 자기 점수판을 들고 있을 때 그걸 쓴다(SUFA).
+            #    둘 다 없으면 아래에서 코드로 기본 점수판을 그린다.
+            if sb_template is None and cards_on and template is not None and template.has_board:
+                sb_template = template
             sb_logo = _decode_logo(sb_cfg.get("logo_url"), sb_dir)
             # 로고가 있으면 판보다 세로가 길다 — 그 높이로 자리를 잡아야 위쪽에 붙였을 때
             # 로고가 화면 밖으로 잘리지 않는다.
@@ -1902,14 +1911,22 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 효과 영상 세트에서도 구간 카드를 굽기는 한다 — 타임라인이 'T 자리' 를
             # 이 카드의 존재로 알아내기 때문이다. 안 구우면 후반 영상 자리도 사라진다
             # (한 번 그렇게 깨뜨렸다). 카드 자체는 아래에서 타임라인에 넣지 않는다.
-            for slot, label in section_at.items():
-                # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
-                text_fields = [f for f in template.fields("section") if f.kind == "text"]
-                values = {text_fields[0].id: label} if text_fields else {}
-                section_card[slot] = render_card_file(
-                    card_dir / f"section_{slot:03d}.png",
-                    render_card(template, "section", iw, ih, values=values, color=card_color),
-                )
+            #
+            # 다만 **점수판 전용 세트**(구간 카드 항목도 전후반 효과도 없는 것 — 퀸컵)는
+            # T 자리에 넣을 것이 아무것도 없다. 그런 세트는 굽지 않는다 — 구워 두면 빈
+            # 전체화면 카드가 T 마다 끼어 점수판만 얹으려던 게 깨진다. 구간 카드가 있거나
+            # (SUFA·파인플레이) 전후반 효과가 있는 세트는 종전대로 굽는다.
+            if (template.fields("section")
+                    or template.first_half_video or template.first_half_image
+                    or template.second_half_video or template.second_half_image):
+                for slot, label in section_at.items():
+                    # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
+                    text_fields = [f for f in template.fields("section") if f.kind == "text"]
+                    values = {text_fields[0].id: label} if text_fields else {}
+                    section_card[slot] = render_card_file(
+                        card_dir / f"section_{slot:03d}.png",
+                        render_card(template, "section", iw, ih, values=values, color=card_color),
+                    )
 
         # ── 합본에 놓일 조각들을 먼저 늘어놓는다 ─────────────────────────
         # 대회 세트가 들고 있는 전후반 효과 영상. 글자를 얹지 않고 그대로 끼운다.
