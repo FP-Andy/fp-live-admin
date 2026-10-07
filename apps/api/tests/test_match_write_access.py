@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 from app import main, auth
 from app.auth_security import fingerprint, hash_secret
 from app.db import Base, SessionLocal, engine
-from app.models import AdminAccount, AuthSession, User, OperatorAccessPolicy, Match, State, Event, MatchMarker, MatchHighlight, Outbox, AuditLog
+from app.models import AdminAccount, AuthSession, User, OperatorAccessPolicy, Match, State, Event, MatchMarker, MatchHighlight, Outbox, AuditLog, PossessionSegment
 
 
 @compiles(JSONB, "sqlite")
@@ -283,6 +283,42 @@ class MatchWriteAccess(unittest.TestCase):
         self.assertEqual(reset.json()['state']['clock_ms'],0)
         self.assertEqual(reset.json()['command_revision'],4)
         self.assertEqual(client.post(path,json=self.state()).status_code,428)
+
+    def test_football_futsal_live_controls_accumulate_possession_without_stopping(self):
+        for mid, sport in ((self.mid, 'FOOTBALL'), (self.other, 'FUTSAL')):
+            with self.subTest(sport=sport):
+                with SessionLocal() as db:
+                    match = db.get(Match, mid)
+                    match.sport = sport
+                    match.operator_id = 'owner'
+                    db.commit()
+                path = f'/api/matches/{mid}'
+                client = self.clients['owner']
+                revision = 0
+                for clock, team, direction, running in [(1000,'HOME','L2R',True), (4000,'AWAY','L2R',True),
+                        (6000,'AWAY','R2L',True), (9000,'HOME','R2L',True), (12000,'NONE','R2L',True), (20000,'NONE','R2L',False)]:
+                    body = {**self.state(), 'clock_ms':clock, 'running':running, 'possession_team':team,
+                            'selected_team':'AWAY' if team == 'AWAY' else 'HOME', 'attack_lr':direction,
+                            'command_revision':revision, 'update_kind':'command'}
+                    response = client.post(path+'/state', json=body)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    revision = response.json()['command_revision']
+                    self.assertEqual(response.json()['state']['running'], running)
+                    self.assertEqual(response.json()['state']['clock_ms'], clock)
+                    if clock == 6000:
+                        for suffix, event in [('/events/attack_lane', {'lane':'LEFT','clock_ms':6500}),
+                                              ('/events/xg', {'xg':.2,'shot_x':40,'shot_y':10,'clock_ms':7000})]:
+                            response = client.post(path+suffix, json={'event_id':str(uuid4()),'team':'AWAY',**event})
+                            self.assertEqual(response.status_code, 200, response.text)
+                            with SessionLocal() as db:
+                                self.assertTrue(main._latest_state(mid, db).running)
+                        sample = {**body,'state_id':str(uuid4()),'command_revision':revision,'update_kind':'sample','clock_ms':8000}
+                        self.assertEqual(client.post(path+'/state',json=sample).status_code, 200)
+                with SessionLocal() as db:
+                    segments = db.query(PossessionSegment).filter_by(match_id=mid).all()
+                    self.assertEqual(main._accumulate_possession_ms(segments, 20000), (6000, 5000))
+                    self.assertTrue(all(segment.end_ms is not None for segment in segments))
+                    self.assertFalse(main._latest_state(mid, db).running)
 
     def test_real_cors_middleware_and_routes(self):
         response = self.clients["anonymous"].options(self.url + "/state", headers={
