@@ -552,6 +552,8 @@ export default function ManualHighlightPage() {
 
   const [padBefore, setPadBefore] = useState(10);
   const [padAfter, setPadAfter] = useState(3);
+  // 클립↔클립 전환(디졸브 0.2초). 켜면 장면이 부드럽게 넘어가고, 끄면 하드컷이다.
+  const [clipTransition, setClipTransition] = useState(true);
   const [status, setStatus] = useState('');
   const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saved' | 'partial' | 'failed'>('idle');
   const [loadedDraftKey, setLoadedDraftKey] = useState('');
@@ -709,8 +711,8 @@ export default function ManualHighlightPage() {
     if (introUrlRef.current) URL.revokeObjectURL(introUrlRef.current);
   }, []);
 
-  const draftWork = useMemo<SavedWork>(() => ({ tags, padBefore, padAfter, scoreboard, cards, watermark }),
-    [tags, padBefore, padAfter, scoreboard, cards, watermark]);
+  const draftWork = useMemo<SavedWork>(() => ({ tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition }),
+    [tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition]);
 
   const applyDraft = (saved: SavedWork) => {
     setTags(saved.tags);
@@ -719,6 +721,7 @@ export default function ManualHighlightPage() {
     setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
     setCards({ ...DEFAULT_CARDS, ...saved.cards });
     setWatermark({ ...DEFAULT_WATERMARK, ...saved.watermark });
+    setClipTransition(saved.clipTransition ?? true);
     setClips([]);
     setCutProgress(null);
   };
@@ -738,7 +741,7 @@ export default function ManualHighlightPage() {
         applyDraft(saved);
         setStatus(`이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore}초 / 뒤 ${saved.padAfter}초`);
       } else {
-        setTags([]);setScoreboard(DEFAULT_SCOREBOARD);setCards(DEFAULT_CARDS);setWatermark(DEFAULT_WATERMARK);setPadBefore(10);setPadAfter(3);
+        setTags([]);setScoreboard(DEFAULT_SCOREBOARD);setCards(DEFAULT_CARDS);setWatermark(DEFAULT_WATERMARK);setPadBefore(10);setPadAfter(3);setClipTransition(true);
       }
       setLegacyAvailable(!!localStorage.getItem(legacyStorageKey));
       setLoadedDraftKey(storageKey);
@@ -1411,6 +1414,8 @@ export default function ManualHighlightPage() {
       await apiJson(`/highlight/manual-jobs/${jobId}/merge`, {
         method: 'POST',
         body: JSON.stringify({
+          // 클립↔클립 전환(디졸브) 길이. 켜면 0.2초, 끄면 하드컷(0).
+          clip_xfade_sec: clipTransition ? 0.2 : 0,
           scoreboard: scoreboard.enabled ? {
             enabled: true,
             home_name: scoreboard.homeName,
@@ -1818,6 +1823,18 @@ export default function ManualHighlightPage() {
                   onChange={(e) => setPadAfter(Math.max(0, Number(e.target.value) || 0))}
                 />
                 초
+              </label>
+              {/* 클립↔클립 전환(디졸브 0.2초). 끄면 하드컷. 카드 경계 디졸브는 늘 유지된다. */}
+              <label
+                style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 4 }}
+                title="켜면 클립이 넘어갈 때 0.2초 디졸브로 부드럽게 전환됩니다. 끄면 바로 컷."
+              >
+                <input
+                  type="checkbox"
+                  checked={clipTransition}
+                  onChange={(e) => setClipTransition(e.target.checked)}
+                />
+                전환 효과
               </label>
               {tags.length ? (
                 <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>

@@ -10236,6 +10236,17 @@ def merge_manual_job(
         metadata["cards"] = _card_settings(db, cards)
         update_job(db, job_id, job_metadata=metadata)
 
+    # 클립↔클립 전환(디졸브) 길이(초). 화면 토글이 켜지면 0.1, 꺼지면 0(하드컷)으로
+    # 온다. 카드 경계 디졸브는 이 값과 무관하게 항상 유지된다.
+    xfade_raw = body.get("clip_xfade_sec") if isinstance(body, dict) else None
+    if xfade_raw is not None:
+        try:
+            metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+            metadata["clip_xfade_sec"] = max(0.0, min(2.0, float(xfade_raw)))
+            update_job(db, job_id, job_metadata=metadata)
+        except (TypeError, ValueError):
+            pass
+
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
     return {"status": "merging"}
 

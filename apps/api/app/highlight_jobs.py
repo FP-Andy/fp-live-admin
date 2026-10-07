@@ -1551,6 +1551,15 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         if not job:
             return
         metadata = dict(job.job_metadata or {})
+        # 클립↔클립 전환(디졸브) 길이. 화면 토글 값이 잡 메타에 실려 오면 그걸 쓰고,
+        # 없으면 전역 기본(env HIGHLIGHT_XFADE_SEC, 보통 0=하드컷)을 쓴다. 카드 경계
+        # 디졸브(CARD_FADE_SEC)는 이 값과 무관하게 늘 유지된다.
+        clip_xfade = XFADE_SEC
+        if metadata.get("clip_xfade_sec") is not None:
+            try:
+                clip_xfade = max(0.0, min(2.0, float(metadata["clip_xfade_sec"])))
+            except (TypeError, ValueError):
+                clip_xfade = XFADE_SEC
         clip_info = list_manual_clip_info(job_id)
         if not clip_info:
             update_job(db, job_id, status="error", error_message="합칠 클립이 없습니다.")
@@ -2019,7 +2028,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             left, right = timeline[i], timeline[i + 1]
             # 클립끼리만 하드컷. 한쪽이라도 카드·마무리 영상이면 디졸브로 잇는다.
             both_clips = left[0] == "clip" and right[0] == "clip"
-            want = XFADE_SEC if both_clips else CARD_FADE_SEC
+            want = clip_xfade if both_clips else CARD_FADE_SEC
             d = min(want, seg_len(left) / 3.0, seg_len(right) / 3.0)
             joins.append(0.0 if d <= 0.02 else d)
 

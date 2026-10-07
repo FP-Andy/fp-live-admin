@@ -48,6 +48,8 @@ export type CardSettings = {
 export type SavedWork = {
   tags: Tag[]; padBefore: number; padAfter: number;
   scoreboard?: Scoreboard; cards?: CardSettings; watermark?: Watermark;
+  /** 클립↔클립 전환(디졸브) 켬/끔. 없으면 켬으로 본다. */
+  clipTransition?: boolean;
 };
 
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -74,10 +76,13 @@ export function parseManualWork(raw: string, allowedKinds: string[]): SavedWork 
     }
     ids.add(tag.id);
   }
-  const work = { ...value, padBefore: value.padBefore ?? 10, padAfter: value.padAfter ?? 3 };
+  const work = {
+    ...value, padBefore: value.padBefore ?? 10, padAfter: value.padAfter ?? 3,
+    clipTransition: typeof value.clipTransition === 'boolean' ? value.clipTransition : true,
+  };
   if (![work.padBefore, work.padAfter].every((n) => finite(n) && n >= 0)) throw new Error('패딩 값이 올바르지 않습니다.');
   if (value.scoreboard !== undefined && !fields(value.scoreboard,
-    ['homeName', 'awayName', 'homeColor', 'awayColor', 'logoUrl', 'roundLabel'],
+    ['homeName', 'awayName', 'homeColor', 'awayColor', 'logoUrl', 'roundLabel', 'template'],
     ['startHome', 'startAway', 'sizePct', 'posX', 'posY', 'logoSizePct', 'nameSizePct'], ['enabled'], ['posPxX', 'posPxY'])) {
     throw new Error('점수판 설정이 올바르지 않습니다.');
   }
