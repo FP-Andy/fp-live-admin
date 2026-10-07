@@ -553,9 +553,15 @@ def youtube_quality_args(max_height: int | None = None) -> list[str]:
     lo = min(YT_MIN_USABLE_HEIGHT, h)
 
     def tier(extra: str) -> str:
+        # 오디오는 **항상 m4a(aac) 를 먼저** 고른다. ba 를 그냥 쓰면 opus(webm) 가
+        # 붙을 수 있는데, 그걸 mp4 로 합치면 크롬·사파리 둘 다 소리를 못 낸다 —
+        # 화면만 나오고 소리는 없다(실측: av01+opus 조합이 그랬다). 영상 코덱은
+        # av1 을 허용해도 오디오만은 브라우저가 읽는 aac 로 못 박는다. m4a 가 없는
+        # 영상이면 그제서야 아무 오디오라도 받는다(못 받는 것보다는 낫다).
         return (
             f"bv*[height<={h}]{extra}[vcodec^=avc1]+ba[ext=m4a]"
             f"/b[height<={h}]{extra}[vcodec^=avc1]"
+            f"/bv*[height<={h}]{extra}+ba[ext=m4a]"
             f"/bv*[height<={h}]{extra}+ba"
             f"/b[height<={h}]{extra}"
         )
@@ -664,6 +670,13 @@ def probe_video_info(path: Path) -> dict:
              "-of", "default=nw=1:nk=0", str(path)],
             capture_output=True, text=True, timeout=60,
         ).stdout
+        # 오디오 코덱은 따로 읽는다 — 소리가 안 나는 원인(opus in mp4)을 잡으려면
+        # 영상 코덱만으론 모자라다.
+        aout = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
     except Exception:  # noqa: BLE001 - 재는 데 실패해도 받은 건 멀쩡하다
         return {}
     # 이름으로 읽는다. 자리로 읽으면 순서가 바뀌었을 때 조용히 틀린 값을 집는다.
@@ -678,8 +691,42 @@ def probe_video_info(path: Path) -> dict:
             return None
 
     info = {"width": num("width"), "height": num("height"),
-            "codec": got.get("codec_name") or None, "bitrate": num("bit_rate")}
+            "codec": got.get("codec_name") or None, "bitrate": num("bit_rate"),
+            "audio_codec": aout.splitlines()[0] if aout else None}
     return {k: v for k, v in info.items() if v is not None}
+
+
+#: mp4 로 담았을 때 크롬·사파리가 소리를 내는 오디오 코덱. opus/vorbis 는 webm 전용이라
+#: mp4 에 넣으면 화면만 나오고 소리가 없다.
+BROWSER_SAFE_AUDIO = {"aac", "mp3", "ac3", "eac3"}
+
+
+def ensure_browser_audio(path: Path) -> bool:
+    """받은 파일의 오디오가 브라우저 비호환(opus 등)이면 그 트랙만 aac 로 바꿔 끼운다.
+
+    영상은 재인코딩하지 않는다(그대로 복사) — 소리만 문제이고, 영상까지 다시 굽는 건
+    느리고 화질을 깎는다. 새 규칙이 애초에 aac 를 받으므로 이건 **이미 받아 둔 opus
+    파일**을 위한 소급 교정이다. 교정했으면 True.
+    """
+    info = probe_video_info(path)
+    ac = str(info.get("audio_codec") or "")
+    if not ac or ac in BROWSER_SAFE_AUDIO:
+        return False
+    tmp = path.with_name(path.stem + ".aac_fix" + path.suffix)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(path),
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+             "-movflags", "+faststart", str(tmp)],
+            check=True, capture_output=True, text=True, timeout=1800,
+        )
+    except Exception:  # noqa: BLE001 - 교정 실패해도 원본은 둔다(소리만 안 날 뿐)
+        tmp.unlink(missing_ok=True)
+        logger.warning("오디오 교정 실패 %s (코덱 %s)", path, ac)
+        return False
+    tmp.replace(path)
+    logger.info("오디오를 브라우저 호환으로 교정 %s: %s → aac", path, ac)
+    return True
 
 
 def fineplay_source_dir(job_id: str) -> Path:
@@ -878,6 +925,11 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
             if fetch_warnings:
                 logger.warning("유튜브 취득 경고 %s/%s: %s",
                                job_id, video.video_id, fetch_warnings)
+            # 소리가 안 나는 조합(opus in mp4)이면 오디오만 aac 로 바꿔 끼운다.
+            # 새 규칙은 애초에 aac 를 받지만, 예전에 받아 둔 opus 파일이나 m4a 가
+            # 아예 없는 영상을 위한 안전장치다. 영상은 복사만 하므로 화질은 그대로다.
+            if dest.exists():
+                ensure_browser_audio(dest)
             # 받은 실물을 재어 남긴다. 화면이 이걸 그대로 보여 주므로 '왜 흐린가' 를
             # 파일을 직접 열어 보지 않고도 알 수 있다.
             info = probe_video_info(dest) if dest.exists() else {}
@@ -1919,14 +1971,25 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         # 하프타임은 한 경기에 한 번뿐이라, 나머지 마커는 원래대로 구간 카드가 간다.
         # 효과 영상이 없는 세트가 보통이다(파인플레이 기본). 없는 것은 조용히 넘어간다 —
         # 경고는 '세트가 들고 있다고 했는데 파일이 없을 때' 만 뜻이 있다.
-        half_first = half_second = None
+        half_first = half_second = None       # ("video", 경로, 길이, 소리) 또는 ("still", 경로)
         if cards_on and template is not None:
-            if template.first_half_video:
-                half_first = _video_segment(
-                    template_asset(template.first_half_video), "전반 효과 영상")
-            if template.second_half_video:
-                half_second = _video_segment(
-                    template_asset(template.second_half_video), "후반 효과 영상")
+            def _half(video_name: str, image_name: str, label: str):
+                """전·후반 한 쪽 — 영상이면 그대로, 그림이면 정지 카드로."""
+                if video_name:
+                    seg = _video_segment(template_asset(video_name), label)
+                    return ("video", *seg) if seg else None
+                if image_name:
+                    path = template_asset(image_name)
+                    if path is None:
+                        logger.warning("%s 그림 자산을 찾지 못했습니다", label)
+                        return None
+                    return ("still", path)
+                return None
+
+            half_first = _half(template.first_half_video, template.first_half_image,
+                               "전반 효과")
+            half_second = _half(template.second_half_video, template.second_half_image,
+                                "후반 효과")
 
         # 카드(정지화면)와 클립을 **같은 종류의 조각**으로 본다. 그래야 이음매마다
         # 페이드를 따로 정할 수 있다 — 클립끼리는 하드컷, 카드가 맞닿는 곳은 디졸브.
@@ -1938,7 +2001,11 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 카드에는 워터마크를 얹지 않는다 — 시안에 이미 'Fine Play' 가 들어 있다.
             timeline.append(("still", intro_card, intro_card_dur, False, "start"))
         if half_first is not None:
-            timeline.append(("video", half_first[0], half_first[1], half_first[2]))
+            if half_first[0] == "still":
+                # 그림 효과 — 구간 카드와 같은 정지 조각. 길이도 그 설정을 따른다.
+                timeline.append(("still", half_first[1], section_card_dur, False, "half1"))
+            else:
+                timeline.append(("video", half_first[1], half_first[2], half_first[3]))
         if has_intro:
             timeline.append(("still", intro_path, intro_dur, True, "intro"))
         second_used = False
@@ -1954,7 +2021,12 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     # 후반 영상이 **전반 영상 바로 뒤**에 붙는다 — 실제로 그렇게 나갔다.
                     # 하프타임이 첫 클립보다 앞일 수는 없다.
                     if k > 0 and not second_used:
-                        timeline.append(("video", half_second[0], half_second[1], half_second[2]))
+                        if half_second[0] == "still":
+                            timeline.append(("still", half_second[1], section_card_dur,
+                                             False, "half2"))
+                        else:
+                            timeline.append(("video", half_second[1], half_second[2],
+                                             half_second[3]))
                         second_used = True
                 else:
                     timeline.append(("still", card, section_card_dur, False, f"sec{k:03d}"))
