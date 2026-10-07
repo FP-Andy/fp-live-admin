@@ -127,6 +127,7 @@ class HighlightRenderWorker:
 
 
 def render_job(queue_id):
+    from .highlight_selected_export import run_selected_export
     from .highlight_jobs import (merge_manual_clips_for_job, merge_clips_for_job,
                                  run_fineplay_produce, run_produce_job)
     with SessionLocal() as db:
@@ -135,7 +136,7 @@ def render_job(queue_id):
             raise RuntimeError('합치기 작업의 실행 권한이 없습니다.')
         kind, job_id = task.kind, task.job_id
     {'manual': merge_manual_clips_for_job, 'operator': merge_clips_for_job,
-     'fineplay': run_fineplay_produce, 'produce_s3': run_produce_job}[kind](job_id)
+     'fineplay': run_fineplay_produce, 'produce_s3': run_produce_job, 'export': run_selected_export}[kind](job_id)
 
 
 if __name__ == '__main__':
@@ -143,7 +144,7 @@ if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--job':
         render_job(int(sys.argv[2]))
     else:
-        HighlightRenderTask.__table__.create(engine, checkfirst=True)
+        # The API owns schema creation; avoid racing create_all on first deploy.
         worker = HighlightRenderWorker()
         signal.signal(signal.SIGTERM, lambda *_: worker.stop.set())
         signal.signal(signal.SIGINT, lambda *_: worker.stop.set())

@@ -125,6 +125,21 @@ class RenderQueueTests(fixture.MatchWriteAccess):
         self.submit(a);self.worker().run_one()
         with fixture.SessionLocal() as db: self.assertEqual(db.get(HighlightJob,a).status,'done')
 
+    def test_selected_clip_export_also_queues_and_freezes_sources(self):
+        a=self.new_job()
+        with fixture.SessionLocal() as db:
+            job=db.get(HighlightJob,a);job.status='done';db.commit()
+        route=f'/api/highlight/jobs/{a}/export'
+        body={'selected':['clip_001.mp4'],'order':['clip_001.mp4']}
+        first=self.client.post(route,json=body)
+        self.assertEqual(first.status_code,200,first.text)
+        self.assertFalse(first.json()['export_ready'])
+        self.assertEqual(self.client.post(route,json=body).json()['render_queue']['queue_id'],first.json()['render_queue']['queue_id'])
+        self.assertEqual(self.client.delete(f'/api/highlight/jobs/{a}/clips/clip_001.mp4').status_code,409)
+        with fixture.SessionLocal() as db:
+            self.assertEqual(db.query(HighlightRenderTask).one().kind,'export')
+            self.assertEqual(db.get(HighlightJob,a).job_metadata['export_selection'],['clip_001.mp4'])
+
     def test_interrupted_render_recovers_once_before_waiting(self):
         a,b=self.new_job(),self.new_job();self.submit(a);self.submit(b)
         def interrupt(*args): raise RenderInterrupted()

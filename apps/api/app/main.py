@@ -10117,10 +10117,12 @@ def merge_manual_job(
         return {"status": job.status, "render_queue": describe(db, existing)}
     if job.status in ("merging", "processing"):
         raise HTTPException(409, "기존 합치기가 진행 중입니다.")
-    if not list_manual_clip_info(job_id):
+    clip_info = list_manual_clip_info(job_id)
+    if not clip_info:
         raise HTTPException(status_code=409, detail="합칠 클립이 없습니다.")
 
-    metadata = dict(job.job_metadata or {})
+    metadata = {**(job.job_metadata or {}), "clip_info": clip_info,
+                "clips": [clip["name"] for clip in clip_info]}
     for key in ("scoreboard", "cards", "watermark"):
         if isinstance(body.get(key), dict) and not body[key].get("enabled"):
             metadata.pop(key, None)
@@ -15177,6 +15179,8 @@ def delete_highlight_clip(
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    from .highlight_render_queue import ensure_editable
+    ensure_editable(db, job)
     try:
         clip_path = safe_clip_path(job_id, clip_name)
     except ValueError as exc:
@@ -15202,10 +15206,15 @@ def export_highlight_job(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
+    from .highlight_render_queue import active_task, describe, enqueue, lock_job
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status != "done":
+    job = lock_job(db, job_id)
+    existing = active_task(db, job_id)
+    if existing:
+        return {"ok": True, "export_ready": False, "render_queue": describe(db, existing)}
+    if job.status != "done" and not (job.status == "error" and (job.job_metadata or {}).get("export_selection")):
         raise HTTPException(status_code=409, detail="Job is not completed yet")
 
     selected = body.get("selected", [])
@@ -15231,32 +15240,9 @@ def export_highlight_job(
     if not clip_paths:
         raise HTTPException(status_code=400, detail="None of the selected clips exist")
 
-    export_path = exports_dir() / f"{job_id}_export.mp4"
-    clips: list = []
-    merged = None
-    try:
-        from moviepy import VideoFileClip, concatenate_videoclips
-
-        clips = [VideoFileClip(path) for path in clip_paths]
-        merged = concatenate_videoclips(clips)
-        merged.write_videofile(
-            str(export_path),
-            codec="libx264",
-            audio_codec="aac",
-            temp_audiofile=f"temp-audio-export-{job_id}.m4a",
-            remove_temp=True,
-            logger=None,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
-    finally:
-        if merged is not None:
-            merged.close()
-        for clip in clips:
-            clip.close()
-
-    update_job(db, job_id, export_path=str(export_path))
-    return {"ok": True, "export_ready": True}
+    job.job_metadata = {**(job.job_metadata or {}), "export_selection": [Path(path).name for path in clip_paths]}
+    queued = enqueue(db, job_id, "export")
+    return {"ok": True, "export_ready": False, "status": "render_queued", "render_queue": queued}
 
 
 @app.get("/api/highlight/jobs/{job_id}/export/download")

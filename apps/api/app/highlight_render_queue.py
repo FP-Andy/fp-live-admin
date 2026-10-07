@@ -10,7 +10,7 @@ from .models import HighlightJob
 
 LOCK_ID = 734210924
 ACTIVE = ('queued', 'running')
-KINDS = {'manual': 'manual', 'fineplay': 'fineplay', 'produce_s3': 'produce_s3', 'operator': 'operator'}
+KINDS = {'manual': 'manual', 'fineplay': 'fineplay', 'produce_s3': 'produce_s3', 'operator': 'operator', 'export': None}
 
 
 class HighlightRenderTask(Base):
@@ -67,7 +67,7 @@ def enqueue(db, job_id, kind):
     # before populate_existing refreshes the row under its transaction lock.
     db.flush()
     job = lock_job(db, job_id)
-    if kind not in KINDS or job.mode != KINDS[kind]:
+    if kind not in KINDS or (KINDS[kind] is not None and job.mode != KINDS[kind]):
         raise ValueError('작업 종류가 합치기 요청과 일치하지 않습니다.')
     existing = active_task(db, job_id)
     if existing:
