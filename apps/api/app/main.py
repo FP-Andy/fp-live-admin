@@ -10142,6 +10142,11 @@ def merge_manual_job(
             "enabled": True,
             "home_name": str(scoreboard.get("home_name") or "").strip()[:20],
             "away_name": str(scoreboard.get("away_name") or "").strip()[:20],
+            # 점수판 전용 템플릿(점수판 섹션에서 고른 디자인 — 퀸컵처럼 카드와 별개). 이게
+            # 있으면 서버가 이 템플릿으로 점수판을 그린다(카드 세트와 무관). 비면 종전대로.
+            "template": str(scoreboard.get("template") or "").strip()[:64],
+            # 대회 세트 점수판 맨 윗줄(round_label 자리가 있는 템플릿만 쓴다).
+            "round_label": str(scoreboard.get("round_label") or "").strip()[:48],
             "home_color": _color("home_color", "#FF7400"),
             "away_color": _color("away_color", "#0000FF"),
             "start_home": _score("start_home"),
@@ -10230,6 +10235,17 @@ def merge_manual_job(
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         metadata["cards"] = _card_settings(db, cards)
         update_job(db, job_id, job_metadata=metadata)
+
+    # 클립↔클립 전환(디졸브) 길이(초). 화면 토글이 켜지면 0.1, 꺼지면 0(하드컷)으로
+    # 온다. 카드 경계 디졸브는 이 값과 무관하게 항상 유지된다.
+    xfade_raw = body.get("clip_xfade_sec") if isinstance(body, dict) else None
+    if xfade_raw is not None:
+        try:
+            metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+            metadata["clip_xfade_sec"] = max(0.0, min(2.0, float(xfade_raw)))
+            update_job(db, job_id, job_metadata=metadata)
+        except (TypeError, ValueError):
+            pass
 
     background_tasks.add_task(merge_manual_clips_for_job, job_id)
     return {"status": "merging"}

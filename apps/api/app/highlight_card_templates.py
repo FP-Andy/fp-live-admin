@@ -23,6 +23,11 @@ WANTED = "WantedSans-ExtraBold.otf"
 # SUFA 시안의 실제 글꼴 — PSD 글자 레이어에서 읽었다(전부 Pretendard-Bold).
 # 무료(OFL) 배포본이라 그대로 넣었다. WantedSans 로 흉내내면 굵기가 더 나간다.
 PRETENDARD = "Pretendard-Bold.otf"
+# 퀸컵 시안 글꼴 — Figma 레이어가 Paperlogy Weight 900(Black)이다. 레포엔 최대 굵기가
+# 8ExtraBold(800)라 그걸 쓴다(900 배포본이 없다). 팀명·점수가 이 글꼴이다.
+PAPERLOGY = "Paperlogy-8ExtraBold.ttf"
+# 콜론(:)만 Figma 가 Weight 400(Regular)이다 — 숫자보다 가늘다.
+PAPERLOGY_REGULAR = "Paperlogy-4Regular.ttf"
 
 
 @dataclass(frozen=True)
@@ -415,7 +420,82 @@ SUFA_L = _sufa("L", "SUFA L리그", "#FF8F00", "#173FE3", "#9F43E6")
 SUFA_S = _sufa("S", "SUFA S리그", "#FFF000", "#173FE3", "#99001C")
 
 
-TEMPLATES: tuple[CardTemplate, ...] = (FINEPLAY, SUFA_A, SUFA_B, SUFA_L, SUFA_S)
+# ── 퀸컵 (K-WIN CUP) — 점수판만 ───────────────────────────────────────────
+#
+# 이 대회는 시작 카드·구간 카드·전후반 효과가 없다. **점수판 하나**만 영상에 얹는다.
+# 그래서 start_fields·section_fields 를 비운다 — 시작 카드는 '채운 항목이 있을 때만'
+# 서고(화면 쪽 조건), 구간 카드는 '항목도 효과도 없는 세트는 굽지 않는다'(highlight_jobs).
+# 결과적으로 전체화면 카드는 한 장도 안 들어가고 점수판만 남는다.
+#
+# 좌표·글꼴은 **Figma 시안에서 직접 읽은 값**이다. 시안 좌표(그룹 323x91.37)를 배경
+# PNG(646x183) 기준으로 2배 환산했다 — 글자 27.05pt→54, 자리도 ×2. 콜론(:)·로고는
+# 배경 PNG 에 그대로 구워 두고(고정), 팀명·점수 자리만 비워 뒀다. 좌우 팀색 바(주황·
+# 파랑)는 board_zones 로 갈아끼운다. 완성본 PNG 픽셀 측정값과도 일치했다(교차검증).
+_QUEENCUP_BOARD_FIELDS: tuple[CardField, ...] = (
+    CardField(
+        id="home_name", label="홈 팀명", kind="text",
+        box=(43.0, 89.0, 160.0, 64.0), font=PAPERLOGY, size=54, max_width=150.0,
+        color="#FFFFFF", placeholder="여주", max_len=16, ui_width=140,
+    ),
+    CardField(
+        id="home_score", label="홈 점수", kind="text",
+        box=(240.0, 89.0, 50.0, 64.0), font=PAPERLOGY, size=54,
+        color="#FFFFFF", placeholder="0", max_len=3, ui_width=70,
+    ),
+    # 콜론은 고치는 값이 아니라 **고정**이다 — default=':' 로 늘 그려지고, 화면 설정에도
+    # 안 뜬다(점수판 입력은 팀명·점수·색만 하드코딩). 두 점수 중앙(x323.5=판 가운데)에
+    # 둬서 '0 : 0' 이 좌우 대칭이 된다. 배경 PNG 에 굽지 않는 이유는 그래야 점수와 같은
+    # 기준선으로 정확히 가운데 정렬되기 때문이다(구우면 몇 px 씩 어긋났다).
+    CardField(
+        id="score_colon", label="콜론", kind="text",
+        box=(305.5, 89.0, 36.0, 64.0), font=PAPERLOGY_REGULAR, size=54,
+        color="#FFFFFF", default=":", placeholder=":", max_len=1, ui_width=40,
+    ),
+    CardField(
+        id="away_score", label="어웨이 점수", kind="text",
+        box=(357.0, 89.0, 50.0, 64.0), font=PAPERLOGY, size=54,
+        color="#FFFFFF", placeholder="0", max_len=3, ui_width=70,
+    ),
+    CardField(
+        id="away_name", label="어웨이 팀명", kind="text",
+        box=(443.0, 89.0, 160.0, 64.0), font=PAPERLOGY, size=54, max_width=150.0,
+        color="#FFFFFF", placeholder="목포", max_len=16, ui_width=140,
+    ),
+)
+
+QUEENCUP = CardTemplate(
+    id="queencup",
+    name="퀸컵",
+    design=(646, 183),
+    base_color="#CE4176",
+    # 시작·구간 카드는 없다 — 배경은 둬야 하는 필수 항목이라 점수판 그림을 가리키되,
+    # 항목을 비워 실제로는 렌더되지 않는다.
+    start_bg="queencup-board.png",
+    section_bg="queencup-board.png",
+    start_fields=(),
+    section_fields=(),
+    board_bg="queencup-board.png",
+    board_design=(646, 183),
+    # 마무리 영상(파인플레이 브랜딩)도 기본으로 끈다.
+    outro_default=False,
+    # 점수판 기본 크기·자리(운영 지정). 점수판 디자인으로 퀸컵을 고르는 순간 이 값으로
+    # 잡히고, 그 뒤엔 자유롭게 옮길 수 있다. 자리는 영상 픽셀 좌표(x=80, y=50)다.
+    board_defaults={"size_pct": 25, "pos_px_x": 80, "pos_px_y": 50},
+    board_fields=_QUEENCUP_BOARD_FIELDS,
+    board_zones=(
+        ColorZone(id="home_color", label="홈 팀 색", box=(0.0, 0.0, 24.0, 183.0),
+                  source="#FF7400"),
+        ColorZone(id="away_color", label="어웨이 팀 색", box=(622.0, 0.0, 24.0, 183.0),
+                  source="#0004FF"),
+    ),
+    note="점수판만 있는 세트입니다. 팀명·점수·팀 색만 바꾸면 됩니다"
+         " (시작·구간·전후반 카드 없음).",
+)
+
+
+TEMPLATES: tuple[CardTemplate, ...] = (
+    FINEPLAY, SUFA_A, SUFA_B, SUFA_L, SUFA_S, QUEENCUP,
+)
 DEFAULT_TEMPLATE_ID = FINEPLAY.id
 
 _BY_ID = {template.id: template for template in TEMPLATES}

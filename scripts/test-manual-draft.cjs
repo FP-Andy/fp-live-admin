@@ -9,6 +9,7 @@ Function('exports', 'module', code)(mod.exports, mod);
 const { parseManualWork, storeManualWork } = mod.exports;
 const allowed = ['home_goal', 'section'];
 const original = { tags: [{ id: 'tag-one', t: 25, before: 3, after: 4, kind: 'home_goal' }], padBefore: 10, padAfter: 3,
+  clipTransition: true,
   scoreboard: { homeName: '홈', startHome: 1, logoUrl: 'data:image/png;base64,synthetic' },
   cards: { values: { cup: { title: '대회', logo: 'data:image/png;base64,synthetic' } }, boxes: { cup: { title: { x: 3, y: 5, scale: 80 } } }, colors: { cup: '#ffffff' } },
   watermark: { enabled: true, opacity: .6 } };
