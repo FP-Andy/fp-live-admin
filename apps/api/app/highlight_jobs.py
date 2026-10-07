@@ -1889,10 +1889,12 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             return ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(clips_to_use[k][0])]
 
         def silence(dur: float) -> list[str]:
-            """무음 트랙 입력. 필요한 길이보다 넉넉히 만들고 -shortest 로 영상에 맞춰 자른다.
+            """무음 입력은 넉넉히 주고 각 조각의 출력 -t로 정확한 길이에 맞춘다.
 
             딱 맞는 길이로 주면 영상 필터와 같은 그래프에 있을 때 오디오 쪽이 한 프레임도
             내지 못한 채 EOF 로 끝나 "Could not open encoder before EOF" 로 죽는다.
+            -shortest는 기본 10초 분량의 프레임을 버퍼링할 수 있어 4K에서 메모리를
+            과도하게 쓴다. 조각 길이는 이미 알므로 스트림 종료를 기다릴 필요가 없다.
             """
             return ["-f", "lavfi", "-t", f"{dur + 1.0:.3f}",
                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
@@ -2101,7 +2103,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                         vlabel = "v0"
                     args += [
                         "-filter_complex", ";".join(chains),
-                        "-map", f"[{vlabel}]", "-map", "1:a", "-shortest", *encode, str(out),
+                        "-map", f"[{vlabel}]", "-map", "1:a", "-t", f"{dur:.3f}", *encode, str(out),
                     ]
                 elif item[0] == "video":
                     # 마무리 영상 — 점수판도 워터마크도 얹지 않는다(카드와 같다).
@@ -2120,7 +2122,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     args += [
                         "-filter_complex", f"[0:v]{norm_v}[v0]",
                         "-map", "[v0]", "-map", audio_map,
-                        *([] if snd else ["-shortest"]),
+                        "-t", f"{dur:.3f}",
                         *encode, str(out),
                     ]
                 else:
@@ -2144,7 +2146,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     args += [
                         "-filter_complex", ";".join(chains),
                         "-map", f"[{vlabel}]", "-map", audio_map,
-                        *([] if has_sound[k] else ["-shortest"]),
+                        "-t", f"{dur:.3f}",
                         *encode, str(out),
                     ]
                 run_media(args, check=True, capture_output=True, text=True)
@@ -2232,7 +2234,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 )
                 args += [
                     "-filter_complex", ";".join(chains),
-                    "-map", "[vout]", "-map", "[a]", "-shortest", *encode, str(out),
+                    "-map", "[vout]", "-map", "[a]", "-t", f"{d:.3f}", *encode, str(out),
                 ]
                 run_media(args, check=True, capture_output=True, text=True)
                 pieces.append(out)

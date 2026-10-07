@@ -220,6 +220,47 @@ class RenderQueueTests(fixture.MatchWriteAccess):
         self.assertEqual(probe['streams'][0]['codec_name'],'h264')
         self.assertEqual(probe['streams'][0]['pix_fmt'],'yuv420p')
 
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'requires media tools')
+    def test_native_merge_preserves_timing_with_stills_scoreboard_audio_and_fades(self):
+        from PIL import Image
+        from types import SimpleNamespace
+        a = self.new_job()
+        response = self.client.post(f'/api/highlight/manual-jobs/{a}/clips',
+            files={'clip':('clip.mp4',b'synthetic','video/mp4')},
+            data={'index':'2','requested_start':'1','requested_end':'3','kind':'home_goal'})
+        self.assertEqual(response.status_code,200,response.text)
+        folder = jobs.clips_dir(a)
+        for index, color in [(1,'red'),(2,'blue')]:
+            args = ['ffmpeg','-y','-v','error','-f','lavfi','-i',f'color={color}:s=512x288:r=25:d=4']
+            if index == 2: args += ['-f','lavfi','-i','sine=frequency=440:duration=4']
+            subprocess.run([*args,'-c:v','libx264','-threads','1','-pix_fmt','yuv420p',
+                str(folder/f'clip_{index:03d}.mp4')],check=True)
+        Image.new('RGB',(512,288),'green').save(folder/'intro.png')
+        template = SimpleNamespace(fields=lambda _:[], has_board=False, first_half_video='',
+            first_half_image='',second_half_video='',second_half_image='',outro_video='outro.mp4')
+        with fixture.SessionLocal() as db:
+            job = db.get(HighlightJob,a)
+            job.job_metadata = {**job.job_metadata,'sport':'FUTSAL','intro_image':'intro.png','intro_duration':1.8,
+                'clip_xfade_sec':.2,'scoreboard':{'enabled':True,'home_name':'HOME','away_name':'AWAY'},
+                'cards':{'enabled':True,'outro':{'enabled':True}}}
+            db.commit()
+        with patch.object(jobs.card_store,'resolve',return_value=template), \
+             patch.object(jobs,'template_asset',return_value=folder/'clip_001.mp4'):
+            jobs.merge_manual_clips_for_job(a)
+        with fixture.SessionLocal() as db:
+            job = db.get(HighlightJob,a)
+            self.assertEqual(job.status,'done',job.error_message)
+            output = job.export_path
+        probe = json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',output]))
+        # Intro (1.8), two clips (2+2), outro (4); overlap at three boundaries.
+        expected = 9.8 - 2*min(jobs.CARD_FADE_SEC,.6) - .2
+        self.assertAlmostEqual(float(probe['format']['duration']),expected,delta=.25)
+        video = next(s for s in probe['streams'] if s['codec_type']=='video')
+        audio = next(s for s in probe['streams'] if s['codec_type']=='audio')
+        self.assertEqual((video['width'],video['height'],video['pix_fmt']),(512,288,'yuv420p'))
+        self.assertEqual(audio['codec_name'],'aac')
+        self.assertAlmostEqual(float(audio['duration']),float(video['duration']),delta=.15)
+
     @unittest.skipUnless(fixture.QA_DATABASE,'requires isolated PostgreSQL')
     def test_actual_postgres_simultaneous_submit_and_worker_locks(self):
         from concurrent.futures import ThreadPoolExecutor
