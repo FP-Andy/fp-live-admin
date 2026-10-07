@@ -20,6 +20,8 @@ jobs:
           cache-dependency-path: apps/api/requirements.txt
       - run: pip install -r apps/api/requirements.txt
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Validate production service configuration
+        run: docker compose -p fpc-check -f infra/app/docker-compose.yml config --quiet
       - name: Synthetic checkout restore drill
         run: python scripts/test_deploy_snapshot.py -v
       - name: Session policy and full application write routes (workers disabled)
