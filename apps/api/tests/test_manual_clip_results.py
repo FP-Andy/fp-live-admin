@@ -36,6 +36,7 @@ from app import fineplay_fpa as fpa
 from app.fineplay_plan import resolve_plan
 from app.highlight_storage import S3Storage
 from app.models import HighlightClip, HighlightClipAction, HighlightJob, Match, User, FpaSavedLog
+from app.highlight_render_queue import HighlightRenderTask
 from app.scene_motion import attach_scene_motions, scene_motion_key
 
 
@@ -83,7 +84,7 @@ class ManualClipTests(unittest.TestCase):
         event.listen(self.engine, 'connect', lambda conn, _: conn.execute('PRAGMA foreign_keys=ON'))
         self.addCleanup(self.engine.dispose)
         Base.metadata.create_all(self.engine, tables=[m.__table__ for m in
-                                 (User, Match, HighlightJob, HighlightClip, HighlightClipAction)])
+                                 (User, Match, HighlightJob, HighlightClip, HighlightClipAction, HighlightRenderTask)])
         self.Session = sessionmaker(bind=self.engine)
         self.storage = SimpleNamespace(configured=True, upload=Mock(), exists=Mock(return_value=True),
             presigned_get=Mock(side_effect=lambda key, **kw: 'https://fixture.invalid/' + key),

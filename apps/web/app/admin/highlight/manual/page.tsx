@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { createHighlightLog, readHighlightLog, logBlob, MAX_LOG_BYTES } from '../../../../lib/highlight-log';
 import { parseManualWork, storeManualWork, type SavedWork, type Tag, type TagKind, type CardSettings } from '../../../../lib/manual-draft';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
@@ -21,6 +22,7 @@ type JobStatus = {
   id: string;
   status: string;
   error_message?: string | null;
+  render_queue?: { status: string; position: number; waiting_ahead: number } | null;
   job_metadata?: { progress?: { detail?: string } | null } | null;
 };
 
@@ -175,14 +177,19 @@ const sectionNameAt = (sport: string, n: number): string => {
   return names[n] ?? `연장 ${n - names.length + 1}`;
 };
 
+const SUBSTITUTION_TAG_KIND: TagKindSpec = {
+  key: 'substitution', code: 'KeyC', letter: 'c', hangul: 'ㅊ',
+  label: '교체', badge: '교체', color: '#A78BFA', side: 'home', goal: false,
+};
+
 const kindsForSport = (sport: string): TagKindSpec[] => [
   ...(sport === 'BASKETBALL' ? BASKETBALL_TAG_KINDS : FOOTBALL_TAG_KINDS),
-  SECTION_TAG_KIND,
+  SUBSTITUTION_TAG_KIND, SECTION_TAG_KIND,
 ];
 
 /** 모든 스포츠의 종류를 합친 조회표 — 저장된 옛 태그도 읽을 수 있어야 한다. */
 const ALL_TAG_KINDS: TagKindSpec[] = [
-  ...FOOTBALL_TAG_KINDS, ...BASKETBALL_TAG_KINDS, SECTION_TAG_KIND,
+  ...FOOTBALL_TAG_KINDS, ...BASKETBALL_TAG_KINDS, SUBSTITUTION_TAG_KIND, SECTION_TAG_KIND,
 ];
 
 /** 그 종류가 클립으로 만들어지는가. 점수만 반영하는 골은 아니다. */
@@ -559,6 +566,9 @@ export default function ManualHighlightPage() {
   const [loadedDraftKey, setLoadedDraftKey] = useState('');
   const [saveAttempt, setSaveAttempt] = useState(0);
   const [recoveryMessage, setRecoveryMessage] = useState('');
+  const [logBusy, setLogBusy] = useState(false);
+  const [logImported, setLogImported] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const recoveryInputRef = useRef<HTMLInputElement | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [cutting, setCutting] = useState(false);
@@ -582,7 +592,7 @@ export default function ManualHighlightPage() {
   const [publishError, setPublishError] = useState('');
   const [doneJobId, setDoneJobId] = useState('');
   // 업로드는 브라우저(탭 유지 필요), 합치기는 서버(탭 닫아도 됨) — 단계를 나눠 바/배지에 쓴다.
-  const [publishPhase, setPublishPhase] = useState<'idle' | 'uploading' | 'merging' | 'done'>('idle');
+  const [publishPhase, setPublishPhase] = useState<'idle' | 'uploading' | 'queued' | 'merging' | 'done'>('idle');
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
   const [introFile, setIntroFile] = useState<File | null>(null);
   const [introUrl, setIntroUrl] = useState('');
@@ -640,6 +650,8 @@ export default function ManualHighlightPage() {
   useEffect(() => revoke, [revoke]);
 
   const pickFiles = async (list: FileList | null) => {
+    if (cutting || publishing || rebuilding || logBusy) return;
+    setLogImported(false);
     if ((draftSaveState === 'failed' || draftSaveState === 'partial') && !window.confirm('브라우저에 저장되지 않은 내용이 있습니다. 복구 파일을 받지 않고 영상을 바꿀까요?')) return;
     revoke();
     setTags([]);
@@ -711,10 +723,15 @@ export default function ManualHighlightPage() {
     if (introUrlRef.current) URL.revokeObjectURL(introUrlRef.current);
   }, []);
 
-  const draftWork = useMemo<SavedWork>(() => ({ tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition }),
-    [tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition]);
+  const draftWork = useMemo<SavedWork>(() => ({ tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition, introDuration, musicVolume, originalVolume }),
+    [tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition, introDuration, musicVolume, originalVolume]);
 
   const applyDraft = (saved: SavedWork) => {
+    lastTemplateRef.current = saved.cards?.template ?? DEFAULT_CARDS.template;
+    lastBoardTemplateRef.current = saved.scoreboard?.template ?? "";
+    setIntroDuration(saved.introDuration ?? 1.8);
+    setMusicVolume(saved.musicVolume ?? 80);
+    setOriginalVolume(saved.originalVolume ?? 20);
     setTags(saved.tags);
     setPadBefore(saved.padBefore);
     setPadAfter(saved.padAfter);
@@ -776,32 +793,38 @@ export default function ManualHighlightPage() {
     return () => { window.removeEventListener('beforeunload', warn); document.removeEventListener('click', leave, true); };
   }, [unsafeDraft]);
 
-  const sourceIdentity = () => sources.map((source) => ({ name: source.file.name, size: source.file.size }));
-  const exportDraft = () => {
-    const payload = { format: 'fpc-manual-draft', version: 1, ownerId:draftOwner?.id, sport, sources: sourceIdentity(), work: draftWork };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a'); link.href = url; link.download = `manual-tags-${sport.toLowerCase()}.json`; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const buildLog = () => createHighlightLog(sport, sources, draftWork, { intro: introFile, music: musicFile });
+  const exportDraft = async () => {
+    setLogBusy(true);
+    try {
+      const payload = await buildLog();
+      const url = URL.createObjectURL(logBlob(payload));
+      const link = document.createElement('a'); link.href = url;
+      link.download = `highlight-log-${sport.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.json`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setRecoveryMessage('골·하이라이트·교체 로그와 출력 설정을 JSON으로 저장했습니다. 같은 원본을 선택한 뒤 불러오면 다시 제작할 수 있습니다.');
+    } catch (error) {
+      setRecoveryMessage(error instanceof Error ? error.message : 'JSON 로그를 저장하지 못했습니다.');
+    } finally { setLogBusy(false); }
   };
   const importDraft = async (file: File | undefined) => {
-    if (!file) return;
+    if (!file || cutting || publishing || rebuilding) return;
     const expectedKey = storageKey;
+    setLogBusy(true);
     try {
-      const payload = JSON.parse(await file.text());
-      if (payload.format !== 'fpc-manual-draft' || payload.version !== 1 || payload.sport !== sport
-        || JSON.stringify(payload.sources) !== JSON.stringify(sourceIdentity())) {
-        throw new Error('종목과 원본 영상의 이름·크기·순서가 같은 복구 파일을 선택하세요.');
-      }
-      const saved = parseManualWork(JSON.stringify(payload.work), tagKinds.map((kind) => kind.key));
-      if (saved.tags.some((tag) => tag.t > duration + 0.1)) throw new Error('영상 길이를 벗어난 태그가 있습니다.');
+      if (file.size > MAX_LOG_BYTES) throw new Error('JSON 로그는 100MB까지 불러올 수 있습니다.');
+      const restored = await readHighlightLog(await file.text(), sport, sources, tagKinds.map((kind) => kind.key));
       if (currentDraftKeyRef.current !== expectedKey) return;
-      if (tags.length && !window.confirm('현재 태그와 출력 설정을 복구 파일의 내용으로 바꿀까요?')) return;
-      applyDraft(saved);
+      if (tags.length && !window.confirm('현재 태그와 출력 설정을 JSON 로그의 내용으로 바꿀까요?')) return;
+      applyDraft(restored.work);
+      pickIntro(restored.intro);
+      setMusicFile(restored.music);
       setLoadedDraftKey(storageKey);
-      setRecoveryMessage(`복구 파일에서 태그 ${saved.tags.length}개와 출력 설정을 불러왔습니다.`);
+      setLogImported(true);
+      setRecoveryMessage(`JSON 로그에서 태그 ${restored.work.tags.length}개를 불러왔습니다. 구간을 확인한 뒤 ‘로그로 하이라이트 제작’을 누르세요.${restored.legacy ? ' 이전 복구 파일의 인트로·음악은 다시 선택해 주세요.' : ''}`);
     } catch (error) {
-      if (currentDraftKeyRef.current === expectedKey) setRecoveryMessage(error instanceof Error ? error.message : '복구 파일을 읽지 못했습니다.');
-    }
+      if (currentDraftKeyRef.current === expectedKey) setRecoveryMessage(error instanceof Error ? error.message : 'JSON 로그를 읽지 못했습니다.');
+    } finally { setLogBusy(false); }
   };
   const currentDraftKeyRef = useRef(storageKey);
   currentDraftKeyRef.current = storageKey;
@@ -1197,14 +1220,14 @@ export default function ManualHighlightPage() {
   // 추출이나 업로드 도중에 창을 닫으면 작업이 끊기고, 업로드 중이었다면 서버에
   // 클립이 일부만 올라간 잡이 남는다. 최소한 경고는 띄운다.
   useEffect(() => {
-    if (!cutting && !publishing) return undefined;
+    if (!cutting && publishPhase !== 'uploading') return undefined;
     const warn = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [cutting, publishing]);
+  }, [cutting, publishPhase]);
 
   // 클립이 되는 태그만 센다. **점수만 올리는 태그와 구간 표시는 장면을 만들지 않으므로
   // 길이에 들어가지 않는다** — 전부 세면 농구처럼 점수 태그가 잦은 경기에서 실제보다
@@ -1298,6 +1321,7 @@ export default function ManualHighlightPage() {
       if (clamped) {
         setCutError(`알림: ${clamped}개 클립은 원본 경계에 걸려 그 영상 끝(또는 처음)까지만 잘랐습니다.`);
       }
+      return { clips: made, tagIndex: fromTag };
     } catch (err) {
       setCutError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1307,14 +1331,17 @@ export default function ManualHighlightPage() {
 
   const clipsTotalBytes = clips.reduce((sum, c) => sum + (c.blob?.size ?? 0), 0);
 
-  const publish = async () => {
-    if (!sources.length || !clips.length || publishing) return;
+  const publish = async (prepared?: { clips: CutClip[]; tagIndex: number[] }) => {
+    const batchClips = prepared?.clips ?? clips;
+    const batchTagIndex = prepared?.tagIndex ?? clipTagIndex;
+    if (!sources.length || !batchClips.length || publishing) return;
     setPublishing(true);
     setPublishError('');
     setDoneJobId('');
     setPublishPhase('uploading');
-    setUploadProgress({ done: 0, total: clips.length });
+    setUploadProgress({ done: 0, total: batchClips.length });
     try {
+      const savedLog = logBlob(await buildLog());
       const { job_id: jobId } = await apiJson<{ job_id: string }>('/highlight/manual-jobs', {
         method: 'POST',
         body: JSON.stringify({
@@ -1326,10 +1353,17 @@ export default function ManualHighlightPage() {
         }),
       });
 
+      const logForm = new FormData();
+      logForm.append('file', savedLog, 'highlight-log.json');
+      const logResponse = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/log`, {
+        method: 'PUT', credentials: 'include', body: logForm,
+      });
+      if (!logResponse.ok) throw new Error(await logResponse.text() || 'JSON 로그 보관 실패');
+
       // 병렬 업로드 — 클립을 하나씩 줄세우지 않고 여러 개를 동시에 올려 네트워크 왕복
       // 지연이 겹치게 한다(특히 서버가 멀 때 큼). 다만 서버(t3.medium)를 독점하지 않도록
       // 동시 4개로 제한한다. 파일명은 clip.index 로 고정돼 서버에서 이름이 겹치지 않는다.
-      setPublishMsg(`클립 업로드 0 / ${clips.length}`);
+      setPublishMsg(`클립 업로드 0 / ${batchClips.length}`);
       const UPLOAD_CONCURRENCY = 4;
       let uploaded = 0;
       let cursor = 0;
@@ -1342,7 +1376,7 @@ export default function ManualHighlightPage() {
         form.append('index', String(clip.index));
         // 점수판용. '점수만 반영' 태그는 클립이 되지 않으므로 clip.index 와 tags 의
         // 자리가 어긋난다 — 자를 때 남겨 둔 색인으로 되찾는다.
-        const tagIdx = clipTagIndex[clip.index - 1];
+        const tagIdx = batchTagIndex[clip.index - 1];
         const tag = tagIdx === undefined ? undefined : tags[tagIdx];
         if (tag) {
           if (tag.kind) form.append('kind', tag.kind);
@@ -1364,8 +1398,8 @@ export default function ManualHighlightPage() {
         });
         if (!res.ok) throw new Error(await res.text() || `클립 ${clip.index} 업로드 실패`);
         uploaded += 1;
-        setUploadProgress({ done: uploaded, total: clips.length });
-        setPublishMsg(`클립 업로드 ${uploaded} / ${clips.length}`);
+        setUploadProgress({ done: uploaded, total: batchClips.length });
+        setPublishMsg(`클립 업로드 ${uploaded} / ${batchClips.length}`);
       };
       // 워커 4개가 공용 커서에서 다음 클립을 집어 처리한다. 하나라도 실패하면
       // Promise.all 이 거부되어 바깥 try/catch 로 잡힌다.
@@ -1373,12 +1407,12 @@ export default function ManualHighlightPage() {
         for (;;) {
           const i = cursor;
           cursor += 1;
-          if (i >= clips.length) return;
-          await uploadOne(clips[i]);
+          if (i >= batchClips.length) return;
+          await uploadOne(batchClips[i]);
         }
       };
       await Promise.all(
-        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, clips.length) }, runWorker),
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, batchClips.length) }, runWorker),
       );
 
       // 인트로 사진이 있으면 클립을 다 올린 뒤, 합치기 직전에 보낸다.
@@ -1409,9 +1443,8 @@ export default function ManualHighlightPage() {
       }
 
       // 여기서부터는 서버 몫 — 탭을 닫아도 합치기는 끝나고 "수동 결과물"에 뜬다.
-      setPublishPhase('merging');
-      setPublishMsg('서버에서 다듬고 합치는 중...');
-      await apiJson(`/highlight/manual-jobs/${jobId}/merge`, {
+      setPublishMsg('합치기 대기열에 등록 중...');
+      const accepted = await apiJson<{ render_queue?: { position: number } }>(`/highlight/manual-jobs/${jobId}/merge`, {
         method: 'POST',
         body: JSON.stringify({
           // 클립↔클립 전환(디졸브) 길이. 켜면 0.2초, 끄면 하드컷(0).
@@ -1487,6 +1520,9 @@ export default function ManualHighlightPage() {
         }),
       });
 
+      setPublishPhase('queued');
+      setPublishMsg(`합치기 대기 ${accepted.render_queue?.position ?? 1}번째 — 탭을 닫아도 진행됩니다.`);
+
       // 합치기는 재인코딩이라 몇 초 걸린다. 끝날 때까지 상태를 확인한다.
       for (;;) {
         await new Promise((r) => setTimeout(r, 2000));
@@ -1498,7 +1534,10 @@ export default function ManualHighlightPage() {
           break;
         }
         if (job.status === 'error') throw new Error(job.error_message || '합치기 실패');
-        setPublishMsg(job.job_metadata?.progress?.detail || '처리 중...');
+        const waiting = job.status === 'render_queued';
+        setPublishPhase(waiting ? 'queued' : 'merging');
+        setPublishMsg(waiting ? `합치기 대기 ${job.render_queue?.position ?? 1}번째 — 탭을 닫아도 진행됩니다.`
+          : job.job_metadata?.progress?.detail || '처리 중...');
       }
     } catch (err) {
       setPublishError(err instanceof Error ? err.message : String(err));
@@ -1507,6 +1546,15 @@ export default function ManualHighlightPage() {
     } finally {
       setPublishing(false);
     }
+  };
+
+  const rebuildFromLog = async () => {
+    if (rebuilding || publishing || cutting || logBusy) return;
+    setRebuilding(true);
+    try {
+      const prepared = await runCut();
+      if (prepared) await publish(prepared);
+    } finally { setRebuilding(false); }
   };
 
   // 렌더 중에 createObjectURL 을 부르면 재생 중 timeupdate 마다 수 MB짜리 URL이 새로 생겨 샌다.
@@ -1631,14 +1679,15 @@ export default function ManualHighlightPage() {
             <strong>{draftSaveState === 'saved' ? '이 브라우저에 저장됨' : draftSaveState === 'partial' ? '그림을 제외하고 저장됨' : draftSaveState === 'failed' ? '브라우저에 저장하지 못함' : '작업 복원 중…'}</strong>
             {unsafeDraft ? <p>현재 입력은 화면에 남아 있습니다. 이동 전에 복구 파일을 받으세요.{draftSaveState === 'partial' ? ' 로고와 카드 그림은 복구 파일에 포함됩니다.' : ''}</p> : null}
             <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-              <button style={smallBtn} onClick={exportDraft}>작업 복구 파일 저장</button>
-              <button style={smallBtn} onClick={() => recoveryInputRef.current?.click()}>복구 파일 불러오기</button>
+              <button style={smallBtn} disabled={logBusy || cutting || publishing} onClick={() => void exportDraft()}>하이라이트 로그 JSON 다운로드</button>
+              <button style={smallBtn} disabled={logBusy || cutting || publishing} onClick={() => recoveryInputRef.current?.click()}>하이라이트 로그 JSON 불러오기</button>
+              {logImported ? <button style={primaryBtn} disabled={logBusy || cutting || publishing || rebuilding || !clipTagCount} onClick={() => void rebuildFromLog()}>로그로 하이라이트 제작</button> : null}
               {unsafeDraft && loadedDraftKey === storageKey ? <button style={smallBtn} onClick={() => setSaveAttempt((value) => value + 1)}>브라우저 저장 다시 시도</button> : null}
               <input ref={recoveryInputRef} type="file" accept="application/json,.json" aria-label="수동 태깅 복구 파일" hidden onChange={(event) => {
                 const file = event.target.files?.[0]; event.target.value = ''; void importDraft(file);
               }} />
             </div>
-            <p style={{ fontSize: 12, marginBottom: 0 }}>복구 파일: 태그·패딩·점수판·카드·워터마크 설정. 원본 영상·인트로·음악 파일은 다시 선택해야 합니다.</p>
+            <p style={{ fontSize: 12, marginBottom: 0 }}>JSON에는 골·하이라이트·교체 시각, 구간, 출력 설정, 선택한 인트로·음악이 포함됩니다. 원본 영상은 포함하지 않습니다. 같은 원본을 같은 순서로 선택하고 JSON을 불러오세요. FPC의 카드 템플릿은 해당 디자인을 그대로 사용합니다.</p>
             <p style={{fontSize:12}}>초안 소유자: {draftOwner?.name||'로그인 확인 중'}. 같은 계정과 원본 영상을 선택하면 복원됩니다.</p>
             {legacyAvailable?<div><p>이 영상의 이전 공용 초안은 원본을 보존하고 별도로 보관했습니다. 관리자에게 소유자 확인 후 복구를 요청하세요.</p>{draftOwner?.role==='SUPERADMIN'?<button style={smallBtn} onClick={()=>void restoreLegacyDraft()}>이전 공용 태그를 내 계정으로 복사</button>:null}</div>:null}
             {recoveryMessage ? <p role="status">{recoveryMessage}</p> : null}
@@ -3030,7 +3079,7 @@ export default function ManualHighlightPage() {
                     <p style={{ fontSize: 12, color: '#f59e0b', margin: '-8px 0 14px' }}>{musicError}</p>
                   ) : null}
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button style={primaryBtn} onClick={publish} disabled={publishing}>
+                    <button style={primaryBtn} onClick={() => void publish()} disabled={publishing}>
                       {publishing ? '처리 중...' : `⬆ 업로드하고 하나로 합치기 (${fmtBytes(clipsTotalBytes)})`}
                     </button>
                     {publishPhase === 'done' && publishMsg ? (
@@ -3054,7 +3103,7 @@ export default function ManualHighlightPage() {
                     </div>
                   ) : null}
 
-                  {publishPhase === 'merging' ? (
+                  {(publishPhase === 'merging' || publishPhase === 'queued') ? (
                     <div style={stageBox}>
                       <div style={stageHead}>
                         <span style={{ fontSize: 13, fontWeight: 600 }}>3. 서버에서 다듬고 합치는 중</span>

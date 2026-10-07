@@ -265,6 +265,7 @@ const SPEEDS = [1, 1.5, 2, 3, 4];
 const STATUS_LABEL: Record<string, string> = {
   tagging: '태깅 대기',
   queued: '생성 대기',
+  render_queued: '생성 대기',
   merging: '생성 중',
   done: '완료',
   error: '실패',
