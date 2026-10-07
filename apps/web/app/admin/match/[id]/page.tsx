@@ -433,31 +433,46 @@ export default function MatchPage() {
   }, [sessionUser, match, canUseX2, clockSpeed]);
 
   const clockRevision=useRef(0),stateQueue=useRef<Promise<unknown>>(Promise.resolve());
-  const applyServerClock=(state:any,revision?:number)=>{
+  const pendingStateWrites=useRef(0);
+  const confirmedControls=useRef({possession_team:'NONE' as PossessionTeam,selected_team:'HOME' as Team,attack_lr:'L2R' as AttackLR});
+  const applyServerClock=(state:any,revision?:number,preserveRunningClock=false)=>{
     if(typeof revision==='number')clockRevision.current=revision;
     if(!state)return;
-    const ms=state.clock_ms||0;baseRef.current=ms;clockRef.current=ms;perfRef.current=state.running?performance.now():null;
+    // A possession/direction acknowledgement refers to the click timestamp.
+    // Keep elapsed time since that click instead of rewinding on every reply.
+    const continuous=preserveRunningClock&&runningRef.current&&state.running;
+    const ms=continuous?Math.max(getCurrentClockMs(),state.clock_ms||0):state.clock_ms||0;
+    baseRef.current=ms;clockRef.current=ms;perfRef.current=state.running?performance.now():null;
     runningRef.current=!!state.running;setRunning(!!state.running);setClockMs(ms);
+    confirmedControls.current={possession_team:state.possession_team||'NONE',selected_team:state.selected_team||'HOME',attack_lr:state.attack_lr||'L2R'};
     setPossessionTeam(state.possession_team||'NONE');setSelectedTeam(state.selected_team||'HOME');setAttackLR(state.attack_lr||'L2R');
   };
   const saveState = async (
     next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>,sample=false
   ) => {
-    const captured={clock_ms:next?.clockMs??getCurrentClockMs(),running:next?.running??running,
-      possession_team:next?.possessionTeam??possessionTeam,selected_team:next?.selectedTeam??selectedTeam,
-      attack_lr:next?.attackLR??attackLR,allow_clock_rewind:!!next?.allowClockRewind};
+    // Samples can wait for the next interval; never queue old controls behind
+    // an operator command. Commands retain their exact click timestamps.
+    if(sample&&pendingStateWrites.current)return;
+    const clickedAt=next?.clockMs??getCurrentClockMs();
+    pendingStateWrites.current++;
     const run=stateQueue.current.catch(()=>{}).then(async()=>{
       try{
+        // Resolve unspecified controls after earlier commands have completed.
+        // A team click during Start/Pause must not replay the previous run state.
+        const captured={clock_ms:clickedAt,running:next?.running??runningRef.current,
+          possession_team:next?.possessionTeam??confirmedControls.current.possession_team,
+          selected_team:next?.selectedTeam??confirmedControls.current.selected_team,
+          attack_lr:next?.attackLR??confirmedControls.current.attack_lr,allow_clock_rewind:!!next?.allowClockRewind};
         const result=await apiJson<any>(`/matches/${id}/state`,{method:'POST',body:JSON.stringify({...captured,state_id:makeId(),update_kind:sample?'sample':'command',command_revision:clockRevision.current})});
         if(result.command_revision!==undefined)clockRevision.current=result.command_revision;
         if(result.ignored){applyServerClock(result.state,result.command_revision);if(!sample)throw Error('시간 명령이 적용되지 않았습니다. 서버 상태를 다시 확인하세요.');}
-        else if(!sample)applyServerClock(result.state,result.command_revision);
+        else if(!sample)applyServerClock(result.state,result.command_revision,next?.running===undefined&&!next?.allowClockRewind);
         return result;
       }catch(e){
         try{const [m,s]=await Promise.all([apiJson<any>(`/matches/${id}`),apiJson<any>(`/matches/${id}/summary`)]);applyServerClock(s.state,m.metadata?.fla_clock_revision||0);}catch{}
         setControlNotice('시간·점유 변경의 저장을 확인하지 못했습니다. 서버 상태를 다시 불러왔습니다. 연결을 확인한 뒤 재시도하세요.');throw e;
       }
-    });stateQueue.current=run;return run;
+    });stateQueue.current=run;return run.finally(()=>{pendingStateWrites.current--;});
   };
 
   const fetchAll = async () => {
@@ -477,15 +492,8 @@ export default function MatchPage() {
     if(!initializedRef.current)clockRevision.current=m.metadata?.fla_clock_revision||0;
     if (s?.state && !initializedRef.current) {
       initializedRef.current = true;
-      clockRevision.current=m.metadata?.fla_clock_revision||0;
-      setClockMs(s.state.clock_ms || 0);
-      setRunning(Boolean(s.state.running));
-      setPossessionTeam(s.state.possession_team || 'NONE');
-      setSelectedTeam(s.state.selected_team || 'HOME');
+      applyServerClock(s.state,m.metadata?.fla_clock_revision||0);
       setXgTeam(s.state.selected_team || 'HOME');
-      setAttackLR((s.state.attack_lr || 'L2R') as AttackLR);
-      baseRef.current = s.state.clock_ms || 0;
-      perfRef.current = s.state.running ? performance.now() : null;
     }
   };
 
@@ -549,7 +557,7 @@ export default function MatchPage() {
   useEffect(() => {
     const t = setInterval(() => {
       if (canWrite && runningRef.current) {
-        saveState({ clockMs: clockRef.current },true).catch(() => undefined);
+        saveState(undefined,true).catch(() => undefined);
       }
     }, 3000);
     return () => clearInterval(t);
@@ -863,7 +871,7 @@ export default function MatchPage() {
     lanePendingRef.current = true;
     try {
       await apiJson(`/matches/${id}/events/attack_lane`, {
-        method: 'POST', body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: clockMs }),
+        method: 'POST', body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: getCurrentClockMs() }),
       });
       setControlNotice(`${selectedTeam === 'HOME' ? '홈' : '어웨이'} · ${{LEFT:'왼쪽',CENTER:'중앙',RIGHT:'오른쪽'}[lane]} 공격을 기록했습니다.`);
       await fetchAll();
@@ -1037,7 +1045,7 @@ export default function MatchPage() {
           is_goal: true,
           is_own_goal: true,
           is_on_target: false,
-          clock_ms: clockMs,
+          clock_ms: getCurrentClockMs(),
           shot_x: shotCoordinates.shot_x,
           shot_y: shotCoordinates.shot_y,
           goalmouth_x: null,
@@ -1075,7 +1083,7 @@ export default function MatchPage() {
         player_number: selectedXgPlayer?.number || null,
         is_goal: isGoalShot,
         is_on_target: isOnTargetShot,
-        clock_ms: clockMs,
+        clock_ms: getCurrentClockMs(),
         shot_x: shotCoordinates?.shot_x ?? null,
         shot_y: shotCoordinates?.shot_y ?? null,
         goalmouth_x: goalmouthCoordinates?.goalmouth_x ?? null,
