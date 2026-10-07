@@ -408,7 +408,9 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
     let active = true;
     let ticket=0;
     const verify=async()=>{
-      const current=++ticket;setCheckingSession(true);
+      const current=++ticket;
+      // Keep a verified workspace visible during focus/minute revalidation.
+      // Initial load and account-change handlers already gate unverified content.
       try{const data=await fetchSessionUser();if(active&&current===ticket){ownerRef.current=data.id;setUser(data);setCheckingSession(false);}}
       catch{if(active&&current===ticket){ownerRef.current=null;setUser(null);router.replace(`/login?next=${encodeURIComponent(currentPath)}`);}}
     };
