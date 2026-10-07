@@ -196,8 +196,8 @@ class RenderQueueTests(fixture.MatchWriteAccess):
         a=self.new_job()
         with fixture.SessionLocal() as db:
             job=db.get(HighlightJob,a)
-            # Futsal has no external clip publication; all media stays in the fixture.
-            job.job_metadata={**job.job_metadata,'sport':'FUTSAL','cards':{'enabled':False}}
+            # Football must also finish without automatic clip-result publication.
+            job.job_metadata={**job.job_metadata,'sport':'FOOTBALL','cards':{'enabled':False}}
             db.commit()
         source=jobs.clips_dir(a)/'clip_001.mp4'
         subprocess.run(['ffmpeg','-y','-v','error','-f','lavfi','-i','testsrc2=s=160x90:r=25:d=4',
@@ -214,6 +214,7 @@ class RenderQueueTests(fixture.MatchWriteAccess):
             job=db.get(HighlightJob,a)
             self.assertEqual(job.status,'done',job.error_message)
             self.assertEqual(db.query(HighlightRenderTask).one().status,'completed')
+            self.assertNotIn('clip_results',job.job_metadata)
             output=job.export_path
         probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',output]))
         self.assertAlmostEqual(float(probe['format']['duration']),2,delta=.12)
