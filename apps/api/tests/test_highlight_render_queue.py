@@ -1,9 +1,11 @@
 """FIFO, duplicate requests, recovery and real API log contracts; isolated DB."""
 import json
+import asyncio
 import os
 import shutil
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 import sys
@@ -230,6 +232,69 @@ class RenderQueueTests(fixture.MatchWriteAccess):
             self.assertIsNotNone(first)
             with exclusive_worker(fixture.engine) as second: self.assertIsNone(second)
         self.assertTrue(self.worker(lock=lambda:exclusive_worker(fixture.engine)).run_one())
+
+    @unittest.skipUnless(fixture.QA_DATABASE, 'requires isolated PostgreSQL row locks')
+    def test_concurrent_asset_uploads_do_not_block_api_event_loop(self):
+        """One event loop, real row contention and slow I/O: the production deadlock.
+
+        A DB timeout bounds the old bug even when asyncio's own timers cannot run.
+        Separate TestClients would hide it by giving requests separate event loops.
+        """
+        import httpx
+        from sqlalchemy import text
+        from app import highlight_render_queue as queue
+        real_copy, real_lock = shutil.copyfileobj, queue.lock_job
+        for kind in ('clips', 'intro', 'music', 'log'):
+            with self.subTest(kind=kind):
+                job_id = self.new_job()
+                entered, release = threading.Event(), threading.Event()
+                def slow_copy(source, target, *args):
+                    entered.set()
+                    if not release.wait(5):
+                        raise RuntimeError('test file copy timed out')
+                    return real_copy(source, target, *args)
+                def bounded_lock(db, jid):
+                    db.execute(text("SET LOCAL lock_timeout = '1800ms'"))
+                    return real_lock(db, jid)
+                payload = {'format':'fpc-highlight-log','version':1,'sport':'FOOTBALL',
+                    'sources':[{'name':'fixture.mp4','size':100,'duration':10,'fingerprint':'fixture'}],
+                    'work':{'tags':[{'id':'tag','t':2,'kind':'substitution'}],'padBefore':1,'padAfter':1},'attachments':{}}
+                clip_args = {'files':{'clip':('clip.mp4',b'synthetic','video/mp4')},
+                             'data':{'index':'2','requested_start':'1','requested_end':'3'}}
+                other_args = {
+                    'clips': {**clip_args, 'data':{**clip_args['data'],'index':'3'}},
+                    'intro': {'files':{'image':('intro.png',b'synthetic','image/png')}},
+                    'music': {'files':{'audio':('music.mp3',b'synthetic','audio/mpeg')}},
+                    'log': {'files':{'file':('log.json',json.dumps(payload),'application/json')}},
+                }[kind]
+                async def run_requests():
+                    transport = httpx.ASGITransport(app=fixture.main.app, raise_app_exceptions=False)
+                    async with httpx.AsyncClient(transport=transport,base_url='http://testserver',
+                                                cookies=self.client.cookies) as client:
+                        first = asyncio.create_task(client.post(f'/api/highlight/manual-jobs/{job_id}/clips',**clip_args))
+                        for _ in range(100):
+                            if entered.is_set(): break
+                            await asyncio.sleep(.01)
+                        self.assertTrue(entered.is_set())
+                        timer = threading.Timer(.6, release.set)
+                        timer.start()
+                        try:
+                            start = time.monotonic()
+                            second = asyncio.create_task(client.request('PUT' if kind=='log' else 'POST',
+                                f'/api/highlight/manual-jobs/{job_id}/{kind}',**other_args))
+                            await asyncio.sleep(.05)
+                            health = await client.get('/health')
+                            latency = time.monotonic()-start
+                            responses = await asyncio.gather(first,second)
+                            self.assertEqual(health.status_code,200)
+                            self.assertLess(latency,.5, f'API blocked for {latency:.3f}s')
+                            for response in responses:
+                                self.assertEqual(response.status_code,200,response.text)
+                        finally:
+                            release.set()
+                            timer.join()
+                with patch.object(shutil,'copyfileobj',slow_copy), patch.object(queue,'lock_job',bounded_lock):
+                    asyncio.run(run_requests())
 
 
 if __name__=='__main__':

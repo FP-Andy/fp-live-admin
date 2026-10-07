@@ -9323,7 +9323,7 @@ def create_manual_job(
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/clips")
-async def upload_manual_clip(
+def upload_manual_clip(
     job_id: str,
     clip: UploadFile = File(...),
     requested_start: float = Form(...),
@@ -9344,7 +9344,9 @@ async def upload_manual_clip(
     - 파일명은 클라이언트가 준 고유 index 로 정해 동시 요청끼리 이름이 겹치지 않게 하고,
     - 구간 정보는 클립마다 독립 사이드카(clip_XXX.json)로 남겨 서로 덮어쓰지 않게 한다.
     합칠 때 이 사이드카들을 order(=index) 순으로 모아 순서를 잡는다(list_manual_clip_info).
-    무거운 디스크 복사는 스레드풀로 넘겨 이벤트 루프(다른 사용자의 요청)를 막지 않는다.
+    DB 잠금과 파일 복사 전체를 FastAPI의 동기 요청 스레드에서 처리한다.
+    잠금을 가진 요청이 파일 I/O를 마치기 전에 다른 업로드가 이벤트 루프를 막으면
+    교착하므로, 이 핸들러를 async로 바꾸거나 잠금 상태에서 await하지 않는다.
     """
     from .highlight_render_queue import ensure_editable
     job = ensure_editable(db, _require_manual_job(db, job_id, user))
@@ -9402,9 +9404,9 @@ async def upload_manual_clip(
         )
 
     try:
-        await run_in_threadpool(_write_clip)
+        _write_clip()
     finally:
-        await clip.close()
+        clip.file.close()
 
     return {"name": name}
 
@@ -9428,7 +9430,7 @@ def register_manual_clip_results(
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/intro")
-async def upload_manual_intro(
+def upload_manual_intro(
     job_id: str,
     image: UploadFile = File(...),
     duration: float = Form(1.8),
@@ -9451,7 +9453,7 @@ async def upload_manual_intro(
         with target.open("wb") as out_file:
             shutil.copyfileobj(image.file, out_file)
     finally:
-        await image.close()
+        image.file.close()
 
     metadata = dict(job.job_metadata or {})
     metadata["intro_image"] = name
@@ -9466,7 +9468,7 @@ MUSIC_MAX_BYTES = 40 * 1024 * 1024
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/music")
-async def upload_manual_music(
+def upload_manual_music(
     job_id: str,
     audio: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -9492,7 +9494,7 @@ async def upload_manual_music(
     size = 0
     try:
         with target.open("wb") as out_file:
-            while chunk := await audio.read(1024 * 1024):
+            while chunk := audio.file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MUSIC_MAX_BYTES:
                     out_file.close()
@@ -9500,7 +9502,7 @@ async def upload_manual_music(
                     raise HTTPException(status_code=400, detail="음악 파일은 40MB 까지입니다.")
                 out_file.write(chunk)
     finally:
-        await audio.close()
+        audio.file.close()
 
     metadata = dict(job.job_metadata or {})
     metadata["music"] = {
