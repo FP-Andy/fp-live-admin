@@ -479,8 +479,8 @@ QUEENCUP = CardTemplate(
     # 마무리 영상(파인플레이 브랜딩)도 기본으로 끈다.
     outro_default=False,
     # 점수판 기본 크기·자리(운영 지정). 점수판 디자인으로 퀸컵을 고르는 순간 이 값으로
-    # 잡히고, 그 뒤엔 자유롭게 옮길 수 있다. 자리는 영상 픽셀 좌표(x=80, y=60)다.
-    board_defaults={"size_pct": 25, "pos_px_x": 80, "pos_px_y": 60},
+    # 잡히고, 그 뒤엔 자유롭게 옮길 수 있다. 자리는 영상 픽셀 좌표(x=80, y=50)다.
+    board_defaults={"size_pct": 25, "pos_px_x": 80, "pos_px_y": 50},
     board_fields=_QUEENCUP_BOARD_FIELDS,
     board_zones=(
         ColorZone(id="home_color", label="홈 팀 색", box=(0.0, 0.0, 24.0, 183.0),
