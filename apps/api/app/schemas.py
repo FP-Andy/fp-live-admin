@@ -191,6 +191,7 @@ class StateRequest(BaseModel):
     update_kind: Literal['sample','command'] = 'sample'
     command_revision: int | None = Field(default=None, ge=0)
     clock_ms: int = Field(ge=0)
+    clock_speed: Literal[1, 2] | None = None
     running: bool
     possession_team: PossessionTeam
     selected_team: Team

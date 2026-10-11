@@ -3665,7 +3665,10 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
             "possession_team": last_state.possession_team if last_state else "NONE",
             "selected_team": last_state.selected_team if last_state else "HOME",
             "attack_lr": last_state.attack_lr if last_state else "L2R",
+            **(state_response(last_state, int((match_obj.metadata_json or {}).get('fla_clock_revision') or 0),
+                              int((match_obj.metadata_json or {}).get('fla_clock_speed') or 1))['state'] or {}),
         },
+        "command_revision": int((match_obj.metadata_json or {}).get('fla_clock_revision') or 0),
         "possession": {
             "home_ms": home_ms,
             "away_ms": away_ms,
@@ -7903,8 +7906,11 @@ def post_state(
 
     metadata = dict(match_obj.metadata_json or {})
     command_revision = int(metadata.get('fla_clock_revision') or 0)
+    clock_speed = int(metadata.get('fla_clock_speed') or 1)
+    if body.clock_speed == 2 and not (session_user.role == 'SUPERADMIN' and metadata.get('stream_mode') == 'MANUAL'):
+        raise HTTPException(403, 'Double speed requires an administrator and a manual match')
     receipts = dict(metadata.get('fla_clock_receipts') or {})
-    request_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude={'user_id'}), sort_keys=True).encode()).hexdigest()
+    request_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude={'user_id'} | ({'clock_speed'} if body.clock_speed is None else set())), sort_keys=True).encode()).hexdigest()
     existing = db.get(State, body.state_id)
     prev = _latest_state(match_id, db)
     if existing:
@@ -7914,11 +7920,11 @@ def post_state(
                 raise HTTPException(409, 'State request ID belongs to different content')
         else:
             require_same_request(existing, match_id, {'clock_ms':body.clock_ms, 'running':body.running, 'possession_team':body.possession_team, 'selected_team':body.selected_team, 'attack_lr':body.attack_lr})
-        return {'ok':True,'idempotent':True,'state_id':existing.id,**state_response(prev,command_revision)}
+        return {'ok':True,'idempotent':True,'state_id':existing.id,**state_response(prev,command_revision,clock_speed)}
     if body.command_revision is None and command_revision:
         raise HTTPException(428, 'Reload the updated console before changing this match clock')
     if body.command_revision is not None and body.command_revision != command_revision:
-        reply={'reason':'stale_command_revision',**state_response(prev,command_revision)}
+        reply={'reason':'stale_command_revision',**state_response(prev,command_revision,clock_speed)}
         if body.update_kind=='sample':return {'ok':True,'ignored':True,**reply}
         raise HTTPException(409, reply)
     effective_clock = body.clock_ms
@@ -7928,9 +7934,13 @@ def post_state(
         command_revision+=1
     elif prev and body.clock_ms < prev.clock_ms and not body.allow_clock_rewind:
         return {'ok':True,'ignored':True,'reason':'stale_clock','state_id':body.state_id,
-                'latest_clock_ms':prev.clock_ms,**state_response(prev,command_revision)}
+                'latest_clock_ms':prev.clock_ms,**state_response(prev,command_revision,clock_speed)}
     elif body.command_revision is not None and prev and any(getattr(body,k)!=getattr(prev,k) for k in ('running','possession_team','selected_team','attack_lr')):
-        return {'ok':True,'ignored':True,'reason':'sample_cannot_change_controls',**state_response(prev,command_revision)}
+        return {'ok':True,'ignored':True,'reason':'sample_cannot_change_controls',**state_response(prev,command_revision,clock_speed)}
+
+    # Samples cannot change playback speed; a speed change is an explicit command.
+    if body.clock_speed is not None and (body.update_kind == 'command' or prev is None):
+        clock_speed = body.clock_speed
 
     prev_team = prev.possession_team if prev else "NONE"
     if prev and effective_clock < prev.clock_ms and body.allow_clock_rewind:
@@ -7998,9 +8008,9 @@ def post_state(
 
     if body.command_revision is not None:
         receipts[str(body.state_id)]=request_hash
-        match_obj.metadata_json={**metadata,'fla_clock_revision':command_revision,'fla_clock_receipts':dict(list(receipts.items())[-128:])}
+        match_obj.metadata_json={**metadata,'fla_clock_revision':command_revision,'fla_clock_speed':clock_speed,'fla_clock_receipts':dict(list(receipts.items())[-128:])}
     db.commit()
-    return {'ok':True,'state_id':body.state_id,**state_response(state,command_revision)}
+    return {'ok':True,'state_id':body.state_id,**state_response(state,command_revision,clock_speed)}
 
 
 @app.post("/api/matches/{match_id}/markers")
@@ -8691,7 +8701,9 @@ def delete_timeline_item(
 
 
 @app.get("/api/matches/{match_id}/summary")
-def summary(match_id: UUID, db: Session = Depends(get_db)):
+def summary(match_id: UUID, fresh: bool = False, db: Session = Depends(get_db)):
+    if fresh:
+        return _build_match_summary(match_id, db)
     cache_key = ("summary", str(match_id))
     cached = _cache_get(_match_response_cache, cache_key)
     if cached is not None:
