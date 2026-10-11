@@ -58,6 +58,14 @@ def saved_substitutions(match):
     return {'revision':value.get('revision',0), 'log':deepcopy(value.get('log'))}
 
 
+def substitution_summary(match):
+    """Count saved time logs, including unresolved cues; never infer player counts."""
+    log=saved_substitutions(match)['log'] if match else None
+    events=(log or {}).get('substitutions', [])
+    counts={team:sum(1 for event in events if event.get('team')==team) for team in ('home','away')}
+    return {'total':sum(counts.values()), **counts}
+
+
 def clear_substitutions(match):
     current=saved_substitutions(match)
     match.metadata_json={**(match.metadata_json or {}), 'fla_substitutions':{'revision':current['revision']+1,'log':None}}
