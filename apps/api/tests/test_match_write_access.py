@@ -284,6 +284,37 @@ class MatchWriteAccess(unittest.TestCase):
         self.assertEqual(reset.json()['command_revision'],4)
         self.assertEqual(client.post(path,json=self.state()).status_code,428)
 
+    def test_clock_recovery_exposes_utc_anchor_without_changing_stored_clock(self):
+        client = self.clients['owner']
+        body = {**self.state(), 'clock_ms': 5000, 'clock_speed': 1, 'update_kind': 'command', 'command_revision': 0}
+        first = client.post(self.url + '/state', json=body)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()['state']['sampled_at'].endswith('Z'))
+        with SessionLocal() as db:
+            main._latest_state(self.mid, db).created_at = datetime.utcnow() - timedelta(seconds=95)
+            db.commit()
+        result = client.get(self.url + '/summary?fresh=true').json()
+        state = result['state']
+        self.assertEqual(result['command_revision'], 1)
+        self.assertEqual(state['clock_ms'], 5000)
+        elapsed = datetime.fromisoformat(state['server_now']) - datetime.fromisoformat(state['sampled_at'])
+        self.assertGreaterEqual(elapsed.total_seconds(), 95)
+        self.assertLess(elapsed.total_seconds(), 97)
+        self.assertTrue(client.post(self.url + '/state', json=body).json()['idempotent'])
+
+    def test_manual_clock_speed_persists_only_on_authorized_commands(self):
+        with SessionLocal() as db:
+            db.get(Match, self.mid).metadata_json = {'stream_mode': 'MANUAL'}
+            db.commit()
+        body = {**self.state(), 'clock_speed': 2, 'update_kind': 'command', 'command_revision': 0}
+        self.assertEqual(self.clients['owner'].post(self.url + '/state', json=body).status_code, 403)
+        result = self.clients['admin'].post(self.url + '/state', json=body)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()['state']['clock_speed'], 2)
+        sample = {**body, 'state_id': str(uuid4()), 'clock_ms': 1500, 'clock_speed': 1, 'update_kind': 'sample', 'command_revision': 1}
+        self.assertEqual(self.clients['admin'].post(self.url + '/state', json=sample).json()['state']['clock_speed'], 2)
+        self.assertEqual(self.clients['admin'].get(self.url + '/summary?fresh=true').json()['state']['clock_speed'], 2)
+
     def test_football_futsal_live_controls_accumulate_possession_without_stopping(self):
         for mid, sport in ((self.mid, 'FOOTBALL'), (self.other, 'FUTSAL')):
             with self.subTest(sport=sport):

@@ -133,6 +133,7 @@ export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPl
                 <button className="btn-secondary" onClick={estimateXgotFromGoalmouth} disabled={!canWrite}>xGOT 계산</button>
               </div> : null}
             </div>
+            {!shotPoint ? <p className="muted">피치에서 슈팅 위치를 선택해 주세요.</p> : isOnTargetShot && !isOwnGoal && !goalmouthPoint ? <p className="muted">골문에서 슈팅 도착 위치를 선택해 주세요.</p> : null}
             <button className="btn-primary fla-shot-submit" onClick={submitXg} disabled={!canRecord || isSavingShot}>{isSavingShot ? '저장 중…' : isOwnGoal ? '자책골 기록' : '슈팅 기록'}</button>
             </div>
             <div className="fla-shot-surfaces">

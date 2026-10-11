@@ -9,6 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
+import { elapsedMatchMs, restoredMatchMs, matchControlJson } from '../../../../lib/match-control';
+import { usePendingShots } from '../../../../lib/use-pending-shots';
 import { useMatchHighlights } from '../../../../lib/use-match-highlights';
 import { resolveMatchTeams } from '../../dashboard/schedule-data';
 
@@ -64,6 +66,11 @@ function makeId() {
 }
 
 export default function MatchPage() {
+  const params = useParams<{ id: string }>();
+  return <MatchControlPage key={params.id} />;
+}
+
+function MatchControlPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
 
@@ -129,13 +136,14 @@ export default function MatchPage() {
   const [clockSpeed, setClockSpeed] = useState<ClockSpeed>(1);
 
   const perfRef = useRef<number | null>(null);
+  const wallRef = useRef(Date.now());
   const baseRef = useRef<number>(0);
   const clockRef = useRef<number>(0);
   const clockSpeedRef = useRef<ClockSpeed>(1);
   const runningRef = useRef<boolean>(false);
   const initializedRef = useRef<boolean>(false);
   const lastPossessionLogSecondRef = useRef<number>(-1);
-  const fetchSeqRef = useRef<number>(0);
+  const refreshInFlight = useRef<Promise<void> | null>(null);
 
   const lineups = (match?.metadata?.lineups?.teams || {}) as Partial<Record<Team, LineupPlayer[]>>;
   const hasLineupPlayers = Boolean((lineups.HOME || []).length || (lineups.AWAY || []).length);
@@ -397,7 +405,7 @@ export default function MatchPage() {
     if (!runningRef.current || perfRef.current == null) {
       return clockRef.current;
     }
-    return Math.floor(baseRef.current + (performance.now() - perfRef.current) * clockSpeedRef.current);
+    return Math.floor(baseRef.current + elapsedMatchMs(perfRef.current, wallRef.current, performance.now(), Date.now()) * clockSpeedRef.current);
   };
 
   // Switching speed mid-run must not rescale already-elapsed time: freeze the
@@ -409,10 +417,12 @@ export default function MatchPage() {
       const frozen = getCurrentClockMs();
       baseRef.current = frozen;
       perfRef.current = performance.now();
+      wallRef.current = Date.now();
       setClockMs(frozen);
     }
     setClockSpeed(nextSpeed);
     clockSpeedRef.current = nextSpeed;
+    void saveState({ clockSpeed: nextSpeed }).catch(() => undefined);
   };
 
   // X2 mode is superadmin-only and manual-match-only: if a session lands on a
@@ -426,6 +436,7 @@ export default function MatchPage() {
       const frozen = getCurrentClockMs();
       baseRef.current = frozen;
       perfRef.current = performance.now();
+      wallRef.current = Date.now();
       setClockMs(frozen);
     }
     setClockSpeed(1);
@@ -436,65 +447,72 @@ export default function MatchPage() {
   const pendingStateWrites=useRef(0);
   const confirmedControls=useRef({possession_team:'NONE' as PossessionTeam,selected_team:'HOME' as Team,attack_lr:'L2R' as AttackLR});
   const applyServerClock=(state:any,revision?:number,preserveRunningClock=false)=>{
+    if(typeof revision==='number' && revision < clockRevision.current)return;
     if(typeof revision==='number')clockRevision.current=revision;
     if(!state)return;
-    // A possession/direction acknowledgement refers to the click timestamp.
-    // Keep elapsed time since that click instead of rewinding on every reply.
     const continuous=preserveRunningClock&&runningRef.current&&state.running;
-    const ms=continuous?Math.max(getCurrentClockMs(),state.clock_ms||0):state.clock_ms||0;
-    baseRef.current=ms;clockRef.current=ms;perfRef.current=state.running?performance.now():null;
+    const restored=restoredMatchMs(state);
+    const ms=continuous?Math.max(getCurrentClockMs(),restored):restored;
+    baseRef.current=ms;clockRef.current=ms;wallRef.current=Date.now();
+    perfRef.current=state.running?performance.now():null;
     runningRef.current=!!state.running;setRunning(!!state.running);setClockMs(ms);
+    if(state.clock_speed===1||state.clock_speed===2){clockSpeedRef.current=state.clock_speed;setClockSpeed(state.clock_speed);}
     confirmedControls.current={possession_team:state.possession_team||'NONE',selected_team:state.selected_team||'HOME',attack_lr:state.attack_lr||'L2R'};
     setPossessionTeam(state.possession_team||'NONE');setSelectedTeam(state.selected_team||'HOME');setAttackLR(state.attack_lr||'L2R');
   };
   const saveState = async (
-    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean;}>,sample=false
+    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean; clockSpeed:ClockSpeed;}>,sample=false
   ) => {
-    // Samples can wait for the next interval; never queue old controls behind
-    // an operator command. Commands retain their exact click timestamps.
     if(sample&&pendingStateWrites.current)return;
     const clickedAt=next?.clockMs??getCurrentClockMs();
     pendingStateWrites.current++;
     const run=stateQueue.current.catch(()=>{}).then(async()=>{
+      const revision=clockRevision.current;
       try{
-        // Resolve unspecified controls after earlier commands have completed.
-        // A team click during Start/Pause must not replay the previous run state.
         const captured={clock_ms:clickedAt,running:next?.running??runningRef.current,
+          clock_speed:next?.clockSpeed??clockSpeedRef.current,
           possession_team:next?.possessionTeam??confirmedControls.current.possession_team,
           selected_team:next?.selectedTeam??confirmedControls.current.selected_team,
           attack_lr:next?.attackLR??confirmedControls.current.attack_lr,allow_clock_rewind:!!next?.allowClockRewind};
-        const result=await apiJson<any>(`/matches/${id}/state`,{method:'POST',body:JSON.stringify({...captured,state_id:makeId(),update_kind:sample?'sample':'command',command_revision:clockRevision.current})});
-        if(result.command_revision!==undefined)clockRevision.current=result.command_revision;
-        if(result.ignored){applyServerClock(result.state,result.command_revision);if(!sample)throw Error('시간 명령이 적용되지 않았습니다. 서버 상태를 다시 확인하세요.');}
-        else if(!sample)applyServerClock(result.state,result.command_revision,next?.running===undefined&&!next?.allowClockRewind);
+        const result=await matchControlJson(`/matches/${id}/state`,{method:'POST',body:JSON.stringify({...captured,state_id:makeId(),update_kind:sample?'sample':'command',command_revision:revision})});
+        if(result.ignored){
+          // A newer revision may be an intentional reset/pause from another tab.
+          applyServerClock(result.state,result.command_revision,result.command_revision===revision);
+          if(!sample)throw Error('시간 명령이 적용되지 않았습니다. 서버 상태를 다시 확인하세요.');
+        }else if(!sample){
+          applyServerClock(result.state,result.command_revision,!next?.allowClockRewind&&next?.running!==false);
+        }else if(result.command_revision!==undefined)clockRevision.current=result.command_revision;
         return result;
       }catch(e){
-        try{const [m,s]=await Promise.all([apiJson<any>(`/matches/${id}`),apiJson<any>(`/matches/${id}/summary`)]);applyServerClock(s.state,m.metadata?.fla_clock_revision||0);}catch{}
-        setControlNotice('시간·점유 변경의 저장을 확인하지 못했습니다. 서버 상태를 다시 불러왔습니다. 연결을 확인한 뒤 재시도하세요.');throw e;
+        try{
+          const latest=await matchControlJson(`/matches/${id}/summary?fresh=true`);
+          applyServerClock(latest.state,latest.command_revision,latest.command_revision===revision);
+        }catch{}
+        setControlNotice('시간·점유 변경의 저장을 확인하지 못했습니다. 진행시간을 유지하며 서버 연결을 확인합니다.');
+        throw e;
       }
     });stateQueue.current=run;return run.finally(()=>{pendingStateWrites.current--;});
   };
 
-  const fetchAll = async () => {
-    const seq = ++fetchSeqRef.current;
-    const [m, s] = await Promise.all([
-      apiJson<any>(`/matches/${id}`),
-      apiJson<any>(`/matches/${id}/summary`),
-    ]);
-    const d = await apiJson<any>(`/matches/${id}/dominance?bin_seconds=${m.sport === 'FUTSAL' ? 60 : 180}&split_halves=true`);
-    if (seq !== fetchSeqRef.current) return;
-    setLoadError('');
-    setMatch(m);
-    setSummary(s);
-    setDominance(d.bins || []);
-    setDominanceMeta(d);
-
-    if(!initializedRef.current)clockRevision.current=m.metadata?.fla_clock_revision||0;
-    if (s?.state && !initializedRef.current) {
-      initializedRef.current = true;
-      applyServerClock(s.state,m.metadata?.fla_clock_revision||0);
-      setXgTeam(s.state.selected_team || 'HOME');
-    }
+  const fetchAll = (): Promise<void> => {
+    if(refreshInFlight.current)return refreshInFlight.current;
+    const request=(async()=>{
+      const [m,s]=await Promise.all([
+        matchControlJson(`/matches/${id}`),
+        matchControlJson(`/matches/${id}/summary${initializedRef.current?'':'?fresh=true'}`),
+      ]);
+      setLoadError('');setMatch(m);setSummary(s);
+      if(!initializedRef.current){
+        initializedRef.current=true;
+        applyServerClock(m.archived&&s.state?{...s.state,running:false}:s.state,s.command_revision??m.metadata?.fla_clock_revision??0);
+        setXgTeam(s.state?.selected_team||'HOME');
+      }
+      const d=await matchControlJson(`/matches/${id}/dominance?bin_seconds=${m.sport==='FUTSAL'?60:180}&split_halves=true`);
+      setDominance(d.bins||[]);setDominanceMeta(d);
+    })();
+    refreshInFlight.current=request;
+    void request.finally(()=>{if(refreshInFlight.current===request)refreshInFlight.current=null;}).catch(()=>{});
+    return request;
   };
 
   const fetchOutbox = async () => {
@@ -542,16 +560,14 @@ export default function MatchPage() {
 
   useEffect(() => {
     if (!running) return;
-    let raf = 0;
-    const loop = () => {
-      if (perfRef.current != null) {
-        const delta = (performance.now() - perfRef.current) * clockSpeedRef.current;
-        setClockMs(Math.floor(baseRef.current + delta));
-      }
-      raf = requestAnimationFrame(loop);
+    const update=()=>{
+      const ms=getCurrentClockMs();
+      // Display seconds only. Event timestamps still read the full precision clock.
+      setClockMs(previous=>Math.floor(previous/1000)===Math.floor(ms/1000)?previous:ms);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    const timer=setInterval(update,250);
+    document.addEventListener('visibilitychange',update);
+    return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',update);};
   }, [running]);
 
   useEffect(() => {
@@ -566,17 +582,14 @@ export default function MatchPage() {
   const toggleRun = async () => {
     if (!canWrite || timerPendingRef.current) return;
     timerPendingRef.current = true;
-    const wasRunning = runningRef.current;
+    const nextRunning = !runningRef.current;
     const frozen = getCurrentClockMs();
-    try {
-      const applied=await saveState({clockMs: frozen, running: !wasRunning});
-      const accepted=applied.state?.clock_ms??frozen;
-      baseRef.current = accepted;
-      perfRef.current = wasRunning ? null : performance.now();
-      setClockMs(accepted);
-      setRunning(!wasRunning);
-      runningRef.current = !wasRunning;
-    } catch { setControlNotice('시간 변경을 저장하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.'); }
+    // Start/pause at the operator's click, not when a delayed response arrives.
+    baseRef.current=frozen;clockRef.current=frozen;wallRef.current=Date.now();
+    perfRef.current=nextRunning?performance.now():null;
+    runningRef.current=nextRunning;setRunning(nextRunning);setClockMs(frozen);
+    try { await saveState({clockMs:frozen,running:nextRunning}); }
+    catch { setControlNotice('시간 변경의 저장을 확인하지 못했습니다. 서버 연결 후 상태를 확인해 주세요.'); }
     finally { timerPendingRef.current = false; }
   };
 
@@ -707,7 +720,8 @@ export default function MatchPage() {
     if (!canWrite) return;
     const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
     if (!window.confirm(`지금 시점을 2H 시작(표시 ${baseHalfMinutes}:00)으로 설정할까요?`)) return;
-    const now = clockRef.current;
+    const now = getCurrentClockMs();
+    clockRef.current = now;
     setSecondHalfStartAbsMs(now);
     setRunning(false);
     perfRef.current = null;
@@ -746,7 +760,8 @@ export default function MatchPage() {
     if (!canWrite) return;
     const baseMin = extraHalfBaseMinutes(3);
     if (!window.confirm(`지금 시점을 연장 전반(3H) 시작(표시 ${baseMin}:00)으로 설정할까요?`)) return;
-    const now = clockRef.current;
+    const now = getCurrentClockMs();
+    clockRef.current = now;
     setThirdHalfStartAbsMs(now);
     setFourthHalfStartAbsMs(null);
     setRunning(false);
@@ -763,7 +778,8 @@ export default function MatchPage() {
     if (!canWrite) return;
     const baseMin = extraHalfBaseMinutes(4);
     if (!window.confirm(`지금 시점을 연장 후반(4H) 시작(표시 ${baseMin}:00)으로 설정할까요?`)) return;
-    const now = clockRef.current;
+    const now = getCurrentClockMs();
+    clockRef.current = now;
     setFourthHalfStartAbsMs(now);
     setRunning(false);
     perfRef.current = null;
@@ -1022,109 +1038,41 @@ export default function MatchPage() {
     }
   };
 
-  const submitXgInternal = async () => {
-    if (!canWrite) return;
-    const shotCoordinates = getShotCoordinates();
-
-    // Own goal: counts as a goal for the selected (crediting) team, but carries
-    // no xG/xGOT and no shot attributes. Team follows the same convention as a
-    // normal goal — whichever side's score should go up.
-    if (isOwnGoal) {
-      if (!shotCoordinates) {
-        setXgEstimateMeta('Click the pitch to set the own-goal location');
-        return;
-      }
-      await apiJson(`/matches/${id}/events/xg`, {
-        method: 'POST',
-        body: JSON.stringify({
-          event_id: makeId(),
-          team: xgTeam,
-          xg: 0,
-          player_name: null,
-          player_number: null,
-          is_goal: true,
-          is_own_goal: true,
-          is_on_target: false,
-          clock_ms: getCurrentClockMs(),
-          shot_x: shotCoordinates.shot_x,
-          shot_y: shotCoordinates.shot_y,
-          goalmouth_x: null,
-          goalmouth_y: null,
-          is_header: false,
-          is_weak_foot: false,
-          under_pressure: false,
-          one_on_one: false,
-          shot_pace_band: 'MID',
-        }),
-      });
-      setShotPoint(null);
-      setIsOwnGoal(false);
-      setXgEstimateMeta(`Own goal recorded → ${xgTeam}`);
-      setXgotEstimateMeta('');
-      await fetchAll();
-      return;
-    }
-
-    const xg = Number(xgValue);
-    if (!Number.isFinite(xg) || xg < 0 || xg > 1) { setXgEstimateMeta('xG는 0~1 사이의 숫자로 입력해 주세요.'); return; }
-    const goalmouthCoordinates = getGoalmouthCoordinates();
-    if (isOnTargetShot && !goalmouthCoordinates) {
-      setXgotEstimateMeta('골문에서 슈팅 도착 위치를 선택해 주세요.');
-      setControlNotice('골문에서 슈팅 도착 위치를 선택한 뒤 기록해 주세요.');
-      return;
-    }
-    const res = await apiFetch(`/matches/${id}/events/xg`, {
-      method: 'POST',
-      body: JSON.stringify({
-        event_id: makeId(),
-        team: xgTeam,
-        xg,
-        player_name: selectedXgPlayer?.name || null,
-        player_number: selectedXgPlayer?.number || null,
-        is_goal: isGoalShot,
-        is_on_target: isOnTargetShot,
-        clock_ms: getCurrentClockMs(),
-        shot_x: shotCoordinates?.shot_x ?? null,
-        shot_y: shotCoordinates?.shot_y ?? null,
-        goalmouth_x: goalmouthCoordinates?.goalmouth_x ?? null,
-        goalmouth_y: goalmouthCoordinates?.goalmouth_y ?? null,
-        is_header: isHeaderShot,
-        is_weak_foot: false,
-        under_pressure: isUnderPressureShot,
-        one_on_one: isOneOnOneShot,
-        shot_pace_band: 'MID',
-      }),
-    });
-    if (!res.ok) throw new Error('Shot save failed');
-    const data = await res.json().catch(() => null);
-    setXgValue('0.10');
-    setXgPlayerKey('');
-    setXgotValue(data?.xgot_meta ? Number(data.xgot_meta.xgot).toFixed(3) : '0.000');
-    setShotPoint(null);
-    setIsOnTargetShot(false);
-    setGoalmouthPoint(null);
-    setIsHeaderShot(false);
-    setIsGoalShot(false);
-    setIsOwnGoal(false);
-    setIsUnderPressureShot(false);
-    setIsOneOnOneShot(false);
-    setXgEstimateMeta('');
-    setXgotEstimateMeta(
-      data?.xgot_meta
-        ? `xGOT=${data.xgot_meta.xgot} | delta=${data.xgot_meta.delta >= 0 ? '+' : ''}${data.xgot_meta.delta} | ${data.xgot_meta.label}`
-        : ''
-    );
-    setControlNotice('슈팅을 기록했습니다. 기록 탭에서 확인할 수 있습니다.');
-    await fetchAll();
-  };
+  const shots = usePendingShots(id,userId,canWrite,()=>{
+    void fetchAll().catch(()=>setLoadError('슈팅은 저장됐습니다. 목록 갱신이 지연되고 있어 다시 불러오는 중입니다.'));
+  });
 
   const submitXg = async () => {
     if (shotPendingRef.current || !canWrite) return;
-    shotPendingRef.current = true;
-    setIsSavingShot(true);
-    try { await submitXgInternal(); }
-    catch { setControlNotice('슈팅 기록을 저장하지 못했습니다. 입력은 유지됩니다. 다시 시도해 주세요.'); }
-    finally { shotPendingRef.current = false; setIsSavingShot(false); }
+    const shotCoordinates=getShotCoordinates();
+    if(!shotCoordinates){setControlNotice('피치에서 슈팅 위치를 선택한 뒤 기록해 주세요.');return;}
+    const xg=isOwnGoal?0:Number(xgValue);
+    if(!Number.isFinite(xg)||xg<0||xg>1){setXgEstimateMeta('xG는 0~1 사이의 숫자로 입력해 주세요.');return;}
+    const goalmouthCoordinates=getGoalmouthCoordinates();
+    if(!isOwnGoal&&isOnTargetShot&&!goalmouthCoordinates){
+      setXgotEstimateMeta('골문에서 슈팅 도착 위치를 선택해 주세요.');
+      setControlNotice('골문에서 슈팅 도착 위치를 선택한 뒤 기록해 주세요.');return;
+    }
+    const submission=shots.enqueue({
+      event_id:makeId(),clock_ms:getCurrentClockMs(),team:xgTeam,xg,
+      player_name:isOwnGoal?null:selectedXgPlayer?.name||null,
+      player_number:isOwnGoal?null:selectedXgPlayer?.number||null,
+      is_goal:isOwnGoal||isGoalShot,is_own_goal:isOwnGoal,is_on_target:!isOwnGoal&&isOnTargetShot,
+      shot_x:shotCoordinates.shot_x,shot_y:shotCoordinates.shot_y,
+      goalmouth_x:isOwnGoal?null:goalmouthCoordinates?.goalmouth_x??null,
+      goalmouth_y:isOwnGoal?null:goalmouthCoordinates?.goalmouth_y??null,
+      is_header:!isOwnGoal&&isHeaderShot,is_weak_foot:false,
+      under_pressure:!isOwnGoal&&isUnderPressureShot,one_on_one:!isOwnGoal&&isOneOnOneShot,shot_pace_band:'MID',
+    });
+    if(!submission)return;
+    shotPendingRef.current=true;setIsSavingShot(true);
+    // The submitted snapshot is already in the pending list. Clear now, so a
+    // later acknowledgement cannot erase edits to the next shot.
+    setXgValue('0.10');setXgPlayerKey('');setXgotValue('0.000');setShotPoint(null);
+    setIsOnTargetShot(false);setGoalmouthPoint(null);setIsHeaderShot(false);setIsGoalShot(false);
+    setIsOwnGoal(false);setIsUnderPressureShot(false);setIsOneOnOneShot(false);
+    setXgEstimateMeta('');setXgotEstimateMeta('');setControlNotice('');
+    try{await submission;}finally{shotPendingRef.current=false;setIsSavingShot(false);}
   };
 
   const attachRtmp = async () => {
@@ -1589,7 +1537,16 @@ export default function MatchPage() {
           <MatchAttackCard attackLR={attackLR} selectedTeam={selectedTeam} pendingLane={pendingLane} matchTeams={matchTeams} summary={summary} canWrite={canWrite} changeAttackDirection={changeAttackDirection} selectEventTeam={selectEventTeam} setPendingLane={setPendingLane} sendLane={sendLane} />
         </section>
         <section className="fla-shots" aria-label="슈팅 입력">
-          <MatchShotCard isFutsal={isFutsal} xgTeam={xgTeam} setXgTeam={setXgTeam} xgPlayerKey={xgPlayerKey} setXgPlayerKey={setXgPlayerKey} xgPlayerOptions={xgPlayerOptions} isOnTargetShot={isOnTargetShot} setIsOnTargetShot={setIsOnTargetShot} isGoalShot={isGoalShot} setIsGoalShot={setIsGoalShot} isHeaderShot={isHeaderShot} setIsHeaderShot={setIsHeaderShot} isOwnGoal={isOwnGoal} setIsOwnGoal={setIsOwnGoal} shotPoint={shotPoint} goalmouthPoint={goalmouthPoint} canWrite={canWrite} xgValue={xgValue} setXgValue={setXgValue} xgotValue={xgotValue} estimateXgFromPitch={estimateXgFromPitch} estimateXgotFromGoalmouth={estimateXgotFromGoalmouth} submitXg={submitXg} isSavingShot={isSavingShot} onGoalmouthClick={onGoalmouthClick} onPitchClick={onPitchClick} xgEstimateMeta={xgEstimateMeta} xgotEstimateMeta={xgotEstimateMeta} />
+          <MatchShotCard isFutsal={isFutsal} xgTeam={xgTeam} setXgTeam={setXgTeam} xgPlayerKey={xgPlayerKey} setXgPlayerKey={setXgPlayerKey} xgPlayerOptions={xgPlayerOptions} isOnTargetShot={isOnTargetShot} setIsOnTargetShot={setIsOnTargetShot} isGoalShot={isGoalShot} setIsGoalShot={setIsGoalShot} isHeaderShot={isHeaderShot} setIsHeaderShot={setIsHeaderShot} isOwnGoal={isOwnGoal} setIsOwnGoal={setIsOwnGoal} shotPoint={shotPoint} goalmouthPoint={goalmouthPoint} canWrite={canWrite} canRecord={canWrite && !!shotPoint && (isOwnGoal || !isOnTargetShot || !!goalmouthPoint)} xgValue={xgValue} setXgValue={setXgValue} xgotValue={xgotValue} estimateXgFromPitch={estimateXgFromPitch} estimateXgotFromGoalmouth={estimateXgotFromGoalmouth} submitXg={submitXg} isSavingShot={isSavingShot} onGoalmouthClick={onGoalmouthClick} onPitchClick={onPitchClick} xgEstimateMeta={xgEstimateMeta} xgotEstimateMeta={xgotEstimateMeta} />
+          {shots.notice ? <p role="status" className="muted">{shots.notice}</p> : null}
+          {shots.storageError ? <p role="alert">브라우저 임시 저장소를 사용할 수 없습니다. 슈팅 저장이 확인될 때까지 이 화면을 닫지 마세요.</p> : null}
+          {shots.pending.length ? <div className="card grid" aria-label="저장 확인 대기 슈팅">
+            <strong>저장 확인 대기 · {shots.pending.length}건</strong>
+            {shots.pending.map(item=><div className="row" key={item.event_id}>
+              <span>{displayClockLabel(item.clock_ms)} · {item.team==='HOME'?'홈':'어웨이'} · {item.is_own_goal?'자책골':item.is_goal?'골':'슈팅'}</span>
+              <button disabled={!canWrite||shots.busy.includes(item.event_id)} onClick={()=>void shots.retry(item)}>{shots.busy.includes(item.event_id)?'저장 확인 중…':'원래 기록 재시도'}</button>
+            </div>)}
+          </div> : null}
 
 
         </section>
