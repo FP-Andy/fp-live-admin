@@ -10,7 +10,7 @@ export default function ReportEventMap({draft,person}:{draft:ReportDraft;person:
   const ctx=c.getContext('2d')!,u=c.width/44,teamColor=(side:string)=>side==='home'?colors.homeColor:colors.awayColor;
   const ownDirection=attackDirection(draft,person);
   ctx.font='600 25px Arial';ctx.textAlign='center';ctx.fillStyle='#6F3A59';
-  ctx.fillText(ownDirection==='right'?'아군 진영':'상대 진영',u*12,u*1.22);ctx.fillText(ownDirection==='right'?'상대 진영':'아군 진영',u*32,u*1.22);
+  ctx.fillText(ownDirection==='right'?'MY 진영':'OPP 진영',u*12,u*1.22);ctx.fillText(ownDirection==='right'?'OPP 진영':'MY 진영',u*32,u*1.22);
   for(const side of ['home','away'] as const){const dir=attackDirection(draft,{...person,side}),right=dir==='right',color=teamColor(side),lanes=draft.fla?.summary.lanes[side];
    if(lanes?.total_count){[lanes.left_count,lanes.center_count,lanes.right_count].forEach((count,i)=>{const ratio=count/lanes.total_count;if(!ratio)return;
     const x=(right?6:34)*u+2*u,y=(2+(right?i:2-i)*6+4)*u,sign=right?1:-1,len=(3+ratio*8)*u;
@@ -21,7 +21,7 @@ export default function ReportEventMap({draft,person}:{draft:ReportDraft;person:
     ctx.closePath();ctx.fill();ctx.restore();
     ctx.fillStyle='#94637F';ctx.font='24px Arial';ctx.fillText(`${Math.round(ratio*100)}%`,x-sign*42,y+8);
    });}
-   ctx.fillStyle=color;ctx.font='600 23px Arial';ctx.fillText(`${side===person.side?'아군':'상대'} 공격 ${right?'→':'←'}`,(right?12:32)*u,23.35*u);
+   ctx.fillStyle=color;ctx.font='600 23px Arial';ctx.fillText(`${side===person.side?'MY':'OPP'} 공격 ${right?'→':'←'}`,(right?12:32)*u,23.35*u);
   }
   for(const m of [...map.markers].sort((a,b)=>Number(a.personal)-Number(b.personal))){if(m.x===null||m.y===null)continue;const x=(m.x+2)*u,y=(m.y+2)*u,r=m.personal?15:10,color=teamColor(m.side);
    ctx.save();ctx.globalAlpha=m.personal?1:.5;ctx.fillStyle=color;ctx.strokeStyle=m.personal?'#48283D':'#FFFFFF';ctx.lineWidth=m.personal?3:2;
