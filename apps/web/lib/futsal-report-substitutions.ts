@@ -13,7 +13,7 @@ export function applySubstitutionReport(d:ReportDraft,result:SubstitutionReport)
   // Changed boundaries do not change identity. A different incoming track does.
   return [p.id,old&&samePlayer(before,p)?old:{...blankPlayer(p),eventNumber:'',flaNumber:''}];}));
  const all=(side:'home'|'away')=>h.players.filter(p=>p.group===side).map(p=>p.id);
- return {...d,heatmap:h,players,substitutionReport:{...metadata,images:d.substitutionReport?.provenance.logRevision===metadata.provenance.logRevision?d.substitutionReport.images:undefined},selected:players[d.selected]?d.selected:h.players[0].id,teamReport:d.teamReport?{...d.teamReport,homePlayers:all('home'),awayPlayers:all('away')}:d.teamReport};
+ return {...d,heatmap:h,players,substitutionReport:{...metadata,images:d.substitutionReport?.provenance.logRevision===metadata.provenance.logRevision&&d.substitutionReport.provenance.algorithm===metadata.provenance.algorithm?Object.fromEntries(Object.entries(d.substitutionReport.images||{}).filter(([id])=>{const a=d.substitutionReport?.events.find(e=>e.id===id),b=metadata.events.find(e=>e.id===id);return !!a&&!!b&&a.inTrackId===b.inTrackId&&a.inTime===b.inTime&&a.inNumber===b.inNumber;})):undefined},selected:players[d.selected]?d.selected:h.players[0].id,teamReport:d.teamReport?{...d.teamReport,homePlayers:all('home'),awayPlayers:all('away')}:d.teamReport};
 }
 /** Back up the latest edit, including removal of the final substitution. Edits
  * made while IDB is writing must reach the backup before the result is applied. */
@@ -23,7 +23,7 @@ export async function preserveAndApplySubstitutions(getLatest:()=>ReportDraft|nu
  const matches=(d:ReportDraft|null):d is ReportDraft=>!!d&&d.id===initial.id&&d.sourceSnapshot?.id===result.provenance.snapshotId&&d.matchId===result.provenance.matchId;
  let current=getLatest(),backedUp=false;
  while(matches(current)){
-  if(current.heatmap&&(current.substitutionReport?.provenance.logRevision!==result.provenance.logRevision||current.substitutionReport?.provenance.snapshotId!==result.provenance.snapshotId)){
+  if(current.heatmap&&(current.substitutionReport?.provenance.logRevision!==result.provenance.logRevision||current.substitutionReport?.provenance.snapshotId!==result.provenance.snapshotId||current.substitutionReport?.provenance.algorithm!==result.provenance.algorithm)){
    await save({...current,id:backupId,title:current.title+' · 교체 갱신 전',updatedAt:new Date().toISOString()});
    backedUp=true;
    if(getLatest()!==current){current=getLatest();continue;}
