@@ -422,8 +422,11 @@ export default function ManualHighlightPage() {
     const tid = scoreboard.template || '';
     const prev = lastBoardTemplateRef.current;
     lastBoardTemplateRef.current = tid;
-    if (prev === null || prev === tid || !tid) return;
-    const bd = cardTemplates.find((t) => t.id === tid)?.board_defaults;
+    if (prev === null || prev === tid) return;
+    // 기본형('')으로 돌아오면 파인플레이 기본형의 기본값(29% · (95,60)px)으로 잡는다.
+    const bd = tid
+      ? cardTemplates.find((t) => t.id === tid)?.board_defaults
+      : { size_pct: 29, pos_px_x: 95, pos_px_y: 60 };
     if (!bd) return;
     setScoreboard((p) => ({
       ...p,
@@ -1074,9 +1077,13 @@ export default function ManualHighlightPage() {
   // 세트 점수판 미리보기. 화면에 코드로 그린 판을 두면 세트를 골라도 옛 판이 보여서
   // '점수판이 템플릿에 안 물렸다' 로 읽힌다 — 실제로 그렇게 읽혔다. 서버가 합치기와
   // 같은 함수(render_board)로 그린 그림을 받아 보여 준다.
-  const hasSetBoard = Boolean(boardTemplate);
+  // 점수판 그림은 이제 **항상** 서버 템플릿으로 그린다 — 전용(퀸컵)/세트(SUFA)를 안
+  // 골랐으면 '기본형'(fineplay-default, 파인플레이 시안)으로 떨어진다. 그래서 켜져 있으면
+  // 늘 서버 미리보기를 쓴다(옛 코드로 그리던 ScoreboardPreview 는 더는 안 쓴다).
+  const boardPreviewId = boardTemplate?.id || 'fineplay-default';
+  const hasSetBoard = scoreboard.enabled;
   useEffect(() => {
-    if (!hasSetBoard || !scoreboard.enabled || !boardTemplate) {
+    if (!scoreboard.enabled) {
       setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
       return undefined;
     }
@@ -1088,7 +1095,7 @@ export default function ManualHighlightPage() {
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            template: boardTemplate.id, kind: 'board', width: 960,
+            template: boardPreviewId, kind: 'board', width: 960,
             values: {
               round_label: scoreboard.roundLabel || '',
               home_name: scoreboard.homeName, away_name: scoreboard.awayName,
@@ -1106,7 +1113,7 @@ export default function ManualHighlightPage() {
       }
     }, 400);
     return () => { alive = false; clearTimeout(timer); };
-  }, [hasSetBoard, scoreboard.enabled, boardTemplate?.id, scoreboard.roundLabel,
+  }, [scoreboard.enabled, boardPreviewId, scoreboard.roundLabel,
       scoreboard.homeName, scoreboard.awayName, scoreboard.homeColor,
       scoreboard.awayColor, finalScore]);
 
@@ -1205,9 +1212,13 @@ export default function ManualHighlightPage() {
       }
       // 축구 Q/W/E/R — 홈 골·홈 장면·원정 장면·원정 골.
       // 농구 Q/W/E(홈 1·2·3점) · A/S/D(원정 1·2·3점). 한글 자판에서도 같다.
-      const kind = tagKinds.find((k) => (
-        e.code === k.code || e.key === k.letter || e.key === k.letter.toUpperCase() || e.key === k.hangul
-      ));
+      // '점수만'(goal·clip:false) 골은 단축키로도 안 찍는다 — 버튼을 내렸으니 키도 막는다.
+      // 점수만으로 바꾸려면 태그 목록의 종류 드롭다운을 쓴다.
+      const kind = tagKinds
+        .filter((k) => !(k.goal && k.clip === false))
+        .find((k) => (
+          e.code === k.code || e.key === k.letter || e.key === k.letter.toUpperCase() || e.key === k.hangul
+        ));
       if (kind) {
         e.preventDefault();
         addTag(kind.key);
@@ -1809,7 +1820,9 @@ export default function ManualHighlightPage() {
               <button style={primaryBtn} onClick={() => addTag()}>
                 ＋ 태깅 ({plainHotkey.label} / {plainHotkey.hangul})
               </button>
-              {tagKinds.map((kind) => (
+              {/* '점수만'(goal·clip:false) 골은 버튼으로 내걸지 않는다 — 실수 태깅을 막고,
+                  필요하면 아래 태그 목록의 종류 드롭다운에서 바꾼다. 구간·교체는 goal:false 라 남는다. */}
+              {tagKinds.filter((kind) => !(kind.goal && kind.clip === false)).map((kind) => (
                 <button
                   key={kind.key}
                   style={{ ...smallBtn, padding: '8px 12px', borderColor: kind.color }}
@@ -1842,8 +1855,9 @@ export default function ManualHighlightPage() {
               단축키 — <strong>Space</strong> 재생·정지 · <strong>←/→</strong> {SEEK_STEP}초 이동
               {' · '}
               <strong>{plainHotkey.label}</strong> 일반 태깅
-              {/* 종류 키는 지금 스포츠의 세트를 그대로 읽는다 — 목록과 안내가 어긋날 수 없다. */}
-              {tagKinds.map((kind) => (
+              {/* 종류 키는 지금 스포츠의 세트를 그대로 읽는다 — 목록과 안내가 어긋날 수 없다.
+                  '점수만' 골은 버튼·단축키를 모두 내렸으므로 안내에서도 뺀다. */}
+              {tagKinds.filter((kind) => !(kind.goal && kind.clip === false)).map((kind) => (
                 <span key={kind.key}>
                   {' · '}
                   <strong>{kind.letter.toUpperCase()}</strong>({kind.hangul}) {kind.label}
@@ -2546,7 +2560,7 @@ export default function ManualHighlightPage() {
                       <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
                     )}
                     <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: '6px 0 10px' }}>
-                      새겨질 점수판 (최종 점수 기준{hasSetBoard ? ` · ${cardTemplate?.name} 세트` : ''})
+                      새겨질 점수판 (최종 점수 기준{scoreboard.enabled ? ` · ${boardTemplate?.name || '기본형'}` : ''})
                     </p>
                     <OverlayPlacer
                       videoW={boardVideo.w}

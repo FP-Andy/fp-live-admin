@@ -57,6 +57,10 @@ class CardField:
     shadow: float = 0.0
     """시안의 text-shadow 번짐 반경. 0 이면 안 그린다."""
 
+    stroke: float = 0.0
+    """글자 외곽 두께(시안 px). 글꼴이 더 두꺼운 굵기(예: Black 900)가 없을 때 같은
+    색 외곽선을 둘러 볼드처럼 보이게 한다. 0 이면 안 두른다."""
+
     tracking: int = 0
     """자간 — 포토샵 Tracking 단위(1/1000 em). SUFA 점수판 제목이 200 이다.
     이걸 빼먹으면 같은 글꼴이라도 제목이 눈에 띄게 좁아 보인다."""
@@ -106,7 +110,13 @@ class ColorZone:
     """배경에 구워져 있는 색(#RRGGBB)."""
 
     tolerance: int = 14
-    """이 값만큼 어긋난 픽셀까지 같은 색으로 본다(가장자리 안티앨리어싱)."""
+    """이 값만큼 어긋난 픽셀까지 같은 색으로 본다(가장자리 안티앨리어싱). span=0 일 때만 쓴다."""
+
+    span: int = 0
+    """0 이면 평면 교체(tolerance 안의 픽셀만 통째로 target 으로). >0 이면 **가중 이동** —
+    픽셀이 source 에서 멀수록(배경으로 섞일수록) 조금만 옮겨, 안티앨리어싱 가장자리가
+    'target↔배경' 블렌드로 자연스럽게 따라온다. span 은 source 와 배경 사이 색거리쯤으로
+    잡는다(그보다 멀면 안 건드림). 그라데이션 없는 평면 바(파인플레이 기본)에 쓴다."""
 
 
 @dataclass(frozen=True)
@@ -493,12 +503,94 @@ QUEENCUP = CardTemplate(
 )
 
 
+# ── 기본형 점수판 (파인플레이) — 코드로 그리던 기본 점수판을 PNG 시안으로 교체 ────
+#
+# 점수판 디자인 '기본형'(scoreboard.template 이 비어 있고 카드 세트 점수판도 없을 때)이
+# 이 판으로 그려진다. **선택 드롭다운에는 올리지 않는다**(TEMPLATES 제외) — 암묵 기본값.
+# 좌표는 빈 판(fineplay-board.png 568x86)에서 직접 측정: 흰 플레이트 x200~331(점수),
+# 네이비 플레이트 좌/우(팀명), 빨강 바 #FF3336(홈)·파랑 바 #0194FE(원정), 하단 주황
+# 바의 'Fine Play' 워드마크는 판에 구워져 고정. 상단 중앙 엠블럼은 **로고 필드** —
+# 기본은 fineplay-board-emblem.png, 점수판 설정의 '대회 로고' 업로드로 교체된다.
+# 판(fineplay-board.png, 568x125)은 처음 시안(점수판_fineplay.png)에서 **팀명 두 개만**
+# 지운 것이다 — 엠블럼·"0 - 0" 점수·빨강/파랑 바·Fine Play 워드마크는 그대로 구워져
+# 있다. 그래서 점수는 베이크된 "0 - 0" 위에 **같은 자리**로 얹어 덮고(구분자 '-' 도
+# 베이크 그대로 사용), 팀명만 빈 네이비 자리에 새로 그린다. 엠블럼은 기본은 베이크된
+# 그림, 사용자가 '대회 로고' 를 올리면 그 위에 덮어 그린다. 좌표는 시안에서 직접 측정.
+_FP_BOARD_FIELDS: tuple[CardField, ...] = (
+    CardField(
+        id="home_name", label="홈 팀명", kind="text",
+        box=(45.0, 50.0, 130.0, 34.0), font=PAPERLOGY, size=28, max_width=124.0,
+        color="#FFFFFF", placeholder="팀 이름", max_len=16, ui_width=140,
+    ),
+    # 점수는 지운 자리(홈 x254 · 콜론 x283 · 어웨이 x312, y70)에 새로 그린다. 시안은
+    # Paperlogy 900(Black)인데 레포엔 8ExtraBold(800)까지라, stroke 로 외곽을 둘러
+    # 한 단계 더 두껍게(볼드처럼) 만든다.
+    CardField(
+        id="home_score", label="홈 점수", kind="text",
+        box=(234.0, 54.0, 40.0, 32.0), font=PAPERLOGY, size=30, stroke=1.2,
+        color="#000000", placeholder="0", max_len=3, ui_width=70,
+    ),
+    # 하이픈은 폰트상 글자 중앙보다 높이 앉아, 숫자와 같은 상자면 위로 뜬다. 상자를
+    # 5px 내려(y 54→59) 숫자 세로 중심(y69)에 맞춘다.
+    CardField(
+        id="score_sep", label="구분자", kind="text",
+        box=(267.0, 59.0, 32.0, 32.0), font=PAPERLOGY, size=30, stroke=1.2,
+        color="#000000", default="-", placeholder="-", max_len=1, ui_width=40,
+    ),
+    CardField(
+        id="away_score", label="어웨이 점수", kind="text",
+        box=(292.0, 54.0, 40.0, 32.0), font=PAPERLOGY, size=30, stroke=1.2,
+        color="#000000", placeholder="0", max_len=3, ui_width=70,
+    ),
+    CardField(
+        id="away_name", label="어웨이 팀명", kind="text",
+        box=(393.0, 50.0, 130.0, 34.0), font=PAPERLOGY, size=28, max_width=124.0,
+        color="#FFFFFF", placeholder="팀 이름", max_len=16, ui_width=140,
+    ),
+    # 엠블럼 — 기본은 베이크된 그림(default 없음 → 아무것도 더 안 그림). 사용자가 '대회
+    # 로고' 를 올리면 이 자리에 덮어 그린다.
+    CardField(
+        id="emblem", label="엠블럼", kind="logo",
+        box=(255.0, 2.0, 58.0, 46.0),
+    ),
+)
+
+DEFAULT_BOARD = CardTemplate(
+    id="fineplay-default",
+    name="기본형",
+    design=(568, 125),
+    base_color="#102C4D",
+    start_bg="fineplay-board.png",
+    section_bg="fineplay-board.png",
+    start_fields=(),
+    section_fields=(),
+    board_bg="fineplay-board.png",
+    board_design=(568, 125),
+    outro_default=True,
+    # 기본 크기·자리(운영 지정). 자리는 영상 픽셀 좌표(x=95, y=60).
+    board_defaults={"size_pct": 29, "pos_px_x": 95, "pos_px_y": 60},
+    board_fields=_FP_BOARD_FIELDS,
+    # 바는 평면이지만 가장자리가 네이비로 안티앨리어싱돼 있다. span 으로 가중 이동해
+    # 가장자리 블렌드까지 팀색으로 따라오게 한다(원래 빨강/파랑이 겉에 남지 않게).
+    # 상자는 흰/회색 점수판과 안 겹치게 좁혀 둔다(회색이 빨강에 가까워 오염 방지).
+    board_zones=(
+        ColorZone(id="home_color", label="홈 팀 색", box=(0.0, 0.0, 216.0, 125.0),
+                  source="#FF3336", span=190),
+        ColorZone(id="away_color", label="어웨이 팀 색", box=(352.0, 0.0, 216.0, 125.0),
+                  source="#0194FE", span=190),
+    ),
+    note="기본형 점수판. 팀명·점수·팀 색·엠블럼(대회 로고)만 바꿉니다.",
+)
+
+
 TEMPLATES: tuple[CardTemplate, ...] = (
     FINEPLAY, SUFA_A, SUFA_B, SUFA_L, SUFA_S, QUEENCUP,
 )
 DEFAULT_TEMPLATE_ID = FINEPLAY.id
 
-_BY_ID = {template.id: template for template in TEMPLATES}
+# DEFAULT_BOARD 는 선택 목록(TEMPLATES)엔 없지만 id 로는 찾을 수 있어야 한다 —
+# 기본형 점수판 미리보기(card-preview)가 이 id 로 서버에 그려 달라고 하기 때문이다.
+_BY_ID = {template.id: template for template in (*TEMPLATES, DEFAULT_BOARD)}
 
 
 def get_template(template_id: str | None) -> CardTemplate:

@@ -232,21 +232,24 @@ def _fit_font(text: str, filename: str, size: int, max_width: float, tracking: i
     return _font(filename, floor), floor
 
 
-def _draw_tracked(draw, xy, text: str, font, size: int, tracking: int, fill) -> None:
+def _draw_tracked(draw, xy, text: str, font, size: int, tracking: int, fill,
+                  stroke_width: int = 0, stroke_fill=None) -> None:
     """자간을 두고 한 자씩 그린다. 자간이 0 이면 통짜로 그린다(빠르고 커닝도 산다)."""
+    kw = {"stroke_width": stroke_width, "stroke_fill": stroke_fill or fill} if stroke_width else {}
     if not tracking or len(text) <= 1:
-        draw.text(xy, text, font=font, fill=fill)
+        draw.text(xy, text, font=font, fill=fill, **kw)
         return
     x, y = xy
     step = size * tracking / 1000.0
     for ch in text:
-        draw.text((x, y), ch, font=font, fill=fill)
+        draw.text((x, y), ch, font=font, fill=fill, **kw)
         x += draw.textlength(ch, font=font) + step
 
 
 def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: str,
              filename: str, size: int, max_width: float | None = None,
-             shadow: float = 0.0, color: str = "", tracking: int = 0) -> None:
+             shadow: float = 0.0, color: str = "", tracking: int = 0,
+             stroke: float = 0.0) -> None:
     """상자 한가운데에 한 줄. 시안의 text-shadow 는 옅은 검정 번짐이다."""
     text = (text or "").strip()
     if not text:
@@ -254,8 +257,9 @@ def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: s
     left, top, width, height = box
     cx, cy = left + width / 2, top + height / 2
     font, fitted = _fit_font(text, filename, size, max_width if max_width else width, tracking)
+    sw = max(0, round(stroke))
     draw = ImageDraw.Draw(layer)
-    bbox = draw.textbbox((0, 0), text, font=font)
+    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=sw)
     track_extra = (len(text) - 1) * fitted * tracking / 1000.0 if tracking and len(text) > 1 else 0
     x = cx - ((bbox[2] - bbox[0]) + track_extra) / 2 - bbox[0]
     y = cy - (bbox[3] - bbox[1]) / 2 - bbox[1]
@@ -265,7 +269,8 @@ def _text_in(layer: Image.Image, box: tuple[float, float, float, float], text: s
         layer.alpha_composite(blur.filter(ImageFilter.GaussianBlur(shadow)))
         draw = ImageDraw.Draw(layer)
     rgb = _hex_rgb(color) if color else None
-    _draw_tracked(draw, (x, y), text, font, fitted, tracking, (*rgb, 255) if rgb else WHITE)
+    fill = (*rgb, 255) if rgb else WHITE
+    _draw_tracked(draw, (x, y), text, font, fitted, tracking, fill, stroke_width=sw, stroke_fill=fill)
 
 
 def _paste_contained(layer: Image.Image, box: tuple[float, float, float, float],
@@ -336,6 +341,11 @@ def _draw_field(layer: Image.Image, spec: CardField, value: str,
             logo = _white_mark()
         if logo is None and spec.empty == "wordmark":
             logo = _wordmark()
+        # 로고를 안 받았으면 시안 기본 로고(assets/brand 안의 파일)를 쓴다. 점수판
+        # 엠블럼처럼 '기본은 이 그림, 사용자가 올리면 교체' 를 위한 것이다 — default 에
+        # 파일명을 담는다(글자 필드의 default 와 같은 자리, kind 로 의미가 갈린다).
+        if logo is None and spec.default:
+            logo = _open_logo(_brand_dir() / spec.default)
         if logo is not None:
             _paste_contained(layer, box, logo, factor)
         elif spec.empty == "vs":
@@ -350,7 +360,7 @@ def _draw_field(layer: Image.Image, spec: CardField, value: str,
     _text_in(layer, box, value, spec.font,
              max(1, round(spec.size * factor)),
              (spec.max_width if spec.max_width else box[2]) * factor,
-             spec.shadow, spec.color, spec.tracking)
+             spec.shadow, spec.color, spec.tracking, stroke=spec.stroke * factor)
 
 
 def _compose(template: CardTemplate, kind: str, layer: Image.Image,
@@ -473,8 +483,31 @@ def _swap_zone_color(image: Image.Image, zone, target: str) -> None:
     y1 = min(image.height, int(top + height))
     if x1 <= x0 or y1 <= y0:
         return
-    tol = max(0, int(zone.tolerance))
     px = image.load()
+    span = max(0, int(getattr(zone, "span", 0)))
+    if span > 0:
+        # 가중 이동: source 에 가까울수록 많이, 멀수록(배경에 섞일수록) 적게 옮긴다.
+        # new = pixel + w·(dst−src),  w = clamp(1 − dist/span, 0, 1).
+        # 코어(dist≈0)는 dst 가 되고, 배경(dist≥span)은 그대로, 가장자리 블렌드는
+        # 'dst↔배경' 으로 자연스럽게 따라온다.
+        dr, dg, db = dst[0] - src[0], dst[1] - src[1], dst[2] - src[2]
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                r, g, b, a = px[x, y]
+                if a == 0:
+                    continue
+                dist = ((r - src[0]) ** 2 + (g - src[1]) ** 2 + (b - src[2]) ** 2) ** 0.5
+                if dist >= span:
+                    continue
+                w = 1.0 - dist / span
+                px[x, y] = (
+                    min(255, max(0, round(r + w * dr))),
+                    min(255, max(0, round(g + w * dg))),
+                    min(255, max(0, round(b + w * db))),
+                    a,
+                )
+        return
+    tol = max(0, int(zone.tolerance))
     for y in range(y0, y1):
         for x in range(x0, x1):
             r, g, b, a = px[x, y]
