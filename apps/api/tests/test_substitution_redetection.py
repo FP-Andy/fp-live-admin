@@ -6,6 +6,7 @@ from unittest.mock import patch
 import test_analysis_snapshots as fixture
 from app.models import FpaCvResource, Match
 from app.fla_substitutions import TrackingResolution
+from app.fpa_cv_storage import KEY
 from app.futsal_substitution_redetection import log_context, check_resolution
 from fastapi import HTTPException
 
@@ -23,6 +24,10 @@ class Redetection(unittest.TestCase):
         self.recovery={'id':'d'*32,'schema':'fpa-substitution-redetection/v1','snapshotId':'c'*32,'datasetId':'sample','logRevision':1,'logContext':log_context(self.log),
                        'video':{'name':'sample.mp4','duration':10},'roi':[[0,0],[1,0],[1,.8],[0,.8]],'model':'yolo26s.pt',
                        'windows':[{'id':1,'eventIds':['event'],'from':0,'to':10,'frames':[{'t':5,'boxes':[{'id':1001000001,'box':[.2,.3,.4,.6],'confidence':.9}]}]}]}
+        def checked_key(key):
+            assert KEY.fullmatch(key), 'Must use the real private FPA key policy'
+            return key
+        self.storage_mock.return_value.key=checked_key
         self.recovery_mock=patch('app.futsal_substitution_redetection.storage',return_value=self.storage_mock.return_value);self.recovery_mock.start()
         self.endpoint=self.url+'/'+'c'*32+'/redetection'
     def tearDown(self):
