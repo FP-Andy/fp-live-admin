@@ -17,6 +17,8 @@ from .fpa_cv_storage import storage
 from .fla_substitutions import saved_substitutions
 from .futsal_analysis_snapshots import router
 
+RESOURCE_KIND = 'sub_redetection'
+
 
 def log_context(log):
     if not log:
@@ -91,7 +93,7 @@ def save_recovery(db, snapshot, user, value):
     digest = hashlib.sha256(content).hexdigest()
     previous = db.get(FpaCvResource, value['id'])
     if previous:
-        if previous.kind != 'substitution_redetection' or previous.owner_id != snapshot.owner_id or previous.payload.get('sha256') != digest:
+        if previous.kind != RESOURCE_KIND or previous.owner_id != snapshot.owner_id or previous.payload.get('sha256') != digest:
             raise HTTPException(409, '같은 재탐지 ID에 다른 결과가 있습니다.')
         return previous.payload
     store = storage()
@@ -111,7 +113,7 @@ def save_recovery(db, snapshot, user, value):
                 'sha256': digest, 'logContext': value['logContext'], 'logRevision': saved['revision'],
                 'trackIds': track_ids, 'createdAt': datetime.now(timezone.utc).isoformat(), 'createdBy': user.name,
                 'windowCount': len(value['windows']), 'reviewOnly': True}
-    db.add(FpaCvResource(id=value['id'], kind='substitution_redetection', owner_id=snapshot.owner_id, payload=manifest))
+    db.add(FpaCvResource(id=value['id'], kind=RESOURCE_KIND, owner_id=snapshot.owner_id, payload=manifest))
     db.commit()
     return manifest
 
@@ -121,7 +123,7 @@ def check_resolution(db, user, snapshot, decision, log):
         if max(decision.outTrackId, decision.inTrackId) >= 10**9:
             raise HTTPException(400, '재탐지 후보의 원본 버전을 함께 선택하세요.')
         return
-    row = owned(db, decision.redetectionId, user, 'substitution_redetection')
+    row = owned(db, decision.redetectionId, user, RESOURCE_KIND)
     if row.payload['snapshotId'] != snapshot.id or row.payload['logContext'] != log_context(log):
         raise HTTPException(409, '교체 시각 또는 원본이 변경되었습니다. 재탐지 후보를 다시 확인하세요.')
     if any(i >= 10**9 and i not in row.payload['trackIds'] for i in (decision.outTrackId, decision.inTrackId)):
@@ -161,7 +163,7 @@ def read_redetection(snapshot_id: str, metadata: bool = False, recovery_id: str 
     if len(pins) > 1:
         raise HTTPException(409, '서로 다른 재탐지 버전의 연결이 있습니다. 동일 버전으로 검수하세요.')
     pinned = next(iter(pins), None)
-    rows = [r for r in db.query(FpaCvResource).filter_by(kind='substitution_redetection', owner_id=snapshot.owner_id).all()
+    rows = [r for r in db.query(FpaCvResource).filter_by(kind=RESOURCE_KIND, owner_id=snapshot.owner_id).all()
             if r.payload.get('snapshotId') == snapshot_id]
     rows.sort(key=lambda r: r.payload['createdAt'], reverse=True)
     chosen_id = pinned or recovery_id

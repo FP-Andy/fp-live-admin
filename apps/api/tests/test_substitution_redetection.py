@@ -7,12 +7,13 @@ import test_analysis_snapshots as fixture
 from app.models import FpaCvResource, Match
 from app.fla_substitutions import TrackingResolution
 from app.fpa_cv_storage import KEY
-from app.futsal_substitution_redetection import log_context, check_resolution
+from app.futsal_substitution_redetection import log_context, check_resolution, RESOURCE_KIND
 from fastapi import HTTPException
 
 class Redetection(unittest.TestCase):
     save=fixture.Snapshots.save
     def setUp(self):
+        self.assertLessEqual(len(RESOURCE_KIND), FpaCvResource.__table__.c.kind.type.length)
         fixture.Snapshots.setUp(self)
         self.save()
         self.match_id=UUID('72adc60a-b83a-5ec9-8938-86986607ace8')
