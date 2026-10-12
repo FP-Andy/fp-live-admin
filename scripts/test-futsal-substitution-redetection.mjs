@@ -8,16 +8,18 @@ for(let i=0;i<150;i++){const t=i/5,boxes=[];
  frames.push({t,boxes});
 }
 const data={datasetId:'one',video:{name:'one.mp4',duration:30},detector:{sampleFps:5,roi:[[0,0],[1,0],[1,.8],[0,.8]]},frames};
-const snapshot={id:'snapshot',jobId:'job',matchId:'match',review:{uniforms:{home:[[255,0,0]],away:[[0,0,255]]}},heatmap:{schema:'fpa-heatmaps/v1',datasetId:'one',video:'one.mp4',from:0,to:30,point:'center',width:80,height:40,scale:1,players:[{id:'home-2',group:'home',jersey:'2',positions,grid:Array(3200).fill(0)}]}};
+const snapshot={id:'a'.repeat(32),jobId:'job',matchId:'match',review:{uniforms:{home:[[255,0,0]],away:[[0,0,255]]}},heatmap:{schema:'fpa-heatmaps/v1',datasetId:'one',video:'one.mp4',from:0,to:30,point:'center',width:80,height:40,scale:1,players:[{id:'home-2',group:'home',jersey:'2',positions,grid:Array(3200).fill(0)}]}};
 const saved={revision:1,log:{schema:'fpa-substitution-log/v2',video:{name:'one.mp4',duration:30,from:0,to:30},players:[],initialPlayers:[],substitutions:[{id:'e',time:11,team:'home',note:''}]}};
 const baseline=deriveSubstitutionReport(snapshot,data,saved);assert.equal(baseline.status,'review');
 const plan=planSubstitutionRedetection(snapshot,data,saved,baseline);assert.equal(plan.windows.length,1);assert.equal(plan.totalSeconds,30);
-const recovery={...plan,id:'recovery-1',windows:[{...plan.windows[0],frames:reFrames}]},before=JSON.stringify({snapshot,data,saved,recovery});
+const recovery={...plan,id:'d'.repeat(32),windows:[{...plan.windows[0],frames:reFrames}]},before=JSON.stringify({snapshot,data,saved,recovery});
 const merged=mergeSubstitutionRedetection(snapshot,data,saved,recovery);assert.deepEqual(merged.recoveryAliases.map(a=>a.originalId),[200,300]);
 const result=deriveSubstitutionReport(snapshot,data,saved,undefined,recovery);assert.equal(result.status,'ready');assert.equal(result.events[0].outNumber,'2');
 assert.equal(JSON.stringify({snapshot,data,saved,recovery}),before,'original snapshot, data, log and sidecar stay immutable');
 assert(result.heatmap.players.at(-1).positions.some(q=>q.trackId===300));
-assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,{...saved,revision:2},recovery),/오래된/);
+assert.doesNotThrow(()=>mergeSubstitutionRedetection(snapshot,data,{...saved,revision:2},recovery),'confirmation/note revisions keep immutable evidence');
+const moved=structuredClone(saved);moved.log.substitutions[0].time+=1;assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,moved,recovery),/오래된/);
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,{...saved,revision:2},{...recovery,logContext:undefined}),/오래된/);
 assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,datasetId:'other'}),/원본/);
 assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,roi:[[0,0],[1,0],[1,1],[0,1]]}),/코트/);
 assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,model:'different.pt'}),/모델/);
@@ -28,3 +30,12 @@ const opponent=structuredClone(recovery);for(const f of opponent.windows[0].fram
 const duplicate=structuredClone(recovery);for(const f of duplicate.windows[0].frames)f.boxes.push({...f.boxes[0],id:1001000002});assert.equal(mergeSubstitutionRedetection(snapshot,data,saved,duplicate).recoveryAliases.length,0,'two comparable tracks cannot claim one original');
 assert.equal(planSubstitutionRedetection(snapshot,data,saved,result).windows.length,0,'resolved logs do not incur inference');
 console.log('PASS: bounded unresolved windows, sustained ID bridge, immutable inputs, stale/video/range/collision rejection, crowded/one-frame/wrong-team safeguards, recovered entrant to end of stint.');
+
+const reviewOnly={...recovery,reviewOnly:true};
+const reviewed=structuredClone(saved);reviewed.revision++;
+reviewed.log.substitutions[0].tracking={snapshotId:snapshot.id,outPersonId:'home-2',outTrackId:result.events[0].outTrackId,inTrackId:result.events[0].inTrackId,redetectionId:recovery.id};
+const confirmed=deriveSubstitutionReport(snapshot,data,reviewed,undefined,reviewOnly);
+assert.equal(confirmed.events[0].connectionConfirmed,true);assert.equal(confirmed.status,'ready');
+reviewed.log.substitutions[0].tracking.redetectionId='e'.repeat(32);
+assert.equal(deriveSubstitutionReport(snapshot,data,reviewed,undefined,reviewOnly).events[0].status,'review');
+console.log('PASS: human confirmation survives revision, uses pinned evidence and rejects a different recovery.');

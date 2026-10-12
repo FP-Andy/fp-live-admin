@@ -23,7 +23,10 @@ class Player(BaseModel):
 
 class TrackingResolution(BaseModel):
     snapshotId: str = Field(pattern=r'^[a-f0-9]{32}$')
+    redetectionId: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
     outPersonId: str = Field(min_length=1, max_length=160)
+    outTime: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    inTime: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     outTrackId: int = Field(ge=0, strict=True)
     inTrackId: int = Field(ge=0, strict=True)
 

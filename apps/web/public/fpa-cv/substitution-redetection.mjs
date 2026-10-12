@@ -1,5 +1,7 @@
 import {classifyUniform} from './colors.mjs';
 export const REDETECTION_VERSION='fpa-substitution-redetection/v1';
+export const substitutionLogContext=log=>log?{video:Object.fromEntries(['name','duration','from','to'].map(k=>[k,log.video[k]])),events:log.substitutions.map(({id,time,team})=>({id,time,team})).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0)}:null;
+const sameContext=(a,b)=>!!a&&JSON.stringify(substitutionLogContext({video:a.video,substitutions:a.events}))===JSON.stringify(substitutionLogContext(b));
 const side=g=>g?.startsWith('home')?'home':g?.startsWith('away')?'away':null;
 const overlap=(a,b)=>{const i=Math.max(0,Math.min(a[2],b[2])-Math.max(a[0],b[0]))*Math.max(0,Math.min(a[3],b[3])-Math.max(a[1],b[1]));return i/Math.max(1e-10,(a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-i);};
 const lower=(rows,t)=>{let a=0,b=rows.length;while(a<b){const m=(a+b)>>1;if(rows[m].t<t)a=m+1;else b=m;}return a;};
@@ -13,12 +15,12 @@ export function planSubstitutionRedetection(snapshot,data,saved,result){
   if(last&&from<=last.to&&to-last.from<=80){last.to=Math.max(last.to,to);last.eventIds.push(e.id);}
   else windows.push({from,to,eventIds:[e.id]});
  }
- return {schema:REDETECTION_VERSION,datasetId:data.datasetId,snapshotId:snapshot.id,logRevision:saved.revision,video:{name:data.video.name,duration:data.video.duration},model:data.detector.model,roi:data.detector.roi,uniforms:snapshot.review?.uniforms||{},windows:windows.map((w,i)=>({...w,id:i+1})),totalSeconds:windows.reduce((n,w)=>n+w.to-w.from,0)};
+ return {schema:REDETECTION_VERSION,datasetId:data.datasetId,snapshotId:snapshot.id,logRevision:saved.revision,logContext:substitutionLogContext(saved.log),video:{name:data.video.name,duration:data.video.duration},model:data.detector.model,roi:data.detector.roi,uniforms:snapshot.review?.uniforms||{},windows:windows.map((w,i)=>({...w,id:i+1})),totalSeconds:windows.reduce((n,w)=>n+w.to-w.from,0)};
 }
 /** Compare new track IDs against simultaneous original boxes, never ID numbers.
  * The caller retains the original snapshot; this only creates a derived input. */
 export function mergeSubstitutionRedetection(snapshot,data,saved,recovery){
- if(typeof recovery?.id!=='string'||!recovery.id||recovery.id.length>128||recovery?.schema!==REDETECTION_VERSION||recovery.datasetId!==data.datasetId||recovery.snapshotId!==snapshot.id||recovery.logRevision!==saved.revision||recovery.video?.name!==data.video.name||Math.abs(recovery.video.duration-data.video.duration)>.2)throw Error('다른 원본 또는 오래된 교체 재탐지 결과입니다.');
+ if(typeof recovery?.id!=='string'||!recovery.id||recovery.id.length>128||recovery?.schema!==REDETECTION_VERSION||recovery.datasetId!==data.datasetId||recovery.snapshotId!==snapshot.id||(recovery.logContext?!sameContext(recovery.logContext,saved.log):recovery.logRevision!==saved.revision)||recovery.video?.name!==data.video.name||Math.abs(recovery.video.duration-data.video.duration)>.2)throw Error('다른 원본 또는 오래된 교체 재탐지 결과입니다.');
  if(JSON.stringify(recovery.roi)!==JSON.stringify(data.detector.roi)||recovery.model!==data.detector.model)throw Error('재탐지 코트 또는 모델 설정이 원본과 다릅니다.');
  const originalIds=new Set(data.frames.flatMap(f=>f.boxes.map(b=>b.id))),frames=new Map(data.frames.map(f=>[f.t,{...f,boxes:[...f.boxes]}])),seen=new Map(),evidence=new Map(),tolerance=.49/data.detector.sampleFps;
  for(const w of recovery.windows){

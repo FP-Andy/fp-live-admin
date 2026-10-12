@@ -7,7 +7,7 @@ import {validateHeatmapAugmentation} from './heatmap-augmentation-schema.mjs';
 import {heatmapDensityScale} from './heatmap-render.mjs';
 import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v3';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v4';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);
@@ -19,6 +19,7 @@ const newId=e=>'sub-'+e.id;
  * Unresolved crossings block export; nearest time alone never assigns identity.
  */
 export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},recovery=null){
+ const originalData=data;
  if(recovery)data=mergeSubstitutionRedetection(snapshot,data,saved,recovery);
  const original=snapshot.heatmap,log=saved.log?validateSubstitutionLog(saved.log):null;
  if(!original||data.datasetId!==original.datasetId)fail('스냅샷과 추적 데이터가 다른 분석입니다.');
@@ -27,6 +28,18 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
  if(!events.length)return {provenance,status:'ready',events:[],heatmap:structuredClone(original)};
  if(events.some(e=>e.time<original.from||e.time>=original.to))fail('분석 구간 밖 교체가 있습니다. 해당 구간을 포함한 스냅샷을 선택하세요.');
  const project=courtProjection(data.detector.roi,original.turn||0),evidence=substitutionEvidence(snapshot,data,events),{paths,pathOf,crossings}=evidence;
+ if(recovery){
+  // A supplemental crop must not remove an existing candidate. Keep both
+  // evidence sets for the operator, projected onto the same path namespace.
+  const baseline=substitutionEvidence(snapshot,originalData,events);
+  for(const c of crossings)c.origin='redetection';
+  for(const c of baseline.crossings){
+   const p=pathOf.get(c.trackId);if(!p)continue;
+   const i=crossings.findIndex(q=>q.kind===c.kind&&q.trackId===c.trackId&&Math.abs(q.time-c.time)<2);
+   const preserved={...c,pathId:p.id,pathIds:p.ids,origin:'original'};
+   if(i>=0)crossings[i]=preserved;else crossings.push(preserved);
+  }
+ }
  const stints=original.players.map(p=>({id:p.id,sourceId:p.id,group:p.group,jersey:p.jersey,from:original.from,to:original.to,kind:'starter'}));
  const used=new Set(),results=[],nextNumber={home:1,away:1};
  for(const p of snapshot.review?.roster||original.players){const n=Number(p.jersey);if(side(p.group)&&Number.isInteger(n))nextNumber[side(p.group)]=Math.max(nextNumber[side(p.group)],n+1);}
@@ -47,12 +60,12 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
   const outs=candidates.filter(c=>c.kind==='out'),ins=candidates.filter(c=>c.kind==='in'),options=stints.filter(s=>s.group===team&&s.from<batch.at(-1).time+12&&s.to>batch[0].time-12).map(s=>({id:s.id,number:s.jersey}));
   const pending=[],selected=[];
   for(const e of batch){const decision=e.tracking;
-   if(decision){const o=outs.find(c=>c.trackId===decision.outTrackId),n=ins.find(c=>c.trackId===decision.inTrackId),s=stints.find(s=>s.id===decision.outPersonId&&s.group===team&&s.from<(o?.time??0)&&s.to>=(o?.time??Infinity));
-    if(decision.snapshotId===snapshot.id&&o&&n&&s&&o.pathId!==n.pathId&&!selected.some(p=>p.s===s||p.n.pathId===n.pathId))selected.push({e,o,n,s,manual:true});
+   if(decision){const o=outs.find(c=>c.trackId===decision.outTrackId&&(decision.outTime===undefined||Math.abs(c.time-decision.outTime)<.001)),n=ins.find(c=>c.trackId===decision.inTrackId&&(decision.inTime===undefined||Math.abs(c.time-decision.inTime)<.001)),s=stints.find(s=>s.id===decision.outPersonId&&s.group===team&&s.from<(o?.time??0)&&s.to>=(o?.time??Infinity));
+    if(decision.snapshotId===snapshot.id&&(!decision.redetectionId||decision.redetectionId===recovery?.id)&&o&&n&&s&&o.pathId!==n.pathId&&!selected.some(p=>p.s===s||p.n.pathId===n.pathId||p.o.pathId===o.pathId))selected.push({e,o,n,s,manual:true});
     else results.push({id:e.id,team,time:e.time,status:'review',reason:'저장된 연결의 출입 근거가 변경되었습니다.',outs,ins,people:options});
    }else pending.push(e);
   }
-  const validOut=outs.filter(o=>!o.returning&&!o.colorConflict&&activeOut(o,team)&&!selected.some(p=>p.o.pathId===o.pathId)),validIn=ins.filter(n=>!n.returning&&!n.colorConflict&&n.team===team&&!selected.some(p=>p.n.pathId===n.pathId));
+  const validOut=outs.filter(o=>!(recovery?.reviewOnly&&o.origin==='redetection')&&!o.returning&&!o.colorConflict&&activeOut(o,team)&&!selected.some(p=>p.o.pathId===o.pathId)),validIn=ins.filter(n=>!(recovery?.reviewOnly&&n.origin==='redetection')&&!n.returning&&!n.colorConflict&&n.team===team&&!selected.some(p=>p.n.pathId===n.pathId));
   const edges=[];for(const o of validOut)for(const n of validIn){const s=activeOut(o,team);if(o.pathId===n.pathId)continue;const source=incomingSource(n,[s]);if(source||(validOut.length===1&&validIn.length===1&&!n.sourceId))edges.push({o,n,s});}
   let chosen=pending.length?completeMatch(edges,pending.length):[];
   let groupOnly=false;
@@ -77,8 +90,8 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
   const departed=selected.map(p=>p.s),batchOutNumbers=departed.map(s=>s.jersey);
   for(const {e,o,n,s,manual,groupOnly:batchPair}of selected){
    const sourceId=incomingSource(n,batchPair?departed:[s]);
-   s.to=Math.min(s.to,o.time);const entrant={id:newId(e),sourceId,group:team,jersey:String(nextNumber[team]++),from:n.time,to:original.to,kind:'substitute',entryTrackId:n.trackId,entryPathId:n.pathId,eventId:e.id};stints.push(entrant);
-   used.add(key(o));used.add(key(n));results.push({id:e.id,team,time:e.time,status:manual?'confirmed':'automatic',outPersonId:s.id,inPersonId:entrant.id,outNumber:s.jersey,inNumber:entrant.jersey,outTime:o.time,inTime:n.time,outTrackId:o.trackId,inTrackId:n.trackId,entryBox:n.box,outs,ins,people:options,...(batchPair?{pairing:'batch',batchId:batch[0].id,batchOutNumbers}:{}),evidence:{out:o.evidence,in:n.evidence,joinedTracks:n.pathIds.length}});
+   s.to=Math.min(s.to,o.time);const entrant={id:newId(e),sourceId,group:team,jersey:String(nextNumber[team]++),from:n.time,to:original.to,kind:'substitute',entryTrackId:n.trackId,entryPathId:n.pathId,eventId:e.id,manual:!!manual};stints.push(entrant);
+   used.add(key(o));used.add(key(n));results.push({id:e.id,team,time:e.time,status:manual?'confirmed':'automatic',connectionConfirmed:!!manual,outPersonId:s.id,inPersonId:entrant.id,outNumber:s.jersey,inNumber:entrant.jersey,outTime:o.time,inTime:n.time,outTrackId:o.trackId,inTrackId:n.trackId,entryBox:n.box,outs,ins,people:options,...(batchPair?{pairing:'batch',batchId:batch[0].id,batchOutNumbers}:{}),evidence:{out:o.evidence,in:n.evidence,joinedTracks:n.pathIds.length}});
   }
  }
  const resultFor=s=>results.find(r=>r.inPersonId===s.id);
@@ -87,15 +100,16 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
  // Allocate each saved observation once, then add only genuinely unassigned
  // detector observations. A new track must never duplicate an active player's heat.
  for(const base of original.players)for(const q of base.positions){
-  const eligible=stints.filter(s=>s.sourceId===base.id&&s.from<q.t+q.seconds&&s.to>q.t);
+  const eligible=stints.filter(s=>(s.sourceId===base.id||s.manual&&s.entryPathId===pathOf.get(q.trackId)?.id)&&s.from<q.t+q.seconds&&s.to>q.t);
   const boundaries=[...new Set([q.t,q.t+q.seconds,...eligible.flatMap(s=>[Math.max(q.t,s.from),Math.min(q.t+q.seconds,s.to)])])].sort((a,b)=>a-b);
-  for(let j=0;j<boundaries.length-1;j++){const a=boundaries[j],z=boundaries[j+1];if(z-a<1e-8)continue;const possible=eligible.filter(s=>s.from<=a&&s.to>=z),exact=possible.find(s=>s.entryPathId===pathOf.get(q.trackId)?.id),chosen=exact||possible.sort((a,b)=>b.from-a.from)[0];if(chosen)allocations.get(chosen.id).push({...q,t:a,seconds:z-a});}
+  for(let j=0;j<boundaries.length-1;j++){const a=boundaries[j],z=boundaries[j+1];if(z-a<1e-8)continue;const possible=eligible.filter(s=>s.from<=a&&s.to>=z),exact=possible.find(s=>s.manual&&s.entryPathId===pathOf.get(q.trackId)?.id)||possible.find(s=>s.entryPathId===pathOf.get(q.trackId)?.id),chosen=exact||possible.sort((a,b)=>b.from-a.from)[0];if(chosen)allocations.get(chosen.id).push({...q,t:a,seconds:z-a});}
  }
  const occupied=new Map();for(const [id,list]of allocations)for(const q of list){const a=occupied.get(q.trackId)||[];a.push({...q,id});occupied.set(q.trackId,a);}for(const list of occupied.values())list.sort((a,b)=>a.t-b.t);
  const raw=new Map();for(const s of stints.filter(s=>!s.sourceId)){
   for(const q of paths.get(s.entryPathId)?.list||[]){if(q.t<s.from||q.t>=s.to||q.b.confidence<.35)continue;const box=q.b.box,xy=project([(box[0]+box[2])/2,original.point==='center'?(box[1]+box[3])/2:box[3]]),color=classifyUniform(q.b.appearance,snapshot.review?.uniforms||{});
    if(!xy||xy.some(n=>n<0||n>1)||(side(color.group)&&side(color.group)!==s.group&&color.strength>.3))continue;
    const seconds=Math.min(q.dt,s.to-q.t),conflict=(paths.get(s.entryPathId)?.ids||[q.b.id]).some(id=>(occupied.get(id)||[]).some(p=>p.t<q.t+seconds-1e-7&&p.t+p.seconds>q.t+1e-7));
+   if((paths.get(s.entryPathId)?.ids||[q.b.id]).some(id=>(occupied.get(id)||[]).some(p=>p.id===s.id&&p.t<q.t+seconds-1e-7&&p.t+p.seconds>q.t+1e-7)))continue;
    if(conflict){markReview(s,'입장 트랙이 다른 출전 선수의 관측과 겹칩니다. 기존 관측은 보존하고 이 연결을 확인하세요.');continue;}
    const k=q.t.toFixed(6)+':'+q.b.id,a=raw.get(k)||[];a.push({s,q:{t:q.t,x:xy[0],y:xy[1],seconds,trackId:q.b.id,source:'automatic'}});raw.set(k,a);
   }
