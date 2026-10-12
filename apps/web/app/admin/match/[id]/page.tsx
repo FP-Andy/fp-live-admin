@@ -1380,6 +1380,8 @@ function MatchControlPage() {
 
   return (
     <main className="page-stack fla-match" data-mobile-view={mobileView}>
+      {/* 분석(경기 타이머) 진행 중 전체화면 네온 글로우 — 시작됐음을 시각적으로 알린다. */}
+      {running ? <div className="live-neon-overlay" aria-hidden /> : null}
       <header className="fla-match-heading">
         <div><div className="row fla-match-context"><Link className="button-link button-compact btn-secondary fla-back-link" href="/admin/dashboard">← 대시보드</Link><span className="status-pill">{match?.competition_class || 'FLA'}</span>{match?.metadata?.design_preview ? <span className="status-pill tech">로컬 예시 경기</span> : null}<span className="muted">{isArchived ? '보관 경기 · 읽기 전용' : canWrite ? '기록 가능' : '읽기 전용'}</span></div><h2>{matchTeams ? `${matchTeams.homeTeam} vs ${matchTeams.awayTeam}` : match?.name || '경기 불러오는 중…'}</h2></div>
       </header>
