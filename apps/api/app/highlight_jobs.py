@@ -554,9 +554,15 @@ def youtube_quality_args(max_height: int | None = None) -> list[str]:
     lo = min(YT_MIN_USABLE_HEIGHT, h)
 
     def tier(extra: str) -> str:
+        # 오디오는 **항상 m4a(aac) 를 먼저** 고른다. ba 를 그냥 쓰면 opus(webm) 가
+        # 붙을 수 있는데, 그걸 mp4 로 합치면 크롬·사파리 둘 다 소리를 못 낸다 —
+        # 화면만 나오고 소리는 없다(실측: av01+opus 조합이 그랬다). 영상 코덱은
+        # av1 을 허용해도 오디오만은 브라우저가 읽는 aac 로 못 박는다. m4a 가 없는
+        # 영상이면 그제서야 아무 오디오라도 받는다(못 받는 것보다는 낫다).
         return (
             f"bv*[height<={h}]{extra}[vcodec^=avc1]+ba[ext=m4a]"
             f"/b[height<={h}]{extra}[vcodec^=avc1]"
+            f"/bv*[height<={h}]{extra}+ba[ext=m4a]"
             f"/bv*[height<={h}]{extra}+ba"
             f"/b[height<={h}]{extra}"
         )
@@ -665,6 +671,13 @@ def probe_video_info(path: Path) -> dict:
              "-of", "default=nw=1:nk=0", str(path)],
             capture_output=True, text=True, timeout=60,
         ).stdout
+        # 오디오 코덱은 따로 읽는다 — 소리가 안 나는 원인(opus in mp4)을 잡으려면
+        # 영상 코덱만으론 모자라다.
+        aout = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
     except Exception:  # noqa: BLE001 - 재는 데 실패해도 받은 건 멀쩡하다
         return {}
     # 이름으로 읽는다. 자리로 읽으면 순서가 바뀌었을 때 조용히 틀린 값을 집는다.
@@ -679,8 +692,42 @@ def probe_video_info(path: Path) -> dict:
             return None
 
     info = {"width": num("width"), "height": num("height"),
-            "codec": got.get("codec_name") or None, "bitrate": num("bit_rate")}
+            "codec": got.get("codec_name") or None, "bitrate": num("bit_rate"),
+            "audio_codec": aout.splitlines()[0] if aout else None}
     return {k: v for k, v in info.items() if v is not None}
+
+
+#: mp4 로 담았을 때 크롬·사파리가 소리를 내는 오디오 코덱. opus/vorbis 는 webm 전용이라
+#: mp4 에 넣으면 화면만 나오고 소리가 없다.
+BROWSER_SAFE_AUDIO = {"aac", "mp3", "ac3", "eac3"}
+
+
+def ensure_browser_audio(path: Path) -> bool:
+    """받은 파일의 오디오가 브라우저 비호환(opus 등)이면 그 트랙만 aac 로 바꿔 끼운다.
+
+    영상은 재인코딩하지 않는다(그대로 복사) — 소리만 문제이고, 영상까지 다시 굽는 건
+    느리고 화질을 깎는다. 새 규칙이 애초에 aac 를 받으므로 이건 **이미 받아 둔 opus
+    파일**을 위한 소급 교정이다. 교정했으면 True.
+    """
+    info = probe_video_info(path)
+    ac = str(info.get("audio_codec") or "")
+    if not ac or ac in BROWSER_SAFE_AUDIO:
+        return False
+    tmp = path.with_name(path.stem + ".aac_fix" + path.suffix)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(path),
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+             "-movflags", "+faststart", str(tmp)],
+            check=True, capture_output=True, text=True, timeout=1800,
+        )
+    except Exception:  # noqa: BLE001 - 교정 실패해도 원본은 둔다(소리만 안 날 뿐)
+        tmp.unlink(missing_ok=True)
+        logger.warning("오디오 교정 실패 %s (코덱 %s)", path, ac)
+        return False
+    tmp.replace(path)
+    logger.info("오디오를 브라우저 호환으로 교정 %s: %s → aac", path, ac)
+    return True
 
 
 def fineplay_source_dir(job_id: str) -> Path:
@@ -879,6 +926,11 @@ def fetch_youtube_sources_for_job(job_id: str, max_height: int | None = None) ->
             if fetch_warnings:
                 logger.warning("유튜브 취득 경고 %s/%s: %s",
                                job_id, video.video_id, fetch_warnings)
+            # 소리가 안 나는 조합(opus in mp4)이면 오디오만 aac 로 바꿔 끼운다.
+            # 새 규칙은 애초에 aac 를 받지만, 예전에 받아 둔 opus 파일이나 m4a 가
+            # 아예 없는 영상을 위한 안전장치다. 영상은 복사만 하므로 화질은 그대로다.
+            if dest.exists():
+                ensure_browser_audio(dest)
             # 받은 실물을 재어 남긴다. 화면이 이걸 그대로 보여 주므로 '왜 흐린가' 를
             # 파일을 직접 열어 보지 않고도 알 수 있다.
             info = probe_video_info(dest) if dest.exists() else {}
