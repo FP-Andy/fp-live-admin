@@ -234,6 +234,8 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const timeline=(data?.segments||[]).filter((p:any)=>p.end_ms>timelineFrom).slice(-120).reverse().map((p:any)=>`${mediaLabel(p.start_ms)}–${mediaLabel(p.end_ms)} · ${names[p.team as Team]}`);
   if(!data)return <p role="status">{error||'경기 불러오는 중…'}</p>;
   return <div className={`fv-workspace${expanded?' fv-expanded':''}`} ref={workspace} data-state={glow}>
+    {/* 분석(기록) 진행 중 전체화면 네온 글로우 — 시작됐음을 시각적으로 알린다. 전체화면에서도 보이게 안쪽에 둔다. */}
+    {glow==='recording'?<div className="live-neon-overlay" aria-hidden />:null}
     {process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?<div className="fv-preview">로컬 검토 · 운영 데이터에 저장되지 않습니다 · 현재 영상은 기능 확인용 샘플입니다.</div>:null}
     <header className="fv-top">
       <div className="fv-match-name">
