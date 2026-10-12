@@ -1,5 +1,6 @@
 'use client';
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
+import {substitutionScene} from '../../lib/substitution-scenes';
 import type {ReportDraft} from '../../lib/futsal-report';
 import type {Crossing,SubstitutionResultEvent} from '../../public/fpa-cv/substitution-report.mjs';
 import {formatLogTime as time} from '../../public/fla-video/substitution-log.mjs';
@@ -8,9 +9,10 @@ type Controller=ReturnType<typeof useSubstitutionReport>;
 const choice=(id:number|undefined,t:number|undefined)=>id===undefined?'':`${id}@${t??''}`;
 const label=(c:Crossing)=>`${c.origin==='redetection'?'재탐지':'기존 추적'} · TRACK #${c.trackId}`;
 function Scene({candidate:c,jobId}:{candidate:Crossing;jobId:string}){
- const [ready,setReady]=useState(false),[error,setError]=useState(false);
+ const [ready,setReady]=useState(false),[error,setError]=useState(false),[src,setSrc]=useState('');
+ useEffect(()=>{let active=true;setReady(false);setError(false);setSrc('');void substitutionScene(`/api/tracking/jobs/${jobId}/report-frame?time=${c.time}`).then(value=>{if(active)setSrc(value);}).catch(()=>{if(active)setError(true);});return()=>{active=false;};},[jobId,c.time]);
  return <div className="mr-sub-candidate-scene">
-  <img loading="lazy" src={`/api/tracking/jobs/${jobId}/report-frame?time=${c.time}`} alt={`${label(c)} · 영상 ${time(c.time)}`} onLoad={()=>setReady(true)} onError={()=>setError(true)}/>
+  {src&&<img src={src} alt={`${label(c)} · 영상 ${time(c.time)}`} onLoad={()=>setReady(true)} onError={()=>setError(true)}/>}
   {!ready&&<span className="mr-sub-loading">{error?'장면을 불러오지 못했습니다':'장면 불러오는 중…'}</span>}
   {ready&&<span className="mr-sub-box" style={{left:`${c.box[0]*100}%`,top:`${c.box[1]*100}%`,width:`${(c.box[2]-c.box[0])*100}%`,height:`${(c.box[3]-c.box[1])*100}%`}}><span>#{c.trackId}</span></span>}
  </div>;
