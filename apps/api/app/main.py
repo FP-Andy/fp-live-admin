@@ -12917,6 +12917,16 @@ def produce_fineplay_job(
         text = str(value or "").strip()
         return text if re.fullmatch(r"#[0-9A-Fa-f]{6}", text) else fallback
 
+    def _board_px(source: dict, key: str) -> float | None:
+        """사람이 끌어 적어 넣은 픽셀 좌표. 안 적었으면 None — 그때는 비율을 쓴다."""
+        raw = source.get(key)
+        if raw is None or raw == "":
+            return None
+        try:
+            return max(0.0, min(20000.0, float(raw)))
+        except (TypeError, ValueError):
+            return None
+
     board = body.get("scoreboard") if isinstance(body.get("scoreboard"), dict) else None
     if board and board.get("enabled"):
         metadata["scoreboard"] = {
@@ -12925,9 +12935,13 @@ def produce_fineplay_job(
             "away_name": str(board.get("away_name") or "").strip()[:20],
             "home_color": _hex_color(board.get("home_color"), "#FF7400"),
             "away_color": _hex_color(board.get("away_color"), "#0000FF"),
-            "size_pct": _pct(board, "size_pct", 24.33, 10.0, 60.0),
+            # 수동 태깅과 같은 기본형 점수판 기본값(29% · 픽셀 95,60).
+            "size_pct": _pct(board, "size_pct", 29.0, 10.0, 60.0),
             "pos_x": _pct(board, "pos_x", 2.18, 0.0, 100.0),
             "pos_y": _pct(board, "pos_y", 4.42, 0.0, 100.0),
+            # 픽셀 좌표가 비율보다 우선. 안 적혔으면 None 이라 비율로 떨어진다.
+            "pos_px_x": _board_px(board, "pos_px_x"),
+            "pos_px_y": _board_px(board, "pos_px_y"),
         }
     else:
         metadata.pop("scoreboard", None)
