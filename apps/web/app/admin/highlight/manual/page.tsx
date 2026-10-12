@@ -2594,6 +2594,9 @@ export default function ManualHighlightPage() {
                             hasSetBoard && boardPreviewUrl ? (
                               <img src={boardPreviewUrl} alt="점수판"
                                    style={{ width, display: 'block' }} />
+                            ) : hasSetBoard ? (
+                              // 서버 점수판 로딩 중 — 옛 ScoreboardPreview 를 깜빡 보여주지 않고 자리만 잡는다.
+                              <div style={{ width, height: Math.round(width * 125 / 568) }} aria-hidden />
                             ) : (
                               <ScoreboardPreview
                                 config={scoreboard}
