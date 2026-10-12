@@ -42,7 +42,10 @@ def validate_recovery(value, snapshot, saved):
             or value.get('logRevision') != saved['revision']):
         raise HTTPException(409, '현재 스냅샷·교체로그에 맞는 재탐지 결과를 등록하세요.')
     context = value['logContext']
-    if not context or value.get('video') != {k: context['video'][k] for k in ('name', 'duration')}:
+    video = value.get('video') or {}
+    # Browser logs store milliseconds; decoder durations retain frame precision.
+    if (not context or video.get('name') != context['video']['name']
+            or not finite(video.get('duration')) or abs(video['duration']-context['video']['duration']) > .2):
         raise HTTPException(400, '재탐지 영상 정보를 확인하세요.')
     roi = value.get('roi')
     if not isinstance(roi, list) or len(roi) != 4 or any(not isinstance(p, list) or len(p) != 2 or not all(finite(x) and 0 <= x <= 1 for x in p) for p in roi):

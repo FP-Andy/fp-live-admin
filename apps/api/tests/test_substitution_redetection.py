@@ -48,6 +48,11 @@ class Redetection(unittest.TestCase):
         self.assertEqual(self.client.get(self.endpoint).json()['status'],'stale')
         self.assertNotIn('recovery',self.client.get(self.endpoint).json())
         self.user.id='two';self.assertEqual(self.client.get(self.endpoint).status_code,404)
+    def test_decoder_duration_can_keep_submillisecond_precision(self):
+        self.recovery['video']['duration']=10.00063
+        self.assertEqual(self.client.post(self.endpoint,json=self.recovery).status_code,201)
+        self.recovery['id']='e'*32;self.recovery['video']['duration']=11
+        self.assertEqual(self.client.post(self.endpoint,json=self.recovery).status_code,400)
     def test_bad_windows_ids_video_and_resolution(self):
         for mutate in [lambda v:v.update(snapshotId='a'*32),lambda v:v.update(logRevision=0),lambda v:v['windows'][0].update(to=90),lambda v:v['windows'][0]['frames'][0]['boxes'][0].update(id=100),lambda v:v['windows'][0]['frames'][0]['boxes'][0].update(box=[.5,.5,.3,.3])]:
             v=copy.deepcopy(self.recovery);mutate(v);self.assertIn(self.client.post(self.endpoint,json=v).status_code,(400,409))
