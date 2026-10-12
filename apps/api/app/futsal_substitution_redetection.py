@@ -97,7 +97,7 @@ def save_recovery(db, snapshot, user, value):
     store = storage()
     if not store:
         raise HTTPException(503, '재탐지 저장소를 확인하세요.')
-    key = f"fpa-cv/substitution-redetection/{snapshot.id}/{value['id']}.json"
+    key = f"fpa-cv/snapshots/{snapshot.id}/redetection-{value['id']}.json"
     try:
         store.client.put_object(Bucket=store.bucket, Key=store.key(key), Body=content, ContentType='application/json', IfNoneMatch='*')
     except Exception as error:
