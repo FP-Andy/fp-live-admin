@@ -5,7 +5,7 @@ import HighlightSubTabs from '../HighlightSubTabs';
 import { API_BASE, apiJson } from '../../../../lib/api';
 import {
   DEFAULT_SCOREBOARD, DEFAULT_WATERMARK, MARK_RATIO, MARK_SRC,
-  OverlayPlacer, ScoreboardPreview, boardPlacement, markPlacement,
+  OverlayPlacer, boardPlacement, markPlacement,
   type Scoreboard, type Watermark,
 } from '../../../../components/HighlightOverlay';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
@@ -435,7 +435,7 @@ export default function FineplayJobsPage() {
   const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
   // 점수판 미리보기는 수동 태깅과 똑같이 **서버가 기본형(파인플레이 시안)으로 그려** 준다.
-  // 옛 코드로 그리던 ScoreboardPreview 는 로딩 중 잠깐만 쓰는 대체물이다.
+  // 로딩 중엔 옛 ScoreboardPreview 를 깜빡 보여주지 않고 빈 자리만 잡는다(깜빡임 방지).
   const [boardPreviewUrl, setBoardPreviewUrl] = useState('');
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
   // 오버레이 자리를 잡을 기준 규격. 원본 해상도를 모르면 1080p 로 본다(대부분 그렇다).
@@ -2699,7 +2699,8 @@ export default function FineplayJobsPage() {
                             <img src={boardPreviewUrl} alt="점수판"
                                  style={{ width: 420, maxWidth: '100%', display: 'block' }} />
                           ) : (
-                            <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                            // 서버 점수판 로딩 중 — 옛 ScoreboardPreview 를 깜빡 보여주지 않는다.
+                            <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>점수판 그리는 중…</span>
                           )}
                           <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: 0 }}>
                             새겨질 점수판 (최종 점수 기준 · 기본형)
@@ -2735,9 +2736,8 @@ export default function FineplayJobsPage() {
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img src={boardPreviewUrl} alt="점수판" style={{ width, display: 'block' }} />
                               ) : (
-                                <ScoreboardPreview
-                                  config={scoreboard} home={finalScore[0]} away={finalScore[1]} width={width}
-                                />
+                                // 로딩 중엔 옛 점수판을 그리지 않고 자리만 잡는다(깜빡임 방지).
+                                <div style={{ width, height: Math.round(width * 125 / 568) }} aria-hidden />
                               )
                             ),
                           }] : []),
