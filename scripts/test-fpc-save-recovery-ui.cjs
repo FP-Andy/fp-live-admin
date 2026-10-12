@@ -88,7 +88,7 @@ async function loadVideo(page) {
 }
 async function exportDraft(page, name) {
   const done = page.waitForEvent('download');
-  await page.getByRole('button', { name: '작업 복구 파일 저장', exact: true }).click();
+  await page.getByRole('button', { name: '하이라이트 로그 JSON 다운로드', exact: true }).click();
   const download = await done; await download.saveAs(output + '/' + name);
   return JSON.parse(fs.readFileSync(output + '/' + name, 'utf8'));
 }
@@ -188,7 +188,7 @@ async function tagKey(page, code, key, time) {
     report('JSON roundtrip preserves tags/padding/scoreboard/card placements/images/watermark; partial autosave is explicitly labeled');
     const wrong = { ...exported, sport: 'FOOTBALL' };
     await restored.getByLabel('수동 태깅 복구 파일').setInputFiles({ name: 'wrong.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(wrong)) });
-    await restored.getByText('종목과 원본 영상의 이름·크기·순서가 같은 복구 파일을 선택하세요.', { exact: true }).waitFor();
+    await restored.getByText('종목과 원본 영상 개수가 일치하는 하이라이트 JSON을 선택하세요.', { exact: true }).waitFor();
     assert.deepEqual((await exportDraft(restored, 'unchanged.json')).work, exported.work);
     report('Wrong-sport recovery file is rejected without changing existing work');
     await r.close();

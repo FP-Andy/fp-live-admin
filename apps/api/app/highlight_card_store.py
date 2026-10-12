@@ -101,6 +101,8 @@ def _template_from_spec(row: HighlightCardTemplate) -> CardTemplate:
         board_defaults=dict(spec.get("board_defaults") or {}),
         first_half_video=asset(spec.get("first_half_video")),
         second_half_video=asset(spec.get("second_half_video")),
+        first_half_image=asset(spec.get("first_half_image")),
+        second_half_image=asset(spec.get("second_half_image")),
         outro_video=asset(spec.get("outro_video")),
         outro_default=bool(spec.get("outro_default", False)),
     )

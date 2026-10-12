@@ -32,6 +32,8 @@ import httpx
 import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
+from .highlight_render_queue import HighlightRenderTask
+from .manual_highlight_log import router as manual_highlight_log_router
 from .competition_queue import (
     CompetitionSendWorker,
     cancel as cancel_competition_send,
@@ -65,7 +67,7 @@ from . import record_sheet
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
 from . import highlight_card_store as card_store
 from . import highlight_template_editor as template_editor
-from .highlight_cards import render_board
+from .highlight_cards import CardTemplate, render_board
 from .highlight_cards import (
     DEFAULT_TEMPLATE_ID,
     TEMPLATES,
@@ -183,6 +185,7 @@ from .services import apply_attack_event, apply_possession_segment, apply_xg_eve
 from .xg import estimate_xg as shared_estimate_xg, is_in_penalty_area as shared_is_in_penalty_area, normalize_shot_x as shared_normalize_shot_x
 
 app = FastAPI(title="Live Match Admin API")
+app.include_router(manual_highlight_log_router)
 app.include_router(auth_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
@@ -3662,7 +3665,10 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
             "possession_team": last_state.possession_team if last_state else "NONE",
             "selected_team": last_state.selected_team if last_state else "HOME",
             "attack_lr": last_state.attack_lr if last_state else "L2R",
+            **(state_response(last_state, int((match_obj.metadata_json or {}).get('fla_clock_revision') or 0),
+                              int((match_obj.metadata_json or {}).get('fla_clock_speed') or 1))['state'] or {}),
         },
+        "command_revision": int((match_obj.metadata_json or {}).get('fla_clock_revision') or 0),
         "possession": {
             "home_ms": home_ms,
             "away_ms": away_ms,
@@ -7900,8 +7906,11 @@ def post_state(
 
     metadata = dict(match_obj.metadata_json or {})
     command_revision = int(metadata.get('fla_clock_revision') or 0)
+    clock_speed = int(metadata.get('fla_clock_speed') or 1)
+    if body.clock_speed == 2 and not (session_user.role == 'SUPERADMIN' and metadata.get('stream_mode') == 'MANUAL'):
+        raise HTTPException(403, 'Double speed requires an administrator and a manual match')
     receipts = dict(metadata.get('fla_clock_receipts') or {})
-    request_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude={'user_id'}), sort_keys=True).encode()).hexdigest()
+    request_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude={'user_id'} | ({'clock_speed'} if body.clock_speed is None else set())), sort_keys=True).encode()).hexdigest()
     existing = db.get(State, body.state_id)
     prev = _latest_state(match_id, db)
     if existing:
@@ -7911,11 +7920,11 @@ def post_state(
                 raise HTTPException(409, 'State request ID belongs to different content')
         else:
             require_same_request(existing, match_id, {'clock_ms':body.clock_ms, 'running':body.running, 'possession_team':body.possession_team, 'selected_team':body.selected_team, 'attack_lr':body.attack_lr})
-        return {'ok':True,'idempotent':True,'state_id':existing.id,**state_response(prev,command_revision)}
+        return {'ok':True,'idempotent':True,'state_id':existing.id,**state_response(prev,command_revision,clock_speed)}
     if body.command_revision is None and command_revision:
         raise HTTPException(428, 'Reload the updated console before changing this match clock')
     if body.command_revision is not None and body.command_revision != command_revision:
-        reply={'reason':'stale_command_revision',**state_response(prev,command_revision)}
+        reply={'reason':'stale_command_revision',**state_response(prev,command_revision,clock_speed)}
         if body.update_kind=='sample':return {'ok':True,'ignored':True,**reply}
         raise HTTPException(409, reply)
     effective_clock = body.clock_ms
@@ -7925,9 +7934,13 @@ def post_state(
         command_revision+=1
     elif prev and body.clock_ms < prev.clock_ms and not body.allow_clock_rewind:
         return {'ok':True,'ignored':True,'reason':'stale_clock','state_id':body.state_id,
-                'latest_clock_ms':prev.clock_ms,**state_response(prev,command_revision)}
+                'latest_clock_ms':prev.clock_ms,**state_response(prev,command_revision,clock_speed)}
     elif body.command_revision is not None and prev and any(getattr(body,k)!=getattr(prev,k) for k in ('running','possession_team','selected_team','attack_lr')):
-        return {'ok':True,'ignored':True,'reason':'sample_cannot_change_controls',**state_response(prev,command_revision)}
+        return {'ok':True,'ignored':True,'reason':'sample_cannot_change_controls',**state_response(prev,command_revision,clock_speed)}
+
+    # Samples cannot change playback speed; a speed change is an explicit command.
+    if body.clock_speed is not None and (body.update_kind == 'command' or prev is None):
+        clock_speed = body.clock_speed
 
     prev_team = prev.possession_team if prev else "NONE"
     if prev and effective_clock < prev.clock_ms and body.allow_clock_rewind:
@@ -7995,9 +8008,9 @@ def post_state(
 
     if body.command_revision is not None:
         receipts[str(body.state_id)]=request_hash
-        match_obj.metadata_json={**metadata,'fla_clock_revision':command_revision,'fla_clock_receipts':dict(list(receipts.items())[-128:])}
+        match_obj.metadata_json={**metadata,'fla_clock_revision':command_revision,'fla_clock_speed':clock_speed,'fla_clock_receipts':dict(list(receipts.items())[-128:])}
     db.commit()
-    return {'ok':True,'state_id':body.state_id,**state_response(state,command_revision)}
+    return {'ok':True,'state_id':body.state_id,**state_response(state,command_revision,clock_speed)}
 
 
 @app.post("/api/matches/{match_id}/markers")
@@ -8688,7 +8701,9 @@ def delete_timeline_item(
 
 
 @app.get("/api/matches/{match_id}/summary")
-def summary(match_id: UUID, db: Session = Depends(get_db)):
+def summary(match_id: UUID, fresh: bool = False, db: Session = Depends(get_db)):
+    if fresh:
+        return _build_match_summary(match_id, db)
     cache_key = ("summary", str(match_id))
     cached = _cache_get(_match_response_cache, cache_key)
     if cached is not None:
@@ -9320,7 +9335,7 @@ def create_manual_job(
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/clips")
-async def upload_manual_clip(
+def upload_manual_clip(
     job_id: str,
     clip: UploadFile = File(...),
     requested_start: float = Form(...),
@@ -9341,9 +9356,12 @@ async def upload_manual_clip(
     - 파일명은 클라이언트가 준 고유 index 로 정해 동시 요청끼리 이름이 겹치지 않게 하고,
     - 구간 정보는 클립마다 독립 사이드카(clip_XXX.json)로 남겨 서로 덮어쓰지 않게 한다.
     합칠 때 이 사이드카들을 order(=index) 순으로 모아 순서를 잡는다(list_manual_clip_info).
-    무거운 디스크 복사는 스레드풀로 넘겨 이벤트 루프(다른 사용자의 요청)를 막지 않는다.
+    DB 잠금과 파일 복사 전체를 FastAPI의 동기 요청 스레드에서 처리한다.
+    잠금을 가진 요청이 파일 I/O를 마치기 전에 다른 업로드가 이벤트 루프를 막으면
+    교착하므로, 이 핸들러를 async로 바꾸거나 잠금 상태에서 await하지 않는다.
     """
-    job = _require_manual_job(db, job_id, user)
+    from .highlight_render_queue import ensure_editable
+    job = ensure_editable(db, _require_manual_job(db, job_id, user))
     if job.status not in {"collecting", "error"} or (job.job_metadata or {}).get("clip_results"):
         raise HTTPException(status_code=409, detail="완료되었거나 분석에 연결한 클립은 덮어쓸 수 없습니다. 새 수동 작업을 만드세요.")
     if requested_end <= requested_start:
@@ -9352,7 +9370,7 @@ async def upload_manual_clip(
         raise HTTPException(status_code=400, detail="클립 index 가 올바르지 않습니다.")
 
     # 모르는 값이 사이드카에 흘러들어 점수 계산을 흔들지 않게 여기서 막는다.
-    clip_kind = kind if kind in {"home_goal", "home", "away", "away_goal"} else ""
+    clip_kind = kind if kind in {"home_goal", "home", "away", "away_goal", "substitution"} else ""
 
     def _score(raw: str) -> list[int] | None:
         """"2:1" 을 [2, 1] 로. 모양이 아니면 None — 그때는 kind 로 쌓아 계산한다."""
@@ -9398,9 +9416,9 @@ async def upload_manual_clip(
         )
 
     try:
-        await run_in_threadpool(_write_clip)
+        _write_clip()
     finally:
-        await clip.close()
+        clip.file.close()
 
     return {"name": name}
 
@@ -9424,7 +9442,7 @@ def register_manual_clip_results(
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/intro")
-async def upload_manual_intro(
+def upload_manual_intro(
     job_id: str,
     image: UploadFile = File(...),
     duration: float = Form(1.8),
@@ -9432,7 +9450,8 @@ async def upload_manual_intro(
     user: User = Depends(_require_superuser),
 ):
     """하이라이트 맨 앞에 잠깐 보여줄 인트로 사진을 받는다. 합칠 때 정지영상으로 붙는다."""
-    job = _require_manual_job(db, job_id, user)
+    from .highlight_render_queue import ensure_editable
+    job = ensure_editable(db, _require_manual_job(db, job_id, user))
 
     ext = Path(image.filename or "").suffix.lower()
     if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -9446,7 +9465,7 @@ async def upload_manual_intro(
         with target.open("wb") as out_file:
             shutil.copyfileobj(image.file, out_file)
     finally:
-        await image.close()
+        image.file.close()
 
     metadata = dict(job.job_metadata or {})
     metadata["intro_image"] = name
@@ -9461,7 +9480,7 @@ MUSIC_MAX_BYTES = 40 * 1024 * 1024
 
 
 @app.post("/api/highlight/manual-jobs/{job_id}/music")
-async def upload_manual_music(
+def upload_manual_music(
     job_id: str,
     audio: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -9472,7 +9491,8 @@ async def upload_manual_music(
     음악은 몇 MB 라 화면이 들고 있을 수 없다(작업 저장이 브라우저 5MB 에서 터진다).
     파일로 받아 잡 폴더에 두고, 합칠 때 그 파일을 쓴다.
     """
-    job = _require_manual_job(db, job_id, user)
+    from .highlight_render_queue import ensure_editable
+    job = ensure_editable(db, _require_manual_job(db, job_id, user))
 
     ext = Path(audio.filename or "").suffix.lower()
     if ext not in MUSIC_EXTS:
@@ -9486,7 +9506,7 @@ async def upload_manual_music(
     size = 0
     try:
         with target.open("wb") as out_file:
-            while chunk := await audio.read(1024 * 1024):
+            while chunk := audio.file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MUSIC_MAX_BYTES:
                     out_file.close()
@@ -9494,7 +9514,7 @@ async def upload_manual_music(
                     raise HTTPException(status_code=400, detail="음악 파일은 40MB 까지입니다.")
                 out_file.write(chunk)
     finally:
-        await audio.close()
+        audio.file.close()
 
     metadata = dict(job.job_metadata or {})
     metadata["music"] = {
@@ -9684,6 +9704,82 @@ async def analyze_card_template_file(
     return result
 
 
+@app.get("/api/highlight/card-templates/pending/{token}")
+def get_pending_template_preview(
+    token: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """분석해 둔 시안의 미리보기 그림. 화면이 이 위에 후보 상자를 겹쳐 그린다."""
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(status_code=404, detail="잘못된 토큰입니다.")
+    path = template_editor.pending_dir() / f"{token}.full.png"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="분석 기록이 없습니다. 다시 올려 주세요.")
+    return Response(content=path.read_bytes(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/highlight/card-templates/preview-draft")
+def preview_draft_card_template(
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """저장하기 전에, 역할을 정한 그대로 한 장 그려 보여 준다.
+
+    저장 후에만 보이면 역할을 바꿀 때마다 만들고-지우고를 반복하게 된다. 합치기가
+    쓰는 렌더러(render_card/render_board)를 그대로 부르므로 결과와 어긋나지 않는다.
+    """
+    token = str(body.get("token") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(status_code=400, detail="token 이 없습니다.")
+    kind = "board" if str(body.get("kind")) == "board" else "start"
+    hide = [int(i) for i in (body.get("hide_layers") or [])]
+    fields_raw = body.get("fields") or []
+    if not isinstance(fields_raw, list):
+        raise HTTPException(status_code=400, detail="fields 는 목록이어야 합니다.")
+    try:
+        bg = template_editor.cached_background(token, hide)
+    except Exception as exc:  # noqa: BLE001 - 깨진 토큰/PSD 는 입력 문제다
+        raise HTTPException(status_code=400, detail=f"배경을 굽지 못했습니다: {exc}")
+
+    from PIL import Image as PILImage2
+    with PILImage2.open(bg) as im:
+        design = im.size
+
+    fields = tuple(card_store._field_from_spec(f) for f in fields_raw)
+    zones = tuple(card_store._zone_from_spec(z) for z in (body.get("zones") or []))
+    # 초안 전용 임시 템플릿 — 저장되지 않고 이 요청 안에서만 산다.
+    draft = CardTemplate(
+        id="draft", name="draft", design=design,
+        start_bg=str(bg), section_bg=str(bg),
+        start_fields=fields, section_fields=fields,
+        board_bg=str(bg) if kind == "board" else "",
+        board_design=design if kind == "board" else None,
+        board_fields=fields if kind == "board" else (),
+        board_zones=zones if kind == "board" else (),
+        backdrop="",
+    )
+    values = body.get("values") if isinstance(body.get("values"), dict) else {}
+    values = {str(k): str(v) for k, v in values.items()}
+    try:
+        width = max(320, min(1600, int(body.get("width") or 900)))
+    except (TypeError, ValueError):
+        width = 900
+    if kind == "board":
+        colors = body.get("colors") if isinstance(body.get("colors"), dict) else {}
+        image = render_board(draft, width, values=values,
+                             colors={str(k): str(v) for k, v in colors.items()})
+    else:
+        height = max(1, round(width * design[1] / design[0]))
+        image = render_card(draft, "start", width, height, values=values)
+    buffer = io.BytesIO()
+    image.convert("RGBA").save(buffer, format="PNG")
+    return Response(content=buffer.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/highlight/card-templates/custom")
 async def create_custom_card_template(
     request: Request,
@@ -9748,10 +9844,32 @@ async def create_custom_card_template(
     if "design" not in spec:
         raise HTTPException(status_code=400, detail="시작 카드는 필수입니다.")
 
-    # 영상들 — 그대로 저장해 세트에 문다. 글자를 얹지 않으므로 검사도 영상인지만 본다.
-    for key, spec_key in (("first_half", "first_half_video"),
-                          ("second_half", "second_half_video"),
-                          ("outro", "outro_video")):
+    # 뒤에 깔 사진(선택) — 시안 여백이 투명일 때 흰 화면 대신 이 사진이 비친다.
+    backdrop = form.get("backdrop")
+    if backdrop is not None and getattr(backdrop, "filename", ""):
+        data = await backdrop.read()
+        if data:
+            if len(data) > 30 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="배경 사진이 30MB 를 넘습니다.")
+            try:
+                with Image.open(io.BytesIO(data)) as probe:
+                    probe.verify()
+            except Exception:
+                raise HTTPException(status_code=400, detail="배경 사진을 그림으로 읽을 수 없습니다.")
+            filename = f"{row.id}-backdrop.png"
+            with Image.open(io.BytesIO(data)) as im:
+                im = im.convert("RGB")
+                im.thumbnail((1920, 1920), Image.LANCZOS)
+                im.save(card_store.template_dir() / filename, format="PNG")
+            spec["backdrop"] = filename
+
+    # 전·후반은 영상(mp4)도 그림도 된다 — 그림이면 그 자리에 정지 카드로 들어간다.
+    # 마무리는 영상만(길이를 파일이 정하는 구조라 그림은 뜻이 없다).
+    VIDEO_SUFFIXES = {".mp4", ".mov", ".webm"}
+    IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+    for key, video_key, image_key in (("first_half", "first_half_video", "first_half_image"),
+                                      ("second_half", "second_half_video", "second_half_image"),
+                                      ("outro", "outro_video", None)):
         upload = form.get(key)
         if upload is None or not getattr(upload, "filename", ""):
             continue
@@ -9761,11 +9879,23 @@ async def create_custom_card_template(
         if len(data) > 100 * 1024 * 1024:
             raise HTTPException(status_code=400, detail=f"{key} 가 100MB 를 넘습니다.")
         suffix = Path(str(upload.filename)).suffix.lower()
-        if suffix not in {".mp4", ".mov", ".webm"}:
-            raise HTTPException(status_code=400, detail=f"{key} 는 영상 파일이어야 합니다.")
-        filename = f"{row.id}-{key}{suffix}"
-        (card_store.template_dir() / filename).write_bytes(data)
-        spec[spec_key] = filename
+        if suffix in VIDEO_SUFFIXES:
+            filename = f"{row.id}-{key}{suffix}"
+            (card_store.template_dir() / filename).write_bytes(data)
+            spec[video_key] = filename
+        elif image_key and suffix in IMAGE_SUFFIXES:
+            try:
+                with Image.open(io.BytesIO(data)) as probe:
+                    probe.verify()
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"{key} 그림을 읽을 수 없습니다.")
+            filename = f"{row.id}-{key}.png"
+            with Image.open(io.BytesIO(data)) as im:
+                im.convert("RGBA").save(card_store.template_dir() / filename, format="PNG")
+            spec[image_key] = filename
+        else:
+            raise HTTPException(status_code=400,
+                                detail=f"{key} 는 영상(mp4)이나 그림(png/jpg) 파일이어야 합니다.")
 
     row.spec = spec
     for token in used_tokens:
@@ -9797,13 +9927,15 @@ def get_template_half_video(
     if which not in {"first", "second"}:
         raise HTTPException(status_code=404, detail="first 또는 second 만 있습니다.")
     template = card_store.resolve(db, template_id)
-    name = template.first_half_video if which == "first" else template.second_half_video
+    video = template.first_half_video if which == "first" else template.second_half_video
+    image = template.first_half_image if which == "first" else template.second_half_image
+    name = video or image
     if not name:
-        raise HTTPException(status_code=404, detail="이 세트에는 효과 영상이 없습니다.")
+        raise HTTPException(status_code=404, detail="이 세트에는 효과가 없습니다.")
     path = template_asset(name)
     if path is None or not path.exists():
-        raise HTTPException(status_code=404, detail=f"효과 영상 파일이 없습니다: {name}")
-    return _serve_file_with_range(path, request, "video/mp4")
+        raise HTTPException(status_code=404, detail=f"효과 파일이 없습니다: {name}")
+    return _serve_file_with_range(path, request, "video/mp4" if video else "image/png")
 
 
 @app.post("/api/highlight/card-preview")
@@ -9991,9 +10123,23 @@ def merge_manual_job(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
-    job = _require_manual_job(db, job_id, user)
-    if not list_manual_clip_info(job_id):
+    from .highlight_render_queue import active_task, describe, enqueue, lock_job
+    _require_manual_job(db, job_id, user)
+    job = lock_job(db, job_id)
+    existing = active_task(db, job_id)
+    if existing:
+        return {"status": job.status, "render_queue": describe(db, existing)}
+    if job.status in ("merging", "processing"):
+        raise HTTPException(409, "기존 합치기가 진행 중입니다.")
+    clip_info = list_manual_clip_info(job_id)
+    if not clip_info:
         raise HTTPException(status_code=409, detail="합칠 클립이 없습니다.")
+
+    metadata = {**(job.job_metadata or {}), "clip_info": clip_info,
+                "clips": [clip["name"] for clip in clip_info]}
+    for key in ("scoreboard", "cards", "watermark"):
+        if isinstance(body.get(key), dict) and not body[key].get("enabled"):
+            metadata.pop(key, None)
 
     # 점수판 설정. 팀명·색은 클립이 아니라 잡 전체에 걸리므로 여기서 한 번만 받는다.
     scoreboard = body.get("scoreboard") if isinstance(body, dict) else None
@@ -10025,11 +10171,15 @@ def merge_manual_job(
                 return None
 
         size_pct = _pct("size_pct", 24.33, 10.0, 60.0)
-        metadata = dict(job.job_metadata or {})
         metadata["scoreboard"] = {
             "enabled": True,
             "home_name": str(scoreboard.get("home_name") or "").strip()[:20],
             "away_name": str(scoreboard.get("away_name") or "").strip()[:20],
+            # 점수판 전용 템플릿(점수판 섹션에서 고른 디자인 — 퀸컵처럼 카드와 별개). 이게
+            # 있으면 서버가 이 템플릿으로 점수판을 그린다(카드 세트와 무관). 비면 종전대로.
+            "template": str(scoreboard.get("template") or "").strip()[:64],
+            # 대회 세트 점수판 맨 윗줄(round_label 자리가 있는 템플릿만 쓴다).
+            "round_label": str(scoreboard.get("round_label") or "").strip()[:48],
             "home_color": _color("home_color", "#FF7400"),
             "away_color": _color("away_color", "#0000FF"),
             "start_home": _score("start_home"),
@@ -10054,7 +10204,6 @@ def merge_manual_job(
                 else ""
             ),
         }
-        update_job(db, job_id, job_metadata=metadata)
 
     # 우리 로고(워터마크) — 점수판과 따로 켜고 끈다. 영상 내내 같은 자리에 얹힌다.
     watermark = body.get("watermark") if isinstance(body, dict) else None
@@ -10065,7 +10214,6 @@ def merge_manual_job(
             except (TypeError, ValueError):
                 return fallback
 
-        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         def _wm_px(key: str) -> float | None:
             """사람이 적어 넣은 픽셀 좌표. 안 적었으면 None — 그때는 비율을 쓴다."""
             raw = watermark.get(key)
@@ -10088,7 +10236,6 @@ def merge_manual_job(
             "pos_px_x": _wm_px("pos_px_x"),
             "pos_px_y": _wm_px("pos_px_y"),
         }
-        update_job(db, job_id, job_metadata=metadata)
 
     # 배경음악 볼륨. 파일은 따로 올라와 있고 여기서는 크기만 정한다.
     music = body.get("music") if isinstance(body, dict) else None
@@ -10099,7 +10246,7 @@ def merge_manual_job(
             except (TypeError, ValueError):
                 return fallback
 
-        current = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+        current = metadata
         existing = current.get("music") if isinstance(current.get("music"), dict) else None
         if existing:
             current["music"] = {
@@ -10110,17 +10257,24 @@ def merge_manual_job(
                 # 0 으로 내리면 음악만 남는다 — 경기장 소리가 방해될 때 쓴다.
                 "original_volume": _vol("original_volume", 0.2),
             }
-            update_job(db, job_id, job_metadata=current)
 
     # 합본 사이에 끼는 전체화면 카드 — 시작 카드(맨 앞) + 구간 카드(T 로 찍은 자리).
     cards = body.get("cards") if isinstance(body, dict) else None
     if isinstance(cards, dict) and cards.get("enabled"):
-        metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         metadata["cards"] = _card_settings(db, cards)
-        update_job(db, job_id, job_metadata=metadata)
 
-    background_tasks.add_task(merge_manual_clips_for_job, job_id)
-    return {"status": "merging"}
+    # 클립↔클립 전환(디졸브) 길이(초). 화면 토글이 켜지면 0.1, 꺼지면 0(하드컷)으로
+    # 온다. 카드 경계 디졸브는 이 값과 무관하게 항상 유지된다.
+    xfade_raw = body.get("clip_xfade_sec") if isinstance(body, dict) else None
+    if xfade_raw is not None:
+        try:
+            metadata["clip_xfade_sec"] = max(0.0, min(2.0, float(xfade_raw)))
+        except (TypeError, ValueError):
+            pass
+
+    job.job_metadata = metadata
+    queued = enqueue(db, job_id, "manual")
+    return {"status": "render_queued", "render_queue": queued}
 
 
 @app.post("/api/highlight/produce-jobs")
@@ -10170,7 +10324,7 @@ def create_produce_job(
     job = HighlightJob(
         id=job_id,
         owner_id=user.id,
-        status="queued",
+        status="render_queued",
         mode="produce_s3",
         original_filename=source_key.rsplit("/", 1)[-1] or "highlight.mp4",
         job_metadata=metadata,
@@ -10178,8 +10332,9 @@ def create_produce_job(
     db.add(job)
     db.commit()
 
-    background_tasks.add_task(run_produce_job, job_id)
-    return {"job_id": job_id, "status": "queued", "segments": len(segments)}
+    from .highlight_render_queue import enqueue
+    queued = enqueue(db, job_id, "produce_s3")
+    return {"job_id": job_id, "status": "render_queued", "segments": len(segments), "render_queue": queued}
 
 
 # ---------------------------------------------------------------------------
@@ -12672,6 +12827,7 @@ def produce_fineplay_job(
     fpaMatchId 를 주면 그 FPA 매치의 dual 씬을 클립에 순서 매칭해 분석 필드를
     채운다. 빈 문자열이면 연결 해제, 키 자체가 없으면 기존 연결 유지(편집룸).
     """
+    from .highlight_render_queue import active_task, describe, enqueue, lock_job
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
         raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
@@ -12679,6 +12835,11 @@ def produce_fineplay_job(
         raise HTTPException(status_code=409, detail="원본이 삭제된 작업이라 클립을 다시 만들 수 없습니다.")
 
     # 편집룸 재편집은 team 을 안 보낼 수 있다 — 같은 clipId 의 기존 태깅 팀을 승계.
+    job = lock_job(db, job_id)
+    existing = active_task(db, job_id)
+    if existing:
+        return {"job_id": job_id, "status": job.status, "render_queue": describe(db, existing)}
+
     prev_teams: dict[str, str] = {}
     for pc in (job.job_metadata or {}).get("clips") or []:
         if pc.get("clipId") and pc.get("team"):
@@ -12791,10 +12952,9 @@ def produce_fineplay_job(
                 raise HTTPException(status_code=400, detail="fpaOurSide 는 home 또는 away 여야 합니다.")
             metadata["fpa_link"] = {"match_id": str(fpa_uuid), "our_side": our_side}
 
-    update_job(db, job_id, status="queued", job_metadata=metadata)
-
-    background_tasks.add_task(run_fineplay_produce, job_id)
-    return {"job_id": job_id, "status": "queued", "clips": len(clips)}
+    job.job_metadata = metadata
+    queued = enqueue(db, job_id, "fineplay")
+    return {"job_id": job_id, "status": "render_queued", "clips": len(clips), "render_queue": queued}
 
 
 # ---------------------------------------------------------------------------
@@ -14693,8 +14853,8 @@ def merge_operator_clips(
     clips = (job.job_metadata or {}).get("clips") or []
     if not clips:
         raise HTTPException(status_code=400, detail="합칠 클립이 없습니다.")
-    background_tasks.add_task(merge_clips_for_job, job_id)
-    return {"status": "merging"}
+    from .highlight_render_queue import enqueue
+    return {"status": "render_queued", "render_queue": enqueue(db, job_id, "operator")}
 
 
 @app.post("/api/highlight/operator-jobs/{job_id}/complete")
@@ -14987,7 +15147,8 @@ def list_highlight_jobs(
         query = (query.filter(or_(column.is_(None), column == DEFAULT_SPORT))
                  if wanted == DEFAULT_SPORT else query.filter(column == wanted))
     rows = query.order_by(desc(HighlightJob.created_at)).limit(limit).all()
-    return [serialize_job(row, brief=brief) for row in rows]
+    from .highlight_render_queue import attach_queue_status
+    return attach_queue_status(db, [serialize_job(row, brief=brief) for row in rows])
 
 
 @app.get("/api/highlight/jobs/{job_id}")
@@ -14999,7 +15160,8 @@ def get_highlight_job(
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return serialize_job(job)
+    from .highlight_render_queue import attach_queue_status
+    return attach_queue_status(db, [serialize_job(job)])[0]
 
 
 @app.get("/api/highlight/jobs/{job_id}/clips/{clip_name}")
@@ -15031,6 +15193,8 @@ def delete_highlight_clip(
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    from .highlight_render_queue import ensure_editable
+    ensure_editable(db, job)
     try:
         clip_path = safe_clip_path(job_id, clip_name)
     except ValueError as exc:
@@ -15056,10 +15220,15 @@ def export_highlight_job(
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
+    from .highlight_render_queue import active_task, describe, enqueue, lock_job
     job = db.get(HighlightJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status != "done":
+    job = lock_job(db, job_id)
+    existing = active_task(db, job_id)
+    if existing:
+        return {"ok": True, "export_ready": False, "render_queue": describe(db, existing)}
+    if job.status != "done" and not (job.status == "error" and (job.job_metadata or {}).get("export_selection")):
         raise HTTPException(status_code=409, detail="Job is not completed yet")
 
     selected = body.get("selected", [])
@@ -15085,32 +15254,9 @@ def export_highlight_job(
     if not clip_paths:
         raise HTTPException(status_code=400, detail="None of the selected clips exist")
 
-    export_path = exports_dir() / f"{job_id}_export.mp4"
-    clips: list = []
-    merged = None
-    try:
-        from moviepy import VideoFileClip, concatenate_videoclips
-
-        clips = [VideoFileClip(path) for path in clip_paths]
-        merged = concatenate_videoclips(clips)
-        merged.write_videofile(
-            str(export_path),
-            codec="libx264",
-            audio_codec="aac",
-            temp_audiofile=f"temp-audio-export-{job_id}.m4a",
-            remove_temp=True,
-            logger=None,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
-    finally:
-        if merged is not None:
-            merged.close()
-        for clip in clips:
-            clip.close()
-
-    update_job(db, job_id, export_path=str(export_path))
-    return {"ok": True, "export_ready": True}
+    job.job_metadata = {**(job.job_metadata or {}), "export_selection": [Path(path).name for path in clip_paths]}
+    queued = enqueue(db, job_id, "export")
+    return {"ok": True, "export_ready": False, "status": "render_queued", "render_queue": queued}
 
 
 @app.get("/api/highlight/jobs/{job_id}/export/download")
@@ -15143,6 +15289,8 @@ def delete_highlight_job(
     job = db.query(HighlightJob).filter_by(id=job_id).with_for_update().one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    from .highlight_render_queue import ensure_editable
+    ensure_editable(db, job)
     if job.mode == "manual":
         clip_ids = [clip.id for clip in db.query(HighlightClip).filter_by(job_id=job_id).all()]
         if clip_ids:

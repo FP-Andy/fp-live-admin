@@ -24,7 +24,7 @@ from .services import apply_possession_segment, apply_attack_event, apply_xg_eve
 from .xgot import estimate_xgot
 from .fpa_cv import same_origin
 from .fpa_cv_storage import storage
-from .fla_substitutions import SaveSubstitutions, saved_substitutions, clear_substitutions, validate_log
+from .fla_substitutions import SaveSubstitutions, saved_substitutions, substitution_summary, clear_substitutions, validate_log
 
 FIXTURES = json.loads((Path(__file__).parent/'data/queen-cup-fla-2026.json').read_text())
 PREFIX = '/api/futsal/fla-video'
@@ -228,7 +228,8 @@ def create_router(dominance_builder=None):
         result=[]
         for f in FIXTURES:
             existing=next((m for m in matches if (m.metadata_json or {}).get('fla_fixture',{}).get('key')==f['key']),None)
-            result.append({**f,'match_id':str(existing.id) if existing else None,'video':video_state(existing) if existing else {},'candidates':candidates(f,uploads)})
+            result.append({**f,'match_id':str(existing.id) if existing else None,'video':video_state(existing) if existing else {},'candidates':candidates(f,uploads),
+                           'substitutions':substitution_summary(existing)})
         for f in result:
             for key in ('writer','writer_at','last_request'):f['video'].pop(key,None)
         return {'fixtures':result,'uploads':[public_upload(u) for u in uploads],'can_create':user.role=='SUPERADMIN'}

@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { createHighlightLog, readHighlightLog, logBlob, MAX_LOG_BYTES } from '../../../../lib/highlight-log';
 import { parseManualWork, storeManualWork, type SavedWork, type Tag, type TagKind, type CardSettings } from '../../../../lib/manual-draft';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
@@ -21,6 +22,7 @@ type JobStatus = {
   id: string;
   status: string;
   error_message?: string | null;
+  render_queue?: { status: string; position: number; waiting_ahead: number } | null;
   job_metadata?: { progress?: { detail?: string } | null } | null;
 };
 
@@ -64,8 +66,10 @@ type CardTemplateSpec = {
   board_defaults?: { size_pct?: number; pos_px_x?: number; pos_px_y?: number };
   /** 마무리 영상 기본 켬/끔 — 파인플레이 브랜딩이라 대회 세트는 기본 끔. */
   outro_default?: boolean;
-  /** 전후반 효과 영상을 들고 있나. */
+  /** 전후반 효과(영상 또는 이미지)를 들고 있나. */
   has_half_videos?: boolean;
+  /** 각 효과가 영상인지 그림인지 — 재생기/그림 중 무엇을 보여줄지 정한다. */
+  half_media?: { first?: 'video' | 'image' | null; second?: 'video' | 'image' | null };
   board_fields?: CardFieldSpec[];
 };
 
@@ -173,14 +177,19 @@ const sectionNameAt = (sport: string, n: number): string => {
   return names[n] ?? `연장 ${n - names.length + 1}`;
 };
 
+const SUBSTITUTION_TAG_KIND: TagKindSpec = {
+  key: 'substitution', code: 'KeyC', letter: 'c', hangul: 'ㅊ',
+  label: '교체', badge: '교체', color: '#A78BFA', side: 'home', goal: false,
+};
+
 const kindsForSport = (sport: string): TagKindSpec[] => [
   ...(sport === 'BASKETBALL' ? BASKETBALL_TAG_KINDS : FOOTBALL_TAG_KINDS),
-  SECTION_TAG_KIND,
+  SUBSTITUTION_TAG_KIND, SECTION_TAG_KIND,
 ];
 
 /** 모든 스포츠의 종류를 합친 조회표 — 저장된 옛 태그도 읽을 수 있어야 한다. */
 const ALL_TAG_KINDS: TagKindSpec[] = [
-  ...FOOTBALL_TAG_KINDS, ...BASKETBALL_TAG_KINDS, SECTION_TAG_KIND,
+  ...FOOTBALL_TAG_KINDS, ...BASKETBALL_TAG_KINDS, SUBSTITUTION_TAG_KIND, SECTION_TAG_KIND,
 ];
 
 /** 그 종류가 클립으로 만들어지는가. 점수만 반영하는 골은 아니다. */
@@ -311,10 +320,15 @@ export default function ManualHighlightPage() {
       .then((data) => {
         if (!alive) return;
         setCardTemplates(data.templates);
-        // 저장된 템플릿이 사라졌으면(코드에서 뺐으면) 기본으로 돌린다.
-        setCards((prev) => (data.templates.some((t) => t.id === prev.template)
+        // 카드 넣기 드롭다운에 올릴 수 있는 세트 — 점수판 전용(퀸컵)은 뺀다.
+        const isCardSet = (t: CardTemplateSpec) => !(
+          t.has_board && !t.has_half_videos
+          && !(t.start_fields?.length) && !(t.section_fields?.length));
+        // 저장된 템플릿이 사라졌거나(코드에서 뺐으면) 점수판 전용으로 바뀌었으면 기본으로
+        // 돌린다 — 카드 드롭다운엔 없는 걸 고른 상태로 남으면 안 된다.
+        setCards((prev) => (data.templates.some((t) => t.id === prev.template && isCardSet(t))
           ? prev
-          : { ...prev, template: data.default || data.templates[0]?.id || prev.template }));
+          : { ...prev, template: data.templates.find(isCardSet)?.id || data.default || prev.template }));
       })
       .catch(() => {});
     return () => { alive = false; };
@@ -322,6 +336,20 @@ export default function ManualHighlightPage() {
 
   const cardTemplate = cardTemplates.find((t) => t.id === cards.template) ?? null;
   const cardValues = cards.values[cards.template] ?? {};
+
+  // 점수판 전용 세트 — 점수판만 있고 카드(시작·구간·전후반)가 없는 템플릿(퀸컵).
+  // 카드 넣기 드롭다운에서는 빼고, 점수판 섹션의 '점수판 디자인' 드롭다운에만 둔다.
+  const isBoardOnly = (t: CardTemplateSpec) => Boolean(
+    t.has_board && !t.has_half_videos
+    && !(t.start_fields?.length) && !(t.section_fields?.length));
+  const cardSetTemplates = cardTemplates.filter((t) => !isBoardOnly(t));
+  const boardOnlyTemplates = cardTemplates.filter(isBoardOnly);
+  // 점수판 그림을 어느 템플릿으로 그릴지. 점수판 섹션에서 **직접 고른 전용 점수판**이
+  // 가장 우선이다(카드를 안 켜도 점수판만 새길 수 있다). 안 골랐으면 카드 세트가 자기
+  // 점수판을 들고 있을 때 그걸 쓰고(SUFA), 둘 다 없으면 코드로 그리는 기본형이다.
+  const boardTemplate = (scoreboard.template
+    ? cardTemplates.find((t) => t.id === scoreboard.template) ?? null
+    : (cards.enabled && cardTemplate?.has_board ? cardTemplate : null));
 
   // 기본값 채우기 — 시안에 박혀 있던 문구('2026 SUFA ADVANCED LEAGUE 1R')는 안내글이
   // 아니라 **시작값**이어야 한다. 안내글은 안 치면 빈칸으로 나가서, 라운드 숫자만
@@ -385,6 +413,28 @@ export default function ManualHighlightPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards.template, cardTemplate?.id]);
+
+  // 점수판 **디자인**(점수판 섹션 드롭다운)으로 전용 점수판을 고르면, 그 템플릿의 기본
+  // 크기·자리로 잡는다 — 퀸컵은 25% · (80,60)px. 카드 세트의 board_defaults 와 같은
+  // 규칙인데, 이쪽은 cards.template 이 아니라 scoreboard.template 변화에 걸린다.
+  // 처음 열 때(저장본 복원 직후)는 건드리지 않는다 — 지난번 옮겨 둔 자리를 덮으면 안 된다.
+  useEffect(() => {
+    const tid = scoreboard.template || '';
+    const prev = lastBoardTemplateRef.current;
+    lastBoardTemplateRef.current = tid;
+    if (prev === null || prev === tid || !tid) return;
+    const bd = cardTemplates.find((t) => t.id === tid)?.board_defaults;
+    if (!bd) return;
+    setScoreboard((p) => ({
+      ...p,
+      sizePct: bd.size_pct ?? p.sizePct,
+      // 픽셀 좌표로 잡는다 — 적어 넣은 값이 비율보다 우선이라 그대로 보인다.
+      posPxX: bd.pos_px_x ?? p.posPxX,
+      posPxY: bd.pos_px_y ?? p.posPxY,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoreboard.template, cardTemplates]);
+
   const setCardValue = (fieldId: string, value: string) => setCards((prev) => ({
     ...prev,
     values: {
@@ -497,6 +547,7 @@ export default function ManualHighlightPage() {
   const [boardPreviewUrl, setBoardPreviewUrl] = useState('');
   // 직전에 골라져 있던 템플릿 — 세트 기본 자리는 '갈아탄 순간' 에만 적용한다.
   const lastTemplateRef = useRef<string | null>(null);
+  const lastBoardTemplateRef = useRef<string | null>(null);
   // 점수판 위치를 실제 장면 위에서 보려고 담아 둔 정지화면(dataURL).
   const [frameUrl, setFrameUrl] = useState('');
   // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 신청 태깅과 통일).
@@ -508,11 +559,16 @@ export default function ManualHighlightPage() {
 
   const [padBefore, setPadBefore] = useState(10);
   const [padAfter, setPadAfter] = useState(3);
+  // 클립↔클립 전환(디졸브 0.2초). 켜면 장면이 부드럽게 넘어가고, 끄면 하드컷이다.
+  const [clipTransition, setClipTransition] = useState(true);
   const [status, setStatus] = useState('');
   const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saved' | 'partial' | 'failed'>('idle');
   const [loadedDraftKey, setLoadedDraftKey] = useState('');
   const [saveAttempt, setSaveAttempt] = useState(0);
   const [recoveryMessage, setRecoveryMessage] = useState('');
+  const [logBusy, setLogBusy] = useState(false);
+  const [logImported, setLogImported] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const recoveryInputRef = useRef<HTMLInputElement | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [cutting, setCutting] = useState(false);
@@ -536,7 +592,7 @@ export default function ManualHighlightPage() {
   const [publishError, setPublishError] = useState('');
   const [doneJobId, setDoneJobId] = useState('');
   // 업로드는 브라우저(탭 유지 필요), 합치기는 서버(탭 닫아도 됨) — 단계를 나눠 바/배지에 쓴다.
-  const [publishPhase, setPublishPhase] = useState<'idle' | 'uploading' | 'merging' | 'done'>('idle');
+  const [publishPhase, setPublishPhase] = useState<'idle' | 'uploading' | 'queued' | 'merging' | 'done'>('idle');
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
   const [introFile, setIntroFile] = useState<File | null>(null);
   const [introUrl, setIntroUrl] = useState('');
@@ -594,6 +650,8 @@ export default function ManualHighlightPage() {
   useEffect(() => revoke, [revoke]);
 
   const pickFiles = async (list: FileList | null) => {
+    if (cutting || publishing || rebuilding || logBusy) return;
+    setLogImported(false);
     if ((draftSaveState === 'failed' || draftSaveState === 'partial') && !window.confirm('브라우저에 저장되지 않은 내용이 있습니다. 복구 파일을 받지 않고 영상을 바꿀까요?')) return;
     revoke();
     setTags([]);
@@ -665,16 +723,22 @@ export default function ManualHighlightPage() {
     if (introUrlRef.current) URL.revokeObjectURL(introUrlRef.current);
   }, []);
 
-  const draftWork = useMemo<SavedWork>(() => ({ tags, padBefore, padAfter, scoreboard, cards, watermark }),
-    [tags, padBefore, padAfter, scoreboard, cards, watermark]);
+  const draftWork = useMemo<SavedWork>(() => ({ tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition, introDuration, musicVolume, originalVolume }),
+    [tags, padBefore, padAfter, scoreboard, cards, watermark, clipTransition, introDuration, musicVolume, originalVolume]);
 
   const applyDraft = (saved: SavedWork) => {
+    lastTemplateRef.current = saved.cards?.template ?? DEFAULT_CARDS.template;
+    lastBoardTemplateRef.current = saved.scoreboard?.template ?? "";
+    setIntroDuration(saved.introDuration ?? 1.8);
+    setMusicVolume(saved.musicVolume ?? 80);
+    setOriginalVolume(saved.originalVolume ?? 20);
     setTags(saved.tags);
     setPadBefore(saved.padBefore);
     setPadAfter(saved.padAfter);
     setScoreboard({ ...DEFAULT_SCOREBOARD, ...saved.scoreboard });
     setCards({ ...DEFAULT_CARDS, ...saved.cards });
     setWatermark({ ...DEFAULT_WATERMARK, ...saved.watermark });
+    setClipTransition(saved.clipTransition ?? true);
     setClips([]);
     setCutProgress(null);
   };
@@ -694,7 +758,7 @@ export default function ManualHighlightPage() {
         applyDraft(saved);
         setStatus(`이전 작업 복원 — 태그 ${saved.tags.length}개, 앞 ${saved.padBefore}초 / 뒤 ${saved.padAfter}초`);
       } else {
-        setTags([]);setScoreboard(DEFAULT_SCOREBOARD);setCards(DEFAULT_CARDS);setWatermark(DEFAULT_WATERMARK);setPadBefore(10);setPadAfter(3);
+        setTags([]);setScoreboard(DEFAULT_SCOREBOARD);setCards(DEFAULT_CARDS);setWatermark(DEFAULT_WATERMARK);setPadBefore(10);setPadAfter(3);setClipTransition(true);
       }
       setLegacyAvailable(!!localStorage.getItem(legacyStorageKey));
       setLoadedDraftKey(storageKey);
@@ -729,32 +793,38 @@ export default function ManualHighlightPage() {
     return () => { window.removeEventListener('beforeunload', warn); document.removeEventListener('click', leave, true); };
   }, [unsafeDraft]);
 
-  const sourceIdentity = () => sources.map((source) => ({ name: source.file.name, size: source.file.size }));
-  const exportDraft = () => {
-    const payload = { format: 'fpc-manual-draft', version: 1, ownerId:draftOwner?.id, sport, sources: sourceIdentity(), work: draftWork };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a'); link.href = url; link.download = `manual-tags-${sport.toLowerCase()}.json`; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const buildLog = () => createHighlightLog(sport, sources, draftWork, { intro: introFile, music: musicFile });
+  const exportDraft = async () => {
+    setLogBusy(true);
+    try {
+      const payload = await buildLog();
+      const url = URL.createObjectURL(logBlob(payload));
+      const link = document.createElement('a'); link.href = url;
+      link.download = `highlight-log-${sport.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.json`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setRecoveryMessage('골·하이라이트·교체 로그와 출력 설정을 JSON으로 저장했습니다. 같은 원본을 선택한 뒤 불러오면 다시 제작할 수 있습니다.');
+    } catch (error) {
+      setRecoveryMessage(error instanceof Error ? error.message : 'JSON 로그를 저장하지 못했습니다.');
+    } finally { setLogBusy(false); }
   };
   const importDraft = async (file: File | undefined) => {
-    if (!file) return;
+    if (!file || cutting || publishing || rebuilding) return;
     const expectedKey = storageKey;
+    setLogBusy(true);
     try {
-      const payload = JSON.parse(await file.text());
-      if (payload.format !== 'fpc-manual-draft' || payload.version !== 1 || payload.sport !== sport
-        || JSON.stringify(payload.sources) !== JSON.stringify(sourceIdentity())) {
-        throw new Error('종목과 원본 영상의 이름·크기·순서가 같은 복구 파일을 선택하세요.');
-      }
-      const saved = parseManualWork(JSON.stringify(payload.work), tagKinds.map((kind) => kind.key));
-      if (saved.tags.some((tag) => tag.t > duration + 0.1)) throw new Error('영상 길이를 벗어난 태그가 있습니다.');
+      if (file.size > MAX_LOG_BYTES) throw new Error('JSON 로그는 100MB까지 불러올 수 있습니다.');
+      const restored = await readHighlightLog(await file.text(), sport, sources, tagKinds.map((kind) => kind.key));
       if (currentDraftKeyRef.current !== expectedKey) return;
-      if (tags.length && !window.confirm('현재 태그와 출력 설정을 복구 파일의 내용으로 바꿀까요?')) return;
-      applyDraft(saved);
+      if (tags.length && !window.confirm('현재 태그와 출력 설정을 JSON 로그의 내용으로 바꿀까요?')) return;
+      applyDraft(restored.work);
+      pickIntro(restored.intro);
+      setMusicFile(restored.music);
       setLoadedDraftKey(storageKey);
-      setRecoveryMessage(`복구 파일에서 태그 ${saved.tags.length}개와 출력 설정을 불러왔습니다.`);
+      setLogImported(true);
+      setRecoveryMessage(`JSON 로그에서 태그 ${restored.work.tags.length}개를 불러왔습니다. 구간을 확인한 뒤 ‘로그로 하이라이트 제작’을 누르세요.${restored.legacy ? ' 이전 복구 파일의 인트로·음악은 다시 선택해 주세요.' : ''}`);
     } catch (error) {
-      if (currentDraftKeyRef.current === expectedKey) setRecoveryMessage(error instanceof Error ? error.message : '복구 파일을 읽지 못했습니다.');
-    }
+      if (currentDraftKeyRef.current === expectedKey) setRecoveryMessage(error instanceof Error ? error.message : 'JSON 로그를 읽지 못했습니다.');
+    } finally { setLogBusy(false); }
   };
   const currentDraftKeyRef = useRef(storageKey);
   currentDraftKeyRef.current = storageKey;
@@ -1004,9 +1074,9 @@ export default function ManualHighlightPage() {
   // 세트 점수판 미리보기. 화면에 코드로 그린 판을 두면 세트를 골라도 옛 판이 보여서
   // '점수판이 템플릿에 안 물렸다' 로 읽힌다 — 실제로 그렇게 읽혔다. 서버가 합치기와
   // 같은 함수(render_board)로 그린 그림을 받아 보여 준다.
-  const hasSetBoard = Boolean(cards.enabled && cardTemplate?.has_board);
+  const hasSetBoard = Boolean(boardTemplate);
   useEffect(() => {
-    if (!hasSetBoard || !scoreboard.enabled) {
+    if (!hasSetBoard || !scoreboard.enabled || !boardTemplate) {
       setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
       return undefined;
     }
@@ -1018,7 +1088,7 @@ export default function ManualHighlightPage() {
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            template: cards.template, kind: 'board', width: 960,
+            template: boardTemplate.id, kind: 'board', width: 960,
             values: {
               round_label: scoreboard.roundLabel || '',
               home_name: scoreboard.homeName, away_name: scoreboard.awayName,
@@ -1036,7 +1106,7 @@ export default function ManualHighlightPage() {
       }
     }, 400);
     return () => { alive = false; clearTimeout(timer); };
-  }, [hasSetBoard, scoreboard.enabled, cards.template, scoreboard.roundLabel,
+  }, [hasSetBoard, scoreboard.enabled, boardTemplate?.id, scoreboard.roundLabel,
       scoreboard.homeName, scoreboard.awayName, scoreboard.homeColor,
       scoreboard.awayColor, finalScore]);
 
@@ -1150,14 +1220,14 @@ export default function ManualHighlightPage() {
   // 추출이나 업로드 도중에 창을 닫으면 작업이 끊기고, 업로드 중이었다면 서버에
   // 클립이 일부만 올라간 잡이 남는다. 최소한 경고는 띄운다.
   useEffect(() => {
-    if (!cutting && !publishing) return undefined;
+    if (!cutting && publishPhase !== 'uploading') return undefined;
     const warn = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [cutting, publishing]);
+  }, [cutting, publishPhase]);
 
   // 클립이 되는 태그만 센다. **점수만 올리는 태그와 구간 표시는 장면을 만들지 않으므로
   // 길이에 들어가지 않는다** — 전부 세면 농구처럼 점수 태그가 잦은 경기에서 실제보다
@@ -1251,6 +1321,7 @@ export default function ManualHighlightPage() {
       if (clamped) {
         setCutError(`알림: ${clamped}개 클립은 원본 경계에 걸려 그 영상 끝(또는 처음)까지만 잘랐습니다.`);
       }
+      return { clips: made, tagIndex: fromTag };
     } catch (err) {
       setCutError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1260,14 +1331,17 @@ export default function ManualHighlightPage() {
 
   const clipsTotalBytes = clips.reduce((sum, c) => sum + (c.blob?.size ?? 0), 0);
 
-  const publish = async () => {
-    if (!sources.length || !clips.length || publishing) return;
+  const publish = async (prepared?: { clips: CutClip[]; tagIndex: number[] }) => {
+    const batchClips = prepared?.clips ?? clips;
+    const batchTagIndex = prepared?.tagIndex ?? clipTagIndex;
+    if (!sources.length || !batchClips.length || publishing) return;
     setPublishing(true);
     setPublishError('');
     setDoneJobId('');
     setPublishPhase('uploading');
-    setUploadProgress({ done: 0, total: clips.length });
+    setUploadProgress({ done: 0, total: batchClips.length });
     try {
+      const savedLog = logBlob(await buildLog());
       const { job_id: jobId } = await apiJson<{ job_id: string }>('/highlight/manual-jobs', {
         method: 'POST',
         body: JSON.stringify({
@@ -1279,10 +1353,17 @@ export default function ManualHighlightPage() {
         }),
       });
 
+      const logForm = new FormData();
+      logForm.append('file', savedLog, 'highlight-log.json');
+      const logResponse = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/log`, {
+        method: 'PUT', credentials: 'include', body: logForm,
+      });
+      if (!logResponse.ok) throw new Error(await logResponse.text() || 'JSON 로그 보관 실패');
+
       // 병렬 업로드 — 클립을 하나씩 줄세우지 않고 여러 개를 동시에 올려 네트워크 왕복
       // 지연이 겹치게 한다(특히 서버가 멀 때 큼). 다만 서버(t3.medium)를 독점하지 않도록
       // 동시 4개로 제한한다. 파일명은 clip.index 로 고정돼 서버에서 이름이 겹치지 않는다.
-      setPublishMsg(`클립 업로드 0 / ${clips.length}`);
+      setPublishMsg(`클립 업로드 0 / ${batchClips.length}`);
       const UPLOAD_CONCURRENCY = 4;
       let uploaded = 0;
       let cursor = 0;
@@ -1295,7 +1376,7 @@ export default function ManualHighlightPage() {
         form.append('index', String(clip.index));
         // 점수판용. '점수만 반영' 태그는 클립이 되지 않으므로 clip.index 와 tags 의
         // 자리가 어긋난다 — 자를 때 남겨 둔 색인으로 되찾는다.
-        const tagIdx = clipTagIndex[clip.index - 1];
+        const tagIdx = batchTagIndex[clip.index - 1];
         const tag = tagIdx === undefined ? undefined : tags[tagIdx];
         if (tag) {
           if (tag.kind) form.append('kind', tag.kind);
@@ -1317,8 +1398,8 @@ export default function ManualHighlightPage() {
         });
         if (!res.ok) throw new Error(await res.text() || `클립 ${clip.index} 업로드 실패`);
         uploaded += 1;
-        setUploadProgress({ done: uploaded, total: clips.length });
-        setPublishMsg(`클립 업로드 ${uploaded} / ${clips.length}`);
+        setUploadProgress({ done: uploaded, total: batchClips.length });
+        setPublishMsg(`클립 업로드 ${uploaded} / ${batchClips.length}`);
       };
       // 워커 4개가 공용 커서에서 다음 클립을 집어 처리한다. 하나라도 실패하면
       // Promise.all 이 거부되어 바깥 try/catch 로 잡힌다.
@@ -1326,12 +1407,12 @@ export default function ManualHighlightPage() {
         for (;;) {
           const i = cursor;
           cursor += 1;
-          if (i >= clips.length) return;
-          await uploadOne(clips[i]);
+          if (i >= batchClips.length) return;
+          await uploadOne(batchClips[i]);
         }
       };
       await Promise.all(
-        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, clips.length) }, runWorker),
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, batchClips.length) }, runWorker),
       );
 
       // 인트로 사진이 있으면 클립을 다 올린 뒤, 합치기 직전에 보낸다.
@@ -1362,11 +1443,12 @@ export default function ManualHighlightPage() {
       }
 
       // 여기서부터는 서버 몫 — 탭을 닫아도 합치기는 끝나고 "수동 결과물"에 뜬다.
-      setPublishPhase('merging');
-      setPublishMsg('서버에서 다듬고 합치는 중...');
-      await apiJson(`/highlight/manual-jobs/${jobId}/merge`, {
+      setPublishMsg('합치기 대기열에 등록 중...');
+      const accepted = await apiJson<{ render_queue?: { position: number } }>(`/highlight/manual-jobs/${jobId}/merge`, {
         method: 'POST',
         body: JSON.stringify({
+          // 클립↔클립 전환(디졸브) 길이. 켜면 0.2초, 끄면 하드컷(0).
+          clip_xfade_sec: clipTransition ? 0.2 : 0,
           scoreboard: scoreboard.enabled ? {
             enabled: true,
             home_name: scoreboard.homeName,
@@ -1386,6 +1468,9 @@ export default function ManualHighlightPage() {
             name_size_pct: scoreboard.nameSizePct,
             // 대회 세트 점수판의 맨 윗줄. 기본 점수판은 이 값을 쓰지 않는다.
             round_label: scoreboard.roundLabel || '',
+            // 점수판 전용 템플릿(카드와 별개로 고른 디자인). 서버가 이걸로 점수판을
+            // 그린다 — 비어 있으면 카드 세트 점수판이나 기본형으로 떨어진다.
+            template: scoreboard.template || '',
             // 적어 넣은 픽셀 좌표. 없으면 null 이고 그때는 비율을 쓴다.
             pos_px_x: scoreboard.posPxX ?? null,
             pos_px_y: scoreboard.posPxY ?? null,
@@ -1435,6 +1520,9 @@ export default function ManualHighlightPage() {
         }),
       });
 
+      setPublishPhase('queued');
+      setPublishMsg(`합치기 대기 ${accepted.render_queue?.position ?? 1}번째 — 탭을 닫아도 진행됩니다.`);
+
       // 합치기는 재인코딩이라 몇 초 걸린다. 끝날 때까지 상태를 확인한다.
       for (;;) {
         await new Promise((r) => setTimeout(r, 2000));
@@ -1446,7 +1534,10 @@ export default function ManualHighlightPage() {
           break;
         }
         if (job.status === 'error') throw new Error(job.error_message || '합치기 실패');
-        setPublishMsg(job.job_metadata?.progress?.detail || '처리 중...');
+        const waiting = job.status === 'render_queued';
+        setPublishPhase(waiting ? 'queued' : 'merging');
+        setPublishMsg(waiting ? `합치기 대기 ${job.render_queue?.position ?? 1}번째 — 탭을 닫아도 진행됩니다.`
+          : job.job_metadata?.progress?.detail || '처리 중...');
       }
     } catch (err) {
       setPublishError(err instanceof Error ? err.message : String(err));
@@ -1455,6 +1546,15 @@ export default function ManualHighlightPage() {
     } finally {
       setPublishing(false);
     }
+  };
+
+  const rebuildFromLog = async () => {
+    if (rebuilding || publishing || cutting || logBusy) return;
+    setRebuilding(true);
+    try {
+      const prepared = await runCut();
+      if (prepared) await publish(prepared);
+    } finally { setRebuilding(false); }
   };
 
   // 렌더 중에 createObjectURL 을 부르면 재생 중 timeupdate 마다 수 MB짜리 URL이 새로 생겨 샌다.
@@ -1579,14 +1679,15 @@ export default function ManualHighlightPage() {
             <strong>{draftSaveState === 'saved' ? '이 브라우저에 저장됨' : draftSaveState === 'partial' ? '그림을 제외하고 저장됨' : draftSaveState === 'failed' ? '브라우저에 저장하지 못함' : '작업 복원 중…'}</strong>
             {unsafeDraft ? <p>현재 입력은 화면에 남아 있습니다. 이동 전에 복구 파일을 받으세요.{draftSaveState === 'partial' ? ' 로고와 카드 그림은 복구 파일에 포함됩니다.' : ''}</p> : null}
             <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-              <button style={smallBtn} onClick={exportDraft}>작업 복구 파일 저장</button>
-              <button style={smallBtn} onClick={() => recoveryInputRef.current?.click()}>복구 파일 불러오기</button>
+              <button style={smallBtn} disabled={logBusy || cutting || publishing} onClick={() => void exportDraft()}>하이라이트 로그 JSON 다운로드</button>
+              <button style={smallBtn} disabled={logBusy || cutting || publishing} onClick={() => recoveryInputRef.current?.click()}>하이라이트 로그 JSON 불러오기</button>
+              {logImported ? <button style={primaryBtn} disabled={logBusy || cutting || publishing || rebuilding || !clipTagCount} onClick={() => void rebuildFromLog()}>로그로 하이라이트 제작</button> : null}
               {unsafeDraft && loadedDraftKey === storageKey ? <button style={smallBtn} onClick={() => setSaveAttempt((value) => value + 1)}>브라우저 저장 다시 시도</button> : null}
               <input ref={recoveryInputRef} type="file" accept="application/json,.json" aria-label="수동 태깅 복구 파일" hidden onChange={(event) => {
                 const file = event.target.files?.[0]; event.target.value = ''; void importDraft(file);
               }} />
             </div>
-            <p style={{ fontSize: 12, marginBottom: 0 }}>복구 파일: 태그·패딩·점수판·카드·워터마크 설정. 원본 영상·인트로·음악 파일은 다시 선택해야 합니다.</p>
+            <p style={{ fontSize: 12, marginBottom: 0 }}>JSON에는 골·하이라이트·교체 시각, 구간, 출력 설정, 선택한 인트로·음악이 포함됩니다. 원본 영상은 포함하지 않습니다. 같은 원본을 같은 순서로 선택하고 JSON을 불러오세요. FPC의 카드 템플릿은 해당 디자인을 그대로 사용합니다.</p>
             <p style={{fontSize:12}}>초안 소유자: {draftOwner?.name||'로그인 확인 중'}. 같은 계정과 원본 영상을 선택하면 복원됩니다.</p>
             {legacyAvailable?<div><p>이 영상의 이전 공용 초안은 원본을 보존하고 별도로 보관했습니다. 관리자에게 소유자 확인 후 복구를 요청하세요.</p>{draftOwner?.role==='SUPERADMIN'?<button style={smallBtn} onClick={()=>void restoreLegacyDraft()}>이전 공용 태그를 내 계정으로 복사</button>:null}</div>:null}
             {recoveryMessage ? <p role="status">{recoveryMessage}</p> : null}
@@ -1772,6 +1873,18 @@ export default function ManualHighlightPage() {
                 />
                 초
               </label>
+              {/* 클립↔클립 전환(디졸브 0.2초). 끄면 하드컷. 카드 경계 디졸브는 늘 유지된다. */}
+              <label
+                style={{ fontSize: 12, color: 'var(--muted, #999)', display: 'flex', alignItems: 'center', gap: 4 }}
+                title="켜면 클립이 넘어갈 때 0.2초 디졸브로 부드럽게 전환됩니다. 끄면 바로 컷."
+              >
+                <input
+                  type="checkbox"
+                  checked={clipTransition}
+                  onChange={(e) => setClipTransition(e.target.checked)}
+                />
+                전환 효과
+              </label>
               {tags.length ? (
                 <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                   예상 합본 길이 약 {fmt(totalClipSeconds + totalCardSeconds)}
@@ -1817,18 +1930,26 @@ export default function ManualHighlightPage() {
                     알 수 없다. 시작 카드 뒤 = 전반, 첫 구간 마커(T) = 후반. */}
                 {cards.enabled && cardTemplate?.has_half_videos ? (
                   <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
-                    {([['first', '전반전 효과'], ['second', '후반전 효과']] as const).map(([w, label]) => (
-                      <span key={w} style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
-                        <video
-                          src={`${API_BASE}/highlight/card-templates/${cards.template}/half/${w}`}
-                          controls muted preload="metadata"
-                          style={{ width: 168, borderRadius: 6, background: '#000' }}
-                        />
-                        <span style={{ fontSize: 10, color: 'var(--muted, #888)', textAlign: 'center' }}>
-                          {label} (mp4)
+                    {([['first', '전반전 효과'], ['second', '후반전 효과']] as const).map(([w, label]) => {
+                      const media = cardTemplate?.half_media?.[w];
+                      if (!media) return null;
+                      const src = `${API_BASE}/highlight/card-templates/${cards.template}/half/${w}`;
+                      return (
+                        <span key={w} style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                          {media === 'video' ? (
+                            <video src={src} controls muted preload="metadata"
+                                   style={{ width: 168, borderRadius: 6, background: '#000' }} />
+                          ) : (
+                            // eslint-disable-next-line @next/next/no-img-element -- 세트 자산
+                            <img src={src} alt={label}
+                                 style={{ width: 168, borderRadius: 6, background: '#000' }} />
+                          )}
+                          <span style={{ fontSize: 10, color: 'var(--muted, #888)', textAlign: 'center' }}>
+                            {label} ({media === 'video' ? 'mp4' : '이미지'})
+                          </span>
                         </span>
-                      </span>
-                    ))}
+                      );
+                    })}
                   </span>
                 ) : null}
                 {cards.enabled && cardTemplates.length ? (
@@ -1839,7 +1960,7 @@ export default function ManualHighlightPage() {
                       onChange={(e) => setCards((p) => ({ ...p, template: e.target.value }))}
                       style={{ ...smallBtn, padding: '3px 6px', fontSize: 12 }}
                     >
-                      {cardTemplates.map((t) => (
+                      {cardSetTemplates.map((t) => (
                         <option key={t.id} value={t.id}>{t.name}</option>
                       ))}
                     </select>
@@ -2064,12 +2185,20 @@ export default function ManualHighlightPage() {
                     ) : null}
                     {previewIsHalfVideo ? (
                       <div style={{ maxWidth: 520 }}>
+                        {cardTemplate?.half_media?.second === 'image' ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- 세트 자산
+                          <img src={`${API_BASE}/highlight/card-templates/${cards.template}/half/second`}
+                               alt="후반전 효과"
+                               style={{ width: '100%', borderRadius: 8, background: '#000',
+                                        border: '1px solid var(--border-ghost, #2c2c32)' }} />
+                        ) : (
                         <video
                           src={`${API_BASE}/highlight/card-templates/${cards.template}/half/second`}
                           controls muted preload="metadata"
                           style={{ width: '100%', borderRadius: 8, background: '#000',
                                    border: '1px solid var(--border-ghost, #2c2c32)' }}
                         />
+                        )}
                         <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted, #999)' }}>
                           첫 T 자리에 이 후반전 효과 영상이 들어갑니다. 이 세트에는
                           구간 카드가 없습니다 — 두 번째 이후의 T 는 무시됩니다.
@@ -2227,9 +2356,33 @@ export default function ManualHighlightPage() {
                 )}
               </div>
 
-              {/* 대회·라운드 — 대회 세트 점수판이 맨 위에 그린다. 세트를 안 고르면
-                  기본 점수판이 이 값을 쓰지 않으므로 그때는 보여 주지 않는다. */}
-              {scoreboard.enabled && cardTemplate?.has_board ? (
+              {/* 점수판 디자인 — 카드 세트와 **따로** 고르는 전용 점수판(퀸컵처럼 카드
+                  없이 점수판만 있는 것). '기본형'은 코드로 그리는 판이거나, 카드 세트를
+                  골랐으면 그 세트의 점수판을 따른다. 전용 점수판을 고르면 카드를 안 켜도
+                  그 디자인으로 새긴다. */}
+              {scoreboard.enabled && boardOnlyTemplates.length ? (
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap',
+                }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>점수판 디자인</span>
+                  <select
+                    value={scoreboard.template || ''}
+                    onChange={(e) => setScoreboard((p) => ({ ...p, template: e.target.value }))}
+                    style={{ ...smallBtn, padding: '3px 6px', fontSize: 12 }}
+                  >
+                    <option value="">기본형{cards.enabled && cardTemplate?.has_board ? ' (세트 점수판 따름)' : ''}</option>
+                    {boardOnlyTemplates.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {/* 대회·라운드 — 점수판에 라운드 자리(round_label)가 있는 세트만 보여 준다.
+                  기본형(코드 점수판)·퀸컵처럼 그 자리가 없는 점수판에서는 숨긴다 — 떠
+                  있어도 그릴 자리가 없어 아무 효과가 없다. */}
+              {scoreboard.enabled && boardTemplate
+                && (boardTemplate.board_fields || []).some((f) => f.id === 'round_label') ? (
                 <label style={{
                   display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap',
                 }}>
@@ -2926,7 +3079,7 @@ export default function ManualHighlightPage() {
                     <p style={{ fontSize: 12, color: '#f59e0b', margin: '-8px 0 14px' }}>{musicError}</p>
                   ) : null}
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button style={primaryBtn} onClick={publish} disabled={publishing}>
+                    <button style={primaryBtn} onClick={() => void publish()} disabled={publishing}>
                       {publishing ? '처리 중...' : `⬆ 업로드하고 하나로 합치기 (${fmtBytes(clipsTotalBytes)})`}
                     </button>
                     {publishPhase === 'done' && publishMsg ? (
@@ -2950,7 +3103,7 @@ export default function ManualHighlightPage() {
                     </div>
                   ) : null}
 
-                  {publishPhase === 'merging' ? (
+                  {(publishPhase === 'merging' || publishPhase === 'queued') ? (
                     <div style={stageBox}>
                       <div style={stageHead}>
                         <span style={{ fontSize: 13, fontWeight: 600 }}>3. 서버에서 다듬고 합치는 중</span>

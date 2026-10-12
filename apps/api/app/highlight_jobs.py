@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+from .highlight_process import run_media
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -276,7 +277,7 @@ def _delete_upload(video_path: str) -> None:
 
 def probe_video_dimensions(path: Path) -> tuple[int, int]:
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe",
                 "-v",
@@ -304,7 +305,7 @@ def make_playback_proxy(src: Path, out: Path, target_h: int = 720) -> bool:
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp.unlink(missing_ok=True)
-        subprocess.run(
+        run_media(
             [
                 "ffmpeg",
                 "-y",
@@ -445,7 +446,7 @@ def probe_video_info_url(url: str) -> dict:
     if not url:
         return {}
     try:
-        out = subprocess.run(
+        out = run_media(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height,codec_name,bit_rate",
              "-of", "default=nw=1:nk=0", url],
@@ -620,7 +621,7 @@ def youtube_available_formats(url: str) -> tuple[str, str]:
     돌려주는 것: (화질 목록, 경고 요약).
     """
     try:
-        proc = subprocess.run(
+        proc = run_media(
             ["yt-dlp", "--list-formats", *YT_JS_ARGS, *youtube_pot_args(),
              *youtube_client_args(), *youtube_cookie_args(), url],
             capture_output=True, text=True, timeout=180,
@@ -663,7 +664,7 @@ def probe_video_info(path: Path) -> dict:
     받은 뒤 한 번 재어 기록으로 남기면 화면에서 바로 보인다.
     """
     try:
-        out = subprocess.run(
+        out = run_media(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height,codec_name,bit_rate",
              "-show_entries", "format=duration",
@@ -1045,7 +1046,7 @@ def download_link_for_job(job_id: str) -> None:
             url,
         ]
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            run_media(cmd, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as ex:
             detail = (ex.stderr or ex.stdout or str(ex))[-2000:]
             logger.warning("yt-dlp download failed for %s: %s", job_id, detail)
@@ -1081,7 +1082,7 @@ def download_link_for_job(job_id: str) -> None:
 def _ffmpeg_cut(src: Path, out: Path, start: float, duration: float) -> bool:
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(
+        run_media(
             [
                 "ffmpeg", "-y",
                 "-ss", f"{max(0.0, start):.3f}",
@@ -1170,7 +1171,7 @@ def merge_clips_for_job(job_id: str) -> None:
         list_file.write_text("".join(f"file '{p.as_posix()}'\n" for p in paths))
         export_path = exports_dir() / f"{job_id}_export.mp4"
         try:
-            subprocess.run(
+            run_media(
                 [
                     "ffmpeg", "-y",
                     "-f", "concat", "-safe", "0",
@@ -1209,7 +1210,7 @@ def _probe_start_time(path: Path) -> float:
     그 값이 곧 ffmpeg 이 실제로 붙잡은 키프레임 위치다.
     """
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=start_time",
@@ -1235,7 +1236,7 @@ def color_args(path: Path) -> list[str]:
     추측에 맡기는 것보다 명시하는 편이 낫다. SD 는 건드리지 않는다(bt601 일 수 있다).
     """
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
                 "-show_entries",
@@ -1290,7 +1291,7 @@ def _probe_video_dims(path: Path) -> tuple[int, int, str]:
     읽지 못하면 720p/30fps 로 둔다 — 최악의 경우에도 인트로만 조금 어긋날 뿐이다.
     """
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
@@ -1360,7 +1361,7 @@ def _mix_music(video: Path, music: Path, volume: float, original: float, out: Pa
         graph = f"[1:a]volume={volume:.3f},aresample=async=1[a]"
         maps = ["-map", "0:v", "-map", "[a]", "-shortest"]
 
-    subprocess.run([
+    run_media([
         "ffmpeg", "-y", "-nostats",
         "-i", str(video),
         "-stream_loop", "-1", "-i", str(music),
@@ -1393,7 +1394,7 @@ def _video_segment(path: Path | None, label: str) -> tuple[Path, float, bool] | 
         logger.warning("%s 자산을 찾지 못했습니다", label)
         return None
     try:
-        length = float(subprocess.run(
+        length = float(run_media(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", str(path)],
             check=True, capture_output=True, text=True,
@@ -1409,7 +1410,7 @@ def _video_segment(path: Path | None, label: str) -> tuple[Path, float, bool] | 
 def _has_audio(path: Path) -> bool:
     """클립에 오디오 트랙이 있는가. 없으면 무음을 만들어 붙여야 조각 규격이 맞는다."""
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "a:0",
@@ -1603,6 +1604,15 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         if not job:
             return
         metadata = dict(job.job_metadata or {})
+        # 클립↔클립 전환(디졸브) 길이. 화면 토글 값이 잡 메타에 실려 오면 그걸 쓰고,
+        # 없으면 전역 기본(env HIGHLIGHT_XFADE_SEC, 보통 0=하드컷)을 쓴다. 카드 경계
+        # 디졸브(CARD_FADE_SEC)는 이 값과 무관하게 늘 유지된다.
+        clip_xfade = XFADE_SEC
+        if metadata.get("clip_xfade_sec") is not None:
+            try:
+                clip_xfade = max(0.0, min(2.0, float(metadata["clip_xfade_sec"])))
+            except (TypeError, ValueError):
+                clip_xfade = XFADE_SEC
         clip_info = list_manual_clip_info(job_id)
         if not clip_info:
             update_job(db, job_id, status="error", error_message="합칠 클립이 없습니다.")
@@ -1761,12 +1771,21 @@ def merge_manual_clips_for_job(job_id: str) -> None:
         sb_dir = work / "sb"
         sb_cache: dict[tuple[int, int], Path] = {}
         sb_logo: Path | None = None
-        # 대회 세트가 자기 점수판 그림을 들고 있으면 그걸 쓴다. 없으면 코드로 그린다.
+        # 점수판 그림을 어느 템플릿으로 그릴지 정한다.
         sb_template = None
-        if sb and cards_on and template is not None and template.has_board:
-            sb_template = template
         if sb:
             sb_cfg, sb_pre, sb_post, sb_goal = sb
+            # ① 점수판 섹션에서 **직접 고른 전용 점수판**(퀸컵처럼 카드 없이 점수판만
+            #    있는 세트)이 가장 우선이다 — 카드를 안 켜도 점수판만 새길 수 있다.
+            board_tid = str(sb_cfg.get("template") or "").strip()
+            if board_tid:
+                cand = card_store.resolve(db, board_tid)
+                if cand.has_board:
+                    sb_template = cand
+            # ② 안 골랐으면 카드 세트가 자기 점수판을 들고 있을 때 그걸 쓴다(SUFA).
+            #    둘 다 없으면 아래에서 코드로 기본 점수판을 그린다.
+            if sb_template is None and cards_on and template is not None and template.has_board:
+                sb_template = template
             sb_logo = _decode_logo(sb_cfg.get("logo_url"), sb_dir)
             # 로고가 있으면 판보다 세로가 길다 — 그 높이로 자리를 잡아야 위쪽에 붙였을 때
             # 로고가 화면 밖으로 잘리지 않는다.
@@ -1922,10 +1941,12 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             return ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(clips_to_use[k][0])]
 
         def silence(dur: float) -> list[str]:
-            """무음 트랙 입력. 필요한 길이보다 넉넉히 만들고 -shortest 로 영상에 맞춰 자른다.
+            """무음 입력은 넉넉히 주고 각 조각의 출력 -t로 정확한 길이에 맞춘다.
 
             딱 맞는 길이로 주면 영상 필터와 같은 그래프에 있을 때 오디오 쪽이 한 프레임도
             내지 못한 채 EOF 로 끝나 "Could not open encoder before EOF" 로 죽는다.
+            -shortest는 기본 10초 분량의 프레임을 버퍼링할 수 있어 4K에서 메모리를
+            과도하게 쓴다. 조각 길이는 이미 알므로 스트림 종료를 기다릴 필요가 없다.
             """
             return ["-f", "lavfi", "-t", f"{dur + 1.0:.3f}",
                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
@@ -1954,14 +1975,22 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             # 효과 영상 세트에서도 구간 카드를 굽기는 한다 — 타임라인이 'T 자리' 를
             # 이 카드의 존재로 알아내기 때문이다. 안 구우면 후반 영상 자리도 사라진다
             # (한 번 그렇게 깨뜨렸다). 카드 자체는 아래에서 타임라인에 넣지 않는다.
-            for slot, label in section_at.items():
-                # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
-                text_fields = [f for f in template.fields("section") if f.kind == "text"]
-                values = {text_fields[0].id: label} if text_fields else {}
-                section_card[slot] = render_card_file(
-                    card_dir / f"section_{slot:03d}.png",
-                    render_card(template, "section", iw, ih, values=values, color=card_color),
-                )
+            #
+            # 다만 **점수판 전용 세트**(구간 카드 항목도 전후반 효과도 없는 것 — 퀸컵)는
+            # T 자리에 넣을 것이 아무것도 없다. 그런 세트는 굽지 않는다 — 구워 두면 빈
+            # 전체화면 카드가 T 마다 끼어 점수판만 얹으려던 게 깨진다. 구간 카드가 있거나
+            # (SUFA·파인플레이) 전후반 효과가 있는 세트는 종전대로 굽는다.
+            if (template.fields("section")
+                    or template.first_half_video or template.first_half_image
+                    or template.second_half_video or template.second_half_image):
+                for slot, label in section_at.items():
+                    # 구간 카드의 첫 글자 항목이 '구간 이름' 이다 — 템플릿이 그렇게 정의한다.
+                    text_fields = [f for f in template.fields("section") if f.kind == "text"]
+                    values = {text_fields[0].id: label} if text_fields else {}
+                    section_card[slot] = render_card_file(
+                        card_dir / f"section_{slot:03d}.png",
+                        render_card(template, "section", iw, ih, values=values, color=card_color),
+                    )
 
         # ── 합본에 놓일 조각들을 먼저 늘어놓는다 ─────────────────────────
         # 대회 세트가 들고 있는 전후반 효과 영상. 글자를 얹지 않고 그대로 끼운다.
@@ -2054,7 +2083,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             left, right = timeline[i], timeline[i + 1]
             # 클립끼리만 하드컷. 한쪽이라도 카드·마무리 영상이면 디졸브로 잇는다.
             both_clips = left[0] == "clip" and right[0] == "clip"
-            want = XFADE_SEC if both_clips else CARD_FADE_SEC
+            want = clip_xfade if both_clips else CARD_FADE_SEC
             d = min(want, seg_len(left) / 3.0, seg_len(right) / 3.0)
             joins.append(0.0 if d <= 0.02 else d)
 
@@ -2126,7 +2155,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                         vlabel = "v0"
                     args += [
                         "-filter_complex", ";".join(chains),
-                        "-map", f"[{vlabel}]", "-map", "1:a", "-shortest", *encode, str(out),
+                        "-map", f"[{vlabel}]", "-map", "1:a", "-t", f"{dur:.3f}", *encode, str(out),
                     ]
                 elif item[0] == "video":
                     # 마무리 영상 — 점수판도 워터마크도 얹지 않는다(카드와 같다).
@@ -2145,7 +2174,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     args += [
                         "-filter_complex", f"[0:v]{norm_v}[v0]",
                         "-map", "[v0]", "-map", audio_map,
-                        *([] if snd else ["-shortest"]),
+                        "-t", f"{dur:.3f}",
                         *encode, str(out),
                     ]
                 else:
@@ -2169,10 +2198,10 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                     args += [
                         "-filter_complex", ";".join(chains),
                         "-map", f"[{vlabel}]", "-map", audio_map,
-                        *([] if has_sound[k] else ["-shortest"]),
+                        "-t", f"{dur:.3f}",
                         *encode, str(out),
                     ]
-                subprocess.run(args, check=True, capture_output=True, text=True)
+                run_media(args, check=True, capture_output=True, text=True)
                 pieces.append(out)
                 bump_progress()
 
@@ -2257,9 +2286,9 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 )
                 args += [
                     "-filter_complex", ";".join(chains),
-                    "-map", "[vout]", "-map", "[a]", "-shortest", *encode, str(out),
+                    "-map", "[vout]", "-map", "[a]", "-t", f"{d:.3f}", *encode, str(out),
                 ]
-                subprocess.run(args, check=True, capture_output=True, text=True)
+                run_media(args, check=True, capture_output=True, text=True)
                 pieces.append(out)
                 bump_progress()
 
@@ -2271,7 +2300,7 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             export_path = exports_dir() / f"{job_id}_export.mp4"
             metadata["progress"] = _progress_payload("merging", 92, "이어 붙이는 중")
             update_job(db, job_id, job_metadata=_json_safe(metadata))
-            subprocess.run([
+            run_media([
                 "ffmpeg", "-y", "-nostats",
                 "-f", "concat", "-safe", "0", "-i", str(list_file),
                 # 영상은 그대로 복사(재인코딩 없음). 오디오만 다시 인코딩해 조각 경계의
@@ -2302,24 +2331,14 @@ def merge_manual_clips_for_job(job_id: str) -> None:
 
         metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
         metadata["progress"] = _progress_payload("done", 100, "하이라이트 제작 완료")
-        if str(metadata.get("sport") or "FOOTBALL").upper() == "FOOTBALL":
-            metadata["clip_results"] = {**(metadata.get("clip_results") or {}),
-                                        "status": "queued", "error": None}
         update_job(
             db, job_id,
             status="done",
             export_path=str(export_path),
             job_metadata=_json_safe(metadata),
         )
-        # Individual football clips share the existing clip/dual workspace.
-        # Registration has its own status; failure must not fail the finished montage.
-        if str(metadata.get("sport") or "FOOTBALL").upper() == "FOOTBALL":
-            try:
-                from .manual_clip_results import publish_manual_clip_results
-                db.close()
-                publish_manual_clip_results(job_id)
-            except Exception as exc:
-                print(f"manual clip registration failed for {job_id}: {exc}")
+        # Clip-result publication is opt-in through the existing registration
+        # endpoint. Release the render queue as soon as the montage is finished.
     except Exception as exc:
         update_job(db, job_id, status="error", error_message=str(exc))
     finally:

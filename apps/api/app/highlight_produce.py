@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from .highlight_process import run_media
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,7 +46,7 @@ def _probe_video_dims(path: Path | str) -> tuple[int, int, str]:
     읽지 못하면 720p/30fps 로 둔다.
     """
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
@@ -69,7 +70,7 @@ def _probe_video_dims(path: Path | str) -> tuple[int, int, str]:
 def _probe_has_audio(path: Path | str) -> bool:
     """원본에 오디오 스트림이 있는지. 없으면(무음 촬영본 등) concat 에 무음을 채워야 한다."""
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "a",
@@ -270,7 +271,7 @@ def make_vertical_9x16(video: Path, out_path: Path, *, preset: str = MERGE_PRESE
 
 def _run(args: list[str], err_prefix: str) -> None:
     try:
-        subprocess.run(args, check=True, capture_output=True, text=True)
+        run_media(args, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as ex:
         detail = (ex.stderr or ex.stdout or str(ex))[-500:]
         raise RuntimeError(f"{err_prefix}: {detail}") from ex

@@ -137,7 +137,9 @@ function ShapChart({ stats, compact = false }: { stats: Record<string, number>; 
 
 type HighlightJob = {
   id: string;
-  status: 'queued' | 'processing' | 'done' | 'error';
+  status: 'queued' | 'processing' | 'done' | 'error' | 'render_queued' | 'merging';
+  render_queue?: { position: number } | null;
+  export_path?: string | null;
   mode: 'ai' | 'log_ai';
   original_filename: string;
   error_message?: string;
@@ -213,7 +215,7 @@ export default function HighlightPage() {
             const initial: Record<string, boolean> = {};
             clips.forEach((c) => (initial[c] = true));
             setSelectedClips(initial);
-            setExportReady(false);
+            setExportReady(Boolean(job.export_path));
           }
           loadJobs();
         }
@@ -307,8 +309,17 @@ export default function HighlightPage() {
         method: 'POST',
         body: JSON.stringify({ selected: ordered, order: ordered }),
       });
-      setExportReady(true);
-      setStatus('합치기 완료 — 다운로드 버튼을 눌러주세요.');
+      setExportReady(false);
+      for (;;) {
+        const job = await apiJson<HighlightJob>(`/highlight/jobs/${activeJob.id}`);
+        setActiveJob(job);
+        if (job.status === 'done') {
+          setExportReady(true); setStatus('합치기 완료 — 다운로드 버튼을 눌러주세요.'); break;
+        }
+        if (job.status === 'error') throw new Error(job.error_message || '합치기 실패');
+        setStatus(job.status === 'render_queued' ? `합치기 대기 ${job.render_queue?.position ?? 1}번째 — 탭을 닫아도 진행됩니다.` : '합치는 중 — 탭을 닫아도 진행됩니다.');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     } catch (err) {
       setStatus(`내보내기 오류: ${err}`);
     } finally {
@@ -495,8 +506,8 @@ export default function HighlightPage() {
                   const init: Record<string, boolean> = {};
                   c.forEach((x) => (init[x] = true));
                   setSelectedClips(init);
-                  setExportReady(false);
-                } else if (job.status === 'queued' || job.status === 'processing') {
+                  setExportReady(Boolean(job.export_path));
+                } else if (job.status === 'queued' || job.status === 'processing' || job.status === 'render_queued' || job.status === 'merging') {
                   startPolling(job.id);
                 }
               }}
@@ -542,7 +553,7 @@ export default function HighlightPage() {
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
         {/* progress / status bar */}
-        {activeJob && (activeJob.status === 'queued' || activeJob.status === 'processing') && (
+        {activeJob && (activeJob.status === 'queued' || activeJob.status === 'processing' || activeJob.status === 'render_queued' || activeJob.status === 'merging') && (
           <div style={{ background: 'var(--surface-card)', borderRadius: 'var(--radius-card)', padding: 24, border: '1px solid var(--border-ghost)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
               <div style={{ fontSize: 11, color: 'var(--muted)' }}>PROCESSING</div>
@@ -556,7 +567,7 @@ export default function HighlightPage() {
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 13, color: 'var(--text)' }}>{progressLabel}</div>
                 <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
-                  {activeJob.status === 'queued' ? '작업은 대기열에 있으며 페이지를 나가도 유지됩니다.' : 'GPU 워커가 백그라운드에서 처리 중입니다. 페이지를 나가도 계속 진행됩니다.'}
+                  {activeJob.status === 'render_queued' ? `합치기 대기 ${activeJob.render_queue?.position ?? 1}번째입니다. 탭을 닫아도 진행됩니다.` : activeJob.status === 'merging' ? '영상 처리 워커에서 합치고 있습니다.' : activeJob.status === 'queued' ? '작업은 대기열에 있으며 페이지를 나가도 유지됩니다.' : 'GPU 워커가 백그라운드에서 처리 중입니다. 페이지를 나가도 계속 진행됩니다.'}
                 </div>
               </div>
             </div>

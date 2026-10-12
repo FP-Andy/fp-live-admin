@@ -36,6 +36,7 @@ from app import fineplay_fpa as fpa
 from app.fineplay_plan import resolve_plan
 from app.highlight_storage import S3Storage
 from app.models import HighlightClip, HighlightClipAction, HighlightJob, Match, User, FpaSavedLog
+from app.highlight_render_queue import HighlightRenderTask
 from app.scene_motion import attach_scene_motions, scene_motion_key
 
 
@@ -83,7 +84,7 @@ class ManualClipTests(unittest.TestCase):
         event.listen(self.engine, 'connect', lambda conn, _: conn.execute('PRAGMA foreign_keys=ON'))
         self.addCleanup(self.engine.dispose)
         Base.metadata.create_all(self.engine, tables=[m.__table__ for m in
-                                 (User, Match, HighlightJob, HighlightClip, HighlightClipAction)])
+                                 (User, Match, HighlightJob, HighlightClip, HighlightClipAction, HighlightRenderTask)])
         self.Session = sessionmaker(bind=self.engine)
         self.storage = SimpleNamespace(configured=True, upload=Mock(), exists=Mock(return_value=True),
             presigned_get=Mock(side_effect=lambda key, **kw: 'https://fixture.invalid/' + key),
@@ -276,7 +277,7 @@ class ManualClipTests(unittest.TestCase):
         self.assertEqual(self.detail().json(), before)
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg/ffprobe required')
-    def test_real_merge_auto_registers_only_football_and_keeps_montage_on_failure(self):
+    def test_real_merge_waits_for_registration_and_keeps_montage_on_failure(self):
         from app import highlight_jobs as jobs
         with patch.object(jobs, 'SessionLocal', self.Session), patch.object(jobs, 'HIGHLIGHT_RUNTIME_DIR', self.root), \
              patch.object(jobs, 'FINAL_PRESET', 'ultrafast'), patch.object(jobs, 'default_client', side_effect=AssertionError('No external callback')):
@@ -294,11 +295,20 @@ class ManualClipTests(unittest.TestCase):
                 with self.Session() as db:
                     db.add(HighlightJob(id=name, status='collecting', mode='manual', clips_dir=str(directory), job_metadata={'sport': sport}))
                     db.commit()
-                if configured:
-                    jobs.merge_manual_clips_for_job(name)
-                else:
-                    with self.assertLogs('app.manual_clip_results', 'ERROR'):
-                        jobs.merge_manual_clips_for_job(name)
+                jobs.merge_manual_clips_for_job(name)
+                with self.Session() as db:
+                    job = db.get(HighlightJob, name)
+                    self.assertEqual(job.status, 'done', job.error_message)
+                    self.assertTrue(Path(job.export_path).is_file())
+                    self.assertEqual(publisher.registration_state(job), {})
+                    self.assertEqual(db.query(HighlightClip).filter_by(job_id=name).count(), 0)
+                if sport != 'BASKETBALL':
+                    path = '/api/highlight/manual-jobs/' + name + '/clip-results'
+                    if configured:
+                        self.assertEqual(self.client.post(path).status_code, 202)
+                    else:
+                        with self.assertLogs('app.manual_clip_results', 'ERROR'):
+                            self.assertEqual(self.client.post(path).status_code, 202)
                 with self.Session() as db:
                     job = db.get(HighlightJob, name)
                     self.assertEqual(job.status, 'done', job.error_message)

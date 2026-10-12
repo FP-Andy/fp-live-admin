@@ -42,6 +42,10 @@ export type Scoreboard = {
   nameSizePct: number;
   /** 대회·라운드 한 줄. 대회 세트 점수판이 맨 위에 그린다(기본 점수판은 안 쓴다). */
   roundLabel?: string;
+  /** 점수판 전용 템플릿 id. 카드 세트와 **따로** 고르는 점수판 디자인(퀸컵처럼
+   *  카드 없이 점수판만 있는 것). 비어 있으면 카드 세트의 점수판(있으면)이나 기본형을
+   *  쓴다 — 종전 동작. 골랐으면 카드를 안 켜도 그 점수판으로 새긴다. */
+  template?: string;
   /** 영상 픽셀 좌표. 적어 넣었으면 비율(posX/posY) 대신 이것을 쓴다.
    *  끌거나 9칸을 누르면 비워진다 — 그것들은 비율로 잡는 몸짓이다. */
   posPxX?: number | null;
@@ -146,6 +150,7 @@ export const DEFAULT_SCOREBOARD: Scoreboard = {
   nameSizePct: 100,
   posPxX: null,
   posPxY: null,
+  template: '',
 };
 
 /** 위치 프리셋 3x3. 값은 posX/posY 비율이다. */

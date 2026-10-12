@@ -98,6 +98,36 @@ class FlaVideoTests(unittest.TestCase):
         if revision is None:revision=self.client.get(self.base).json()['substitutions']['revision']
         payload={'log':log,'revision':revision,'request_id':request_id or str(uuid4()),'client_id':client_id or self.client_id}
         return self.client.put(self.base+'/substitutions',json=payload)
+    def test_fixture_substitution_counts_follow_saved_logs_and_deletions(self):
+        with self.Session() as db:
+            match=db.get(Match,self.id)
+            match.metadata_json={**match.metadata_json,'fla_fixture':FIXTURES[0]}
+            db.commit()
+        def summary():
+            response=self.client.get('/api/futsal/fla-video/fixtures')
+            self.assertEqual(response.status_code,200,response.text)
+            fixtures=response.json()['fixtures']
+            # Not-yet-created matches also have an explicit empty summary.
+            self.assertEqual(fixtures[1]['substitutions'],{'total':0,'home':0,'away':0})
+            return fixtures[0]['substitutions']
+        self.assertEqual(summary(),{'total':0,'home':0,'away':0})
+        log=self.substitution_log()
+        # A saved roster alone must not look like a substitution entry.
+        self.assertEqual(self.save_log(log).status_code,200)
+        self.assertEqual(summary(),{'total':0,'home':0,'away':0})
+        self.update(action='start')
+        self.update(action='finish')
+        log.update(schema='fpa-substitution-log/v2',players=[],initialPlayers=[])
+        log['substitutions']=[dict(id='h1',time=10,team='home'),dict(id='h2',time=11,team='home'),dict(id='a',time=12,team='away')]
+        self.assertEqual(self.save_log(log).status_code,200)
+        self.assertEqual(summary(),{'total':3,'home':2,'away':1})
+        log['substitutions']=log['substitutions'][:1]
+        self.assertEqual(self.save_log(log).status_code,200)
+        self.assertEqual(summary(),{'total':1,'home':1,'away':0})
+        log['substitutions']=[]
+        self.assertEqual(self.save_log(log).status_code,200)
+        self.assertEqual(summary(),{'total':0,'home':0,'away':0})
+
     def test_substitutions_reentry_roundtrip_retry_and_possession_isolation(self):
         log=self.substitution_log()
         r=self.save_log(log);self.assertEqual(r.status_code,200,r.text)
