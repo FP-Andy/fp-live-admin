@@ -342,13 +342,23 @@ def create_router(dominance_builder=None):
         review_only=m.archived or state.get('ended') or not state.get('started')
         log=validate_log(body.log,state,upload.payload.get('name',''),review_only=review_only,
                          saved_video=(current.get('log') or {}).get('video'))
-        # A resolution can only reference an accessible snapshot of this match/video.
+        # Geometry edits invalidate recovery decisions; note/confirmation edits do not.
         from .fpa_cv import owned
-        for event in body.log.substitutions:
-            if event.tracking:
-                snapshot=owned(db,event.tracking.snapshotId,user,'analysis_snapshot')
+        from .futsal_substitution_redetection import check_resolution, log_context
+        from .fla_substitutions import TrackingResolution
+        changed=log_context(log)!=log_context(current.get('log'))
+        recovery_ids=set()
+        for event in log['substitutions']:
+            decision=event.get('tracking')
+            if changed and decision and decision.get('redetectionId'):
+                event.pop('tracking',None);continue
+            if decision:
+                snapshot=owned(db,decision['snapshotId'],user,'analysis_snapshot')
                 if snapshot.payload.get('matchId')!=str(m.id) or snapshot.payload.get('uploadId')!=state['upload_id']:
                     raise HTTPException(400,'현재 경기의 분석 스냅샷에서 선수 연결을 확인하세요.')
+                check_resolution(db,user,snapshot,TrackingResolution(**decision),log)
+                if decision.get('redetectionId'):recovery_ids.add(decision['redetectionId'])
+        if len(recovery_ids)>1:raise HTTPException(409,'동일한 재탐지 버전의 후보로 연결을 확인하세요.')
         # Row lock + independent revision serialize edits without renewing a FLA recording lease.
         m.metadata_json={**(m.metadata_json or {}),'fla_substitutions':{'revision':body.revision+1,'log':log,'last_request':str(body.request_id),'upload_id':state['upload_id']}}
         db.commit();return {'substitutions':saved_substitutions(m)}

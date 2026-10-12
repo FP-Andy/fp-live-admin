@@ -75,6 +75,26 @@ const passed = name => console.log('PASS:', name);
   assert.equal(applySubstitutionReport(withSub, adjusted).players[entrant.id].heatComment, '');
   passed('Time boundary edits preserve the same player; a changed incoming track does not inherit prose');
 
+  const entry = { id: 'event-1', inTrackId: 22, inTime: 50, inNumber: '7' };
+  const pictured = { ...withSub, substitutionReport: { ...withSub.substitutionReport, events: [entry], images: { 'event-1': 'cached-frame' } } };
+  const sameEntry = { ...result, events: [entry] };
+  assert.equal(applySubstitutionReport(pictured, sameEntry).substitutionReport.images['event-1'], 'cached-frame');
+  assert.deepEqual(applySubstitutionReport(pictured, { ...sameEntry, events: [{ ...entry, inTime: 51 }] }).substitutionReport.images, {});
+  const upgraded = { ...sameEntry, provenance: { ...result.provenance, algorithm: 'substitution-report/v2' } };
+  assert.equal(applySubstitutionReport(pictured, upgraded).substitutionReport.images, undefined);
+  const upgradeBackups = []; let upgradedDraft;
+  await preserveAndApplySubstitutions(() => pictured, d => { upgradedDraft = d; }, async d => { upgradeBackups.push(d); }, upgraded);
+  assert.equal(upgradeBackups.length, 1);
+  assert.equal(upgradeBackups[0].substitutionReport.images['event-1'], 'cached-frame');
+  assert.equal(upgradedDraft.players['home-1'].heatComment, '직접 쓴 코멘트');
+  passed('Algorithm upgrades back up the draft; changed entry evidence invalidates cached photos');
+  const redetected = { ...sameEntry, provenance: { ...sameEntry.provenance, redetectionId: 'new-inference' } };
+  const recoveryBackups = [];
+  await preserveAndApplySubstitutions(() => pictured, () => {}, async d => { recoveryBackups.push(d); }, redetected);
+  assert.equal(recoveryBackups.length, 1);
+  assert.equal(applySubstitutionReport(pictured, redetected).substitutionReport.images, undefined);
+  passed('A new redetection run invalidates cached scenes and backs up same-revision edits');
+
   let latest = withSub, applied, backups = [], first = deferred();
   const removed = { ...result, provenance: { ...result.provenance, logRevision: 2 }, heatmap: heat, events: [] };
   const applying = preserveAndApplySubstitutions(() => latest, d => { applied = d; }, async copy => { backups.push(copy); if (backups.length === 1) await first.promise; }, removed);

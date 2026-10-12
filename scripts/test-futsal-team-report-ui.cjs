@@ -4,8 +4,9 @@ const {PDFDocument}=require('../apps/web/node_modules/pdf-lib');
 const origin=process.env.TEAM_REPORT_ORIGIN||'http://127.0.0.1:4346',out='/tmp/futsal-team-report-qa';fs.mkdirSync(out,{recursive:true});
 const sid='c'.repeat(32),nextId='d'.repeat(32),job='a'.repeat(32),matchId='team-match';
 const heat={schema:'fpa-heatmaps/v1',datasetId:'team-fixture',video:'서울 안양',resultVersion:1,from:0,to:900,width:80,height:40,scale:30,players:Array.from({length:10},(_,i)=>({id:(i<5?'home-':'away-')+(i%5+1),group:i<5?'home':'away',jersey:String(i%5+2),grid:Array.from({length:3200},(_,n)=>n===800+i*85?210:0),positions:[0,1,2].map(j=>({t:j*300,x:i<5?.25+.12*(i%5)+j*.015:1-(.25+.12*(i%5)+j*.015),y:.35,seconds:70})),coverage:210/900,observed:210}))};
+for(const p of heat.players){p.grid.fill(0);for(const q of p.positions)p.grid[Math.floor(q.y*heat.height)*heat.width+Math.floor(q.x*heat.width)]+=q.seconds;}
 const source={schema:'fpc-analysis-snapshot/v1',id:sid,jobId:job,version:1,title:'서울 안양',createdAt:'2026-09-30T00:00:00Z',createdBy:'검수자',reviewVersion:1,resultVersion:1,meanCoverage:210/900,minCoverage:210/900,eventCount:1,matchId,matchName:'서울 vs 안양',homeName:'서울',awayName:'안양',roster:heat.players.map((p,i)=>({id:p.id,name:(i<5?'서울':'안양')+' 선수 '+p.jersey,position:'ALA'})),heatmap:heat,fpa:{rows:[{Team:'home',Player:'2',Action:'Shot',StartX:'32',StartY:'9',Direction:'right'},{Team:'home',Player:'2',Action:'Acquisition',StartX:'14',StartY:'7',Direction:'right'},{Team:'away',Player:'2',Action:'Intercept',StartX:'28',StartY:'15',Direction:'left'},{Team:'away',Player:'2',Action:'Block',StartX:'36',StartY:'3',Direction:'left'},{Team:'away',Player:'2',Action:'Shot',StartX:'8',StartY:'13',Direction:'left'}],logs:[]}};
-const newer=JSON.parse(JSON.stringify(source));newer.id=nextId;newer.version=2;newer.heatmap.resultVersion=2;newer.heatmap.players[0].grid[2000]=20;newer.heatmap.players[0].positions.push({t:800,x:.65,y:.75,seconds:20});
+const newer=JSON.parse(JSON.stringify(source));newer.id=nextId;newer.version=2;newer.heatmap.resultVersion=2;newer.heatmap.players[0].grid[30*80+52]+=20;newer.heatmap.players[0].positions.push({t:800,x:.65,y:.75,seconds:20});
 const summary={possession:{home_ms:600000,away_ms:300000,home_pct:66.67,away_pct:33.33},lanes:{home:{left_count:2,center_count:6,right_count:2,total_count:10},away:{left_count:8,center_count:1,right_count:1,total_count:10}}};
 const dominance={bins:Array.from({length:15},(_,i)=>({start_ms:i*60000,end_ms:(i+1)*60000,dominance:Math.sin(i*.8)*.65,annotations:{goal_summary:{home:i===3?1:0,away:i===8?1:0}}}))};
 let current=source;
@@ -19,8 +20,22 @@ const setup=initial?.setup||{preparationId:prep,time:0,roster:[...heat.players.m
  await page.route('**/api/**',r=>{const p=new URL(r.request().url()).pathname;let body={};if(p.endsWith('/frame.png'))return r.fulfill({contentType:'image/png',body:framePNG});if(p==='/api/tracking/jobs/'+job)body={options:{setup,roi:initial?.roi||[[0,0],[1,0],[1,1],[0,1]]}};else if(p==='/api/session/me')body={id:'local',name:'QA',role:'SUPERADMIN'};else if(p==='/api/futsal/analysis-snapshots')body=r.request().method()==='POST'?current:{snapshots:[current]};else if(p.startsWith('/api/futsal/analysis-snapshots/'))body=current;else if(p==='/api/futsal/fla-video/fixtures')body={fixtures:[{key:'one',match_id:matchId,home:'서울',away:'안양',stage:'정규',round:1,court:'A',date:'2026-09-12',video:{started:true,ended:true}}]};else if(p==='/api/matches/'+matchId+'/summary')body=summary;else if(p.endsWith('/dominance'))body=dominance;else if(p==='/api/futsal/fla-video/matches/'+matchId)body={match:{archived:true},state:{started:false,ended:false},events:Array.from({length:12},(_,i)=>({id:'shot-'+i,type:'XG',team:i%2?'HOME':'AWAY',shot_x:24+i,shot_y:2+i,xg:.1,is_goal:false,player_number:'',player_name:'',clock_ms:i*60000}))};else if(p==='/api/matches/'+matchId)body={id:matchId,name:'서울 vs 안양',metadata:{home_team:'서울',away_team:'안양'}};else if(p.endsWith('/snapshot'))body={match:{home:{score:3},away:{score:1}}};return r.fulfill({contentType:'application/json',body:JSON.stringify(body)});});
  await page.context().addCookies([{name:'live_admin_session',value:'isolated-qa',url:origin}]);
  await page.goto(origin+'/admin/fcm/futsal/reports?snapshot='+sid,{waitUntil:'networkidle'});
+ await page.locator('.mr-preview .mr-sheet-top').waitFor();
+ await page.getByText(/선수 배정·교체 설정 ·/).click();
+ await page.getByRole('button',{name:/^초기 장면 (다시 )?불러오기$/}).click();
  await page.getByRole('button',{name:'선수 배정표 보기',exact:true}).waitFor();
- await page.getByRole('button',{name:'선수 배정표 보기',exact:true}).click();assert.equal(await page.locator('.mr-preview .ar-team tbody tr').count(),12);assert.equal(await page.locator('.mr-preview .ar-position-note').count(),2);assert.match(await page.locator('.mr-preview .ar-position-note').first().innerText(),/히트맵을 바탕으로 제안된 포지션이며, 실제와는 차이가 있을 수 있습니다/);assert.equal(await page.locator('.mr-preview .ar-frame svg text').count(),13);await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/assignment.png'});
+ await page.getByRole('button',{name:'선수 배정표 보기',exact:true}).click();assert.equal(await page.locator('.mr-preview .ar-team tbody tr').count(),12);assert.equal(await page.locator('.mr-preview .ar-position-note').count(),2);assert.match(await page.locator('.mr-preview .ar-position-note').first().innerText(),/히트맵을 바탕으로 제안된 포지션이며, 실제와는 차이가 있을 수 있습니다/);assert.equal(await page.locator('.mr-preview .ar-frame svg text').count(),6);await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/assignment.png'});
+ assert.match(await page.locator('.mr-preview .mr-sheet').innerText(), /K-WIN CUP/);
+ assert.deepEqual(await page.locator('.mr-preview .ar-frame svg text').allTextContents(), ['MY #2','MY #3','MY #4','MY #5','MY #6','MY GK #1']);
+ await page.getByRole('button',{name:'팀 편집',exact:true}).click();
+ await page.getByLabel('리포트 기준 팀',{exact:true}).selectOption('away');
+ await page.getByRole('button',{name:'선수 배정표',exact:true}).click();
+ assert.deepEqual(await page.locator('.mr-preview .ar-frame svg text').allTextContents(), ['MY #2','MY #3','MY #4','MY #5','MY #6','MY GK #1']);
+ assert.match(await page.locator('.mr-preview .ar-team').first().innerText(), /MY TEAM[\s\S]*안양/);
+ await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/assignment-away.png'});
+ await page.getByLabel('리포트 기준 팀',{exact:true}).selectOption('home');
+ if(process.env.REPORT_BRANDING_ONLY==='1'){console.log('PASS: K-WIN CUP; home and away own-team labels only; both-team assignment tables preserved.');return;}
+ await page.getByRole('button',{name:'개인 편집',exact:true}).click();
  await page.getByRole('button',{name:'개인 리포트',exact:true}).click();
  await page.getByLabel('선수 이름',{exact:true}).fill('직접 수정한 이름');await page.getByLabel('히트맵 코멘트',{exact:true}).fill('수정한 코멘트가 새 지도에서도 유지됩니다.');
  current=newer;await page.evaluate(async()=>{const s=await import('/fpa-cv/analysis-snapshots.mjs');await s.saveAnalysisSnapshot({confirmed:true});});
@@ -31,7 +46,7 @@ const setup=initial?.setup||{preparationId:prep,time:0,roster:[...heat.players.m
  const brand=await page.locator('.mr-preview .mr-brand').evaluate(n=>({color:getComputedStyle(n).color,font:getComputedStyle(n).fontFamily}));assert.equal(brand.color,'rgb(255, 116, 0)');assert.match(brand.font,/Giants/);
  assert.equal(await page.getByLabel('FC 서울 포인트 색상',{exact:true}).inputValue(),'#d6000f');assert.equal(await page.getByLabel('FC 안양 포인트 색상',{exact:true}).inputValue(),'#4a227a');
  await page.getByRole('button',{name:'최신 FLA 기록 불러오기',exact:true}).click();await page.getByText('같은 경기의 대시보드 FLA를 연결했습니다. 공격 방향·점유율·슈팅·경기 흐름을 반영했습니다.',{exact:true}).waitFor();
- assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/아군 66.7%/);assert((await page.locator('.mr-preview .tr-review p').innerText()).length>400);
+ assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/MY TEAM 66.7%/);assert((await page.locator('.mr-preview .tr-review p').innerText()).length>400);
  assert.equal(await page.locator('.mr-phases>div').count(),3);assert.match(await page.locator('.mr-preview .tr-review').innerText(),/중앙/);assert.match(await page.locator('.mr-preview .mr-score').innerText(),/3\s*:\s*1/);assert.match(await page.getByLabel('경기 총평',{exact:true}).getAttribute('placeholder'),/중앙/);
  assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/3:1 승리/);
  await page.getByLabel('어웨이 스코어',{exact:true}).fill('3');assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/3:3 무승부/);
@@ -39,7 +54,7 @@ const setup=initial?.setup||{preparationId:prep,time:0,roster:[...heat.players.m
  await page.getByLabel('경기 총평',{exact:true}).fill('');assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/3:1 승리/);
  await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/home.png'});
  await page.getByLabel('리포트 기준 팀',{exact:true}).selectOption('away');
- assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/아군 33.3%/);
+ assert.match(await page.locator('.mr-preview .tr-possession-numbers').innerText(),/MY TEAM 33.3%/);
  assert.match(await page.locator('.mr-preview .mr-own-team').innerText(),/안양/);
  assert.match(await page.locator('.mr-preview .tr-review').innerText(),/왼쪽 측면/);
  assert.match(await page.locator('.mr-preview .tr-review p').innerText(),/1:3.*패배/s);await page.locator('.mr-preview .mr-sheet').screenshot({path:out+'/away.png'});

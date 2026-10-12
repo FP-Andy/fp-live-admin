@@ -1,28 +1,49 @@
 'use client';
-import {useRef,useState} from 'react';
+import {useEffect,useState} from 'react';
+import {substitutionScene} from '../../lib/substitution-scenes';
 import type {ReportDraft} from '../../lib/futsal-report';
 import type {Crossing,SubstitutionResultEvent} from '../../public/fpa-cv/substitution-report.mjs';
 import {formatLogTime as time} from '../../public/fla-video/substitution-log.mjs';
 import type {useSubstitutionReport} from './useSubstitutionReport';
 type Controller=ReturnType<typeof useSubstitutionReport>;
-function Resolution({event,draft,control,show}:{event:SubstitutionResultEvent;draft:ReportDraft;control:Controller;show:(c:Crossing)=>void}){
- const [person,setPerson]=useState(event.outPersonId||''),[out,setOut]=useState(String(event.outTrackId??'')),[incoming,setIncoming]=useState(String(event.inTrackId??'')),[saving,setSaving]=useState(false),[error,setError]=useState('');
- const select=(kind:'out'|'in',values:Crossing[],value:string,set:(s:string)=>void)=><label>{kind==='out'?'퇴장 객체':'입장 객체'}<select aria-label={kind==='out'?'퇴장 객체':'입장 객체'} value={value} onChange={e=>set(e.target.value)}><option value="">장면에서 선택</option>{values.map(c=><option key={`${c.trackId}-${c.time}`} value={c.trackId}>TRACK #{c.trackId} · {time(c.time)}</option>)}</select><button disabled={!value} onClick={()=>show(values.find(c=>String(c.trackId)===value)!)}>장면 보기</button></label>;
- return <details className="mr-sub-event" open={event.status==='review'}><summary>{event.team==='home'?draft.homeName:draft.awayName} · {time(event.time)} · {event.status==='review'?'확인 필요':`#${event.outNumber} → #${event.inNumber}`}</summary>
- {event.reason&&<p>{event.reason}</p>}{select('out',event.outs,out,setOut)}{select('in',event.ins,incoming,setIncoming)}
+const choice=(id:number|undefined,t:number|undefined)=>id===undefined?'':`${id}@${t??''}`;
+const label=(c:Crossing)=>`${c.origin==='redetection'?'재탐지':'기존 추적'} · TRACK #${c.trackId}`;
+function Scene({candidate:c,jobId}:{candidate:Crossing;jobId:string}){
+ const [ready,setReady]=useState(false),[error,setError]=useState(false),[src,setSrc]=useState('');
+ useEffect(()=>{let active=true;setReady(false);setError(false);setSrc('');void substitutionScene(`/api/tracking/jobs/${jobId}/report-frame?time=${c.time}`).then(value=>{if(active)setSrc(value);}).catch(()=>{if(active)setError(true);});return()=>{active=false;};},[jobId,c.time]);
+ return <div className="mr-sub-candidate-scene">
+  {src&&<img src={src} alt={`${label(c)} · 영상 ${time(c.time)}`} onLoad={()=>setReady(true)} onError={()=>setError(true)}/>}
+  {!ready&&<span className="mr-sub-loading">{error?'장면을 불러오지 못했습니다':'장면 불러오는 중…'}</span>}
+  {ready&&<span className="mr-sub-box" style={{left:`${c.box[0]*100}%`,top:`${c.box[1]*100}%`,width:`${(c.box[2]-c.box[0])*100}%`,height:`${(c.box[3]-c.box[1])*100}%`}}><span>#{c.trackId}</span></span>}
+ </div>;
+}
+function Candidates({title,values,value,set,jobId,show}:{title:string;values:Crossing[];value:string;set:(s:string)=>void;jobId:string;show:(c:Crossing)=>void}){
+ return <section className="mr-sub-candidates"><h3>{title}</h3>{!values.length&&<p>확인된 후보가 없습니다.</p>}
+ {values.map(c=><div className={`mr-sub-candidate ${value===choice(c.trackId,c.time)?'is-selected':''}`} key={`${c.trackId}-${c.time}`}>
+  <button className="mr-sub-pick" aria-label={`${title} ${label(c)} 선택`} aria-pressed={value===choice(c.trackId,c.time)} onClick={()=>set(choice(c.trackId,c.time))}><Scene candidate={c} jobId={jobId}/><strong>{value===choice(c.trackId,c.time)?'✓ ':''}{label(c)}</strong><small>영상 {time(c.time)}</small></button>
+  <button onClick={()=>show(c)}>장면 크게 보기</button>
+ </div>)}
+ </section>;
+}
+function Resolution({event,draft,control,show,initialOpen}:{event:SubstitutionResultEvent;draft:ReportDraft;control:Controller;show:(c:Crossing)=>void;initialOpen:boolean}){
+ const [open,setOpen]=useState(initialOpen),[person,setPerson]=useState(event.outPersonId||''),[out,setOut]=useState(choice(event.outTrackId,event.outTime)),[incoming,setIncoming]=useState(choice(event.inTrackId,event.inTime)),[saving,setSaving]=useState(false),[error,setError]=useState('');
+ const unchanged=event.connectionConfirmed&&person===event.outPersonId&&out===choice(event.outTrackId,event.outTime)&&incoming===choice(event.inTrackId,event.inTime);
+ const state=event.connectionConfirmed?(event.status==='review'?'연결 확인됨 · 이후 추적 확인 필요':'연결 확인됨'):event.status==='review'?'확인 필요':event.pairing==='batch'?`동시 교체 · 새 #${event.inNumber}`:`#${event.outNumber} → #${event.inNumber}`;
+ return <details className="mr-sub-event" open={open} onToggle={e=>setOpen(e.currentTarget.open)}><summary>{event.team==='home'?draft.homeName:draft.awayName} · {time(event.time)} · {state}</summary>
+ {open&&<>{event.pairing==='batch'&&<p>동시 퇴장 {event.batchOutNumbers?.map(n=>'#'+n).join(', ')} · 입장 선수별 출전 구간을 분리합니다.</p>}{event.reason&&<p>{event.reason}</p>}
+ <div className="mr-sub-candidate-columns"><Candidates title="나간 선수" values={event.outs} value={out} set={setOut} jobId={draft.sourceSnapshot!.jobId} show={show}/><Candidates title="들어온 선수" values={event.ins} value={incoming} set={setIncoming} jobId={draft.sourceSnapshot!.jobId} show={show}/></div>
  <label>퇴장한 분석번호<select aria-label="퇴장한 분석번호" value={person} onChange={e=>setPerson(e.target.value)}><option value="">번호 선택</option>{event.people.map(p=><option key={p.id} value={p.id}>#{p.number}</option>)}</select></label>
- <button className="btn-primary" disabled={!person||!out||!incoming||out===incoming||saving||!control.canWrite||control.state==='working'} onClick={async()=>{setSaving(true);setError('');try{await control.confirm(event.id,{snapshotId:draft.sourceSnapshot!.id,outPersonId:person,outTrackId:Number(out),inTrackId:Number(incoming)});}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setSaving(false);}}}>{saving?'반영 중…':'이 연결 확인 · 리포트 갱신'}</button>
- {(!event.outs.length||!event.ins.length)&&<a href={`/admin/futsal/fla/video/${draft.matchId}`}>영상 기록에서 시각 확인</a>}{error&&<p role="alert">{error}</p>}
+ <button className="btn-primary" disabled={!person||!out||!incoming||out.split('@')[0]===incoming.split('@')[0]||saving||unchanged||!control.canWrite||control.state==='working'||control.state==='error'} onClick={async()=>{setSaving(true);setError('');try{await control.confirm(event.id,{snapshotId:draft.sourceSnapshot!.id,...(draft.substitutionReport?.provenance.redetectionId?{redetectionId:draft.substitutionReport.provenance.redetectionId}:{}),outPersonId:person,outTrackId:Number(out.split('@')[0]),inTrackId:Number(incoming.split('@')[0]),outTime:Number(out.split('@')[1]),inTime:Number(incoming.split('@')[1])});}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setSaving(false);}}}>{saving?'반영 중…':unchanged?'연결 저장됨':'이 연결 확인 · 리포트 갱신'}</button>
+ <a href={`/admin/futsal/fla/video/${draft.matchId}`} target="_blank" rel="noreferrer">영상 기록에서 전후 장면 보기</a>{error&&<p role="alert">{error}</p>}</>}
  </details>;
 }
 export default function SubstitutionReportPanel({draft,control}:{draft:ReportDraft;control:Controller}){
- const video=useRef<HTMLVideoElement>(null),[scene,setScene]=useState<Crossing|null>(null),[ratio,setRatio]=useState('16 / 9'),[frameReady,setFrameReady]=useState(false),[frameError,setFrameError]=useState('');
- const show=(c:Crossing)=>{if(!c)return;setFrameReady(false);setFrameError('');setScene(c);if(video.current){video.current.pause();video.current.currentTime=c.time;}};
- const result=draft.substitutionReport;
- return <section className="card card-panel mr-substitutions"><h2>교체 자동 반영</h2><p role="status">{control.state==='working'?control.progress:control.state==='checking'?'교체로그 확인 중…':control.state==='ready'?`최신 교체로그 ${control.saved?.log?.substitutions.length||0}건 반영됨`:control.state==='review'?'불확실한 연결을 확인하면 PDF에 반영됩니다.':control.error||'경기와 분석 스냅샷을 연결하세요.'}</p>
+ const [scene,setScene]=useState<Crossing|null>(null),result=draft.substitutionReport;
+ return <section className="card card-panel mr-substitutions"><h2>교체 자동 반영</h2><p role="status">{control.state==='working'?control.progress:control.state==='checking'?'교체로그 확인 중…':control.state==='ready'?`최신 교체로그 ${control.saved?.log?.substitutions.length||0}건 반영됨`:control.state==='review'?'나간 선수·들어온 선수의 장면과 퇴장 분석번호를 선택하세요.':control.error||'경기와 분석 스냅샷을 연결하세요.'}</p>
+ {control.recovery?.status==='ready'&&<p className="mr-sub-recovery">재탐지 {control.recovery.windowCount}개 구간의 후보를 함께 표시합니다. 새 후보는 직접 확인한 뒤 연결됩니다.</p>}
  {control.error&&<p role="alert">{control.error}</p>}<button disabled={control.state==='working'} onClick={()=>void control.refresh()}>교체로그 다시 확인</button>
- {!!result?.events.length&&draft.sourceSnapshot&&<><div className="mr-sub-video" style={{aspectRatio:ratio}}>{scene?<img key={`${scene.trackId}-${scene.time}`} alt={`TRACK ${scene.trackId} · ${time(scene.time)}`} src={`/api/tracking/jobs/${draft.sourceSnapshot.jobId}/report-frame?time=${scene.time}`} onLoad={e=>{setRatio(`${e.currentTarget.naturalWidth} / ${e.currentTarget.naturalHeight}`);setFrameReady(true);}} onError={()=>setFrameError('장면을 불러오지 못했습니다. 다른 후보를 선택하거나 다시 확인하세요.')} style={{width:'100%',display:frameReady?'block':'none'}}/>:<video ref={video} src={`/api/tracking/jobs/${draft.sourceSnapshot.jobId}/source`} preload="metadata" playsInline controls onLoadedMetadata={()=>{if(video.current)setRatio(`${video.current.videoWidth} / ${video.current.videoHeight}`);}}/>}{scene&&!frameReady&&<p role="status">{frameError||'교체 장면 불러오는 중…'}</p>}{scene&&frameReady&&<div className="mr-sub-box" style={{left:`${scene.box[0]*100}%`,top:`${scene.box[1]*100}%`,width:`${(scene.box[2]-scene.box[0])*100}%`,height:`${(scene.box[3]-scene.box[1])*100}%`}}><span>#{scene.trackId}</span></div>}</div><small>후보의 ‘장면 보기’로 해당 객체를 확인하세요.</small></>}
- {result?.events.map(e=><Resolution key={`${result.provenance.logRevision}-${e.id}`} event={e} draft={draft} control={control} show={show}/>)}
- {!!result?.events.length&&<p className="field-help">새 번호는 출전 구간을 구분하는 분석번호입니다. 재입장한 동일인인지는 별도로 확인합니다.</p>}
+ {result?.events.map(e=><Resolution key={[result.provenance.snapshotId,result.provenance.algorithm,result.provenance.logRevision,result.provenance.redetectionId,e.id,e.outPersonId,e.outTrackId,e.inTrackId].join(':')} event={e} draft={draft} control={control} show={setScene} initialOpen={e.id===result.events.find(q=>q.status==='review'&&!q.connectionConfirmed)?.id}/>)}
+ {!!result?.events.length&&<p className="field-help">새 번호는 출전 구간을 구분하는 분석번호입니다. 연결을 확인한 뒤에도 이후 추적이 부족하면 별도 검수가 필요합니다.</p>}
+ {scene&&draft.sourceSnapshot&&<div className="mr-sub-lightbox" role="dialog" aria-modal="true" aria-label="교체 후보 장면" onKeyDown={e=>{if(e.key==='Escape')setScene(null);}}><div><header><strong>{label(scene)} · 영상 {time(scene.time)}</strong><button autoFocus onClick={()=>setScene(null)}>닫기</button></header><Scene key={`${scene.trackId}-${scene.time}`} candidate={scene} jobId={draft.sourceSnapshot.jobId}/></div></div>}
  </section>;
 }

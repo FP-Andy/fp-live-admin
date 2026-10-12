@@ -190,6 +190,7 @@ app.include_router(auth_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
 from .futsal_analysis_snapshots import router as analysis_snapshots_router
+from . import futsal_substitution_redetection  # register private review evidence routes
 app.include_router(analysis_snapshots_router)
 
 origins = [v.strip() for v in os.getenv("CORS_ORIGINS", "*").split(",") if v.strip()]

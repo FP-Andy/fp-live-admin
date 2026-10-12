@@ -2,13 +2,14 @@
 const fs=require('fs'),zlib=require('zlib'),http=require('http'),path=require('path');
 const dir=process.env.SUB_REPORT_FIXTURE;if(!dir)throw Error('Set SUB_REPORT_FIXTURE to the local diagnostic fixture directory');
 const b=JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(dir,'source-bundle.json.gz')))),api=JSON.parse(fs.readFileSync(path.join(dir,'api.json'))),snapshot=b.snapshot;
-let saved=b.log;const trackBody=JSON.stringify(b.tracks),snapshotBody=JSON.stringify(snapshot),videoFile=process.env.SUB_REPORT_VIDEO;
+let saved=b.saved||b.log;const recoveryFile=process.env.SUB_REPORT_RECOVERY,recovery=recoveryFile?JSON.parse(fs.readFileSync(recoveryFile)):null;const trackBody=JSON.stringify(b.tracks),snapshotBody=JSON.stringify(snapshot),videoFile=process.env.SUB_REPORT_VIDEO;
 const port=Number(process.env.SUB_REPORT_API_PORT||5452),web=process.env.SUB_REPORT_WEB_ORIGIN||'http://127.0.0.1:5451';
 http.createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost'),p=u.pathname;res.setHeader('Cache-Control','no-store');
  const send=(v,status=200)=>{res.statusCode=status;res.setHeader('Content-Type','application/json');res.end(typeof v==='string'?v:JSON.stringify(v));};
  if(p==='/preview'){res.writeHead(302,{'Set-Cookie':'live_admin_session=local-substitution-preview; Path=/; HttpOnly; SameSite=Lax','Location':web+'/admin/fcm/futsal/reports?match='+b.match.id});res.end();return;}
  if(p==='/api/session/me')return send({id:'local-preview',name:'로컬 교체 검수 · 저장은 미리보기에만 반영',role:'SUPERADMIN'});
  if(p.endsWith('/substitutions')&&req.method==='PUT'){let raw='';for await(const c of req)raw+=c;const value=JSON.parse(raw);if(value.revision!==saved.revision)return send({detail:'revision conflict'},409);saved={revision:saved.revision+1,log:value.log};return send({substitutions:saved});}
+ if(p.endsWith('/redetection'))return send({status:recovery?'ready':'missing',id:recovery?.id,windowCount:recovery?.windows.length||0,...(u.searchParams.get('metadata')==='true'?{}:{recovery})});
  if(p.endsWith('/tracks.json'))return send(trackBody);
  if(p==='/api/futsal/analysis-snapshots')return send({snapshots:[{...snapshot,heatmap:undefined,review:undefined,fpa:undefined}]});
  if(p==='/api/futsal/analysis-snapshots/'+snapshot.id)return send(snapshotBody);

@@ -23,7 +23,7 @@ const run=f=>deriveSubstitutionReport(f.snapshot,f.data,f.saved);
 const f=fixture(),before=JSON.stringify(f),r=run(f);assert.equal(r.status,'ready');assert.equal(r.heatmap.players.length,2);assert.equal(r.events[0].outTrackId,100);assert.equal(r.events[0].inTrackId,200);assert.equal(JSON.stringify(f),before,'immutable input');
 for(const p of r.heatmap.players)for(const q of p.positions)assert(q.t>=p.activeFrom&&q.t+q.seconds<=p.activeTo+.002);
 assert.equal(run(fixture({kick:true})).status,'review','kick-in must not become substitution');
-const ambiguous=fixture({two:true});assert.equal(run(ambiguous).status,'review','simultaneous swaps do not guess pairing');
+const ambiguous=fixture({two:true});assert.equal(run(ambiguous).status,'ready','simultaneous swaps with unique existing ownership resolve together');assert.deepEqual(run(ambiguous).events.map(e=>[e.outTrackId,e.inTrackId]),[[100,200],[101,201]]);
 for(const [i,e]of ambiguous.saved.log.substitutions.entries())e.tracking={snapshotId:ambiguous.snapshot.id,outPersonId:'home-'+i,outTrackId:100+i,inTrackId:200+i};
 assert.equal(run(ambiguous).status,'ready','manual decisions resolve ambiguity');
 ambiguous.saved.log.substitutions[0].tracking.snapshotId='c'.repeat(32);assert.equal(run(ambiguous).status,'review','old snapshot decisions expire');
@@ -31,3 +31,24 @@ f.saved.log.substitutions=[];assert.equal(run(f).heatmap.players.length,1,'delet
 f.saved.log.substitutions=[{id:'event',time:11,team:'home',note:''}];f.saved.log.video.name='other.mp4';assert.throws(()=>run(f),/영상이 다릅니다/);
 if(process.argv[2]){const b=JSON.parse(zlib.gunzipSync(fs.readFileSync(process.argv[2]))),out=deriveSubstitutionReport(b.snapshot,b.tracks,b.log);assert.equal(out.status,'ready');assert.deepEqual(out.events.map(e=>[e.outTrackId,e.inTrackId]),[[8282,8991],[14702,15650]]);assert.deepEqual(out.heatmap.players.filter(p=>p.id.startsWith('sub-')).map(p=>Math.round(p.observed)),[438,11]);console.log('PASS real Ulsan–Jeonbuk: both reviewed pairs and observed durations reproduced.');}
 console.log('PASS: immutable source, distinct stints, ambiguous batch review, manual resolution, stale decision rejection, deletion reset and kick-in exclusion.');
+
+const withoutEntryOwnership=f=>{for(const p of f.snapshot.heatmap.players)p.positions=p.positions.filter(q=>q.t<10);return f;};
+const chain=withoutEntryOwnership(fixture());
+for(const frame of chain.data.frames)for(const b of frame.boxes)if(b.id===200&&frame.t>=20)b.id=300;
+const joined=run(chain);assert.equal(joined.status,'ready','unique short-gap continuation survives an ID reset');assert(joined.heatmap.players.at(-1).positions.some(q=>q.trackId===300));assert(joined.heatmap.players.at(-1).positions.every(q=>q.source==='automatic'),'derived observations are not labelled human annotations');
+const fork=structuredClone(chain);
+for(const frame of fork.data.frames)for(const b of [...frame.boxes])if(b.id===300)frame.boxes.push({...b,id:301,box:[...b.box]});
+assert.equal(run(fork).status,'review','two equivalent continuations require review');
+const batch=run(withoutEntryOwnership(fixture({two:true})));
+assert.equal(batch.status,'ready');assert(batch.events.every(e=>e.pairing==='batch'));assert.deepEqual(batch.events[0].batchOutNumbers,['2','3'],'simultaneous departures are a set, not inferred replacement pairs');
+const conflict=withoutEntryOwnership(fixture());
+conflict.snapshot.heatmap.players.push({id:'home-other',group:'home',jersey:'3',grid:Array(3200).fill(0),positions:conflict.data.frames.filter(f=>f.t>=25).map(f=>({t:f.t,x:.35,y:.8,seconds:.2,trackId:200,source:'manual'}))});
+const protectedResult=run(conflict);assert.equal(protectedResult.status,'review');assert(protectedResult.events[0].reason,'ownership conflicts stay explicit review cases');
+assert.equal(protectedResult.heatmap.players.find(p=>p.id==='home-other').positions.length,25,'existing observations survive an entrant ownership conflict');
+const seen=new Set();for(const p of protectedResult.heatmap.players)for(const q of p.positions){const k=q.t.toFixed(5)+':'+q.trackId;assert(!seen.has(k),'no observation counted twice');seen.add(k);}
+const wrongTeam=withoutEntryOwnership(fixture());for(const f of wrongTeam.data.frames)for(const b of f.boxes)if(b.id===200)b.appearance=[{rgb:[0,0,255],weight:1}];assert.equal(run(wrongTeam).status,'review','opponent arrival cannot satisfy a home substitution');
+const extra=withoutEntryOwnership(fixture());for(const f of extra.data.frames)for(const b of [...f.boxes])if(b.id===200)f.boxes.push({...b,id:201,box:b.box.map((x,i)=>i%2?x:x+.3)});assert.equal(run(extra).status,'review','an extra unowned entry prevents a forced singleton pairing');
+console.log('PASS v2: simultaneous sets, mutual short-gap joins, fork rejection, protected ownership, wrong-team exclusion and honest observation provenance.');
+
+const spatial=fixture();for(const p of spatial.snapshot.heatmap.players)for(const q of p.positions)q.trackId+=1000;assert.equal(run(spatial).status,'ready','time-aligned positions can bridge a different detector ID');
+const crowded=structuredClone(spatial);crowded.snapshot.heatmap.players.push({...structuredClone(crowded.snapshot.heatmap.players[0]),id:'home-crowded',jersey:'3',positions:crowded.snapshot.heatmap.players[0].positions.map(q=>({...q,trackId:q.trackId+2000,x:q.x+.005}))});assert.equal(run(crowded).status,'review','nearby teammates with comparable spatial support are ambiguous');

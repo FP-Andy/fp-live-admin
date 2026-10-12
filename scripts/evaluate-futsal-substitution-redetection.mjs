@@ -1,0 +1,9 @@
+import fs from 'node:fs';import zlib from 'node:zlib';
+import {deriveSubstitutionReport} from '../apps/web/public/fpa-cv/substitution-report.mjs';
+const [bundleFile,recoveryFile,output]=process.argv.slice(2);if(!output)throw Error('Usage: node scripts/evaluate-futsal-substitution-redetection.mjs bundle.json.gz recovery.json comparison.json');
+const b=JSON.parse(zlib.gunzipSync(fs.readFileSync(bundleFile))),recovery=JSON.parse(fs.readFileSync(recoveryFile)),saved=b.saved||b.log;
+const before=deriveSubstitutionReport(b.snapshot,b.tracks,saved),after=deriveSubstitutionReport(b.snapshot,b.tracks,saved,undefined,recovery),counts=r=>({automatic:r.events.filter(e=>e.status==='automatic').length,confirmed:r.events.filter(e=>e.status==='confirmed').length,review:r.events.filter(e=>e.status==='review').length});
+const regressions=before.events.filter(e=>e.status!=='review').filter(e=>{const n=after.events.find(q=>q.id===e.id);return !n||n.status==='review'||n.outPersonId!==e.outPersonId;}).map(e=>e.id);
+const observations=new Map();for(const p of after.heatmap.players)for(const q of p.positions){if(q.t<p.activeFrom-1e-5||q.t+q.seconds>p.activeTo+1e-5)throw Error('Observation outside appearance');const list=observations.get(q.trackId)||[];list.push({from:q.t,to:q.t+q.seconds,id:p.id});observations.set(q.trackId,list);}for(const list of observations.values()){list.sort((a,b)=>a.from-b.from);for(let i=1;i<list.length;i++)if(list[i-1].to>list[i].from+1e-5)throw Error('Duplicate observation interval');}
+const value={before:counts(before),after:counts(after),regressions,eligible:regressions.length===0&&counts(after).automatic>counts(before).automatic,aliases:after.provenance.redetection.aliases,events:after.events,beforeEvents:before.events,result:after};
+fs.writeFileSync(output,JSON.stringify(value));console.log(JSON.stringify({...value,events:undefined,beforeEvents:undefined,result:undefined}));
