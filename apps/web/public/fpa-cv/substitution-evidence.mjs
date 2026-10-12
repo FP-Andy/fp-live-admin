@@ -39,7 +39,22 @@ export function substitutionEvidence(snapshot,data,events){
  const outgoing=new Map(),incoming=new Map();for(const e of edges){for(const [map,key]of [[outgoing,e.a],[incoming,e.b]]){const a=map.get(key)||[];a.push(e);map.set(key,a);}}
  const unique=rows=>{rows?.sort((a,b)=>a.score-b.score);return rows?.length&&(!rows[1]||(rows[1].score-rows[0].score>.35&&rows[1].score>rows[0].score*1.5))?rows[0]:null;};
  const next=new Map(),prev=new Map();for(const e of edges)if(unique(outgoing.get(e.a))===e&&unique(incoming.get(e.b))===e){next.set(e.a,e.b);prev.set(e.b,e.a);}
- const paths=new Map(),pathOf=new Map();for(const [id,list]of tracks){if(prev.has(id))continue;const ids=[id];while(next.has(ids.at(-1)))ids.push(next.get(ids.at(-1)));const path={id,ids,list:ids.flatMap(k=>tracks.get(k))};paths.set(id,path);for(const k of ids)pathOf.set(k,path);}
+ const parent=new Map([...tracks.keys()].map(id=>[id,id])),root=id=>{let p=id;while(parent.get(p)!==p)p=parent.get(p);return p;},join=(a,b)=>{if(parent.has(a)&&parent.has(b))parent.set(root(b),root(a));};
+ for(const [a,b]of next)join(a,b);
+ const aliases=data.recoveryAliases||[];
+ for(const a of aliases){
+  // A crop track overlapping two distinct original people at the same time
+  // is not a reliable identity bridge, even if both are near the touchline.
+  if(aliases.some(b=>b.trackId===a.trackId&&b.originalId!==a.originalId&&b.from<a.to-.2&&a.from<b.to-.2))continue;
+  join(a.originalId,a.trackId);
+ }
+ const members=new Map();for(const id of tracks.keys()){const r=root(id),ids=members.get(r)||[];ids.push(id);members.set(r,ids);}
+ const paths=new Map(),pathOf=new Map();for(const [id,ids]of members){const observations=ids.flatMap(k=>tracks.get(k)).sort((a,b)=>a.t-b.t),list=[];
+  // Keep original geometry/colour at shared times. The new pass fills missing
+  // observations and joins fragments without replacing established detections.
+  for(const o of observations){const last=list.at(-1);if(last&&Math.abs(last.t-o.t)<step*.45){if(last.b.recovery&&!o.b.recovery||o.b.recovery===last.b.recovery&&o.b.confidence>last.b.confidence)list[list.length-1]=o;}else list.push(o);}
+  const path={id,ids,list};paths.set(id,path);for(const k of ids)pathOf.set(k,path);
+ }
  const positions=new Map(original.players.map(p=>[p.id,[...p.positions].sort((a,b)=>a.t-b.t)]));
  const spatialOwner=(path,t,kind)=>{
   const rows=path.list.filter(o=>o.t>=t+(kind==='out'?-8:0)&&o.t<=t+(kind==='out'?0:20)),ranked=[];
@@ -68,8 +83,15 @@ export function substitutionEvidence(snapshot,data,events){
   // directed approach/arrival at that line; a disappearance in the field is not enough.
   for(const kind of ['in','out']){const endpoint=kind==='in'?path.list[0]:path.list.at(-1);if(endpoint.t<original.from+2||endpoint.t>original.to-2||endpoint.xy[0]<0||endpoint.xy[0]>1||endpoint.xy[1]<.96||endpoint.xy[1]>1.08||!events.some(e=>Math.abs(e.time-endpoint.t)<=12))continue;
    if(crossings.some(c=>c.pathId===path.id&&c.kind===kind&&Math.abs(c.time-endpoint.t)<3))continue;
-   const near=path.list.filter(o=>kind==='in'?o.t>endpoint.t&&o.t<=endpoint.t+2:o.t<endpoint.t&&o.t>=endpoint.t-2);
-   if(near.length>=3&&near.some(o=>o.xy[1]<=.90)&&near.reduce((n,o)=>n+o.dt,0)>=.4)add(path,endpoint,kind,'boundary-endpoint');
+   // Crop detections can reveal a player slowly walking out from behind a
+   // sideline person. Allow six seconds to establish the directed arrival;
+   // still require the first/last observation at the boundary and motion inside.
+   const recovered=path.ids.some(id=>tracks.get(id)?.some(o=>o.b.recovery&&Math.abs(o.t-endpoint.t)<1)),approach=recovered?6:2;
+   const near=path.list.filter(o=>kind==='in'?o.t>endpoint.t&&o.t<=endpoint.t+approach:o.t<endpoint.t&&o.t>=endpoint.t-approach);
+   // For the supplementary pass require at least 1.2m of inward depth on a
+   // 20m court, instead of demanding a fast run two metres past the line.
+   const inside=recovered?Math.min(.94,endpoint.xy[1]-.06):.90;
+   if(near.length>=3&&near.some(o=>o.xy[1]<=inside)&&near.reduce((n,o)=>n+o.dt,0)>=.4)add(path,endpoint,kind,'boundary-endpoint');
   }
  }
  for(const c of crossings)c.returning=crossings.some(q=>q.pathId===c.pathId&&q.kind!==c.kind&&Math.abs(q.time-c.time)<12);

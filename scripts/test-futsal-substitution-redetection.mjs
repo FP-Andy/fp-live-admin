@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {deriveSubstitutionReport} from '../apps/web/public/fpa-cv/substitution-report.mjs';
+import {planSubstitutionRedetection,mergeSubstitutionRedetection} from '../apps/web/public/fpa-cv/substitution-redetection.mjs';
+const box=(id,y,x=.4)=>({id,box:[x-.02,y*.8-.02,x+.02,Math.min(1,y*.8+.02)],confidence:.9,appearance:[{rgb:[255,0,0],weight:1}]}),frames=[],positions=[],reFrames=[];
+for(let i=0;i<150;i++){const t=i/5,boxes=[];
+ if(t<11){const y=t<9?.6:.6+(t-9)*.35;boxes.push(box(100,y));if(y<1)positions.push({t,x:.4,y,seconds:.2,trackId:100,source:'manual'});}
+ if(t>=11){const y=t<12?1.1-(t-11)*.3:.8;if(t<20||t>=23)boxes.push(box(t<20?200:300,y));if(t<26)reFrames.push({t,boxes:[box(1001000001,y)]});}
+ frames.push({t,boxes});
+}
+const data={datasetId:'one',video:{name:'one.mp4',duration:30},detector:{sampleFps:5,roi:[[0,0],[1,0],[1,.8],[0,.8]]},frames};
+const snapshot={id:'snapshot',jobId:'job',matchId:'match',review:{uniforms:{home:[[255,0,0]],away:[[0,0,255]]}},heatmap:{schema:'fpa-heatmaps/v1',datasetId:'one',video:'one.mp4',from:0,to:30,point:'center',width:80,height:40,scale:1,players:[{id:'home-2',group:'home',jersey:'2',positions,grid:Array(3200).fill(0)}]}};
+const saved={revision:1,log:{schema:'fpa-substitution-log/v2',video:{name:'one.mp4',duration:30,from:0,to:30},players:[],initialPlayers:[],substitutions:[{id:'e',time:11,team:'home',note:''}]}};
+const baseline=deriveSubstitutionReport(snapshot,data,saved);assert.equal(baseline.status,'review');
+const plan=planSubstitutionRedetection(snapshot,data,saved,baseline);assert.equal(plan.windows.length,1);assert.equal(plan.totalSeconds,30);
+const recovery={...plan,id:'recovery-1',windows:[{...plan.windows[0],frames:reFrames}]},before=JSON.stringify({snapshot,data,saved,recovery});
+const merged=mergeSubstitutionRedetection(snapshot,data,saved,recovery);assert.deepEqual(merged.recoveryAliases.map(a=>a.originalId),[200,300]);
+const result=deriveSubstitutionReport(snapshot,data,saved,undefined,recovery);assert.equal(result.status,'ready');assert.equal(result.events[0].outNumber,'2');
+assert.equal(JSON.stringify({snapshot,data,saved,recovery}),before,'original snapshot, data, log and sidecar stay immutable');
+assert(result.heatmap.players.at(-1).positions.some(q=>q.trackId===300));
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,{...saved,revision:2},recovery),/오래된/);
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,datasetId:'other'}),/원본/);
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,roi:[[0,0],[1,0],[1,1],[0,1]]}),/코트/);
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,model:'different.pt'}),/모델/);
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,windows:[{...recovery.windows[0],frames:[{t:32,boxes:[]}]}]}),/구간 밖/);
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,windows:[{...recovery.windows[0],frames:[{t:12,boxes:[box(100,.8)]}]}]}),/ID/);
+const oneFrame={...recovery,windows:[{...recovery.windows[0],frames:reFrames.slice(5,6)}]};assert.equal(mergeSubstitutionRedetection(snapshot,data,saved,oneFrame).recoveryAliases.length,0,'one nearby detection cannot bridge identity');
+const opponent=structuredClone(recovery);for(const f of opponent.windows[0].frames)for(const b of f.boxes)b.appearance=[{rgb:[0,0,255],weight:1}];assert.equal(mergeSubstitutionRedetection(snapshot,data,saved,opponent).recoveryAliases.length,0,'opponent colours cannot bridge to home');
+const duplicate=structuredClone(recovery);for(const f of duplicate.windows[0].frames)f.boxes.push({...f.boxes[0],id:1001000002});assert.equal(mergeSubstitutionRedetection(snapshot,data,saved,duplicate).recoveryAliases.length,0,'two comparable tracks cannot claim one original');
+assert.equal(planSubstitutionRedetection(snapshot,data,saved,result).windows.length,0,'resolved logs do not incur inference');
+console.log('PASS: bounded unresolved windows, sustained ID bridge, immutable inputs, stale/video/range/collision rejection, crowded/one-frame/wrong-team safeguards, recovered entrant to end of stint.');

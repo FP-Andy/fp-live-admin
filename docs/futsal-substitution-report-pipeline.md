@@ -36,3 +36,25 @@
 로컬 종단 검증(2026-10-02): 울산–전북 교체 2건 자동 연결, 전북 7명(기존 5명+투입 2명)의 개인 리포트, 초기 배정표, 교체 배정표, 팀 요약을 포함한 A4 10페이지 PDF 출력 성공. 실제 원본의 HEVC 장면은 운영 데이터 수정 없이 FFmpeg로 두 장만 읽어 로컬 fixture에 사용했다. PDF 3페이지(교체 배정표), 10페이지(약 11초 출전 선수)를 렌더링해 잘림과 표시 내용을 확인했다. 출력 직전 로그 revision 변경 차단도 브라우저 테스트로 확인했다. 모든 경기의 자동 판정 정확도를 검증한 결과는 아니다.
 
 로컬 UI는 `/preview`에서 테스트 세션을 부여하고 저장은 메모리에만 반영한다. 실제 API 배포에서는 기존 FPC 세션과 소유권 검사를 사용한다. PDF 생성은 사용자가 팀 리포트 PDF 버튼을 누를 때 실행하며, 타임로그를 저장할 때마다 파일을 자동 다운로드하지 않는다.
+
+## 교체 구간 재탐지 실험 (2026-10-12, 로컬 전용)
+
+기존 전체 분석을 바꾸지 않고 `substitution-report/v3`의 선택적 다섯 번째 인자로 재탐지 sidecar를 대조한다. 운영 웹/API 자동 실행·배포에는 아직 연결하지 않았다. 새로 생긴 검출 ID를 기존 분석번호로 간주하지 않는다.
+
+- `scripts/plan-futsal-substitution-redetection.mjs`는 미해결 로그의 전 16초/후 24초만 계획하고 가까운 구간을 최대 80초로 묶는다. 완료된 로그는 재탐지 대상에서 제외한다.
+- `scripts/fpa_cv_substitution_redetect.py`는 기존 YOLO26s, ByteTrack·팀 색상 제약을 유지한 채 하단 교체선의 겹치는 두 영역을 확대 검출한다. 타일 경계 중복 상자를 제거하며 새 결과는 별도 ID 공간과 별도 JSON에 저장한다. CUDA/MPS/CPU와 기존 S3 Range reader를 지원한다. 모델이나 의존성 자동 설치는 하지 않는다.
+- `scripts/evaluate-futsal-substitution-redetection.mjs`는 원본 결과와 재탐지 결과를 비교한다. 동일 시각 여러 프레임의 상자 겹침, 팀 충돌과 다중 후보를 검증한다. 기존 관측이 있는 시각은 원본을 우선하고 새 관측으로 단절 구간을 보완한다. 복원된 트랙의 경계 접근은 느린 진입도 고려하되, 실제 관측된 안쪽 이동이 필요하다.
+- Sidecar는 dataset ID·snapshot ID·교체로그 revision·영상 이름/길이에 묶인다. 다른 원본, 오래된 로그, 구간 밖 프레임, 기존 ID 충돌은 거절한다. 새 sidecar를 리포트에 적용할 때 이전 편집을 백업하고 장면 캐시를 무효화한다.
+- `scripts/plan-futsal-substitution-redetection-batch.mjs`는 경기별 실험 목록만 만든다. 실행 전에 최신 원본과 교체로그를 다시 확인해야 한다. 원본 S3 스냅샷, 운영 리포트, 선수 번호를 일괄 덮어쓰는 기능은 없다.
+
+실행 예시:
+
+```sh
+node scripts/plan-futsal-substitution-redetection.mjs source-bundle.json.gz plan.json
+python scripts/fpa_cv_substitution_redetect.py --plan plan.json --video source.mp4 --model runtime/fpa-cv/yolo26s.pt --device auto --output recovery.json
+node scripts/evaluate-futsal-substitution-redetection.mjs source-bundle.json.gz recovery.json comparison.json
+```
+
+원본에서 시각을 보존해 잘라낸 실험 영상은 `--source-offset`을 반드시 지정한다. 특정 구간만 비교하려면 `--window-ids`를 사용한다. 결과 파일이 이미 있으면 덮어쓰지 않는다. `eligible`은 기존 자동 분리를 잃지 않으면서 자동 건수가 증가했는지에 대한 계산상의 조건이며, 사람 검증으로 측정한 정확도가 아니다.
+
+실제 예비 비교: 용인–포항 40초(단일 교체)와 부천–충남아산 약 43초(동시 교체)를 로컬 MPS에서 재탐지했다. 전송용 사본은 원본 비율을 유지한 폭 2560px H.264/15fps이며 순수 추론은 각각 약 70초/76초였다. 원본 해상도 직접 S3 추론 및 CUDA와 동일 성능이라는 뜻은 아니다. 용인–포항의 누락 입장 후보를 복원했으나 기존 활동 번호와 충돌했고, 부천–충남아산도 후보 충돌이 남아 두 경기의 자동 분리 건수는 증가하지 않았다. 이 후보를 확정 결과로 채택하지 않았다. 다음 검증 항목은 교체 경계 전후의 시간 범위를 제한한 번호 귀속과 동시 교체 중복 후보 병합이다.

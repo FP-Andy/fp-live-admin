@@ -1,4 +1,5 @@
 import {substitutionEvidence} from './substitution-evidence.mjs';
+import {mergeSubstitutionRedetection} from './substitution-redetection.mjs';
 import {courtProjection} from './court-projection.mjs';
 import {classifyUniform} from './colors.mjs';
 import {augmentPlayerActivity} from './heatmap-augmentation.mjs';
@@ -6,7 +7,7 @@ import {validateHeatmapAugmentation} from './heatmap-augmentation-schema.mjs';
 import {heatmapDensityScale} from './heatmap-render.mjs';
 import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v2';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v3';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);
@@ -17,11 +18,12 @@ const newId=e=>'sub-'+e.id;
  * Boundary evidence is in camera coordinates, heat is in the saved pitch turn.
  * Unresolved crossings block export; nearest time alone never assigns identity.
  */
-export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{}){
+export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},recovery=null){
+ if(recovery)data=mergeSubstitutionRedetection(snapshot,data,saved,recovery);
  const original=snapshot.heatmap,log=saved.log?validateSubstitutionLog(saved.log):null;
  if(!original||data.datasetId!==original.datasetId)fail('스냅샷과 추적 데이터가 다른 분석입니다.');
  if(log?.substitutions?.length&&(log.video.name!==data.video.name||Math.abs(log.video.duration-data.video.duration)>.2))fail('교체로그와 분석 영상이 다릅니다.');
- const events=log?.substitutions||[],provenance={algorithm:SUBSTITUTION_REPORT_VERSION,snapshotId:snapshot.id,jobId:snapshot.jobId,logRevision:saved.revision,matchId:snapshot.matchId};
+ const events=log?.substitutions||[],provenance={algorithm:SUBSTITUTION_REPORT_VERSION,snapshotId:snapshot.id,jobId:snapshot.jobId,logRevision:saved.revision,matchId:snapshot.matchId,...(data.substitutionRecovery?{redetectionId:data.substitutionRecovery.id,redetection:data.substitutionRecovery}:{} )};
  if(!events.length)return {provenance,status:'ready',events:[],heatmap:structuredClone(original)};
  if(events.some(e=>e.time<original.from||e.time>=original.to))fail('분석 구간 밖 교체가 있습니다. 해당 구간을 포함한 스냅샷을 선택하세요.');
  const project=courtProjection(data.detector.roi,original.turn||0),evidence=substitutionEvidence(snapshot,data,events),{paths,pathOf,crossings}=evidence;
@@ -93,7 +95,7 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{}){
  const raw=new Map();for(const s of stints.filter(s=>!s.sourceId)){
   for(const q of paths.get(s.entryPathId)?.list||[]){if(q.t<s.from||q.t>=s.to||q.b.confidence<.35)continue;const box=q.b.box,xy=project([(box[0]+box[2])/2,original.point==='center'?(box[1]+box[3])/2:box[3]]),color=classifyUniform(q.b.appearance,snapshot.review?.uniforms||{});
    if(!xy||xy.some(n=>n<0||n>1)||(side(color.group)&&side(color.group)!==s.group&&color.strength>.3))continue;
-   const seconds=Math.min(q.dt,s.to-q.t),conflict=(occupied.get(q.b.id)||[]).some(p=>p.t<q.t+seconds-1e-7&&p.t+p.seconds>q.t+1e-7);
+   const seconds=Math.min(q.dt,s.to-q.t),conflict=(paths.get(s.entryPathId)?.ids||[q.b.id]).some(id=>(occupied.get(id)||[]).some(p=>p.t<q.t+seconds-1e-7&&p.t+p.seconds>q.t+1e-7));
    if(conflict){markReview(s,'입장 트랙이 다른 출전 선수의 관측과 겹칩니다. 기존 관측은 보존하고 이 연결을 확인하세요.');continue;}
    const k=q.t.toFixed(6)+':'+q.b.id,a=raw.get(k)||[];a.push({s,q:{t:q.t,x:xy[0],y:xy[1],seconds,trackId:q.b.id,source:'automatic'}});raw.set(k,a);
   }

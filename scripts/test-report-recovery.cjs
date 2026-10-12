@@ -88,6 +88,12 @@ const passed = name => console.log('PASS:', name);
   assert.equal(upgradeBackups[0].substitutionReport.images['event-1'], 'cached-frame');
   assert.equal(upgradedDraft.players['home-1'].heatComment, '직접 쓴 코멘트');
   passed('Algorithm upgrades back up the draft; changed entry evidence invalidates cached photos');
+  const redetected = { ...sameEntry, provenance: { ...sameEntry.provenance, redetectionId: 'new-inference' } };
+  const recoveryBackups = [];
+  await preserveAndApplySubstitutions(() => pictured, () => {}, async d => { recoveryBackups.push(d); }, redetected);
+  assert.equal(recoveryBackups.length, 1);
+  assert.equal(applySubstitutionReport(pictured, redetected).substitutionReport.images, undefined);
+  passed('A new redetection run invalidates cached scenes and backs up same-revision edits');
 
   let latest = withSub, applied, backups = [], first = deferred();
   const removed = { ...result, provenance: { ...result.provenance, logRevision: 2 }, heatmap: heat, events: [] };
