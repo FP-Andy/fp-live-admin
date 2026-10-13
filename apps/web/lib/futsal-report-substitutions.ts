@@ -11,7 +11,8 @@ export function applySubstitutionReport(d:ReportDraft,result:SubstitutionReport)
  if(result.provenance.snapshotId!==d.sourceSnapshot?.id||result.provenance.matchId!==d.matchId)throw Error('현재 리포트와 교체 분석 원본이 다릅니다.');
  const {heatmap:h,...metadata}=result;const players=Object.fromEntries(h.players.map(p=>{const old=d.players[p.id],before=d.heatmap?.players.find(q=>q.id===p.id);
   // Changed boundaries do not change identity. A different incoming track does.
-  return [p.id,old&&samePlayer(before,p)?old:{...blankPlayer(p),eventNumber:'',flaNumber:''}];}));
+  const retained=old&&samePlayer(before,p)?(before?.jersey!==p.jersey&&old.jersey===before?.jersey?{...old,jersey:p.jersey}:old):null;
+  return [p.id,retained||{...blankPlayer(p),eventNumber:'',flaNumber:''}];}));
  const all=(side:'home'|'away')=>h.players.filter(p=>p.group===side).map(p=>p.id);
  return {...d,heatmap:h,players,substitutionReport:{...metadata,images:d.substitutionReport?.provenance.logRevision===metadata.provenance.logRevision&&d.substitutionReport.provenance.algorithm===metadata.provenance.algorithm&&d.substitutionReport.provenance.redetectionId===metadata.provenance.redetectionId?Object.fromEntries(Object.entries(d.substitutionReport.images||{}).filter(([id])=>{const a=d.substitutionReport?.events.find(e=>e.id===id),b=metadata.events.find(e=>e.id===id);return !!a&&!!b&&a.inTrackId===b.inTrackId&&a.inTime===b.inTime&&a.inNumber===b.inNumber;})):undefined},selected:players[d.selected]?d.selected:h.players[0].id,teamReport:d.teamReport?{...d.teamReport,homePlayers:all('home'),awayPlayers:all('away')}:d.teamReport};
 }
