@@ -10,7 +10,8 @@ const {chromium}=require('../apps/web/node_modules/playwright-core'),assert=requ
  if(await event.getAttribute('open')===null)await event.locator('summary').click();
  await event.getByRole('button',{name:'나간 선수 기존 추적 · TRACK #5296 선택',exact:true}).click();
  await event.getByRole('button',{name:'들어온 선수 재탐지 · TRACK #6585 선택',exact:true}).click();
- await event.getByLabel('퇴장한 분석번호').selectOption('home-4');
+ await event.getByText('기존 #5의 기록을 종료하고, 들어온 선수는 새 분석번호로 분리합니다.',{exact:true}).waitFor();
+ assert.equal(await event.getByLabel('퇴장한 분석번호').count(),0,'outgoing number comes from trajectory, not the reviewer');
  await event.getByRole('button',{name:'장면 크게 보기'}).last().click();
  const dialog=page.getByRole('dialog',{name:'교체 후보 장면'});await dialog.waitFor();
  await page.waitForFunction(()=>Array.from(document.querySelectorAll('[role=dialog] img')).every(i=>i.complete&&i.naturalWidth>0));
