@@ -36,6 +36,8 @@ from .highlight_produce import (
     produce_clip,
 )
 from .highlight_storage import Storage
+from .highlight_cards import render_board_file
+from .highlight_card_templates import DEFAULT_BOARD
 from .scoreboard import board_placement, render_scoreboard_file
 from .watermark import (
     DEFAULT_OPACITY as WM_DEFAULT_OPACITY,
@@ -196,12 +198,23 @@ def _process_in(
         _overlay_geom["h"] = vh
         board = overlay.get("scoreboard") or {}
         if board.get("enabled"):
+            # 픽셀 좌표(pos_px_x/y)가 있으면 그게 이긴다 — 수동 태깅과 같은 기본 자리(95,60).
+            def _px(key: str) -> float | None:
+                raw = board.get(key)
+                if raw is None or raw == "":
+                    return None
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    return None
             bw, _bh, bx, by = board_placement(
                 vw, vh,
-                float(board.get("size_pct") or 24.33),
+                float(board.get("size_pct") or 29.0),
                 float(board.get("pos_x") or 0),
                 float(board.get("pos_y") or 0),
                 with_logo=False,
+                pos_px_x=_px("pos_px_x"),
+                pos_px_y=_px("pos_px_y"),
             )
             _overlay_geom["board"] = (bw, bx, by)
         mark = overlay.get("watermark") or {}
@@ -226,12 +239,30 @@ def _process_in(
         if cached is None:
             board = (overlay or {}).get("scoreboard") or {}
             bw = _overlay_geom["board"][0]  # type: ignore[index]
-            cached = render_scoreboard_file(
-                overlay_dir / f"sb_{score[0]}_{score[1]}.png",
-                str(board.get("home_name") or ""), str(board.get("away_name") or ""),
-                score[0], score[1], bw,
-                board.get("home_color"), board.get("away_color"), None,
-            )
+            dest = overlay_dir / f"sb_{score[0]}_{score[1]}.png"
+            # 수동 태깅과 같은 **기본형 점수판**(DEFAULT_BOARD, 파인플레이 시안)으로 그린다.
+            # 엠블럼은 시안 기본(사용자 로고 업로드는 이 경로에 아직 없다). 팀 색만 교체.
+            try:
+                cached = render_board_file(
+                    dest, DEFAULT_BOARD, bw,
+                    values={
+                        "home_name": str(board.get("home_name") or ""),
+                        "away_name": str(board.get("away_name") or ""),
+                        "home_score": str(score[0]),
+                        "away_score": str(score[1]),
+                    },
+                    colors={
+                        "home_color": str(board.get("home_color") or ""),
+                        "away_color": str(board.get("away_color") or ""),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - 기본형 자산 문제 시 옛 코드 점수판으로
+                cached = render_scoreboard_file(
+                    dest,
+                    str(board.get("home_name") or ""), str(board.get("away_name") or ""),
+                    score[0], score[1], bw,
+                    board.get("home_color"), board.get("away_color"), None,
+                )
             _sb_cache[score] = cached
         return cached
 

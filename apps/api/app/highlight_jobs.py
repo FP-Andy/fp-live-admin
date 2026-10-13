@@ -39,6 +39,7 @@ from .highlight_cards import (
     render_card,
     render_card_file,
 )
+from .highlight_card_templates import DEFAULT_BOARD
 from .scoreboard import board_placement, render_scoreboard_file
 from .watermark import (
     DEFAULT_OPACITY as WM_DEFAULT_OPACITY,
@@ -1783,20 +1784,25 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                 if cand.has_board:
                     sb_template = cand
             # ② 안 골랐으면 카드 세트가 자기 점수판을 들고 있을 때 그걸 쓴다(SUFA).
-            #    둘 다 없으면 아래에서 코드로 기본 점수판을 그린다.
             if sb_template is None and cards_on and template is not None and template.has_board:
                 sb_template = template
+            # ③ 그래도 없으면 **기본형 점수판**(DEFAULT_BOARD, 파인플레이 시안)으로 그린다.
+            #    예전의 코드로 그리던 기본 점수판(render_scoreboard_file)을 대체한다.
+            if sb_template is None:
+                sb_template = DEFAULT_BOARD
             sb_logo = _decode_logo(sb_cfg.get("logo_url"), sb_dir)
-            # 로고가 있으면 판보다 세로가 길다 — 그 높이로 자리를 잡아야 위쪽에 붙였을 때
-            # 로고가 화면 밖으로 잘리지 않는다.
             # 로고 크기는 화면에서 %로 온다(100 = 시안 원본).
             sb_logo_scale = float(sb_cfg.get("logo_size_pct") or 100) / 100.0
+            # 보드 템플릿은 로고(엠블럼)가 판 안의 필드라 세로를 따로 비울 필요가 없다.
+            # with_logo 는 코드로 그리는 옛 점수판이 로고를 판 위에 얹을 때만 쓴다 —
+            # 지금은 항상 템플릿이라 실질적으로 꺼져 있다.
+            sb_has_board = sb_template is not None and sb_template.has_board
             sb_board_w, _sb_h, sb_x, sb_y = board_placement(
                 vw, vh,
                 float(sb_cfg.get("size_pct") or 28),
                 float(sb_cfg.get("pos_x") or 0),
                 float(sb_cfg.get("pos_y") or 0),
-                with_logo=sb_logo is not None,
+                with_logo=(not sb_has_board) and sb_logo is not None,
                 logo_size=sb_logo_scale,
                 # 사람이 적어 넣은 픽셀 좌표. 있으면 이것이 이긴다.
                 pos_px_x=sb_cfg.get("pos_px_x"), pos_px_y=sb_cfg.get("pos_px_y"),
@@ -1854,8 +1860,17 @@ def merge_manual_clips_for_job(job_id: str) -> None:
             if path is None:
                 dest = sb_dir / f"sb_{score[0]}_{score[1]}.png"
                 if sb_template is not None:
-                    # 대회 세트가 자기 점수판을 들고 있으면 그것으로 그린다.
-                    # 팀명·점수는 여기서 넣고, 팀 색은 시안에 구워진 색을 갈아끼운다.
+                    # 보드 템플릿(기본형·SUFA·퀸컵)으로 그린다. 팀명·점수는 여기서 넣고,
+                    # 팀 색은 시안에 구워진 색을 갈아끼운다. 기본형은 상단 엠블럼이 로고
+                    # 필드라, 사용자가 '대회 로고'를 올렸으면 그걸로, 안 올렸으면 시안
+                    # 기본 엠블럼으로 그린다(로고 크기 슬라이더는 엠블럼 배율에 반영).
+                    board_boxes = (dict(sb_cfg.get("boxes"))
+                                   if isinstance(sb_cfg.get("boxes"), dict) else {})
+                    emblem_scale = float(sb_cfg.get("logo_size_pct") or 100)
+                    if emblem_scale != 100:
+                        board_boxes = {**board_boxes,
+                                       "emblem": {**(board_boxes.get("emblem") or {}),
+                                                  "scale": emblem_scale}}
                     path = render_board_file(
                         dest, sb_template, sb_board_w,
                         values={
@@ -1865,8 +1880,8 @@ def merge_manual_clips_for_job(job_id: str) -> None:
                             "home_score": str(score[0]),
                             "away_score": str(score[1]),
                         },
-                        boxes=(sb_cfg.get("boxes") if isinstance(sb_cfg.get("boxes"), dict)
-                               else None),
+                        logos={"emblem": str(sb_logo)} if sb_logo else None,
+                        boxes=board_boxes or None,
                         colors={
                             "home_color": str(sb_cfg.get("home_color") or ""),
                             "away_color": str(sb_cfg.get("away_color") or ""),

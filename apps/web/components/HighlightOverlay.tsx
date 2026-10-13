@@ -134,22 +134,16 @@ export const DEFAULT_SCOREBOARD: Scoreboard = {
   awayColor: '#0000FF',
   startHome: 0,
   startAway: 0,
-  sizePct: 24.33,
-  // 좌상단에서 살짝 안쪽 — 실제로 쓰는 자리(2026-09-09).
-  //
-  // 이 값은 '여백을 뺀 놓을 수 있는 범위' 안에서의 비율이라 숫자가 눈에 안 들어온다.
-  // 1920x1080 · 크기 24.33% 에서 화면 좌표 **(70, 80)px** 이 되는 값이다
-  // (판 467x95 · 여백 40 · 여유 1373x905 → (70−40)/1373, (80−40)/905).
-  //
-  // ⚠️ 저장이 비율이라 **영상 규격이 다르면 px 자리가 달라진다.** SUFA 원본은 전부
-  // 1920x1080 이라 실질적인 문제는 없지만, 파노라마(3840x800) 같은 걸 넣으면 밀린다.
+  // 기본형 점수판(파인플레이 시안) 기본 크기·자리 — 29% · 영상 픽셀 (95, 60).
+  // 픽셀 좌표(posPxX/Y)가 비율(posX/Y)보다 우선이므로 규격이 달라도 그대로 지켜진다.
+  sizePct: 29,
   posX: 2.18,
   posY: 4.42,
   logoUrl: '',
   logoSizePct: 100,
   nameSizePct: 100,
-  posPxX: null,
-  posPxY: null,
+  posPxX: 95,
+  posPxY: 60,
   template: '',
 };
 
@@ -329,11 +323,11 @@ export const DEFAULT_WATERMARK: Watermark = {
   enabled: true,
   // 중계 화면의 방송사 로고가 보통 이 정도다 — 경기를 가리지 않으면서 눈에는 들어오는 선.
   sizePct: 5,
-  posPxX: null,
-  posPxY: null,
+  // 기본 자리 — 영상 픽셀 (1730, 70). 픽셀 좌표가 비율보다 우선이라 그대로 지켜진다.
+  posPxX: 1730,
+  posPxY: 70,
   opacity: 0.55,
-  // 1920x1080 에서 로고 왼쪽 위가 (1740, 80). 서버(watermark.py)와 같은 값이라
-  // 미리보기 자리가 결과물의 자리다.
+  // 픽셀을 비울 때 쓸 비율 폴백(1920x1080 기준 우상단).
   posX: 97.4771,
   posY: 4.4494,
 };

@@ -5,7 +5,7 @@ import HighlightSubTabs from '../HighlightSubTabs';
 import { API_BASE, apiJson } from '../../../../lib/api';
 import {
   DEFAULT_SCOREBOARD, DEFAULT_WATERMARK, MARK_RATIO, MARK_SRC,
-  OverlayPlacer, ScoreboardPreview, boardPlacement, markPlacement,
+  OverlayPlacer, boardPlacement, markPlacement,
   type Scoreboard, type Watermark,
 } from '../../../../components/HighlightOverlay';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
@@ -154,7 +154,7 @@ const badgeStyle: React.CSSProperties = {
   fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5, whiteSpace: 'nowrap',
 };
 
-// team: 태깅 시점에 확정하는 클립 귀속 팀 (A=홈 / D=어웨이).
+// team: 태깅 시점에 확정하는 클립 귀속 팀. 수동 태깅과 키 통일 — W 홈 장면 / E 원정 장면(골은 Q/R).
 // padBefore/padAfter: 태그별 앞/뒤 초 오버라이드 — 없으면 전역 기본값을 쓴다.
 // videoIdx/videoId: 다중 영상 신청에서 태그가 찍힌 원본(탭). clampEnd: 그 영상 길이(끝 넘김 방지).
 type Tag = {
@@ -434,6 +434,9 @@ export default function FineplayJobsPage() {
   // 클립에 새길 오버레이. 수동 태깅과 같은 설정 모양이라 결과물도 같은 그림이 나온다.
   const [scoreboard, setScoreboard] = useState<Scoreboard>(DEFAULT_SCOREBOARD);
   const [watermark, setWatermark] = useState<Watermark>(DEFAULT_WATERMARK);
+  // 점수판 미리보기는 수동 태깅과 똑같이 **서버가 기본형(파인플레이 시안)으로 그려** 준다.
+  // 로딩 중엔 옛 ScoreboardPreview 를 깜빡 보여주지 않고 빈 자리만 잡는다(깜빡임 방지).
+  const [boardPreviewUrl, setBoardPreviewUrl] = useState('');
   const [activeOverlay, setActiveOverlay] = useState<'board' | 'mark'>('board');
   // 오버레이 자리를 잡을 기준 규격. 원본 해상도를 모르면 1080p 로 본다(대부분 그렇다).
   const overlayVideo = { w: 1920, h: 1080 };
@@ -1220,43 +1223,70 @@ export default function FineplayJobsPage() {
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
       if (e.code === 'ArrowLeft') { e.preventDefault(); seekTo(videoRef.current.currentTime - 5); return; }
       if (e.code === 'ArrowRight') { e.preventDefault(); seekTo(videoRef.current.currentTime + 5); return; }
-      // 한글 자판이면 e.key 가 'ㅁ'·'ㅇ' 으로 오고, IME 상태에 따라 'Process' 로 오기도 한다.
-      // e.code 는 자판 배열과 무관하게 물리 키 위치를 주므로 그걸 먼저 본다.
-      if (e.code === 'KeyA' || e.key === 'a' || e.key === 'A' || e.key === 'ㅁ') {
-        e.preventDefault();
-        addTag('home');
-        return;
-      }
-      if (e.code === 'KeyD' || e.key === 'd' || e.key === 'D' || e.key === 'ㅇ') {
-        e.preventDefault();
-        addTag('away');
-        return;
-      }
-      // 골. 장면 키(A/D) 바로 옆에 둬서 손을 크게 옮기지 않아도 되게 했다.
-      if (e.code === 'KeyS' || e.key === 's' || e.key === 'S' || e.key === 'ㄴ') {
+      // 수동 태깅과 키를 통일한다(기준=수동 태깅): Q 홈 골 · W 홈 장면 · E 원정 장면 · R 원정 골.
+      // e.code 는 자판 배열과 무관하게 물리 키 위치를 주므로 한글 자판에서도 그대로 잡힌다.
+      // 수동의 일반(S) 태깅은 신청 작업엔 팀 없는 장면이 없어 넣지 않는다. '점수만'은
+      // 버튼·단축키 모두 빼고(수동과 동일) 태그 목록의 종류 토글로만 바꾼다.
+      if (e.code === 'KeyQ' || e.key === 'q' || e.key === 'Q' || e.key === 'ㅂ') {
         e.preventDefault();
         addTag('home', { goal: true });
         return;
       }
-      if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F' || e.key === 'ㄹ') {
+      if (e.code === 'KeyW' || e.key === 'w' || e.key === 'W' || e.key === 'ㅈ') {
         e.preventDefault();
-        addTag('away', { goal: true });
+        addTag('home');
         return;
       }
-      // 골이지만 장면은 안 넣는 것 — 신청팀 하이라이트에서 상대 골이 이것이다.
-      if (e.code === 'KeyQ' || e.key === 'q' || e.key === 'Q' || e.key === 'ㅂ') {
+      if (e.code === 'KeyE' || e.key === 'e' || e.key === 'E' || e.key === 'ㄷ') {
         e.preventDefault();
-        addTag('home', { scoreOnly: true });
+        addTag('away');
         return;
       }
       if (e.code === 'KeyR' || e.key === 'r' || e.key === 'R' || e.key === 'ㄱ') {
         e.preventDefault();
-        addTag('away', { scoreOnly: true });
+        addTag('away', { goal: true });
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [togglePlay, seekTo, addTag, sourceUrl]);
+
+  // 점수판 기본형(fineplay-default)을 서버가 그려 미리보기로 준다 — 수동 태깅과 동일한 그림.
+  // 팀명·점수·색이 바뀔 때마다 다시 그린다(400ms 디바운스). 끄면 비운다.
+  useEffect(() => {
+    if (!scoreboard.enabled) {
+      setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
+      return undefined;
+    }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/highlight/card-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            template: 'fineplay-default', kind: 'board', width: 960,
+            values: {
+              round_label: '',
+              home_name: scoreboard.homeName, away_name: scoreboard.awayName,
+              home_score: String(finalScore[0]), away_score: String(finalScore[1]),
+            },
+            colors: { home_color: scoreboard.homeColor, away_color: scoreboard.awayColor },
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const url = URL.createObjectURL(await res.blob());
+        if (!alive) { URL.revokeObjectURL(url); return; }
+        setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+      } catch {
+        if (alive) setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return ''; });
+      }
+    }, 400);
+    return () => { alive = false; clearTimeout(timer); };
+    // finalScore 는 매 렌더 새 배열이라 값(점수)으로 의존해야 재생 중 불필요한 재요청이 없다.
+  }, [scoreboard.enabled, scoreboard.homeName, scoreboard.awayName,
+      scoreboard.homeColor, scoreboard.awayColor, finalScore[0], finalScore[1]]);
 
   // 생성만 한다. FinePlay 전송은 클립 결과 탭에서만 — 여기서 sendCallback 을
   // 켤 일이 없어 아예 상수로 굳힌다(전송 창구는 한 곳이어야 한다).
@@ -1296,6 +1326,8 @@ export default function FineplayJobsPage() {
           // 클립에 새길 오버레이. 수동 태깅과 같은 모양이라 서버도 같은 코드로 그린다.
           scoreboard: scoreboard.enabled ? {
             enabled: true,
+            // 수동 태깅과 같은 기본형 점수판으로 그린다. 위치·크기도 같은 기본값(픽셀 95,60 · 29%).
+            template: 'fineplay-default',
             home_name: scoreboard.homeName,
             away_name: scoreboard.awayName,
             home_color: scoreboard.homeColor,
@@ -1303,6 +1335,9 @@ export default function FineplayJobsPage() {
             size_pct: scoreboard.sizePct,
             pos_x: scoreboard.posX,
             pos_y: scoreboard.posY,
+            // 사람이 끌어 옮기지 않았으면 픽셀 기본값이 그대로 — 규격이 달라도 자리가 지켜진다.
+            pos_px_x: scoreboard.posPxX,
+            pos_px_y: scoreboard.posPxY,
           } : { enabled: false },
           watermark: watermark.enabled ? {
             enabled: true,
@@ -2315,44 +2350,37 @@ export default function FineplayJobsPage() {
                     {SPEEDS.map((s) => <option key={s} value={s}>{s}x</option>)}
                   </select>
                 </label>
-                <button style={primaryBtn} onClick={() => addTag('home')}>
-                  ＋ 홈 {fpaTeams.home !== 'Home' ? fpaTeams.home : ''} 태깅 (A / ㅁ)
-                </button>
+                {/* 버튼·단축키를 수동 태깅과 통일한다(기준=수동 태깅). 순서·키·색 모두 같게:
+                    Q 홈 골 · W 홈 장면 · E 원정 장면 · R 원정 골. 수동의 일반(S) 태깅은
+                    신청 작업엔 팀 없는 장면이 없어 넣지 않는다. '점수만'은 버튼에서 빼고
+                    (수동과 동일) 아래 태그 목록의 종류 토글(장면→골→골·점수만)로만 바꾼다. */}
                 <button
-                  style={{ ...btn, background: '#16a34a', borderColor: 'transparent' }}
+                  style={{ ...smallBtn, padding: '8px 12px', borderColor: '#2F6FED' }}
+                  title="홈 골 — Q (한글 ㅂ). 클립도 만들고 점수판도 올린다"
                   onClick={() => addTag('home', { goal: true })}
-                  title="홈 골 — 클립도 만들고 점수판도 올린다"
                 >
-                  ⚽ 홈 골 (S / ㄴ)
+                  <span style={{ color: '#2F6FED', fontWeight: 700 }}>Q</span> 홈 골
                 </button>
                 <button
-                  style={{ ...btn, background: '#7c3aed', borderColor: 'transparent' }}
+                  style={{ ...smallBtn, padding: '8px 12px', borderColor: '#2F6FED' }}
+                  title="홈 장면 — W (한글 ㅈ)"
+                  onClick={() => addTag('home')}
+                >
+                  <span style={{ color: '#2F6FED', fontWeight: 700 }}>W</span> 홈 장면
+                </button>
+                <button
+                  style={{ ...smallBtn, padding: '8px 12px', borderColor: '#E8452F' }}
+                  title="원정 장면 — E (한글 ㄷ)"
                   onClick={() => addTag('away')}
                 >
-                  ＋ 어웨이 {fpaTeams.away !== 'Away' ? fpaTeams.away : ''} 태깅 (D / ㅇ)
+                  <span style={{ color: '#E8452F', fontWeight: 700 }}>E</span> 원정 장면
                 </button>
                 <button
-                  style={{ ...btn, background: '#16a34a', borderColor: 'transparent' }}
+                  style={{ ...smallBtn, padding: '8px 12px', borderColor: '#E8452F' }}
+                  title="원정 골 — R (한글 ㄱ). 클립도 만들고 점수판도 올린다"
                   onClick={() => addTag('away', { goal: true })}
-                  title="어웨이 골 — 클립도 만들고 점수판도 올린다"
                 >
-                  ⚽ 어웨이 골 (F / ㄹ)
-                </button>
-                {/* 장면은 넣지 않고 점수판만 올리는 골. 신청팀 하이라이트에서 상대 골이
-                    이것이다 — 그 팀이 잘한 것만 담아야 하므로 상대 골 장면은 넣지 않는다. */}
-                <button
-                  style={{ ...btn, background: 'transparent', borderColor: '#16a34a', color: '#16a34a' }}
-                  onClick={() => addTag('home', { scoreOnly: true })}
-                  title="점수판만 올린다 — 이 장면은 클립으로 만들지 않는다"
-                >
-                  홈 골·점수만 (Q / ㅂ)
-                </button>
-                <button
-                  style={{ ...btn, background: 'transparent', borderColor: '#16a34a', color: '#16a34a' }}
-                  onClick={() => addTag('away', { scoreOnly: true })}
-                  title="점수판만 올린다 — 이 장면은 클립으로 만들지 않는다"
-                >
-                  어웨이 골·점수만 (R / ㄱ)
+                  <span style={{ color: '#E8452F', fontWeight: 700 }}>R</span> 원정 골
                 </button>
                 <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>
                   {fmt(current)} / {fmt(duration)}
@@ -2666,9 +2694,16 @@ export default function FineplayJobsPage() {
                               />
                             </div>
                           ))}
-                          <ScoreboardPreview config={scoreboard} home={finalScore[0]} away={finalScore[1]} />
+                          {boardPreviewUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={boardPreviewUrl} alt="점수판"
+                                 style={{ width: 420, maxWidth: '100%', display: 'block' }} />
+                          ) : (
+                            // 서버 점수판 로딩 중 — 옛 ScoreboardPreview 를 깜빡 보여주지 않는다.
+                            <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>점수판 그리는 중…</span>
+                          )}
                           <p style={{ fontSize: 11, color: 'var(--muted, #999)', margin: 0 }}>
-                            새겨질 점수판 (최종 점수 기준)
+                            새겨질 점수판 (최종 점수 기준 · 기본형)
                           </p>
                         </div>
                       ) : null}
@@ -2684,18 +2719,26 @@ export default function FineplayJobsPage() {
                             key: 'board' as const,
                             label: '점수판',
                             place: boardPlacement(overlayVideo.w, overlayVideo.h,
-                              scoreboard.sizePct, scoreboard.posX, scoreboard.posY, false),
+                              scoreboard.sizePct, scoreboard.posX, scoreboard.posY,
+                              false, scoreboard.logoSizePct, scoreboard.posPxX, scoreboard.posPxY),
                             recompute: (pct: number) =>
-                              boardPlacement(overlayVideo.w, overlayVideo.h, pct, 0, 0, false),
+                              boardPlacement(overlayVideo.w, overlayVideo.h, pct, 0, 0,
+                                false, scoreboard.logoSizePct),
                             sizePct: scoreboard.sizePct,
                             sizeRange: [10, 60] as [number, number],
-                            onMove: (posX: number, posY: number) => setScoreboard((p) => ({ ...p, posX, posY })),
+                            // 끌면 비율로 잡고 적어 둔 픽셀 좌표는 푼다 — 안 그러면 제자리에 붙어 고장처럼 보인다.
+                            onMove: (posX: number, posY: number) =>
+                              setScoreboard((p) => ({ ...p, posX, posY, posPxX: null, posPxY: null })),
                             onResize: (sizePct: number, posX: number, posY: number) =>
-                              setScoreboard((p) => ({ ...p, sizePct, posX, posY })),
+                              setScoreboard((p) => ({ ...p, sizePct, posX, posY, posPxX: null, posPxY: null })),
                             render: (width: number) => (
-                              <ScoreboardPreview
-                                config={scoreboard} home={finalScore[0]} away={finalScore[1]} width={width}
-                              />
+                              boardPreviewUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={boardPreviewUrl} alt="점수판" style={{ width, display: 'block' }} />
+                              ) : (
+                                // 로딩 중엔 옛 점수판을 그리지 않고 자리만 잡는다(깜빡임 방지).
+                                <div style={{ width, height: Math.round(width * 125 / 568) }} aria-hidden />
+                              )
                             ),
                           }] : []),
                           ...(watermark.enabled ? [{
