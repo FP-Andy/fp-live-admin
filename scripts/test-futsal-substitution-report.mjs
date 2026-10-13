@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import zlib from 'node:zlib';
 import {deriveSubstitutionReport} from '../apps/web/public/fpa-cv/substitution-report.mjs';
+import {substitutionEvidence} from '../apps/web/public/fpa-cv/substitution-evidence.mjs';
 function fixture({two=false,kick=false,early=false}={}){
  const roi=[[0,0],[1,0],[1,1],[0,1]],uniforms={home:[[255,0,0]],away:[[0,0,255]]},frames=[],people=Array.from({length:two?2:1},(_,i)=>({id:'home-'+i,group:'home',jersey:String(i+2),positions:[],grid:Array(3200).fill(0)}));
  const box=(id,x,y)=>({id,box:[x-.01,y-.02,x+.01,y+.02],confidence:.9,appearance:[{rgb:[255,0,0],weight:1}]});
@@ -52,3 +53,16 @@ console.log('PASS v2: simultaneous sets, mutual short-gap joins, fork rejection,
 
 const spatial=fixture();for(const p of spatial.snapshot.heatmap.players)for(const q of p.positions)q.trackId+=1000;assert.equal(run(spatial).status,'ready','time-aligned positions can bridge a different detector ID');
 const crowded=structuredClone(spatial);crowded.snapshot.heatmap.players.push({...structuredClone(crowded.snapshot.heatmap.players[0]),id:'home-crowded',jersey:'3',positions:crowded.snapshot.heatmap.players[0].positions.map(q=>({...q,trackId:q.trackId+2000,x:q.x+.005}))});assert.equal(run(crowded).status,'review','nearby teammates with comparable spatial support are ambiguous');
+
+const waiting=fixture();
+for(const frame of waiting.data.frames){frame.boxes=frame.boxes.filter(b=>b.id!==200);const y=frame.t<11?1.005:frame.t<12?1.005-(frame.t-11)*.205:.8;frame.boxes.push({id:200,box:[.34,y-.02,.36,y+.02],confidence:.9,appearance:[{rgb:[255,0,0],weight:1}]});}
+const wr=run(waiting);assert(wr.events[0].ins.some(c=>c.evidence==='boundary-wait'));assert.equal(wr.status,'review','new waiting evidence needs scene review');
+const walking=structuredClone(waiting);for(const frame of walking.data.frames){const b=frame.boxes.find(b=>b.id===200),dx=Math.min(0,(frame.t-11)*.02);b.box[0]+=dx;b.box[2]+=dx;}assert(run(walking).events[0].ins.some(c=>c.evidence==='boundary-wait'),'walking along the boundary before entering is not discarded');
+const still=structuredClone(waiting);for(const frame of still.data.frames){const b=frame.boxes.find(b=>b.id===200);b.box=[.34,.985,.36,1.025];}assert(!run(still).events[0].ins.some(c=>c.trackId===200),'waiting alone is not entry');
+const returning=structuredClone(waiting);returning.saved.log.substitutions[0].time=22;for(const frame of returning.data.frames){const b=frame.boxes.find(b=>b.id===200),y=frame.t<5?.8:frame.t<22?1.005:.8;b.box=[.34,y-.02,.36,y+.02];}assert(!run(returning).events[0].ins.some(c=>c.evidence==='boundary-wait'),'prior field activity rejects a waiting kick-in return');
+const held=fixture();held.saved.log.substitutions[0].note='[보류] 출입 장면 재확인';const hr=run(held);assert(hr.events[0].held);assert.equal(hr.status,'review');assert.equal(hr.heatmap.players.length,1,'held event never splits observations');
+const mixed=run(wrongTeam);assert(mixed.events[0].ins.some(c=>c.teamConflict),'opposing colour evidence remains visible but cannot auto-pair');
+const late=fixture();late.saved.log.substitutions[0].time=0.1;for(const frame of late.data.frames){frame.boxes=frame.boxes.filter(b=>b.id!==100);if(frame.t<14){const y=frame.t<12?.6:frame.t<13?.6+(frame.t-12)*.5:1.1;frame.boxes.push({id:100,box:[.34,y-.02,.36,y+.02],confidence:.9,appearance:[{rgb:[255,0,0],weight:1}]});}}assert(run(late).events[0].outs.some(c=>c.extendedWindow),'departure just beyond 12 seconds remains reviewable');
+const bridge=fixture();for(const frame of bridge.data.frames){frame.boxes=[{id:1,box:[.19,.6,.21,.64],confidence:.9},{id:2,box:[.79,.6,.81,.64],confidence:.9},{id:900,box:[.19,.6,.21,.64],confidence:.9,recovery:true}];}
+bridge.data.recoveryAliases=[{trackId:900,originalId:1,from:0,to:8},{trackId:900,originalId:2,from:12,to:20}];const be=substitutionEvidence(bridge.snapshot,bridge.data,bridge.saved.log.substitutions);assert.notEqual(be.pathOf.get(1).id,be.pathOf.get(2).id,'non-overlapping alias edges cannot unite coexisting original players');
+console.log('PASS v6: boundary waiting, stationary/kick-in negatives, explicit hold, colour conflict visibility, delayed exit and transitive alias rejection.');
