@@ -7,7 +7,7 @@ import {validateHeatmapAugmentation} from './heatmap-augmentation-schema.mjs';
 import {heatmapDensityScale} from './heatmap-render.mjs';
 import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v5';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v6';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);
@@ -54,18 +54,41 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
  };
  const groups=[];for(const team of ['home','away'])for(const e of events.filter(e=>e.team===team).sort((a,b)=>a.time-b.time||a.id.localeCompare(b.id))){const last=groups.at(-1);if(last&&last[0].team===team&&e.time-last.at(-1).time<=6)last.push(e);else groups.push([e]);}groups.sort((a,b)=>a[0].time-b[0].time);
  const completeMatch=(edges,count)=>{const answers=[];let visits=0,overflow=false;const visit=(i,picked)=>{if(++visits>50000){overflow=true;return;}if(answers.length>1||overflow)return;if(picked.length===count){answers.push(picked);return;}for(let j=i;j<edges.length;j++){const e=edges[j];if(picked.some(p=>p.s.id===e.s.id||p.n.pathId===e.n.pathId||p.o.pathId===e.o.pathId))continue;visit(j+1,[...picked,e]);}};visit(0,[]);return !overflow&&answers.length===1?answers[0]:null;};
+ const boxOverlap=(a,b)=>{const n=Math.max(0,Math.min(a[2],b[2])-Math.max(a[0],b[0]))*Math.max(0,Math.min(a[3],b[3])-Math.max(a[1],b[1]));return n/Math.max(1e-9,(a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-n);};
+ const sameBody=(a,b)=>{
+  if(a.kind!==b.kind||Math.abs(a.time-b.time)>3)return false;if(a.pathId===b.pathId)return true;
+  const aa=paths.get(a.pathId)?.list.filter(o=>Math.abs(o.t-a.time)<=3)||[],bb=paths.get(b.pathId)?.list.filter(o=>Math.abs(o.t-b.time)<=3)||[];let total=0,close=0,last=-Infinity,j=0;
+  for(const q of aa){if(q.t-last<.2)continue;last=q.t;while(j<bb.length&&bb[j].t<q.t)j++;const r=[bb[j-1],bb[j]].filter(Boolean).sort((a,b)=>Math.abs(a.t-q.t)-Math.abs(b.t-q.t))[0];if(!r||Math.abs(r.t-q.t)>evidence.step*.55)continue;total++;if(boxOverlap(q.b.box,r.b.box)>.5)close++;}
+  return close>=4&&close/total>=.85;
+ };
+ const deduplicate=rows=>{const kept=[];for(const c of [...rows].sort((a,b)=>Number(!!a.reviewOnly)-Number(!!b.reviewOnly)||Number(b.origin==='original')-Number(a.origin==='original')||Number(b.ownerCertain)-Number(a.ownerCertain)||a.time-b.time)){
+  // Keep an explicitly saved choice even if another detector saw the same body.
+  const pinned=events.some(e=>e.tracking&&(e.tracking.outTrackId===c.trackId||e.tracking.inTrackId===c.trackId));
+  if(pinned||!kept.some(q=>sameBody(c,q)))kept.push(c);
+ }return kept;};
  for(const [i,batch]of groups.entries()){
   progress({phase:'교체 출입·번호 연결',completed:i,total:groups.length});
-  const team=batch[0].team,candidates=crossings.filter(c=>batch.some(e=>Math.abs(c.time-e.time)<=12)&&(!c.team||c.team===team)&&!used.has(key(c)));
+  const team=batch[0].team,distance=c=>Math.min(...batch.map(e=>Math.abs(c.time-e.time))),available=crossings.filter(c=>!used.has(key(c)));
+  const candidates=deduplicate(available.filter(c=>distance(c)<=12&&(!c.team||c.team===team)));
+  for(const kind of ['out','in']){
+   if(candidates.filter(c=>c.kind===kind&&!c.returning).length>=batch.length)continue;
+   // A delayed departure is searchable until the next same-team cue is closer.
+   // Team conflicts remain visible, but cannot automatically satisfy a swap.
+   const extra=available.filter(c=>c.kind===kind&&distance(c)<=24&&!candidates.includes(c)&&!c.returning&&
+    !events.some(e=>e.team===team&&!batch.includes(e)&&Math.abs(e.time-c.time)<distance(c))&&
+    (distance(c)<=12||!c.team||c.team===team)).map(c=>({...c,reviewOnly:true,...(c.team&&c.team!==team?{teamConflict:true}:{extendedWindow:true})}));
+   for(const c of deduplicate(extra))if(!candidates.some(q=>sameBody(c,q)))candidates.push(c);
+  }
   const outs=candidates.filter(c=>c.kind==='out').map(c=>{const s=activeOut(c,team);return {...c,...(s?{resolvedPersonId:s.id,resolvedNumber:s.jersey}:{})};}),ins=candidates.filter(c=>c.kind==='in'),options=stints.filter(s=>s.group===team&&s.from<batch.at(-1).time+12&&s.to>batch[0].time-12).map(s=>({id:s.id,number:s.jersey}));
   const pending=[],selected=[];
   for(const e of batch){const decision=e.tracking;
+   if(e.note?.trim().startsWith('[보류]')){results.push({id:e.id,team,time:e.time,status:'review',held:true,reason:e.note.trim(),outs,ins,people:options});continue;}
    if(decision){const o=outs.find(c=>c.trackId===decision.outTrackId&&(decision.outTime===undefined||Math.abs(c.time-decision.outTime)<.001)),n=ins.find(c=>c.trackId===decision.inTrackId&&(decision.inTime===undefined||Math.abs(c.time-decision.inTime)<.001)),s=stints.find(s=>s.id===decision.outPersonId&&s.group===team&&s.from<(o?.time??0)&&s.to>=(o?.time??Infinity));
     if(decision.snapshotId===snapshot.id&&(!decision.redetectionId||decision.redetectionId===recovery?.id)&&o&&n&&s&&o.pathId!==n.pathId&&!selected.some(p=>p.s===s||p.n.pathId===n.pathId||p.o.pathId===o.pathId))selected.push({e,o,n,s,manual:true});
     else results.push({id:e.id,team,time:e.time,status:'review',reason:'저장된 연결의 출입 근거가 변경되었습니다.',outs,ins,people:options});
    }else pending.push(e);
   }
-  const validOut=outs.filter(o=>!(recovery?.reviewOnly&&o.origin==='redetection')&&!o.returning&&!o.colorConflict&&activeOut(o,team)&&!selected.some(p=>p.o.pathId===o.pathId)),validIn=ins.filter(n=>!(recovery?.reviewOnly&&n.origin==='redetection')&&!n.returning&&!n.colorConflict&&n.team===team&&!selected.some(p=>p.n.pathId===n.pathId));
+  const validOut=outs.filter(o=>!o.reviewOnly&&!o.teamConflict&&!(recovery?.reviewOnly&&o.origin==='redetection')&&!o.returning&&!o.colorConflict&&activeOut(o,team)&&!selected.some(p=>p.o.pathId===o.pathId)),validIn=ins.filter(n=>!n.reviewOnly&&!n.teamConflict&&!(recovery?.reviewOnly&&n.origin==='redetection')&&!n.returning&&!n.colorConflict&&n.team===team&&!selected.some(p=>p.n.pathId===n.pathId));
   const edges=[];for(const o of validOut)for(const n of validIn){const s=activeOut(o,team);if(o.pathId===n.pathId)continue;const source=incomingSource(n,[s]);if(source||(validOut.length===1&&validIn.length===1&&!n.sourceId))edges.push({o,n,s});}
   let chosen=pending.length?completeMatch(edges,pending.length):[];
   let groupOnly=false;
@@ -77,10 +100,11 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
   }
   if(chosen){chosen.sort((a,b)=>(a.o.time+a.n.time)-(b.o.time+b.n.time)||a.n.trackId-b.n.trackId);chosen.forEach((p,j)=>selected.push({...p,e:pending[j],groupOnly}));}
   else {
-   const reason=!outs.length&&!ins.length?'로그 전후 12초에서 경기장 하단의 출입 경로를 찾지 못했습니다. 영상 시각을 확인하세요.'
+   const reason=!outs.length&&!ins.length?'교체 시각 주변에서 경기장 하단의 출입 경로를 찾지 못했습니다. 영상 시각을 확인하세요.'
     :!outs.length?'입장 후보는 있으나 퇴장 경로가 없습니다. 나간 선수의 장면을 확인하세요.'
     :!ins.length?'퇴장 후보는 있으나 입장 경로가 없습니다. 들어온 선수의 장면을 확인하세요.'
-    :recovery?.reviewOnly&&[...outs,...ins].some(c=>c.origin==='redetection'&&!c.returning&&!c.colorConflict)?'재탐지로 출입 후보를 찾았습니다. 나간 사람과 들어온 사람이 맞는지 확인하면 출전 구간을 분리합니다.'
+    :[...outs,...ins].some(c=>c.teamConflict)?'팀 색상이 충돌하는 출입 후보를 함께 표시했습니다. 실제 유니폼과 출입 장면을 확인하세요.'
+    :[...outs,...ins].some(c=>c.reviewOnly)||recovery?.reviewOnly&&[...outs,...ins].some(c=>c.origin==='redetection'&&!c.returning&&!c.colorConflict)?'출입 후보를 찾았습니다. 나간 사람과 들어온 사람이 맞는지 확인하면 출전 구간을 분리합니다.'
     :!validOut.length?'퇴장 후보의 기존 기록을 자동으로 찾지 못했습니다. 출입 장면과 기존 추적 연결을 확인하세요.'
     :!validIn.length?'입장 후보의 팀 또는 재진입 여부가 불확실합니다. 들어온 선수의 장면을 확인하세요.'
     :pending.length>1&&(validOut.length<pending.length||validIn.length<pending.length)?`동시 교체 ${pending.length}건 중 퇴장 ${validOut.length}개·입장 ${validIn.length}개 경로를 확인했습니다. 부족한 출입을 확인하세요.`

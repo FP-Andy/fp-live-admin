@@ -39,7 +39,24 @@ export function substitutionEvidence(snapshot,data,events){
  const outgoing=new Map(),incoming=new Map();for(const e of edges){for(const [map,key]of [[outgoing,e.a],[incoming,e.b]]){const a=map.get(key)||[];a.push(e);map.set(key,a);}}
  const unique=rows=>{rows?.sort((a,b)=>a.score-b.score);return rows?.length&&(!rows[1]||(rows[1].score-rows[0].score>.35&&rows[1].score>rows[0].score*1.5))?rows[0]:null;};
  const next=new Map(),prev=new Map();for(const e of edges)if(unique(outgoing.get(e.a))===e&&unique(incoming.get(e.b))===e){next.set(e.a,e.b);prev.set(e.b,e.a);}
- const parent=new Map([...tracks.keys()].map(id=>[id,id])),root=id=>{let p=id;while(parent.get(p)!==p)p=parent.get(p);return p;},join=(a,b)=>{if(parent.has(a)&&parent.has(b))parent.set(root(b),root(a));};
+ const parent=new Map([...tracks.keys()].map(id=>[id,id])),membersOf=new Map([...tracks.keys()].map(id=>[id,[id]])),root=id=>{let p=id;while(parent.get(p)!==p)p=parent.get(p);return p;};
+ const conflicts=new Map();
+ const simultaneousPeople=(a,b)=>{
+  const key=[a,b].sort((a,b)=>a-b).join(':');if(conflicts.has(key))return conflicts.get(key);
+  const aa=tracks.get(a),bb=tracks.get(b);let mismatches=0,first=null,last=-Infinity;
+  // Reject transitive crop bridges between original people seen simultaneously.
+  for(let i=lower(aa,bb[0].t-step*.5);i<aa.length&&aa[i].t<=bb.at(-1).t+step*.5;i++){
+   const q=aa[i];if(q.t-last<.2||q.b.recovery)continue;last=q.t;
+   const at=lower(bb,q.t),r=[bb[at-1],bb[at]].filter(Boolean).sort((a,b)=>Math.abs(a.t-q.t)-Math.abs(b.t-q.t))[0];
+   if(!r||r.b.recovery||Math.abs(r.t-q.t)>step*.55||distance(q.xy,r.xy)<1.2)continue;
+   first??=q.t;if(++mismatches>=3&&q.t-first>=.4){conflicts.set(key,true);return true;}
+  }
+  conflicts.set(key,false);return false;
+ };
+ const join=(a,b)=>{if(!parent.has(a)||!parent.has(b))return;const ar=root(a),br=root(b);if(ar===br)return;
+  const aa=membersOf.get(ar),bb=membersOf.get(br);if(aa.some(x=>bb.some(y=>simultaneousPeople(x,y))))return;
+  parent.set(br,ar);membersOf.set(ar,[...aa,...bb]);membersOf.delete(br);
+ };
  for(const [a,b]of next)join(a,b);
  const aliases=data.recoveryAliases||[];
  for(const a of aliases){
@@ -71,13 +88,29 @@ export function substitutionEvidence(snapshot,data,events){
  const add=(path,o,kind,evidence)=>{const owner=votes(path.ids,o.t,kind==='out'?-6:-.2,kind==='out'?.2:8),past=kind==='out'&&!certain(owner)?votes(path.ids,o.t,-20,.2):owner,spatial=!certain(past)?spatialOwner(path,o.t,kind):null,source=certain(past)?people.get(past[0][0]):spatial?people.get(spatial.id):null,uniform=color(path.list,o.t),team=side(uniform)||side(source?.group),conflict=!!uniform&&!!source&&side(uniform)!==side(source.group);
   crossings.push({trackId:o.b.id,pathId:path.id,pathIds:path.ids,time:o.t,kind,evidence,team,sourceId:source?.id||null,sourceEvidence:spatial?'spatial-continuity':'track-ownership',ownerCertain:!!source,colorConflict:conflict,box:[...o.b.box],x:o.xy[0],y:o.xy[1]});};
  for(const path of paths.values()){let last=null,lastT=-Infinity;
-  for(let i=0;i<path.list.length;i++){const o=path.list[i],xy=o.xy;if(!events.some(e=>Math.abs(e.time-o.t)<=16))continue;
+  for(let i=0;i<path.list.length;i++){const o=path.list[i],xy=o.xy;if(!events.some(e=>Math.abs(e.time-o.t)<=28))continue;
    if(o.t-lastT>2)last=null;lastT=o.t;
    if(xy[0]<0||xy[0]>1||xy[1]<.65){last=null;continue;}
    const state=xy[1]<.97?'inside':xy[1]>1.025?'outside':null;if(!state)continue;
    if(last&&last!==state){const kind=state==='inside'?'in':'out';let held=0;for(let j=i;j<path.list.length&&path.list[j].t<=o.t+1.5;j++){const q=path.list[j];if(kind==='in'?q.xy[1]<1:q.xy[1]>1)held+=q.dt;}
     if(held>=Math.min(.2,original.to-o.t-.1))add(path,o,kind,'crossing');}
    last=state;
+  }
+  // A substitute can wait ON the line without ever entering the outside state.
+  // Stable waiting followed by sustained inward travel is reviewable evidence.
+  for(const event of events){
+   const near=path.list.slice(lower(path.list,event.time-20),lower(path.list,event.time+9));
+   const pre=near.filter(o=>o.t>=event.time-8&&o.t<=event.time-2),post=near.filter(o=>o.t>=event.time-2&&o.t<=event.time+8);
+   if(pre.length<6||pre.at(-1).t-pre[0].t<2||!post.length)continue;
+   const ys=pre.map(o=>o.xy[1]).sort((a,b)=>a-b),xs=pre.map(o=>o.xy[0]).sort((a,b)=>a-b),y=ys[Math.floor(ys.length/2)];
+   // Walking along the line while waiting is allowed; inward travel is tested separately.
+   if(y<.95||y>1.08||xs[0]<0||xs.at(-1)>1||ys.at(-1)-ys[0]>.06||xs.at(-1)-xs[0]>.25)continue;
+   if(near.some(o=>o.t<event.time-8&&o.xy[1]<.90))continue;
+   const inside=post.filter(o=>o.xy[1]<Math.min(.9,y-.12));
+   if(inside.length<4||inside.at(-1).t-inside[0].t<1||inside.reduce((s,o)=>s+o.dt,0)<.6)continue;
+   if(crossings.some(c=>c.pathId===path.id&&c.kind==='in'&&Math.abs(c.time-inside[0].t)<6))continue;
+   const at=post.find(o=>o.t<=inside[0].t&&o.xy[1]<y-.04)||inside[0];
+   add(path,at,'in','boundary-wait');crossings.at(-1).reviewOnly=true;
   }
   // The detector may drop a person at the touchline. Require an observed,
   // directed approach/arrival at that line; a disappearance in the field is not enough.
