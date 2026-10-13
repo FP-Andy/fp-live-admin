@@ -138,7 +138,8 @@ export default function FutsalMatchReportPage(){
   return()=>{active=false;clearInterval(timer);channel?.close();window.removeEventListener('focus',onFocus);window.removeEventListener('storage',storage);document.removeEventListener('visibilitychange',onFocus);};
  },[draft?.id,!!draft?.sourceSnapshot]);
  useEffect(()=>{let active=true;apiJson<{fixtures:Fixture[]}>('/futsal/fla-video/fixtures').then(data=>{if(active)setMatches(data.fixtures);}).catch(()=>{if(active)setNotice('영상 기록 경기 목록을 불러오지 못했습니다. 새로고침 후 다시 시도하세요.');});return()=>{active=false;};},[]);
- useEffect(()=>{if(draft&&new URLSearchParams(location.search).get('review')==='substitutions'){const panel=document.getElementById('substitution-settings') as HTMLDetailsElement|null;if(panel){panel.open=true;panel.scrollIntoView({block:'start'});}}},[draft?.id]);
+ const openSubstitutionReview=()=>{setEditorTab('player');requestAnimationFrame(()=>{const panel=document.getElementById('substitution-settings') as HTMLDetailsElement|null;if(panel){panel.open=true;panel.querySelector('.mr-substitutions')?.scrollIntoView({block:'center'});}});};
+ useEffect(()=>{if(draft&&new URLSearchParams(location.search).get('review')==='substitutions')openSubstitutionReview();},[draft?.id]);
  useEffect(()=>{if(!draft||!preview.current)return;const node=preview.current;const update=()=>setScale(Math.min(1,Math.max(.25,(node.clientWidth-2)/REPORT_WIDTH)));const ro=new ResizeObserver(update);ro.observe(node);update();return()=>ro.disconnect();},[!!draft]);
  useEffect(()=>{if(!sheet.current)return;const node=sheet.current;const update=()=>setOverflow(reportOverflow(node));const ro=new ResizeObserver(update);ro.observe(node);const frame=requestAnimationFrame(update);void document.fonts.ready.then(update);return()=>{ro.disconnect();cancelAnimationFrame(frame);};},[draft,reportView]);
  useEffect(()=>{setDraft(d=>d?applyAutomaticPositions(d):d);},[draft?.heatmap,draft?.assignment,draft?.homeDirection,draft?.matchStartSeconds,draft?.fla?.videoStartSeconds]);
@@ -252,6 +253,7 @@ export default function FutsalMatchReportPage(){
   <section className="mr-context" aria-label="현재 리포트 작업">
    <div><strong>{draft.matchName||draft.title}</strong><span>{reportView==='team'?'팀 리포트':reportView==='assignment'?'선수 배정표':`개인 리포트 · ${person.name||person.jersey||'선수 미선택'}`}</span><small>{draft.sourceSnapshot?`확정 v${draft.sourceSnapshot.version}에서 만든 편집 초안`:'이 계정의 브라우저 편집 초안 · 확정본 미연결'}</small></div>
    <nav aria-label="같은 경기 작업 이동">
+    {draft.sourceSnapshot&&<button type="button" onClick={openSubstitutionReview}>교체 검수</button>}
     {draft.matchId?<a href={`/admin/futsal/fla/video/${draft.matchId}`}>영상 기록</a>:<span aria-disabled="true" title="자료 연결에서 경기를 먼저 선택하세요">영상 기록 · 경기 미연결</span>}
     {draft.sourceSnapshot?<a href={`/admin/futsal/fpa/tracking?job=${draft.sourceSnapshot.jobId}`}>분석 검수 · 확정 v{draft.sourceSnapshot.version}</a>:<button onClick={()=>setEditorTab('source')}>확정본 연결하기</button>}
    </nav>
