@@ -42,7 +42,10 @@ def main():
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--model',required=True)
     parser.add_argument('--device',default='auto');parser.add_argument('--source-offset',type=float,default=0)
     parser.add_argument('--window-ids',nargs='*',type=int);parser.add_argument('--sample-fps',type=float,default=15)
-    parser.add_argument('--s3-key');args=parser.parse_args()
+    parser.add_argument('--s3-key')
+    parser.add_argument('--half',action='store_true',help='CUDA half precision; recorded in provenance')
+    parser.add_argument('--tile-batch',action='store_true',help='Predict both overlapping crops together')
+    args=parser.parse_args()
     if args.output.exists():parser.error('Preserve prior results; choose a new output file')
     if not math.isfinite(args.source_offset) or args.source_offset<0 or not 1<=args.sample_fps<=30:parser.error('Invalid time or sampling')
     plan=json.loads(args.plan.read_text());windows=[w for w in plan['windows'] if args.window_ids is None or w['id'] in args.window_ids]
@@ -62,12 +65,14 @@ def main():
     from fpa_cv_uniforms import classify_uniform,uniform_team
     cv2.setNumThreads(1);torch.set_num_threads(2)
     device=args.device if args.device!='auto' else '0' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+    if args.half and device in ('cpu','mps'):parser.error('--half requires CUDA')
     model=YOLO(args.model);tiles=crop_tiles(plan['roi']);reader=nullcontext(None)
     if args.s3_key:
         from fpa_cv_remote_video import S3VideoReader
         from fpa_cv_storage import storage
         reader=S3VideoReader(storage(),args.s3_key)
     output={**plan,'id':uuid.uuid4().hex,'windows':[],'detector':{'model':Path(args.model).name,'modelSha256':hashlib.sha256(Path(args.model).read_bytes()).hexdigest(),'device':device,'imgsz':1280,'confidence':.1,'tiles':tiles,'sampleFps':args.sample_fps,'sourceOffset':args.source_offset,'method':'touchline-overlapping-crops/v1'}}
+    output['detector'].update(half=args.half,tileBatch=args.tile_batch)
     start=time.monotonic()
     with reader as remote:
         cap=cv2.VideoCapture(remote.url if remote else args.video)
@@ -85,9 +90,17 @@ def main():
                     if not ok:raise ValueError('Decode failed; incomplete result not saved')
                     if (index-first)%stride:continue
                     height,width=frame.shape[:2];rows=[]
-                    for tile in tiles:
-                        x,y,z,v=[round(n*(width if i%2==0 else height)) for i,n in enumerate(tile)]
-                        detection=model.predict(frame[y:v,x:z],classes=[0],imgsz=1280,conf=.1,device=device,verbose=False)[0]
+                    bounds=[[round(n*(width if i%2==0 else height)) for i,n in enumerate(tile)] for tile in tiles]
+                    if args.tile_batch:
+                        # Rounding normalized crops can differ by one pixel.
+                        # Equal shapes let YOLO use rectangular padding instead
+                        # of padding both touchline crops to 1280 x 1280.
+                        crop_width=min(z-x for x,y,z,v in bounds)
+                        bounds=[[x,y,x+crop_width,v] for x,y,z,v in bounds]
+                    crops=[frame[y:v,x:z] for x,y,z,v in bounds]
+                    options=dict(classes=[0],imgsz=1280,conf=.1,device=device,half=args.half,verbose=False)
+                    predictions=model.predict(crops,**options) if args.tile_batch else [model.predict(c,**options)[0] for c in crops]
+                    for (x,y,z,v),detection in zip(bounds,predictions):
                         for box,score in zip(detection.boxes.xyxy.cpu().tolist(),detection.boxes.conf.cpu().tolist()):
                             rows.append([box[0]+x,box[1]+y,box[2]+x,box[3]+y,score,0])
                     rows=nms(rows);detections=Boxes(np.asarray(rows,dtype=np.float32).reshape(-1,6),(height,width)).cpu().numpy()

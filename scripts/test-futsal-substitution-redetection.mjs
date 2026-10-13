@@ -15,6 +15,8 @@ const plan=planSubstitutionRedetection(snapshot,data,saved,baseline);assert.equa
 const recovery={...plan,id:'d'.repeat(32),windows:[{...plan.windows[0],frames:reFrames}]},before=JSON.stringify({snapshot,data,saved,recovery});
 const merged=mergeSubstitutionRedetection(snapshot,data,saved,recovery);assert.deepEqual(merged.recoveryAliases.map(a=>a.originalId),[200,300]);
 const result=deriveSubstitutionReport(snapshot,data,saved,undefined,recovery);assert.equal(result.status,'ready');assert.equal(result.events[0].outNumber,'2');
+assert.equal(result.events[0].outs.find(c=>c.trackId===100).resolvedPersonId,'home-2','exit history supplies the old analysis number');
+assert.equal(result.events[0].outs.find(c=>c.trackId===100).resolvedNumber,'2');
 assert.equal(JSON.stringify({snapshot,data,saved,recovery}),before,'original snapshot, data, log and sidecar stay immutable');
 assert(result.heatmap.players.at(-1).positions.some(q=>q.trackId===300));
 assert.doesNotThrow(()=>mergeSubstitutionRedetection(snapshot,data,{...saved,revision:2},recovery),'confirmation/note revisions keep immutable evidence');

@@ -7,7 +7,7 @@ import {validateHeatmapAugmentation} from './heatmap-augmentation-schema.mjs';
 import {heatmapDensityScale} from './heatmap-render.mjs';
 import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v4';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v5';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);
@@ -57,7 +57,7 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
  for(const [i,batch]of groups.entries()){
   progress({phase:'교체 출입·번호 연결',completed:i,total:groups.length});
   const team=batch[0].team,candidates=crossings.filter(c=>batch.some(e=>Math.abs(c.time-e.time)<=12)&&(!c.team||c.team===team)&&!used.has(key(c)));
-  const outs=candidates.filter(c=>c.kind==='out'),ins=candidates.filter(c=>c.kind==='in'),options=stints.filter(s=>s.group===team&&s.from<batch.at(-1).time+12&&s.to>batch[0].time-12).map(s=>({id:s.id,number:s.jersey}));
+  const outs=candidates.filter(c=>c.kind==='out').map(c=>{const s=activeOut(c,team);return {...c,...(s?{resolvedPersonId:s.id,resolvedNumber:s.jersey}:{})};}),ins=candidates.filter(c=>c.kind==='in'),options=stints.filter(s=>s.group===team&&s.from<batch.at(-1).time+12&&s.to>batch[0].time-12).map(s=>({id:s.id,number:s.jersey}));
   const pending=[],selected=[];
   for(const e of batch){const decision=e.tracking;
    if(decision){const o=outs.find(c=>c.trackId===decision.outTrackId&&(decision.outTime===undefined||Math.abs(c.time-decision.outTime)<.001)),n=ins.find(c=>c.trackId===decision.inTrackId&&(decision.inTime===undefined||Math.abs(c.time-decision.inTime)<.001)),s=stints.find(s=>s.id===decision.outPersonId&&s.group===team&&s.from<(o?.time??0)&&s.to>=(o?.time??Infinity));
@@ -80,7 +80,8 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
    const reason=!outs.length&&!ins.length?'로그 전후 12초에서 경기장 하단의 출입 경로를 찾지 못했습니다. 영상 시각을 확인하세요.'
     :!outs.length?'입장 후보는 있으나 퇴장 경로가 없습니다. 나간 선수의 장면을 확인하세요.'
     :!ins.length?'퇴장 후보는 있으나 입장 경로가 없습니다. 들어온 선수의 장면을 확인하세요.'
-    :!validOut.length?'퇴장 후보의 분석번호를 확정할 수 없습니다. 재진입·팀 충돌 여부와 나간 번호를 확인하세요.'
+    :recovery?.reviewOnly&&[...outs,...ins].some(c=>c.origin==='redetection'&&!c.returning&&!c.colorConflict)?'재탐지로 출입 후보를 찾았습니다. 나간 사람과 들어온 사람이 맞는지 확인하면 출전 구간을 분리합니다.'
+    :!validOut.length?'퇴장 후보의 기존 기록을 자동으로 찾지 못했습니다. 출입 장면과 기존 추적 연결을 확인하세요.'
     :!validIn.length?'입장 후보의 팀 또는 재진입 여부가 불확실합니다. 들어온 선수의 장면을 확인하세요.'
     :pending.length>1&&(validOut.length<pending.length||validIn.length<pending.length)?`동시 교체 ${pending.length}건 중 퇴장 ${validOut.length}개·입장 ${validIn.length}개 경로를 확인했습니다. 부족한 출입을 확인하세요.`
     :!edges.length?'퇴장 분석번호와 입장 후 번호의 연결 근거가 일치하지 않습니다. 두 장면을 비교하세요.'
