@@ -87,14 +87,17 @@ export function substitutionEvidence(snapshot,data,events){
  const crossings=[];
  const add=(path,o,kind,evidence)=>{const owner=votes(path.ids,o.t,kind==='out'?-6:-.2,kind==='out'?.2:8),past=kind==='out'&&!certain(owner)?votes(path.ids,o.t,-20,.2):owner,spatial=!certain(past)?spatialOwner(path,o.t,kind):null,source=certain(past)?people.get(past[0][0]):spatial?people.get(spatial.id):null,uniform=color(path.list,o.t),team=side(uniform)||side(source?.group),conflict=!!uniform&&!!source&&side(uniform)!==side(source.group);
   crossings.push({trackId:o.b.id,pathId:path.id,pathIds:path.ids,time:o.t,kind,evidence,team,sourceId:source?.id||null,sourceEvidence:spatial?'spatial-continuity':'track-ownership',ownerCertain:!!source,colorConflict:conflict,box:[...o.b.box],x:o.xy[0],y:o.xy[1]});};
- for(const path of paths.values()){let last=null,lastT=-Infinity;
+ for(const path of paths.values()){let last=null,lastT=-Infinity,lastStateT=-Infinity;
   for(let i=0;i<path.list.length;i++){const o=path.list[i],xy=o.xy;if(!events.some(e=>Math.abs(e.time-o.t)<=28))continue;
    if(o.t-lastT>2)last=null;lastT=o.t;
    if(xy[0]<0||xy[0]>1||xy[1]<.65){last=null;continue;}
    const state=xy[1]<.97?'inside':xy[1]>1.025?'outside':null;if(!state)continue;
    if(last&&last!==state){const kind=state==='inside'?'in':'out';let held=0;for(let j=i;j<path.list.length&&path.list[j].t<=o.t+1.5;j++){const q=path.list[j];if(kind==='in'?q.xy[1]<1:q.xy[1]>1)held+=q.dt;}
-    if(held>=Math.min(.2,original.to-o.t-.1))add(path,o,kind,'crossing');}
-   last=state;
+    if(held>=Math.min(.2,original.to-o.t-.1)){
+     add(path,o,kind,'crossing');
+     if(!events.some(e=>Math.abs(e.time-lastStateT)<=16)){crossings.at(-1).reviewOnly=true;if(kind==='in')crossings.at(-1).evidence='boundary-wait';}
+    }}
+   last=state;lastStateT=o.t;
   }
   // A substitute can wait ON the line without ever entering the outside state.
   // Stable waiting followed by sustained inward travel is reviewable evidence.
