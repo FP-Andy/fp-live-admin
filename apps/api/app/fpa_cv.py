@@ -250,8 +250,15 @@ async def asset(job_id: str, asset: str, request: Request, user: User = Depends(
         upload=owned(db,row.payload['uploadId'],user,'upload')
         key=upload.payload['key'] if asset=='source' else row.payload.get('s3Assets',{}).get(asset)
         if not key:raise HTTPException(404,'분석 파일을 찾지 못했습니다.')
-        return RedirectResponse(storage().url(key),headers={'Cache-Control':'private, no-store'})
-    base,headers=connection();url=f'{base}/api/tracking/jobs/{job_id}/{asset}'
+        url=storage().url(key)
+        if asset in {'source','preview.mp4'}:
+            return RedirectResponse(url,headers={'Cache-Control':'private, no-store'})
+        # Review workers and canvas images need readable bytes. Keep these
+        # authenticated requests same-origin instead of relying on S3 redirects
+        # and the browser's cross-origin response/cache handling.
+        headers={}
+    else:
+        base,headers=connection();url=f'{base}/api/tracking/jobs/{job_id}/{asset}'
     if request.headers.get('range'):
         headers['Range'] = request.headers['range']
     client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5))
