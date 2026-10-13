@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+import httpx
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from app.db import Base, engine, SessionLocal
-from app.models import User, FpaCvResource
+from app.models import User, Match, FpaCvResource
 from app.auth import require_session_user
 from app.fpa_cv import router
 
@@ -23,7 +24,7 @@ def json_type(element,compiler,**kw):return 'JSON'
 
 class GatewayTests(unittest.TestCase):
     def setUp(self):
-        Base.metadata.create_all(engine,tables=[User.__table__,FpaCvResource.__table__])
+        Base.metadata.create_all(engine,tables=[User.__table__,Match.__table__,FpaCvResource.__table__])
         self.app=FastAPI();self.app.include_router(router)
         self.client=TestClient(self.app)
         self.job='a'*32;self.upload='b'*32
@@ -34,7 +35,7 @@ class GatewayTests(unittest.TestCase):
         def user(x_test_user: str=Header(default='owner')):return User(id=x_test_user,name=x_test_user,role='OPERATOR')
         self.app.dependency_overrides[require_session_user]=user
     def tearDown(self):
-        self.client.close();Base.metadata.drop_all(engine,tables=[FpaCvResource.__table__,User.__table__])
+        self.client.close();Base.metadata.drop_all(engine,tables=[FpaCvResource.__table__,Match.__table__,User.__table__])
     def test_requires_login_and_ownership(self):
         self.app.dependency_overrides.clear()
         self.assertEqual(self.client.get('/api/tracking/jobs').status_code,401)
@@ -91,13 +92,52 @@ class GatewayTests(unittest.TestCase):
             row=db.get(FpaCvResource,self.upload);row.payload={'key':f'fpa-cv/uploads/{self.upload}/source.mp4'}
             row=db.get(FpaCvResource,self.job);row.payload={**row.payload,'storage':'s3','s3Assets':{'tracks.json':f'fpa-cv/jobs/{self.job}/tracks.json'}};db.commit()
         store=Mock();store.url.return_value='https://s3.example/tracks'
-        with patch('app.fpa_cv_storage.storage',return_value=store):
+        upstream=Mock();upstream.status_code=200
+        upstream.headers={'content-type':'application/json','content-length':'2'}
+        async def chunks():yield b'{}'
+        upstream.aiter_raw=chunks;upstream.aclose=AsyncMock()
+        client=Mock();client.send=AsyncMock(return_value=upstream);client.aclose=AsyncMock()
+        with patch('app.fpa_cv_storage.storage',return_value=store),patch('app.fpa_cv.httpx.AsyncClient',return_value=client):
             url=f'/api/tracking/jobs/{self.job}/tracks.json'
             self.assertEqual(self.client.get(url,headers={'x-test-user':'other'}).status_code,404)
-            self.assertEqual(self.client.get(url,follow_redirects=False).status_code,307)
+            client.send.assert_not_called()
+            response=self.client.get(url,follow_redirects=False)
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.json(),{})
+            self.assertNotIn('location',response.headers)
+            self.assertEqual(response.headers['cache-control'],'private, no-store')
+            upstream.aclose.assert_awaited_once();client.aclose.assert_awaited_once()
+            self.assertEqual(self.client.get(f'/api/tracking/jobs/{self.job}/source',follow_redirects=False).status_code,307)
             with SessionLocal() as db:
                 row=db.get(FpaCvResource,self.job);row.payload={**row.payload,'status':'running'};db.commit()
             self.assertEqual(self.client.get(url).status_code,409)
+
+    def test_s3_review_frame_streams_ranges_without_credentials_or_redirect(self):
+        with SessionLocal() as db:
+            row=db.get(FpaCvResource,self.upload);row.payload={'key':f'fpa-cv/uploads/{self.upload}/source.mp4'}
+            row=db.get(FpaCvResource,self.job);row.payload={**row.payload,'storage':'s3','s3Assets':{'frame.png':f'fpa-cv/jobs/{self.job}/frame.png'}};db.commit()
+        store=Mock();store.url.return_value='https://s3.example/frame'
+        upstream=Mock();upstream.status_code=206
+        upstream.headers={'content-type':'image/png','content-length':'3','content-range':'bytes 0-2/9','accept-ranges':'bytes','x-amz-request-id':'private'}
+        async def chunks():yield b'png'
+        upstream.aiter_raw=chunks;upstream.aclose=AsyncMock()
+        client=Mock();client.send=AsyncMock(return_value=upstream);client.aclose=AsyncMock()
+        with patch('app.fpa_cv_storage.storage',return_value=store),patch('app.fpa_cv.httpx.AsyncClient',return_value=client):
+            response=self.client.get(f'/api/tracking/jobs/{self.job}/frame.png',headers={'Range':'bytes=0-2','Authorization':'Bearer not-for-s3'})
+            self.assertEqual(response.status_code,206);self.assertEqual(response.content,b'png')
+            self.assertEqual(response.headers['content-range'],'bytes 0-2/9')
+            self.assertNotIn('x-amz-request-id',response.headers)
+            client.build_request.assert_called_once_with('GET','https://s3.example/frame',headers={'Range':'bytes=0-2'})
+            upstream.aclose.assert_awaited_once();client.aclose.assert_awaited_once()
+
+    def test_s3_review_network_failure_closes_client(self):
+        with SessionLocal() as db:
+            row=db.get(FpaCvResource,self.job);row.payload={**row.payload,'storage':'s3','s3Assets':{'tracks.json':f'fpa-cv/jobs/{self.job}/tracks.json'}};db.commit()
+        store=Mock();store.url.return_value='https://s3.example/tracks'
+        client=Mock();client.send=AsyncMock(side_effect=httpx.ConnectError('unavailable'));client.aclose=AsyncMock()
+        with patch('app.fpa_cv_storage.storage',return_value=store),patch('app.fpa_cv.httpx.AsyncClient',return_value=client):
+            response=self.client.get(f'/api/tracking/jobs/{self.job}/tracks.json')
+            self.assertEqual(response.status_code,503);client.aclose.assert_awaited_once()
     def test_review_version_and_owner(self):
         url=f'/api/tracking/jobs/{self.job}/review'
         self.assertEqual(self.client.get(url,headers={'x-test-user':'other'}).status_code,404)
