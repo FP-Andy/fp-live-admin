@@ -68,7 +68,7 @@ export function reportPlayer(d:ReportDraft,id=d.selected){
  const generated=commentDraft(d.heatmap,player,raw,map.personal,direction,d.matchStartSeconds??d.fla?.videoStartSeconds??d.heatmap?.from??0);
  generated.eventComment=playStory(d,id,map,generated.eventComment);
  const seconds=observedSeconds(player,Math.max(source?.from??0,matchStart),source?.to);
- if(seconds<30){
+ if(player&&seconds<30){
   raw.position='';Object.assign(generated,limitedObservationStory(seconds));
  }
  return {raw,player,source,map,direction,generated,person:{...raw,heatComment:raw.heatComment||generated.heatComment,eventComment:raw.eventComment||generated.eventComment,strengths:raw.strengths.map((v,i)=>v||generated.strengths[i]),improvements:raw.improvements.map((v,i)=>v||generated.improvements[i])}};
