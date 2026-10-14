@@ -106,6 +106,8 @@ def handler_for(run: Path | None, jobs=None, worker_token=None):
                 if route in {'/api/tracking/queue/pause','/api/tracking/queue/resume'}:
                     if not isinstance(value,dict):raise JobError('대기열 요청을 확인하세요.')
                     self.send_json(jobs.control_queue(route.rsplit('/',1)[1],stop_running=value.get('stopRunning',False)));return
+                if route=='/api/tracking/recoveries':
+                    self.send_json(jobs.create_recovery(value),202);return
                 if route=='/api/tracking/batch/start':
                     self.send_json(jobs.start_batch(value.get('ids')),202);return
                 if route=='/api/tracking/uploads/register':
@@ -186,7 +188,7 @@ def handler_for(run: Path | None, jobs=None, worker_token=None):
                             listing['deleted' if item.get('deletedAt') else 'jobs'].append(item)
                         self.send_json(listing);return
                     if route=='/api/tracking/jobs/existing' and legacy:self.send_json(jobs.legacy_state(legacy));return
-                    match=re.fullmatch(r'/api/tracking/jobs/([0-9a-f]{32})(?:/(tracks.json|preview.mp4|source|detections.json|frame.png|initial-review.json))?',route)
+                    match=re.fullmatch(r'/api/tracking/jobs/([0-9a-f]{32})(?:/(tracks.json|preview.mp4|source|detections.json|frame.png|initial-review.json|recovery.json))?',route)
                     if not match:raise JobError('분석 작업을 찾지 못했습니다.',404)
                     if not match[2]:self.send_json(jobs.get(match[1]));return
                     item=jobs.asset(match[1],match[2])

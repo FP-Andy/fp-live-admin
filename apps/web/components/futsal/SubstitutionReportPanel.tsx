@@ -45,6 +45,14 @@ export default function SubstitutionReportPanel({draft,control}:{draft:ReportDra
  {control.recovery?.status==='ready'&&<p className="mr-sub-recovery">재탐지 {control.recovery.windowCount}개 구간의 후보를 함께 표시합니다. 새 후보는 직접 확인한 뒤 연결됩니다.</p>}
  {!!result?.events.length&&<p>출입 연결 {linked}건 · 연결 검토 {pending}건 · 관측 일부 {partial}건{partial?' (연결된 건과 중복 집계)':''}</p>}
  {control.error&&<p role="alert">{control.error}</p>}<button disabled={control.state==='working'} onClick={()=>void control.refresh()}>교체로그 다시 확인</button>
+ <div className="mr-sub-recovery">
+  <button className="btn-primary" disabled={!control.canWrite||control.recoveryBusy||control.recoveryActive||control.state==='working'||control.state==='error'||!result?.recoveryPlan?.windows.length} onClick={()=>void control.startRecovery()}>{control.recoveryBusy?'요청 중…':'RF-DETR로 짧은 추적 보강'}</button>
+  <p className="field-help">추적이 짧은 선수의 누락 구간부터 GPU로 추가 탐지합니다. 시작한 작업은 창을 닫아도 계속됩니다.</p>
+  {control.recoveryJob&&<p role="status">{control.recoveryJob.stage}{control.recoveryActive?` · ${Math.round(control.recoveryJob.progress||0)}%`:''}{control.recoveryActive&&Number.isFinite(control.recoveryJob.eta)?` · 약 ${Math.ceil(control.recoveryJob.eta!/60)}분 남음`:''}</p>}
+  {control.recoveryJob?.error&&<p role="alert">{control.recoveryJob.error}</p>}
+  {control.recoveryError&&<p role="alert">{control.recoveryError}</p>}
+  {control.recoveryActive&&<button disabled={!control.canWrite||control.recoveryBusy} onClick={()=>void control.cancelRecovery()}>보강 중단</button>}
+ </div>
  {!!result?.continuation?.audit.length&&<details className="mr-sub-event"><summary>추적 복구 결과 · {result.continuation.audit.length}명</summary>
   <p className="field-help">실제 탐지 좌표의 연결 시간입니다. 히트맵 추정 보강은 포함하지 않습니다.</p>
   {result.recoveryPlan&&<p>기존 검출 연결 검토 {result.recoveryPlan.associationReview.length}명 · 추가 탐지 후보 {result.recoveryPlan.windows.length}구간</p>}

@@ -49,7 +49,10 @@ def main():
     parser.add_argument('--detector',choices=['yolo','rfdetr'],default='yolo')
     parser.add_argument('--scope',choices=['touchline','court'],default='touchline')
     parser.add_argument('--stop-file',type=Path,help='Stop after a frame if this file appears')
+    parser.add_argument('--result-id')
+    parser.add_argument('--progress-json',action='store_true')
     args=parser.parse_args()
+    if args.result_id and (len(args.result_id)!=32 or any(c not in '0123456789abcdef' for c in args.result_id)):parser.error('Invalid result ID')
     if args.output.exists():parser.error('Preserve prior results; choose a new output file')
     if not math.isfinite(args.source_offset) or args.source_offset<0 or not 1<=args.sample_fps<=30:parser.error('Invalid time or sampling')
     plan=json.loads(args.plan.read_text());windows=[w for w in plan['windows'] if args.window_ids is None or w['id'] in args.window_ids]
@@ -90,7 +93,7 @@ def main():
         from fpa_cv_remote_video import S3VideoReader
         from fpa_cv_storage import storage
         reader=S3VideoReader(storage(),args.s3_key)
-    output={**plan,'id':uuid.uuid4().hex,'windows':[],'detector':{'model':Path(args.model).name,'modelSha256':hashlib.sha256(Path(args.model).read_bytes()).hexdigest(),'device':device,'imgsz':1280,'confidence':.1,'tiles':tiles,'sampleFps':args.sample_fps,'sourceOffset':args.source_offset,'method':'touchline-overlapping-crops/v1'}}
+    output={**plan,'id':args.result_id or uuid.uuid4().hex,'windows':[],'detector':{'model':Path(args.model).name,'modelSha256':hashlib.sha256(Path(args.model).read_bytes()).hexdigest(),'device':device,'imgsz':1280,'confidence':.1,'tiles':tiles,'sampleFps':args.sample_fps,'sourceOffset':args.source_offset,'method':'touchline-overlapping-crops/v1'}}
     output['detector'].update(half=args.half,tileBatch=args.tile_batch if args.detector=='yolo' else False,engine=args.detector,scope=args.scope,imgsz=1024 if args.detector=='rfdetr' else 1280,method='bounded-crops-fragment-filter/v2')
     removed_fragments=0
     start=time.monotonic()
@@ -98,6 +101,7 @@ def main():
         cap=cv2.VideoCapture(remote.url if remote else args.video)
         fps=cap.get(cv2.CAP_PROP_FPS);count=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if not cap.isOpened() or fps<=0:raise ValueError('Cannot open source video')
+        processed=0;total=sum(max(1,math.ceil((w['to']-w['from'])*min(args.sample_fps,fps))) for w in windows)
         try:
             for w in windows:
                 first=round((w['from']-args.source_offset)*fps);last=math.ceil((w['to']-args.source_offset)*fps-1e-7)
@@ -140,6 +144,10 @@ def main():
                         boxes.append({'id':1000000000+w['id']*1000000+int(row[4]),'box':box,'confidence':round(float(row[5]),4),'appearance':appearance(frame,box),'zone':'redetection'})
                     t=round(args.source_offset+index/fps,6)
                     if w['from']-1e-6<=t<w['to']+1e-6:result['frames'].append({'t':t,'boxes':boxes})
+                    processed+=1
+                    if args.progress_json and (processed==1 or processed%15==0):
+                        elapsed=time.monotonic()-start;remaining=max(0,total-processed)
+                        print('FPA_PROGRESS '+json.dumps({'processedFrames':processed,'totalFrames':total,'elapsed':elapsed,'eta':elapsed/processed*remaining,'progress':min(97,processed/total*97)}),flush=True)
                     if len(result['frames'])%30==0:print(json.dumps({'window':w['id'],'sourceTime':t,'samples':len(result['frames']),'elapsed':round(time.monotonic()-start,1)}),flush=True)
                 output['windows'].append(result)
         finally:cap.release()

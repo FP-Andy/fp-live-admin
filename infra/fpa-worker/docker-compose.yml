@@ -15,6 +15,8 @@ services:
       FPA_CV_S3_BUCKET: ${FPA_CV_S3_BUCKET:-}
       FPA_CV_S3_REGION: ${FPA_CV_S3_REGION:-us-east-1}
       FPA_CV_INSTANCE_ROLE: ${FPA_CV_INSTANCE_ROLE:-1}
+      FPA_CV_RF_PYTHON: /workspace/runtime/fpa-cv/rfdetr-venv/bin/python
+      FPA_CV_RF_MODEL: /workspace/runtime/fpa-cv/rf-detr-medium.pth
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
     ports:
       - "${FPA_CV_PRIVATE_IP:?GPU private IP required}:4333:4333"
