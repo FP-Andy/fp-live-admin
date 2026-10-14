@@ -67,6 +67,7 @@ jobs:
           node scripts/test-futsal-substitution-redetection.mjs
           node scripts/test-futsal-substitution-continuity.mjs
           node scripts/test-futsal-substitution-refinement.mjs
+          node --test scripts/test-futsal-substitution-volume.mjs
           node scripts/test-futsal-substitution-recovery-plan.mjs
       - name: Production web build
         run: npm run build --prefix apps/web

@@ -17,18 +17,32 @@ export function buildContinuationGraph(ev,snapshot){
  for(const a of ends){const ae=endpoint(a.p,true);for(let j=lower(starts,a.t-1.2);j<starts.length&&starts[j].t<=a.t+3.5;j++){const b=starts[j];if(a.p.id===b.p.id||b.p.list.at(-1).t<a.t+.35||a.p.list[0].t>b.t-.35)continue;const be=endpoint(b.p,false),gap=be.o.t-ae.o.t;if(ae.team&&be.team&&ae.team!==be.team)continue;
   const ap=ae.o.xy,bp=be.o.xy;if([ap,bp].some(p=>p[0]<0||p[0]>1||p[1]<0||p[1]>1.03))continue;
   if(Math.max(ap[1],bp[1])>.92&&(Math.abs(ae.v[1])<.012||ae.v[1]*be.v[1]<=0))continue;
-  let error,overlapSamples=0;
+  let error,overlapSamples=0,method;
   if(gap<0){let count=0,close=0,err=0,strong=0;for(const q of a.p.list.filter(q=>q.t>=b.t)){const at=lower(b.p.list,q.t),r=[b.p.list[at-1],b.p.list[at]].filter(Boolean).sort((x,y)=>Math.abs(x.t-q.t)-Math.abs(y.t-q.t))[0];if(!r||Math.abs(r.t-q.t)>ev.step*.6)continue;count++;if(ev.qualityReason?.(q)||ev.qualityReason?.(r))continue;const d=distance(q.xy,r.xy);if(d<.65&&iou(q.b.box,r.b.box)>.65)strong++;if(d<.75&&iou(q.b.box,r.b.box)>.4){close++;err+=d;}}const shortReset=strong>=2&&strong/count>=.9&&distance(ae.v,be.v)<4;if(!shortReset&&(close<3||close/count<.85))continue;error=err/close;overlapSamples=close;
   }else{const af=ap.map((x,i)=>x+ae.v[i]*gap),bb=bp.map((x,i)=>x-be.v[i]*gap),forward=distance(af,bp),backward=distance(bb,ap);error=(forward+backward)/2;const shortReset=gap<=.6&&gap>=0&&ae.team&&ae.team===be.team&&distance(ap,bp)<=1+gap*.7&&error<=2.1&&iou(ae.o.b.box,be.o.b.box)>.05;
-   if(!shortReset&&(error>1.05+gap*.45||Math.min(forward,backward)>.8+gap*.3||distance(ap,bp)>1+gap*7))continue;}
+   // A verified contact can abruptly reverse velocity. In a short, local gap,
+   // require clear same-kit observations on both sides instead of extrapolating
+   // the pre-contact velocity through the turn. Reciprocal uniqueness still applies.
+   const contactTurn=gap>=0&&gap<=1.3&&ae.team&&ae.team===be.team&&distance(ap,bp)<.9&&
+    a.p.list.some(q=>q.t>=ae.o.t&&q.t<=ae.o.t+.5&&ev.qualityReason?.(q))&&
+    [a.p.list.filter(q=>q.t>=ae.o.t-1&&q.t<=ae.o.t),b.p.list.filter(q=>q.t>=be.o.t&&q.t<=be.o.t+1)].every(rows=>{
+     let right=0,wrong=0;for(const q of rows){if(ev.qualityReason?.(q))continue;const label=ev.team?.(q);if(label===ae.team)right+=Math.min(q.dt||ev.step,.1);else if(label)wrong++;}return right>=.5&&!wrong;
+    });
+   if(!shortReset&&!contactTurn&&(error>1.05+gap*.45||Math.min(forward,backward)>.8+gap*.3||distance(ap,bp)>1+gap*7))continue;
+   if(contactTurn){error=distance(ap,bp);method='contact-turn';}}
   const ab=ae.o.b.box,bb=be.o.b.box,ratio=((bb[2]-bb[0])*(bb[3]-bb[1]))/((ab[2]-ab[0])*(ab[3]-ab[1]));if(ratio<(gap<1?.25:.4)||ratio>(gap<1?4:2.5))continue;
-  edges.push({a:a.p.id,b:b.p.id,gap,error,overlapSamples,score:error+.2*Math.max(0,gap)+Math.abs(Math.log(ratio))*.12,at:a.t,bt:b.t});
+  edges.push({a:a.p.id,b:b.p.id,gap,error,overlapSamples,score:error+.2*Math.max(0,gap)+Math.abs(Math.log(ratio))*.12,at:method?ae.o.t:a.t,bt:b.t,...(method?{method}:{})});
  }}
  const incoming=new Map(),outgoing=new Map();for(const e of edges)for(const [map,key]of [[incoming,e.b],[outgoing,e.a]]){const list=map.get(key)||[];list.push(e);map.set(key,list);}
- const best=rows=>{rows?.sort((a,b)=>a.score-b.score);return rows?.length&&(!rows[1]||rows[1].score-rows[0].score>.55&&rows[1].score>rows[0].score*1.8)?rows[0]:null;};
- const previous=new Map();for(const e of edges)if(best(incoming.get(e.b))===e&&best(outgoing.get(e.a))===e)previous.set(e.b,e);
+ const equivalent=(id1,id2,t)=>{
+  if(id1===id2)return true;const a=ev.paths.get(id1),b=ev.paths.get(id2);let samples=0,close=0,first,last;
+  for(const q of a.list){if(q.t<t-1||q.t>t+1)continue;const r=nearest(b.list,q.t);if(!r||Math.abs(q.t-r.t)>ev.step*.6)continue;if(distance(q.xy,r.xy)>1.2)return false;if(ev.qualityReason?.(q)||ev.qualityReason?.(r))continue;samples++;if(distance(q.xy,r.xy)<.65&&iou(q.b.box,r.b.box)>.4){close++;first??=q.t;last=q.t;}}
+  return close>=6&&last-first>=.5&&close/samples>=.85;
+ };
+ const best=rows=>{rows?.sort((a,b)=>a.score-b.score);if(!rows?.length)return null;const e=rows[0];const rival=rows.slice(1).find(r=>!(e.method==='contact-turn'&&r.method==='contact-turn'&&equivalent(e.a,r.a,e.at)&&equivalent(e.b,r.b,e.bt)));return !rival||rival.score-e.score>.55&&rival.score>e.score*1.8?e:null;};
+ const selected=[];for(const e of edges){const back=best(incoming.get(e.b));if(best(outgoing.get(e.a))===e&&(back===e||back&&e.method==='contact-turn'&&back.method==='contact-turn'&&equivalent(e.a,back.a,e.at)))selected.push(e);}
 
- return {next:new Map([...previous.values()].map(e=>[e.a,e])),links:[...previous.values()],candidates:edges.length};
+ return {next:new Map(selected.map(e=>[e.a,e])),links:selected,candidates:edges.length};
 }
 
 /** Continue only observed detections from a known entrant. The source snapshot
@@ -64,6 +78,11 @@ export function continueSubstitutionReport(snapshot,ev,saved,result,options={}){
  };
  const spans=new Map(players.map(p=>[p.id,p.positions.map(q=>[q.t,q.t+q.seconds])])),additions=new Map(players.map(p=>[p.id,[]])),removals=new Map();
  for(const {p,path:first} of seeds){
+  // An already assigned, sustained same-team segment can resume the chain.
+  // It must still fit a short spatial gap; all ownership guards apply below.
+  const anchorStats=new Map();
+  for(const q of p.positions){const segment=ev.pathAt(q.trackId,q.t);if(!segment)continue;const o=nearest(segment.list,q.t);if(!o||Math.abs(o.t-q.t)>ev.step*.6||ev.qualityReason(o))continue;const label=ev.team(o);if(label&&label!==p.group)continue;const a=anchorStats.get(segment.id)||{path:segment,seconds:0,right:0,from:q.t,to:q.t};a.seconds+=q.seconds;a.right+=label===p.group?q.seconds:0;a.to=q.t+q.seconds;anchorStats.set(segment.id,a);}
+  const anchors=[...anchorStats.values()].filter(a=>a.path.id!==first.id&&a.seconds>=1&&a.right>=.3).sort((a,b)=>a.from-b.from);
   const knownExit=result.events.filter(e=>e.status!=='review'&&e.outPersonId===p.id&&Number.isFinite(e.outTime)).map(e=>e.outTime);
   let until=Math.min(h.to,...knownExit),path=first,links=[],ids=new Set(),nodes=[],rowStop=false;
   for(let n=0;path&&n<80&&!ids.has(path.id);n++){
@@ -83,9 +102,14 @@ export function continueSubstitutionReport(snapshot,ev,saved,result,options={}){
     const wrong=kitWindow.filter(v=>v.team&&v.team!==p.group),wrongSeconds=wrong.reduce((n,v)=>n+v.dt,0),rightSeconds=kitWindow.filter(v=>v.team===p.group).reduce((n,v)=>n+v.dt,0);
     if(wrongSeconds>=.8&&wrongSeconds>rightSeconds*3){until=Math.min(until,wrong[0].t);rowStop=true;break;}
    }
-   ids.add(path.id);nodes.push(path);
-   const edge=graph.next.get(path.id);if(!edge||path.list.at(-1).t>=until||edge.bt>=until)break;
-   links.push(edge);path=ev.paths.get(edge.b);
+   ids.add(path.id);
+   const edge=graph.next.get(path.id);
+   nodes.push(['sustained-overlap','contact-turn'].includes(edge?.method)?{...path,list:path.list.filter(o=>o.t<=edge.at+1e-7)}:path);
+   if(path.list.at(-1).t>=until)break;
+   if(edge&&edge.bt<until){links.push(edge);path=ev.paths.get(edge.b);continue;}
+   const tail=path.list.at(-1),anchor=anchors.find(a=>!ids.has(a.path.id)&&a.from<until&&a.from>=tail.t-2&&a.from<=tail.t+3.5&&ev.distance(tail.xy,nearest(a.path.list,a.from).xy)<=1+Math.max(0,a.from-tail.t)*7);
+   if(!anchor)break;
+   links.push({a:path.id,b:anchor.path.id,at:tail.t,bt:anchor.from,method:'existing-observation-anchor',support:anchor.seconds});path=anchor.path;
   }
   const splitAt=ev.splits.filter(s=>s.reason!=='observation-gap'&&nodes.some(n=>n.originalPathId===s.pathId));
   const end=nodes.at(-1)?.list.at(-1);
@@ -113,10 +137,12 @@ export function continueSubstitutionReport(snapshot,ev,saved,result,options={}){
  }
  for(const list of requests.values()){
   if(list.length!==1)continue;const {p,q,row}=list[0];if(spans.get(p.id).some(([a,z])=>a<q.t+q.seconds-1e-7&&z>q.t+1e-7))continue;const conflicts=(owners.get(q.trackId)||[]).filter(v=>v.q.t<q.t+q.seconds-1e-7&&v.q.t+v.q.seconds>q.t+1e-7);
-  // Different detector IDs do not make the same visible body two people.
-  // Preserve existing ownership and leave that interval for review instead.
-  if(bodyConflicts(p,q).length){row.bodyConflictSeconds+=q.seconds;continue;}
+  // Different detector IDs do not make one body two people. Contact can
+  // obscure kit evidence, so retain ownership until that conflict is reviewed.
+  const bodies=bodyConflicts(p,q);
+  if(bodies.length){row.bodyConflictSeconds+=q.seconds;continue;}
   if(conflicts.some(v=>v.p.id!==p.id&&(v.q.source==='manual'||v.q.checkpoint||v.p.group!==p.group||v.p.substitutionStint?.kind==='substitute')))continue;
+
   // Restore a reset track from a recycled starter slot only after a reciprocal
   // geometric link. Other independently seeded substitutes are never stolen.
   for(const v of conflicts){if(v.p.id===p.id)continue;const cuts=removals.get(v.q)||[];cuts.push([q.t,q.t+q.seconds]);removals.set(v.q,cuts);changes.add(v.p.id);row.reassigned+=Math.max(0,Math.min(v.q.t+v.q.seconds,q.t+q.seconds)-Math.max(v.q.t,q.t));}

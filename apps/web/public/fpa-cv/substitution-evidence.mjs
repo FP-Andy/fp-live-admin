@@ -47,11 +47,13 @@ export function substitutionEvidence(snapshot,data,events){
  const simultaneousPeople=(a,b)=>{
   const key=[a,b].sort((a,b)=>a-b).join(':');if(conflicts.has(key))return conflicts.get(key);
   const aa=tracks.get(a),bb=tracks.get(b);let mismatches=0,first=null,last=-Infinity;
-  // Reject transitive crop bridges between original people seen simultaneously.
+  // Reject transitive bridges between all people seen simultaneously,
+  // including two supplemental passes. Otherwise an old crop can replace the
+  // new pass with a different person at its earlier timestamps.
   for(let i=lower(aa,bb[0].t-step*.5);i<aa.length&&aa[i].t<=bb.at(-1).t+step*.5;i++){
-   const q=aa[i];if(q.t-last<.2||q.b.recovery)continue;last=q.t;
+   const q=aa[i];if(q.t-last<.2)continue;last=q.t;
    const at=lower(bb,q.t),r=[bb[at-1],bb[at]].filter(Boolean).sort((a,b)=>Math.abs(a.t-q.t)-Math.abs(b.t-q.t))[0];
-   if(!r||r.b.recovery||Math.abs(r.t-q.t)>step*.55||distance(q.xy,r.xy)<1.2)continue;
+   if(!r||Math.abs(r.t-q.t)>step*.55||distance(q.xy,r.xy)<1.2)continue;
    first??=q.t;if(++mismatches>=3&&q.t-first>=.4){conflicts.set(key,true);return true;}
   }
   conflicts.set(key,false);return false;
