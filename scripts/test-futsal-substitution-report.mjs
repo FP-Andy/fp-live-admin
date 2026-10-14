@@ -9,7 +9,9 @@ function fixture({two=false,kick=false,early=false}={}){
   const old=100+p,newTrack=kick?old:200+p,x=.35+p*.3;
   const y=t<9?.6:t<10? .6+(t-9)*.5:1.1;
   if(t<=10.8)boxes.push(box(old,x,y));
-  const entry=early?10:12,ny=t<entry-1?1.1:t<entry?1.1-(t-(entry-1))*.2:.8;
+  // Walk continuously into the court. The old .94 -> .8 step represented a
+  // 14 m/s teleport, which the identity guard correctly rejects.
+  const entry=early?10:12,ny=t<entry-1?1.1:Math.max(.8,1.1-(t-(entry-1))*.2);
   if(t>=entry-1&&(!kick||t>10.8))boxes.push(box(newTrack,x,ny));
   const observed=boxes.find(b=>b.id===old&&t<10)||boxes.find(b=>b.id===newTrack&&t>=entry);
   if(observed){const q={t,x,y:(observed.box[1]+observed.box[3])/2,seconds:.2,trackId:observed.id,source:'automatic'};if(q.y<=1){people[p].positions.push(q);people[p].grid[Math.floor(q.y*40)*80+Math.floor(x*80)]+=.2;}}
@@ -22,6 +24,8 @@ function fixture({two=false,kick=false,early=false}={}){
 }
 const run=f=>deriveSubstitutionReport(f.snapshot,f.data,f.saved);
 const f=fixture(),before=JSON.stringify(f),r=run(f);assert.equal(r.status,'ready');assert.equal(r.heatmap.players.length,2);assert.equal(r.events[0].outTrackId,100);assert.equal(r.events[0].inTrackId,200);assert.equal(JSON.stringify(f),before,'immutable input');
+const teleport=fixture();for(const frame of teleport.data.frames)if(frame.t>=12){const b=frame.boxes.find(b=>b.id===200);if(b)b.box=[.34,.78,.36,.82];}for(const q of teleport.snapshot.heatmap.players[0].positions)if(q.t>=12)q.y=.8;
+assert.equal(run(teleport).status,'review','a synthetic 14 m/s entry jump is not a clean identity continuation');
 for(const p of r.heatmap.players)for(const q of p.positions)assert(q.t>=p.activeFrom&&q.t+q.seconds<=p.activeTo+.002);
 assert.equal(run(fixture({kick:true})).status,'review','kick-in must not become substitution');
 const ambiguous=fixture({two:true});assert.equal(run(ambiguous).status,'ready','simultaneous swaps with unique existing ownership resolve together');assert.deepEqual(run(ambiguous).events.map(e=>[e.outTrackId,e.inTrackId]),[[100,200],[101,201]]);
