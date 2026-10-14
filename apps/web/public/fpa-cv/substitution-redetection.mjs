@@ -21,7 +21,10 @@ export function planSubstitutionRedetection(snapshot,data,saved,result){
  * The caller retains the original snapshot; this only creates a derived input. */
 export function mergeSubstitutionRedetection(snapshot,data,saved,recovery){
  if(typeof recovery?.id!=='string'||!recovery.id||recovery.id.length>128||recovery?.schema!==REDETECTION_VERSION||recovery.datasetId!==data.datasetId||recovery.snapshotId!==snapshot.id||(recovery.logContext?!sameContext(recovery.logContext,saved.log):recovery.logRevision!==saved.revision)||recovery.video?.name!==data.video.name||Math.abs(recovery.video.duration-data.video.duration)>.2)throw Error('다른 원본 또는 오래된 교체 재탐지 결과입니다.');
- if(JSON.stringify(recovery.roi)!==JSON.stringify(data.detector.roi)||recovery.model!==data.detector.model)throw Error('재탐지 코트 또는 모델 설정이 원본과 다릅니다.');
+ // Tracker metadata stores float32 corners; setup and GPU plans retain float64.
+ // One millionth of a frame is below 0.004 px even for 4K video.
+ const sameCourt=Array.isArray(recovery.roi)&&recovery.roi.length===4&&Array.isArray(data.detector.roi)&&data.detector.roi.length===4&&recovery.roi.every((p,i)=>Array.isArray(p)&&p.length===2&&p.every((v,j)=>Number.isFinite(v)&&Number.isFinite(data.detector.roi[i]?.[j])&&Math.abs(v-data.detector.roi[i][j])<=1e-6));
+ if(!sameCourt||recovery.model!==data.detector.model)throw Error('재탐지 코트 또는 모델 설정이 원본과 다릅니다.');
  const originalIds=new Set(data.frames.flatMap(f=>f.boxes.map(b=>b.id))),frames=new Map(data.frames.map(f=>[f.t,{...f,boxes:[...f.boxes]}])),seen=new Map(),evidence=new Map(),tolerance=.49/data.detector.sampleFps;
  for(const w of recovery.windows){
   if(!Number.isFinite(w.from)||!Number.isFinite(w.to)||w.to<=w.from||w.from<snapshot.heatmap.from-1e-6||w.to>snapshot.heatmap.to+1e-6||w.to-w.from>80.01)throw Error('재탐지 구간 범위를 확인하세요.');
