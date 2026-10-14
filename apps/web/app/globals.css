@@ -5789,7 +5789,22 @@ a:focus-visible {
 .fpa-scene-footer {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
   margin-top: 6px;
+}
+.fpa-scene-apply-btn {
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(22, 242, 154, 0.5);
+  background: rgba(22, 242, 154, 0.14);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.fpa-scene-apply-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .fpa-scene-del-btn {
   padding: 4px 12px;
