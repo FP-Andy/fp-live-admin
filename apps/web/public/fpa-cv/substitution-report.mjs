@@ -7,8 +7,9 @@ import {validateHeatmapAugmentation} from './heatmap-augmentation-schema.mjs';
 import {heatmapDensityScale} from './heatmap-render.mjs';
 import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
 import {reconcileStintObservations} from './substitution-observations.mjs';
+import {continueSubstitutionReport} from './substitution-continuity.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v7';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v10';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);
@@ -158,10 +159,14 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
  const seen=new Set();for(const p of players)for(const q of p.positions){const k=q.t.toFixed(5)+':'+q.trackId;if(seen.has(k))fail('같은 관측이 두 출전 구간에 연결되었습니다. 교체 연결을 확인하세요.');seen.add(k);}
  results.sort((a,b)=>events.findIndex(e=>e.id===a.id)-events.findIndex(e=>e.id===b.id));
  const heatmap={...original,players,substitutionsApplied:results.every(r=>r.status!=='review')};
+ const derived={provenance,status:heatmap.substitutionsApplied?'ready':'review',events:results,heatmap};
+ progress({phase:'교체 선수의 이후 추적 연결',completed:0,total:1});
+ const {changed}=continueSubstitutionReport(snapshot,evidence,saved,derived);
+ for(const p of players)if(changed.has(p.id)&&original.augmentation)p.augmentation=augmentPlayerActivity(p,{from:original.from,to:original.to,width:original.width,height:original.height,targetRatio:p.activeTo-p.activeFrom<30?0:original.augmentation.targetRatio*(p.activeTo-p.activeFrom)/(original.to-original.from)});
  heatmap.scale=heatmapDensityScale(heatmap);validateHeatmapAugmentation(heatmap);
  // Normalize comparable full stints by time. Very short stints use their own scale.
  const eligible=players.filter(p=>p.activeTo-p.activeFrom>=30);
  const rate=heatmapDensityScale({...heatmap,players:eligible.map(p=>({...p,grid:p.grid.map(v=>v/(p.activeTo-p.activeFrom)),...(p.augmentation?{augmentation:{...p.augmentation,estimatedGrid:p.augmentation.estimatedGrid.map(v=>v/(p.activeTo-p.activeFrom))}}:{})}))});
  for(const p of players)p.renderScale=p.activeTo-p.activeFrom<30?heatmapDensityScale({...heatmap,players:[p]}):rate*(p.activeTo-p.activeFrom);
- return {provenance,status:heatmap.substitutionsApplied?'ready':'review',events:results,heatmap};
+ return derived;
 }

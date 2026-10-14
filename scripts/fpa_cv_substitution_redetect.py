@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-detect bounded substitution windows with the existing YOLO26s model.
+"""Re-detect bounded substitution windows with YOLO26s or optional RF-DETR.
 
 Outputs a separate, revision-bound sidecar. Original tracks and reviews are
 never written. --source-offset supports an explicitly timed source clip.
@@ -13,15 +13,16 @@ import os
 from pathlib import Path
 import time
 import uuid
+from fpa_cv_detection_merge import remove_crop_fragments
 
 
-def crop_tiles(roi):
+def crop_tiles(roi, scope='touchline'):
     """Two overlapping high-detail views of the lower touchline, in camera space."""
     if len(roi)!=4 or any(len(p)!=2 or any(not math.isfinite(n) or not 0<=n<=1 for n in p) for p in roi):
         raise ValueError('Four normalized court corners are required')
     bottom=sorted(roi,key=lambda p:p[1])[-2:]
     left=max(0,min(p[0] for p in roi)-.08);right=min(1,max(p[0] for p in roi)+.08)
-    top=max(0,min(p[1] for p in bottom)-.40);end=min(1,max(p[1] for p in bottom)+.16)
+    top=max(0,min(p[1] for p in (roi if scope=='court' else bottom))-(.05 if scope=='court' else .40));end=min(1,max(p[1] for p in bottom)+.16)
     width=right-left
     return [[left,top,left+width*.62,end],[left+width*.38,top,right,end]]
 
@@ -45,12 +46,16 @@ def main():
     parser.add_argument('--s3-key')
     parser.add_argument('--half',action='store_true',help='CUDA half precision; recorded in provenance')
     parser.add_argument('--tile-batch',action='store_true',help='Predict both overlapping crops together')
+    parser.add_argument('--detector',choices=['yolo','rfdetr'],default='yolo')
+    parser.add_argument('--scope',choices=['touchline','court'],default='touchline')
+    parser.add_argument('--stop-file',type=Path,help='Stop after a frame if this file appears')
     args=parser.parse_args()
     if args.output.exists():parser.error('Preserve prior results; choose a new output file')
     if not math.isfinite(args.source_offset) or args.source_offset<0 or not 1<=args.sample_fps<=30:parser.error('Invalid time or sampling')
     plan=json.loads(args.plan.read_text());windows=[w for w in plan['windows'] if args.window_ids is None or w['id'] in args.window_ids]
     if plan.get('schema')!='fpa-substitution-redetection/v1' or not windows:parser.error('No eligible windows')
-    if plan.get('model') and Path(args.model).name!=plan['model']:parser.error('Use the same detector model as the original analysis')
+    if args.detector=='yolo' and plan.get('model') and Path(args.model).name!=plan['model']:parser.error('Use the same YOLO detector as the original analysis')
+    if not Path(args.model).is_file():parser.error('An existing local model checkpoint is required; no automatic model download')
     for w in windows:
         if not 0<w['to']-w['from']<=80.01 or w['from']<args.source_offset:parser.error('Invalid bounded window')
     os.environ.setdefault('YOLO_AUTOINSTALL','false')
@@ -66,13 +71,28 @@ def main():
     cv2.setNumThreads(1);torch.set_num_threads(2)
     device=args.device if args.device!='auto' else '0' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     if args.half and device in ('cpu','mps'):parser.error('--half requires CUDA')
-    model=YOLO(args.model);tiles=crop_tiles(plan['roi']);reader=nullcontext(None)
+    if args.detector=='rfdetr':
+        try:
+            from rfdetr import RFDETRMedium
+            from rfdetr.util.coco_classes import COCO_CLASSES
+            from PIL import Image
+        except ImportError as exc:
+            parser.error(f'RF-DETR is optional; use the isolated experiment environment: {exc}')
+        rf_device='cuda' if device.isdigit() or device.startswith('cuda:') else device
+        if rf_device=='cuda':torch.cuda.set_device(int(device.split(':')[-1]) if device!='cuda' else 0)
+        model=RFDETRMedium(device=rf_device,resolution=1024,pretrain_weights=args.model)
+        model.optimize_for_inference(compile=False,dtype=torch.float16 if args.half else torch.float32)
+        labels=COCO_CLASSES.items() if isinstance(COCO_CLASSES,dict) else enumerate(COCO_CLASSES)
+        person=next(k for k,v in labels if v=='person')
+    else:model=YOLO(args.model)
+    tiles=crop_tiles(plan['roi'],args.scope);reader=nullcontext(None)
     if args.s3_key:
         from fpa_cv_remote_video import S3VideoReader
         from fpa_cv_storage import storage
         reader=S3VideoReader(storage(),args.s3_key)
     output={**plan,'id':uuid.uuid4().hex,'windows':[],'detector':{'model':Path(args.model).name,'modelSha256':hashlib.sha256(Path(args.model).read_bytes()).hexdigest(),'device':device,'imgsz':1280,'confidence':.1,'tiles':tiles,'sampleFps':args.sample_fps,'sourceOffset':args.source_offset,'method':'touchline-overlapping-crops/v1'}}
-    output['detector'].update(half=args.half,tileBatch=args.tile_batch)
+    output['detector'].update(half=args.half,tileBatch=args.tile_batch if args.detector=='yolo' else False,engine=args.detector,scope=args.scope,imgsz=1024 if args.detector=='rfdetr' else 1280,method='bounded-crops-fragment-filter/v2')
+    removed_fragments=0
     start=time.monotonic()
     with reader as remote:
         cap=cv2.VideoCapture(remote.url if remote else args.video)
@@ -86,12 +106,13 @@ def main():
                 tracker=ColorBYTETracker(SimpleNamespace(**YAML.load(check_yaml('bytetrack.yaml'))),observation_fps=fps/stride)
                 result={**w,'frames':[]}
                 for index in range(first,min(last,count)):
+                    if args.stop_file and args.stop_file.exists():raise InterruptedError('Stopped; completed source and existing results are unchanged')
                     ok,frame=cap.read()
                     if not ok:raise ValueError('Decode failed; incomplete result not saved')
                     if (index-first)%stride:continue
                     height,width=frame.shape[:2];rows=[]
                     bounds=[[round(n*(width if i%2==0 else height)) for i,n in enumerate(tile)] for tile in tiles]
-                    if args.tile_batch:
+                    if args.tile_batch and args.detector=='yolo':
                         # Rounding normalized crops can differ by one pixel.
                         # Equal shapes let YOLO use rectangular padding instead
                         # of padding both touchline crops to 1280 x 1280.
@@ -99,10 +120,18 @@ def main():
                         bounds=[[x,y,x+crop_width,v] for x,y,z,v in bounds]
                     crops=[frame[y:v,x:z] for x,y,z,v in bounds]
                     options=dict(classes=[0],imgsz=1280,conf=.1,device=device,half=args.half,verbose=False)
-                    predictions=model.predict(crops,**options) if args.tile_batch else [model.predict(c,**options)[0] for c in crops]
-                    for (x,y,z,v),detection in zip(bounds,predictions):
-                        for box,score in zip(detection.boxes.xyxy.cpu().tolist(),detection.boxes.conf.cpu().tolist()):
-                            rows.append([box[0]+x,box[1]+y,box[2]+x,box[3]+y,score,0])
+                    if args.detector=='rfdetr':
+                        for (x,y,z,v),crop in zip(bounds,crops):
+                            detection=model.predict(Image.fromarray(cv2.cvtColor(crop,cv2.COLOR_BGR2RGB)),threshold=.1)
+                            for box,score,cls in zip(detection.xyxy.tolist(),detection.confidence.tolist(),detection.class_id.tolist()):
+                                if cls==person:rows.append([box[0]+x,box[1]+y,box[2]+x,box[3]+y,score,0])
+                    else:
+                        predictions=model.predict(crops,**options) if args.tile_batch else [model.predict(c,**options)[0] for c in crops]
+                        for (x,y,z,v),detection in zip(bounds,predictions):
+                            for box,score in zip(detection.boxes.xyxy.cpu().tolist(),detection.boxes.conf.cpu().tolist()):
+                                rows.append([box[0]+x,box[1]+y,box[2]+x,box[3]+y,score,0])
+                    teams=[uniform_team(classify_uniform(appearance(frame,[v/(width if i%2==0 else height) for i,v in enumerate(row[:4])]),plan['uniforms'])) for row in rows]
+                    count_before=len(rows);rows=remove_crop_fragments(rows,bounds,teams);removed_fragments+=count_before-len(rows)
                     rows=nms(rows);detections=Boxes(np.asarray(rows,dtype=np.float32).reshape(-1,6),(height,width)).cpu().numpy()
                     colors=[classify_uniform(appearance(frame,b),plan['uniforms']) for b in detections.xyxyn]
                     tracked=tracker.update(detections,teams=[uniform_team(c) for c in colors]);boxes=[]
@@ -115,6 +144,7 @@ def main():
                 output['windows'].append(result)
         finally:cap.release()
     output['elapsedSeconds']=time.monotonic()-start
+    output['detector']['removedCropFragments']=removed_fragments
     args.output.parent.mkdir(parents=True,exist_ok=True);temp=args.output.with_suffix('.tmp');temp.write_text(json.dumps(output,separators=(',',':')));temp.replace(args.output)
     print(json.dumps({'done':True,'windows':len(windows),'elapsed':output['elapsedSeconds']}),flush=True)
 
