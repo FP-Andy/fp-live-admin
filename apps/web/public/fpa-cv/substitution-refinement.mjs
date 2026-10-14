@@ -1,6 +1,6 @@
 import {classifyUniform} from './colors.mjs';
 
-export const REFINEMENT_VERSION='substitution-refinement/v3';
+export const REFINEMENT_VERSION='substitution-refinement/v4';
 export const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 export const lower=(rows,t)=>{let a=0,b=rows.length;while(a<b){const m=(a+b)>>1;if(rows[m].t<t)a=m+1;else b=m;}return a;};
 export const area=b=>Math.max(0,b[2]-b[0])*Math.max(0,b[3]-b[1]);
@@ -127,7 +127,7 @@ export function addOverlapLinks(ev,snapshot,base){
     if(ratio>.18&&ratio<.7&&intersection(ab,bb)/area(bb)>.65&&Math.abs(ab[3]-bb[3])<.4*(ab[3]-ab[1])&&at&&at===bt){contained++;bodyFirst??=q.t;bodyLast=q.t;}
    }
    const shadow=contained>=4&&contained/count>.8&&bodyLast-bodyFirst>=.18&&t-bodyLast<.2;
-   if((!shadow&&(close<4||close/count<.8||last-first<.5||t-last>.3))||opposing/count>.2)continue;
+   if((!shadow&&(close<4||close/count<.8||last-first<.5||t-last>.65))||opposing/count>.2)continue;
    let separate=0;sampled=-Infinity;
    for(let i=lower(a.list,from);i<a.list.length;i++){
     const q=a.list[i];if(q.t-sampled<.4)continue;sampled=q.t;
@@ -135,13 +135,26 @@ export function addOverlapLinks(ev,snapshot,base){
     if(r&&Math.abs(r.t-q.t)<=ev.step*.6&&distance(q.xy,r.xy)>1.5&&++separate>=3)break;
    }
    if(separate>=3)continue;
-   candidates.push({a:a.id,b:b.id,gap:0,error:close?error/close:0,overlapSamples:shadow?contained:close,score:shadow?.3:error/close,at:t,bt:t,method:shadow?'shadow-contained-body':'sustained-overlap'});
+   candidates.push({a:a.id,b:b.id,gap:0,error:close?error/close:0,overlapSamples:shadow?contained:close,score:shadow?.3:error/close,at:shadow?t:last,bt:shadow?t:last,method:shadow?'shadow-contained-body':'sustained-overlap'});
   }
  }
  const incoming=new Map(),outgoing=new Map();
  for(const e of candidates)for(const [map,key]of [[incoming,e.b],[outgoing,e.a]]){const rows=map.get(key)||[];rows.push(e);map.set(key,rows);}
  const best=rows=>{rows?.sort((a,b)=>a.score-b.score);return rows?.length&&(!rows[1]||rows[1].score-rows[0].score>.25&&rows[1].score>2*rows[0].score)?rows[0]:null;};
- for(const e of candidates)if(best(incoming.get(e.b))===e&&best(outgoing.get(e.a))===e&&!base.links.some(q=>q.b===e.b)){
+ // Duplicate detector paths on the same body are not competing identities.
+ // Require repeated overlap and reject any separate-body evidence.
+ const equivalent=(aId,bId,t)=>{
+  if(aId===bId)return true;const a=ev.paths.get(aId),b=ev.paths.get(bId);if(!a||!b)return false;
+  let n=0,close=0,from=null,to=null,far=0;
+  for(const q of a.list.filter(q=>q.t>=t-2.5&&q.t<=t+.05)){
+   const r=nearest(b.list,q.t);if(!r||Math.abs(r.t-q.t)>ev.step*.6||ev.qualityReason?.(q)||ev.qualityReason?.(r))continue;
+   n++;const d=distance(q.xy,r.xy);if(d>1.2)far++;
+   if(d<.65&&iou(q.b.box,r.b.box)>.35){close++;from??=q.t;to=q.t;}
+  }
+  return close>=6&&close/n>=.85&&to-from>=.5&&far===0;
+ };
+ const compatible=e=>best(incoming.get(e.b))===e||(incoming.get(e.b)||[]).every(q=>equivalent(e.a,q.a,Math.min(e.at,q.at)));
+ for(const e of candidates)if(compatible(e)&&best(outgoing.get(e.a))===e&&!base.links.some(q=>q.b===e.b&&!equivalent(e.a,q.a,Math.min(e.at,q.at)))){
   base.next.set(e.a,e);base.links.push(e);
  }
  return {...base,overlapCandidates:candidates.length};
