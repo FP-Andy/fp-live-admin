@@ -39,7 +39,7 @@ for(const frame of chain.data.frames)for(const b of frame.boxes)if(b.id===200&&f
 const joined=run(chain);assert.equal(joined.status,'ready','unique short-gap continuation survives an ID reset');assert(joined.heatmap.players.at(-1).positions.some(q=>q.trackId===300));assert(joined.heatmap.players.at(-1).positions.every(q=>q.source==='automatic'),'derived observations are not labelled human annotations');
 const fork=structuredClone(chain);
 for(const frame of fork.data.frames)for(const b of [...frame.boxes])if(b.id===300)frame.boxes.push({...b,id:301,box:[...b.box]});
-assert.equal(run(fork).status,'review','two equivalent continuations require review');
+const forkResult=run(fork);assert.equal(forkResult.status,'ready','known entry remains linked despite an ambiguous later continuation');assert.equal(forkResult.events[0].trackingStatus,'partial');assert(forkResult.heatmap.players.at(-1).positions.every(q=>q.trackId!==300&&q.trackId!==301),'do not choose either ambiguous later track');assert(forkResult.heatmap.players.at(-1).blockedIntervals.some(b=>b.to===30),'unobserved continuation is blocked from augmentation');
 const batch=run(withoutEntryOwnership(fixture({two:true})));
 assert.equal(batch.status,'ready');assert(batch.events.every(e=>e.pairing==='batch'));assert.deepEqual(batch.events[0].batchOutNumbers,['2','3'],'simultaneous departures are a set, not inferred replacement pairs');
 const conflict=withoutEntryOwnership(fixture());
@@ -66,3 +66,14 @@ const late=fixture();late.saved.log.substitutions[0].time=0.1;for(const frame of
 const bridge=fixture();for(const frame of bridge.data.frames){frame.boxes=[{id:1,box:[.19,.6,.21,.64],confidence:.9},{id:2,box:[.79,.6,.81,.64],confidence:.9},{id:900,box:[.19,.6,.21,.64],confidence:.9,recovery:true}];}
 bridge.data.recoveryAliases=[{trackId:900,originalId:1,from:0,to:8},{trackId:900,originalId:2,from:12,to:20}];const be=substitutionEvidence(bridge.snapshot,bridge.data,bridge.saved.log.substitutions);assert.notEqual(be.pathOf.get(1).id,be.pathOf.get(2).id,'non-overlapping alias edges cannot unite coexisting original players');
 console.log('PASS v6: boundary waiting, stationary/kick-in negatives, explicit hold, colour conflict visibility, delayed exit and transitive alias rejection.');
+
+const recycled=fixture(),other={id:'home-other',group:'home',jersey:'3',grid:Array(3200).fill(0),positions:[]};
+for(const q of recycled.snapshot.heatmap.players[0].positions)if(q.t>=20){other.positions.push({...q});q.trackId=400;q.x=.7;}
+for(const frame of recycled.data.frames)if(frame.t>=20)frame.boxes.push({id:400,box:[.69,.78,.71,.82],confidence:.9,appearance:[{rgb:[255,0,0],weight:1}]});
+recycled.snapshot.heatmap.players.push(other);
+recycled.saved.log.substitutions[0].tracking={snapshotId:recycled.snapshot.id,outPersonId:'home-0',outTrackId:100,inTrackId:200};
+const recycledBefore=JSON.stringify(recycled),reconciled=run(recycled),entrant=reconciled.heatmap.players.find(p=>p.id==='sub-event');
+assert.equal(JSON.stringify(recycled),recycledBefore);assert.equal(reconciled.status,'ready');assert(reconciled.events[0].reconciledOverlapSeconds>9);
+assert(entrant.positions.every(q=>q.trackId===200),'confirmed entry observations override simultaneous recycled-slot positions');
+assert(entrant.observed<=entrant.activeTo-entrant.activeFrom+1e-6,'manual confirmation cannot inflate observation time');
+console.log('PASS v7: confirmed entry takes precedence over a recycled slot without double-counting time or altering the snapshot.');

@@ -29,9 +29,9 @@ function Resolution({event,draft,control,show,initialOpen}:{event:SubstitutionRe
  const [open,setOpen]=useState(initialOpen),[person,setPerson]=useState(event.outPersonId||''),[out,setOut]=useState(choice(event.outTrackId,event.outTime)),[incoming,setIncoming]=useState(choice(event.inTrackId,event.inTime)),[saving,setSaving]=useState(false),[error,setError]=useState('');
  const outgoing=event.outs.find(c=>choice(c.trackId,c.time)===out),resolvedPerson=outgoing?.resolvedPersonId||person;
  const unchanged=event.connectionConfirmed&&resolvedPerson===event.outPersonId&&out===choice(event.outTrackId,event.outTime)&&incoming===choice(event.inTrackId,event.inTime);
- const state=event.held?'보류':event.connectionConfirmed?(event.status==='review'?'연결 확인됨 · 이후 추적 확인 필요':'연결 확인됨'):event.status==='review'?'확인 필요':event.pairing==='batch'?`동시 교체 · 새 #${event.inNumber}`:`#${event.outNumber} → #${event.inNumber}`;
+ const state=event.held?'보류':event.status==='review'?(event.connectionConfirmed?'출입 확인됨 · 좌표 연결 검토':'출입 연결 확인 필요'):event.trackingStatus==='partial'?'출입 연결됨 · 관측 일부':event.connectionConfirmed?'연결 확인됨':event.pairing==='batch'?`동시 교체 · 새 #${event.inNumber}`:`#${event.outNumber} → #${event.inNumber}`;
  return <details className="mr-sub-event" open={open} onToggle={e=>setOpen(e.currentTarget.open)}><summary>{event.team==='home'?draft.homeName:draft.awayName} · {time(event.time)} · {state}</summary>
- {open&&<>{event.pairing==='batch'&&<p>동시 퇴장 {event.batchOutNumbers?.map(n=>'#'+n).join(', ')} · 입장 선수별 출전 구간을 분리합니다.</p>}{event.reason&&<p>{event.reason}</p>}
+ {open&&<>{event.pairing==='batch'&&<p>동시 퇴장 {event.batchOutNumbers?.map(n=>'#'+n).join(', ')} · 입장 선수별 출전 구간을 분리합니다.</p>}{event.reason&&<p>{event.reason}</p>}{event.trackingWarning&&<p>{event.trackingWarning}</p>}
  <div className="mr-sub-candidate-columns"><Candidates title="나간 선수" values={event.outs} value={out} set={setOut} jobId={draft.sourceSnapshot!.jobId} show={show}/><Candidates title="들어온 선수" values={event.ins} value={incoming} set={setIncoming} jobId={draft.sourceSnapshot!.jobId} show={show}/></div>
  {outgoing?.resolvedPersonId?<p role="status">기존 #{outgoing.resolvedNumber}의 기록을 종료하고, 들어온 선수는 새 분석번호로 분리합니다.</p>:<label>퇴장한 분석번호<select aria-label="퇴장한 분석번호" value={person} onChange={e=>setPerson(e.target.value)}><option value="">기존 기록 연결 확인 필요</option>{event.people.map(p=><option key={p.id} value={p.id}>#{p.number}</option>)}</select></label>}
  {event.held&&<p>보류한 교체는 자동으로 연결하지 않습니다. 검토 후 영상 기록의 교체 메모에서 [보류]를 지우면 다시 연결할 수 있습니다.</p>}
@@ -40,9 +40,10 @@ function Resolution({event,draft,control,show,initialOpen}:{event:SubstitutionRe
  </details>;
 }
 export default function SubstitutionReportPanel({draft,control}:{draft:ReportDraft;control:Controller}){
- const [scene,setScene]=useState<Crossing|null>(null),result=draft.substitutionReport;
+ const [scene,setScene]=useState<Crossing|null>(null),result=draft.substitutionReport,linked=result?.events.filter(e=>e.status!=='review').length||0,pending=result?.events.filter(e=>e.status==='review').length||0,partial=result?.events.filter(e=>e.trackingStatus==='partial').length||0;
  return <section className="card card-panel mr-substitutions"><h2>교체 자동 반영</h2><p role="status">{control.state==='working'?control.progress:control.state==='checking'?'교체로그 확인 중…':control.state==='ready'?`최신 교체로그 ${control.saved?.log?.substitutions.length||0}건 반영됨`:control.state==='review'?'나간 사람과 들어온 사람의 장면을 선택하세요. 기존 분석번호는 추적 이력으로 연결합니다.':control.error||'경기와 분석 스냅샷을 연결하세요.'}</p>
  {control.recovery?.status==='ready'&&<p className="mr-sub-recovery">재탐지 {control.recovery.windowCount}개 구간의 후보를 함께 표시합니다. 새 후보는 직접 확인한 뒤 연결됩니다.</p>}
+ {!!result?.events.length&&<p>출입 연결 {linked}건 · 연결 검토 {pending}건 · 관측 일부 {partial}건{partial?' (연결된 건과 중복 집계)':''}</p>}
  {control.error&&<p role="alert">{control.error}</p>}<button disabled={control.state==='working'} onClick={()=>void control.refresh()}>교체로그 다시 확인</button>
  {result?.events.map(e=><Resolution key={[result.provenance.snapshotId,result.provenance.algorithm,result.provenance.logRevision,result.provenance.redetectionId,e.id,e.outPersonId,e.outTrackId,e.inTrackId].join(':')} event={e} draft={draft} control={control} show={setScene} initialOpen={e.id===result.events.find(q=>q.status==='review'&&!q.connectionConfirmed)?.id}/>)}
  {!!result?.events.length&&<p className="field-help">새 번호는 출전 구간을 구분하는 분석번호입니다. 연결을 확인한 뒤에도 이후 추적이 부족하면 별도 검수가 필요합니다.</p>}

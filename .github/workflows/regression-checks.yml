@@ -60,6 +60,8 @@ jobs:
           node scripts/test-futsal-team-report.cjs
           node scripts/test-futsal-report-stories.cjs
           node scripts/test-futsal-substitution-report.mjs
+          node scripts/test-futsal-substitution-observations.mjs
+          node scripts/test-futsal-substitution-redetection.mjs
       - name: Production web build
         run: npm run build --prefix apps/web
       - name: Install browser test media tools
