@@ -45,6 +45,17 @@ export default function SubstitutionReportPanel({draft,control}:{draft:ReportDra
  {control.recovery?.status==='ready'&&<p className="mr-sub-recovery">재탐지 {control.recovery.windowCount}개 구간의 후보를 함께 표시합니다. 새 후보는 직접 확인한 뒤 연결됩니다.</p>}
  {!!result?.events.length&&<p>출입 연결 {linked}건 · 연결 검토 {pending}건 · 관측 일부 {partial}건{partial?' (연결된 건과 중복 집계)':''}</p>}
  {control.error&&<p role="alert">{control.error}</p>}<button disabled={control.state==='working'} onClick={()=>void control.refresh()}>교체로그 다시 확인</button>
+ {!!result?.continuation?.audit.length&&<details className="mr-sub-event"><summary>추적 복구 결과 · {result.continuation.audit.length}명</summary>
+  <p className="field-help">실제 탐지 좌표의 연결 시간입니다. 히트맵 추정 보강은 포함하지 않습니다.</p>
+  {result.recoveryPlan&&<p>기존 검출 연결 검토 {result.recoveryPlan.associationReview.length}명 · 추가 탐지 후보 {result.recoveryPlan.windows.length}구간</p>}
+  {!!result.recoveryPlan?.windows.length&&<button onClick={()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(result.recoveryPlan,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`tracking-recovery-${draft.sourceSnapshot!.id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}}>추가 탐지 구간 내보내기</button>}
+  {result.continuation.audit.map(a=><div key={a.personId}>
+   <strong>{a.team==='home'?draft.homeName:draft.awayName} #{a.number}</strong>
+   <p>{a.before.toFixed(1)}초 → {a.after.toFixed(1)}초 · 후속 연결 {a.links.length}개{(a.removed||0)>0?` · 위치 확인 필요 ${(a.removed||0).toFixed(1)}초 제외`:''}</p>
+   {!!a.manualConflicts&&<p role="status">수동 관측 {a.manualConflicts}건은 변경하지 않았습니다. 유니폼·박스 근거를 확인하세요.</p>}
+   {a.scene&&<button onClick={()=>setScene({...a.scene!,kind:'in',team:a.team==='home'?'home':'away',sourceId:a.personId,ownerCertain:false})}>마지막 연결 장면</button>}
+  </div>)}
+ </details>}
  {result?.events.map(e=><Resolution key={[result.provenance.snapshotId,result.provenance.algorithm,result.provenance.logRevision,result.provenance.redetectionId,e.id,e.outPersonId,e.outTrackId,e.inTrackId].join(':')} event={e} draft={draft} control={control} show={setScene} initialOpen={e.id===result.events.find(q=>q.status==='review'&&!q.connectionConfirmed)?.id}/>)}
  {!!result?.events.length&&<p className="field-help">새 번호는 출전 구간을 구분하는 분석번호입니다. 연결을 확인한 뒤에도 이후 추적이 부족하면 별도 검수가 필요합니다.</p>}
  {scene&&draft.sourceSnapshot&&<div className="mr-sub-lightbox" role="dialog" aria-modal="true" aria-label="교체 후보 장면" onKeyDown={e=>{if(e.key==='Escape')setScene(null);}}><div><header><strong>{label(scene)} · 영상 {time(scene.time)}</strong><button autoFocus onClick={()=>setScene(null)}>닫기</button></header><Scene key={`${scene.trackId}-${scene.time}`} candidate={scene} jobId={draft.sourceSnapshot.jobId}/></div></div>}
