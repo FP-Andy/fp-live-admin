@@ -10,7 +10,7 @@ for(let i=0;i<150;i++){const t=i/5,boxes=[];
 const data={datasetId:'one',video:{name:'one.mp4',duration:30},detector:{sampleFps:5,roi:[[0,0],[1,0],[1,.8],[0,.8]]},frames};
 const snapshot={id:'a'.repeat(32),jobId:'job',matchId:'match',review:{uniforms:{home:[[255,0,0]],away:[[0,0,255]]}},heatmap:{schema:'fpa-heatmaps/v1',datasetId:'one',video:'one.mp4',from:0,to:30,point:'center',width:80,height:40,scale:1,players:[{id:'home-2',group:'home',jersey:'2',positions,grid:Array(3200).fill(0)}]}};
 const saved={revision:1,log:{schema:'fpa-substitution-log/v2',video:{name:'one.mp4',duration:30,from:0,to:30},players:[],initialPlayers:[],substitutions:[{id:'e',time:11,team:'home',note:''}]}};
-const baseline=deriveSubstitutionReport(snapshot,data,saved);assert.equal(baseline.status,'review');
+const baseline=deriveSubstitutionReport(snapshot,data,saved);assert.equal(baseline.status,'ready');assert.equal(baseline.events[0].trackingStatus,'partial');
 const plan=planSubstitutionRedetection(snapshot,data,saved,baseline);assert.equal(plan.windows.length,1);assert.equal(plan.totalSeconds,30);
 const recovery={...plan,id:'d'.repeat(32),windows:[{...plan.windows[0],frames:reFrames}]},before=JSON.stringify({snapshot,data,saved,recovery});
 const merged=mergeSubstitutionRedetection(snapshot,data,saved,recovery);assert.deepEqual(merged.recoveryAliases.map(a=>a.originalId),[200,300]);

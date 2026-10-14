@@ -6,8 +6,9 @@ import {augmentPlayerActivity} from './heatmap-augmentation.mjs';
 import {validateHeatmapAugmentation} from './heatmap-augmentation-schema.mjs';
 import {heatmapDensityScale} from './heatmap-render.mjs';
 import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
+import {reconcileStintObservations} from './substitution-observations.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v6';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v7';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);
@@ -141,13 +142,16 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
  }
  for(const a of raw.values()){if(a.length===1)allocations.get(a[0].s.id).push(a[0].q);else for(const {s}of a)markReview(s,'동일 입장 경로를 두 출전 구간이 요청했습니다. 교체 연결을 확인하세요.');}
  const players=stints.map(s=>{
-  const base=original.players.find(p=>p.id===s.sourceId),positions=allocations.get(s.id).sort((a,b)=>a.t-b.t);
+  const base=original.players.find(p=>p.id===s.sourceId),entry=paths.get(s.entryPathId);
+  const preferredTrack=t=>{const list=entry?.list||[];let lo=0,hi=list.length;while(lo<hi){const mid=(lo+hi)>>1;if(list[mid].t<=t)lo=mid+1;else hi=mid;}const q=list[lo-1];return q&&q.t+q.dt>=t-1e-7?q.b.id:undefined;};
+  const {positions,removedSeconds}=reconcileStintObservations(allocations.get(s.id),{direct:q=>s.manual&&pathOf.get(q.trackId)?.id===s.entryPathId,preferredTrack});
+  if(removedSeconds){const r=resultFor(s);if(r)r.reconciledOverlapSeconds=removedSeconds;}
   const grid=Array(original.width*original.height).fill(0);for(const p of positions)grid[Math.min(original.height-1,Math.floor(p.y*original.height))*original.width+Math.min(original.width-1,Math.floor(p.x*original.width))]+=p.seconds;
   const blockedIntervals=(base?.blockedIntervals||[]).map(b=>({...b,from:Math.max(b.from,s.from),to:Math.min(b.to,s.to)})).filter(b=>b.to>b.from),inactiveIntervals=[...(s.from>original.from?[{from:original.from,to:s.from,reason:'substitution'}]:[]),...(s.to<original.to?[{from:s.to,to:original.to,reason:'substitution'}]:[])];
   const observed=sum(positions.map(p=>p.seconds)),p={id:s.id,group:s.group,jersey:s.jersey,positions,grid,observed,coverage:observed/(original.to-original.from),activeFrom:s.from,activeTo:s.to,blockedIntervals,inactiveIntervals,substitutionStint:s};
   // An unconnected track end is an identity gap, not permission to invent the rest of the stint.
   if(!positions.length){const r=results.find(r=>r.inPersonId===s.id);if(r){r.status='review';r.reason='투입 선수의 유효 좌표가 없습니다. FPA 검수 후 새 스냅샷을 저장하세요.';}}
-  if(!base&&positions.length&&positions.at(-1).t+positions.at(-1).seconds<s.to-.1){p.blockedIntervals.push({from:positions.at(-1).t+positions.at(-1).seconds,to:s.to,reason:'inactive'});const r=results.find(r=>r.inPersonId===s.id);if(r&&r.status!=='review'){r.status='review';r.reason='입장 선수의 이후 트랙 연결이 끊겼습니다. FPA 검수를 반영해 새 스냅샷을 저장하세요.';}}
+  if(!base&&positions.length&&positions.at(-1).t+positions.at(-1).seconds<s.to-.1){p.blockedIntervals.push({from:positions.at(-1).t+positions.at(-1).seconds,to:s.to,reason:'inactive'});const r=resultFor(s);if(r){r.trackingStatus='partial';r.trackingWarning='출입 연결은 확인됐습니다. 이후 추적이 끊긴 구간은 히트맵에서 제외됩니다.';}}
   if(original.augmentation)p.augmentation=augmentPlayerActivity(p,{from:original.from,to:original.to,width:original.width,height:original.height,targetRatio:s.to-s.from<30?0:original.augmentation.targetRatio*(s.to-s.from)/(original.to-original.from)});
   return p;
  });

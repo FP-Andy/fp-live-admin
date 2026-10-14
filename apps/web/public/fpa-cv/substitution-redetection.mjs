@@ -8,7 +8,7 @@ const lower=(rows,t)=>{let a=0,b=rows.length;while(a<b){const m=(a+b)>>1;if(rows
 /** Only unresolved logs are scheduled. Nearby windows share one inference run. */
 export function planSubstitutionRedetection(snapshot,data,saved,result){
  if(result.provenance.snapshotId!==snapshot.id||result.provenance.logRevision!==saved.revision||data.datasetId!==snapshot.heatmap.datasetId)throw Error('재탐지 원본과 교체로그 버전이 다릅니다.');
- const pending=new Set(result.events.filter(e=>e.status==='review').map(e=>e.id)),windows=[];
+ const pending=new Set(result.events.filter(e=>e.status==='review'||e.trackingStatus==='partial').map(e=>e.id)),windows=[];
  for(const e of [...(saved.log?.substitutions||[])].sort((a,b)=>a.time-b.time)){
   if(!pending.has(e.id))continue;
   const from=Math.max(snapshot.heatmap.from,e.time-16),to=Math.min(snapshot.heatmap.to,e.time+24),last=windows.at(-1);

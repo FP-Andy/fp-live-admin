@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {reconcileStintObservations} from '../apps/web/public/fpa-cv/substitution-observations.mjs';
+const p=(t,seconds,trackId,x=.5)=>({t,seconds,trackId,x,y:.5,source:'automatic'}),input=[p(1,1,10),p(1.4,.8,20,.7),p(2.2,.2,20,.7)],before=JSON.stringify(input);
+const r=reconcileStintObservations(input,{direct:q=>q.trackId===20});
+assert.equal(JSON.stringify(input),before);assert(Math.abs(r.positions.reduce((s,p)=>s+p.seconds,0)-1.4)<1e-8);assert(Math.abs(r.removedSeconds-.6)<1e-8);
+assert(r.positions.filter(p=>p.t>=1.4).every(p=>p.trackId===20),'confirmed entry beats recycled slot only during overlap');
+assert(r.positions.every((p,i)=>!i||p.t>=r.positions[i-1].t+r.positions[i-1].seconds-1e-7));
+assert.throws(()=>reconcileStintObservations(input),/겹칩니다/,'unproven identity overlap is not silently discarded');
+const alias=reconcileStintObservations([p(1,1,20),p(1,1,21)],{direct:()=>true,preferredTrack:()=>21});assert.equal(alias.positions.length,1);assert.equal(alias.positions[0].trackId,21);assert.equal(alias.removedSeconds,1);
+const separate=[p(1,.2,10),p(2,.2,20)];assert.deepEqual(reconcileStintObservations(separate).positions,separate,'nonoverlapping observations remain exact');
+console.log('PASS: one observation per instant, direct entry precedence, canonical alias selection, interval clipping, conflict rejection and immutable inputs.');
