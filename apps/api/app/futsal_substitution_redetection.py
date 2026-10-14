@@ -18,6 +18,51 @@ from .fla_substitutions import saved_substitutions
 from .futsal_analysis_snapshots import router
 
 RESOURCE_KIND = 'sub_redetection'
+REVIEWED_KIND = 'sub_reviewed_report'
+
+
+def reviewed_manifest(db, snapshot, saved, recovery):
+    """Only reuse a reviewed derivative against exactly the sources reviewed.
+
+    The immutable analysis snapshot and the operator's substitution log remain
+    unchanged. A new log revision or recovery invalidates the derivative.
+    """
+    rows = db.query(FpaCvResource).filter_by(kind=REVIEWED_KIND, owner_id=snapshot.owner_id).all()
+    rows = [r for r in rows if r.payload.get('snapshotId') == snapshot.id]
+    rows.sort(key=lambda r: r.payload.get('createdAt', ''), reverse=True)
+    for row in rows:
+        p = row.payload
+        if (p.get('logRevision') == saved['revision']
+                and p.get('matchId') == snapshot.payload.get('matchId')
+                and p.get('jobId') == snapshot.payload.get('jobId')
+                and p.get('redetectionId') == (recovery.id if recovery else None)
+                and (not recovery or recovery.payload['logContext'] == log_context(saved['log']))):
+            return row
+    return None
+
+
+@router.get('/{snapshot_id}/reviewed-report')
+def read_reviewed_report(snapshot_id: str, review_id: str,
+                         user: User = Depends(require_session_user), db: Session = Depends(get_db)):
+    snapshot = owned(db, snapshot_id, user, 'analysis_snapshot')
+    saved = saved_substitutions(context_match(db, snapshot))
+    recovery = select_recovery(db, snapshot, saved)
+    row = reviewed_manifest(db, snapshot, saved, recovery)
+    if not row or row.id != review_id:
+        raise HTTPException(409, '검수 결과의 원본이 변경되었습니다. 새로 불러오세요.')
+    try:
+        store = storage()
+        content = store.client.get_object(Bucket=store.bucket, Key=store.key(row.payload['key']))['Body'].read()
+        if hashlib.sha256(content).hexdigest() != row.payload['sha256']:
+            raise ValueError('checksum')
+        result = json.loads(content)
+        provenance = result['provenance']
+        expected = {k: row.payload.get(k) for k in ('snapshotId', 'jobId', 'matchId', 'logRevision', 'redetectionId')}
+        if any(provenance.get(k) != v for k, v in expected.items()) or provenance.get('reviewedReportId') != row.id:
+            raise ValueError('provenance')
+    except Exception as error:
+        raise HTTPException(503, '저장된 검수 결과를 확인하지 못했습니다. 다시 시도하세요.') from error
+    return JSONResponse(result, headers={'Cache-Control': 'private, no-store'})
 
 
 def log_context(log):
@@ -186,7 +231,9 @@ def read_redetection(snapshot_id: str, metadata: bool = False, recovery_id: str 
     context = log_context(saved['log'])
     row=select_recovery(db,snapshot,saved,recovery_id)
     status = 'missing' if not row else 'ready' if row.payload['logContext'] == context else 'stale'
-    result = {'status': status, 'id': row.id if row else None, 'windowCount': row.payload['windowCount'] if row else 0}
+    reviewed = reviewed_manifest(db, snapshot, saved, row)
+    result = {'status': status, 'id': row.id if row else None, 'windowCount': row.payload['windowCount'] if row else 0,
+              'reviewedReportId': reviewed.id if reviewed else None}
     if not metadata and status == 'ready':
         store = storage()
         try:

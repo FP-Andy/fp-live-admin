@@ -24,7 +24,7 @@ export async function preserveAndApplySubstitutions(getLatest:()=>ReportDraft|nu
  const matches=(d:ReportDraft|null):d is ReportDraft=>!!d&&d.id===initial.id&&d.sourceSnapshot?.id===result.provenance.snapshotId&&d.matchId===result.provenance.matchId;
  let current=getLatest(),backedUp=false;
  while(matches(current)){
-  if(current.heatmap&&(current.substitutionReport?.provenance.logRevision!==result.provenance.logRevision||current.substitutionReport?.provenance.snapshotId!==result.provenance.snapshotId||current.substitutionReport?.provenance.algorithm!==result.provenance.algorithm||current.substitutionReport?.provenance.redetectionId!==result.provenance.redetectionId)){
+  if(current.heatmap&&(current.substitutionReport?.provenance.reviewedReportId!==result.provenance.reviewedReportId||current.substitutionReport?.provenance.logRevision!==result.provenance.logRevision||current.substitutionReport?.provenance.snapshotId!==result.provenance.snapshotId||current.substitutionReport?.provenance.algorithm!==result.provenance.algorithm||current.substitutionReport?.provenance.redetectionId!==result.provenance.redetectionId)){
    await save({...current,id:backupId,title:current.title+' · 교체 갱신 전',updatedAt:new Date().toISOString()});
    backedUp=true;
    if(getLatest()!==current){current=getLatest();continue;}
