@@ -24,6 +24,8 @@ jobs:
         run: docker compose -p fpc-check -f infra/app/docker-compose.yml config --quiet
       - name: Synthetic checkout restore drill
         run: python scripts/test_deploy_snapshot.py -v
+      - name: Bounded tracking crop filters
+        run: PYTHONPATH=scripts python -m unittest scripts/test_fpa_cv_substitution_redetect.py -v
       - name: Session policy and full application write routes (workers disabled)
         run: |
           python apps/api/tests/test_auth.py -v
@@ -62,6 +64,9 @@ jobs:
           node scripts/test-futsal-substitution-report.mjs
           node scripts/test-futsal-substitution-observations.mjs
           node scripts/test-futsal-substitution-redetection.mjs
+          node scripts/test-futsal-substitution-continuity.mjs
+          node scripts/test-futsal-substitution-refinement.mjs
+          node scripts/test-futsal-substitution-recovery-plan.mjs
       - name: Production web build
         run: npm run build --prefix apps/web
       - name: Install browser test media tools
