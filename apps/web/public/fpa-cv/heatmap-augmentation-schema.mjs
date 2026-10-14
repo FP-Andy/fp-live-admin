@@ -12,7 +12,7 @@ export function validateHeatmapAugmentation(h) {
     const unavailable=p.positions.map(o=>({from:o.t,to:o.t+o.seconds}));
     for(const block of [...(p.blockedIntervals||[]),...(p.inactiveIntervals||[])]){
       if(!block||!Number.isFinite(block.from)||!Number.isFinite(block.to)||block.to<=block.from)fail();
-      if((p.inactiveIntervals||[]).includes(block)||['outside','substitution','bench','inactive','automaticFiltered'].includes(block.reason))unavailable.push(block);
+      if((p.inactiveIntervals||[]).includes(block)||['outside','substitution','bench','inactive','automaticFiltered','identity-conflict'].includes(block.reason))unavailable.push(block);
     }
     unavailable.sort((a,b)=>a.from-b.from);
     let cursor=h.from,index=0,seconds=0;

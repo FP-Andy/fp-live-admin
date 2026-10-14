@@ -8,8 +8,9 @@ import {heatmapDensityScale} from './heatmap-render.mjs';
 import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
 import {reconcileStintObservations} from './substitution-observations.mjs';
 import {continueSubstitutionReport} from './substitution-continuity.mjs';
+import {guardSubstitutionIdentities} from './substitution-identity-guard.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v12';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v13';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);
@@ -153,7 +154,7 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
   // An unconnected track end is an identity gap, not permission to invent the rest of the stint.
   if(!positions.length){const r=results.find(r=>r.inPersonId===s.id);if(r){r.status='review';r.reason='투입 선수의 유효 좌표가 없습니다. FPA 검수 후 새 스냅샷을 저장하세요.';}}
   if(!base&&positions.length&&positions.at(-1).t+positions.at(-1).seconds<s.to-.1){p.blockedIntervals.push({from:positions.at(-1).t+positions.at(-1).seconds,to:s.to,reason:'inactive'});const r=resultFor(s);if(r){r.trackingStatus='partial';r.trackingWarning='출입 연결은 확인됐습니다. 이후 추적이 끊긴 구간은 히트맵에서 제외됩니다.';}}
-  if(original.augmentation)p.augmentation=augmentPlayerActivity(p,{from:original.from,to:original.to,width:original.width,height:original.height,targetRatio:s.to-s.from<30?0:original.augmentation.targetRatio*(s.to-s.from)/(original.to-original.from)});
+  if(original.augmentation)p.augmentation=augmentPlayerActivity(p,{from:original.from,to:original.to,width:original.width,height:original.height,targetRatio:observed<30?0:original.augmentation.targetRatio*(s.to-s.from)/(original.to-original.from)});
   return p;
  });
  const seen=new Set();for(const p of players)for(const q of p.positions){const k=q.t.toFixed(5)+':'+q.trackId;if(seen.has(k))fail('같은 관측이 두 출전 구간에 연결되었습니다. 교체 연결을 확인하세요.');seen.add(k);}
@@ -161,12 +162,16 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
  const heatmap={...original,players,substitutionsApplied:results.every(r=>r.status!=='review')};
  const derived={provenance,status:heatmap.substitutionsApplied?'ready':'review',events:results,heatmap};
  progress({phase:'교체 선수의 이후 추적 연결',completed:0,total:1});
- const {changed}=continueSubstitutionReport(snapshot,evidence,saved,derived);
- for(const p of players)if(changed.has(p.id)&&original.augmentation)p.augmentation=augmentPlayerActivity(p,{from:original.from,to:original.to,width:original.width,height:original.height,targetRatio:p.activeTo-p.activeFrom<30?0:original.augmentation.targetRatio*(p.activeTo-p.activeFrom)/(original.to-original.from)});
+ // Incorrect inherited observations must not become continuation anchors.
+ // Recheck after recovery too: a longer path is not necessarily one identity.
+ const {changed}=guardSubstitutionIdentities(snapshot,evidence,derived);
+ for(const id of continueSubstitutionReport(snapshot,evidence,saved,derived).changed)changed.add(id);
+ for(const id of guardSubstitutionIdentities(snapshot,evidence,derived).changed)changed.add(id);
+ for(const p of players)if(changed.has(p.id)&&original.augmentation)p.augmentation=augmentPlayerActivity(p,{from:original.from,to:original.to,width:original.width,height:original.height,targetRatio:p.observed<30?0:original.augmentation.targetRatio*(p.activeTo-p.activeFrom)/(original.to-original.from)});
  heatmap.scale=heatmapDensityScale(heatmap);validateHeatmapAugmentation(heatmap);
  // Normalize comparable full stints by time. Very short stints use their own scale.
- const eligible=players.filter(p=>p.activeTo-p.activeFrom>=30);
+ const eligible=players.filter(p=>p.observed>=30);
  const rate=heatmapDensityScale({...heatmap,players:eligible.map(p=>({...p,grid:p.grid.map(v=>v/(p.activeTo-p.activeFrom)),...(p.augmentation?{augmentation:{...p.augmentation,estimatedGrid:p.augmentation.estimatedGrid.map(v=>v/(p.activeTo-p.activeFrom))}}:{})}))});
- for(const p of players)p.renderScale=p.activeTo-p.activeFrom<30?heatmapDensityScale({...heatmap,players:[p]}):rate*(p.activeTo-p.activeFrom);
+ for(const p of players)p.renderScale=p.observed<30?heatmapDensityScale({...heatmap,players:[p]}):rate*(p.activeTo-p.activeFrom);
  return derived;
 }

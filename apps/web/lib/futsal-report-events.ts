@@ -1,6 +1,7 @@
 import {appearanceSource} from './futsal-report-substitutions';
 import {rolePlay} from './futsal-report-positions';
 import {automaticPositions} from './futsal-report-auto-position';
+import {observedSeconds,limitedObservationStory} from './futsal-report-evidence';
 import {sameClub} from './futsal-clubs';
 import {parseFpa,isShot,isDefense,type FpaEvent} from '../components/futsal/fpaGraphics';
 import {attackDirection,eventPoint,eventKind,commentDraft,spatialSummary,blankPlayer,type ReportDraft,type PlayerText,type Side} from './futsal-report';
@@ -66,12 +67,9 @@ export function reportPlayer(d:ReportDraft,id=d.selected){
  const raw={...(d.players[id]||blankPlayer()),appearanceFrom:original?.activeFrom,appearanceTo:original?.activeTo,position:automaticPositions(d)[id]?.position||''},player=d.heatmap?.players.find(p=>p.id===id),map=eventMapData(d,raw),direction=attackDirection(d,raw);
  const generated=commentDraft(d.heatmap,player,raw,map.personal,direction,d.matchStartSeconds??d.fla?.videoStartSeconds??d.heatmap?.from??0);
  generated.eventComment=playStory(d,id,map,generated.eventComment);
- if(original?.activeFrom!==undefined&&original.activeTo!-original.activeFrom<30){
-  raw.position='';const duration=Math.round(original.activeTo!-original.activeFrom);
-  generated.heatComment=`교체 투입 뒤 약 ${duration}초의 출전 구간이 남아 있어요. 히트맵은 이 구간에서 확인된 움직임만 담았어요. 투입 전 시간이나 앞선 선수의 활동은 합치지 않았어요.\n\n짧은 기록이므로 경기 전체의 포지션이나 활동 성향을 평가하기보다, 투입 직후 어떤 위치를 찾았는지 함께 돌아봐 주세요.`;
-  generated.eventComment='이벤트맵은 양 팀의 경기 전체 흐름을 보여줘요. 해당 선수의 출전 시간 밖에서 나온 플레이는 개인 기록으로 연결하지 않았어요. 짧게 남은 출전 장면과 팀의 흐름을 구분해서 살펴봐 주세요.';
-  generated.strengths=['투입 직후 코트 안에서 찾은 위치를 확인할 수 있어요.','짧게 남은 움직임도 다음 플레이를 돌아볼 출발점이 될 수 있어요.','개인 평가는 더 긴 출전 장면과 함께 살펴보면 좋아요.'];
-  generated.improvements=['입장 직후 동료와 어떤 간격을 만들었는지 돌아보세요.','공이 움직이는 방향에 맞춰 다음에 설 자리를 확인해 보세요.','다음 경기의 충분한 출전 기록과 함께 특징을 이어서 살펴봐요.'];
+ const seconds=observedSeconds(player,Math.max(source?.from??0,matchStart),source?.to);
+ if(seconds<30){
+  raw.position='';Object.assign(generated,limitedObservationStory(seconds));
  }
  return {raw,player,source,map,direction,generated,person:{...raw,heatComment:raw.heatComment||generated.heatComment,eventComment:raw.eventComment||generated.eventComment,strengths:raw.strengths.map((v,i)=>v||generated.strengths[i]),improvements:raw.improvements.map((v,i)=>v||generated.improvements[i])}};
 }
