@@ -1,6 +1,6 @@
 import {classifyUniform} from './colors.mjs';
 
-export const REFINEMENT_VERSION='substitution-refinement/v2';
+export const REFINEMENT_VERSION='substitution-refinement/v3';
 export const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 export const lower=(rows,t)=>{let a=0,b=rows.length;while(a<b){const m=(a+b)>>1;if(rows[m].t<t)a=m+1;else b=m;}return a;};
 export const area=b=>Math.max(0,b[2]-b[0])*Math.max(0,b[3]-b[1]);

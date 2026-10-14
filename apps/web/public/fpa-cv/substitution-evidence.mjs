@@ -13,7 +13,10 @@ export function substitutionEvidence(snapshot,data,events){
  const tracks=new Map(),owners=new Map(),people=new Map(original.players.map(p=>[p.id,p]));
  for(const p of original.players)for(const q of p.positions){const a=owners.get(q.trackId)||[];a.push({t:q.t,to:q.t+q.seconds,id:p.id});owners.set(q.trackId,a);}
  for(const list of owners.values())list.sort((a,b)=>a.t-b.t);
- for(const [i,f]of data.frames.entries())for(const b of f.boxes){const dt=Math.max(0,Math.min(step,(data.frames[i+1]?.t??original.to)-f.t));if(!dt)continue;const xy=camera(point(b.box,bottom));if(!xy)continue;const a=tracks.get(b.id)||[];a.push({t:f.t,dt,b,xy,heatXY:project(point(b.box,bottom))});tracks.set(b.id,a);}
+ for(const f of data.frames)for(const b of f.boxes){const dt=Math.max(0,Math.min(b.observationStep||step,(b.observationEnd??original.to)-f.t));if(!dt)continue;const xy=camera(point(b.box,bottom));if(!xy)continue;const a=tracks.get(b.id)||[];a.push({t:f.t,dt,b,xy,heatXY:project(point(b.box,bottom))});tracks.set(b.id,a);}
+ // An unrelated detector's interleaved frame must not halve this track's
+ // observation time or delay the sustained opposite-kit stop.
+ for(const list of tracks.values())for(let i=0;i<list.length-1;i++)list[i].dt=Math.min(list[i].dt,list[i+1].t-list[i].t);
  const votes=(ids,t,from=-6,to=2)=>{const counts=new Map();for(const id of ids){const list=owners.get(id)||[];for(let i=Math.max(0,lower(list,t+from)-1);i<list.length&&list[i].t<=t+to;i++){const q=list[i],duration=Math.min(q.to,t+to)-Math.max(q.t,t+from);if(duration>0)counts.set(q.id,(counts.get(q.id)||0)+duration*Math.exp(-Math.abs(q.t-t)/6));}}return [...counts].sort((a,b)=>b[1]-a[1]);};
  const certain=v=>!!v[0]&&v[0][1]>=Math.min(.12,step)&&(!v[1]||v[0][1]>v[1][1]*3);
  const color=(list,t,window=2)=>{const groups=new Map();let last=-Infinity;for(const o of list){if(Math.abs(o.t-t)>window||o.t-last<.2)continue;last=o.t;const c=classifyUniform(o.b.appearance,snapshot.review?.uniforms||{});if(c.group&&c.strength>=.15)groups.set(c.group,(groups.get(c.group)||0)+c.strength);}const ranked=[...groups].sort((a,b)=>b[1]-a[1]);return ranked[0]&&ranked[0][1]>(ranked[1]?.[1]||0)*1.5?ranked[0][0]:null;};
@@ -69,7 +72,8 @@ export function substitutionEvidence(snapshot,data,events){
  const paths=new Map(),pathOf=new Map();for(const [id,ids]of members){const observations=ids.flatMap(k=>tracks.get(k)).sort((a,b)=>a.t-b.t),list=[];
   // Keep original geometry/colour at shared times. The new pass fills missing
   // observations and joins fragments without replacing established detections.
-  for(const o of observations){const last=list.at(-1);if(last&&Math.abs(last.t-o.t)<step*.45){if(last.b.recovery&&!o.b.recovery||o.b.recovery===last.b.recovery&&o.b.confidence>last.b.confidence)list[list.length-1]=o;}else list.push(o);}
+  for(const o of observations){const last=list.at(-1);if(last&&Math.abs(last.t-o.t)<=step*.5+1e-6){if(last.b.recovery&&!o.b.recovery||o.b.recovery===last.b.recovery&&o.b.confidence>last.b.confidence)list[list.length-1]=o;}else list.push(o);}
+  for(let i=0;i<list.length-1;i++)list[i]={...list[i],dt:Math.min(list[i].dt,list[i+1].t-list[i].t)};
   const path={id,ids,list};paths.set(id,path);for(const k of ids)pathOf.set(k,path);
  }
  const positions=new Map(original.players.map(p=>[p.id,[...p.positions].sort((a,b)=>a.t-b.t)]));

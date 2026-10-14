@@ -56,7 +56,12 @@ export function continueSubstitutionReport(snapshot,ev,saved,result,options={}){
   if(removed){p.positions=kept;p.observed=kept.reduce((n,q)=>n+q.seconds,0);changes.add(p.id);}
   removedQuality.set(p.id,removed);manualConflicts.set(p.id,conflicts);
  }
- for(const p of players)for(const q of p.positions){const a=owners.get(q.trackId)||[];a.push({p,q});owners.set(q.trackId,a);}
+ const spatialOwners=new Map(),bucketWidth=Math.max(.1,ev.step),boxAt=q=>{const path=ev.pathAt(q.trackId,q.t),o=path&&nearest(path.list,q.t);return o&&Math.abs(o.t-q.t)<=ev.step*.6?o.b.box:null;};
+ const indexOwner=(p,q)=>{const v={p,q,box:boxAt(q)};for(let k=Math.floor(q.t/bucketWidth);k<=Math.floor((q.t+q.seconds-1e-8)/bucketWidth);k++){const a=spatialOwners.get(k)||[];a.push(v);spatialOwners.set(k,a);}};
+ for(const p of players)for(const q of p.positions){const a=owners.get(q.trackId)||[];a.push({p,q});owners.set(q.trackId,a);indexOwner(p,q);}
+ const bodyConflicts=(p,q)=>{const box=boxAt(q);if(!box)return [];const candidates=new Set();for(let k=Math.floor(q.t/bucketWidth);k<=Math.floor((q.t+q.seconds-1e-8)/bucketWidth);k++)for(const v of spatialOwners.get(k)||[])candidates.add(v);
+  return [...candidates].filter(v=>v.p.id!==p.id&&v.q.trackId!==q.trackId&&v.q.t<q.t+q.seconds-1e-7&&v.q.t+v.q.seconds>q.t+1e-7&&v.box&&ev.distance([q.x,q.y],[v.q.x,v.q.y])<.4&&iou(box,v.box)>.65);
+ };
  const spans=new Map(players.map(p=>[p.id,p.positions.map(q=>[q.t,q.t+q.seconds])])),additions=new Map(players.map(p=>[p.id,[]])),removals=new Map();
  for(const {p,path:first} of seeds){
   const knownExit=result.events.filter(e=>e.status!=='review'&&e.outPersonId===p.id&&Number.isFinite(e.outTime)).map(e=>e.outTime);
@@ -84,7 +89,7 @@ export function continueSubstitutionReport(snapshot,ev,saved,result,options={}){
   }
   const splitAt=ev.splits.filter(s=>s.reason!=='observation-gap'&&nodes.some(n=>n.originalPathId===s.pathId));
   const end=nodes.at(-1)?.list.at(-1);
-  const row={personId:p.id,number:p.jersey,team:p.group,before:before.get(p.id),added:0,reassigned:0,removed:removedQuality.get(p.id),manualConflicts:manualConflicts.get(p.id),weakSeconds:0,until,links,splitAt,oppositeKitStop:rowStop||!!splitAt.length,stoppedAt:end?.t,...(end?{scene:{time:end.t,trackId:end.b.id,box:[...end.b.box]}}:{})};audit.push(row);
+  const row={personId:p.id,number:p.jersey,team:p.group,before:before.get(p.id),added:0,reassigned:0,removed:removedQuality.get(p.id),manualConflicts:manualConflicts.get(p.id),bodyConflictSeconds:0,weakSeconds:0,until,links,splitAt,oppositeKitStop:rowStop||!!splitAt.length,stoppedAt:end?.t,...(end?{scene:{time:end.t,trackId:end.b.id,box:[...end.b.box]}}:{})};audit.push(row);
   // Keep a raw ID's disconnected reappearance out unless the graph actually
   // reconnects that segment. A saved human observation always wins.
   const reachable=new Set(nodes.map(n=>n.id)),origins=new Set(nodes.map(n=>n.originalPathId));
@@ -108,11 +113,14 @@ export function continueSubstitutionReport(snapshot,ev,saved,result,options={}){
  }
  for(const list of requests.values()){
   if(list.length!==1)continue;const {p,q,row}=list[0];if(spans.get(p.id).some(([a,z])=>a<q.t+q.seconds-1e-7&&z>q.t+1e-7))continue;const conflicts=(owners.get(q.trackId)||[]).filter(v=>v.q.t<q.t+q.seconds-1e-7&&v.q.t+v.q.seconds>q.t+1e-7);
+  // Different detector IDs do not make the same visible body two people.
+  // Preserve existing ownership and leave that interval for review instead.
+  if(bodyConflicts(p,q).length){row.bodyConflictSeconds+=q.seconds;continue;}
   if(conflicts.some(v=>v.p.id!==p.id&&(v.q.source==='manual'||v.q.checkpoint||v.p.group!==p.group||v.p.substitutionStint?.kind==='substitute')))continue;
   // Restore a reset track from a recycled starter slot only after a reciprocal
   // geometric link. Other independently seeded substitutes are never stolen.
   for(const v of conflicts){if(v.p.id===p.id)continue;const cuts=removals.get(v.q)||[];cuts.push([q.t,q.t+q.seconds]);removals.set(v.q,cuts);changes.add(v.p.id);row.reassigned+=Math.max(0,Math.min(v.q.t+v.q.seconds,q.t+q.seconds)-Math.max(v.q.t,q.t));}
-  additions.get(p.id).push(q);spans.get(p.id).push([q.t,q.t+q.seconds]);changes.add(p.id);row.added+=q.seconds;if(q.recoveryReason==='bracketed-detection')row.weakSeconds+=q.seconds;
+  additions.get(p.id).push(q);spans.get(p.id).push([q.t,q.t+q.seconds]);indexOwner(p,q);changes.add(p.id);row.added+=q.seconds;if(q.recoveryReason==='bracketed-detection')row.weakSeconds+=q.seconds;
  }
  for(const p of players){if(!changes.has(p.id))continue;
   const kept=p.positions.flatMap(q=>{let parts=[q];for(const [a,z]of removals.get(q)||[]){parts=parts.flatMap(v=>{const lo=Math.max(a,v.t),hi=Math.min(z,v.t+v.seconds);if(hi<=lo)return[v];return [...(lo>v.t+1e-8?[{...v,seconds:lo-v.t}]:[]),...(hi<v.t+v.seconds-1e-8?[{...v,t:hi,seconds:v.t+v.seconds-hi}]:[])];});}return parts;});
