@@ -45,3 +45,6 @@ console.log('PASS: human confirmation survives revision, uses pinned evidence an
 reviewed.log.substitutions[0].tracking.redetectionId=recovery.id;
 const cumulative={...reviewOnly,id:'f'.repeat(32),ancestorIds:[recovery.id]};
 assert.equal(deriveSubstitutionReport(snapshot,data,reviewed,undefined,cumulative).events[0].connectionConfirmed,true,'cumulative evidence preserves an earlier human pin');
+
+assert.doesNotThrow(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,roi:recovery.roi.map(p=>p.map(v=>Math.fround(v)))}),'float32 metadata and float64 setup describe the same court');
+assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,roi:recovery.roi.map(p=>p.map(v=>v+0.0001))}),/코트/,'real court changes are still rejected');
