@@ -10,7 +10,7 @@ export const AUGMENTATION_DEFAULTS=Object.freeze({targetRatio:.2,courtWidth:40,c
   minObservedSeconds:1,maxSpeed:8,sampleSeconds:.25});
 const total=a=>a.reduce((s,v)=>s+v,0);
 const dist=(a,b,c)=>Math.hypot((a.x-b.x)*c.courtWidth,(a.y-b.y)*c.courtHeight);
-const unavailable=new Set(['outside','substitution','bench','inactive','automaticFiltered']);
+const unavailable=new Set(['outside','substitution','bench','inactive','automaticFiltered','identity-conflict']);
 const epsilon=1e-5;
 
 function config(options){

@@ -50,7 +50,9 @@ export function buildContinuationGraph(ev,snapshot){
 export function continueSubstitutionReport(snapshot,ev,saved,result,options={}){
  const settings={split:true,overlap:true,quality:true,weak:true,...options};
  ev=refineEvidence(ev,snapshot,settings);
- const h=result.heatmap,players=h.players,seeds=players.filter(p=>p.substitutionStint?.kind==='substitute'&&result.events.some(e=>e.inPersonId===p.id&&e.status!=='review')).map(p=>({p,path:ev.pathAt(p.substitutionStint.entryTrackId,p.activeFrom)||ev.pathOf.get(p.substitutionStint.entryTrackId)})).filter(s=>s.path);
+ // A video-reviewed stint is an explicit accepted scope. Automatic recovery
+ // must not resurrect rejected pre-contact fragments or extend that scope.
+ const h=result.heatmap,players=h.players,seeds=players.filter(p=>p.substitutionStint?.kind==='substitute'&&!p.substitutionStint.visualReviewId&&result.events.some(e=>e.inPersonId===p.id&&e.status!=='review')).map(p=>({p,path:ev.pathAt(p.substitutionStint.entryTrackId,p.activeFrom)||ev.pathOf.get(p.substitutionStint.entryTrackId)})).filter(s=>s.path);
  if(!seeds.length)return {result,changed:new Set()};
  const base=buildContinuationGraph(ev,snapshot),graph=settings.overlap?addOverlapLinks(ev,snapshot,base):base,audit=[],requests=new Map(),owners=new Map();
  const before=new Map(players.map(p=>[p.id,p.observed])),removedQuality=new Map(),manualConflicts=new Map(),changes=new Set();
