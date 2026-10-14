@@ -55,5 +55,5 @@ export function mergeSubstitutionRedetection(snapshot,data,saved,recovery){
   if(rivals.some(r=>r.length>=unique.length*.35))continue;
   aliases.push({trackId:first.newId,originalId:first.oldId,samples:unique.length,from:first.t,to:unique.at(-1).t});
  }
- return {...data,frames:[...frames.values()].sort((a,b)=>a.t-b.t),recoveryAliases:aliases,substitutionRecovery:{id:recovery.id,schema:recovery.schema,snapshotId:recovery.snapshotId,logRevision:recovery.logRevision,windows:recovery.windows.map(({frames,...w})=>w),aliases}};
+ return {...data,frames:[...frames.values()].sort((a,b)=>a.t-b.t),recoveryAliases:aliases,substitutionRecovery:{id:recovery.id,ancestorIds:recovery.ancestorIds||[],schema:recovery.schema,snapshotId:recovery.snapshotId,logRevision:recovery.logRevision,windows:recovery.windows.map(({frames,...w})=>w),aliases}};
 }

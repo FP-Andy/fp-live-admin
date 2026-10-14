@@ -25,7 +25,7 @@ jobs:
       - name: Synthetic checkout restore drill
         run: python scripts/test_deploy_snapshot.py -v
       - name: Bounded tracking crop filters
-        run: PYTHONPATH=scripts python -m unittest scripts/test_fpa_cv_substitution_redetect.py -v
+        run: PYTHONPATH=scripts python -m unittest scripts/test_fpa_cv_substitution_redetect.py scripts/test_fpa_cv_recovery_jobs.py scripts/test_fpa_cv_jobs.py -v
       - name: Session policy and full application write routes (workers disabled)
         run: |
           python apps/api/tests/test_auth.py -v
@@ -33,6 +33,7 @@ jobs:
           python apps/api/tests/test_outbox_recovery.py -v
           PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_fla_video.py -v
           PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_analysis_snapshots.py -v
+          PYTHONPATH=apps/api:apps/api/tests python -m unittest test_recovery_jobs -v
       - name: Individual manual clips and scene downloads
         run: |
           python apps/api/tests/test_manual_clip_results.py -v

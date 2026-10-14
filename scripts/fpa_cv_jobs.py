@@ -65,7 +65,9 @@ def options_for(value):
     return {'start': start, 'duration': duration, 'device': device, 'roi': roi}
 
 
-class TrackingJobs:
+from fpa_cv_recovery_jobs import RecoveryJobs
+
+class TrackingJobs(RecoveryJobs):
     def __init__(self, root, python=None, *, probe=True, start_worker=True, storage=None):
         self.storage = storage
         if self.storage is None and os.getenv('FPA_CV_S3_BUCKET'):
@@ -335,7 +337,9 @@ class TrackingJobs:
         value = deepcopy(job)
         if job['status'] == 'completed':
             base = '/api/tracking/jobs/' + job['id']
-            if job.get('kind')=='preparation':value['result']={'detections':base+'/detections.json','frame':base+'/frame.png'}
+            if job.get('kind')=='recovery':
+                value['options']={'device':'gpu'};value['result']={'recovery':base+'/recovery.json'}
+            elif job.get('kind')=='preparation':value['result']={'detections':base+'/detections.json','frame':base+'/frame.png'}
             else:
                 value['result'] = {'tracks': base+'/tracks.json', 'preview': base+'/preview.mp4', 'original': base+'/source'}
                 if job['options'].get('setup'):value['result']['initialReview']=base+'/initial-review.json'
@@ -344,7 +348,7 @@ class TrackingJobs:
     def listing(self, deleted=False):
         with self.lock:
             return [self.public(job) for job in sorted(self.jobs.values(), key=lambda job: job.get('deletedAt',job['createdAt']), reverse=True)
-                    if job.get('kind')!='preparation' and bool(job.get('deletedAt'))==deleted]
+                    if job.get('kind') not in {'preparation','recovery'} and bool(job.get('deletedAt'))==deleted]
 
     def legacy_state(self, job, deleted=None):
         """Remove only the list reference to an externally supplied demo run."""
@@ -465,6 +469,7 @@ class TrackingJobs:
         if job['status'] not in {'failed', 'cancelled', 'interrupted'}:
             raise JobError('중단되거나 실패한 작업만 재시도할 수 있습니다.', 409)
         if job.get('kind')=='preparation':return self.create_preparation(job['uploadId'],{'time':job['options']['start'],'device':job['options']['device']})
+        if job.get('kind')=='recovery':raise JobError('리포트 화면에서 최신 구간으로 보강을 다시 요청하세요.',409)
         return self.create(job['uploadId'], job['options'])
 
     def asset(self, job_id, name):
@@ -474,7 +479,7 @@ class TrackingJobs:
         if name == 'source':
             _, path = self._upload(job['uploadId'])
             return path, 'video/quicktime' if path.suffix.lower()=='.mov' else 'video/mp4' if path.suffix.lower() in {'.mp4','.m4v'} else 'application/octet-stream'
-        allowed={'detections.json','frame.png'} if job.get('kind')=='preparation' else {'tracks.json','preview.mp4','initial-review.json'}
+        allowed={'recovery.json'} if job.get('kind')=='recovery' else {'detections.json','frame.png'} if job.get('kind')=='preparation' else {'tracks.json','preview.mp4','initial-review.json'}
         if name not in allowed:
             raise JobError('파일을 찾지 못했습니다.', 404)
         return self.root/'jobs'/job_id/'output'/name, 'application/json' if name.endswith('.json') else 'image/png' if name.endswith('.png') else 'video/mp4'
@@ -515,6 +520,7 @@ class TrackingJobs:
                     self.processes.pop(job_id, None)
 
     def _execute(self, job):
+        if job.get('kind')=='recovery':return self._execute_recovery(job)
         info, source = self._upload(job['uploadId'])
         folder = self.root/'jobs'/job['id']
         settings = job['options']

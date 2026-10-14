@@ -83,13 +83,20 @@ def validate_recovery(value, snapshot, saved):
     return sorted(track_ids)
 
 
-def save_recovery(db, snapshot, user, value):
+def save_recovery(db, snapshot, user, value, *, trusted_parent=None, commit=True):
     match = context_match(db, snapshot)
     saved = saved_substitutions(match)
     track_ids = validate_recovery(value, snapshot, saved)
+    if trusted_parent:
+        if trusted_parent.payload.get('snapshotId') != snapshot.id or trusted_parent.owner_id != snapshot.owner_id:
+            raise HTTPException(409,'보강 기준이 다른 분석입니다.')
+        value={**value,'parentRecoveryId':trusted_parent.id,'ancestorIds':list(dict.fromkeys([trusted_parent.id,*trusted_parent.payload.get('ancestorIds',[])]))}
+    elif value.get('parentRecoveryId') or value.get('ancestorIds'):
+        raise HTTPException(400,'누적 보강 계보는 서버 작업에서만 생성됩니다.')
     # The uploaded evidence is immutable and remains a manual review source.
     value = {**value, 'reviewOnly': True}
     content = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    if len(content)>32*1024**2:raise HTTPException(413,'누적 보강 결과는 32MB 이하로 저장하세요.')
     digest = hashlib.sha256(content).hexdigest()
     previous = db.get(FpaCvResource, value['id'])
     if previous:
@@ -112,9 +119,11 @@ def save_recovery(db, snapshot, user, value):
     manifest = {'id': value['id'], 'snapshotId': snapshot.id, 'matchId': str(match.id), 'key': key,
                 'sha256': digest, 'logContext': value['logContext'], 'logRevision': saved['revision'],
                 'trackIds': track_ids, 'createdAt': datetime.now(timezone.utc).isoformat(), 'createdBy': user.name,
-                'windowCount': len(value['windows']), 'reviewOnly': True}
+                'windowCount': len(value['windows']), 'reviewOnly': True,
+                'parentRecoveryId':value.get('parentRecoveryId'),'ancestorIds':value.get('ancestorIds',[])}
     db.add(FpaCvResource(id=value['id'], kind=RESOURCE_KIND, owner_id=snapshot.owner_id, payload=manifest))
-    db.commit()
+    if commit:db.commit()
+    else:db.flush()
     return manifest
 
 
@@ -152,24 +161,30 @@ async def register_redetection(snapshot_id: str, request: Request, user: User = 
         raise HTTPException(400, '재탐지 결과의 구간·객체 형식을 확인하세요.')
 
 
+def select_recovery(db, snapshot, saved, recovery_id=None):
+    context=log_context(saved['log'])
+    pins={e['tracking']['redetectionId'] for e in (saved['log'] or {}).get('substitutions',[]) if e.get('tracking',{}).get('snapshotId')==snapshot.id and e.get('tracking',{}).get('redetectionId')}
+    rows=[r for r in db.query(FpaCvResource).filter_by(kind=RESOURCE_KIND,owner_id=snapshot.owner_id).all() if r.payload.get('snapshotId')==snapshot.id]
+    rows.sort(key=lambda r:r.payload['createdAt'],reverse=True)
+    compatible=lambda r:pins<={r.id,*r.payload.get('ancestorIds',[])}
+    if recovery_id:
+        row=next((r for r in rows if r.id==recovery_id and compatible(r)),None)
+        if not row:raise HTTPException(409,'재탐지 검수 버전이 변경되었습니다. 새로 불러오세요.')
+        return row
+    row=next((r for r in rows if compatible(r) and r.payload['logContext']==context),None)
+    if row:return row
+    row=next((r for r in rows if compatible(r)),None)
+    if pins and not row:raise HTTPException(409,'서로 다른 재탐지 버전의 연결이 있습니다. 동일 버전으로 검수하세요.')
+    return row
+
+
 @router.get('/{snapshot_id}/redetection')
 def read_redetection(snapshot_id: str, metadata: bool = False, recovery_id: str | None = None,
                      user: User = Depends(require_session_user), db: Session = Depends(get_db)):
     snapshot = owned(db, snapshot_id, user, 'analysis_snapshot')
     saved = saved_substitutions(context_match(db, snapshot))
     context = log_context(saved['log'])
-    pins = {e['tracking']['redetectionId'] for e in (saved['log'] or {}).get('substitutions', [])
-            if e.get('tracking', {}).get('snapshotId') == snapshot_id and e.get('tracking', {}).get('redetectionId')}
-    if len(pins) > 1:
-        raise HTTPException(409, '서로 다른 재탐지 버전의 연결이 있습니다. 동일 버전으로 검수하세요.')
-    pinned = next(iter(pins), None)
-    rows = [r for r in db.query(FpaCvResource).filter_by(kind=RESOURCE_KIND, owner_id=snapshot.owner_id).all()
-            if r.payload.get('snapshotId') == snapshot_id]
-    rows.sort(key=lambda r: r.payload['createdAt'], reverse=True)
-    chosen_id = pinned or recovery_id
-    row = next((r for r in rows if r.id == chosen_id), None) if chosen_id else next((r for r in rows if r.payload['logContext'] == context), rows[0] if rows else None)
-    if recovery_id and (not row or row.id != recovery_id):
-        raise HTTPException(409, '재탐지 검수 버전이 변경되었습니다. 새로 불러오세요.')
+    row=select_recovery(db,snapshot,saved,recovery_id)
     status = 'missing' if not row else 'ready' if row.payload['logContext'] == context else 'stale'
     result = {'status': status, 'id': row.id if row else None, 'windowCount': row.payload['windowCount'] if row else 0}
     if not metadata and status == 'ready':

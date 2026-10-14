@@ -86,7 +86,7 @@ export function deriveSubstitutionReport(snapshot,data,saved,progress=()=>{},rec
   for(const e of batch){const decision=e.tracking;
    if(e.note?.trim().startsWith('[보류]')){results.push({id:e.id,team,time:e.time,status:'review',held:true,reason:e.note.trim(),outs,ins,people:options});continue;}
    if(decision){const o=outs.find(c=>c.trackId===decision.outTrackId&&(decision.outTime===undefined||Math.abs(c.time-decision.outTime)<.001)),n=ins.find(c=>c.trackId===decision.inTrackId&&(decision.inTime===undefined||Math.abs(c.time-decision.inTime)<.001)),s=stints.find(s=>s.id===decision.outPersonId&&s.group===team&&s.from<(o?.time??0)&&s.to>=(o?.time??Infinity));
-    if(decision.snapshotId===snapshot.id&&(!decision.redetectionId||decision.redetectionId===recovery?.id)&&o&&n&&s&&o.pathId!==n.pathId&&!selected.some(p=>p.s===s||p.n.pathId===n.pathId||p.o.pathId===o.pathId))selected.push({e,o,n,s,manual:true});
+    if(decision.snapshotId===snapshot.id&&(!decision.redetectionId||decision.redetectionId===recovery?.id||recovery?.ancestorIds?.includes(decision.redetectionId))&&o&&n&&s&&o.pathId!==n.pathId&&!selected.some(p=>p.s===s||p.n.pathId===n.pathId||p.o.pathId===o.pathId))selected.push({e,o,n,s,manual:true});
     else results.push({id:e.id,team,time:e.time,status:'review',reason:'저장된 연결의 출입 근거가 변경되었습니다.',outs,ins,people:options});
    }else pending.push(e);
   }

@@ -41,3 +41,7 @@ assert.equal(confirmed.events[0].connectionConfirmed,true);assert.equal(confirme
 reviewed.log.substitutions[0].tracking.redetectionId='e'.repeat(32);
 assert.equal(deriveSubstitutionReport(snapshot,data,reviewed,undefined,reviewOnly).events[0].status,'review');
 console.log('PASS: human confirmation survives revision, uses pinned evidence and rejects a different recovery.');
+
+reviewed.log.substitutions[0].tracking.redetectionId=recovery.id;
+const cumulative={...reviewOnly,id:'f'.repeat(32),ancestorIds:[recovery.id]};
+assert.equal(deriveSubstitutionReport(snapshot,data,reviewed,undefined,cumulative).events[0].connectionConfirmed,true,'cumulative evidence preserves an earlier human pin');
