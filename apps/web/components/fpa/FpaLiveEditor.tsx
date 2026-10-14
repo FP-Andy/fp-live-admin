@@ -2534,6 +2534,34 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
     closeSceneEditor();
   };
 
+  // 선택 액션 수정 적용: 편집 행의 코드(StatInput)를 입력창 값으로 바꿔 그 행만 제자리 재채점한다.
+  // 다른 행은 코드·좌표가 그대로라 동일하게 재채점된다. 화살표는 rowIndex 로 매칭돼(rescoreSceneRows)
+  // 편집 행의 기존 좌표를 그대로 재사용하므로, 좌표를 다시 찍지 않고 코드만 고쳐 재채점할 수 있다.
+  const applyEditRowCode = async () => {
+    if (editSelectedRowIndex == null || !editStatInput.trim()) return;
+    const targetIndex = editSelectedRowIndex;
+    const nextInput = editStatInput.trim();
+    const updatedRows = editRows.map((row, index) =>
+      index === targetIndex ? { ...row, StatInput: nextInput } : row,
+    );
+    setBusy(true);
+    setStatus('선택 액션 재채점 중…');
+    const { rows: scoredRows, logs: scoredLogs } = await rescoreSceneRows(updatedRows, editLogs, {
+      before: editBeforeDots,
+      after: editAfterDots,
+      arrows: editPassArrows,
+      actorTeam: editTeam,
+      half: editHalf,
+      direction: editDirection,
+      timeline: editTimeline,
+      primary: editPrimary,
+    });
+    setEditRows(scoredRows);
+    setEditLogs(scoredLogs);
+    setBusy(false);
+    setStatus(`선택 액션(${targetIndex + 1}) 수정 적용 · 재채점 완료`);
+  };
+
   const handleEditPitchClick = (side: PitchSide, event: React.MouseEvent<HTMLDivElement>) => {
     if(workbench)setCvRowId(null);
     // 피치 빈 곳을 누르면 골라 둔 화살표가 풀린다 — ✕ 가 계속 떠 있으면
@@ -4942,7 +4970,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
                     <div
                       className="fpa-scene-action-row"
                       key={`edit-${index}-${row.Player}-${row.Action}`}
-                      onClick={() => {setEditSelectedRowIndex(index);if(workbench)cvSelectRow(row,editLogs[index]);}}
+                      onClick={() => {setEditSelectedRowIndex(index);setEditStatInput(row.StatInput ?? '');if(workbench)cvSelectRow(row,editLogs[index]);}}
                       role="button"
                       tabIndex={0}
                       style={{ outline: editSelectedRowIndex === index ? '1px solid var(--accent)' : 'none' }}
@@ -4966,6 +4994,13 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
               )}
             </div>
             <div className="fpa-scene-footer">
+              <button
+                className="fpa-scene-apply-btn"
+                disabled={editSelectedRowIndex == null || !editStatInput.trim() || busy}
+                onClick={() => { void applyEditRowCode(); }}
+                title="선택한 행의 코드를 입력창 값으로 바꿔 그 행만 재채점"
+                type="button"
+              >선택 액션 수정 적용</button>
               <button
                 className="fpa-scene-del-btn"
                 disabled={editSelectedRowIndex == null}
