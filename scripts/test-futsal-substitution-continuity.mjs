@@ -17,3 +17,12 @@ const switched=path(2,2.4,12);for(const q of switched.list)if(q.t>=6)q.b.appeara
 const original=make('sub-x','7',1,0,2.2,a.list),r2={heatmap:{from:0,to:12.2,width:80,height:40,players:[original]},events:[{id:'x',inPersonId:'sub-x',status:'automatic'}]};
 continueSubstitutionReport(snapshot,evidence([a,switched]),{log:{substitutions:[]}},r2);assert(r2.heatmap.players[0].positions.every(q=>q.t<6),'sustained opposite kit terminates a tracker ID before later joins');assert(r2.continuation.audit[0].oppositeKitStop);
 console.log('PASS: stable raw ID cannot silently switch to an opponent.');
+
+const sameBodyA=path(21,0,4),sameBodyB=path(22,0,4),entrant=make('sub-new','7',21,0,4.2,[]),starter=make('starter','2',22,0,4.2,sameBodyB.list);
+delete starter.substitutionStint;starter.group='away';
+const duplicateReport={heatmap:{from:0,to:4.2,width:80,height:40,players:[entrant,starter]},events:[{id:'entry',inPersonId:entrant.id,status:'automatic'}]};
+continueSubstitutionReport(snapshot,evidence([sameBodyA,sameBodyB]),{log:{substitutions:[]}},duplicateReport);
+assert.equal(entrant.observed,0,'a second detector ID cannot claim an already owned body');
+assert(duplicateReport.continuation.audit[0].bodyConflictSeconds>4,'duplicate ownership is auditable');
+assert.equal(starter.positions.length,sameBodyB.list.length,'existing ownership is preserved');
+console.log('PASS: cross-detector same-body observations cannot belong to two people.');

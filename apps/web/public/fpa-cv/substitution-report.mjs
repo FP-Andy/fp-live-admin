@@ -9,7 +9,7 @@ import {validateSubstitutionLog} from '../fla-video/substitution-log.mjs';
 import {reconcileStintObservations} from './substitution-observations.mjs';
 import {continueSubstitutionReport} from './substitution-continuity.mjs';
 
-export const SUBSTITUTION_REPORT_VERSION='substitution-report/v10';
+export const SUBSTITUTION_REPORT_VERSION='substitution-report/v11';
 const fail=message=>{throw Error(message);};
 const side=group=>group?.startsWith('home')?'home':group?.startsWith('away')?'away':null;
 const sum=values=>values.reduce((a,b)=>a+b,0);

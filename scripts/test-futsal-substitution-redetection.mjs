@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {deriveSubstitutionReport} from '../apps/web/public/fpa-cv/substitution-report.mjs';
 import {planSubstitutionRedetection,mergeSubstitutionRedetection} from '../apps/web/public/fpa-cv/substitution-redetection.mjs';
+import {substitutionEvidence} from '../apps/web/public/fpa-cv/substitution-evidence.mjs';
+import {refineEvidence} from '../apps/web/public/fpa-cv/substitution-refinement.mjs';
 const box=(id,y,x=.4)=>({id,box:[x-.02,y*.8-.02,x+.02,Math.min(1,y*.8+.02)],confidence:.9,appearance:[{rgb:[255,0,0],weight:1}]}),frames=[],positions=[],reFrames=[];
 for(let i=0;i<150;i++){const t=i/5,boxes=[];
  if(t<11){const y=t<9?.6:.6+(t-9)*.35;boxes.push(box(100,y));if(y<1)positions.push({t,x:.4,y,seconds:.2,trackId:100,source:'manual'});}
@@ -48,3 +50,16 @@ assert.equal(deriveSubstitutionReport(snapshot,data,reviewed,undefined,cumulativ
 
 assert.doesNotThrow(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,roi:recovery.roi.map(p=>p.map(v=>Math.fround(v)))}),'float32 metadata and float64 setup describe the same court');
 assert.throws(()=>mergeSubstitutionRedetection(snapshot,data,saved,{...recovery,roi:recovery.roi.map(p=>p.map(v=>v+0.0001))}),/코트/,'real court changes are still rejected');
+
+const shifted=structuredClone(recovery);for(const w of shifted.windows)for(const f of w.frames)f.t+=.1;
+const phase=mergeSubstitutionRedetection(snapshot,data,saved,shifted);
+assert(phase.recoveryAliases.some(a=>a.originalId===200),'half-sample phase offset still supplies sustained body matches');
+assert(phase.frames.some(f=>Math.abs(f.t-11.1)<1e-8),'measured RF timestamps are retained');
+const originalEvidence=substitutionEvidence(snapshot,data,saved.log.substitutions),phaseEvidence=substitutionEvidence(snapshot,phase,saved.log.substitutions);
+const seconds=(ev,id)=>ev.tracks.get(id).reduce((n,o)=>n+o.dt,0);
+assert(Math.abs(seconds(originalEvidence,200)-seconds(phaseEvidence,200))<1e-8,'inserting RF frames cannot halve original-track time');
+const switching=structuredClone(data);switching.frames=Array.from({length:80},(_,i)=>({t:i*.2,boxes:[{...box(900,.5),appearance:[{rgb:i<30?[255,0,0]:[0,0,255],weight:1}]}]}));
+const interleaved={...switching,frames:[...switching.frames,...switching.frames.map(f=>({t:f.t+.1,boxes:[box(901,.2,.9)]}))].sort((a,b)=>a.t-b.t)};
+const switches=d=>refineEvidence(substitutionEvidence(snapshot,d,[]),snapshot).splits.filter(s=>s.pathId===900);
+assert.deepEqual(switches(interleaved),switches(switching),'unrelated observations cannot delay opposite-kit cutoff');
+console.log('PASS: half-frame alignment, source timestamps and cadence-invariant identity cutoff.');
