@@ -104,7 +104,7 @@ def main():
         processed=0;total=sum(max(1,math.ceil((w['to']-w['from'])*min(args.sample_fps,fps))) for w in windows)
         try:
             for w in windows:
-                first=round((w['from']-args.source_offset)*fps);last=math.ceil((w['to']-args.source_offset)*fps-1e-7)
+                first=math.ceil((w['from']-args.source_offset)*fps-1e-7);last=math.ceil((w['to']-args.source_offset)*fps-1e-7)
                 if first<0 or last>count+1:raise ValueError('Source clip does not cover the requested window')
                 stride=max(1,round(fps/args.sample_fps));cap.set(cv2.CAP_PROP_POS_FRAMES,first)
                 tracker=ColorBYTETracker(SimpleNamespace(**YAML.load(check_yaml('bytetrack.yaml'))),observation_fps=fps/stride)
