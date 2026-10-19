@@ -44,6 +44,10 @@ const GK_RING_INSET = 0.10;
 const GK_RING_COLOR = 'rgba(0, 0, 0, 0.26)';
 const PASS_SUCCESS = '#04FF04';
 const PASS_FAIL = '#FF0C04';
+// 슛블락 임팩트 — 공이 막아낸 지점(block)에 닿는 순간 세우는 방사형 버스트.
+// 공이 경로 끝(phase=1)에 도착하는 흐름이라, 그 직전부터 솟아 '여기서 막혔다'를 보여준다.
+const BLOCK_COLOR = '#FFD23F';
+const BLOCK_RADIUS = 11; // @320 기준 버스트 반경(px)
 // 자막(골 장면) — 앱 xfp_scene_view 와 같은 톤. 핸드오프 §6 컬러 레퍼런스의
 // 네이비/오렌지다. 골대 패널이 반쪽을 덮으므로 반대쪽 위로 비켜 놓는다.
 const CAPTION_BG = 'rgba(33, 33, 63, 0.8)';   // #21213F cc
@@ -102,6 +106,9 @@ export type SceneData = {
   // exit — 클리어 전용. path 끝에 도착한 **뒤에** 공만 여기로 굴러 나간다.
   ball?: { path?: { x: number; y: number }[]; exit?: { x: number; y: number } };
   shot?: SceneShot;
+  // block — 슛블락(qw) 전용. 공이 ball.path 끝(=막아낸 지점)에 닿으면 그 자리에
+  // 임팩트 마커를 세워 '막았다' 를 보여준다. shot 과 배타적(블록은 골대 패널이 없다).
+  block?: { x: number; y: number };
   caption?: string;
 };
 
@@ -344,6 +351,32 @@ export default function SceneMotionView({ data, width, animate = true, frameTime
             </div>
           );
         })}
+
+      {/* 5-pre) 슛블락 임팩트 — 막아낸 지점(block). 공이 경로 끝에 닿는 흐름에 맞춰
+          phase 끝에서 솟아오른다. 공보다 아래 레이어라 공이 버스트 중앙에 놓인다. */}
+      {data.block ? (() => {
+        const bc = toLocal(data.block.x, data.block.y, width, height);
+        const pop = Math.min(1, Math.max(0, (phase - 0.8) / 0.2));
+        if (pop <= 0) return null;
+        const r = BLOCK_RADIUS * k * pop;
+        const spokes = Array.from({ length: 8 }, (_, i) => {
+          const ang = (i / 8) * Math.PI * 2;
+          return (
+            <line
+              key={`bs${i}`}
+              x1={bc.px + Math.cos(ang) * r * 0.55} y1={bc.py + Math.sin(ang) * r * 0.55}
+              x2={bc.px + Math.cos(ang) * r * 1.25} y2={bc.py + Math.sin(ang) * r * 1.25}
+              stroke={BLOCK_COLOR} strokeWidth={2 * k} strokeLinecap="round"
+            />
+          );
+        });
+        return (
+          <svg width={width} height={height} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+            <circle cx={bc.px} cy={bc.py} r={r} fill="none" stroke={BLOCK_COLOR} strokeWidth={2.5 * k} opacity={0.95} />
+            {spokes}
+          </svg>
+        );
+      })() : null}
 
       {/* 5) 볼 */}
       {ball ? (
