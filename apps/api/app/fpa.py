@@ -174,6 +174,13 @@ DUEL_CODES = {"bb", "b"}
 SHOT_BLOCK_CODES = {"qw"}
 BLOCK_CREDIT = 1.0
 
+# db=막힌 슛(우리 슈터의 슛이 막힘, 태그 Blocked/Fail) — 골대 입력 대신 **2점 경로**로 찍는다
+# (start=슛 지점, end=막힌·끊긴 지점). xG 는 일반 슛과 똑같이 **start(슈터 위치)** 로만
+# 계산하고(골문 좌표 안 받음), end 는 씬모션 cut-point(공이 막혀 멈추는 자리) 전용이라
+# EPV/PC(전진·지배 델타)에는 넣지 않는다 — 넣으면 슛이 슈터→막힌지점 '이동' 으로 오인된다.
+# 슛블락(qw)과 달리 슈터가 **우리 편**이라 좌표를 뒤집지 않는다(일반 슛 분기 그대로 탄다).
+SHOT_ARROW_CODES = {"db"}
+
 # 세이브(sv) — 골키퍼가 막은 슛. 블록과 같은 모양의 화살표를 쓴다
 # (start=상대 슈터 위치, end=막아낸 지점) (2026-09-07).
 #
@@ -2305,7 +2312,7 @@ def generate_log_entry(
         # 기존 방식이 그대로 살아 있어야 옛 데이터와 간단 태깅이 안 깨진다.
         if not requires_two_dots and action_code_raw in (
             DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES | PRESS_ARROW_CODES
-            | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES
+            | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES | SHOT_ARROW_CODES
         ) and len(dots) >= 2:
             requires_two_dots = True
     if not is_dribble and requires_two_dots:
@@ -2319,7 +2326,7 @@ def generate_log_entry(
         # Progressive는 전진 '전달' 액션(패스/크로스/드리블 등)에만 — 수비(상대 공/슛 경로)엔 부적절하므로 제외
         if action_name not in {"Throw-in", "Kick-in"} and action_code_raw not in (
             DEFENSE_ARROW_CODES | SHOT_BLOCK_CODES | DUEL_CODES
-            | PRESS_ARROW_CODES | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES
+            | PRESS_ARROW_CODES | SAVE_ARROW_CODES | GK_CLAIM_ARROW_CODES | SHOT_ARROW_CODES
         ) and is_progressive_pass(start_x_adj, end_x_adj) and "Progressive" not in tags_list:
             tags_list.append("Progressive")
         if action_name == "Throw-in":
@@ -2444,6 +2451,17 @@ def generate_log_entry(
             claim_value = _gk_claim_value(start_x_adj, start_y)
             if claim_value is not None:
                 metrics["EPV"] = claim_value
+    elif action_code_raw in SHOT_ARROW_CODES:
+        # 막힌 슛(db) — xG(슈터 위치)는 위 Shot 분기에서 이미 채웠다. end(막힌 지점)는
+        # 씬모션 cut-point 전용이라 EPV/PC(전진·지배 델타)에 넣지 않는다. 넣으면 슛이
+        # 슈터→막힌지점 '이동' 으로 오인돼 값이 틀어진다. 점 1개로 찍던 때와 **같은 값**
+        # (start 기준, ΔEPV=0)을 유지해 채점·표시 회귀를 막는다.
+        epv_value = _epv_delta(start_x_adj, start_y, start_x_adj, start_y)
+        if epv_value is not None:
+            metrics["EPV"] = epv_value
+        pc_value = _pitch_control_delta(compact_dual_state, (start_x, start_y), (start_x, start_y))
+        if pc_value is not None:
+            metrics["PC"] = pc_value
 
     else:
         if action_code_raw == "pr":

@@ -989,9 +989,11 @@ function statInputIsMoveAction(statInput: string) {
   return MOVE_ACTION_CODES.includes(extractActionCode(statInput));
 }
 
-// 슛(d/dd/ddd/db)의 채점 위치는 행위자 점 하나뿐 — 아군 점이 여럿이어도(팀메이트·마커)
+// 슛(d/dd/ddd)의 채점 위치는 행위자 점 하나뿐 — 아군 점이 여럿이어도(팀메이트·마커)
 // 다른 점이 슛 위치로 밀리면 xG가 왜곡된다 (백엔드는 dots[-1]을 슛 위치로 사용).
-const SHOT_INPUT_CODES = new Set(['d', 'dd', 'ddd', 'db']);
+// db(막힌 슛)는 여기서 뺐다 — 2점 경로 화살표(SHOT_ARROW_CODES)로 바뀌어 start(슛 지점)
+// 으로 채점하고 end(막힌 지점)는 씬모션 cut-point 로만 쓴다.
+const SHOT_INPUT_CODES = new Set(['d', 'dd', 'ddd']);
 function statInputIsShotAction(statInput: string) {
   return SHOT_INPUT_CODES.has(extractActionCode(statInput));
 }
@@ -1012,6 +1014,10 @@ const DUEL_ARROW_CODES = new Set(['b', 'bb']);
 // 두 번 클릭으로 **볼 경로**를 그리는 액션 전체 — 색·선종류·끝점 마커를 패스와 달리 준다.
 const BALL_PATH_ARROW_CODES = new Set([...DEFENSE_ARROW_CODES, ...DUEL_ARROW_CODES]);
 const SHOT_BLOCK_CODES = new Set(['qw']);
+// db=막힌 슛(우리 슈터) — 골대 입력 대신 2점 경로로 찍는다(start=슛 지점, end=막힌 지점).
+// 백엔드는 start 로 일반 슛 xG 를 내고(골문 좌표 안 받음), end 는 씬모션 cut-point 전용.
+// 슛블락(qw=상대 슛 차단)과 달리 **우리 슛**이 막힌 것이라 액션은 Shot(Blocked/Fail) 그대로다.
+const SHOT_ARROW_CODES = new Set(['db']);
 // 압박(pr)도 상대 볼 경로를 화살표로 그린다 — 시작=압박 시작 시점의 상대 볼 위치,
 // 끝=압박 뒤 볼이 간 위치. 그 경로 반경 8m 가 곧 채점 영역이다(백엔드
 // PRESS_BALL_PATH_RADIUS_M). 그전에는 프레임에 찍힌 전원의 hull 로 쟀는데, 압박의
@@ -1052,13 +1058,18 @@ function statInputIsBallPathArrow(statInput?: string | null) {
   return BALL_PATH_ARROW_CODES.has(statInputActionCode(statInput))
     || statInputIsPressArrow(statInput)
     || statInputIsSaveArrow(statInput)
-    || statInputIsGkClaimArrow(statInput);
+    || statInputIsGkClaimArrow(statInput)
+    || statInputIsShotArrow(statInput);
 }
 function statInputIsDuelArrow(statInput?: string | null) {
   return DUEL_ARROW_CODES.has(statInputActionCode(statInput));
 }
 function statInputIsShotBlock(statInput?: string | null) {
   return SHOT_BLOCK_CODES.has(statInputActionCode(statInput));
+}
+// db=막힌 슛 — 2점 경로 화살표. start=슛 지점(xG 채점), end=막힌 지점(씬모션 cut-point).
+function statInputIsShotArrow(statInput?: string | null) {
+  return SHOT_ARROW_CODES.has(statInputActionCode(statInput));
 }
 
 // 화살표 그리기 대기 상태 서술자 — 피치 위 배지/커서/미리보기 렌더에 사용
@@ -1076,6 +1087,9 @@ function arrowKind(code?: string): ArrowKind {
 function arrowArmHint(code: string, stage: 'start' | 'end') {
   if (statInputIsShotBlock(code)) {
     return stage === 'start' ? '슛 위치(슈터) 클릭 · xG 채점 기준' : '블록 지점 클릭 · 기록용';
+  }
+  if (statInputIsShotArrow(code)) {
+    return stage === 'start' ? '슛 지점 클릭 · xG 채점 기준' : '막힌 지점 클릭 · 기록용';
   }
   if (statInputIsDuelArrow(code)) {
     return stage === 'start' ? '볼이 온 곳 클릭' : '경합 지점 클릭 · 채점 기준';

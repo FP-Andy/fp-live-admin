@@ -102,6 +102,9 @@ export type SceneData = {
   // exit — 클리어 전용. path 끝에 도착한 **뒤에** 공만 여기로 굴러 나간다.
   ball?: { path?: { x: number; y: number }[]; exit?: { x: number; y: number } };
   shot?: SceneShot;
+  // block — 슛블락(qw) 전용. 공이 ball.path 끝(=막아낸 지점)에 닿으면 그 자리에
+  // 임팩트 마커를 세워 '막았다' 를 보여준다. shot 과 배타적(블록은 골대 패널이 없다).
+  block?: { x: number; y: number };
   caption?: string;
 };
 
@@ -344,6 +347,7 @@ export default function SceneMotionView({ data, width, animate = true, frameTime
             </div>
           );
         })}
+
 
       {/* 5) 볼 */}
       {ball ? (
