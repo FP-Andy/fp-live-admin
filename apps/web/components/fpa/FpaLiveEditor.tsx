@@ -2558,6 +2558,10 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
     });
     setEditRows(scoredRows);
     setEditLogs(scoredLogs);
+    // 제자리 교체가 끝나면 선택을 풀어 '편집 의도'를 닫는다 — 안 풀면 바로 다음에
+    // 코드를 치고 Enter 했을 때 또 이 행을 덮어쓰게 돼(추가가 안 됨) 헷갈린다.
+    setEditSelectedRowIndex(null);
+    setEditStatInput('');
     setBusy(false);
     setStatus(`선택 액션(${targetIndex + 1}) 수정 적용 · 재채점 완료`);
   };
@@ -2606,6 +2610,10 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
     };
     if (side === 'before') setEditBeforeDots(place);
     else setEditAfterDots(place);
+    // 새 좌표를 찍는 것 = '새 액션 추가' 의도. 직전에 행을 골라 코드가 떠 있어도
+    // 여기서 행 선택을 풀어, 뒤이어 코드를 치고 Enter 하면 기존 행 교체가 아니라
+    // 추가로 가게 한다(제자리 수정은 행을 다시 클릭하면 된다).
+    setEditSelectedRowIndex(null);
     requestAnimationFrame(() => editStatInputRef.current?.focus());
   };
 
@@ -5038,12 +5046,21 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault();
-                    void addEditLog();
+                    // 행이 선택돼 있으면(= 그 행을 클릭해 코드를 불러온 '편집 의도')
+                    // 제자리 교체한다. 선택이 없으면 평소대로 새 액션 추가.
+                    if (editSelectedRowIndex != null) void applyEditRowCode();
+                    else void addEditLog();
                   }
                 }}
                 placeholder="스탯 코드 (예: 10ss8.k.f.w, 4tt7.lt)"
               />
-              <button className="submit" disabled={!editStatInput.trim() || busy || Boolean(pendingXgot)} onClick={addEditLog} type="button">
+              <button
+                className="submit"
+                disabled={!editStatInput.trim() || busy || Boolean(pendingXgot)}
+                onClick={() => { if (editSelectedRowIndex != null) void applyEditRowCode(); else void addEditLog(); }}
+                title={editSelectedRowIndex != null ? '선택한 행을 이 코드로 제자리 교체' : '새 액션 추가'}
+                type="button"
+              >
                 ↵
               </button>
             </div>
