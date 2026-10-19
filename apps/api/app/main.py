@@ -33,6 +33,7 @@ import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
 from .highlight_render_queue import HighlightRenderTask
+from .scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion
 from .manual_highlight_log import router as manual_highlight_log_router
 from .competition_queue import (
     CompetitionSendWorker,
@@ -13381,43 +13382,16 @@ def clip_result_detail(
     return out
 
 
-def _render_scene_motions_bg(
-    actions: list[dict], clip_key: str, storage: object, prefix: str
-) -> None:
-    """장면 모션 mp4 를 **응답을 보낸 뒤에** 렌더·업로드한다.
-
-    검수 화면의 기본은 sceneData 네이티브 렌더고 mp4 는 'mp4 로 보기' 토글 전용이다.
-    그런데 예전엔 그 mp4 를 응답 경로에서 장면마다(액션당 수 초) 직렬로 다 만들고서야
-    응답했다. 장면이 일고여덟 개만 돼도 CloudFront 오리진 타임아웃(기본 30초)을 넘겨
-    504 가 났다 — 화면에 쓰지도 않는 파일을 기다리다 죽은 것이다.
-
-    DB 세션은 이 시점에 이미 닫혀 있다. 직렬화가 끝난 액션 dict 만 받아 쓴다.
-    """
-    try:
-        for warning in attach_scene_motions(
-            actions, None, clip_key=clip_key, storage=storage, prefix=prefix,
-        ):
-            print(f"scene-motion background render: {warning}")
-    except Exception as exc:  # 검수 화면은 이미 응답을 받았다 — 여기서 죽어도 조용히 둔다
-        print(f"scene-motion background render failed for {clip_key}: {exc}")
-
-
 @app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions")
 def clip_result_scene_motions(
     clip_id: str,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """클립 액션들의 장면 모션 데이터를 돌려준다 (검수용).
+    """Return native scene data immediately; enqueue missing MP4s durably.
 
-    전송(resend/produce)과 같은 attach_scene_motions·S3 키를 쓰므로
-    여기서 보이는 모션이 곧 앱으로 나가는 모션이다. sceneState 가 있는 액션만 생성된다.
-
-    **sceneData 는 즉시, mp4 는 뒤늦게.** 앱도 콘솔도 기본은 sceneData 네이티브
-    렌더이고 mp4 는 구버전 앱 폴백·토글용이다. 그래서 좌표 계산(수 ms)만 응답 경로에
-    두고, 렌더·업로드(액션당 수 초)는 _render_scene_motions_bg 로 미룬다. 이미 올라가
-    있는 mp4 는 그대로 링크를 준다 — 두 번째로 여는 클립은 토글이 바로 찬다.
+    No BackgroundTasks, capture lock or S3 HEAD calls run in this request.
+    A separate service resolves the existing-object cache and renders serially.
     """
     clip = db.get(HighlightClip, clip_id)
     if not clip:
@@ -13425,43 +13399,28 @@ def clip_result_scene_motions(
     storage = highlight_default_storage()
     if not storage.configured:
         raise HTTPException(status_code=409, detail="S3 스토리지가 설정되지 않았습니다.")
-    actions = [
-        _serialize_clip_action(a)
-        for a in db.query(HighlightClipAction)
-        .filter(HighlightClipAction.clip_id == clip_id)
-        .order_by(HighlightClipAction.seq)
-        .all()
-    ]
-    motion_prefix = (
-        clip.horizontal_s3_key.rsplit("/", 1)[0]
-        if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
-        else highlight_output_prefix()
-    )
-    # storage=None 이면 좌표(sceneData)만 붙고 렌더·업로드는 건너뛴다.
-    warnings = attach_scene_motions(
-        actions, None,
-        clip_key=clip.id,
-        storage=None,
-        prefix=motion_prefix,
-    )
-    # sceneData 가 붙은 행이 곧 장면 대표다(둘 다 before/after 가 없으면 건너뛴다).
-    # mp4 는 **이미 올라가 있을 때만** 링크한다 — 없으면 아래 백그라운드가 만든다.
+    actions = [_serialize_clip_action(a) for a in db.query(HighlightClipAction)
+               .filter(HighlightClipAction.clip_id == clip_id)
+               .order_by(HighlightClipAction.seq).all()]
+    motion_prefix = (clip.horizontal_s3_key.rsplit("/", 1)[0]
+                     if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
+                     else highlight_output_prefix())
+    warnings = attach_scene_motions(actions, None, clip_key=clip.id,
+                                    storage=None, prefix=motion_prefix)
     motions = []
     for action in actions:
         if not action.get("sceneData"):
             continue
-        # 좌표 지문까지 같아야 그 좌표의 mp4 다 — 좌표를 고치면 키가 달라져
-        # 옛 mp4 가 딸려오지 않는다(예전에는 고치기 전 모션이 그대로 나왔다).
-        key = scene_motion_key(motion_prefix, clip.id, action.get("seq"),
-                               action.get("sceneData"))
+        key = scene_motion_key(motion_prefix, clip.id, action.get("seq"), action["sceneData"])
+        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"])
+        status = task.status if task else "deferred"
         motions.append({
             "seq": action.get("seq"),
-            "url": storage.presigned_get(key, expires=3600) if storage.exists(key) else None,
-            "sceneData": action.get("sceneData"),
+            "url": storage.presigned_get(key, expires=3600) if status == "completed" else None,
+            "sceneData": action["sceneData"],
+            "render_status": status,
         })
-    background_tasks.add_task(
-        _render_scene_motions_bg, actions, clip.id, storage, motion_prefix,
-    )
+    db.commit()
     return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
 
 
@@ -13489,7 +13448,13 @@ def download_clip_scene_motion(
         raise HTTPException(status_code=404, detail="이 액션의 씬모션이 없습니다.")
     key = scene_motion_key(prefix, clip.id, seq, action["sceneData"])
     if not storage.exists(key):
-        raise HTTPException(status_code=409, detail="현재 장면의 MP4를 준비 중입니다. 모션 새로고침 후 다시 다운로드하세요.")
+        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"], retry=True, missing=True)
+        status = task.status if task else "deferred"
+        db.commit()
+        detail = ("씬모션 대기열이 가득 찼습니다. 잠시 후 다시 다운로드하세요."
+                  if status == "deferred" else
+                  "현재 장면의 MP4를 준비 중입니다. 모션 새로고침 후 다시 다운로드하세요.")
+        raise HTTPException(status_code=409, detail=detail)
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", clip.id)[:100]
     filename = f"scene-motion-{safe_id}-action-{seq}.mp4"
     return {"url": storage.presigned_download(key, filename, expires=600), "filename": filename}
