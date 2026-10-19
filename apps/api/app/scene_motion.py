@@ -60,7 +60,9 @@ def _parse_dots(value: Any) -> list[dict[str, Any]]:
 # 셋 다 '아군이 의도한 패스' 가 아니라 공이 실제로 지나온 길이라 패스와 다른 색을 준다.
 _DEFENSE_ARROW_CODES = {"aa", "q", "ww", "qw", "w", "b", "bb"}
 # 실패 패스/크로스 입력 코드(단자 = 실패) — 빨간 화살표로 구분, 공은 실패 지점까지 이동.
-_FAIL_ARROW_CODES = {"s", "c"}
+# db(막힌 슛)도 여기 넣는다 — 슛이 끊긴 '실패한 시도' 라 빨간 궤적이 맞고, 공이 막힌
+# 지점까지 날아가 멈춘다(그 끝에 block cut-point 임팩트가 선다).
+_FAIL_ARROW_CODES = {"s", "c", "db"}
 # 화살표의 code 는 전체 스탯 입력("10s8"·"5aa.up")이다 — 프론트 statInputActionCode 와
 # 같은 규칙으로 액션 코드만 추출한다 (앞 등번호·뒤 수신 번호·태그(.) 제거).
 _STAT_CODE_RE = re.compile(r"^\d*([a-z]+)\d*$")
@@ -297,6 +299,12 @@ GK_SAVE_ACTION = "Save"
 # 골문 좌표(goalMouth)가 없어 골대 패널(shot)이 안 뜨므로, 공이 슈터→블록 지점
 # 화살표를 따라와 **그 끝에서 막혀 멈추는** 연출로 그린다(build_scene_data 의 block 좌표).
 BLOCK_ACTION = "Block"
+
+# db=막힌 슛(우리 슈터의 슛이 막힘) — action 은 "Shot" + "Blocked" 태그다(fpa.py db 분기).
+# 슛블락(qw)과 같은 cut-point 연출을 쓴다: 공이 슛 지점→막힌 지점 화살표를 따라와 멈춘다.
+# db 도 골문 좌표를 안 받아 골대 패널이 없으므로 block 좌표(공이 막힌 자리)만 세운다.
+SHOT_ACTION = "Shot"
+BLOCKED_SHOT_TAG = "Blocked"
 
 # 막은 뒤의 처리 — 태그로 갈린다(fpa.SAVE_TAG_CODES: sv.c / sv.p).
 #
@@ -626,9 +634,12 @@ def attach_scene_motions(
         is_save = rep_action == GK_SAVE_ACTION
         # 마무리는 태그로 갈린다(sv.c / sv.p). 옛 기록은 태그가 없어 쳐내기로 그린다.
         save_caught = is_save and _row_has_tag(rep, GK_SAVE_CATCH_TAG)
-        # 슛블락(qw=Block) — 공이 슈터→블록 지점 화살표를 따라와 막힌다. 경로 끝에
-        # 블록 임팩트 마커를 세우도록 build_scene_data 에 플래그를 넘긴다(block 좌표 생성).
-        is_block = rep_action == BLOCK_ACTION
+        # 슛블락(qw=Block)·막힌 슛(db=Shot+Blocked) — 공이 슛/슈터 지점→막힌 지점 화살표를
+        # 따라와 막힌다. 경로 끝에 블록 임팩트 마커를 세우도록 build_scene_data 에 플래그를
+        # 넘긴다(block 좌표 생성). db 는 action 이 "Shot" 이라 Blocked 태그로 가른다.
+        is_block = rep_action == BLOCK_ACTION or (
+            rep_action == SHOT_ACTION and _row_has_tag(rep, BLOCKED_SHOT_TAG)
+        )
         # 앱 네이티브 씬모션용 좌표 데이터 — 스토리지·렌더와 무관하게 항상 싣는다.
         # (앱은 sceneData 우선, 없으면 sceneMotionKey mp4 폴백)
         data = build_scene_data(
