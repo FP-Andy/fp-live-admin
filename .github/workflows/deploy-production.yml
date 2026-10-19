@@ -50,7 +50,7 @@ jobs:
           git clean -fd
           git checkout -B main origin/main
 
-          docker compose -f "$COMPOSE_FILE" build api web highlight-render
+          docker compose -f "$COMPOSE_FILE" build api web highlight-render scene-render
 
           # Reject a missing/invalid private account manifest before replacing
           # the running API. This check imports no DB code or delivery workers.
@@ -74,8 +74,8 @@ jobs:
           # potoken(유튜브 PO 토큰 발급기)도 함께 띄운다. 빌드가 없는 기성 이미지라
           # up 만으로 받는다. 이걸 빼먹어서 코드만 배포되고 컨테이너가 안 생겨,
           # 유튜브 취득이 360p 로 떨어진 적이 있다(2026-09-30).
-          docker compose -f "$COMPOSE_FILE" up -d potoken api web highlight-render
-          docker compose -f "$COMPOSE_FILE" ps potoken api web highlight-render
+          docker compose -f "$COMPOSE_FILE" up -d potoken api web highlight-render scene-capture scene-render
+          docker compose -f "$COMPOSE_FILE" ps potoken api web highlight-render scene-capture scene-render
 
           # `up -d` returns once the container process starts, but uvicorn only
           # binds :8000 after startup (schema migration + seeding + workers).
@@ -98,6 +98,17 @@ jobs:
             exit 1
           fi
           docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
+
+          scene_healthy=false
+          for i in $(seq 1 20); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' app-scene-render)" = healthy ] && \
+               [ "$(docker inspect -f '{{.State.Health.Status}}' app-scene-capture)" = healthy ]; then
+              scene_healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$scene_healthy" != true ]; then echo 'Scene render services unhealthy'; exit 1; fi
 
           # potoken 이 실제로 응답하는지 본다. 실패해도 배포는 계속한다 —
           # 화질 저하는 감수할 수 있지만 배포 전체가 막히면 안 된다. 대신 크게 남긴다.

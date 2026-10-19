@@ -39,6 +39,7 @@ jobs:
           python apps/api/tests/test_manual_clip_results.py -v
           python apps/api/tests/test_highlight_render_queue.py
           python apps/api/tests/test_scene_motion_renderer.py -v
+          python apps/api/tests/test_scene_motion_queue.py -v
 
   web:
     runs-on: ubuntu-latest
@@ -150,3 +151,4 @@ jobs:
         run: |
           python apps/api/tests/test_match_write_access.py -v
           python apps/api/tests/test_highlight_render_queue.py
+          python apps/api/tests/test_scene_motion_queue.py -v
