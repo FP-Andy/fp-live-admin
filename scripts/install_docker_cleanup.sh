@@ -12,7 +12,12 @@ install -m 0644 "$ROOT/infra/app/systemd/fpc-docker-cleanup.timer" /etc/systemd/
 # Do not replace this inode: a deployment might already hold its lock.
 runuser -u ubuntu -- python3 -c 'import os; fd=os.open("/home/ubuntu/.fpc-docker-maintenance.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600); os.close(fd)'
 install -d -o ubuntu -g ubuntu -m 0700 /var/lib/fpc-docker-cleanup
-systemd-analyze verify /etc/systemd/system/fpc-docker-cleanup.service /etc/systemd/system/fpc-docker-cleanup.timer
+if ! VERIFY="$(systemd-analyze verify /etc/systemd/system/fpc-docker-cleanup.service /etc/systemd/system/fpc-docker-cleanup.timer 2>&1)"; then
+  printf '%s\n' "$VERIFY" >&2
+  exit 1
+fi
+# systemd returns success for some ignored directives; reject warnings too.
+if [ -n "$VERIFY" ]; then printf '%s\n' "$VERIFY" >&2; exit 1; fi
 systemctl daemon-reload
 systemctl enable --now fpc-docker-cleanup.timer
 systemctl list-timers --all --no-pager fpc-docker-cleanup.timer

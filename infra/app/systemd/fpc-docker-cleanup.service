@@ -1,7 +1,7 @@
 [Unit]
 Description=FPC old image and unused build cache retention
 After=docker.service
-ConditionPathIsSocket=/var/run/docker.sock
+ConditionPathExists=/var/run/docker.sock
 
 [Service]
 Type=oneshot
