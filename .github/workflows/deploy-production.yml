@@ -32,6 +32,10 @@ jobs:
           BACKUP_ROOT="/home/ubuntu/deploy-backups"
           DEPLOY_ID="gha-${{ github.sha }}-$(date -u +%Y%m%d_%H%M%S)"
 
+          # Serialize image changes with the server's daily retention job.
+          exec 9>/home/ubuntu/.fpc-docker-maintenance.lock
+          flock -w 900 9
+
           cd "$APP_DIR"
           mkdir -p "$BACKUP_ROOT"
 
