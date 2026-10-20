@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily FPC disk maintenance at 05:00 Korea time
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 Asia/Seoul
+RandomizedDelaySec=10min
+Persistent=true
+Unit=fpc-docker-cleanup.service
+
+[Install]
+WantedBy=timers.target

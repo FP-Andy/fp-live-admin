@@ -1,0 +1,28 @@
+[Unit]
+Description=FPC old image and unused build cache retention
+After=docker.service
+ConditionPathExists=/var/run/docker.sock
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+StateDirectory=fpc-docker-cleanup
+StateDirectoryMode=0700
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+Environment=DOCKER_CONFIG=/var/lib/fpc-docker-cleanup/docker-config
+ExecStartPre=/usr/bin/mkdir -p /var/lib/fpc-docker-cleanup/docker-config
+ExecStart=/usr/bin/python3 /usr/local/lib/fpc/docker_cleanup.py --apply
+TimeoutStartSec=15min
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/.fpc-docker-maintenance.lock
+PrivateTmp=true
+RestrictSUIDSGID=true
