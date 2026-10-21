@@ -12905,10 +12905,6 @@ def produce_fineplay_job(
     metadata["clips"] = clips
     # 자동 전송 없음 — sendCallback=true 일 때만 produce 후 콜백. 기본은 생성만(클립 결과 탭에서 명시 전송).
     metadata["send_on_produce"] = bool(body.get("sendCallback"))
-    # 씬모션 mp4 전송 여부(기본 OFF). 앱은 sceneData 로 네이티브 재렌더하므로 mp4 는
-    # 불필요 — 콘솔에서 '씬모션 mp4 포함'을 켰을 때만 렌더·업로드하고 sceneMotionKey 를
-    # 전송한다. metadata 에 저장해 재전송(resend)에도 같은 선택이 유지되게 한다.
-    metadata["include_scene_motion_mp4"] = bool(body.get("includeSceneMotionMp4"))
 
     # ── 클립에 새길 오버레이 ─────────────────────────────────────────────
     # 수동 하이라이트와 같은 설정 모양이라, 두 흐름이 같은 그림을 같은 자리에 그린다.
@@ -14018,6 +14014,7 @@ def _build_clip_result_payload(
 @app.post("/api/highlight/clip-results/matches/{match_id}/resend")
 def clip_result_resend(
     match_id: UUID,
+    body: dict = Body(default={}),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -14025,6 +14022,10 @@ def clip_result_resend(
 
     사전 작업 잡은 연결된 신청(links.home/away)별로 그 팀 관점 페이로드를 각각
     보낸다 — 자기 팀 클립만, 자기 라인업으로 재매칭, 상대편 액션은 익명.
+
+    body.includeSceneMotionMp4(기본 false): 앱은 sceneData 로 씬모션을 네이티브
+    재렌더하므로 mp4(sceneMotionKey)는 보통 불필요하다. 켰을 때만 전송 시점에 mp4 를
+    렌더·업로드해 싣는다. sceneData 는 플래그와 무관하게 항상 실린다.
     """
     clips = (
         db.query(HighlightClip)
@@ -14038,6 +14039,9 @@ def clip_result_resend(
     if not job:
         raise HTTPException(status_code=409, detail="클립의 원본 잡이 없습니다.")
     metadata = dict(job.job_metadata or {})
+    # 이번 전송의 씬모션 mp4 포함 여부. 아래 _build_clip_result_payload 가 이 값을 읽고,
+    # update_job 으로 저장돼 다음 전송 화면의 기본값('마지막 값')으로도 쓰인다.
+    metadata["include_scene_motion_mp4"] = bool(body.get("includeSceneMotionMp4"))
     client = fineplay_default_client()
     if not client.configured:
         raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
@@ -14568,6 +14572,11 @@ def clip_result_send_competition(
     match_body = dict(body.get("match") if isinstance(body.get("match"), dict) else {})
     if not str(match_body.get("fpcMatchId") or "").strip():
         match_body["fpcMatchId"] = str(metadata.get("analysis_request_id") or f"match:{match_id}")
+
+    # 씬모션 mp4 포함 여부(기본 false). 전송은 백그라운드에서 돌고 _build_competition_payload
+    # 가 job.job_metadata 를 새로 읽으므로, 큐에 넣기 전에 잡 메타에 저장해 둔다.
+    metadata["include_scene_motion_mp4"] = bool(body.get("includeSceneMotionMp4"))
+    update_job(db, job.id, job_metadata=metadata)
 
     status = enqueue_competition_send(db, job.id, {
         "match_id": str(match_id), "job_id": job.id,
