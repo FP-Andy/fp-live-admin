@@ -294,6 +294,9 @@ export default function ClipResultsPage() {
   // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  // 씬모션 mp4 포함(기본 OFF). 앱은 sceneData 로 씬모션을 네이티브 재렌더하므로 mp4
+  // (sceneMotionKey)는 보통 불필요하다 — 켰을 때만 전송 시 mp4 를 렌더·업로드해 싣는다.
+  const [includeSceneMotionMp4, setIncludeSceneMotionMp4] = useState(false);
   // 대회 인입(competition-results) 전송 폼 — 사전 작업 매치를 신청 없이 앱으로 보낸다.
   const [compForm, setCompForm] = useState<
     {
@@ -873,7 +876,7 @@ export default function ClipResultsPage() {
     try {
       const res = await apiJson<{ clips?: number; callback_status?: string | Record<string, string> }>(
         `/highlight/clip-results/matches/${selectedMatch.match_id}/resend`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify({ includeSceneMotionMp4 }) },
       );
       // 사전 작업 매치는 연결된 신청(홈/어웨이)별로 나가고 사이드별 상태가 온다.
       if (res.callback_status && typeof res.callback_status === 'object') {
@@ -921,6 +924,7 @@ export default function ClipResultsPage() {
               ...(compForm.round.trim() ? { round: compForm.round.trim() } : {}),
             },
             match,
+            includeSceneMotionMp4,
           }),
         },
       );
@@ -1084,6 +1088,20 @@ export default function ClipResultsPage() {
                   >
                     ⬆ FinePlay로 전송{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
                   </button>
+                  {selectedMatch.plan?.tier !== 'basic' ? (
+                    <label
+                      style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                      title="앱은 좌표(sceneData)로 씬모션을 네이티브 재렌더하므로 mp4 는 보통 불필요합니다. 켜면 전송 시 씬모션 mp4 도 렌더·업로드해 함께 보냅니다(sceneData 는 항상 전송)."
+                    >
+                      <input
+                        type="checkbox"
+                        checked={includeSceneMotionMp4}
+                        onChange={(e) => setIncludeSceneMotionMp4(e.target.checked)}
+                        disabled={busy}
+                      />
+                      씬모션 mp4 포함(기본 꺼짐)
+                    </label>
+                  ) : null}
                   {selectedMatch.plan?.source === 'standalone' ? (
                     <button
                       style={primaryBtn}
