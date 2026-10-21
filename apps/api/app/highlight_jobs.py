@@ -2676,6 +2676,8 @@ def run_fineplay_produce(job_id: str) -> None:
                         clip_key=record["clip_key"],
                         storage=default_storage(),
                         prefix=prefix,
+                        # mp4 는 콘솔에서 '씬모션 mp4 포함'을 켰을 때만. sceneData 는 항상.
+                        render_mp4=bool(metadata.get("include_scene_motion_mp4")),
                     )
                 if motion_warnings:
                     metadata["scene_motion_status"] = "; ".join(motion_warnings)

@@ -12905,6 +12905,10 @@ def produce_fineplay_job(
     metadata["clips"] = clips
     # 자동 전송 없음 — sendCallback=true 일 때만 produce 후 콜백. 기본은 생성만(클립 결과 탭에서 명시 전송).
     metadata["send_on_produce"] = bool(body.get("sendCallback"))
+    # 씬모션 mp4 전송 여부(기본 OFF). 앱은 sceneData 로 네이티브 재렌더하므로 mp4 는
+    # 불필요 — 콘솔에서 '씬모션 mp4 포함'을 켰을 때만 렌더·업로드하고 sceneMotionKey 를
+    # 전송한다. metadata 에 저장해 재전송(resend)에도 같은 선택이 유지되게 한다.
+    metadata["include_scene_motion_mp4"] = bool(body.get("includeSceneMotionMp4"))
 
     # ── 클립에 새길 오버레이 ─────────────────────────────────────────────
     # 수동 하이라이트와 같은 설정 모양이라, 두 흐름이 같은 그림을 같은 자리에 그린다.
@@ -13887,6 +13891,7 @@ def _build_clip_result_payload(
     lineup: list[dict] | None = None,
     side_filter: str | None = None,
     include_analysis: bool = True,
+    render_scene_motion_mp4: bool = False,
     on_clip: Callable[[str], None] | None = None,
 ) -> dict:
     """DB의 clip·action 으로 FinePlay 결과 페이로드를 조립한다.
@@ -13943,7 +13948,8 @@ def _build_clip_result_payload(
             a.pop("id", None)
         if lineup is not None:
             actions = fineplay_rematch_action_players(actions, our_side=our_side, lineup=lineup)
-        # FPA 장면 모션 렌더·업로드 — sceneMotionKey 가 액션에 붙어 teamView.actions 로 나간다.
+        # FPA 장면 좌표(sceneData)를 항상 붙인다 — 앱이 네이티브로 재렌더한다.
+        # sceneMotionKey(mp4)는 render_scene_motion_mp4=True 일 때만 렌더·업로드해 단다.
         motion_prefix = (
             c.horizontal_s3_key.rsplit("/", 1)[0]
             if c.horizontal_s3_key and "/" in c.horizontal_s3_key
@@ -13954,6 +13960,7 @@ def _build_clip_result_payload(
             clip_key=c.id,
             storage=highlight_default_storage(),
             prefix=motion_prefix,
+            render_mp4=render_scene_motion_mp4,
         )
         # 무거운 일은 여기까지다(클립마다 씬모션 렌더·업로드). 한 장 끝낼 때마다
         # 알려야 화면이 '몇 개 중 몇 개' 를 보여 줄 수 있다.
@@ -14056,6 +14063,7 @@ def clip_result_resend(
                 lineup=list(link.get("lineup") or []),
                 side_filter=side,
                 include_analysis=side_xfp,
+                render_scene_motion_mp4=bool(metadata.get("include_scene_motion_mp4")),
             )
             payload = fineplay_prepare_payload(payload, metadata, side=side)
             link["plan_tier"] = "xfp" if side_xfp else "basic"
@@ -14100,6 +14108,7 @@ def clip_result_resend(
         rid=rid,
         team_id=team_id,
         include_analysis=fineplay_xfp_enabled(metadata),
+        render_scene_motion_mp4=bool(metadata.get("include_scene_motion_mp4")),
     )
     payload = fineplay_prepare_payload(payload, metadata)
     metadata["result_payload"] = payload
@@ -14266,6 +14275,7 @@ def _build_competition_payload(
             lineup=injected_lineup,
             side_filter=side,
             include_analysis=True,
+            render_scene_motion_mp4=bool(metadata.get("include_scene_motion_mp4")),
             on_clip=on_clip,
         )
         for clip in side_payload.get("clips") or []:

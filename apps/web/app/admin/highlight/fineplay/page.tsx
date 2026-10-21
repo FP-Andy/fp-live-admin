@@ -463,6 +463,9 @@ export default function FineplayJobsPage() {
   useEffect(() => { localStorage.setItem('fp-clip-pad-before-v2', String(padBefore)); }, [padBefore]);
   useEffect(() => { localStorage.setItem('fp-clip-pad-after-v2', String(padAfter)); }, [padAfter]);
   const [makeVertical, setMakeVertical] = useState(false);
+  // 씬모션 mp4 포함(기본 OFF). 앱은 sceneData 로 네이티브 재렌더하므로 mp4 는 불필요 —
+  // 켰을 때만 서버가 mp4 를 렌더·업로드해 sceneMotionKey 를 전송한다(sceneData 는 항상).
+  const [includeSceneMotionMp4, setIncludeSceneMotionMp4] = useState(false);
   const [producing, setProducing] = useState(false);
   const [produceMsg, setProduceMsg] = useState('');
   const [produceError, setProduceError] = useState('');
@@ -1322,7 +1325,7 @@ export default function FineplayJobsPage() {
         method: 'POST',
         // fpaMatchId: '' 는 연결 해제 — 서버는 키가 있을 때만 링크를 갱신한다.
         body: JSON.stringify({
-          clips, fpaMatchId, fpaOurSide, sendCallback,
+          clips, fpaMatchId, fpaOurSide, sendCallback, includeSceneMotionMp4,
           // 클립에 새길 오버레이. 수동 태깅과 같은 모양이라 서버도 같은 코드로 그린다.
           scoreboard: scoreboard.enabled ? {
             enabled: true,
@@ -2777,6 +2780,11 @@ export default function FineplayJobsPage() {
                   <label style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input type="checkbox" checked={makeVertical} onChange={(e) => setMakeVertical(e.target.checked)} />
                     세로(9:16)도 생성
+                  </label>
+                  <label style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                    title="앱은 좌표(sceneData)로 씬모션을 네이티브 재렌더하므로 mp4 는 보통 불필요합니다. 켜면 서버가 씬모션 mp4 도 렌더·업로드해 함께 전송합니다.">
+                    <input type="checkbox" checked={includeSceneMotionMp4} onChange={(e) => setIncludeSceneMotionMp4(e.target.checked)} />
+                    씬모션 mp4 포함(기본 꺼짐)
                   </label>
                   {produceMsg ? (
                     <span style={{ fontSize: 13, color: producing ? 'var(--muted, #999)' : '#22c55e' }}>{produceMsg}</span>

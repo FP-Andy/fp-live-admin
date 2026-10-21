@@ -561,6 +561,7 @@ def attach_scene_motions(
     clip_key: str,
     storage: Any,
     prefix: str,
+    render_mp4: bool = False,
 ) -> list[str]:
     """장면(태깅 단위)당 모션 mp4 를 1개 렌더·업로드하고 대표 액션에 sceneMotionKey 를 단다.
 
@@ -570,10 +571,14 @@ def attach_scene_motions(
 
     db_actions: extra 를 포함한 상세 액션(렌더 소스). 여기에 sceneMotionKey 도 세팅된다.
     payload_actions: teamView.actions 처럼 extra 가 빠진 병렬 목록(있으면 seq 로 매칭해 세팅).
+    render_mp4: mp4 렌더·업로드·sceneMotionKey 부착 여부. **기본 False** — 앱은 sceneData
+        로 네이티브 재렌더하므로 mp4 는 불필요하고, 콘솔에서 '씬모션 mp4 포함'을 켰을
+        때만 True 로 넘긴다. False 면 sceneData 만 붙고 렌더/업로드/키는 통째로 건너뛴다.
+        sceneData 는 render_mp4 와 무관하게 **항상** 붙는다(앱 네이티브 렌더용).
     반환: 실패/경고 메시지 목록 (실패해도 예외는 던지지 않는다 — 전송은 계속).
     """
     warnings: list[str] = []
-    storage_ok = storage is not None and getattr(storage, "configured", False)
+    storage_ok = render_mp4 and storage is not None and getattr(storage, "configured", False)
     by_seq = {a.get("seq"): a for a in (payload_actions or [])}
 
     groups: list[list[dict[str, Any]]] = []
