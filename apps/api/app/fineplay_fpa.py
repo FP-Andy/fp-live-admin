@@ -611,6 +611,12 @@ def analysis_from_actions(
             pa["groupIndex"] = ex["groupIndex"]
         if ex.get("isGroupMain") and not pa.get("isGroupMain"):
             pa["isGroupMain"] = True
+        # 게이지 렌더용 — tags·receiver 는 extra 에만 있어 간결형에서 빠진다. 앱 게이지가
+        # 슛 결과(유효/빗나감/막힘)·GK 펀칭 구분·패스 도착점에 쓰므로 top-level 로 승격한다.
+        if pa.get("tags") is None and ex.get("tags") is not None:
+            pa["tags"] = ex["tags"]
+        if not pa.get("receiver") and ex.get("receiver"):
+            pa["receiver"] = ex["receiver"]
         # 재전송 경로(DB) 액션은 좌표가 extra 에만 있다 — 분류 전에 승격.
         if a.get("x") is None and ex.get("x") is not None:
             a["x"] = ex.get("x")
