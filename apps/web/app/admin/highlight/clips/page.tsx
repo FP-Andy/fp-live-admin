@@ -278,6 +278,22 @@ export default function ClipResultsPage() {
   const activeClipId = useRef<string | null>(null);
   const motionRequest = useRef(0);
   const matchRequest = useRef(0);
+  // xFP 게이지 미리보기(iframe). 선택 클립의 actions/길이를 postMessage 로 넣어 준다.
+  const gaugeFrame = useRef<HTMLIFrameElement | null>(null);
+  const postGaugeClip = useCallback(() => {
+    const win = gaugeFrame.current?.contentWindow;
+    if (!win) return;
+    const dur = detail?.duration_seconds || (detail ? Math.max(0, detail.end_sec - detail.start_sec) : 0);
+    win.postMessage({ type: 'xfp-gauge-clip', actions, dur }, '*');
+  }, [actions, detail]);
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.data && (e.data as { type?: string }).type === 'xfp-gauge-ready') postGaugeClip();
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [postGaugeClip]);
+  useEffect(() => { postGaugeClip(); }, [postGaugeClip]);
   const closeDetail = () => {
     activeClipId.current = null;
     motionRequest.current += 1;
@@ -1655,6 +1671,27 @@ export default function ClipResultsPage() {
                 ))}
               </div>
             )}
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <h3 style={{ fontSize: 14, margin: 0 }}>xFP 게이지 (미리보기)</h3>
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                이 클립 actions 로 그린 하이라이트 게이지. 액션을 수정하면 즉시 반영됩니다.
+              </span>
+            </div>
+            <div style={{
+              borderRadius: 8, overflow: 'hidden',
+              background: 'var(--surface-input, #16161a)', border: '1px solid var(--border-ghost, #2c2c32)',
+            }}>
+              <iframe
+                ref={gaugeFrame}
+                src="/gauge/embed.html"
+                title="xFP 게이지 미리보기"
+                onLoad={postGaugeClip}
+                style={{ width: '100%', maxWidth: 760, height: 320, border: 0, display: 'block' }}
+              />
+            </div>
           </div>
 
           <div style={{ marginTop: 14 }}>
