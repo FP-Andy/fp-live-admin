@@ -4102,6 +4102,11 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       + (skipped ? ` · ${skipped}명은 자리 정보를 못 읽어 건너뜀` : '')
       + (slotless ? ` · ${slotless}명은 신청에 자리가 비어 있어 건너뜀` : ''),
     );
+    // 한 팀 라인업을 깔면 다음 차례는 반대 팀이라, 레이어를 반대 팀 필드로 자동 전환한다
+    // (홈 배치 → 어웨이 레이어, 어웨이 배치 → 홈 레이어). '둘 다 배치' 엔 적용하지 않는다.
+    if (targetSides.length === 1) {
+      setActiveLayer(targetSides[0] === 'home' ? 'away_field' : 'home_field');
+    }
   };
 
   /** 잔상 클릭 = 활성화. 좌표는 그대로 두고 ghost 표시만 뗀다.
