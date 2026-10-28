@@ -338,6 +338,7 @@ def _process_in(
             duration_seconds=_probe_duration(local_h),
             resolution=f"{w}x{h}",
             main_action=spec.main_action,
+            is_goal=spec.is_goal,
         )
 
     # 클립 병렬 렌더 — ffmpeg subprocess 라 GIL 무관, 업로드도 렌더와 자연히 겹친다.

@@ -2472,6 +2472,7 @@ def _persist_clip_records(
         row.end_sec = float(clip.get("endTime") or 0)
         row.duration_seconds = hv.get("durationSeconds")
         row.main_action = clip.get("mainAction")
+        row.is_goal = bool(clip.get("isGoal"))
         row.horizontal_s3_key = hv.get("horizontalS3Key")
         row.vertical_s3_key = hv.get("verticalS3Key")
         row.thumbnail_s3_key = hv.get("thumbnailS3Key")
@@ -2592,6 +2593,7 @@ def run_fineplay_produce(job_id: str) -> None:
                 score_before=_pair(c.get("scoreBefore")),
                 score_after=_pair(c.get("scoreAfter")),
                 goal_at=goal_at,
+                is_goal=bool(c.get("isGoal")),
             ))
             team = str(c.get("team") or "").strip().lower()
             clip_teams[specs[-1].clip_id] = team if team in ("home", "away") else None
