@@ -104,6 +104,8 @@ class ClipSpec:
     score_before: tuple[int, int] | None = None
     score_after: tuple[int, int] | None = None
     goal_at: float | None = None
+    # 골 클립인가 — 태깅 '골'(Q/R) vs '장면'(W/E). 결과 clip 의 isGoal 로 그대로 나간다.
+    is_goal: bool = False
 
 
 @dataclass
@@ -118,6 +120,7 @@ class ClipOutput:
     duration_seconds: float | None = None
     resolution: str | None = None
     main_action: str | None = None
+    is_goal: bool = False
 
     def to_result_clip(self) -> dict[str, Any]:
         """결과 콜백(§6-2)의 clips[] 한 항목. 분석 지표(teamView/playerView)는 비워 둔다."""
@@ -143,6 +146,8 @@ class ClipOutput:
         }
         if self.main_action:
             clip["mainAction"] = self.main_action
+        # 골 클립 여부 — 항상 실어, 앱이 골/장면을 가릴 수 있게 한다(기본 False).
+        clip["isGoal"] = self.is_goal
         return clip
 
 

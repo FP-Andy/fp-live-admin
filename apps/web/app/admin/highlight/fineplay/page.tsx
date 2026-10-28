@@ -1320,6 +1320,8 @@ export default function FineplayJobsPage() {
           scoreAfter: after,
           // 클립 시작에서 골까지의 초. 그 지점에서 점수가 바뀐다.
           goalAt: tag.goal ? Math.max(0, tag.t - start) : undefined,
+          // 골 클립('골' Q/R) vs 주요장면('장면' W/E) — 앱이 골을 가릴 수 있게 필드로 보낸다.
+          isGoal: !!tag.goal,
         }];
       });
       await apiJson(`/highlight/fineplay-jobs/${selected.id}/produce`, {

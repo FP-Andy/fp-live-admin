@@ -389,6 +389,10 @@ def _ensure_runtime_schema() -> None:
     if "highlight_clips" in table_names and "fpa_scenes" not in clip_columns:
         statements.append("ALTER TABLE highlight_clips ADD COLUMN fpa_scenes JSONB")
 
+    # 골/장면 구분 — 하이라이트만(basic) 건도 앱이 골 여부를 알 수 있게 한다.
+    if "highlight_clips" in table_names and "is_goal" not in clip_columns:
+        statements.append("ALTER TABLE highlight_clips ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
+
     if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
         statements.append("CREATE INDEX IF NOT EXISTS ix_highlight_jobs_owner_id ON highlight_jobs (owner_id)")
@@ -12974,6 +12978,8 @@ def produce_fineplay_job(
                 "scoreAfter": _clip_score(c.get("scoreAfter")),
                 # 클립 시작에서 골까지의 초. 그 지점에서 점수가 바뀐다.
                 "goalAt": _clip_goal_at(c.get("goalAt")),
+                # 골 클립('골' Q/R) vs 주요장면('장면' W/E) — 앱 전송에 isGoal 로 실린다.
+                "isGoal": bool(c.get("isGoal")),
             })
     if not clips:
         raise HTTPException(status_code=400, detail="유효한 구간(end > start)이 없습니다.")
@@ -13972,6 +13978,8 @@ def _build_clip_result_payload(
                 entry["mainAction"] = c.title or c.main_action
             if c.title:
                 entry["title"] = c.title
+            # 골/장면 구분 — 하이라이트만 건도 앱이 골 클립을 가릴 수 있게 항상 실어 보낸다.
+            entry["isGoal"] = bool(c.is_goal)
             payload_clips.append(entry)
             continue
         actions = [
@@ -14041,6 +14049,8 @@ def _build_clip_result_payload(
             entry["teamView"] = team_view
         if involved:
             entry["involvedPlayers"] = involved
+        # 골/장면 구분 — xFP 건에도 동일 필드로 실어, 앱이 경로에 상관없이 같은 키를 읽게 한다.
+        entry["isGoal"] = bool(c.is_goal)
         payload_clips.append(entry)
 
     return {
