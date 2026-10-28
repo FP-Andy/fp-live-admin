@@ -2323,7 +2323,15 @@ export default function FineplayJobsPage() {
                   if (stop !== null && v.currentTime >= stop) {
                     stopAtRef.current = null;
                     v.pause();
-                    v.currentTime = stop;
+                    // 끝점으로 되감는 이 seek 은 onSeeking 을 다시 때리는데, 그걸
+                    // 사용자 스크럽으로 오인하면 방금 누른 태그 하이라이트(previewTagId)가
+                    // 구간 끝나는 순간 꺼진다. 자가 유발로 표시해 보호한다(초기 seek 과 동일).
+                    // 이미 정확히 끝점이면 쓰지 않는다 — 안 그러면 플래그가 남아 다음
+                    // 사용자 스크럽을 삼킨다(no-op 쓰기는 seek 이벤트를 안 낸다).
+                    if (v.currentTime > stop) {
+                      autoSeekRef.current = true;
+                      v.currentTime = stop;
+                    }
                   }
                 }}
                 // 사용자가 직접 스크럽하면 미리보기 정지 예약을 푼다 —
