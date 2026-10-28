@@ -33,7 +33,11 @@ function requestScore(manifest: unknown): { our: number; opponent: number } | nu
   const team = m.team as Record<string, unknown> | undefined;
   const opp = m.opponent as Record<string, unknown> | undefined;
   const nested = m.score as Record<string, unknown> | undefined;
+  // 실제 신청 매니페스트는 manifest.match.ourScore / opponentScore 에 싣는다
+  // (앱 신청 1단계 값). 이게 1순위다 — 나머지는 옛/대체 경로 폴백.
+  const match = m.match as Record<string, unknown> | undefined;
   const candidates: [unknown, unknown][] = [
+    [match?.ourScore, match?.opponentScore],
     [m.ourScore, m.opponentScore],
     [nested?.our, nested?.opponent],
     [team?.score, opp?.score],
