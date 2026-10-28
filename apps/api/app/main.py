@@ -5385,6 +5385,82 @@ def get_fpa_fineplay_lineup(match_id: UUID, db: Session = Depends(get_db), _user
     }
 
 
+@app.post("/api/fpa/matches/{match_id}/fineplay-lineup/player")
+def add_fpa_fineplay_lineup_player(
+    match_id: UUID,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_session_user),
+):
+    """이 매치의 FinePlay 잡 라인업에 선수 1명(등번호+이름)을 추가한다.
+
+    매치의 모든 클립이 이 잡 하나를 공유하므로(HighlightClip.job_id), 여기 넣으면
+    그 매치 전 클립의 명단 탭에 바로 보인다. claim 잡은 manifest.lineup(우리 사이드),
+    사전 작업 잡은 links.{side}.lineup 에 쌓는다 — _fineplay_lineup_sides 소비 위치와 1:1.
+    body: {side: home|away, jerseyNumber|number, name}
+    """
+    side = str(body.get("side") or "").strip().lower()
+    jersey = str(body.get("jerseyNumber") or body.get("number") or "").strip()
+    name = str(body.get("name") or "").strip()
+    if side not in ("home", "away"):
+        raise HTTPException(status_code=400, detail="side 는 home 또는 away 여야 합니다.")
+    if not jersey or not name:
+        raise HTTPException(status_code=400, detail="등번호와 이름이 필요합니다.")
+
+    target = str(match_id)
+    jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.mode == "fineplay")
+        .order_by(desc(HighlightJob.created_at))
+        .all()
+    )
+    job = next(
+        (
+            j for j in jobs
+            if str(
+                ((j.job_metadata or {}).get("fpa_link") or {}).get("match_id")
+                or (j.job_metadata or {}).get("match_id")
+                or ""
+            ) == target
+        ),
+        None,
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="이 매치에 연결된 FinePlay 잡이 없습니다.")
+
+    metadata = dict(job.job_metadata or {})
+    our_side = str((metadata.get("fpa_link") or {}).get("our_side") or "home").strip().lower()
+    manifest = dict(metadata.get("manifest") or {})
+    # claim 잡의 우리 사이드는 manifest.lineup, 그 외(상대 사이드·사전작업)는 links.{side}.lineup.
+    use_manifest = side == our_side and isinstance(manifest.get("lineup"), list) and bool(manifest.get("lineup"))
+    links = dict(metadata.get("links") or {})
+    link = dict(links.get(side) or {})
+    lineup = list((manifest.get("lineup") if use_manifest else link.get("lineup")) or [])
+
+    for e in lineup:
+        if isinstance(e, dict) and str(e.get("jerseyNumber") or "").strip() == jersey:
+            raise HTTPException(status_code=400, detail=f"등번호 {jersey} 는 이미 명단에 있습니다.")
+
+    # 포지션 슬롯이 없으므로 교체 명단으로 들어간다(선발 포메이션을 흐트러뜨리지 않게). 수기 추가 표시.
+    lineup.append({"jerseyNumber": jersey, "name": name, "isSubstitute": True, "manualAdded": True})
+
+    if use_manifest:
+        manifest["lineup"] = lineup
+        metadata["manifest"] = manifest
+    else:
+        link["lineup"] = lineup
+        links[side] = link
+        metadata["links"] = links
+    update_job(db, job.id, job_metadata=metadata)
+    _audit(
+        db, "FINEPLAY_LINEUP_PLAYER_ADDED", "highlight_job",
+        actor=user, target_id=job.id,
+        details={"side": side, "jersey": jersey, "name": name},
+    )
+    db.commit()
+    return {"ok": True, "side": side, "jerseyNumber": jersey, "name": name}
+
+
 @app.put("/api/fpa/matches/{match_id}/logs", response_model=FpaSavedLogsResponse)
 def save_fpa_logs(
     match_id: UUID,

@@ -3825,6 +3825,9 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
   // FinePlay 신청 라인업 — before 프레임 사전 배치의 원본. matchId(클레임/사전 잡의
   // fpa_link 매치) 또는 클립 귀속 모드의 클립에서 가져온다. 라인업 있는 사이드만 담긴다.
   const [lineupSides, setLineupSides] = useState<LineupSides>({});
+  // 명단 탭 "선수 추가" 입력(등번호+이름). 추가하면 매치 잡 라인업에 저장 → 이 경기 전 클립에 반영.
+  const [addPlayerForm, setAddPlayerForm] = useState<{ jersey: string; name: string }>({ jersey: '', name: '' });
+  const [addingPlayer, setAddingPlayer] = useState(false);
 
   // 피치 오른쪽 패널 탭 — 액션 목록 / 신청 명단
   const [sidePanelTab, setSidePanelTab] = useState<'actions' | 'roster'>('actions');
@@ -3951,6 +3954,31 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
     }, 400);
     return () => clearTimeout(timer);
   }, [matchId]);
+
+  // 명단에 선수 1명 추가(등번호+이름) → 매치 잡 라인업에 저장. 이 경기 모든 클립에 반영된다.
+  const addRosterPlayer = async (side: TeamSide) => {
+    const id = matchId.trim();
+    const jersey = addPlayerForm.jersey.trim();
+    const name = addPlayerForm.name.trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { setStatus('매치가 연결돼야 선수를 추가할 수 있습니다'); return; }
+    if (!jersey || !name) { setStatus('등번호와 이름을 입력하세요'); return; }
+    setAddingPlayer(true);
+    try {
+      await apiJson(`/fpa/matches/${id}/fineplay-lineup/player`, {
+        method: 'POST',
+        body: JSON.stringify({ side, jerseyNumber: jersey, name }),
+      });
+      setAddPlayerForm({ jersey: '', name: '' });
+      // 매치 단위 저장이라 재조회하면 지금 클립뿐 아니라 이후 모든 클립에도 그대로 뜬다.
+      const d = await apiJson<{ linked: boolean; sides?: LineupSides }>(`/fpa/matches/${id}/fineplay-lineup`);
+      setLineupSides(d.linked ? d.sides ?? {} : {});
+      setStatus(`${name}(${jersey}번) 추가됨 — 이 경기 모든 클립에 반영됩니다`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '선수 추가 실패');
+    } finally {
+      setAddingPlayer(false);
+    }
+  };
 
 
   // 신청 라인업을 before 프레임에 포메이션대로 '잔상' 으로 깔아준다.
@@ -5618,6 +5646,34 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
           {starters.length ? starters.map(row) : <div className="fpa-roster-empty-line">없음</div>}
           <div className="fpa-roster-sec">교체명단 {subs.length}</div>
           {subs.length ? subs.map(row) : <div className="fpa-roster-empty-line">없음</div>}
+        </div>
+        {/* 명단에 없는 선수 수기 추가(등번호+이름) — 매치 단위로 저장돼 이 경기 모든 클립에 뜬다. */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '8px 10px', borderTop: '1px solid var(--border-ghost, #2c2c32)' }}>
+          <input
+            value={addPlayerForm.jersey}
+            onChange={(e) => setAddPlayerForm((f) => ({ ...f, jersey: e.target.value.replace(/[^0-9]/g, '').slice(0, 3) }))}
+            placeholder="등번호"
+            inputMode="numeric"
+            aria-label="추가할 선수 등번호"
+            style={{ width: 54, padding: '4px 6px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border-ghost, #3a3a42)', background: 'var(--surface-input, #16161a)', color: 'inherit', textAlign: 'center' }}
+          />
+          <input
+            value={addPlayerForm.name}
+            onChange={(e) => setAddPlayerForm((f) => ({ ...f, name: e.target.value }))}
+            onKeyDown={(e) => { if (e.key === 'Enter') void addRosterPlayer(side); }}
+            placeholder="이름"
+            aria-label="추가할 선수 이름"
+            style={{ flex: 1, minWidth: 0, padding: '4px 6px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border-ghost, #3a3a42)', background: 'var(--surface-input, #16161a)', color: 'inherit' }}
+          />
+          <button
+            type="button"
+            disabled={addingPlayer}
+            onClick={() => void addRosterPlayer(side)}
+            title="명단에 없는 선수를 추가합니다 — 이 경기 모든 클립에 반영됩니다"
+            style={{ fontSize: 12, fontWeight: 700, padding: '5px 10px', borderRadius: 6, cursor: addingPlayer ? 'default' : 'pointer', border: '1px solid transparent', background: 'var(--accent, #3b82f6)', color: '#fff', whiteSpace: 'nowrap' }}
+          >
+            {addingPlayer ? '추가 중…' : '+ 추가'}
+          </button>
         </div>
         <div className="fpa-roster-hint">
           교체가 있었다면 들어온 선수를 나간 선수 위로 끌어 놓으세요.
