@@ -24,7 +24,7 @@
 
   const DEF = new Set(['Intercept', 'Clear', 'Cutout', 'Tackle', 'Block', 'Save', 'Interception', 'Clearance', 'Defense', 'Duel']);
   const HOLD_ACT = new Set(['Tackle', 'Intercept', 'Interception', 'Duel']);  // 우리가 공을 가짐
-  const RENAME = {'세이브': '선방', '컷아웃': '패스 차단'};
+  const RENAME = {'세이브': '선방'};
 
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const easeIO = (u) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
