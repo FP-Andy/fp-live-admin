@@ -2395,6 +2395,30 @@ export default function FineplayJobsPage() {
                 </label>
               </div>
 
+              {/* 지금까지 태깅한 클립으로 하이라이트를 만들면 몇 분짜리가 나오는지 —
+                  '점수만' 태그는 클립을 안 만드니 뺀다(produce 와 같은 규칙). 버튼 줄과
+                  클립 목록 사이에 둬서 태깅하면서 총 길이를 바로 확인하게 한다. */}
+              {tags.some((t) => !t.scoreOnly) ? (() => {
+                const total = tags.reduce((sum, t) => {
+                  if (t.scoreOnly) return sum;
+                  const r = clipRangeOf(t);
+                  return sum + Math.max(0, r.end - r.start);
+                }, 0);
+                const clipCount = tags.filter((t) => !t.scoreOnly).length;
+                return (
+                  <div style={{
+                    marginTop: 10, display: 'flex', alignItems: 'center', gap: 8,
+                    fontSize: 13, padding: '6px 10px', borderRadius: 6,
+                    background: 'var(--surface, #101014)',
+                    border: '1px solid var(--border-ghost, #2c2c32)',
+                  }}>
+                    <span style={{ color: 'var(--muted, #999)' }}>하이라이트 총 길이</span>
+                    <strong style={{ fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>{fmt(total)}</strong>
+                    <span style={{ color: 'var(--muted, #666)' }}>· 클립 {clipCount}개</span>
+                  </div>
+                );
+              })() : null}
+
               {tags.length ? (
                 <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {tags.map((tag, i) => (
