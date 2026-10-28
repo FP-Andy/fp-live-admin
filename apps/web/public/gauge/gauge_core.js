@@ -316,7 +316,13 @@
     if (r.ended) {
       // 끝 점수: 마지막 액션 선수가 이 장면 최고 점수 선수면 그 점수 유지, 아니면 최고 선수로
       const last = r.g.main, keep = last.jersey === M.best.jersey && last.xfpScore != null, e = keep ? last : M.best;
-      title = M.result; player = e.xfpScore != null ? {jersey: String(e.jersey), score: e.xfpScore, gold: true} : null;
+      // 끝 제목 = 보여지는 선수(e)의 액션으로 맞춘다 — 점수와 같은 액션을 가리키게.
+      // (마지막 액션이 실패여서 최고선수가 다른 액션이면, M.result 는 마지막 액션 기준이라
+      //  제목·점수가 어긋난다. 예: 패스→크로스실패 → M.result "크로스 성공" + 패스 점수.)
+      // 슛 결과 헤드라인(득점·유효·막힘·빗나감)만 장면의 슛 결과 M.result 를 그대로 쓴다.
+      const shotHeadline = !!(M.goal || M.onT || M.blocked || M.miss);
+      title = shotHeadline ? M.result : `${label(e)} 성공`;
+      player = e.xfpScore != null ? {jersey: String(e.jersey), score: e.xfpScore, gold: true} : null;
     } else if (r.pre) { title = '상대 공격'; }
     else { const a = r.g.main; title = liveLabel(a); player = {jersey: String(a.jersey), score: a.xfpScore != null ? a.xfpScore : null, gold: a.xfpScore >= 95}; }
     const P = clamp(r.P || 0, 0, 1);
