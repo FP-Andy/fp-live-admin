@@ -2449,6 +2449,13 @@ export default function FineplayJobsPage() {
                       >
                         {fmt(clipRangeOf(tag).start)} → {fmt(clipRangeOf(tag).end)}
                       </button>
+                      {/* 이 클립이 몇 초짜리로 만들어지는지 — 수동 태깅처럼 길이를 바로 보여 준다. */}
+                      <span
+                        title="이 클립 길이(앞/뒤 패딩 반영)"
+                        style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted, #999)', fontVariantNumeric: 'tabular-nums' }}
+                      >
+                        {(() => { const r = clipRangeOf(tag); return fmt(Math.max(0, r.end - r.start)); })()}
+                      </span>
                       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, color: 'var(--muted, #999)' }}>
                         앞 <input
                           type="number" min={0} max={60}

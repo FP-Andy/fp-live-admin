@@ -2394,6 +2394,16 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
     requestAnimationFrame(() => statInputRef.current?.focus());
   };
 
+  // 실수로 "새 액션"을 눌러 이어받은 Before 좌표가 날아갔을 때의 복구 —
+  // 기록된 로그에서 액션을 골라 그 After 좌표를 현재 Before 로 다시 복사한다(좌표만).
+  const copySceneAfterToBefore = (scene: SavedScene) => {
+    const dots = clonePitchDotsForNextScene(scene.afterDots || []);
+    if (!dots.length) { setStatus('이 액션엔 복사할 After 좌표가 없습니다'); return; }
+    setBeforeDots(dots);
+    setStatus(`선택한 액션의 After 좌표를 현재 Before로 복사했습니다 (${dots.length}점)`);
+    requestAnimationFrame(() => statInputRef.current?.focus());
+  };
+
   // 불러오기: 선택한 저장 장면을 기록된 로그 아래 "수정용 피치"로 복원 — 라이브 캔버스(찍는 데이터)는 안 건드림
   const loadSelectedScene = () => {
     if (selectedSceneIndex == null) return;
@@ -5246,7 +5256,15 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
                             role="button"
                             tabIndex={0}
                           >
-                            <div className="fpa-log-action-divider">액션 {actionPos + 1}{editingSceneIndex === sceneIdx ? ' (편집 중)' : ''}</div>
+                            <div className="fpa-log-action-divider">
+                              액션 {actionPos + 1}{editingSceneIndex === sceneIdx ? ' (편집 중)' : ''}
+                              <button
+                                type="button"
+                                title="이 액션의 After 좌표를 현재 Before로 복사 — 실수로 '새 액션'을 눌러 좌표가 날아갔을 때 되돌리기"
+                                onClick={(e) => { e.stopPropagation(); copySceneAfterToBefore(scene); }}
+                                style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 5, cursor: 'pointer', border: '1px solid var(--border-ghost, #3a3a42)', background: 'var(--surface-input, #1a1a1f)', color: 'var(--fg, #ddd)' }}
+                              >⎘ 좌표 복사</button>
+                            </div>
                             {sceneRowOrder(scene.rows.length, scene.primary).map(({ j, role }) =>
                               renderLogRow(scene.rows[j], scene.logs[j], `s${sceneIdx}-${j}`, false, -1, role),
                             )}
