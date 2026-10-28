@@ -204,6 +204,10 @@ GK_CLAIM_CODE = "S14"
 # effect_basis 가 progression 곡선으로 백분위를 낸다 — 전용 앵커가 쌓이면 재보정 대상.
 # ⚠️ S15 도 잠정 배정(24코드 표준 밖). 정본 확인 후 상수만 바꾸면 된다.
 BEFOULED_CODE = "S15"
+# 파울 유도 점수 밴드 — 백분위를 [55, 92] 로 선형 사상한다. 파울을 얻어낸 건 늘 어느
+# 정도 가치가 있어(하한 55) 자리가 낮아도 바닥까지 떨어지지 않고, 반대로 그 자체가
+# 득점·유효 액션은 아니라 상한을 92 로 눌러 둔다(운영 지정, 2026-10-28).
+BEFOULED_SCORE_BAND: tuple[int, int] = (55, 92)
 
 # 캐칭·펀칭 밴드와 곡선 (2026-09-07 운영 결정).
 #
@@ -514,6 +518,16 @@ def duel_outcome_score(percentile: float) -> int:
 def defense_outcome_score(percentile: float) -> int:
     """수비 백분위 → [50, 100] 안의 점수 (DEFENSE_SCORE_BAND 주석 참조)."""
     return _normal_band_score(percentile, DEFENSE_SCORE_BAND, DEFENSE_SCORE_SIGMA_SPAN)
+
+
+def befouled_outcome_score(percentile: float) -> int:
+    """파울 유도 백분위 → [55, 92] 안의 점수 (BEFOULED_SCORE_BAND 주석 참조).
+
+    소유 밴드처럼 **선형** 사상이다 — 경합·수비의 종모양 압축을 쓰지 않는다. 그 지점
+    EPV 를 그대로 줄세운 값이라, 자리의 가치 차이를 눌러 가운데로 모으지 않고 편다.
+    """
+    lo, hi = BEFOULED_SCORE_BAND
+    return int(round(lo + (hi - lo) * max(0.0, min(1.0, percentile))))
 
 
 def possession_outcome_score(code: str, action: dict[str, Any], percentile: float) -> int | None:
@@ -1133,6 +1147,11 @@ def score_clip_actions(payload_actions: list[dict[str, Any]]) -> None:
             elif code == GK_CLAIM_CODE:
                 # 캐칭·펀칭은 액션별 밴드에 볼록 곡선으로 얹는다(GK_CLAIM_SCORE_BANDS).
                 banded = gk_claim_outcome_score(pa, p)
+            elif code == BEFOULED_CODE:
+                # 파울 유도는 그 지점 EPV 백분위를 [55,92] 밴드에 선형으로 얹는다.
+                # possession_outcome_score 보다 먼저 봐야 한다 — S 코드라 안 그러면
+                # 공통 소유 밴드([50,80])로 빨려 들어간다.
+                banded = befouled_outcome_score(p)
             elif code in DEFENSE_CODES and effect_basis(code, pa) == "defense":
                 # 태클·인터셉트·컷아웃·클리어 — 범위 [50,100] 은 그대로, 모양만 정규로.
                 # **슛블락은 제외된다**(effect_basis 가 "goal"): 막은 슛의 xG 로 재므로
