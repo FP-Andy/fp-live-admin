@@ -1464,6 +1464,10 @@ export default function ClipResultsPage() {
               ref={videoRef}
               src={videoSource?.clipId === detail.id ? videoSource.url : detail.video_url}
               controls
+              // 클립을 열면 바로 버퍼링해 둬서 재생 버튼을 눌렀을 때 검은 화면에서 멈추지 않게 한다.
+              // 클립은 짧아 미리 받아도 부담이 적다. 로딩 동안엔 검정 대신 썸네일(poster)을 보여 준다.
+              preload="auto"
+              poster={detail.thumbnail_url || undefined}
               onError={() => { void refreshVideoSource(detail.id); }}
               onTimeUpdate={(e) => { playedAtRef.current = e.currentTarget.currentTime; }}
               onLoadedMetadata={(e) => {
