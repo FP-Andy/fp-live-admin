@@ -75,7 +75,7 @@ ACTION_LABELS_KO: dict[str, str] = {
     "Duel": "경합",
     "Acquisition": "볼 획득",
     "Clear": "클리어",
-    "Cutout": "컷아웃",
+    "Cutout": "차단",
     "Block": "블록",
     "Catching": "캐칭",
     "Punching": "펀칭",

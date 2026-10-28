@@ -24,7 +24,7 @@
 
   const DEF = new Set(['Intercept', 'Clear', 'Cutout', 'Tackle', 'Block', 'Save', 'Interception', 'Clearance', 'Defense', 'Duel']);
   const HOLD_ACT = new Set(['Tackle', 'Intercept', 'Interception', 'Duel']);  // 우리가 공을 가짐
-  const RENAME = {'세이브': '선방', '컷아웃': '패스 차단'};
+  const RENAME = {'세이브': '선방'};
 
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const easeIO = (u) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
@@ -314,9 +314,15 @@
     // 제목·선수 점수(숫자는 한 번에 하나)
     let title, player = null;
     if (r.ended) {
-      // 끝 점수: 마지막 액션 선수가 이 장면 최고 점수 선수면 그 점수 유지, 아니면 최고 선수로
-      const last = r.g.main, keep = last.jersey === M.best.jersey && last.xfpScore != null, e = keep ? last : M.best;
-      title = M.result; player = e.xfpScore != null ? {jersey: String(e.jersey), score: e.xfpScore, gold: true} : null;
+      // 끝 = 이 장면의 "최고 플레이"(선수·액션·점수·성공실패 전부 일치). 골만 "득점 성공" 유지.
+      // 제목 워딩은 액션 태깅 기준(actionLabel + 슛 결과: 유효 슈팅 / 블록된 슈팅 / 슈팅).
+      const best = M.best;
+      const bestFail = /Fail/.test(best.tags || '') && best.baseAction !== 'Shot';
+      title = M.goal ? '득점 성공'
+        : best.baseAction === 'Shot' ? (M.onT ? '유효 슈팅' : M.blocked ? '블록된 슈팅' : '슈팅')
+        : bestFail ? `${label(best)} 실패`
+        : `${label(best)} 성공`;
+      player = best.xfpScore != null ? {jersey: String(best.jersey), score: best.xfpScore, gold: true} : null;
     } else if (r.pre) { title = '상대 공격'; }
     else { const a = r.g.main; title = liveLabel(a); player = {jersey: String(a.jersey), score: a.xfpScore != null ? a.xfpScore : null, gold: a.xfpScore >= 95}; }
     const P = clamp(r.P || 0, 0, 1);

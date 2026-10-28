@@ -470,13 +470,16 @@ function GoalPanel({
   const faceD = gloveW / 2 + 7 * u;
   const faceX = endX - (ndx / nlen) * faceD;
   const faceY = endY - (ndy / nlen) * faceD;
+  // 세이브면 공은 골대 입구(endX,endY)가 아니라 골키퍼(장갑, 골대 앞)에서 멈춘다 —
+  // 입구까지 가면 '막았는데도 골에 들어간' 것처럼 보인다. 아크 끝 접선 근사로 장갑 앞
+  // (faceD 만큼) 지점의 베지어 파라미터(tGlove)를 구해 공·궤적 모두 거기까지만 간다.
+  const tGlove = Math.max(0, 1 - faceD / (2 * nlen));
 
   const ball = (() => {
     if (!isSave) return bez(shotT);
-    if (shotT <= SAVE_CONTACT) return bez(shotT / SAVE_CONTACT);
-    // 잡았으면 **장갑과 같은 자리**에 겹쳐 멈춘다. 장갑이 뒤, 공이 앞이라(그리는
-    // 순서가 그렇다) 손에 쥔 그림이 된다. 옆에 붙여 놓으면 '닿기만 하고 흘렀다' 로 보인다.
-    if (caught) return { x: endX, y: endY };
+    if (shotT <= SAVE_CONTACT) return bez((shotT / SAVE_CONTACT) * tGlove);
+    // 잡았으면 골키퍼(장갑) 자리에 멈춘다 — 골대 입구까지 가지 않는다.
+    if (caught) return { x: faceX, y: faceY };
     // 쳐냈으면 가까운 포스트 밖으로, 크로스바 위로. 패널 안에 가둔다(밖으로 나가면
     // 피치 위에 공이 떠 있는 그림이 된다).
     const after = ease((shotT - SAVE_CONTACT) / (1 - SAVE_CONTACT));

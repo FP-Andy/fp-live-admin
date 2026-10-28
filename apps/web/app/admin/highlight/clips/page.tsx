@@ -403,20 +403,17 @@ export default function ClipResultsPage() {
       if (activeClipId.current !== clipId) return;
       setDetail(d);
       setActions(d.actions);
-      // 구간 경계 되유도 — 액션에 찍힌 start/end 가 곧 경계다. 여기에, 아직 액션을 안 넣어
-      // offset 에 흔적이 없는 칸을 브라우저 기억에서 더한다.
+      // 구간은 사람이 직접 나눈다 — 액션 offset 에서 자동으로 나누지 않는다(요청).
+      // 저장해 둔 수동 경계(remembered)만 되살린다. 액션 start/end(전송 경계)는 그대로 유지된다.
       const duration = Number(d.duration_seconds || 0);
-      const fromActions = d.actions
-        .flatMap((a) => [a.startOffset, a.endOffset])
-        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
       let remembered: number[] = [];
       try {
         const raw = JSON.parse(window.localStorage.getItem(segStoreKey(clipId)) || '[]');
         if (Array.isArray(raw)) remembered = raw.filter((v) => typeof v === 'number');
       } catch {
-        /* 사파리 프라이빗 등 — 기억이 없으면 되유도분만 쓴다 */
+        /* 사파리 프라이빗 등 — 기억이 없으면 구간 없이 통짜 */
       }
-      setSplits(mergeSplits([...fromActions, ...remembered], duration));
+      setSplits(mergeSplits(remembered, duration));
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
     }
