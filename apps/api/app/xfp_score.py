@@ -197,6 +197,14 @@ def save_catch_bonus(score: float) -> int:
 # ⚠️ S14 도 SAVE_CODE 와 같이 **잠정 배정**이다 — 정본 확인 후 상수만 바꾸면 된다.
 GK_CLAIM_CODE = "S14"
 
+# 파울 유도(Be Fouled, 'ff') — 파울을 얻어낸 '그 지점' 의 EPV 레벨로 잰다. 코드가
+# 없어 점수가 통째로 빠져 있던 액션이다(세이브·GK 처리와 같은 공백). 끝점을 안 찍어
+# ΔEPV 가 0 이라, 전진 델타가 아니라 그 자리의 상태가치 레벨(fpa._epv_state_value)을
+# EPV 컬럼에 담는다. 그 레벨의 분포가 전진 델타 앵커(progression) 범위와 겹쳐
+# effect_basis 가 progression 곡선으로 백분위를 낸다 — 전용 앵커가 쌓이면 재보정 대상.
+# ⚠️ S15 도 잠정 배정(24코드 표준 밖). 정본 확인 후 상수만 바꾸면 된다.
+BEFOULED_CODE = "S15"
+
 # 캐칭·펀칭 밴드와 곡선 (2026-09-07 운영 결정).
 #
 #     score = 밴드하한 + 밴드폭 × 백분위 ** GK_CLAIM_SCORE_GAMMA
@@ -741,6 +749,11 @@ def effect_basis(code: str, action: dict[str, Any]) -> str | None:
     # 캐칭·펀칭은 킥 위치 위협 × 회수계수 → 전용 gk_claim 곡선(GK_CLAIM_CODE 주석).
     if code == GK_CLAIM_CODE:
         return "gk_claim"
+    # 파울 유도는 그 지점 EPV '레벨' 로 재는데(BEFOULED_CODE 주석), 그 값의 분포가
+    # 전진 델타 앵커 범위와 겹쳐 progression 곡선으로 백분위를 낸다. S 코드라 중복제거
+    # Outcome 군은 possession 이지만(한 event 라 솔로), 백분위 곡선은 여기서 가른다.
+    if code == BEFOULED_CODE:
+        return "progression"
     return outcome_family(code)
 
 

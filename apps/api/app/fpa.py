@@ -2479,6 +2479,13 @@ def generate_log_entry(
             # (ΔEPV 가 정의상 0), 여기서 쓰는 좌표는 **after 프레임의 행위자 점**이다.
             # DUEL_CODES 주석 참조.
             epv_value = _defense_turnover_value(metric_end_x_adj, metric_end_y, action_name)
+        elif action_code_raw == "ff":
+            # 파울 유도(Be Fouled): 파울을 얻어낸 '그 지점' 의 상태가치 레벨로 잰다.
+            # 끝점을 안 찍어 _epv_delta 는 0 이 되므로(위치를 옮긴 게 아니라 그 자리에서
+            # 얻어낸 것), 수비 전환가치·GK 처리값과 같이 '레벨' 을 EPV 컬럼에 담는다.
+            # 공격 기준 상태가치라 위험한 자리에서 얻은 파울일수록 값이 크다
+            # (xfp_score.BEFOULED_CODE 가 progression 곡선으로 백분위를 낸다).
+            epv_value = _epv_state_value(start_x_adj, start_y)
         else:
             epv_value = _epv_delta(start_x_adj, start_y, metric_end_x_adj, metric_end_y)
         if epv_value is not None:

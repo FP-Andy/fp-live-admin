@@ -20,6 +20,7 @@ from typing import Any
 
 from .fpa import press_movement_shares
 from .xfp_score import (
+    BEFOULED_CODE,
     GK_CLAIM_CODE,
     PRESS_CODE,
     SAVE_CODE,
@@ -988,6 +989,10 @@ def classify_action_code(
         return GK_CLAIM_CODE
     if name == "Duel":
         return "S11" if not opp else "S12"
+    # 파울 유도 — 얻어낸 지점의 EPV 레벨로 잰다(BEFOULED_CODE 주석). 진영과 무관하게
+    # 같은 코드다. 위치는 점수(그 지점 EPV)에만 반영되지 코드를 가르지 않는다.
+    if name == "Be Fouled":
+        return BEFOULED_CODE
     return None
 
 
