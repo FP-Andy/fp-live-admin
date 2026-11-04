@@ -191,9 +191,11 @@ app.include_router(auth_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
 from .futsal_analysis_snapshots import router as analysis_snapshots_router
+from .agent_fla import router as agent_fla_router, is_tombstoned as _agent_fla_tombstoned
 from . import futsal_substitution_redetection  # register private review evidence routes
 from . import futsal_recovery_jobs  # persistent, bounded RF-DETR jobs
 app.include_router(analysis_snapshots_router)
+app.include_router(agent_fla_router)  # /api/agent/fla/** — 직원 에이전트 토큰 전용(이사68)
 
 origins = [v.strip() for v in os.getenv("CORS_ORIGINS", "*").split(",") if v.strip()]
 app.add_middleware(
@@ -3332,11 +3334,14 @@ def _apply_editor_item_updates(
         event.under_pressure = body.under_pressure
         event.one_on_one = body.one_on_one
         event.shot_pace_band = body.shot_pace_band
+        # 기록 수정 화면은 이 값을 보내지 않는다(None) — 그때는 저장된 자책골 표시를 그대로 둔다.
+        if body.is_own_goal is not None:
+            event.is_own_goal = body.is_own_goal
         return xgot_meta
 
-    if body.kind == "MARKER" and body.type == "HALFTIME_START":
+    if body.kind == "MARKER" and body.type in {"HALFTIME_START", "EXTRA_TIME_1_START", "EXTRA_TIME_2_START"}:
         assert marker is not None
-        marker.marker_type = "HALFTIME_START"
+        marker.marker_type = body.type
         marker.clock_ms = body.clock_ms
         return None
 
@@ -8414,6 +8419,9 @@ def post_attack_lane(
     if existing:
         require_same_request(existing, match_id, {'type': 'ATTACK_LANE', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'lane': body.lane})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
+    if _agent_fla_tombstoned(db, body.event_id):
+        # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실). 되살리지 않고 저장 확인만 돌려준다.
+        return {"ok": True, "idempotent": True, "event_id": body.event_id, "deleted_by_agent": True}
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8474,6 +8482,9 @@ def post_xg(
     if existing:
         require_same_request(existing, match_id, {'type': 'XG', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'xg': body.xg, 'player_name': (body.player_name or "").strip() or None, 'player_number': (body.player_number or "").strip() or None, 'is_goal': body.is_goal, 'is_own_goal': body.is_own_goal, 'is_on_target': body.is_on_target, 'shot_x': body.shot_x, 'shot_y': body.shot_y, 'goalmouth_x': body.goalmouth_x, 'goalmouth_y': body.goalmouth_y, 'is_header': body.is_header, 'is_weak_foot': body.is_weak_foot, 'under_pressure': body.under_pressure, 'one_on_one': body.one_on_one, 'shot_pace_band': body.shot_pace_band})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
+    if _agent_fla_tombstoned(db, body.event_id):
+        # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실). 되살리지 않고 저장 확인만 돌려준다.
+        return {"ok": True, "idempotent": True, "event_id": body.event_id, "deleted_by_agent": True}
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8566,6 +8577,20 @@ def post_xg(
     return {"ok": True, "event_id": body.event_id, "xgot": xgot_meta["xgot"], "xgot_meta": xgot_meta}
 
 
+def _parse_archived_match_name(db: Session, name: str) -> tuple[str, str, int, str, str]:
+    """기록 수정 화면의 경기 이름 규칙. 에이전트 수정(agent_fla)도 같은 규칙을 쓴다."""
+    next_name = name.strip()
+    name_match = MATCH_NAME_PATTERN.match(next_name)
+    if not name_match:
+        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
+
+    next_class = _normalize_competition_class(name_match.group("class"))
+    if not db.get(CompetitionClass, next_class):
+        raise HTTPException(status_code=400, detail="Unknown competition class")
+    next_round = int(name_match.group("round"))
+    return next_name, next_class, next_round, name_match.group("home").strip(), name_match.group("away").strip()
+
+
 @app.patch("/api/admin/matches/{match_id}", response_model=MatchResponse)
 def update_archived_match(
     match_id: UUID,
@@ -8578,17 +8603,7 @@ def update_archived_match(
         raise HTTPException(status_code=404, detail="Match not found")
     _require_archived_editor_access(match_obj, user)
 
-    next_name = body.name.strip()
-    name_match = MATCH_NAME_PATTERN.match(next_name)
-    if not name_match:
-        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
-
-    next_class = _normalize_competition_class(name_match.group("class"))
-    if not db.get(CompetitionClass, next_class):
-        raise HTTPException(status_code=400, detail="Unknown competition class")
-    next_round = int(name_match.group("round"))
-    home_team = name_match.group("home").strip()
-    away_team = name_match.group("away").strip()
+    next_name, next_class, next_round, home_team, away_team = _parse_archived_match_name(db, body.name)
 
     previous_name = match_obj.name
     metadata = dict(match_obj.metadata_json or {})

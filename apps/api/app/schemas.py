@@ -304,6 +304,8 @@ class TimelineEditorUpsertRequest(BaseModel):
     under_pressure: bool = False
     one_on_one: bool = False
     shot_pace_band: Literal["LOW", "MID", "HIGH"] = "MID"
+    # None = 저장된 값 유지(기록 수정 화면). 에이전트 수정은 항상 값을 보낸다.
+    is_own_goal: bool | None = None
 
 
 class TimelineEditorListItem(BaseModel):
