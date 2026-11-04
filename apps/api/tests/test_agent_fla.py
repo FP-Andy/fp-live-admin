@@ -16,14 +16,20 @@ from unittest.mock import patch
 from uuid import uuid4
 
 ROOT = tempfile.TemporaryDirectory(prefix="fpc-agent-fla-tests-")
-os.environ.update(DATABASE_URL="sqlite:///" + str(Path(ROOT.name) / "test.sqlite"),
+QA_DATABASE = os.getenv('FPC_TEST_DATABASE_URL')  # CI 의 PostgreSQL 작업(행 잠금 포함)과 같은 규칙
+if QA_DATABASE:
+    from urllib.parse import urlparse
+    parsed = urlparse(QA_DATABASE)
+    assert parsed.path == '/fpc_release_qa', 'Only isolated fpc_release_qa is allowed'
+os.environ.update(DATABASE_URL=QA_DATABASE or "sqlite:///" + str(Path(ROOT.name) / "test.sqlite"),
                   AWS_EC2_METADATA_DISABLED="true", MPLCONFIGDIR=str(Path(ROOT.name) / "mpl"),
                   XDG_CACHE_HOME=str(Path(ROOT.name) / "cache"),
                   HIGHLIGHT_RUNTIME_DIR=str(Path(ROOT.name) / "highlight"),
                   BROADCAST_INGEST_KEY="synthetic-broadcast-key")
 sys.path.insert(0, os.getenv('FPC_API_SOURCE', str(Path(__file__).resolve().parents[1])))
 NETWORK = patch.object(socket.socket, "connect", side_effect=AssertionError("No network in API regression tests"))
-NETWORK.start()
+if not QA_DATABASE:
+    NETWORK.start()
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from fastapi.testclient import TestClient

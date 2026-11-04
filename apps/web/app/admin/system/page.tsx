@@ -1,6 +1,7 @@
 'use client';
 
 import AccessManagement from '../../../components/AccessManagement';
+import AgentTokenManagement from '../../../components/AgentTokenManagement';
 import { ConsoleSectionNav } from '../../../components/ConsoleTools';
 import { useEffect, useState } from 'react';
 import { apiFetch, apiJson, displayRole, type SessionUser } from '../../../lib/api';
@@ -302,8 +303,9 @@ export default function SystemPage() {
 
   return (
     <main className="page-stack console-page system-page">
-      <ConsoleSectionNav items={[{ id: "system-access", label: "계정 · 접근" }, { id: "system-health", label: "알림" }, { id: "system-resources", label: "서버 상태" }, { id: "system-media", label: "미디어 제어" }, { id: "system-worker", label: "GPU 제어" }, { id: "system-audit", label: "작업 이력" }]} />
+      <ConsoleSectionNav items={[{ id: "system-access", label: "계정 · 접근" }, { id: "system-agent-tokens", label: "에이전트 토큰" }, { id: "system-health", label: "알림" }, { id: "system-resources", label: "서버 상태" }, { id: "system-media", label: "미디어 제어" }, { id: "system-worker", label: "GPU 제어" }, { id: "system-audit", label: "작업 이력" }]} />
       <AccessManagement />
+      <AgentTokenManagement />
       <section id="system-health" className="card card-utility grid">
         <div className="section-heading">
           <div>

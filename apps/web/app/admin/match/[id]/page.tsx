@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
+import AgentEditNotice from '../../../../components/fla/AgentEditNotice';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
 import { elapsedMatchMs, restoredMatchMs, matchControlJson } from '../../../../lib/match-control';
 import { usePendingShots } from '../../../../lib/use-pending-shots';
@@ -1472,6 +1473,7 @@ function MatchControlPage() {
           </details>
       {loadError ? <div className="fla-feedback" role="alert">{loadError}</div> : null}
       {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}</span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
+      <AgentEditNotice matchId={id} onChange={() => { void fetchAll().catch(() => {}); }} />
       <section className="card fla-clock" aria-label="경기 타이머">
         <div className="fla-clock-main"><div><span className="muted">{running ? '진행 중' : '일시정지'}</span><strong className="fla-clock-value">{displayClockLabel(clockMs)}{clockSpeed === 2 ? ' ×2' : ''}</strong></div>
           <div className="fla-period-controls" role="group" aria-label={isSinglePeriod ? "단일 경기" : "전후반 선택"}>
