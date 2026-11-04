@@ -1109,6 +1109,7 @@ def _op_update_event(v: _Virtual, op: UpdateEventOp):
             fields["player_number"], fields["player_name"] = _resolve_player(v, fields["team"], number, name)
         if fields.get("xg") is None:
             fields["xg"] = 0.0
+        fields["shot_pace_band"] = fields.get("shot_pace_band") or "MID"  # 기록 수정 화면과 같은 기본값
         _check_shot_shape(fields)
     _apply_event_fields(v, event, fields)
     if any(k in given for k in ("at", "team", "lane", "is_goal")):
