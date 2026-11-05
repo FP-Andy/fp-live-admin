@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 import socket
 import sys
+import json
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -292,7 +294,10 @@ class AgentFlaTests(unittest.TestCase):
         self.assertEqual(ctx.describe(2_810_000)["label"], "1H 45+1:50")
         for half, text, code in (("1H", "47:30", "CLOCK_IN_NEXT_PERIOD"), ("2H", "30:00", "CLOCK_OUT_OF_HALF"),
                                  ("ET1", "95:00", "PERIOD_NOT_STARTED"), ("1H", "10:75", "BAD_CLOCK"),
-                                 ("2H", "45+1:00", "BAD_CLOCK"), ("1H", "abc", "BAD_CLOCK"), ("1H", "45+21:00", "CLOCK_OUT_OF_HALF")):
+                                 ("2H", "45+1:00", "BAD_CLOCK"), ("1H", "abc", "BAD_CLOCK"), ("1H", "45+21:00", "CLOCK_OUT_OF_HALF"),
+                                 # 지시 02 L1: 추가시간 초 60 이상·전각 숫자
+                                 ("1H", "45+0:99", "BAD_CLOCK"), ("1H", "45+1:60", "BAD_CLOCK"), ("1H", "５０:００", "BAD_CLOCK"),
+                                 ("1H", "１0:00", "BAD_CLOCK")):
             with self.subTest(text):
                 with self.assertRaises(agent_fla.RuleError) as raised:
                     ctx.to_raw(half, text)
@@ -314,8 +319,8 @@ class AgentFlaTests(unittest.TestCase):
         self.assertEqual((own["is_goal"], own["is_on_target"], own["xg"], own["player_number"]), (True, False, 0.0, None))
         self.assertEqual(self.errors(self.plan(self.archived, [{"op": "update_event", "event_id": str(self.lane), "set": {"xg": 0.2}}])),
                          ["FIELD_NOT_FOR_LANE"])
-        too_many = [{"op": "delete_event", "event_id": str(uuid4())}] * 21
-        self.assertEqual(self.plan(self.archived, too_many).status_code, 422)
+        too_big = [{"op": "delete_event", "event_id": str(uuid4())}] * (agent_fla.OPS_SAFETY_MAX + 1)
+        self.assertEqual(self.plan(self.archived, too_big).status_code, 422)  # 요청 크기 안전값(한도 아님)
 
     # ── 정정 절차(보관 경기) ─────────────────────────────────────────────────
 
@@ -395,7 +400,7 @@ class AgentFlaTests(unittest.TestCase):
     def test_live_guards(self):
         cases = [
             ([{"op": "add_shot", "team": "HOME", "at": {"half": "1H", "clock": "35:00"}, "shot_x": 95, "shot_y": 30}], "LIVE_FUTURE_TIME"),
-            ([{"op": "set_period_start", "period": "2H", "previous_period_clock": "20:00"}], "LIVE_PERIOD_TRANSITION"),
+            ([{"op": "set_period_start", "period": "2H", "previous_period_clock": "20:00"}], "LIVE_PERIOD_MARKER"),
             ([{"op": "rename_match", "name": "[K3 | 2R] A vs B"}], "LIVE_RENAME"),
             ([{"op": "set_possession_team", "segment_id": self.live_seg_ids[1], "team": "AWAY"}], "SEGMENT_OPEN"),
             ([{"op": "move_possession_boundary", "segment_id": self.live_seg_ids[0], "new_end": {"half": "1H", "clock": "07:00"}}], "SEGMENT_OPEN"),
@@ -538,6 +543,223 @@ class AgentFlaTests(unittest.TestCase):
         self.assertIn("대표에게 문의", rules["markdown"])
         self.assertEqual(self.anon.get(f"/api/agent/fla/matches/{self.archived}/result", headers=self.h()).status_code, 200)
 
+
+    # ── 지시 02(보안 검증 반영) ─────────────────────────────────────────────
+
+    def _make_live_second_half(self):
+        """진행 중 경기를 후반으로: 후반 시작 raw 25:00, 지금 raw 40:00(=2H 60:00), 후반 슈팅 하나."""
+        with SessionLocal() as db:
+            db.add(MatchMarker(match_id=self.live, marker_type="HALFTIME_START", clock_ms=1_500_000, created_at=OLD))
+            db.add(State(id=uuid4(), match_id=self.live, clock_ms=2_400_000, running=True, possession_team="HOME",
+                         selected_team="HOME", attack_lr="L2R", created_at=datetime.utcnow() + timedelta(seconds=1)))
+            db.add(self._ev(uuid4(), self.live, 1_800_000, "AWAY"))
+            db.commit()
+
+    def _fla_clock(self):
+        snap = self.anon.get(f"/api/broadcast/matches/{self.live}/snapshot").json()
+        return snap["match"]["fla_clock"]
+
+    def test_r1_live_period_marker_cannot_move_server_clock(self):
+        self._make_live_second_half()
+        before = self._fla_clock()
+        # 재현 시나리오(검증 R1): 진행 중 후반 시작 표시를 옮겨 지금 시계를 10분 당기려 한다 → plan 단계에서 거부
+        r = self.plan(self.live, [{"op": "set_period_start", "period": "2H", "previous_period_clock": "35:00"}])
+        self.assertEqual(self.errors(r), ["LIVE_PERIOD_MARKER"])
+        self.assertEqual(self._fla_clock(), before)
+        # 일반 검사: 어떤 op 로든 진행 중 마커·지금 시계 표시가 바뀌면 거부
+        with SessionLocal() as db:
+            v = agent_fla._Virtual(db, db.get(Match, self.live))
+            marker = next(iter(v.markers.values()))
+            marker.clock_ms = 2_100_000
+            with self.assertRaises(agent_fla.RuleError) as raised:
+                agent_fla._live_clock_guard(v)
+            self.assertEqual(raised.exception.code, "LIVE_CLOCK_CHANGE")
+            # apply 때도: 진행 중 경기에 마커를 쓰는 변경 묶음은 적용하지 않는다(plan 을 우회해 만든 행이라도)
+            token = db.query(AgentFlaToken).filter(AgentFlaToken.token_hash == fingerprint(self.token)).one()
+            mid = db.query(MatchMarker).filter(MatchMarker.match_id == self.live).one()
+            snap = agent_fla._snap(mid, agent_fla.MARKER_COLS)
+            moved = {**snap, "clock_ms": 2_100_000}
+            row = AgentFlaChange(token_id=token.id, user_id=token.user_id, actor_name="박기록", match_id=self.live,
+                                 status="planned", live=True, request_summary="우회 시도", summary="", ops=[],
+                                 items=[{"key": f"marker:{mid.id}", "kind": "marker", "action": "update", "before": snap,
+                                         "after": moved, "before_fp": agent_fla._fp(snap), "after_fp": agent_fla._fp(moved)}],
+                                 preview={}, created_at=datetime.utcnow(), expires_at=datetime.utcnow() + timedelta(minutes=5))
+            db.add(row)
+            db.commit()
+            plan_id = row.id
+        r = self.apply(plan_id)
+        self.assertEqual((r.status_code, r.json()["detail"]["reason"]), (409, "live_clock_change"))
+        self.assertEqual(self._fla_clock(), before)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(MatchMarker).filter(MatchMarker.match_id == self.live).one().clock_ms, 1_500_000)
+        # 진행 중에도 지난 기록 수정은 그대로 된다(시계 불변)
+        self.plan_apply(self.live, [{"op": "update_event", "event_id": str(self.live_goal), "set": {"player_number": "9"}}])
+        self.assertEqual(self._fla_clock(), before)
+        # 보관 뒤에는 에이전트로 하프 시작 시각을 고칠 수 있다
+        self.plan_apply(self.archived, [{"op": "set_period_start", "period": "2H", "previous_period_clock": "45+1:30"}])
+
+    @unittest.skipUnless(QA_DATABASE, "병렬 잠금은 PostgreSQL 에서만 의미가 있다(CI 의 PostgreSQL 작업)")
+    def test_r2_parallel_requests_cannot_pass_daily_limits(self):
+        with SessionLocal() as db:
+            ids = [uuid4() for _ in range(8)]
+            db.add_all([Event(id=i, match_id=self.archived, type="ATTACK_LANE", clock_ms=300_000 + n * 10_000, team="AWAY",
+                              lane="LEFT", created_at=OLD) for n, i in enumerate(ids)])
+            db.commit()
+        plans = [self.plan(self.archived, [{"op": "update_event", "event_id": str(i), "set": {"lane": "RIGHT"}}]).json()["data"]["plan_id"]
+                 for i in ids]
+        results, barrier = [], threading.Barrier(len(plans))
+
+        def go(pid):
+            client = TestClient(main.app)
+            barrier.wait()
+            results.append(client.post(f"/api/agent/fla/plans/{pid}/apply", headers=self.h()).status_code)
+            client.close()
+
+        with patch.object(agent_fla, "DAILY_WRITES", 3):
+            threads = [threading.Thread(target=go, args=(p,)) for p in plans]
+            [t.start() for t in threads]
+            [t.join() for t in threads]
+        self.assertEqual(sorted(results), [200] * 3 + [429] * 5)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(AgentFlaChange).filter(AgentFlaChange.status == "applied").count(), 3)
+        # 하루 plan 한도도 같은 방식
+        agent_fla.rate_limiter.reset()
+        results.clear()
+        barrier = threading.Barrier(6)
+
+        def plan_go():
+            client = TestClient(main.app)
+            barrier.wait()
+            results.append(client.post(f"/api/agent/fla/matches/{self.archived}/plan", headers=self.h(),
+                                       json={"request_summary": "병렬", "ops": [{"op": "delete_event", "event_id": str(self.shot)}]}).status_code)
+            client.close()
+
+        with SessionLocal() as db:
+            used = db.query(AgentFlaChange).count()
+        with patch.object(agent_fla, "DAILY_PLANS", used + 2):
+            threads = [threading.Thread(target=plan_go) for _ in range(6)]
+            [t.start() for t in threads]
+            [t.join() for t in threads]
+        self.assertEqual(sorted(results), [200] * 2 + [429] * 4)
+
+    def test_r3_deactivated_admin_token_stops_and_bootstrap_revokes(self):
+        r = self.admin.post("/api/admin/agent-fla/tokens", json={"person_name": "관리자", "user_id": "admin"})
+        self.assertEqual(r.status_code, 200, r.text)
+        admin_token = r.json()["token"]
+        self.assertEqual(self.anon.get("/api/agent/fla/me", headers=self.h(admin_token)).status_code, 200)
+        with SessionLocal() as db:
+            db.get(AdminAccount, "admin").active = False
+            db.commit()
+        r = self.anon.get("/api/agent/fla/me", headers=self.h(admin_token))
+        self.assertEqual((r.status_code, r.json()["detail"]), (401, "이 토큰에 묶인 관리자 계정이 비활성입니다."))
+        self.assertEqual(self.plan(self.archived, [{"op": "delete_event", "event_id": str(self.shot)}], token=admin_token).status_code, 401)
+        # 매니페스트에서 빠져 비활성화되면 토큰도 폐기된다
+        with SessionLocal() as db:
+            db.get(AdminAccount, "admin").active = True
+            db.commit()
+        manifest = Path(ROOT.name) / "admins.json"
+        manifest.write_text(json.dumps({"version": 1, "accounts": [{"login": "boss", "name": "보스", "password_hash": self.password_hash}]}))
+        with SessionLocal() as db:
+            auth.bootstrap_admin_accounts(db, str(manifest))
+        with SessionLocal() as db:
+            row = db.query(AgentFlaToken).filter(AgentFlaToken.token_hash == fingerprint(admin_token)).one()
+            self.assertIsNotNone(row.revoked_at)
+            self.assertEqual(row.revoked_by, "system:admin_deactivated")
+            self.assertTrue(db.query(AuditLog).filter(AuditLog.action == "AGENT_FLA_TOKEN_REVOKED", AuditLog.target_id == row.id).count())
+            staff = db.query(AgentFlaToken).filter(AgentFlaToken.token_hash == fingerprint(self.token)).one()
+            self.assertIsNone(staff.revoked_at)  # 직원 토큰은 그대로
+
+    def test_l2_tombstone_only_for_same_match_and_kind(self):
+        other_live = uuid4()
+        with SessionLocal() as db:
+            db.add(Match(id=other_live, name="[K3 | 3R] A vs B", sport="FOOTBALL", operator_id="op", metadata_json={}, created_at=OLD))
+            db.commit()
+        with patch.object(agent_fla, "LIVE_SETTLE_SECONDS", 0):
+            gone = uuid4()
+            body = {"event_id": str(gone), "clock_ms": 1_200_000, "team": "HOME", "xg": 0.1, "shot_x": 92.0, "shot_y": 30.0}
+            self.assertEqual(self.op.post(f"/api/matches/{self.live}/events/xg", json=body).status_code, 200)
+            self.plan_apply(self.live, [{"op": "delete_event", "event_id": str(gone)}])
+        r = self.op.post(f"/api/matches/{self.live}/events/xg", json=body)
+        self.assertEqual((r.status_code, r.json().get("deleted_by_agent")), (200, True))
+        r = self.op.post(f"/api/matches/{other_live}/events/xg", json=body)
+        self.assertEqual(r.status_code, 409)
+        r = self.op.post(f"/api/matches/{self.live}/events/attack_lane", json={"event_id": str(gone), "clock_ms": 1_200_000, "team": "HOME", "lane": "LEFT"})
+        self.assertEqual(r.status_code, 409)
+        with SessionLocal() as db:
+            self.assertIsNone(db.get(Event, gone))
+
+    def test_l3_flag_values(self):
+        cases = {None: True, "1": True, "true": True, "YES": True, " on ": True,
+                 "0": False, "false": False, "off": False, "disabled": False, "enabled": False, "": False, "2": False}
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                env = {k: v for k, v in os.environ.items() if k != "I68_FLAG"}
+                if value is not None:
+                    env["I68_FLAG"] = value
+                with patch.dict(os.environ, env, clear=True):
+                    self.assertIs(agent_fla._env_flag("I68_FLAG"), expected)
+
+    def test_l4_admin_can_revert_after_token_revoked(self):
+        _p, a = self.plan_apply(self.live, [{"op": "update_event", "event_id": str(self.live_goal), "set": {"is_goal": False}}])
+        self.assertFalse(self.event(self.live_goal).is_goal)
+        url = f"/api/admin/agent-fla/changes/{a['change_id']}/revert"
+        self.assertEqual(self.anon.post(url, headers=self.h()).status_code, 401)  # 토큰으로는 안 됨
+        self.assertEqual(self.op.post(url).status_code, 403)  # 운영자 세션도 안 됨
+        tid = next(t["id"] for t in self.admin.get("/api/admin/agent-fla/tokens").json()["items"] if t["person_name"] == "박기록")
+        self.admin.post(f"/api/admin/agent-fla/tokens/{tid}/revoke")
+        r = self.admin.post(url)
+        self.assertEqual((r.status_code, r.json()["status"], r.json()["reverted_by"]), (200, "reverted", "관리자"))
+        self.assertTrue(self.event(self.live_goal).is_goal)
+        with SessionLocal() as db:
+            audit = db.query(AuditLog).filter(AuditLog.action == "AGENT_FLA_REVERT").one()
+            self.assertEqual((audit.actor_name, audit.actor_role, audit.details["by_admin"], audit.details["staff"]),
+                             ("관리자", "SUPERADMIN", True, "박기록"))
+        notes = self.op.get(f"/api/matches/{self.live}/agent-edits").json()["items"]
+        self.assertTrue(notes[0]["message"].startswith("관리자님이 박기록님의 수정을 되돌렸습니다"))
+        self.assertEqual(self.admin.post(url).status_code, 409)  # 두 번은 안 됨
+        # 충돌 검사도 같다: 적용 뒤 같은 기록이 바뀌었으면 거부
+        token2 = self.issue("박기록")
+        _p, b = self.plan_apply(self.archived, [{"op": "update_event", "event_id": str(self.goal1), "set": {"player_number": "9"}}], token=token2)
+        self.plan_apply(self.archived, [{"op": "update_event", "event_id": str(self.goal1), "set": {"at": {"half": "1H", "clock": "11:00"}}}], token=token2)
+        r = self.admin.post(f"/api/admin/agent-fla/changes/{b['change_id']}/revert")
+        self.assertEqual((r.status_code, r.json()["detail"]["reason"]), (409, "changed_after_apply"))
+
+    # ── 지시 03(한도 기본 해제) ─────────────────────────────────────────────
+
+    def test_d03_limits_are_off_by_default_and_can_be_enabled(self):
+        # 이 테스트 프로세스에는 AGENT_FLA_* 한도 환경변수가 없다 → 전부 한도 없음
+        for name in ("RATE_PER_MINUTE", "WRITE_RATE_PER_MINUTE", "DAILY_WRITES", "DAILY_PLANS", "MAX_ITEMS"):
+            self.assertIsNone(getattr(agent_fla, name), name)
+        for raw, expected in ((None, None), ("", None), ("0", None), ("-3", None), ("abc", None), (" 5 ", 5)):
+            with self.subTest(raw=raw):
+                env = {k: v for k, v in os.environ.items() if k != "I68_LIMIT"}
+                if raw is not None:
+                    env["I68_LIMIT"] = raw
+                with patch.dict(os.environ, env, clear=True):
+                    self.assertEqual(agent_fla._env_limit("I68_LIMIT"), expected)
+        # 분당 호출 한도 없음
+        self.assertEqual({self.anon.get("/api/agent/fla/me", headers=self.h()).status_code for _ in range(80)}, {200})
+        me = self.anon.get("/api/agent/fla/me", headers=self.h()).json()["data"]["limits"]
+        self.assertEqual((me["writes_per_day"], me["items_per_plan"], me["calls_per_minute"]), (None, None, None))
+        # 한 번 항목 수 한도 없음: 25건을 한 plan 으로
+        with SessionLocal() as db:
+            ids = [uuid4() for _ in range(25)]
+            db.add_all([Event(id=i, match_id=self.archived, type="ATTACK_LANE", clock_ms=300_000 + n * 10_000, team="AWAY",
+                              lane="LEFT", created_at=OLD) for n, i in enumerate(ids)])
+            db.commit()
+        ops = [{"op": "update_event", "event_id": str(i), "set": {"lane": "RIGHT"}} for i in ids]
+        self.assertEqual(self.plan(self.archived, ops).json()["data"]["item_count"], 25)
+        # 하루 수정 한도 없음: 연달아 적용·되돌리기
+        for i in ids[:5]:
+            _p, a = self.plan_apply(self.archived, [{"op": "update_event", "event_id": str(i), "set": {"lane": "CENTER"}}])
+            self.assertEqual(self.anon.post(f"/api/agent/fla/changes/{a['change_id']}/revert", headers=self.h()).status_code, 200)
+        # 설정으로 켜면 건다(MAX_ITEMS=0 은 이제 '전부 거부'가 아니라 '없음')
+        with patch.object(agent_fla, "MAX_ITEMS", 20):
+            self.assertEqual(self.errors(self.plan(self.archived, ops)), ["TOO_MANY_ITEMS"])
+        with patch.dict(os.environ, {"AGENT_FLA_MAX_ITEMS": "0"}):
+            self.assertIsNone(agent_fla._env_limit("AGENT_FLA_MAX_ITEMS"))
+        with patch.object(agent_fla, "ITEMS_SAFETY_MAX", 10):
+            self.assertEqual(self.errors(self.plan(self.archived, ops)), ["REQUEST_TOO_LARGE"])
 
 if __name__ == "__main__":
     unittest.main()

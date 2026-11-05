@@ -35,14 +35,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func, or_, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func, inspect, or_, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .auth import require_admin, require_session_user
 from .auth_security import fingerprint, normalize_login
 from .db import Base, get_db
-from .models import AuditLog, Event, Match, MatchMarker, PossessionSegment, ScheduleEntry, State, User
+from .models import AdminAccount, AuditLog, Event, Match, MatchMarker, PossessionSegment, ScheduleEntry, State, User
 
 router = APIRouter()
 
@@ -58,20 +58,41 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-AGENT_ENABLED = os.getenv("AGENT_FLA_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-WRITE_ENABLED = os.getenv("AGENT_FLA_WRITE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-RATE_PER_MINUTE = _env_int("AGENT_FLA_RATE_PER_MINUTE", 60)
-WRITE_RATE_PER_MINUTE = _env_int("AGENT_FLA_WRITE_RATE_PER_MINUTE", 20)
-DAILY_WRITES = _env_int("AGENT_FLA_DAILY_WRITES", 40)  # apply + revert, 토큰당, 한국 날짜 기준
-DAILY_PLANS = _env_int("AGENT_FLA_DAILY_PLANS", 200)
-MAX_ITEMS = _env_int("AGENT_FLA_MAX_ITEMS", 20)  # plan 하나가 바꾸는 행 수
+def _env_flag(name: str) -> bool:
+    """환경변수가 없으면 켜짐. 있으면 1·true·yes·on 만 켜짐이고 그 밖(빈 값·오타 포함)은 꺼짐."""
+    value = os.getenv(name)
+    if value is None:
+        return True
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+AGENT_ENABLED = _env_flag("AGENT_FLA_ENABLED")
+WRITE_ENABLED = _env_flag("AGENT_FLA_WRITE_ENABLED")
+def _env_limit(name: str) -> int | None:
+    """사용 한도. 기본은 없음(None). 환경변수가 비었거나 0 이하·숫자가 아니면 없음, 양수일 때만 그 값으로 건다.
+    2026-11-05 대표 결정(지시 03): 내부 C레벨 직원에게만 주므로 한도 없이 시작하고, 대상이 넓어지면 설정으로 켠다."""
+    try:
+        value = int((os.getenv(name) or "").strip() or "0")
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+RATE_PER_MINUTE = _env_limit("AGENT_FLA_RATE_PER_MINUTE")  # 토큰당 분당 호출
+WRITE_RATE_PER_MINUTE = _env_limit("AGENT_FLA_WRITE_RATE_PER_MINUTE")  # 토큰당 분당 plan·apply·revert
+DAILY_WRITES = _env_limit("AGENT_FLA_DAILY_WRITES")  # apply + revert, 토큰당, 한국 날짜 기준
+DAILY_PLANS = _env_limit("AGENT_FLA_DAILY_PLANS")
+MAX_ITEMS = _env_limit("AGENT_FLA_MAX_ITEMS")  # plan 하나가 바꾸는 행 수
+# 한도가 아니라 서버 보호용 요청 크기 안전값(비정상적으로 큰 요청만 422). 문서에는 "한도 없음".
+OPS_SAFETY_MAX = 500
+ITEMS_SAFETY_MAX = 2000
 PLAN_TTL_SECONDS = _env_int("AGENT_FLA_PLAN_TTL_SECONDS", 600)
 LIVE_SETTLE_SECONDS = _env_int("AGENT_FLA_LIVE_SETTLE_SECONDS", 30)
 TOKEN_DEFAULT_DAYS = 90
 STOPPAGE_MAX_MS = 20 * 60_000  # 하프마다 추가시간 상한(표기 45+20:00까지)
 DUPLICATE_WINDOW_MS = 3_000
 RULES_PATH = Path(__file__).resolve().parent / "data" / "agent_fla_rules.md"
-RULES_VERSION = "2026-11-04.1"
+RULES_VERSION = "2026-11-05.2"
 
 # 토큰으로 할 수 없는 일 — 이름을 넣으면 422 가 아니라 403 과 이유를 돌려준다(에이전트가 다른 길을 찾지 않게).
 FORBIDDEN_OPS = {
@@ -127,6 +148,8 @@ class AgentFlaChange(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     reverted_by_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 되돌린 사람 이름(관리자가 콘솔에서 되돌리면 관리자 이름, 토큰이면 직원 이름)
+    reverted_by_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class AgentFlaTombstone(Base):
@@ -136,12 +159,39 @@ class AgentFlaTombstone(Base):
 
     event_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
     match_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    event_type: Mapped[str | None] = mapped_column(String, nullable=True)  # XG · ATTACK_LANE
     change_id: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
-def is_tombstoned(db: Session, event_id: UUID) -> bool:
-    return db.get(AgentFlaTombstone, event_id) is not None
+def tombstone_reply(db: Session, event_id: UUID, match_id: UUID, event_type: str) -> dict | None:
+    """라이브 입력 라우트용. 지운 기록의 재전송이면 저장 확인을 돌려주고, 같은 id 가 다른 경기·종류로 오면
+    기존 기록이 있을 때와 같은 409 로 거부한다. 표식이 없으면 None(평소대로 저장)."""
+    stone = db.get(AgentFlaTombstone, event_id)
+    if stone is None:
+        return None
+    if str(stone.match_id) != str(match_id) or (stone.event_type and stone.event_type != event_type):
+        raise HTTPException(409, "Request ID already belongs to a different match or payload")
+    return {"ok": True, "idempotent": True, "event_id": event_id, "deleted_by_agent": True}
+
+
+def revoke_tokens_for_user(db: Session, user_id: str, *, reason: str, actor: User | None = None) -> int:
+    """사람의 활성 토큰을 모두 폐기한다(관리자 계정 비활성화 등). 커밋은 부르는 쪽에서."""
+    if not inspect(db.get_bind()).has_table(AgentFlaToken.__tablename__):
+        return 0  # 표가 아직 없으면(기동 전 부트스트랩·일부 표만 쓰는 도구) 폐기할 토큰도 없다
+    now = datetime.utcnow()
+    rows = (db.query(AgentFlaToken).filter(AgentFlaToken.user_id == user_id, AgentFlaToken.revoked_at.is_(None))
+            .with_for_update().all())  # 잠금 순서: 토큰 → 변경 묶음(apply 와 같음)
+    for row in rows:
+        row.revoked_at = now
+        row.revoked_by = actor.id if actor else "system:" + reason
+        db.query(AgentFlaChange).filter(AgentFlaChange.token_id == row.id, AgentFlaChange.status == "planned") \
+            .update({AgentFlaChange.status: "expired"}, synchronize_session=False)
+        db.add(AuditLog(actor_id=actor.id if actor else None, actor_name=actor.name if actor else None,
+                        actor_role=actor.role if actor else "SYSTEM", action="AGENT_FLA_TOKEN_REVOKED",
+                        target_type="agent_fla_token", target_id=row.id, severity="WARN",
+                        details={"display_prefix": row.display_prefix, "reason": reason}))
+    return len(rows)
 
 
 def _core():
@@ -174,8 +224,10 @@ class _RateLimiter:
         self._hits: dict[tuple[str, str], deque] = {}
         self._lock = threading.Lock()
 
-    def hit(self, token_id: str, bucket: str, limit: int) -> int | None:
-        """한도 안이면 None, 넘으면 다시 시도할 초."""
+    def hit(self, token_id: str, bucket: str, limit: int | None) -> int | None:
+        """한도 안이면 None, 넘으면 다시 시도할 초. limit 이 None 이면 세지 않는다(한도 없음)."""
+        if limit is None:
+            return None
         now = time.monotonic()
         with self._lock:
             q = self._hits.setdefault((token_id, bucket), deque())
@@ -228,6 +280,13 @@ def _agent_principal(request: Request, db: Session = Depends(get_db)) -> AgentPr
     user = db.get(User, row.user_id)
     if user is None:
         raise _unauthorized()
+    if user.role == "SUPERADMIN":
+        # 관리자 계정에 묶은 토큰은 그 계정이 살아 있을 때만 — 콘솔 로그인이 막힌 사람의 토큰도 막는다.
+        account = db.scalar(select(AdminAccount).where(AdminAccount.user_id == user.id))
+        if account is None or not account.active:
+            raise _unauthorized("이 토큰에 묶인 관리자 계정이 비활성입니다.")
+    elif user.role != "STAFF":
+        raise _unauthorized()
     retry = rate_limiter.hit(row.id, "all", RATE_PER_MINUTE)
     if retry is not None:
         raise HTTPException(429, "호출 한도를 넘었습니다. 잠시 뒤 다시 하세요.", headers={"Retry-After": str(retry)})
@@ -270,7 +329,7 @@ HALVES = ("1H", "2H", "ET1", "ET2")
 MARKER_FOR = {"2H": "HALFTIME_START", "ET1": "EXTRA_TIME_1_START", "ET2": "EXTRA_TIME_2_START"}
 HALF_FOR_MARKER = {v: k for k, v in MARKER_FOR.items()}
 HALF_LABEL = {"1H": "전반", "2H": "후반", "ET1": "연장 전반", "ET2": "연장 후반"}
-CLOCK_RE = re.compile(r"^\s*(\d{1,3})(?:\+(\d{1,2})(?::(\d{2}))?|:(\d{2}))\s*$")
+CLOCK_RE = re.compile(r"^\s*([0-9]{1,3})(?:\+([0-9]{1,2})(?::([0-9]{2}))?|:([0-9]{2}))\s*$")  # 전각 숫자 거부
 
 
 class RuleError(Exception):
@@ -344,6 +403,8 @@ class ClockContext:
         if extra_min is not None:
             if int(minutes) * 60_000 != end:
                 raise RuleError("BAD_CLOCK", f"{half} 추가시간은 '{end // 60_000}+분:초' 로 적습니다(받은 값 '{text}').")
+            if int(extra_sec or 0) >= 60:
+                raise RuleError("BAD_CLOCK", f"초는 00~59 입니다(받은 값 '{text}').")
             return end + int(extra_min) * 60_000 + int(extra_sec or 0) * 1000
         if int(sec) >= 60:
             raise RuleError("BAD_CLOCK", f"초는 00~59 입니다(받은 값 '{text}').")
@@ -539,7 +600,7 @@ Op = Annotated[Union[AddShotOp, AddAttackLaneOp, UpdateEventOp, DeleteEventOp, S
 
 class PlanRequest(_Strict):
     request_summary: str = Field(min_length=2, max_length=500, description="직원이 요청한 내용 요약(감사에 남는다)")
-    ops: list[Op] = Field(min_length=1, max_length=MAX_ITEMS)
+    ops: list[Op] = Field(min_length=1, max_length=OPS_SAFETY_MAX)
 
 
 # ── 경기 읽기 공통 ────────────────────────────────────────────────────────────
@@ -691,7 +752,8 @@ def agent_me(principal: AgentPrincipal = Depends(_agent_principal), db: Session 
                       "limits": {"calls_per_minute": RATE_PER_MINUTE, "writes_per_minute": WRITE_RATE_PER_MINUTE,
                                  "writes_per_day": DAILY_WRITES, "writes_used_today": used,
                                  "plans_per_day": DAILY_PLANS, "items_per_plan": MAX_ITEMS,
-                                 "plan_ttl_seconds": PLAN_TTL_SECONDS, "live_settle_seconds": LIVE_SETTLE_SECONDS}})
+                                 "plan_ttl_seconds": PLAN_TTL_SECONDS, "live_settle_seconds": LIVE_SETTLE_SECONDS,
+                                 "note": "null = 한도 없음(기본). 관리자가 설정으로 켤 수 있다."}})
 
 
 @router.get("/api/agent/fla/rules")
@@ -700,7 +762,8 @@ def agent_rules(_p: AgentPrincipal = Depends(read_principal)):
                       "limits": {"items_per_plan": MAX_ITEMS, "plan_ttl_seconds": PLAN_TTL_SECONDS,
                                  "writes_per_day": DAILY_WRITES, "live_settle_seconds": LIVE_SETTLE_SECONDS,
                                  "stoppage_max_minutes": STOPPAGE_MAX_MS // 60_000,
-                                 "duplicate_window_seconds": DUPLICATE_WINDOW_MS // 1000},
+                                 "duplicate_window_seconds": DUPLICATE_WINDOW_MS // 1000,
+                                 "note": "items_per_plan·writes_per_day 가 null 이면 한도 없음(기본)."},
                       "ops": sorted(["add_shot", "add_attack_lane", "update_event", "delete_event", "set_period_start",
                                      "shift_events", "set_possession_team", "move_possession_boundary", "rename_match"]),
                       "forbidden_ops": FORBIDDEN_OPS})
@@ -1129,6 +1192,10 @@ def _op_delete_event(v: _Virtual, op: DeleteEventOp):
 
 
 def _op_set_period_start(v: _Virtual, op: SetPeriodStartOp):
+    if v.live:
+        # 하프 시작 표시는 서버 경기 시계(방송 fla_clock·결과 시각)의 기준이다. 옮기면 지금 시계가 바뀐다 = 시계 조작.
+        raise RuleError("LIVE_PERIOD_MARKER", "진행 중 경기의 하프 시작 시각은 운영자가 매치 컨트롤에서 고칩니다. "
+                                              "경기를 보관한 뒤에는 에이전트로 고칠 수 있습니다.")
     marker_type = MARKER_FOR[op.period]
     existing = sorted([m for m in v.markers.values() if m.marker_type == marker_type], key=lambda m: m.clock_ms)
     previous = HALVES[HALVES.index(op.period) - 1]
@@ -1140,11 +1207,6 @@ def _op_set_period_start(v: _Virtual, op: SetPeriodStartOp):
     later = [ctx.start(h) for h in HALVES[HALVES.index(op.period) + 1:] if ctx.start(h) is not None]
     if later and raw >= min(later):
         raise RuleError("PERIOD_ORDER", f"{op.period} 시작은 다음 하프 시작보다 앞이어야 합니다.")
-    if v.live:
-        if not existing:
-            raise RuleError("LIVE_PERIOD_TRANSITION", "진행 중 경기에서 하프 전환(새 시작 표시)은 운영자가 매치 컨트롤에서 합니다.")
-        v.guard_live_time(raw, "하프 시작 시각")
-        v.guard_live_time(existing[0].clock_ms, "하프 시작 시각")
     old_ctx = ctx
     if existing:
         marker = existing[0]
@@ -1262,6 +1324,15 @@ def _op_rename(v: _Virtual, op: RenameMatchOp):
     v.lines.append({"op": "rename_match", "before": before, "after": name})
 
 
+def _live_clock_guard(v: _Virtual):
+    """진행 중이면 op 종류와 상관없이 '지금 경기 시계 표시'(방송 fla_clock 과 같은 기준)가 바뀌는 plan 을 막는다."""
+    now_before = v.orig_ctx.describe(v.current_clock)["label"]
+    now_after = v.ctx().describe(v.current_clock)["label"]
+    if v.orig_ctx.markers != v.ctx().markers or now_before != now_after:
+        raise RuleError("LIVE_CLOCK_CHANGE", f"이 수정은 진행 중 경기의 지금 경기 시계를 바꿉니다({now_before} → {now_after}). "
+                                             "시계·하프 기준은 운영자 몫입니다.")
+
+
 OP_HANDLERS = {"add_shot": _op_add_shot, "add_attack_lane": _op_add_lane, "update_event": _op_update_event,
                "delete_event": _op_delete_event, "set_period_start": _op_set_period_start, "shift_events": _op_shift,
                "set_possession_team": _op_possession_team, "move_possession_boundary": _op_possession_boundary,
@@ -1282,7 +1353,7 @@ def _current_snapshot(v: _Virtual, key: str) -> dict | None:
     return dict(v.match_info)
 
 
-def _db_snapshot(db: Session, match_obj: Match, key: str) -> dict | None:
+def _db_snapshot(db: Session, match_obj: Match, key: str, *, lock: bool = False) -> dict | None:
     kind, ident = key.split(":", 1)
     if kind == "match":
         meta = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
@@ -1290,7 +1361,10 @@ def _db_snapshot(db: Session, match_obj: Match, key: str) -> dict | None:
                 "round_number": match_obj.round_number, "home_team": meta.get("home_team"), "away_team": meta.get("away_team")}
     model, cols = {"event": (Event, EVENT_COLS), "marker": (MatchMarker, MARKER_COLS),
                    "possession": (PossessionSegment, SEGMENT_COLS)}[kind]
-    row = db.get(model, UUID(ident))
+    query = db.query(model).filter(model.id == UUID(ident))
+    if lock:
+        query = query.with_for_update()  # apply·revert 동안 기록 수정 화면 등 다른 쓰기가 이 행을 못 바꾼다
+    row = query.populate_existing().first()
     if row is None or str(row.match_id) != str(match_obj.id):
         return None
     return _snap(row, cols)
@@ -1336,6 +1410,11 @@ def _build_plan(db: Session, match_obj: Match, ops: list) -> dict:
         except RuleError as exc:
             errors.append({"op_index": index, "op": op.op, **exc.as_dict()})
             break  # 앞 단계가 틀리면 뒤 단계 결과는 의미가 없다
+    if not errors and v.live:
+        try:
+            _live_clock_guard(v)
+        except RuleError as exc:
+            errors.append({"op_index": None, "op": None, **exc.as_dict()})
     if errors:
         return {"ok": False, "errors": errors}
     items = []
@@ -1349,7 +1428,9 @@ def _build_plan(db: Session, match_obj: Match, ops: list) -> dict:
                       "before_fp": _fp(before), "after_fp": _fp(after)})
     if not items:
         return {"ok": False, "errors": [{"code": "NOTHING_TO_CHANGE", "message": "바뀌는 것이 없습니다."}]}
-    if len(items) > MAX_ITEMS:
+    if len(items) > ITEMS_SAFETY_MAX:
+        return {"ok": False, "errors": [{"code": "REQUEST_TOO_LARGE", "message": f"한 번에 바꾸는 행이 너무 많습니다({len(items)}건). 범위를 나누세요."}]}
+    if MAX_ITEMS is not None and len(items) > MAX_ITEMS:
         return {"ok": False, "errors": [{"code": "TOO_MANY_ITEMS", "message": f"한 번에 {MAX_ITEMS}건까지 바꿀 수 있습니다(이번 {len(items)}건). 범위를 나누세요."}]}
     new_events = list(v.events.values())
     score_before, score_after = _score(v.orig_events), _score(new_events)
@@ -1399,7 +1480,17 @@ def _daily_writes(db: Session, token_id: str, day_start: datetime) -> int:
     return int(applied) + int(reverted)
 
 
+def _lock_token(db: Session, principal: AgentPrincipal) -> AgentFlaToken:
+    """한도는 토큰 행을 잠근 채 센다 — 같은 토큰의 병렬 요청이 함께 한도를 넘지 못하게(커밋까지 잠금 유지)."""
+    row = db.query(AgentFlaToken).filter(AgentFlaToken.id == principal.token.id).with_for_update().populate_existing().one()
+    if row.revoked_at is not None or row.expires_at <= _utcnow():
+        raise _unauthorized("폐기되었거나 만료된 토큰입니다.")
+    return row
+
+
 def _check_daily_write(db: Session, principal: AgentPrincipal):
+    if DAILY_WRITES is None:
+        return
     used = _daily_writes(db, principal.token.id, _kst_day_start_utc())
     if used >= DAILY_WRITES:
         raise HTTPException(429, f"오늘 수정 한도({DAILY_WRITES}회)를 다 썼습니다. 급하면 관리자에게 문의하세요.")
@@ -1423,7 +1514,7 @@ def _change_view(row: AgentFlaChange, *, full: bool = False) -> dict:
     out = {"change_id": row.id, "plan_id": row.id, "match_id": str(row.match_id), "status": row.status, "live": row.live,
            "actor_name": row.actor_name, "summary": row.summary, "request_summary": row.request_summary,
            "created_at": _kst(row.created_at), "expires_at": _kst(row.expires_at) if row.status == "planned" else None,
-           "applied_at": _kst(row.applied_at), "reverted_at": _kst(row.reverted_at)}
+           "applied_at": _kst(row.applied_at), "reverted_at": _kst(row.reverted_at), "reverted_by": row.reverted_by_name}
     if full:
         out.update({"ops": row.ops, "items": row.items, **{k: row.preview.get(k) for k in (
             "lines", "warnings", "score", "stats", "possession", "follow_ups")}})
@@ -1440,13 +1531,14 @@ def agent_plan(match_id: UUID, raw: dict = Body(...), principal: AgentPrincipal 
         raise HTTPException(422, json.loads(exc.json(include_url=False)))
     match_obj = _load_match(db, match_id)
     _require_writable(match_obj)
+    result = _build_plan(db, match_obj, body.ops)
+    db.rollback()  # 작업판은 DB 에 붙지 않지만, 혹시 남은 변경이 있어도 버린다
+    _lock_token(db, principal)  # 여기서부터 커밋까지 토큰 행 잠금 — 하루 plan 한도를 병렬로 넘지 못하게
     day = _kst_day_start_utc()
     plans_today = db.query(func.count(AgentFlaChange.id)).filter(AgentFlaChange.token_id == principal.token.id,
                                                                   AgentFlaChange.created_at >= day).scalar() or 0
-    if plans_today >= DAILY_PLANS:
+    if DAILY_PLANS is not None and plans_today >= DAILY_PLANS:
         raise HTTPException(429, f"오늘 plan 한도({DAILY_PLANS}회)를 다 썼습니다.")
-    result = _build_plan(db, match_obj, body.ops)
-    db.rollback()  # 작업판은 DB 에 붙지 않지만, 혹시 남은 변경이 있어도 버린다
     if not result["ok"]:
         _audit(db, principal, "AGENT_FLA_PLAN_REJECTED", match_id=match_id, severity="INFO",
                details={"request_summary": body.request_summary, "errors": result["errors"]})
@@ -1487,7 +1579,7 @@ def _write_snapshot(db: Session, match_obj: Match, key: str, snapshot: dict | No
         if row is not None:
             db.delete(row)
             if kind == "event" and db.get(AgentFlaTombstone, UUID(ident)) is None:
-                db.add(AgentFlaTombstone(event_id=UUID(ident), match_id=match_obj.id, change_id=change_id))
+                db.add(AgentFlaTombstone(event_id=UUID(ident), match_id=match_obj.id, event_type=row.type, change_id=change_id))
         return
     values = {c: _restore_value(c, snapshot[c]) for c in cols}
     if row is None:
@@ -1514,7 +1606,7 @@ def _finish_write(db: Session, match_obj: Match):
 def _stale(db: Session, match_obj: Match, items: list[dict], side: str) -> list[dict]:
     stale = []
     for it in items:
-        current = _fp(_db_snapshot(db, match_obj, it["key"]))
+        current = _fp(_db_snapshot(db, match_obj, it["key"], lock=True))
         if current != it[f"{side}_fp"]:
             stale.append({"key": it["key"], "expected": it[f"{side}_fp"], "current": current})
     return stale
@@ -1539,6 +1631,7 @@ def _new_input_clashes(db: Session, row: AgentFlaChange) -> list[dict]:
 
 @router.post("/api/agent/fla/plans/{plan_id}/apply")
 def agent_apply(plan_id: str, principal: AgentPrincipal = Depends(write_principal), db: Session = Depends(get_db)):
+    _lock_token(db, principal)  # 잠금 순서: 토큰 → 변경 묶음 → 경기 → 대상 행
     row = db.query(AgentFlaChange).filter(AgentFlaChange.id == plan_id).with_for_update().first()
     if row is None or row.token_id != principal.token.id:
         raise HTTPException(404, "plan 을 찾을 수 없습니다(본인 토큰으로 만든 plan 만 적용할 수 있습니다).")
@@ -1553,6 +1646,12 @@ def agent_apply(plan_id: str, principal: AgentPrincipal = Depends(write_principa
     _require_writable(match_obj)
     if (not match_obj.archived) != row.live:
         raise HTTPException(409, "plan 뒤에 경기 보관 상태가 바뀌었습니다. 다시 plan 하세요.")
+    if row.live and any(it["kind"] == "marker" for it in row.items):
+        # plan 때 막히지만, 어떤 경로로든 진행 중 경기의 시계 기준(하프 시작 표시)을 쓰는 변경은 적용하지 않는다.
+        _audit(db, principal, "AGENT_FLA_APPLY_REJECTED", match_id=row.match_id, target_id=row.id, severity="WARN",
+               details={"reason": "live_clock_change"})
+        db.commit()
+        raise HTTPException(409, {"reason": "live_clock_change", "message": "진행 중 경기의 하프 시작 표시는 바꾸지 않습니다(운영자 몫)."})
     stale = _stale(db, match_obj, row.items, "before")
     if stale:
         _audit(db, principal, "AGENT_FLA_APPLY_REJECTED", match_id=row.match_id, target_id=row.id, severity="WARN",
@@ -1584,20 +1683,12 @@ def agent_apply(plan_id: str, principal: AgentPrincipal = Depends(write_principa
                       "revert": f"되돌리려면 POST /api/agent/fla/changes/{row.id}/revert (그 뒤 같은 기록이 또 바뀌었으면 거부)"})
 
 
-@router.post("/api/agent/fla/changes/{change_id}/revert")
-def agent_revert(change_id: str, principal: AgentPrincipal = Depends(write_principal), db: Session = Depends(get_db)):
-    row = db.query(AgentFlaChange).filter(AgentFlaChange.id == change_id).with_for_update().first()
-    if row is None or row.token_id != principal.token.id:
-        raise HTTPException(404, "변경 묶음을 찾을 수 없습니다(본인 토큰의 변경만 되돌릴 수 있습니다).")
-    if row.status != "applied":
-        raise HTTPException(409, f"적용된 변경만 되돌릴 수 있습니다(status={row.status}).")
-    _check_daily_write(db, principal)
+def _do_revert(db: Session, row: AgentFlaChange, *, by_name: str, by_token: str | None, audit) -> None:
+    """변경 묶음 되돌리기 — 토큰(본인)·관리자 콘솔 공통. 적용 뒤 같은 항목이 바뀌었으면 거부."""
     match_obj = _load_match(db, row.match_id, for_update=True)
     stale = _stale(db, match_obj, row.items, "after")
     if stale:
-        db.rollback()
-        _audit(db, principal, "AGENT_FLA_REVERT_REJECTED", match_id=row.match_id, target_id=row.id, severity="WARN",
-               details={"stale": stale})
+        audit("AGENT_FLA_REVERT_REJECTED", {"stale": stale})
         db.commit()
         raise HTTPException(409, {"reason": "changed_after_apply", "message": "적용 뒤에 같은 기록이 또 바뀌어 되돌리지 않습니다. 지금 기록을 보고 새로 plan 하세요.",
                                   "stale": stale})
@@ -1606,10 +1697,24 @@ def agent_revert(change_id: str, principal: AgentPrincipal = Depends(write_princ
     _finish_write(db, match_obj)
     row.status = "reverted"
     row.reverted_at = _utcnow()
-    row.reverted_by_token = principal.token.id
-    _audit(db, principal, "AGENT_FLA_REVERT", match_id=row.match_id, target_id=row.id, severity="WARN",
-           details={"change_id": row.id, "summary": row.summary, "live": row.live})
+    row.reverted_by_token = by_token
+    row.reverted_by_name = by_name
+    audit("AGENT_FLA_REVERT", {"change_id": row.id, "summary": row.summary, "live": row.live})
     db.commit()
+
+
+@router.post("/api/agent/fla/changes/{change_id}/revert")
+def agent_revert(change_id: str, principal: AgentPrincipal = Depends(write_principal), db: Session = Depends(get_db)):
+    _lock_token(db, principal)
+    row = db.query(AgentFlaChange).filter(AgentFlaChange.id == change_id).with_for_update().first()
+    if row is None or row.token_id != principal.token.id:
+        raise HTTPException(404, "변경 묶음을 찾을 수 없습니다(본인 토큰의 변경만 되돌릴 수 있습니다).")
+    if row.status != "applied":
+        raise HTTPException(409, f"적용된 변경만 되돌릴 수 있습니다(status={row.status}).")
+    _check_daily_write(db, principal)
+    _do_revert(db, row, by_name=principal.user.name, by_token=principal.token.id,
+               audit=lambda action, details: _audit(db, principal, action, match_id=row.match_id, target_id=row.id,
+                                                    severity="WARN", details=details))
     return _envelope({"change_id": row.id, "status": row.status, "summary": row.summary})
 
 
@@ -1655,9 +1760,11 @@ def console_agent_edits(match_id: UUID, since: str | None = None, db: Session = 
                         "summary": r.summary, "at": r.applied_at.isoformat() + "Z",
                         "message": f"{r.actor_name}님이 기록을 고쳤습니다({r.summary})"})
         if r.reverted_at and r.reverted_at >= floor:
-            out.append({"id": r.id + ":reverted", "change_id": r.id, "kind": "reverted", "actor_name": r.actor_name,
-                        "summary": r.summary, "at": r.reverted_at.isoformat() + "Z",
-                        "message": f"{r.actor_name}님이 고친 기록을 되돌렸습니다({r.summary})"})
+            who = r.reverted_by_name or r.actor_name
+            text = (f"{r.actor_name}님이 고친 기록을 되돌렸습니다({r.summary})" if who == r.actor_name
+                    else f"{who}님이 {r.actor_name}님의 수정을 되돌렸습니다({r.summary})")
+            out.append({"id": r.id + ":reverted", "change_id": r.id, "kind": "reverted", "actor_name": who,
+                        "summary": r.summary, "at": r.reverted_at.isoformat() + "Z", "message": text})
     out.sort(key=lambda x: x["at"], reverse=True)
     return {"items": out, "server_now": _utcnow().isoformat() + "Z"}
 
@@ -1727,7 +1834,7 @@ def admin_issue_token(body: TokenIssueRequest, response: Response, db: Session =
 @router.post("/api/admin/agent-fla/tokens/{token_id}/revoke")
 def admin_revoke_token(token_id: str, response: Response, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     response.headers["Cache-Control"] = "no-store"
-    row = db.get(AgentFlaToken, token_id)
+    row = db.query(AgentFlaToken).filter(AgentFlaToken.id == token_id).with_for_update().first()  # 토큰 → 변경 묶음 순서
     if row is None:
         raise HTTPException(404, "토큰이 없습니다.")
     if row.revoked_at is None:
@@ -1763,3 +1870,22 @@ def admin_change(change_id: str, response: Response, db: Session = Depends(get_d
     if row is None:
         raise HTTPException(404, "변경 묶음이 없습니다.")
     return {**_change_view(row, full=True), "token_id": row.token_id}
+
+
+@router.post("/api/admin/agent-fla/changes/{change_id}/revert")
+def admin_revert_change(change_id: str, response: Response, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """관리자(SUPERADMIN 세션)가 직원의 변경 묶음을 되돌린다 — 토큰을 폐기한 뒤에도. 충돌 검사·감사는 같다."""
+    response.headers["Cache-Control"] = "no-store"
+    row = db.query(AgentFlaChange).filter(AgentFlaChange.id == change_id).with_for_update().first()
+    if row is None:
+        raise HTTPException(404, "변경 묶음이 없습니다.")
+    if row.status != "applied":
+        raise HTTPException(409, f"적용된 변경만 되돌릴 수 있습니다(status={row.status}).")
+
+    def audit(action: str, details: dict) -> None:
+        db.add(AuditLog(actor_id=admin.id, actor_name=admin.name, actor_role=admin.role, action=action,
+                        target_type="agent_fla", target_id=row.id, match_id=str(row.match_id), severity="WARN",
+                        details={"by_admin": True, "token_id": row.token_id, "staff": row.actor_name, **details}))
+
+    _do_revert(db, row, by_name=admin.name, by_token=None, audit=audit)
+    return {**_change_view(row), "token_id": row.token_id}

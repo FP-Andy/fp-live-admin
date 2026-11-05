@@ -191,7 +191,7 @@ app.include_router(auth_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
 from .futsal_analysis_snapshots import router as analysis_snapshots_router
-from .agent_fla import router as agent_fla_router, is_tombstoned as _agent_fla_tombstoned
+from .agent_fla import router as agent_fla_router, tombstone_reply as _agent_fla_tombstone_reply
 from . import futsal_substitution_redetection  # register private review evidence routes
 from . import futsal_recovery_jobs  # persistent, bounded RF-DETR jobs
 app.include_router(analysis_snapshots_router)
@@ -8419,9 +8419,11 @@ def post_attack_lane(
     if existing:
         require_same_request(existing, match_id, {'type': 'ATTACK_LANE', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'lane': body.lane})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
-    if _agent_fla_tombstoned(db, body.event_id):
-        # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실). 되살리지 않고 저장 확인만 돌려준다.
-        return {"ok": True, "idempotent": True, "event_id": body.event_id, "deleted_by_agent": True}
+    # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실) → 되살리지 않고 저장 확인만.
+    # 같은 id 가 다른 경기·종류로 오면 기존 기록이 있을 때처럼 409.
+    tombstone = _agent_fla_tombstone_reply(db, body.event_id, match_id, "ATTACK_LANE")
+    if tombstone:
+        return tombstone
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8482,9 +8484,11 @@ def post_xg(
     if existing:
         require_same_request(existing, match_id, {'type': 'XG', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'xg': body.xg, 'player_name': (body.player_name or "").strip() or None, 'player_number': (body.player_number or "").strip() or None, 'is_goal': body.is_goal, 'is_own_goal': body.is_own_goal, 'is_on_target': body.is_on_target, 'shot_x': body.shot_x, 'shot_y': body.shot_y, 'goalmouth_x': body.goalmouth_x, 'goalmouth_y': body.goalmouth_y, 'is_header': body.is_header, 'is_weak_foot': body.is_weak_foot, 'under_pressure': body.under_pressure, 'one_on_one': body.one_on_one, 'shot_pace_band': body.shot_pace_band})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
-    if _agent_fla_tombstoned(db, body.event_id):
-        # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실). 되살리지 않고 저장 확인만 돌려준다.
-        return {"ok": True, "idempotent": True, "event_id": body.event_id, "deleted_by_agent": True}
+    # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실) → 되살리지 않고 저장 확인만.
+    # 같은 id 가 다른 경기·종류로 오면 기존 기록이 있을 때처럼 409.
+    tombstone = _agent_fla_tombstone_reply(db, body.event_id, match_id, "XG")
+    if tombstone:
+        return tombstone
 
     clock_ms = body.clock_ms
     if clock_ms is None:
