@@ -81,7 +81,7 @@ export default function AgentTokenManagement() {
       <label className="field-stack"><span className="field-label">직원 실명</span><input value={person} maxLength={40} onChange={(e) => setPerson(e.target.value)} disabled={busy} placeholder="감사 기록에 남는 이름" /></label>
       <label className="field-stack"><span className="field-label">메모</span><input value={label} maxLength={120} onChange={(e) => setLabel(e.target.value)} disabled={busy} placeholder="예: FLA 기록 정정용" /></label>
       <label className="field-stack"><span className="field-label">유효기간(일)</span><input type="number" min={1} max={90} value={days} onChange={(e) => setDays(Math.max(1, Math.min(90, Number(e.target.value) || 90)))} disabled={busy} /></label>
-      <label><input type="checkbox" checked={write} onChange={(e) => setWrite(e.target.checked)} disabled={busy} /> 기록 수정 허용(fla:write) — 끄면 읽기만</label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" style={{ width: 'auto', minHeight: 0 }} checked={write} onChange={(e) => setWrite(e.target.checked)} disabled={busy} /> 기록 수정 허용(fla:write) — 끄면 읽기만</label>
       <div className="access-actions"><button type="submit" className="btn-primary" disabled={busy}>{busy ? '처리 중…' : '토큰 발급'}</button></div>
     </form>
     {tokens && tokens.map((t) => <div key={t.id} className="log-row">
@@ -91,7 +91,7 @@ export default function AgentTokenManagement() {
       </div>
       {t.state === 'active' && <button type="button" className="btn-danger" disabled={busy} onClick={() => revoke(t)}>폐기</button>}
     </div>)}
-    <h4>최근 에이전트 수정</h4>
+    <h4 style={{ marginTop: 16 }}>최근 에이전트 수정</h4>
     {!changes.length ? <p className="muted">아직 없습니다.</p> : changes.map((c) => <div key={c.change_id} className="log-row">
       <div className="grid" style={{ gap: 4 }}>
         <strong>{c.actor_name} · {c.summary}</strong>
