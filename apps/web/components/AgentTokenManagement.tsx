@@ -11,7 +11,7 @@ type AgentToken = {
 };
 type AgentChange = {
   change_id: string; match_id: string; match_name: string | null; status: string; live: boolean; actor_name: string;
-  summary: string; request_summary: string; applied_at: string | null; reverted_at: string | null;
+  summary: string; request_summary: string; applied_at: string | null; reverted_at: string | null; reverted_by?: string | null;
   score?: { before: Record<string, number>; after: Record<string, number> } | null;
 };
 
@@ -60,6 +60,10 @@ export default function AgentTokenManagement() {
       person_name: person.trim(), label: label.trim(), expires_days: days, scopes: write ? ['fla:read', 'fla:write'] : ['fla:read'] }) }),
     (payload) => { setIssued({ name: payload.person_name, token: payload.token }); setPerson(''); setLabel(''); });
   };
+  const revertChange = (change: AgentChange) => {
+    if (!window.confirm(`${change.actor_name}님의 수정(${change.summary})을 되돌릴까요? 그 뒤 같은 기록이 또 바뀌었으면 되돌리지 않습니다.`)) return;
+    void run(() => apiFetch(`/admin/agent-fla/changes/${change.change_id}/revert`, { method: 'POST' }), () => {});
+  };
   const revoke = (token: AgentToken) => {
     if (!window.confirm(`${token.person_name}님의 토큰(${token.display_prefix}…)을 폐기할까요? 바로 쓸 수 없게 됩니다.`)) return;
     void run(() => apiFetch(`/admin/agent-fla/tokens/${token.id}/revoke`, { method: 'POST' }), () => {});
@@ -98,7 +102,8 @@ export default function AgentTokenManagement() {
         <div className="muted">{c.match_name || c.match_id}{c.live ? ' · 진행 중 수정' : ''}{c.score && JSON.stringify(c.score.before) !== JSON.stringify(c.score.after) ? ` · 점수 ${c.score.before.HOME}:${c.score.before.AWAY} → ${c.score.after.HOME}:${c.score.after.AWAY}` : ''}</div>
         <div className="muted">요청: {c.request_summary}</div>
       </div>
-      <div className="muted">{when(c.applied_at)}{c.status === 'reverted' ? ` · 되돌림 ${when(c.reverted_at)}` : ''}</div>
+      <div className="muted">{when(c.applied_at)}{c.status === 'reverted' ? ` · 되돌림 ${when(c.reverted_at)}${c.reverted_by ? ` (${c.reverted_by})` : ''}` : ''}
+        {c.status === 'applied' && <button type="button" className="btn-secondary" style={{ marginLeft: 8 }} disabled={busy} onClick={() => revertChange(c)}>되돌리기</button>}</div>
     </div>)}
   </section>;
 }
