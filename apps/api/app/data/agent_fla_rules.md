@@ -1,4 +1,4 @@
-# FLA 기록 정정 규칙 (RULES) — 버전 2026-11-05.2
+# FLA 기록 정정 규칙 (RULES) — 버전 2026-11-05.3
 
 이 문서는 FPC 서버가 `GET /api/agent/fla/rules` 로 그대로 내보내는 정본이다. 서버는 여기 적힌 규칙을 **같은 내용으로 강제**한다
 (규칙 밖 값은 plan 단계에서 422 로 거부된다). 에이전트는 이 문서에 있는 절차로만 고치고, 정해지지 않은 정정은 **"대표에게 문의"** 로 끝낸다.
@@ -12,7 +12,7 @@
    진행 중 경기에서 점수가 바뀌면(`LIVE_BROADCAST_SCORE`) **운영자와 말을 맞췄는지** 꼭 확인한다.
 5. **apply** — 직원이 "적용" 이라고 답한 뒤에만 `apply_plan(plan_id)`. plan 은 10분 뒤 만료된다.
 6. **확인** — `get_timeline`/`get_result` 로 바뀐 것을 확인하고, apply 응답의 `follow_ups` 중 `auto:false` 항목(직접 다시 해야 할 일)을 직원에게 알려 준다.
-7. **되돌리기** — 잘못 고쳤으면 `revert_change(change_id)`. 그 뒤 같은 기록이 또 바뀌었으면 서버가 거부한다(그때는 지금 기록을 보고 새로 plan).
+7. **되돌리기** — 잘못 고쳤으면 `revert_change(change_id)`. 그 뒤 같은 기록이 또 바뀌었거나, 그 사이 경기 보관 상태가 바뀌었으면 서버가 거부한다(11장 `archive_state_changed`). 되돌리기도 진행 중 보호(6장)를 똑같이 거친다.
 
 ## 1. 시각 표기 (가장 중요)
 
@@ -202,6 +202,8 @@
 | TOO_MANY_ITEMS · REQUEST_TOO_LARGE | 관리자가 켠 건수 한도 초과 · 요청이 비정상적으로 큼 | 범위를 나누기 |
 | stale_plan · new_input_clash (409) | plan 뒤에 기록이 바뀜 | 다시 plan |
 | changed_after_apply (409, revert) | 적용 뒤에 또 바뀜 | 지금 기록을 보고 새로 plan |
+| archive_state_changed (409, apply·revert) | 변경을 만들 때와 지금의 경기 보관 상태가 다름 — 예: 보관된 뒤에 만든 수정을 보관 해제(진행 중) 뒤에 되돌리려 함 | "보관된 뒤에 만든 수정을 진행 중 경기에서 되돌릴 수 없습니다 — 다시 보관한 뒤 되돌리거나 기록 수정 화면에서 고치세요." 반대(진행 중에 만든 수정을 보관 뒤에)도 같다 — 새로 plan 하거나 기록 수정 화면 |
+| live_future_time · segment_open · live_rename (409, apply·revert) | 진행 중 경기에 지금 시계보다 뒤 기록·열린 구간·경기 이름을 쓰려 함 | 하지 않는다 |
 | live_clock_change (409) | 진행 중 경기의 시계 기준을 바꾸는 변경 | 하지 않는다(운영자 몫) |
 | 403 | 권한 없음·금지된 일 | 하지 않는다 |
 

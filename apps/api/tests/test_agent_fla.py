@@ -761,5 +761,83 @@ class AgentFlaTests(unittest.TestCase):
         with patch.object(agent_fla, "ITEMS_SAFETY_MAX", 10):
             self.assertEqual(self.errors(self.plan(self.archived, ops)), ["REQUEST_TOO_LARGE"])
 
+    # ── 지시 04(재검증 N1) ─────────────────────────────────────────────────
+
+    def _set_archived(self, mid, archived, clock_ms=None):
+        with SessionLocal() as db:
+            m = db.get(Match, mid)
+            m.archived = archived
+            m.archived_at = OLD if archived else None
+            if clock_ms is not None:
+                db.add(State(id=uuid4(), match_id=mid, clock_ms=clock_ms, running=True, possession_team="HOME",
+                             selected_team="HOME", attack_lr="L2R", created_at=datetime.utcnow() + timedelta(seconds=1)))
+            db.commit()
+
+    def _snapshot_clock(self, mid):
+        return self.anon.get(f"/api/broadcast/matches/{mid}/snapshot").json()["match"]["fla_clock"]
+
+    def _marker_raw(self, mid):
+        with SessionLocal() as db:
+            return db.query(MatchMarker).filter(MatchMarker.match_id == mid).one().clock_ms
+
+    def test_n1_revert_of_archived_marker_change_after_unarchive_is_rejected(self):
+        # 재현: 보관 중 후반 시작 표시 이동 → 보관 해제(진행 중, raw 65:00) → revert 로 시계가 움직였다
+        _p, a = self.plan_apply(self.archived, [{"op": "set_period_start", "period": "2H", "previous_period_clock": "45+10:00"}])
+        self.assertEqual(self._marker_raw(self.archived), 3_300_000)
+        self._set_archived(self.archived, False, clock_ms=3_900_000)
+        before = self._snapshot_clock(self.archived)
+        for label, call in (("직원", lambda: self.anon.post(f"/api/agent/fla/changes/{a['change_id']}/revert", headers=self.h())),
+                            ("관리자", lambda: self.admin.post(f"/api/admin/agent-fla/changes/{a['change_id']}/revert"))):
+            with self.subTest(label):
+                r = call()
+                self.assertEqual((r.status_code, r.json()["detail"]["reason"]), (409, "archive_state_changed"))
+                self.assertIn("보관된 뒤에 만든 수정을 진행 중 경기에서 되돌릴 수 없습니다", r.json()["detail"]["message"])
+                self.assertEqual(self._snapshot_clock(self.archived), before)
+                self.assertEqual(self._marker_raw(self.archived), 3_300_000)
+        with SessionLocal() as db:
+            self.assertEqual(db.get(AgentFlaChange, a["change_id"]).status, "applied")
+            self.assertEqual(db.query(AuditLog).filter(AuditLog.action == "AGENT_FLA_REVERT_REJECTED").count(), 2)
+        # 다시 보관하면 되돌릴 수 있다(안내대로)
+        self._set_archived(self.archived, True)
+        self.assertEqual(self.anon.post(f"/api/agent/fla/changes/{a['change_id']}/revert", headers=self.h()).status_code, 200)
+        self.assertEqual(self._marker_raw(self.archived), 2_820_000)
+
+    def test_n1_revert_checks_archive_state_both_ways_and_live_guard(self):
+        # 반대 방향: 진행 중에 만든 수정을 보관 뒤에 되돌리기 → 거부(안내), 다시 진행 중이면 된다
+        _p, a = self.plan_apply(self.live, [{"op": "update_event", "event_id": str(self.live_goal), "set": {"player_number": "9"}}])
+        self._set_archived(self.live, True)
+        r = self.admin.post(f"/api/admin/agent-fla/changes/{a['change_id']}/revert")
+        self.assertEqual((r.status_code, r.json()["detail"]["reason"]), (409, "archive_state_changed"))
+        self.assertIn("진행 중에 만든 수정을 보관된 경기에서 되돌릴 수 없습니다", r.json()["detail"]["message"])
+        self._set_archived(self.live, False)
+        self.assertEqual(self.anon.post(f"/api/agent/fla/changes/{a['change_id']}/revert", headers=self.h()).status_code, 200)
+        # 진행 중 보호를 revert 도 같은 함수로 거친다: 마커 항목·미래 시각은 되돌리기로도 쓰지 않는다
+        with SessionLocal() as db:
+            token = db.query(AgentFlaToken).filter(AgentFlaToken.token_hash == fingerprint(self.token)).one()
+            ev = db.get(Event, self.live_goal)
+            now = agent_fla._snap(ev, agent_fla.EVENT_COLS)
+            future = {**now, "clock_ms": 9_000_000}
+            marker = MatchMarker(id=uuid4(), match_id=self.live, marker_type="HALFTIME_START", clock_ms=1_500_000, created_at=OLD)
+            db.add(marker)
+            db.flush()
+            msnap = agent_fla._snap(marker, agent_fla.MARKER_COLS)
+            rows = {}
+            for name, item in (("future", {"key": f"event:{ev.id}", "kind": "event", "action": "update", "before": future, "after": now,
+                                           "before_fp": agent_fla._fp(future), "after_fp": agent_fla._fp(now)}),
+                               ("marker", {"key": f"marker:{marker.id}", "kind": "marker", "action": "update", "before": {**msnap, "clock_ms": 1_400_000},
+                                           "after": msnap, "before_fp": None, "after_fp": agent_fla._fp(msnap)})):
+                row = AgentFlaChange(token_id=token.id, user_id=token.user_id, actor_name="박기록", match_id=self.live, status="applied",
+                                     live=True, request_summary=name, summary=name, ops=[], items=[item], preview={},
+                                     created_at=datetime.utcnow(), expires_at=datetime.utcnow(), applied_at=datetime.utcnow())
+                db.add(row)
+                db.flush()
+                rows[name] = row.id
+            db.commit()
+        r = self.admin.post(f"/api/admin/agent-fla/changes/{rows['marker']}/revert")
+        self.assertEqual((r.status_code, r.json()["detail"]["reason"]), (409, "live_clock_change"))
+        r = self.anon.post(f"/api/agent/fla/changes/{rows['future']}/revert", headers=self.h())
+        self.assertEqual((r.status_code, r.json()["detail"]["reason"]), (409, "live_future_time"))
+        self.assertEqual(self.event(self.live_goal).clock_ms, 600_000)
+
 if __name__ == "__main__":
     unittest.main()

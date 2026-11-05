@@ -92,7 +92,7 @@ TOKEN_DEFAULT_DAYS = 90
 STOPPAGE_MAX_MS = 20 * 60_000  # 하프마다 추가시간 상한(표기 45+20:00까지)
 DUPLICATE_WINDOW_MS = 3_000
 RULES_PATH = Path(__file__).resolve().parent / "data" / "agent_fla_rules.md"
-RULES_VERSION = "2026-11-05.2"
+RULES_VERSION = "2026-11-05.3"
 
 # 토큰으로 할 수 없는 일 — 이름을 넣으면 422 가 아니라 403 과 이유를 돌려준다(에이전트가 다른 길을 찾지 않게).
 FORBIDDEN_OPS = {
@@ -1603,6 +1603,42 @@ def _finish_write(db: Session, match_obj: Match):
     core._broadcast_snapshot_cache.clear()
 
 
+ARCHIVE_STATE_MESSAGES = {
+    "apply": "plan 뒤에 경기 보관 상태가 바뀌었습니다. 다시 plan 하세요.",
+    "revert_live": "보관된 뒤에 만든 수정을 진행 중 경기에서 되돌릴 수 없습니다 — 다시 보관한 뒤 되돌리거나 기록 수정 화면에서 고치세요.",
+    "revert_archived": "진행 중에 만든 수정을 보관된 경기에서 되돌릴 수 없습니다 — 지금 기록을 보고 새로 plan 하거나 기록 수정 화면에서 고치세요.",
+}
+
+
+def _live_write_guard(db: Session, match_obj: Match, row: AgentFlaChange, side: str) -> dict | None:
+    """apply(side=after)·revert(side=before) 공통 — 쓰기 직전에 보관 상태와 진행 중 보호를 다시 본다.
+
+    - 변경을 만들 때(plan)의 보관 상태와 지금이 다르면 거부(보관 중 만든 변경을 진행 중에 쓰거나 그 반대).
+    - 진행 중이면: 하프 시작 표시(서버 경기 시계 기준)는 어떤 경우에도 쓰지 않고, 지금 시계보다 뒤의 기록·열린 점유 구간도 쓰지 않는다.
+    거부 사유 dict 를 돌려준다(없으면 None)."""
+    live_now = not match_obj.archived
+    if live_now != row.live:
+        key = "apply" if side == "after" else ("revert_live" if live_now else "revert_archived")
+        return {"reason": "archive_state_changed", "message": ARCHIVE_STATE_MESSAGES[key]}
+    if not live_now:
+        return None
+    if any(it["kind"] == "marker" for it in row.items):
+        return {"reason": "live_clock_change", "message": "진행 중 경기의 하프 시작 표시는 바꾸지 않습니다(운영자 몫)."}
+    if any(it["kind"] == "match" for it in row.items):
+        return {"reason": "live_rename", "message": "진행 중 경기의 이름은 바꾸지 않습니다."}
+    state = _latest_state(db, match_obj.id)
+    current = state.clock_ms if state else 0
+    for it in row.items:
+        snap = it[side]
+        if snap is None:
+            continue
+        if it["kind"] == "event" and int(snap["clock_ms"]) > current:
+            return {"reason": "live_future_time", "message": "진행 중 경기의 지금 시계보다 뒤 시각은 쓰지 않습니다."}
+        if it["kind"] == "possession" and (snap["end_ms"] is None or int(snap["end_ms"]) > current):
+            return {"reason": "segment_open", "message": "진행 중 경기의 열린(또는 지금 시계보다 뒤) 점유 구간은 쓰지 않습니다."}
+    return None
+
+
 def _stale(db: Session, match_obj: Match, items: list[dict], side: str) -> list[dict]:
     stale = []
     for it in items:
@@ -1644,14 +1680,13 @@ def agent_apply(plan_id: str, principal: AgentPrincipal = Depends(write_principa
     _check_daily_write(db, principal)
     match_obj = _load_match(db, row.match_id, for_update=True)  # 운영자 입력과 같은 잠금 — 순서대로 처리된다
     _require_writable(match_obj)
-    if (not match_obj.archived) != row.live:
-        raise HTTPException(409, "plan 뒤에 경기 보관 상태가 바뀌었습니다. 다시 plan 하세요.")
-    if row.live and any(it["kind"] == "marker" for it in row.items):
-        # plan 때 막히지만, 어떤 경로로든 진행 중 경기의 시계 기준(하프 시작 표시)을 쓰는 변경은 적용하지 않는다.
+    blocked = _live_write_guard(db, match_obj, row, "after")
+    if blocked:
+        # plan 때 막히지만, 어떤 경로로든 진행 중 경기의 시계 기준·미래 시각을 쓰는 변경은 적용하지 않는다.
         _audit(db, principal, "AGENT_FLA_APPLY_REJECTED", match_id=row.match_id, target_id=row.id, severity="WARN",
-               details={"reason": "live_clock_change"})
+               details={"reason": blocked["reason"]})
         db.commit()
-        raise HTTPException(409, {"reason": "live_clock_change", "message": "진행 중 경기의 하프 시작 표시는 바꾸지 않습니다(운영자 몫)."})
+        raise HTTPException(409, blocked)
     stale = _stale(db, match_obj, row.items, "before")
     if stale:
         _audit(db, principal, "AGENT_FLA_APPLY_REJECTED", match_id=row.match_id, target_id=row.id, severity="WARN",
@@ -1686,6 +1721,11 @@ def agent_apply(plan_id: str, principal: AgentPrincipal = Depends(write_principa
 def _do_revert(db: Session, row: AgentFlaChange, *, by_name: str, by_token: str | None, audit) -> None:
     """변경 묶음 되돌리기 — 토큰(본인)·관리자 콘솔 공통. 적용 뒤 같은 항목이 바뀌었으면 거부."""
     match_obj = _load_match(db, row.match_id, for_update=True)
+    blocked = _live_write_guard(db, match_obj, row, "before")  # apply 와 같은 보관 상태·진행 중 보호(재검증 N1)
+    if blocked:
+        audit("AGENT_FLA_REVERT_REJECTED", {"reason": blocked["reason"]})
+        db.commit()
+        raise HTTPException(409, blocked)
     stale = _stale(db, match_obj, row.items, "after")
     if stale:
         audit("AGENT_FLA_REVERT_REJECTED", {"stale": stale})

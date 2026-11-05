@@ -46,7 +46,7 @@ export default function AgentTokenManagement() {
     try {
       const response = await action();
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '처리하지 못했습니다.');
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : payload.detail?.message || '처리하지 못했습니다.');
       done(payload);
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : '처리하지 못했습니다.'); }
