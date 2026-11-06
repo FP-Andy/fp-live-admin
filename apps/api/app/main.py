@@ -33,6 +33,7 @@ import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
 from .highlight_render_queue import HighlightRenderTask
+from . import gpu_auto_stop
 from .scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion
 from .manual_highlight_log import router as manual_highlight_log_router
 from .competition_queue import (
@@ -210,6 +211,7 @@ competition_send_worker: CompetitionSendWorker | None = None
 system_monitor_task: asyncio.Task | None = None
 schedule_slack_task: asyncio.Task | None = None
 broadcast_asset_task: asyncio.Task | None = None
+gpu_auto_stop_task: asyncio.Task | None = None
 PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://console.fineludens.kr").rstrip("/")
 # Console 대시보드는 운영 화면을 열 때마다 gateway 상태를 확인한다. 미디어 서버가 꺼진
 # 상태에서는 이 확인이 전체 화면을 기다리게 해서는 안 된다.
@@ -1571,6 +1573,38 @@ async def system_monitor_worker(stop_event: asyncio.Event) -> None:
             pass
 
 
+def _gpu_auto_stop_tick(settings: gpu_auto_stop.Settings) -> None:
+    db = SessionLocal()
+    try:
+        result = gpu_auto_stop.run_tick(
+            db,
+            now=datetime.utcnow(),
+            settings=settings,
+            control=_highlight_worker_control_request,
+            notify=gpu_auto_stop.slack_notifier(settings.slack_webhook_url),
+        )
+        if result.error or result.stopped:
+            print(f"gpu auto-stop: {result.decision} {result.error or ''}".rstrip())
+    finally:
+        db.close()
+
+
+async def gpu_auto_stop_worker(stop_event: asyncio.Event) -> None:
+    # 기본은 꺼짐(GPU_AUTO_STOP_ENABLED=1 일 때만). 제어 URL이 없으면 끌 방법이 없으니 돌지 않는다.
+    settings = gpu_auto_stop.Settings.from_env()
+    while not stop_event.is_set():
+        if settings.enabled and HIGHLIGHT_WORKER_CONTROL_URL:
+            try:
+                await asyncio.to_thread(_gpu_auto_stop_tick, settings)
+            except Exception as ex:
+                # DB 연결 끊김 같은 예외도 루프를 죽이지 않는다. 다음 차례에 다시 본다.
+                print(f"gpu auto-stop failed: {ex}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=settings.check_seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
 def _probe_hls_url(hls_url: str | None) -> dict:
     normalized_url = _normalize_hls_url(hls_url)
     if not normalized_url:
@@ -1602,7 +1636,7 @@ def _probe_hls_url(hls_url: str | None) -> dict:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global worker_task, system_monitor_task, schedule_slack_task, broadcast_asset_task, competition_send_worker
+    global worker_task, system_monitor_task, schedule_slack_task, broadcast_asset_task, competition_send_worker, gpu_auto_stop_task
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
     ensure_highlight_runtime_dirs()
@@ -1619,6 +1653,7 @@ async def startup() -> None:
     system_monitor_task = asyncio.create_task(system_monitor_worker(worker_stop_event))
     schedule_slack_task = asyncio.create_task(schedule_slack_worker(worker_stop_event))
     broadcast_asset_task = asyncio.create_task(broadcast_asset_worker(worker_stop_event))
+    gpu_auto_stop_task = asyncio.create_task(gpu_auto_stop_worker(worker_stop_event))
 
 
 @app.on_event("shutdown")
@@ -1634,6 +1669,8 @@ async def shutdown() -> None:
         await schedule_slack_task
     if broadcast_asset_task:
         await broadcast_asset_task
+    if gpu_auto_stop_task:
+        await gpu_auto_stop_task
 
 
 def _require_write_lock(match_obj: Match, user: User | None) -> None:
@@ -7234,6 +7271,7 @@ def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_requi
             **highlight_worker,
             "active_jobs": active_highlight_jobs,
         },
+        "gpu_auto_stop": gpu_auto_stop.status_payload(db, datetime.utcnow(), gpu_auto_stop.Settings.from_env()),
         "health": {
             "gateway_ok": bool(gateway_status.get("ok")),
             "running_streams": len(gateway_status.get("running_match_ids") or []),
@@ -7353,6 +7391,8 @@ def get_highlight_worker_status(db: Session = Depends(get_db), _user: User = Dep
 @app.post("/api/admin/ec2/highlight-worker-start")
 def start_highlight_worker(db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
     data = _highlight_worker_control_request("start")
+    # 자동 종료가 방금 켠 서버를 예전 유휴 기록으로 바로 끄지 않게 시계를 다시 맞춘다.
+    gpu_auto_stop.note_manual_start(db, datetime.utcnow())
     _audit(
         db,
         "HIGHLIGHT_WORKER_EC2_START",
@@ -7384,6 +7424,7 @@ def stop_highlight_worker(confirm_live_action: bool = Query(default=False), db: 
         )
 
     data = _highlight_worker_control_request("stop", confirmed_live_action=confirm_live_action)
+    gpu_auto_stop.note_manual_stop(db, datetime.utcnow())
     _audit(
         db,
         "HIGHLIGHT_WORKER_EC2_STOP",
@@ -7403,6 +7444,33 @@ def stop_highlight_worker(confirm_live_action: bool = Query(default=False), db: 
         "highlight_worker": _highlight_worker_control_status(),
         "result": data,
     }
+
+
+@app.get("/api/admin/gpu-auto-stop")
+def get_gpu_auto_stop(db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    return {"ok": True, "gpu_auto_stop": gpu_auto_stop.status_payload(db, datetime.utcnow(), gpu_auto_stop.Settings.from_env())}
+
+
+@app.post("/api/admin/gpu-auto-stop/skip-today")
+def set_gpu_auto_stop_skip_today(body: dict = Body(default={}), db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    # "오늘 자동 종료 안 함" — 긴 작업을 띄워 둔 날 GPU가 중간에 꺼지지 않게 하는 수동 예외.
+    # 한국 날짜 기준으로 저장해 다음 날 0시(KST)에 저절로 풀린다.
+    skip = body.get("skip")
+    if not isinstance(skip, bool):
+        raise HTTPException(status_code=400, detail="skip 은 true/false 로 보내 주세요.")
+    now = datetime.utcnow()
+    state = gpu_auto_stop.set_skip_today(db, now, skip, user.name or user.id)
+    _audit(
+        db,
+        "GPU_AUTO_STOP_SKIP_TODAY",
+        "system",
+        actor=user,
+        target_id=gpu_auto_stop.STATE_ID,
+        severity="INFO",
+        details={"skip": skip, "date_kst": state.skip_date or gpu_auto_stop.kst_date(now)},
+    )
+    db.commit()
+    return {"ok": True, "gpu_auto_stop": gpu_auto_stop.status_payload(db, now, gpu_auto_stop.Settings.from_env())}
 
 
 @app.get("/api/admin/media")

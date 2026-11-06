@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { apiJson } from '../../../../lib/api';
-import { RTMP_SERVER, rtmpServerAddress } from '../../../../lib/rtmp';
+import { rtmpServerAddress, sharedRtmpServer } from '../../../../lib/rtmp';
 import BasketballRecording from '../../../../components/basketball/BasketballRecording';
 
 type Match = {id:string; name:string; archived:boolean};
@@ -39,11 +39,13 @@ export default function BasketballMediaPage(){
   async function copy(text:string){try{await navigator.clipboard.writeText(text);setNotice('복사했습니다.');}catch{setNotice('복사하지 못했습니다. 경기의 녹화·다운로드를 열어 직접 복사하세요.');}}
   const readyRows=rows.filter(row=>row.recording?.desired&&row.recording.stream_key);
   const chosen=rows.find(row=>row.match.id===selected);
+  // 공통 주소도 서버가 준 녹화 주소에서 가져온다(설정 RECORDING_RTMP_PUBLIC_BASE). 없을 때만 기본값.
+  const rtmpServer=sharedRtmpServer(rows.map(row=>row.recording?.server_url));
   return <main className="page-stack console-page">
     <section className="card card-panel grid">
       <div className="section-heading"><div><div className="sidebar-eyebrow">BASKETBALL · MEDIA</div><h2>농구 미디어</h2><p className="muted">송출 수신, 최근 저장 화면과 녹화 영상을 확인합니다. 약 10초마다 상태를 갱신합니다.</p></div><button className="btn" disabled={loading} onClick={()=>setRevision(value=>value+1)}>새로고침</button></div>
-      <div className="basketball-media-server"><div><span className="muted">축구·농구 공통 RTMP 서버</span><code>{RTMP_SERVER}</code></div><button className="btn" onClick={()=>void copy(RTMP_SERVER)}>서버 주소 복사</button></div>
-      <div className="row" style={{gap:12,flexWrap:'wrap'}}><label className="row" style={{gap:8}}><input type="checkbox" checked={archived} onChange={e=>{setArchived(e.target.checked);setPage(0);}}/>보관된 경기</label><button className="btn" disabled={!readyRows.length} onClick={()=>void copy(readyRows.map(({match,recording:r})=>`${match.name}\n서버: ${rtmpServerAddress(r!.server_url)}\n키: ${r!.stream_key}`).join('\n\n'))}>현재 목록 송출 정보 복사</button><span className="muted">{checkedAt?`마지막 확인 ${checkedAt}`:'상태 확인 중…'}</span></div>
+      <div className="basketball-media-server"><div><span className="muted">축구·농구 공통 RTMP 서버</span><code>{rtmpServer}</code></div><button className="btn" onClick={()=>void copy(rtmpServer)}>서버 주소 복사</button></div>
+      <div className="row" style={{gap:12,flexWrap:'wrap'}}><label className="row" style={{gap:8}}><input type="checkbox" checked={archived} onChange={e=>{setArchived(e.target.checked);setPage(0);}}/>보관된 경기</label><button className="btn" disabled={!readyRows.length} onClick={()=>void copy(readyRows.map(({match,recording:r})=>`${match.name}\n서버: ${rtmpServerAddress(r!.server_url,rtmpServer)}\n키: ${r!.stream_key}`).join('\n\n'))}>현재 목록 송출 정보 복사</button><span className="muted">{checkedAt?`마지막 확인 ${checkedAt}`:'상태 확인 중…'}</span></div>
       {notice&&<p role="status">{notice}</p>}{error&&<p role="alert" className="form-error">{error}</p>}
     </section>
     {loading&&<p role="status">농구 경기 수신 상태를 확인하고 있습니다.</p>}
