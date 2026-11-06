@@ -62,6 +62,8 @@ const results=[];
      if(plan==='lose-on-reload'){await gate(r=>{cut=r;});return route.abort().catch(()=>{});}
      return route.fulfill(reply).catch(()=>{});
     }
+    // FLA 에이전트 수정 알림(AgentEditNotice) 폴링 — 이 회귀와 무관, 빈 목록.
+    if(path.endsWith('/agent-edits'))return route.fulfill({json:{items:[],server_now:new Date().toISOString()}}).catch(()=>{});
     throw Error(`Unexpected route ${path}`);
    });
    const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));

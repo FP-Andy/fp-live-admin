@@ -49,6 +49,8 @@ async function run(sport, scenario) {
       if (body.update_kind === 'command') revision++;
       return respond({ ok: true, state, command_revision: revision });
     }
+    // FLA 에이전트 수정 알림(AgentEditNotice) 폴링 — 이 회귀와 무관, 빈 목록.
+    if (path === `/api/matches/${id}/agent-edits`) return respond({ items: [], server_now: new Date().toISOString() });
     throw Error(`Unexpected API: ${path}`);
   });
   const page = await context.newPage(); page.on('pageerror', e => result.errors.push(e.message));

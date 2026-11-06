@@ -47,6 +47,8 @@ def main_helpers():
         '_fcm_player_side', '_fcm_fineplay_positions', '_fineplay_job_for_fpa_match',
         # 카드 데이터 파일 선택(팀별 → 공용) — 미리보기와 같이 쓰는 헬퍼.
         '_fcm_card_workbook_source',
+        # 제출 응답의 제출자 이름(submitted_by_name).
+        '_fcm_user_name',
     }
     module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)] + [
         node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in names

@@ -22,7 +22,7 @@ async function navigate(page) {
   await page.waitForURL('**/admin/futsal/fla/video');
 }
 async function showNavigation(page) {
-  if (!await page.locator('a[href="/admin/futsal/fla/video"]').count()) await page.getByRole('button', { name: /FLA.*Live Analytics/ }).click();
+  if (!await page.locator('a[href="/admin/futsal/fla/video"]').count()) await page.getByRole('button', { name: /FLA.*(라이브 기록|Live Analytics)/ }).click();
 }
 (async () => {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : chromium.executablePath()), headless: true });

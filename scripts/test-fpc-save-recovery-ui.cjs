@@ -64,6 +64,8 @@ async function context(sport, quota = 'none', seeded = null) {
       if (deleteFailure) return route.fulfill({ status: 403, json: { detail: 'Synthetic rejection' } });
       rows.delete(path.split('/').pop()); return respond({ ok: true });
     }
+    // FLA 에이전트 수정 알림(AgentEditNotice) 폴링 — 이 회귀와 무관, 빈 목록.
+    if (path === `/api/matches/${matchId}/agent-edits`) return respond({ items: [], server_now: new Date().toISOString() });
     unexpected.push({ path, method });
     return route.fulfill({ status: 404, json: { detail: 'No fixture for this request' } });
   });
