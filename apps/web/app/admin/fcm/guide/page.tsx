@@ -24,6 +24,8 @@ const templateRows = [
 
 const statRows = [
   ['자동 후보', 'FPA 데이터 분석 결과에서 선수별 주요 후보가 표시됩니다.', '후보 버튼을 눌러 최대 5개 선택'],
+  ['자동 선택 순서', '골이 있으면 Goal → 기대득점(xG) → 슈팅(유효슈팅) → 드리블/돌파 → 경합 성공률, 어시스트가 있으면 Assist → Key Pass → 패스 성공률 → 전진 패스 → 경합 성공률, 둘 다 없으면 포지션(FW/MF/DF)에 맞는 스탯으로 5개를 채웁니다.', '값이 없는 스탯은 건너뜁니다. 5줄이 넘치면 수비 스탯은 한 줄에 묶습니다(예: 인터셉트 : 3회 / 차단 : 3회).'],
+  ['표기', '스탯명 : 값 형식이며 괄호 앞은 띄우지 않습니다.', '예: 패스 성공률(%) : 85.0%(17회), 기대득점(xG) : 0.310(1골)'],
   ['커스텀 스탯', '특정 선수에게 필요한 문구를 직접 입력합니다.', '예: 압박 회피 후 전진 패스 4회'],
   ['선수 이름', '카드에 표시될 선수 이름입니다.', '번호만 자동으로 잡히므로 이름은 확인 후 입력'],
   ['팀 선택', 'HOME/AWAY 각각 별도로 저장됩니다.', '양 팀 모두 Ready가 필요하면 두 팀을 각각 제출'],
@@ -86,7 +88,7 @@ function GuideList({ items, ordered = false }: { items: ReactNode[]; ordered?: b
 
 export default function FcmGuidePage() {
   return (
-    <main className="page-stack console-page fcm-guide-page">
+    <main className="page-stack console-page fcm-guide-page console-flat">
       <FcmWorkflow current="guide" />
       <section className="card card-hero page-hero fcm-guide-hero">
         <div className="section-heading">
@@ -94,7 +96,7 @@ export default function FcmGuidePage() {
             <div className="sidebar-eyebrow">FinePlay Card Marker</div>
             <h2 style={{ margin: '6px 0 0' }}>Guide</h2>
           </div>
-          <span className="status-pill tech">FCM</span>
+          <span className="status-pill tech chip-tag">FCM</span>
         </div>
         <p className="field-help" style={{ margin: 0, maxWidth: '78ch' }}>
           FCM은 archived match의 FPA 데이터에서 대표 선수와 주요스탯을 정리하고, 팀별 배경 템플릿을 매칭해

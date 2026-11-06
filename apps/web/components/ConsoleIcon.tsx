@@ -1,4 +1,20 @@
 /** Small, consistent stroke icons for console navigation. */
+// 메뉴 이름을 한국어로 바꾸면서(2026-11-04) 아이콘은 그대로 쓴다 — 새 이름 → 기존 아이콘 키.
+const ALIASES: Record<string, string> = {
+  '운영 현황': 'Dashboard',
+  '영상 송출': 'Media',
+  '중계 그래픽': 'Live Coder',
+  'FinePlay 분석': 'Live Logger',
+  '모델 관리': 'Model Room',
+  '씬 모션': 'Scene Motion',
+  '코드 안내': 'Code Guide',
+  '데이터 제출': 'Match Status',
+  '템플릿': 'Templates',
+  '카드 생성': 'Workspace',
+  '사용 가이드': 'Guide',
+  '시스템': 'System',
+};
+
 export default function ConsoleIcon({ name }: { name: string }) {
   const paths: Record<string, React.ReactNode> = {
     Dashboard: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
@@ -9,6 +25,10 @@ export default function ConsoleIcon({ name }: { name: string }) {
     Visualization: <><path d="M4 3v17h17M8 16v-5m5 5V7m5 9V4" /></>,
     'AI+Log': <><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Zm9 11 1 3 3 1-3 1-1 3-1-3-3-1 3-1Z" /></>,
     FinePlay: <><path d="m10 8 6 4-6 4Z" /><path d="M7 3H4v5m13-5h3v5M4 16v5h3m13-5v5h-3" /></>,
+    // FHL 사이드바 — 라벨이 곧 키다(AdminShell 의 ConsoleIcon name={item.label}).
+    'FinePlay 클립': <><path d="m10 8 6 4-6 4Z" /><path d="M7 3H4v5m13-5h3v5M4 16v5h3m13-5v5h-3" /></>,
+    '직접 만들기': <><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M8.1 8.1 20 20M8.1 15.9 20 4" /></>,
+    '클립 검수': <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m8 12 3 3 5-6" /></>,
     '중계 오버레이': <><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M6 8h5v3H6Zm3 13h6m-3-3v3m2-7h4" /></>,
     'Model Room': <><path d="m12 3 9 5-9 5-9-5Zm-9 9 9 5 9-5m-18 5 9 5 9-5" /></>,
     'Scene Motion': <><circle cx="12" cy="12" r="9" /><path d="m10 8 6 4-6 4ZM3 3v5h5" /></>,
@@ -24,5 +44,5 @@ export default function ConsoleIcon({ name }: { name: string }) {
     data: <><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5" /></>,
     logout: <><path d="M9 4H4v16h5m6-12 4 4-4 4M9 12h10" /></>,
   };
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 15v-3m5 3V8m5 7v-5" /></>}</svg>;
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths[ALIASES[name]] || <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 15v-3m5 3V8m5 7v-5" /></>}</svg>;
 }

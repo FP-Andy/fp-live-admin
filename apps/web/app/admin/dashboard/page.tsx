@@ -1,10 +1,14 @@
 'use client';
 
 import BasketballRecording from '../../../components/basketball/BasketballRecording';
+import ConfirmDialog from '../../../components/ConfirmDialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../lib/api';
+import { countStoredFlaInputs } from '../../../lib/fla-input-outbox';
 import { responseError } from '../../../lib/response-error';
+import { errorDetail, errorFromBody, errorFromResponse, errorMessage, responseMessage, warnRaw } from '../../../lib/error-messages';
+import ErrorNotice from '../../../components/ErrorNotice';
 import { useSportContext, type Sport } from '../../../components/SportContext';
 
 type Match = {
@@ -306,6 +310,13 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [listMode, setListMode] = useState<'active' | 'archived'>('active');
   const [classFilter, setClassFilter] = useState('ALL');
+  // 경기 검색 — 서버에서 7개씩 받으므로 검색어도 서버로 보낸다. 입력을 멈추고 0.3초 뒤에 찾는다.
+  const [searchText, setSearchText] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQuery(searchText.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchText]);
   const [activePage, setActivePage] = useState(1);
   const [archivedPage, setArchivedPage] = useState(1);
   const [isClassModalOpen, setIsClassModalOpen] = useState(false);
@@ -368,6 +379,7 @@ export default function Dashboard() {
       offset: String((currentPage - 1) * PAGE_SIZE),
     });
     if (classFilter !== 'ALL') params.set('competition_class', classFilter);
+    if (searchQuery) params.set('q', searchQuery);
     return params;
   };
 
@@ -403,7 +415,7 @@ export default function Dashboard() {
       setAssignedMatchTotal(0);
       setRtmpMatchTotal(0);
       setRunningMatchIds([]);
-      setError(loadError instanceof Error ? loadError.message : 'API unavailable. Run API server or infra/app compose stack.');
+      setError(errorMessage(loadError, '경기 목록을 불러오지 못했습니다. 잠시 후 새로고침해 주세요.', { fixed: true }));
     } finally {
       setBootstrapReady(true);
     }
@@ -433,7 +445,7 @@ export default function Dashboard() {
       loadedQueryRef.current = params.toString();
       setError('');
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '경기 목록을 불러오지 못했습니다.');
+      setError(errorMessage(loadError, '경기 목록을 불러오지 못했습니다. 잠시 후 새로고침해 주세요.', { fixed: true }));
     }
   };
 
@@ -446,7 +458,7 @@ export default function Dashboard() {
     const timer = setInterval(() => void refreshLive(), 15000);
     return () => clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bootstrapReady, listMode, classFilter, activePage, archivedPage]);
+  }, [bootstrapReady, listMode, classFilter, searchQuery, activePage, archivedPage]);
 
   const load = async () => {
     await loadBootstrap();
@@ -598,7 +610,7 @@ export default function Dashboard() {
     });
 
     if (!response.ok) {
-      setClassModalError((await response.text()) || 'Failed to create competition class');
+      setClassModalError(await responseMessage(response, { action: '대회를 만들지 못했습니다' }));
       return;
     }
 
@@ -660,7 +672,7 @@ export default function Dashboard() {
     });
 
     if (!response.ok) {
-      setClassModalError((await response.text()) || 'Failed to update competition class');
+      setClassModalError(await responseMessage(response, { action: '대회 정보를 저장하지 못했습니다' }));
       return;
     }
 
@@ -684,7 +696,7 @@ export default function Dashboard() {
         window.alert(`${item.code} 대회로 만든 경기가 있어 삭제할 수 없습니다.\n해당 대회의 경기가 하나도 없어야 삭제할 수 있습니다.`);
         return;
       }
-      setClassModalError((await response.text()) || '대회를 삭제하지 못했습니다.');
+      setClassModalError(await responseMessage(response, { action: '대회를 삭제하지 못했습니다' }));
       return;
     }
 
@@ -701,7 +713,7 @@ export default function Dashboard() {
       credentials: 'include',
     });
     if (!response.ok) {
-      setClassModalError((await response.text()) || '팀 목록을 다운로드하지 못했습니다.');
+      setClassModalError(await responseMessage(response, { action: '팀 목록을 다운로드하지 못했습니다' }));
       return;
     }
     const blob = await response.blob();
@@ -729,7 +741,7 @@ export default function Dashboard() {
       });
       const text = await response.text();
       if (!response.ok) {
-        setClassModalError(text || '팀 목록 업로드에 실패했습니다.');
+        setClassModalError(errorFromBody(response.status, text, { action: '팀 목록을 올리지 못했습니다', url: response.url }).message);
         return;
       }
       const result = text ? JSON.parse(text) : { team_count: 0 };
@@ -740,7 +752,7 @@ export default function Dashboard() {
       }
       await load();
     } catch (loadError) {
-      setClassModalError(loadError instanceof Error ? loadError.message : '팀 목록 업로드에 실패했습니다.');
+      setClassModalError(errorMessage(loadError, '팀 목록을 올리지 못했습니다.'));
     } finally {
       setImportingClassTeams('');
     }
@@ -822,7 +834,7 @@ export default function Dashboard() {
       body: JSON.stringify(scheduleForm),
     });
     if (!response.ok) {
-      setScheduleError((await response.text()) || '일정을 저장하지 못했습니다.');
+      setScheduleError(await responseMessage(response, { action: '일정을 저장하지 못했습니다' }));
       return;
     }
     setScheduleNotice(editingScheduleId ? '일정을 수정했습니다.' : '일정을 추가했습니다.');
@@ -840,7 +852,7 @@ export default function Dashboard() {
     setScheduleNotice('');
     const response = await apiFetch(`/schedule-entries/${entry.id}`, { method: 'DELETE' });
     if (!response.ok) {
-      setScheduleError((await response.text()) || '일정을 삭제하지 못했습니다.');
+      setScheduleError(await responseMessage(response, { action: '일정을 삭제하지 못했습니다' }));
       return;
     }
     setScheduleNotice('일정을 삭제했습니다.');
@@ -864,7 +876,7 @@ export default function Dashboard() {
     });
     const text = await response.text();
     if (!response.ok) {
-      setScheduleError(text || 'CSV 업로드에 실패했습니다.');
+      setScheduleError(errorFromBody(response.status, text, { action: 'CSV를 올리지 못했습니다', url: response.url }).message);
       return;
     }
     const result = text ? JSON.parse(text) : { imported: 0, created: 0, updated: 0 };
@@ -884,35 +896,50 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
-  const deleteMatch = async (matchId: string, matchName: string) => {
-    const ok = window.confirm(`Delete match '${matchName}'? This removes states/events/dominance data.`);
-    if (!ok) return;
+  // 삭제 확인 창 — 한 번 묻고 "삭제"를 누르면 지운다. 시계가 돌고 있는 경기면 서버가 409 로
+  // 막으므로, 같은 창 문구를 그 경고로 바꿔 한 번 더 누르게 한다(그때만 confirm_live_action).
+  // 매치 컨트롤 "경기 종료" 후 넘어오면, 송출 중지·HLS 정리 중 실패한 단계가 있었는지 알려 준다.
+  // 오류 칸(error)은 15초 새로고침마다 비워지므로 따로 두고, 닫을 때까지 남긴다.
+  const [endMatchNotice, setEndMatchNotice] = useState('');
+  useEffect(() => {
+    try {
+      const note = window.sessionStorage.getItem('fla-end-match-notice');
+      if (note) { window.sessionStorage.removeItem('fla-end-match-notice'); setEndMatchNotice(note); }
+    } catch { /* 저장소를 못 쓰면 안내만 생략 */ }
+  }, []);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; live: boolean } | null>(null);
+  const [deletingMatch, setDeletingMatch] = useState(false);
 
+  const confirmDeleteMatch = async () => {
+    if (!deleteTarget) return;
+    setDeletingMatch(true);
     setError('');
-    let response = await apiFetch(`/matches/${matchId}?stop_stream=true`, {
-      method: 'DELETE',
-    });
-
-    if (response.status === 409) {
-      const detail = await response.text();
-      const confirmLive = window.confirm(`${detail}\n\n계속 삭제할까요?`);
-      if (!confirmLive) return;
-      response = await apiFetch(`/matches/${matchId}?stop_stream=true&confirm_live_action=true`, {
-        method: 'DELETE',
-      });
+    try {
+      const response = await apiFetch(
+        `/matches/${deleteTarget.id}?stop_stream=true${deleteTarget.live ? '&confirm_live_action=true' : ''}`,
+        { method: 'DELETE' },
+      );
+      if (response.status === 409 && !deleteTarget.live) {
+        setDeleteTarget({ ...deleteTarget, live: true });
+        return;
+      }
+      setDeleteTarget(null);
+      if (!response.ok) {
+        setError(await responseMessage(response, { action: '경기를 삭제하지 못했습니다' }));
+        return;
+      }
+      await load();
+    } finally {
+      setDeletingMatch(false);
     }
-
-    if (!response.ok) {
-      setError((await response.text()) || 'Failed to delete match');
-      return;
-    }
-
-    await load();
   };
 
   const setArchived = async (matchId: string, archived: boolean) => {
+    // 매치 컨트롤은 입력을 이 기기에 먼저 남기고 뒤에서 보낸다. 다 보내기 전에 보관하면 서버가
+    // 보관 경기 쓰기를 막아 남은 입력이 저장되지 못한다 — 보관 전에 그 사실을 알린다.
+    const unsent = archived ? countStoredFlaInputs(matchId) : 0;
     const prompt = archived
-      ? '이 경기를 보관할까요? 보관 후에는 상세 페이지가 read-only가 됩니다.'
+      ? `${unsent ? `이 기기에 아직 서버에 못 보낸 경기 입력이 ${unsent}건 있습니다. 보관하면 저장되지 않습니다.\n\n` : ''}이 경기를 보관할까요? 보관 후에는 상세 페이지가 read-only가 됩니다.`
       : '이 경기를 다시 운영 목록으로 복원할까요?';
     if (!window.confirm(prompt)) return;
 
@@ -926,8 +953,12 @@ export default function Dashboard() {
     });
 
     if (response.status === 409) {
-      const detail = await response.text();
-      const confirmLive = window.confirm(`${detail}\n\n계속 진행할까요?`);
+      // 409 = 시계가 도는 경기. 확인 창엔 한국어만, 서버 원문은 콘솔로(판정은 서버 detail 원문으로).
+      const conflict = await errorFromResponse(response, {});
+      warnRaw('경기 보관 409 — 한 번 더 확인', conflict);
+      const confirmLive = window.confirm(/blocked while match clock is running/.test(errorDetail(conflict))
+        ? '경기 시계가 돌고 있습니다. 그래도 보관하면 송출이 멈춥니다. 계속할까요?'
+        : `${conflict.message}\n\n계속 진행할까요?`);
       if (!confirmLive) return;
       response = await apiFetch(`/matches/${matchId}/archive?confirm_live_action=true`, {
         method: 'POST',
@@ -939,7 +970,7 @@ export default function Dashboard() {
     }
 
     if (!response.ok) {
-      setError((await response.text()) || (archived ? 'Failed to archive match' : 'Failed to restore match'));
+      setError(await responseMessage(response, { action: archived ? '경기를 보관하지 못했습니다' : '경기를 복원하지 못했습니다' }));
       return;
     }
 
@@ -1013,7 +1044,7 @@ export default function Dashboard() {
   useEffect(() => {
     setActivePage(1);
     setArchivedPage(1);
-  }, [classFilter, listMode, sport]);
+  }, [classFilter, searchQuery, listMode, sport]);
 
   useEffect(() => {
     if (activePage > activePageCount) setActivePage(activePageCount);
@@ -1043,6 +1074,24 @@ export default function Dashboard() {
 
   return (
     <>
+      {deleteTarget ? (
+        <ConfirmDialog
+          title={deleteTarget.live ? '진행 중인 경기입니다' : '경기를 삭제할까요?'}
+          message={deleteTarget.live ? (
+            <p>
+              <b>{deleteTarget.name}</b> 경기의 시계가 돌고 있습니다. 그래도 삭제하면 송출이 멈추고
+              기록·점유·분석 데이터가 모두 지워집니다. 되돌릴 수 없습니다.
+            </p>
+          ) : (
+            <p>
+              <b>{deleteTarget.name}</b> 경기의 기록·점유·분석 데이터가 모두 지워집니다. 되돌릴 수 없습니다.
+            </p>
+          )}
+          busy={deletingMatch}
+          onConfirm={() => void confirmDeleteMatch()}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      ) : null}
       <main className="page-stack console-dashboard">
         <section className="page-hero">
           <div className="hero-grid">
@@ -1254,7 +1303,7 @@ export default function Dashboard() {
                 <button className="btn-primary match-create-button" disabled={creatingMatch} aria-busy={creatingMatch} onClick={createMatch}>{creatingMatch ? <><span className="match-create-spinner" aria-hidden="true" /> 경기 생성 중…</> : '경기 생성'}</button>
                 <span className="muted" role="status">{creatingMatch ? '경기를 등록하고 있습니다. 잠시 기다려주세요.' : ''}</span>
               </div>
-              {createError ? <p role="alert" className="form-error" style={{ margin: 0 }}>{createError}</p> : null}
+              {createError ? <ErrorNotice className="form-error" style={{ margin: 0 }} message={createError} /> : null}
               {createdMatch ? <div className="match-create-success" role="status">
                 <div><strong>경기가 생성되었습니다.</strong><p>{createdMatch.name}</p></div>
                 {createdMatch.id ? <Link className="button-link btn-primary" href={createdMatch.sport === 'BASKETBALL' ? `/admin/basketball/match/${createdMatch.id}` : `/admin/match/${createdMatch.id}`}>매치 컨트롤 열기 →</Link> : <a className="button-link btn-secondary" href="#dashboard-match-list">경기 목록 보기 ↓</a>}
@@ -1264,7 +1313,8 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {error ? <p role="alert" className="form-error">{error}</p> : null}
+        {endMatchNotice ? <div className="fla-feedback" role="status"><span>{endMatchNotice}</span><button aria-label="안내 닫기" onClick={() => setEndMatchNotice('')}>×</button></div> : null}
+        {error ? <ErrorNotice className="form-error" style={{ margin: '14px 0' }} message={error} /> : null}
         <section className="dashboard-grid" id="dashboard-match-list">
           <div className="card card-panel">
             <div className="section-heading">
@@ -1275,9 +1325,19 @@ export default function Dashboard() {
             </div>
 
             <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 16 }}>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <div className="row console-seg" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button className={listMode === 'active' ? 'btn-active' : ''} onClick={() => setListMode('active')} aria-pressed={listMode === 'active'}>진행 경기</button>
                 <button className={listMode === 'archived' ? 'btn-active' : ''} onClick={() => setListMode('archived')} aria-pressed={listMode === 'archived'}>보관 경기</button>
+              </div>
+              <div className="field-stack dashboard-filter-search">
+                <span className="field-label">경기 검색</span>
+                <input
+                  type="search"
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                  placeholder="팀 이름·라운드 (예: 강릉, 29R)"
+                  aria-label="경기 검색"
+                />
               </div>
               <div className="field-stack dashboard-filter-select">
                 <span className="field-label">{sport === 'BASKETBALL' ? '종목 필터' : '대회 필터'}</span>
@@ -1325,7 +1385,8 @@ export default function Dashboard() {
                       ) : (
                         <>
                           <button className="button-compact btn-secondary" onClick={() => setArchived(match.id, true)}>Archive</button>
-                          <button className="btn-danger button-compact" onClick={() => deleteMatch(match.id, match.name)}>Delete</button>
+                          {/* 「경기 제어」 바로 옆 빨간 버튼이라 잘못 누르기 쉬웠다 — 구분선 뒤 작은 글씨로 뺀다. */}
+                          <button className="btn-link-danger match-delete" onClick={() => setDeleteTarget({ id: match.id, name: match.name, live: false })}>삭제</button>
                         </>
                       )}
                     </div>
@@ -1333,7 +1394,7 @@ export default function Dashboard() {
                 );
               })}
               {matchTotal === 0 ? (
-                <div className="dashboard-empty"><div className="empty-pitch" aria-hidden="true"><span /></div><strong>{listMode === 'active' ? '진행 중인 경기가 없습니다' : '보관된 경기가 없습니다'}</strong><p>{listMode === 'active' ? '새 경기를 등록하거나 대회 필터를 변경해 보세요.' : '종료 후 보관한 경기를 이곳에서 확인할 수 있습니다.'}</p></div>
+                <div className="dashboard-empty"><div className="empty-pitch" aria-hidden="true"><span /></div><strong>{searchQuery ? `"${searchQuery}"에 맞는 경기가 없습니다` : listMode === 'active' ? '진행 중인 경기가 없습니다' : '보관된 경기가 없습니다'}</strong><p>{listMode === 'active' ? '새 경기를 등록하거나 대회 필터를 변경해 보세요.' : '종료 후 보관한 경기를 이곳에서 확인할 수 있습니다.'}</p></div>
               ) : null}
             </div>
 
@@ -1428,7 +1489,7 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {scheduleError ? <p className="form-error">{scheduleError}</p> : null}
+                {scheduleError ? <ErrorNotice className="form-error" style={{ margin: '14px 0' }} message={scheduleError} /> : null}
                 {scheduleNotice ? <p className="muted">{scheduleNotice}</p> : null}
 
                 {selectedMatches.length === 0 ? (
@@ -1556,7 +1617,7 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
+                  {classModalError ? <ErrorNotice className="form-error" style={{ margin: 0 }} message={classModalError} /> : null}
                   <div className="row hero-actions-compact">
                     <button className="btn-primary" onClick={createCompetitionClass}>Create Competition</button>
                   </div>
@@ -1687,7 +1748,7 @@ export default function Dashboard() {
                     </div>
                   ) : null}
 
-                  {classModalError ? <p className="form-error" style={{ margin: 0 }}>{classModalError}</p> : null}
+                  {classModalError ? <ErrorNotice className="form-error" style={{ margin: 0 }} message={classModalError} /> : null}
                   {classModalNotice ? <p className="muted" style={{ margin: 0 }}>{classModalNotice}</p> : null}
                 </div>
               )}
@@ -1723,7 +1784,7 @@ export default function Dashboard() {
                 </label>
               </div>
 
-              {scheduleError ? <p className="form-error" style={{ margin: 0 }}>{scheduleError}</p> : null}
+              {scheduleError ? <ErrorNotice className="form-error" style={{ margin: 0 }} message={scheduleError} /> : null}
 
               <div className="row hero-actions-compact schedule-dialog-actions">
                 <button className="button-compact btn-secondary" onClick={downloadScheduleTemplate}>CSV 템플릿</button>
@@ -1784,7 +1845,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {scheduleError ? <p className="form-error" style={{ margin: 0 }}>{scheduleError}</p> : null}
+              {scheduleError ? <ErrorNotice className="form-error" style={{ margin: 0 }} message={scheduleError} /> : null}
 
               <div className="row hero-actions-compact schedule-dialog-actions">
                 <button className="button-compact btn-secondary" onClick={closeScheduleModal}>취소</button>

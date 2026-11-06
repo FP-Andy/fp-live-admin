@@ -16,6 +16,8 @@ type NavItem = {
   icon: string;
   match: (pathname: string) => boolean;
   roles?: SessionUser['role'][];
+  /** 사이드바 항목에 마우스를 올리면 뜨는 한 줄 설명(title). */
+  description?: string;
 };
 
 type NavSection = {
@@ -34,19 +36,19 @@ const DATA_HUB_ITEM: NavItem = {
 const FLA_ITEMS: NavItem[] = [
   {
     href: '/admin/dashboard',
-    label: 'Dashboard',
+    label: '운영 현황',
     icon: '▦',
     match: (pathname) => pathname === '/admin/dashboard',
   },
   {
     href: '/admin/media',
-    label: 'Media',
+    label: '영상 송출',
     icon: '◉',
     match: (pathname) => pathname.startsWith('/admin/media'),
   },
   {
     href: '/admin/live-coder',
-    label: 'Live Coder',
+    label: '중계 그래픽',
     icon: '▥',
     match: (pathname) => pathname.startsWith('/admin/live-coder'),
   },
@@ -105,36 +107,45 @@ const FHL_ITEMS: NavItem[] = [
   //   match: (pathname) => pathname.startsWith('/admin/highlight/completed'),
   //   roles: ['SUPERADMIN'],
   // },
+  // FHL 메뉴는 "무엇을 하러 왔나" 기준 두 묶음 + 중계 오버레이. 묶음 안의 화면은 상단 탭(HighlightSubTabs)이 나눈다.
   {
-    href: '/admin/highlight',
-    label: 'AI+Log',
-    icon: '▶',
-    match: (pathname) => pathname === '/admin/highlight' || pathname.startsWith('/admin/highlight/player'),
+    href: '/admin/highlight/fineplay',
+    label: 'FinePlay 클립',
+    icon: '◇',
+    description: 'FinePlay 신청을 받아 클립을 만들고 보내는 곳',
+    match: (pathname) =>
+      pathname.startsWith('/admin/highlight/fineplay') ||
+      pathname.startsWith('/admin/highlight/clips') ||
+      pathname.startsWith('/admin/highlight/archive'),
     roles: ['SUPERADMIN'],
   },
   {
-    href: '/admin/highlight/fineplay',
-    label: 'FinePlay',
-    icon: '◇',
+    href: '/admin/highlight',
+    label: '직접 만들기',
+    icon: '▶',
+    description: 'AI·선수별·수동으로 하이라이트를 직접 만드는 곳',
     match: (pathname) =>
-      pathname.startsWith('/admin/highlight/fineplay') ||
-      pathname.startsWith('/admin/highlight/editroom') ||
-      pathname.startsWith('/admin/highlight/clips') ||
-      pathname.startsWith('/admin/highlight/archive'),
+      pathname === '/admin/highlight' ||
+      pathname.startsWith('/admin/highlight/player') ||
+      pathname.startsWith('/admin/highlight/manual') ||
+      pathname.startsWith('/admin/highlight/results') ||
+      pathname.startsWith('/admin/highlight/template-editor'),
     roles: ['SUPERADMIN'],
   },
   {
     href: '/admin/highlight/overlay',
     label: '중계 오버레이',
     icon: '▧',
+    description: '중계 영상에 기록 그래픽을 얹는 곳',
     match: (pathname) => pathname.startsWith('/admin/highlight/overlay'),
     roles: ['SUPERADMIN'],
   },
-  // OPERATOR 는 FinePlay 클립 결과(+클립 귀속 FPA)만 접근한다.
+  // OPERATOR 는 FinePlay 클립 검수(+클립 귀속 FPA)만 접근한다. fineplay API 는 superuser 전용이다.
   {
     href: '/admin/highlight/clips',
-    label: 'FinePlay',
+    label: '클립 검수',
     icon: '◇',
+    description: 'FinePlay 클립의 구간·대표 액션·FPA를 확인하고 고치는 곳',
     match: (pathname) => pathname.startsWith('/admin/highlight/clips'),
     roles: ['OPERATOR'],
   },
@@ -162,25 +173,25 @@ const BASKETBALL_FHL_ITEMS: NavItem[] = [
 const FPA_ITEMS: NavItem[] = [
   {
     href: '/admin/fpa/live',
-    label: 'Live Logger',
+    label: 'FinePlay 분석',
     icon: '⌁',
     match: (pathname) => pathname.startsWith('/admin/fpa/live'),
   },
   {
     href: '/admin/fpa/reports',
-    label: 'Model Room',
+    label: '모델 관리',
     icon: '◌',
     match: (pathname) => pathname.startsWith('/admin/fpa/reports'),
   },
   {
     href: '/admin/fpa/replay',
-    label: 'Scene Motion',
+    label: '씬 모션',
     icon: '◒',
     match: (pathname) => pathname.startsWith('/admin/fpa/replay'),
   },
   {
     href: '/admin/fpa/settings',
-    label: 'Code Guide',
+    label: '코드 안내',
     icon: '⋯',
     match: (pathname) => pathname.startsWith('/admin/fpa/settings'),
   },
@@ -200,25 +211,25 @@ const FUTSAL_FPA_ITEMS: NavItem[] = [
 const FCM_ITEMS: NavItem[] = [
   {
     href: '/admin/fcm/match-status',
-    label: 'Match Status',
+    label: '데이터 제출',
     icon: '◎',
     match: (pathname) => pathname.startsWith('/admin/fcm/match-status'),
   },
   {
-    href: '/admin/fcm/templates',
-    label: 'Templates',
-    icon: '◫',
-    match: (pathname) => pathname.startsWith('/admin/fcm/templates'),
-  },
-  {
     href: '/admin/fcm/workspace',
-    label: 'Workspace',
+    label: '카드 생성',
     icon: '▣',
     match: (pathname) => pathname.startsWith('/admin/fcm/workspace'),
   },
   {
+    href: '/admin/fcm/templates',
+    label: '템플릿',
+    icon: '◫',
+    match: (pathname) => pathname.startsWith('/admin/fcm/templates'),
+  },
+  {
     href: '/admin/fcm/guide',
-    label: 'Guide',
+    label: '사용 가이드',
     icon: '⋯',
     match: (pathname) => pathname.startsWith('/admin/fcm/guide'),
   },
@@ -276,17 +287,17 @@ function getPageMeta(pathname: string) {
     return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Match Control' };
   }
   if (pathname.startsWith('/admin/media')) {
-    return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Media' };
+    return { product: 'FLA', eyebrow: 'Live Match Admin', title: '영상 송출' };
   }
   if (pathname.startsWith('/admin/live-coder')) {
-    return { product: 'FLA', eyebrow: 'FLA Broadcast Overlay', title: 'Live Coder' };
+    return { product: 'FLA', eyebrow: 'FLA Broadcast Overlay', title: '중계 그래픽' };
   }
   if (pathname.startsWith('/admin/highlight')) {
     if (pathname.startsWith('/admin/highlight/overlay')) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '중계 오버레이' };
     }
     if (pathname.startsWith('/admin/highlight/player')) {
-      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Player Clips' };
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '선수 개인 클립' };
     }
     if (pathname.startsWith('/admin/highlight/upload')) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'Upload' };
@@ -307,30 +318,36 @@ function getPageMeta(pathname: string) {
       return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '수동 결과물' };
     }
     if (pathname.startsWith('/admin/highlight/clips')) {
-      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '클립 결과' };
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '클립 검수·전송' };
     }
     if (pathname.startsWith('/admin/highlight/archive')) {
-      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '아카이브' };
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '보관함' };
     }
-    return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'AI+Log' };
+    if (pathname.startsWith('/admin/highlight/fineplay')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '신청·태깅' };
+    }
+    if (pathname.startsWith('/admin/highlight/template-editor')) {
+      return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: '템플릿 에디터' };
+    }
+    return { product: 'FHL', eyebrow: 'FinePlay Highlight', title: 'AI 하이라이트' };
   }
   if (pathname.startsWith('/admin/system')) {
-    return { product: 'SYSTEM', eyebrow: 'Console Settings', title: 'System' };
+    return { product: 'SYSTEM', eyebrow: 'Console Settings', title: '시스템' };
   }
   if (pathname.startsWith('/admin/fpa/live')) {
-    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Live Logger' };
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'FinePlay 분석' };
   }
   if (pathname.startsWith('/admin/fpa/reports')) {
-    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Model Room' };
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: '모델 관리' };
   }
   if (pathname.startsWith('/admin/fpa/tracking')) {
     return { product: 'FPA', eyebrow: 'Computer Vision Review', title: 'Player Matching' };
   }
   if (pathname.startsWith('/admin/fpa/replay')) {
-    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Scene Motion' };
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: '씬 모션' };
   }
   if (pathname.startsWith('/admin/fpa/settings')) {
-    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'Code Guide' };
+    return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: '코드 안내' };
   }
   if (pathname.startsWith('/admin/fpa')) {
     return { product: 'FPA', eyebrow: 'Football Performance Analysis', title: 'FPA' };
@@ -339,24 +356,24 @@ function getPageMeta(pathname: string) {
     return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Match Report' };
   }
   if (pathname.startsWith('/admin/fcm/match-status')) {
-    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Match Status' };
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: '데이터 제출' };
   }
   if (pathname.startsWith('/admin/fcm/workspace')) {
-    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Workspace' };
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: '카드 생성' };
   }
   if (pathname.startsWith('/admin/fcm/templates')) {
-    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Templates' };
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: '템플릿' };
   }
   if (pathname.startsWith('/admin/data-hub')) {
     return { product: 'DATA', eyebrow: 'Shared Match Data', title: 'Data Hub' };
   }
   if (pathname.startsWith('/admin/fcm/guide')) {
-    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'Guide' };
+    return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: '사용 가이드' };
   }
   if (pathname.startsWith('/admin/fcm')) {
     return { product: 'FCM', eyebrow: 'FinePlay Card Marker', title: 'FCM' };
   }
-  return { product: 'FLA', eyebrow: 'Live Match Admin', title: 'Dashboard' };
+  return { product: 'FLA', eyebrow: 'Live Match Admin', title: '운영 현황' };
 }
 
 function AdminShellContent({ children }: { children: React.ReactNode }) {
@@ -494,14 +511,14 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
 
               <nav className="sidebar-nav">
                 {visibleSections.map((section) => (
-                  <div className="sidebar-section" key={section.id}>
+                  <div className="sidebar-section" data-product={section.id} key={section.id}>
                     <button
                       className={`product-badge product-toggle ${pageMeta.product === section.id ? 'active' : ''}`}
                       onClick={() => setExpandedProduct((current) => current === section.id ? null : section.id)}
                       aria-expanded={expandedProduct === section.id}
                       aria-controls={`nav-${section.id}`}
                     >
-                      <span className="product-label"><span className="product-monogram">{section.label}</span><span>{({ FLA: 'Live Analytics', FHL: 'Highlights', FPA: 'Performance', FCM: 'Card Studio' })[section.id]}</span></span>
+                      <span className="product-label"><span className="product-monogram">{section.label}</span><span>{({ FLA: '라이브 기록', FHL: '하이라이트 제작', FPA: 'FinePlay 분석', FCM: '카드 제작' })[section.id]}</span></span>
                       <span className={`product-toggle-icon ${expandedProduct === section.id ? 'open' : ''}`}>⌄</span>
                     </button>
                     {expandedProduct === section.id ? (
@@ -511,6 +528,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
                             className={item.match(currentPath) ? 'active' : ''}
                             href={item.href}
                             aria-current={item.match(currentPath) ? 'page' : undefined}
+                            title={item.description}
                             key={item.href}
                           >
                             <span className="nav-icon"><ConsoleIcon name={item.label} /></span>
@@ -523,6 +541,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
                 ))}
                 <Link
                   className={`product-badge data-hub-nav-item ${DATA_HUB_ITEM.match(currentPath) ? 'active' : ''}`}
+                  data-product="DATA"
                   href={DATA_HUB_ITEM.href}
                 >
                   <span>
@@ -535,7 +554,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
               <div className="sidebar-footer">
                 {user?.role === 'SUPERADMIN' ? (
                   <Link className={`sidebar-system-link ${currentPath.startsWith('/admin/system') ? 'active' : ''}`} href="/admin/system" aria-current={currentPath.startsWith('/admin/system') ? 'page' : undefined}>
-                    <ConsoleIcon name="System" /> System
+                    <ConsoleIcon name="System" /> 시스템
                   </Link>
                 ) : null}
                 <button onClick={logout}><ConsoleIcon name="logout" /> 로그아웃</button>

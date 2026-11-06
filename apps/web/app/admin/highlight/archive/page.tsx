@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import HighlightSubTabs from '../HighlightSubTabs';
 import { apiJson } from '../../../../lib/api';
+import { errorMessage } from '../../../../lib/error-messages';
+import { ErrorFold } from '../../../../components/ErrorNotice';
 
 // 아카이브: 클립 결과 작업이 끝난 매치들의 보관함 (사전·일반 모두).
 // '열어서 수정'으로 클립 결과에 들어가 FPA·구간·대표액션을 계속 고칠 수 있고,
@@ -63,7 +65,7 @@ export default function ClipArchivePage() {
       setRows(res.jobs);
       setMsg('');
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '목록을 불러오지 못했습니다. 다시 시도해 주세요.', { fixed: true }));
     }
   }, []);
 
@@ -75,10 +77,10 @@ export default function ClipArchivePage() {
         method: 'POST',
         body: JSON.stringify({ archived: false }),
       });
-      setMsg(`아카이브 해제 — ${row.name}. FinePlay 작업·클립 결과 목록으로 돌아갔습니다.`);
+      setMsg(`보관 해제 — ${row.name}. 신청·태깅과 클립 검수·전송 목록으로 돌아갔습니다.`);
       await load();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '보관함에서 꺼내지 못했습니다. 다시 시도해 주세요.', { fixed: true, context: { '작업 ID': row.job_id } }));
     }
   };
 
@@ -87,12 +89,12 @@ export default function ClipArchivePage() {
   ));
 
   return (
-    <div style={{ width: '100%' }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%' }}>
       <HighlightSubTabs />
 
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h2 style={{ fontSize: 18, margin: 0 }}>아카이브</h2>
+          <h2 style={{ fontSize: 18, margin: 0 }}>보관함</h2>
           <span style={{ display: 'inline-flex', gap: 4 }}>
             {FILTERS.map((f) => (
               <button
@@ -111,18 +113,18 @@ export default function ClipArchivePage() {
           <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => void load()}>새로고침</button>
         </div>
         <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: '6px 0 0' }}>
-          클립 결과 작업이 끝난 매치 보관함 — FinePlay 작업·클립 결과 목록에서는 빠지고 여기로 모입니다.
+          클립 검수·전송 작업이 끝난 매치 보관함 — 신청·태깅과 클립 검수·전송 목록에서는 빠지고 여기로 모입니다.
           데이터는 그대로라 열어서 언제든 수정할 수 있고, 해제하면 양쪽 목록으로 되돌아갑니다.
           사전 매치는 런칭 후 신청 연결·전송이 여기서 진행됩니다.
         </p>
-        {msg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}</p> : null}
+        {msg ? <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}<ErrorFold message={msg} /></div> : null}
       </div>
 
       <div style={card}>
         {visible.length === 0 ? (
           <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
             {rows.length === 0
-              ? '아카이브된 작업이 없습니다. FinePlay 작업 탭에서 완료된 작업의 📦 아카이브 버튼으로 보관하세요.'
+              ? '보관된 작업이 없습니다. 신청·태깅 탭에서 완료된 작업의 📦 보관 버튼으로 보관하세요.'
               : '필터에 해당하는 작업이 없습니다.'}
           </p>
         ) : (
@@ -159,12 +161,12 @@ export default function ClipArchivePage() {
                   <button
                     style={{ ...smallBtn, background: 'var(--accent, #3b82f6)', borderColor: 'transparent' }}
                     disabled={!row.match_id}
-                    title="클립 결과에서 열기 — FPA·구간·대표액션 수정 가능"
+                    title="클립 검수·전송에서 열기 — FPA·구간·대표액션 수정 가능"
                     onClick={() => row.match_id && router.push(`/admin/highlight/clips?matchId=${row.match_id}`)}
                   >
                     열어서 수정
                   </button>
-                  <button style={smallBtn} onClick={() => void unarchive(row)}>아카이브 해제</button>
+                  <button style={smallBtn} onClick={() => void unarchive(row)}>보관 해제</button>
                 </span>
               </div>
             ))}

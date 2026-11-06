@@ -4,6 +4,8 @@ import AccessManagement from '../../../components/AccessManagement';
 import { ConsoleSectionNav } from '../../../components/ConsoleTools';
 import { useEffect, useState } from 'react';
 import { apiFetch, apiJson, displayRole, type SessionUser } from '../../../lib/api';
+import ErrorNotice from '../../../components/ErrorNotice';
+import { errorFromResponse, errorMessage } from '../../../lib/error-messages';
 
 type SystemInfo = {
   ok: boolean;
@@ -191,7 +193,7 @@ export default function SystemPage() {
       })
       .catch((loadError) => {
         if (!active) return;
-        setError(loadError instanceof Error ? loadError.message : 'System dashboard unavailable');
+        setError(errorMessage(loadError, 'System dashboard unavailable'));
       });
 
     loadIfActive();
@@ -221,7 +223,7 @@ export default function SystemPage() {
       });
 
       if (response.status === 409 && isStop) {
-        const detail = await response.text();
+        const detail = (await errorFromResponse(response, {})).message;
         const confirmLive = window.confirm(`${detail}\n\n그래도 중지할까요?`);
         if (!confirmLive) {
           setSubmittingAction('');
@@ -233,13 +235,13 @@ export default function SystemPage() {
       }
 
       if (!response.ok) {
-        throw new Error((await response.text()) || `Media ${action} failed`);
+        throw await errorFromResponse(response, `Media ${action} failed`);
       }
 
       await load();
       setActionMessage(action === 'start' ? 'Media server start 요청을 보냈습니다.' : 'Media server stop 요청을 보냈습니다.');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : `Media ${action} failed`);
+      setError(errorMessage(actionError, `Media ${action} failed`));
     } finally {
       setSubmittingAction('');
     }
@@ -264,7 +266,7 @@ export default function SystemPage() {
       });
 
       if (response.status === 409 && isStop) {
-        const detail = await response.text();
+        const detail = (await errorFromResponse(response, {})).message;
         const confirmLive = window.confirm(`${detail}\n\n그래도 중지할까요?`);
         if (!confirmLive) {
           setSubmittingAction('');
@@ -276,13 +278,13 @@ export default function SystemPage() {
       }
 
       if (!response.ok) {
-        throw new Error((await response.text()) || `FHL GPU worker ${action} failed`);
+        throw await errorFromResponse(response, `FHL GPU worker ${action} failed`);
       }
 
       await load();
       setActionMessage(action === 'start' ? 'FHL GPU worker start 요청을 보냈습니다.' : 'FHL GPU worker stop 요청을 보냈습니다.');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : `FHL GPU worker ${action} failed`);
+      setError(errorMessage(actionError, `FHL GPU worker ${action} failed`));
     } finally {
       setSubmittingAction('');
     }
@@ -290,10 +292,10 @@ export default function SystemPage() {
 
   if (error) {
     return (
-      <main className="page-stack console-page system-page">
+      <main className="page-stack console-page system-page console-flat">
         <section className="card card-panel grid">
         <h2 style={{ margin: 0 }}>System</h2>
-        <div className="form-error" role="alert">{error}</div><button onClick={() => void load()} type="button">다시 불러오기</button>
+        <ErrorNotice message={error} className="form-error" /><button onClick={() => void load()} type="button">다시 불러오기</button>
       </section>
       <AccessManagement />
       </main>
@@ -301,7 +303,7 @@ export default function SystemPage() {
   }
 
   return (
-    <main className="page-stack console-page system-page">
+    <main className="page-stack console-page system-page console-flat">
       <ConsoleSectionNav items={[{ id: "system-access", label: "계정 · 접근" }, { id: "system-health", label: "알림" }, { id: "system-resources", label: "서버 상태" }, { id: "system-media", label: "미디어 제어" }, { id: "system-worker", label: "GPU 제어" }, { id: "system-audit", label: "작업 이력" }]} />
       <AccessManagement />
       <section id="system-health" className="card card-utility grid">
@@ -332,7 +334,7 @@ export default function SystemPage() {
             <div className="sidebar-eyebrow">Admin</div>
             <h2 style={{ margin: 0 }}>System Control</h2>
           </div>
-          <span className="status-pill running">{displayRole(sessionUser?.role) || 'ROLE'}</span>
+          <span className="status-pill running chip-tag">{displayRole(sessionUser?.role) || 'ROLE'}</span>
         </div>
         <div className="muted">
           서버 자원, 송출 상태와 최근 작업 이력을 확인하고 미디어 서버와 GPU 작업자를 제어합니다.
@@ -393,7 +395,7 @@ export default function SystemPage() {
             <div className="sidebar-eyebrow">Live Resources</div>
             <h3 style={{ margin: 0 }}>서버 자원 현황</h3>
           </div>
-          <span className="status-pill tech">15s refresh</span>
+          <span className="status-pill tech chip-tag">15s refresh</span>
         </div>
         <div className="resource-grid">
           <ResourceCard title="App / API / DB" subtitle="live-admin-app" server={systemInfo?.app_server} showMemory showDisk />

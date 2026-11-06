@@ -3,7 +3,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FcmWorkflow, ConsoleToolbar, ConsoleEmpty } from '../../../../components/ConsoleTools';
 import TeamLogoLibrary from '../../../../components/TeamLogoLibrary';
-import { API_BASE, apiJson } from '../../../../lib/api';
+import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
+import ErrorNotice from '../../../../components/ErrorNotice';
+import { errorFromResponse, errorMessage } from '../../../../lib/error-messages';
+
+/** 템플릿 화면에 맞춘 서버 detail 문장(변환표보다 우선). 원문은 '자세히'에 남는다. */
+const TEMPLATE_OVERRIDES: Record<string, string> = {
+  'Template name is required': '템플릿 이름을 입력하세요.',
+  'Template image must be PNG or JPG': '템플릿 이미지는 PNG 또는 JPG만 올릴 수 있습니다.',
+  'Uploaded file is not a valid image': '이미지 파일을 읽을 수 없습니다. 다른 파일을 골라 주세요.',
+  'Template not found': '템플릿을 찾을 수 없습니다. 새로고침해 주세요.',
+};
 
 const TEMPLATES_PER_PAGE = 5;
 const DEFAULT_COMPETITION_CLASS = 'K3';
@@ -127,7 +137,7 @@ export default function FcmTemplatesPage() {
     } catch (loadError) {
       setTemplates([]);
       setCompetitionClasses([]);
-      setError(loadError instanceof Error ? loadError.message : '템플릿 목록을 불러오지 못했습니다.');
+      setError(errorMessage(loadError, '템플릿 목록을 불러오지 못했습니다. 새로고침해 주세요.'));
     } finally {
       setLoading(false);
     }
@@ -176,7 +186,7 @@ export default function FcmTemplatesPage() {
       return;
     }
     if (!name.trim() || !matchRegex.trim() || !competitionClass) {
-      setError('템플릿 이름, 대회 클래스, Regex를 입력하세요.');
+      setError('템플릿 이름, 대회 클래스, 호출 Regex를 입력하세요.');
       return;
     }
 
@@ -200,7 +210,7 @@ export default function FcmTemplatesPage() {
         body: form,
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || '템플릿 저장에 실패했습니다.');
+        throw await errorFromResponse(response, { fallback: '템플릿을 저장하지 못했습니다. 다시 시도해 주세요.', overrides: TEMPLATE_OVERRIDES });
       }
       setName('');
       setMatchRegex('');
@@ -211,7 +221,7 @@ export default function FcmTemplatesPage() {
       setMessage('템플릿이 등록되었습니다.');
       await load();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : '템플릿 저장에 실패했습니다.');
+      setError(errorMessage(saveError, '템플릿을 저장하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setSaving(false);
     }
@@ -240,7 +250,7 @@ export default function FcmTemplatesPage() {
   const saveTemplateEdit = async (templateId: string) => {
     if (!editDraft) return;
     if (!editDraft.name.trim() || !editDraft.match_regex.trim() || !editDraft.competition_class) {
-      setError('템플릿 이름, 대회 클래스, Regex를 입력하세요.');
+      setError('템플릿 이름, 대회 클래스, 호출 Regex를 입력하세요.');
       return;
     }
 
@@ -248,7 +258,7 @@ export default function FcmTemplatesPage() {
     setError('');
     setMessage('');
     try {
-      await apiJson<FcmTemplate>(`/fcm/templates/${templateId}`, {
+      const response = await apiFetch(`/fcm/templates/${templateId}`, {
         method: 'PUT',
         body: JSON.stringify({
           name: editDraft.name.trim(),
@@ -259,23 +269,24 @@ export default function FcmTemplatesPage() {
           active: editDraft.active,
         }),
       });
+      if (!response.ok) throw await errorFromResponse(response, { fallback: '템플릿을 고치지 못했습니다. 다시 시도해 주세요.', overrides: TEMPLATE_OVERRIDES });
       setMessage('템플릿이 수정되었습니다.');
       cancelEdit();
       await load();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : '템플릿 수정에 실패했습니다.');
+      setError(errorMessage(saveError, '템플릿을 고치지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setUpdatingTemplateId(null);
     }
   };
 
   return (
-    <div className="page-stack console-page templates-page">
+    <div className="page-stack console-page templates-page console-flat">
       <FcmWorkflow current="templates" />
       <TeamLogoLibrary competitions={competitionClasses} />
 
       {message ? <p className="console-feedback" role="status">{message}</p> : null}
-      {error ? <p className="console-feedback" role="alert">{error}</p> : null}
+      <ErrorNotice message={error} className="console-feedback" />
       <section className="fcm-template-grid">
         <details className="card card-panel console-disclosure fcm-template-create"><summary>＋ 새 템플릿 등록</summary><div className="fcm-template-form">
           <div className="section-heading">
@@ -407,7 +418,7 @@ export default function FcmTemplatesPage() {
                 <div className="sidebar-eyebrow">Templates</div>
                 <h3 style={{ margin: '6px 0 0' }}>등록된 템플릿</h3>
               </div>
-              <span className="status-pill">{filteredTemplates.length} / {templates.length}</span>
+              <span className="status-pill chip-tag">{filteredTemplates.length} / {templates.length}</span>
             </div>
 
             {loading ? <p className="field-help">템플릿 목록을 불러오는 중입니다.</p> : null}

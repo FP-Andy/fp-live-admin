@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { ConsoleToolbar, ConsoleEmpty } from '../../../components/ConsoleTools';
 import { useEffect, useMemo, useState } from 'react';
 import { apiFetch, apiJson } from '../../../lib/api';
+import { errorFromResponse, errorMessage, responseMessage } from '../../../lib/error-messages';
+import ErrorNotice from '../../../components/ErrorNotice';
 
 type MatchItem = {
   id: string;
@@ -57,7 +59,7 @@ export default function MediaPage() {
       setData(next);
       setError('');
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Media dashboard unavailable');
+      setError(errorMessage(loadError, 'Media dashboard unavailable'));
     }
   };
 
@@ -98,18 +100,43 @@ export default function MediaPage() {
     }
   };
 
+  // 경기 하나의 스트림 키 복사 — 전체 복사만 있어 한 경기 키를 쓰려면 전체를 붙여넣고 골라내야 했다.
+  // 송출 장비(OBS 등) 키 칸에 바로 붙이도록 키 값만 복사한다. 키가 없으면 전체 복사와 같은 규칙(경기 id).
+  const [copiedKeyMatchId, setCopiedKeyMatchId] = useState('');
+  const copyMatchKey = async (match: MatchItem) => {
+    const key = match.metadata?.rtmp?.stream_key || match.id;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(key);
+      } else {
+        // HTTPS 가 아닌 화면(사내망 주소 등)에서도 되도록 예전 방식으로 한 번 더 시도한다.
+        const t = document.createElement('textarea');
+        t.value = key;
+        document.body.appendChild(t);
+        t.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(t);
+        if (!ok) throw new Error('copy failed');
+      }
+      setCopiedKeyMatchId(match.id);
+      setTimeout(() => setCopiedKeyMatchId((current) => (current === match.id ? '' : current)), 2000);
+    } catch {
+      window.alert('클립보드 복사에 실패했습니다. 카드의 "연결 주소 · 스트림 키"를 펼쳐 직접 복사해 주세요.');
+    }
+  };
+
   const runAction = async (key: string, action: () => Promise<Response>) => {
     setBusyKey(key);
     setError('');
     try {
       const response = await action();
       if (!response.ok) {
-        setError((await response.text()) || 'Media action failed');
+        setError(await responseMessage(response, 'Media action failed'));
         return;
       }
       await load();
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : 'Media action failed');
+      setError(errorMessage(actionError, 'Media action failed'));
     } finally {
       setBusyKey('');
     }
@@ -125,25 +152,26 @@ export default function MediaPage() {
     try {
       let response = await action(false);
       if (response.status === 409) {
-        const detail = await response.text();
+        // 관리자 화면 — 서버 문장 그대로(JSON 껍데기만 벗김). 재시도 판정은 상태 코드(409).
+        const detail = (await errorFromResponse(response, {})).message;
         const ok = window.confirm(`${detail}\n\n계속 진행할까요?`);
         if (!ok) return;
         response = await action(true);
       }
       if (!response.ok) {
-        setError((await response.text()) || 'Media action failed');
+        setError(await responseMessage(response, 'Media action failed'));
         return;
       }
       await load();
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : confirmMessage);
+      setError(errorMessage(actionError, confirmMessage));
     } finally {
       setBusyKey('');
     }
   };
 
   return (
-    <main className="page-stack console-page media-page">
+    <main className="page-stack console-page media-page console-flat">
       <section className="card card-panel grid">
         <div className="section-heading">
           <div>
@@ -159,7 +187,7 @@ export default function MediaPage() {
           </div>
         </div>
 
-        {error ? <div className="form-error">{error}</div> : null}
+        {error ? <ErrorNotice className="form-error" message={error} /> : null}
 
         <div className="metric-strip">
           <div className="metric-tile tech">
@@ -251,11 +279,11 @@ export default function MediaPage() {
                   <div className="grid" style={{ gap: 4 }}>
                     <strong>{match.name}</strong>
                     <div className="match-meta-group">
-                      <span className="meta-chip">{match.competition_class}</span>
-                      <span className={`meta-chip ${match.metadata?.stream_mode === 'MANUAL' ? 'warning' : ''}`}>
+                      <span className="meta-chip chip-tag">{match.competition_class}</span>
+                      <span className={`meta-chip chip-tag ${match.metadata?.stream_mode === 'MANUAL' ? 'warning' : ''}`}>
                         mode {match.metadata?.stream_mode || 'STREAM'}
                       </span>
-                      <span className={`meta-chip ${match.metadata?.ingest_protocol ? 'tech' : ''}`}>
+                      <span className={`meta-chip chip-tag ${match.metadata?.ingest_protocol ? 'tech' : ''}`}>
                         protocol {match.metadata?.ingest_protocol || 'N/A'}
                       </span>
                     </div>
@@ -295,6 +323,9 @@ export default function MediaPage() {
 
                   <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                     <Link className="button-link button-compact btn-primary" href={`/admin/match/${match.id}`}>경기 제어</Link>
+                    <button className="btn-secondary" onClick={() => void copyMatchKey(match)}>
+                      {copiedKeyMatchId === match.id ? '복사됨 ✓' : '스트림 키 복사'}
+                    </button>
                     <button
                       className="btn-primary"
                       onClick={() => runAction(`reattach:${match.id}`, () => apiFetch(`/admin/media/${match.id}/reattach`, { method: 'POST' }))}

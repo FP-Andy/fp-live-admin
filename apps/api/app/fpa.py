@@ -19,6 +19,7 @@ from mplsoccer import Pitch
 from PIL import Image, ImageDraw, ImageFont
 
 from .fcm_cards import render_reference_heatmap, render_reference_passmap
+from .fcm_stats import infer_position_from_events, select_player_stats
 from .xg import estimate_xg as shared_estimate_xg
 from .xg_cone import estimate_xg_with_cone
 
@@ -1566,7 +1567,10 @@ def create_shooter_summary(df_with_xg: pd.DataFrame) -> pd.DataFrame:
         )
         .to_dict("index")
     )
-    player_teams = df_with_xg[["Player", "TeamID"]].drop_duplicates().set_index("Player")["TeamID"]
+    # dual 로그는 양 팀이 같은 등번호를 쓴다(홈 7번·원정 7번). Player 만으로 색인하면
+    # player_teams[player] 가 Series 가 되어 비교에서 ValueError 가 났다 — FPA 로그 반영이
+    # 500 으로 끝나던 원인. 이 요약은 Player 단위라 첫 팀만 쓴다(FCM 카드는 팀별로 따로 센다).
+    player_teams = df_with_xg[["Player", "TeamID"]].drop_duplicates(subset="Player").set_index("Player")["TeamID"]
     all_team_ids = set(df_with_xg["TeamID"].unique())
     for player in all_players:
         if player in player_teams:
@@ -3108,6 +3112,78 @@ def _safe_series_value(series: pd.Series | None, key: str) -> float:
     return float(value)
 
 
+def _fcm_tag_mask(events: pd.DataFrame, tag: str) -> pd.Series:
+    tags = events.get("Tags", pd.Series("", index=events.index)).fillna("").astype(str)
+    return tags.map(lambda value: _has_tag(value, tag))
+
+
+def _fcm_player_metrics(player_events: pd.DataFrame) -> dict[str, float]:
+    """한 선수(팀+등번호)의 FCM 카드용 수치. 정의는 FPA 요약표(create_*_summary)와 같다.
+
+    요약표는 Player 만으로 묶어 홈 7번과 원정 7번이 합쳐지므로, 카드는 그 선수의 행만으로
+    다시 센다.
+    """
+    events = player_events.copy()
+    actions = events["Action"].map(_clean_scalar_text)
+    tags = events.get("Tags", pd.Series("", index=events.index)).fillna("").astype(str)
+    success = tags.str.contains("Success")
+
+    shot_mask = events.apply(_is_shot_row, axis=1).astype(bool) if not events.empty else pd.Series(dtype=bool)
+    shots = events.loc[shot_mask]
+    on_target = shots.apply(_is_on_target_shot_row, axis=1).astype(bool) if not shots.empty else pd.Series(dtype=bool)
+    goal_mask = shots.apply(_is_goal_row, axis=1).astype(bool) if not shots.empty else pd.Series(dtype=bool)
+    shot_xg = pd.to_numeric(shots.get("xG", pd.Series(0, index=shots.index)), errors="coerce").fillna(0)
+
+    pass_mask = actions.isin(["Pass", "Cross"])
+    passes = events.loc[pass_mask]
+    pass_tags = tags.loc[pass_mask]
+    pass_success = success.loc[pass_mask]
+    start_x = pd.to_numeric(passes.get("StartX_adj", pd.Series(np.nan, index=passes.index)), errors="coerce")
+    end_x = pd.to_numeric(passes.get("EndX_adj", pd.Series(np.nan, index=passes.index)), errors="coerce")
+    # 전진 패스: 성공한 패스 중 10m 이상 전진(요약표 is_progressive_pass) 또는 분석관이 붙인 Progressive 태그.
+    progressive = is_progressive_pass(start_x, end_x).fillna(False) | _fcm_tag_mask(passes, "Progressive")
+
+    cross_mask = actions == "Cross"
+    duel_mask = actions == "Duel"
+    # 헤더 = 헤딩 슈팅 수(가이드). 헤딩 클리어는 수비 스탯이라 넣지 않는다.
+    header_shots = int(_fcm_tag_mask(shots, "Header").sum()) if not shots.empty else 0
+
+    return {
+        "goals": float(goal_mask.sum()),
+        # 어시스트·키패스는 auto_tag_key_pass_and_assist 가 붙인 패스 태그 기준(요약표와 같다).
+        "assists": float(pass_tags.str.contains("Assist").sum()),
+        "key_passes": float(pass_tags.str.contains("Key").sum()),
+        "shots": float(len(shots)),
+        "shots_on_target": float(on_target.sum()),
+        "xg": float(shot_xg.sum()),
+        "passes": float(len(passes)),
+        "passes_success": float(pass_success.sum()),
+        "forward_passes": float((pass_success & progressive).sum()),
+        "crosses": float(cross_mask.sum()),
+        "crosses_success": float((cross_mask & success).sum()),
+        "headers": float(header_shots),
+        "dribbles": float((actions == "Dribble").sum()),
+        "breakthroughs": float(((actions == "Breakthrough") & success).sum()),
+        "intercepts": float((actions == "Intercept").sum()),
+        "tackles": float(((actions == "Tackle") & success).sum()),
+        "clears": float((actions == "Clear").sum()),
+        # 차단 = Block + Cutout. 어드민 카드뉴스(fpaAnalysis.js)도 둘을 합쳐 '차단'으로 쓴다.
+        "blocks": float(actions.isin(["Block", "Cutout"]).sum()),
+        "duels": float(duel_mask.sum()),
+        "duels_won": float((duel_mask & success).sum()),
+    }
+
+
+def _fcm_mean_x_ratio(player_events: pd.DataFrame) -> float | None:
+    """공격 방향을 오른쪽으로 맞춘 시작 X 평균 / 경기장 길이 — 포지션 추정용."""
+    xs = pd.to_numeric(player_events.get("StartX_adj", pd.Series(dtype=float)), errors="coerce").dropna()
+    if xs.empty:
+        return None
+    sport = player_events.get("Sport", pd.Series("FOOTBALL", index=player_events.index)).astype(str).str.upper()
+    pitch_length = FUTSAL_FIELD_W if (sport == "FUTSAL").any() else float(FIELD_W)
+    return float(max(0.0, min(1.0, xs.mean() / pitch_length)))
+
+
 def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
     df = load_excel_dataframe(file_bytes, "Data")
     required_cols = ["Player", "Action", "Team", "StartX", "StartY"]
@@ -3118,76 +3194,19 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
     # Support both raw FPA exports and already-analyzed workbooks.
     already_analyzed = all(col in df.columns for col in ["StartX_adj", "StartY_adj", "EndX_adj", "EndY_adj", "xG"])
     analyzed = df.copy() if already_analyzed else perform_full_analysis(df)
-    pass_summary = create_player_summary(analyzed)
-    shooter_summary = create_shooter_summary(analyzed)
-    cross_summary = create_cross_summary(analyzed)
-    advanced_summary = create_advanced_summary(analyzed)
-
-    touch_counts = analyzed.groupby("Player")["Action"].count()
-    player_teams = analyzed.groupby("Player")["Team"].agg(lambda values: _clean_player_label(values.dropna().iloc[0]) if len(values.dropna()) else "")
 
     players_payload: list[dict[str, Any]] = []
+    analyzed = analyzed.loc[analyzed["Player"].map(_clean_player_label) != ""].copy()
+    analyzed["_fcm_team"] = analyzed["Team"].map(_clean_player_label)
+    analyzed["_fcm_player"] = analyzed["Player"].map(_clean_player_label)
 
-    stat_priority = [
-        "Goal",
-        "Assist",
-        "슈팅(유효슈팅)",
-        "기대득점(xG)",
-        "크로스 성공률(%)",
-        "헤더",
-        "드리블",
-        "돌파",
-        "패스 성공률(%)",
-        "전진 패스",
-        "Key Pass",
-        "인터셉트",
-        "태클",
-        "클리어",
-        "블락",
-        "차단",
-        "경합 성공률(%)",
-        "볼 터치",
-    ]
-
-    for raw_player in analyzed["Player"].dropna().unique():
-        player = _clean_player_label(raw_player)
-        player_events = analyzed.loc[analyzed["Player"] == raw_player].copy()
-        shooter_row = shooter_summary.loc[raw_player] if raw_player in shooter_summary.index else None
-        pass_row = pass_summary.loc[raw_player] if raw_player in pass_summary.index else None
-        cross_row = cross_summary.loc[raw_player] if raw_player in cross_summary.index else None
-        advanced_row = advanced_summary.loc[raw_player] if raw_player in advanced_summary.index else None
-
-        goals = _safe_series_value(shooter_row, "Goals")
-        assists = _safe_series_value(pass_row, "Assist")
-        total_xg = _safe_series_value(shooter_row, "Total_xG")
-        total_shots = _safe_series_value(shooter_row, "Total_Shots")
-        shots_on_target = _safe_series_value(shooter_row, "Shots_On_Target")
-        key_pass = _safe_series_value(pass_row, "Key_Pass")
-        pass_success_rate = _safe_series_value(pass_row, "Pass_Success_Rate")
-        success_pass = _safe_series_value(pass_row, "Success_Pass")
-        progressive_pass = _safe_series_value(pass_row, "Progressive_Pass_Success")
-        crosses = _safe_series_value(cross_row, "Total_Crosses")
-        cross_accuracy = _safe_series_value(cross_row, "Cross_Accuracy")
-        successful_crosses = _safe_series_value(cross_row, "Successful_Crosses")
-        dribble = _safe_series_value(advanced_row, "Dribble_Attempt")
-        breakthrough = _safe_series_value(advanced_row, "Breakthrough_Success")
-        intercept = _safe_series_value(advanced_row, "Intercept_Count")
-        tackle = _safe_series_value(advanced_row, "Successful_Tackles")
-        clear = _safe_series_value(advanced_row, "Clear_Count")
-        block = _safe_series_value(advanced_row, "Block_Count")
-        cutout = _safe_series_value(advanced_row, "Cutout_Count")
-        touches = float(touch_counts.get(raw_player, 0))
-        duel_win = _safe_series_value(advanced_row, "Duel_Win_Count")
-        duel_lose = _safe_series_value(advanced_row, "Duel_Lose_Count")
-        aerial_win = _safe_series_value(advanced_row, "Aerial_Duels_Won")
-        aerial_lose = _safe_series_value(advanced_row, "Aerial_Duels_Lost")
-        headed_goals = _safe_series_value(shooter_row, "Headed_Goals")
-        header_sot = _safe_series_value(advanced_row, "Header_SOT")
-        header_clear = _safe_series_value(advanced_row, "Header_Clear")
-        # Duel_Win/Lose_Count 는 공중볼(Aerial) 경합까지 이미 포함 → aerial_* 재합산은 중복 (2026-07-21)
-        duel_total = duel_win + duel_lose
-        duel_success_pct = (duel_win / duel_total * 100) if duel_total > 0 else 0.0
-        header_count = headed_goals + header_sot + header_clear
+    # 선수는 (팀, 등번호)로 묶는다. dual 로그는 양 팀이 같은 등번호를 써서, 등번호만으로
+    # 묶으면 홈 7번과 원정 7번의 스탯이 한 카드에 합쳐졌다.
+    for (player_team, player), player_events in analyzed.groupby(["_fcm_team", "_fcm_player"], sort=False):
+        metrics = _fcm_player_metrics(player_events)
+        goals = metrics["goals"]
+        pass_success_rate = (metrics["passes_success"] / metrics["passes"] * 100) if metrics["passes"] > 0 else 0.0
+        success_pass = metrics["passes_success"]
 
         # FPA의 골키퍼 기록은 Save / Catching / Punching 액션으로 남는다.
         # 이 액션이 하나라도 있으면 포지션 정보를 별도로 올리지 않은 원본
@@ -3199,16 +3218,13 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         saves = float(((player_action_labels == "save") & ~penalty_save_mask).sum())
         catches = float((player_action_labels == "catching").sum())
         punches = float((player_action_labels == "punching").sum())
-        player_team = _clean_player_label(player_teams.get(raw_player, ""))
 
         # 실점과 기대 실점은 해당 골키퍼의 팀을 상대로 한 모든 슈팅에서 계산한다.
         # 이전 엑셀의 Shot On Target / Blocked Shot도 일반 슈팅 집계와 같은
         # 액션 목록으로 포함한다. Goal만 남으면 기대 실점이 일부 xG로 축소된다.
         opponent_events = analyzed.copy()
         if player_team:
-            opponent_events = opponent_events.loc[
-                opponent_events["Team"].map(_clean_player_label) != player_team
-            ]
+            opponent_events = opponent_events.loc[opponent_events["_fcm_team"] != player_team]
         opponent_action_labels = opponent_events["Action"].fillna("").astype(str).str.strip().str.lower()
         opponent_tags = opponent_events.get("Tags", pd.Series("", index=opponent_events.index)).fillna("").astype(str).str.lower()
         opponent_results = opponent_events.get("Result", pd.Series("", index=opponent_events.index)).fillna("").astype(str).str.lower()
@@ -3225,26 +3241,6 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
         conceded_goals = int(conceded_mask.sum())
         opponent_xg = pd.to_numeric(opponent_events.get("xG", pd.Series(0, index=opponent_events.index)), errors="coerce").fillna(0)
         conceded_xg = float(opponent_xg.loc[shot_mask].sum())
-        candidate_map = {
-            "Goal": f"Goal : {int(goals)}골",
-            "Assist": f"Assist : {int(assists)}도움",
-            "슈팅(유효슈팅)": f"슈팅(유효슈팅) : {int(total_shots)}회({int(shots_on_target)}회)",
-            "기대득점(xG)": f"기대득점(xG) : {_format_decimal(total_xg)} ({int(goals)}골)",
-            "크로스 성공률(%)": f"크로스 성공률(%) : {_format_percent(cross_accuracy)} ({int(successful_crosses)}회)",
-            "헤더": f"헤더 : {_format_count(header_count)}",
-            "드리블": f"드리블 : {_format_count(dribble)}",
-            "돌파": f"돌파 : {_format_count(breakthrough)}",
-            "패스 성공률(%)": f"패스 성공률(%) : {_format_percent(pass_success_rate)} ({int(success_pass)}회)",
-            "전진 패스": f"전진 패스 : {_format_count(progressive_pass)}",
-            "Key Pass": f"Key Pass : {_format_count(key_pass)}",
-            "인터셉트": f"인터셉트 : {_format_count(intercept)}",
-            "태클": f"태클 : {_format_count(tackle)}",
-            "클리어": f"클리어 : {_format_count(clear)}",
-            "블락": f"블락 : {_format_count(block)}",
-            "차단": f"차단 : {_format_count(cutout)}",
-            "경합 성공률(%)": f"경합 성공률(%) : {_format_percent(duel_success_pct)} ({int(duel_win)}회)",
-            "볼 터치": f"볼 터치 : {_format_count(touches)}",
-        }
 
         goalkeeper_candidate_map = {
             "실점": f"실점 : {conceded_goals}골",
@@ -3254,58 +3250,47 @@ def analyze_card_workbook(file_bytes: bytes) -> dict[str, Any]:
             "캐칭": f"캐칭 : {_format_count(catches)}",
             "펀칭": f"펀칭 : {_format_count(punches)}",
         }
+        goalkeeper_priority = ["실점", "기대 실점(xG)", "선방", "패스 성공률(%)", "캐칭", "펀칭"]
+        goalkeeper_candidates = [goalkeeper_candidate_map[key] for key in goalkeeper_priority]
 
-        weighted_pool = {
-            "Goal": goals * 100,
-            "Assist": assists * 90,
-            "슈팅(유효슈팅)": total_shots * 18 + shots_on_target * 12,
-            "기대득점(xG)": total_xg * 40,
-            "크로스 성공률(%)": crosses * 14 + successful_crosses * 4,
-            "헤더": header_count * 10,
-            "드리블": dribble * 10,
-            "돌파": breakthrough * 12,
-            "패스 성공률(%)": pass_success_rate + success_pass,
-            "전진 패스": progressive_pass * 14,
-            "Key Pass": key_pass * 16,
-            "인터셉트": intercept * 9,
-            "태클": tackle * 10,
-            "클리어": clear * 7,
-            "블락": block * 8,
-            "차단": cutout * 8,
-            "경합 성공률(%)": duel_success_pct + duel_total,
-            "볼 터치": touches * 0.5,
-        }
-
-        ranked_keys = sorted(stat_priority, key=lambda key: weighted_pool.get(key, 0), reverse=True)
-        candidates = [candidate_map[key] for key in ranked_keys if key in candidate_map]
-        if is_goalkeeper:
-            goalkeeper_priority = ["실점", "기대 실점(xG)", "선방", "패스 성공률(%)", "캐칭", "펀칭"]
-            candidates = [goalkeeper_candidate_map[key] for key in goalkeeper_priority]
+        # 주요선수 스탯은 가이드 규칙(fcm_stats)으로 고른다. 여기서는 FPA 액션 위치로
+        # 추정한 포지션을 쓰고, 명단 포지션이 있으면 main 의 lineup 보강 단계에서 다시 고른다.
+        inferred_position = infer_position_from_events(_fcm_mean_x_ratio(player_events), is_goalkeeper=bool(is_goalkeeper))
+        selection = select_player_stats(metrics, inferred_position)
+        candidates = goalkeeper_candidates if is_goalkeeper else selection["candidates"]
+        selected_stats = goalkeeper_candidates[:5] if is_goalkeeper else selection["selected"]
 
         ranking_score = (
             goals * 100
-            + assists * 80
-            + total_xg * 35
-            + shots_on_target * 15
-            + key_pass * 14
-            + progressive_pass * 10
-            + breakthrough * 9
-            + dribble * 6
-            + intercept * 6
-            + tackle * 6
-            + clear * 3
-            + block * 4
-            + touches * 0.2
+            + metrics["assists"] * 80
+            + metrics["xg"] * 35
+            + metrics["shots_on_target"] * 15
+            + metrics["key_passes"] * 14
+            + metrics["forward_passes"] * 10
+            + metrics["breakthroughs"] * 9
+            + metrics["dribbles"] * 6
+            + metrics["intercepts"] * 6
+            + metrics["tackles"] * 6
+            + metrics["clears"] * 3
+            + metrics["blocks"] * 4
+            + len(player_events) * 0.2
         )
 
         players_payload.append(
             {
                 "player_id": player,
                 "player_name": "",
-                "team": _clean_player_label(player_teams.get(raw_player, "")),
+                "team": player_team,
                 "ranking_score": round(ranking_score, 2),
                 "candidates": candidates,
+                "selected_stats": selected_stats,
                 "is_goalkeeper": bool(is_goalkeeper),
+                "position": inferred_position,
+                "position_source": "fpa_events" if inferred_position else "",
+                "stat_case": selection["stat_case"],
+                # 명단 포지션으로 다시 고를 때 쓰는 원자료. 응답 스키마에는 없어 화면으로 나가지 않는다.
+                "stat_metrics": metrics,
+                "goalkeeper_candidates": goalkeeper_candidates,
             }
         )
 

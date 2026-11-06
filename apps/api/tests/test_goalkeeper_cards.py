@@ -24,6 +24,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 from app.fpa import analyze_card_workbook
 from app.fcm_cards import GOALKEEPER_TEMPLATE_PATH, build_card_image
+from app import fcm_stats
 from app.models import CompetitionClass, Event, Match, FcmSubmission
 from app.db import Base
 
@@ -42,11 +43,15 @@ def main_helpers():
         '_goalkeeper_fla_conceded_values',
         '_sync_goalkeeper_card_stats', '_enrich_fcm_analysis_with_lineup',
         '_build_fcm_card_payload', '_serialize_fcm_submission',
+        # 주요선수 스탯 규칙 보강(사이드 판정·신청 라인업 포지션)이 같은 함수 안에서 불린다.
+        '_fcm_player_side', '_fcm_fineplay_positions', '_fineplay_job_for_fpa_match',
+        # 카드 데이터 파일 선택(팀별 → 공용) — 미리보기와 같이 쓰는 헬퍼.
+        '_fcm_card_workbook_source',
     }
     module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)] + [
         node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in names
     ], type_ignores=[])
-    namespace = {'re': re, 'Event': Event, 'Match': Match}
+    namespace = {'re': re, 'Event': Event, 'Match': Match, **{name: getattr(fcm_stats, name) for name in ('normalize_position', 'position_from_slot', 'select_player_stats')}}
     exec(compile(ast.fix_missing_locations(module), 'main-goalkeeper-helpers', 'exec'), namespace)
     return namespace
 

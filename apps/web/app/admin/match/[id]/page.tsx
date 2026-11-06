@@ -3,15 +3,20 @@
 import { futsalPitchPoint } from '../../../../lib/futsal-pitch';
 import { futsalShotThreat } from '../../../../components/fla/FutsalShotPitch';
 import LineupUniforms from '../../../../components/LineupUniforms';
+import ConfirmDialog from '../../../../components/ConfirmDialog';
 import {MatchPossessionCard, MatchAttackCard, MatchShotCard, MatchRecentRecords, MatchPossessionTimeline, MatchFlowCard} from '../../../../components/fla/MatchControlCards';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
 import { elapsedMatchMs, restoredMatchMs, matchControlJson } from '../../../../lib/match-control';
-import { usePendingShots } from '../../../../lib/use-pending-shots';
+import { useFlaOutbox, outboxRecordRow, type FlaOutboxItem } from '../../../../lib/fla-input-outbox';
+import { registerWorkspaceLeave } from '../../../../lib/workspace-leave';
 import { useMatchHighlights } from '../../../../lib/use-match-highlights';
+import { errorDetail, errorFromResponse, errorMessage, lookupErrorInfo, responseMessage, warnRaw } from '../../../../lib/error-messages';
+import { ErrorFold } from '../../../../components/ErrorNotice';
+import BroadcastPreviewPanel from '../../../../components/fla/BroadcastPreviewPanel';
 import { resolveMatchTeams } from '../../dashboard/schedule-data';
 
 const DEFAULT_HLS = process.env.NEXT_PUBLIC_DEFAULT_HLS_URL || '';
@@ -86,7 +91,10 @@ function MatchControlPage() {
   const [running, setRunning] = useState(false);
   const [possessionTeam, setPossessionTeam] = useState<PossessionTeam>('NONE');
   const [selectedTeam, setSelectedTeam] = useState<Team>('HOME');
-  const [pendingLane, setPendingLane] = useState<Lane>('CENTER');
+  const [pendingLane, setPendingLaneState] = useState<Lane>('CENTER');
+  // A→Enter 를 다시 그리기보다 빠르게 눌러도 방금 고른 위치로 기록되게 ref 에 바로 적는다.
+  const pendingLaneRef = useRef<Lane>('CENTER');
+  const setPendingLane = (lane: Lane) => { pendingLaneRef.current = lane; setPendingLaneState(lane); };
   const [attackLR, setAttackLR] = useState<AttackLR>('L2R');
 
   const [xgTeam, setXgTeam] = useState<Team>('HOME');
@@ -119,11 +127,9 @@ function MatchControlPage() {
   const [mobileView, setMobileView] = useState<'control' | 'shots' | 'review' | 'settings'>('control');
   const [controlNotice, setControlNotice] = useState('');
   const [loadError, setLoadError] = useState('');
-  const [isSavingShot, setIsSavingShot] = useState(false);
-  const shotPendingRef = useRef(false);
-  const timerPendingRef = useRef(false);
-  const lanePendingRef = useRef(false);
   const [copyMessage, setCopyMessage] = useState('');
+  // 원문이 기억된 오류는 "자세히"를 펼쳐 볼 수 있게 남기고, 그 밖의 안내만 잠시 뒤 지운다.
+  const clearCopyMessageLater = (ms: number) => { setTimeout(() => setCopyMessage((current) => (lookupErrorInfo(current) ? current : '')), ms); };
   const [isAttachingStream, setIsAttachingStream] = useState(false);
   const [isStoppingStream, setIsStoppingStream] = useState(false);
   const [isClearingHls, setIsClearingHls] = useState(false);
@@ -346,6 +352,8 @@ function MatchControlPage() {
 
   useEffect(() => {
     if (possessionTeam === 'HOME' || possessionTeam === 'AWAY') {
+      // 다음 공격 기록은 화면에 보이는 팀으로 저장돼야 한다 — 보낼 값을 담는 ref 도 같이 맞춘다.
+      controlsRef.current = { ...controlsRef.current, selected_team: possessionTeam };
       setSelectedTeam(possessionTeam);
       setXgTeam(possessionTeam);
     }
@@ -389,6 +397,10 @@ function MatchControlPage() {
 
   const userId = sessionUser?.id || '';
   const isArchived = Boolean(match?.archived);
+  // 후반 시작을 깜빡한 경우 — 전반이 정규시간 + 15분을 넘겼는데 후반 표시가 없으면 작게 알린다.
+  // 시계 카드의 "시간 보정" 줄 안에 띄워 카드 높이를 바꾸지 않는다.
+  const forgotSecondHalf = !isSinglePeriod && !isArchived && secondHalfStartAbsMs == null
+    && clockMs > (regulationHalfMinutes(match?.competition_class, match?.first_half_minutes) + 15) * 60000;
   const isSuperuser = sessionUser?.role === 'SUPERADMIN';
   const isManualMatch = match?.metadata?.stream_mode === 'MANUAL';
   const canUseX2 = isSuperuser && isManualMatch;
@@ -422,7 +434,7 @@ function MatchControlPage() {
     }
     setClockSpeed(nextSpeed);
     clockSpeedRef.current = nextSpeed;
-    void saveState({ clockSpeed: nextSpeed }).catch(() => undefined);
+    saveState({ clockSpeed: nextSpeed });
   };
 
   // X2 mode is superadmin-only and manual-match-only: if a session lands on a
@@ -443,12 +455,15 @@ function MatchControlPage() {
     clockSpeedRef.current = 1;
   }, [sessionUser, match, canUseX2, clockSpeed]);
 
-  const clockRevision=useRef(0),stateQueue=useRef<Promise<unknown>>(Promise.resolve());
-  const pendingStateWrites=useRef(0);
-  const confirmedControls=useRef({possession_team:'NONE' as PossessionTeam,selected_team:'HOME' as Team,attack_lr:'L2R' as AttackLR});
-  const applyServerClock=(state:any,revision?:number,preserveRunningClock=false)=>{
-    if(typeof revision==='number' && revision < clockRevision.current)return;
-    if(typeof revision==='number')clockRevision.current=revision;
+  // 화면의 점유·기록 팀·공격 방향. 키보드 연타가 다시 그리기보다 빠를 수 있어 상태와 별도로 ref 에도 즉시 적는다.
+  const controlsRef=useRef({possession_team:'NONE' as PossessionTeam,selected_team:'HOME' as Team,attack_lr:'L2R' as AttackLR});
+  const setControls=(next:Partial<{possession_team:PossessionTeam;selected_team:Team;attack_lr:AttackLR}>)=>{
+    controlsRef.current={...controlsRef.current,...next};
+    if(next.possession_team)setPossessionTeam(next.possession_team);
+    if(next.selected_team)setSelectedTeam(next.selected_team);
+    if(next.attack_lr)setAttackLR(next.attack_lr);
+  };
+  const applyServerClock=(state:any,preserveRunningClock=false)=>{
     if(!state)return;
     const continuous=preserveRunningClock&&runningRef.current&&state.running;
     const restored=restoredMatchMs(state);
@@ -457,56 +472,88 @@ function MatchControlPage() {
     perfRef.current=state.running?performance.now():null;
     runningRef.current=!!state.running;setRunning(!!state.running);setClockMs(ms);
     if(state.clock_speed===1||state.clock_speed===2){clockSpeedRef.current=state.clock_speed;setClockSpeed(state.clock_speed);}
-    confirmedControls.current={possession_team:state.possession_team||'NONE',selected_team:state.selected_team||'HOME',attack_lr:state.attack_lr||'L2R'};
-    setPossessionTeam(state.possession_team||'NONE');setSelectedTeam(state.selected_team||'HOME');setAttackLR(state.attack_lr||'L2R');
-  };
-  const saveState = async (
-    next?: Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean; clockSpeed:ClockSpeed;}>,sample=false
-  ) => {
-    if(sample&&pendingStateWrites.current)return;
-    const clickedAt=next?.clockMs??getCurrentClockMs();
-    pendingStateWrites.current++;
-    const run=stateQueue.current.catch(()=>{}).then(async()=>{
-      const revision=clockRevision.current;
-      try{
-        const captured={clock_ms:clickedAt,running:next?.running??runningRef.current,
-          clock_speed:next?.clockSpeed??clockSpeedRef.current,
-          possession_team:next?.possessionTeam??confirmedControls.current.possession_team,
-          selected_team:next?.selectedTeam??confirmedControls.current.selected_team,
-          attack_lr:next?.attackLR??confirmedControls.current.attack_lr,allow_clock_rewind:!!next?.allowClockRewind};
-        const result=await matchControlJson(`/matches/${id}/state`,{method:'POST',body:JSON.stringify({...captured,state_id:makeId(),update_kind:sample?'sample':'command',command_revision:revision})});
-        if(result.ignored){
-          // A newer revision may be an intentional reset/pause from another tab.
-          applyServerClock(result.state,result.command_revision,result.command_revision===revision);
-          if(!sample)throw Error('시간 명령이 적용되지 않았습니다. 서버 상태를 다시 확인하세요.');
-        }else if(!sample){
-          applyServerClock(result.state,result.command_revision,!next?.allowClockRewind&&next?.running!==false);
-        }else if(result.command_revision!==undefined)clockRevision.current=result.command_revision;
-        return result;
-      }catch(e){
-        try{
-          const latest=await matchControlJson(`/matches/${id}/summary?fresh=true`);
-          applyServerClock(latest.state,latest.command_revision,latest.command_revision===revision);
-        }catch{}
-        setControlNotice('시간·점유 변경의 저장을 확인하지 못했습니다. 진행시간을 유지하며 서버 연결을 확인합니다.');
-        throw e;
-      }
-    });stateQueue.current=run;return run.finally(()=>{pendingStateWrites.current--;});
+    setControls({possession_team:state.possession_team||'NONE',selected_team:state.selected_team||'HOME',attack_lr:state.attack_lr||'L2R'});
   };
 
+  // 저장이 확인됐지만 아직 폴링 목록에 안 들어온 기록. 보관함에서 빠진 순간 목록에서 사라졌다가
+  // 3초 뒤 다시 나타나는 깜빡임(점수도 1 내려갔다 오름)을 막는다.
+  const deliveredRef=useRef(new Map<string,{item:FlaOutboxItem;at:number}>());
+  const [deliveredTick,setDeliveredTick]=useState(0);
+  const lateStateRef=useRef(false);
+  const inputs=useFlaOutbox(id,userId,canWrite,{
+    onDelivered:(item)=>{
+      if(item.kind==='lane'||item.kind==='shot'){deliveredRef.current.set(item.id,{item,at:Date.now()});setDeliveredTick(t=>t+1);}
+      if(item.kind==='state'&&Date.now()-item.pressed_at>2000)lateStateRef.current=true;
+    },
+    onIdle:()=>{
+      // 밀린 명령이 늦게 들어가면 서버 시계가 누른 시각에 머문다 — 그때만 바로 현재 시계를 한 번 알려
+      // 중계 그래픽을 따라오게 한다. 제때 들어간 명령 뒤에도 보내면 누를 때마다 상태 행이 두 개씩 생긴다.
+      if(lateStateRef.current&&canWriteRef.current&&runningRef.current)void inputsRef.current.sample(stateBody());
+      lateStateRef.current=false;
+      void fetchAll().catch(()=>undefined);
+    },
+    onServerState:(state,revision)=>adoptServerState(state,revision),
+  });
+  const inputsRef=useRef(inputs);inputsRef.current=inputs;
+  const canWriteRef=useRef(canWrite);canWriteRef.current=canWrite;
+
+  /** 다른 탭·기기가 시계·점유를 바꿨을 때만 서버 값을 따른다. 이 화면에 아직 안 보낸 시계·점유 입력이 있으면
+   *  서버 값을 쓰지 않는다 — 운영자가 누른 값이 우선이고, 보낼 때 409 를 받아 최신 번호로 다시 보낸다. */
+  const adoptServerState=(state:any,revision:number)=>{
+    const outbox=inputsRef.current;
+    if(outbox.hasPendingState())return;
+    const known=outbox.getRevision();
+    if(known!==null&&revision<=known)return;
+    outbox.noteRevision(revision);
+    if(!state)return;
+    const c=controlsRef.current;
+    const differs=!!state.running!==runningRef.current||(state.possession_team||'NONE')!==c.possession_team
+      ||(state.selected_team||'HOME')!==c.selected_team||(state.attack_lr||'L2R')!==c.attack_lr
+      ||Math.abs(restoredMatchMs(state)-getCurrentClockMs())>2000;
+    // 내 명령인데 응답만 늦게 확인된 경우엔 값이 같다 — 그때 시계를 다시 맞추면 화면 시계가 튄다.
+    if(differs)applyServerClock(state,true);
+  };
+
+  type StateInput=Partial<{clockMs:number; running:boolean; possessionTeam:PossessionTeam; selectedTeam:Team; attackLR:AttackLR; allowClockRewind:boolean; clockSpeed:ClockSpeed;}>;
+  /** 누른 순간의 시계·제어값 전체. 늦게 보내져도 서버에는 이 값이 그대로 저장된다. */
+  const stateBody=(next:StateInput={})=>({
+    clock_ms:Math.max(0,Math.round(next.clockMs??getCurrentClockMs())),running:next.running??runningRef.current,
+    clock_speed:next.clockSpeed??clockSpeedRef.current,
+    possession_team:next.possessionTeam??controlsRef.current.possession_team,
+    selected_team:next.selectedTeam??controlsRef.current.selected_team,
+    attack_lr:next.attackLR??controlsRef.current.attack_lr,allow_clock_rewind:!!next.allowClockRewind,
+  });
+  // 화면은 호출하는 쪽에서 먼저 바꾼다. 여기서는 보관함에 넣기만 하고 서버를 기다리지 않는다.
+  const saveState=(next:StateInput={})=>{
+    if(!canWriteRef.current)return;
+    const body=stateBody(next);
+    inputsRef.current.enqueue('state',body,body.clock_ms);
+  };
+
+  const [serverReady,setServerReady]=useState(false);
   const fetchAll = (): Promise<void> => {
     if(refreshInFlight.current)return refreshInFlight.current;
     const request=(async()=>{
+      const startedAt=Date.now();
       const [m,s]=await Promise.all([
         matchControlJson(`/matches/${id}`),
         matchControlJson(`/matches/${id}/summary${initializedRef.current?'':'?fresh=true'}`),
       ]);
+      // 요약은 서버에서 최대 3초 캐시된다. 저장 확인 3.5초 뒤에 시작한 요청에도 없으면 그 기록은
+      // 지워진 것(기록 전체 삭제 등)이니 이어 붙이기를 멈춘다.
+      const serverIds=new Set<string>((s?.events||[]).map((e:any)=>String(e.id)));
+      let pruned=false;
+      deliveredRef.current.forEach((entry,key)=>{if(serverIds.has(key)||entry.at+3500<startedAt){deliveredRef.current.delete(key);pruned=true;}});
+      if(pruned)setDeliveredTick(t=>t+1);
       setLoadError('');setMatch(m);setSummary(s);
+      const revision=Number(s.command_revision??m.metadata?.fla_clock_revision??0);
       if(!initializedRef.current){
         initializedRef.current=true;
-        applyServerClock(m.archived&&s.state?{...s.state,running:false}:s.state,s.command_revision??m.metadata?.fla_clock_revision??0);
+        inputsRef.current.noteRevision(revision);
+        applyServerClock(m.archived&&s.state?{...s.state,running:false}:s.state);
         setXgTeam(s.state?.selected_team||'HOME');
-      }
+        setServerReady(true);
+      }else if(!m.archived)adoptServerState(s.state,revision);
       const d=await matchControlJson(`/matches/${id}/dominance?bin_seconds=${m.sport==='FUTSAL'?60:180}&split_halves=true`);
       setDominance(d.bins||[]);setDominanceMeta(d);
     })();
@@ -515,25 +562,45 @@ function MatchControlPage() {
     return request;
   };
 
+  // 새로고침 전에 누른 시계·점유가 아직 서버에 없다면 서버 값 대신 그 마지막 입력을 화면에 되살린다.
+  // 보관함은 로그인 정보가 온 뒤에 열리므로 서버 첫 응답과 둘 다 준비됐을 때 한 번만 한다.
+  const restoredLocalRef=useRef(false);
+  useEffect(()=>{
+    if(!serverReady||!inputs.loaded||restoredLocalRef.current)return;
+    restoredLocalRef.current=true;
+    const last=[...inputs.items].reverse().find(item=>item.kind==='state'&&!item.failed);
+    if(!last||match?.archived)return;
+    const b=last.body;
+    const speed=b.clock_speed===2?2:1;
+    const ms=b.running?b.clock_ms+Math.max(0,Date.now()-last.pressed_at)*speed:b.clock_ms;
+    baseRef.current=ms;clockRef.current=ms;wallRef.current=Date.now();
+    perfRef.current=b.running?performance.now():null;
+    runningRef.current=!!b.running;setRunning(!!b.running);setClockMs(ms);
+    clockSpeedRef.current=speed;setClockSpeed(speed);
+    setControls({possession_team:b.possession_team||'NONE',selected_team:b.selected_team||'HOME',attack_lr:b.attack_lr||'L2R'});
+  },[serverReady,inputs.loaded]);
+
   const fetchOutbox = async () => {
     const data = await apiJson<any[]>(`/outbox`);
     setOutbox(data || []);
   };
 
   useEffect(() => {
-    const refresh = () => fetchAll().catch(() => setLoadError('경기 데이터를 불러오지 못했습니다. 연결을 확인해 주세요.'));
+    const refresh = () => fetchAll().catch((e) => setLoadError(errorMessage(e, '경기 데이터를 불러오지 못했습니다. 연결을 확인해 주세요.', { fixed: true })));
     refresh();
     const t = setInterval(refresh, 3000);
     return () => clearInterval(t);
   }, [id]);
 
+  // 전송 대기열은 관리자만 본다 — 운영자 화면에서 5초마다 모든 경기 대기열을 부를 이유가 없다.
   useEffect(() => {
+    if (!isSuperuser) return;
     fetchOutbox().catch(() => undefined);
     const t = setInterval(() => {
       fetchOutbox().catch(() => undefined);
     }, 5000);
     return () => clearInterval(t);
-  }, [id]);
+  }, [id, isSuperuser]);
 
   useEffect(() => {
     const s = summary?.state;
@@ -571,26 +638,90 @@ function MatchControlPage() {
   }, [running]);
 
   useEffect(() => {
+    // 시계 저장(sample)은 보관함이 비어 있을 때만 나간다 — 밀린 입력보다 먼저 가면 누른 시각이 밀린다.
     const t = setInterval(() => {
-      if (canWrite && runningRef.current) {
-        saveState(undefined,true).catch(() => undefined);
-      }
+      if (canWrite && runningRef.current) void inputsRef.current.sample(stateBody());
     }, 3000);
     return () => clearInterval(t);
-  }, [running, possessionTeam, selectedTeam, attackLR, canWrite]);
+  }, [canWrite]);
 
-  const toggleRun = async () => {
-    if (!canWrite || timerPendingRef.current) return;
-    timerPendingRef.current = true;
+  // 시계를 누른 순간 값으로 세우거나 그 값부터 다시 돌린다. 서버 응답을 기다리지 않는다.
+  const setLocalClock = (ms: number, nextRunning: boolean) => {
+    baseRef.current=ms;clockRef.current=ms;wallRef.current=Date.now();
+    perfRef.current=nextRunning?performance.now():null;
+    runningRef.current=nextRunning;setRunning(nextRunning);setClockMs(ms);
+  };
+
+  // 잠금 없이 바로 바뀐다. 연달아 눌러도 누른 순서·시각대로 보관함에 쌓인다.
+  const toggleRun = () => {
+    if (!canWrite) return;
     const nextRunning = !runningRef.current;
     const frozen = getCurrentClockMs();
-    // Start/pause at the operator's click, not when a delayed response arrives.
-    baseRef.current=frozen;clockRef.current=frozen;wallRef.current=Date.now();
-    perfRef.current=nextRunning?performance.now():null;
-    runningRef.current=nextRunning;setRunning(nextRunning);setClockMs(frozen);
-    try { await saveState({clockMs:frozen,running:nextRunning}); }
-    catch { setControlNotice('시간 변경의 저장을 확인하지 못했습니다. 서버 연결 후 상태를 확인해 주세요.'); }
-    finally { timerPendingRef.current = false; }
+    setLocalClock(frozen, nextRunning);
+    saveState({clockMs:frozen,running:nextRunning});
+  };
+
+  /* 경기 종료 — 경기가 완전히 끝났을 때 한 번에 마감한다(전·후반 종료 버튼이 아니다).
+     순서: 시계 정지 → 남은 입력 전송 완료 대기 → 송출 중지 → HLS 정리 → 보관 → 대시보드.
+     보관된 경기는 기록 쓰기·송출 정리가 막히므로(서버 _require_match_not_archived) 남은 입력을
+     다 보내기 전에는 보관하지 않는다 — 보관을 먼저 하면 못 보낸 기록이 사라진다. */
+  const [endMatchStep, setEndMatchStep] = useState<'' | 'confirm' | 'running'>('');
+  const [endMatchNote, setEndMatchNote] = useState('');
+  const pendingInputsRef = useRef({ pending: 0, failed: 0 });
+  // 종료 대기 루프가 최신 남은 입력 수를 보도록 렌더마다 갱신한다(useFlaOutbox 결과는 위에서 이미 나왔다).
+  pendingInputsRef.current = { pending: inputs.pendingCount, failed: inputs.failedCount };
+  const confirmEndMatch = async () => {
+    if (!canWrite || endMatchStep === 'running') return;
+    setEndMatchStep('running');
+    const problems: string[] = [];
+    try {
+      if (runningRef.current) {
+        setEndMatchNote('시계를 멈추는 중…');
+        toggleRun();
+      }
+      // 남은 입력이 다 저장될 때까지 기다린다(최대 60초). 못 보내면 종료하지 않는다.
+      const until = Date.now() + 60000;
+      while (pendingInputsRef.current.pending > 0 && Date.now() < until) {
+        setEndMatchNote(`남은 기록 ${pendingInputsRef.current.pending}건 저장 중…`);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      if (pendingInputsRef.current.pending > 0 || pendingInputsRef.current.failed > 0) {
+        setEndMatchStep('');
+        setEndMatchNote('');
+        setControlNotice(`아직 저장되지 않은 기록이 있어 경기를 종료하지 않았습니다(대기 ${pendingInputsRef.current.pending}건 · 실패 ${pendingInputsRef.current.failed}건). 저장된 뒤 다시 눌러 주세요.`);
+        return;
+      }
+      if (!isManualMatch) {
+        setEndMatchNote('송출을 멈추고 HLS 영상을 정리하는 중…');
+        const stopped = await apiFetch(`/matches/${id}/stream/stop`, { method: 'POST' }).catch(() => null);
+        if (!stopped?.ok) problems.push('송출 중지');
+        const cleared = await apiFetch(`/matches/${id}/stream/clear`, { method: 'POST' }).catch(() => null);
+        if (!cleared?.ok) problems.push('HLS 정리');
+      }
+      setEndMatchNote('경기를 보관하는 중…');
+      const body = JSON.stringify({ archived: true, stop_stream: !isManualMatch });
+      let res = await apiFetch(`/matches/${id}/archive`, { method: 'POST', body });
+      // 시계 정지가 서버에 늦게 닿아 '진행 중'으로 막히면, 종료를 이미 확인받았으므로 그대로 보관한다.
+      if (res.status === 409) res = await apiFetch(`/matches/${id}/archive?confirm_live_action=true`, { method: 'POST', body });
+      if (!res.ok) {
+        setEndMatchStep('');
+        setEndMatchNote('');
+        // 함께 실패한 단계(송출 중지·HLS 정리)와 서버 원문은 자세히에 남긴다.
+        setControlNotice((await errorFromResponse(res, {
+          fixed: "경기 보관에 실패했습니다. 운영 현황에서 'Archive'를 눌러 주세요.",
+          context: problems.length ? { '함께 실패한 단계': problems.join('·') } : undefined,
+        })).message);
+        return;
+      }
+      try {
+        if (problems.length) window.sessionStorage.setItem('fla-end-match-notice', `경기를 보관했습니다. 다만 ${problems.join('·')}를 하지 못했습니다. Media 화면에서 확인해 주세요.`);
+      } catch { /* 안내만 못 남길 뿐이다 */ }
+      window.location.href = '/admin/dashboard';
+    } catch {
+      setEndMatchStep('');
+      setEndMatchNote('');
+      setControlNotice('경기 종료 중 연결이 끊겼습니다. 다시 눌러 주세요.');
+    }
   };
 
   const copyText = async (value: string, label: string) => {
@@ -683,54 +814,49 @@ function MatchControlPage() {
     lastPossessionLogSecondRef.current = -1;
   };
 
-  const resetClock = async () => {
+  const resetClock = () => {
     if (!canWrite) return;
     if (!window.confirm('타이머를 00:00으로 초기화할까요?')) return;
-    setClockMs(0);
-    baseRef.current = 0;
-    perfRef.current = null;
-    setRunning(false);
+    setLocalClock(0, false);
+    setControls({ possession_team: 'NONE' });
     setSecondHalfStartAbsMs(null);
     setThirdHalfStartAbsMs(null);
     setFourthHalfStartAbsMs(null);
-    await saveState({ clockMs: 0, running: false, allowClockRewind: true, possessionTeam: 'NONE' });
+    saveState({ clockMs: 0, running: false, allowClockRewind: true, possessionTeam: 'NONE' });
   };
 
-  const startFirstHalf = async () => {
+  const startFirstHalf = () => {
     if (!canWrite) return;
     if (!window.confirm(isSinglePeriod ? '경기 타이머를 00:00으로 설정할까요?' : '타이머를 1H 00:00으로 설정할까요?')) return;
-    setClockMs(0);
-    baseRef.current = 0;
-    perfRef.current = null;
-    setRunning(false);
+    setLocalClock(0, false);
+    setControls({ possession_team: 'NONE' });
     setSecondHalfStartAbsMs(null);
     setThirdHalfStartAbsMs(null);
     setFourthHalfStartAbsMs(null);
-    setPossessionTeam('NONE');
-    await saveState({
+    saveState({
       clockMs: 0,
       running: false,
       possessionTeam: 'NONE',
       allowClockRewind: true,
     });
-    await fetchAll();
   };
 
-  const markSecondHalfStart = async () => {
+  // 전후반·연장 경계: 마커와 정지 명령을 누른 순서대로 보관함에 넣는다. 마커는 종류당 한 줄을
+  // 덮어쓰므로 다시 보내도 같은 값이 남는다.
+  const markPeriodStart = (markerType: 'HALFTIME_START' | 'EXTRA_TIME_1_START' | 'EXTRA_TIME_2_START', now: number) => {
+    setLocalClock(now, false);
+    setControls({ possession_team: 'NONE' });
+    inputsRef.current.enqueue('marker', { marker_type: markerType, clock_ms: now }, now);
+    saveState({ clockMs: now, running: false, possessionTeam: 'NONE' });
+  };
+
+  const markSecondHalfStart = () => {
     if (!canWrite) return;
     const baseHalfMinutes = regulationHalfMinutes(match?.competition_class, match?.first_half_minutes);
     if (!window.confirm(`지금 시점을 2H 시작(표시 ${baseHalfMinutes}:00)으로 설정할까요?`)) return;
     const now = getCurrentClockMs();
-    clockRef.current = now;
     setSecondHalfStartAbsMs(now);
-    setRunning(false);
-    perfRef.current = null;
-    await apiFetch(`/matches/${id}/markers`, {
-      method: 'POST',
-      body: JSON.stringify({ marker_type: 'HALFTIME_START', clock_ms: now }),
-    });
-    await saveState({ running: false, possessionTeam: 'NONE' });
-    await fetchAll();
+    markPeriodStart('HALFTIME_START', now);
   };
 
   // ── 하이라이트(HL) ─────────────────────────────────────────────────────
@@ -756,67 +882,59 @@ function MatchControlPage() {
     return period === 3 ? firstHalfMin + secondHalfMin : firstHalfMin + secondHalfMin + extraFirstHalfMin;
   };
 
-  const markThirdHalfStart = async () => {
+  const markThirdHalfStart = () => {
     if (!canWrite) return;
     const baseMin = extraHalfBaseMinutes(3);
     if (!window.confirm(`지금 시점을 연장 전반(3H) 시작(표시 ${baseMin}:00)으로 설정할까요?`)) return;
     const now = getCurrentClockMs();
-    clockRef.current = now;
     setThirdHalfStartAbsMs(now);
     setFourthHalfStartAbsMs(null);
-    setRunning(false);
-    perfRef.current = null;
-    await apiFetch(`/matches/${id}/markers`, {
-      method: 'POST',
-      body: JSON.stringify({ marker_type: 'EXTRA_TIME_1_START', clock_ms: now }),
-    });
-    await saveState({ running: false, possessionTeam: 'NONE' });
-    await fetchAll();
+    markPeriodStart('EXTRA_TIME_1_START', now);
   };
 
-  const markFourthHalfStart = async () => {
+  const markFourthHalfStart = () => {
     if (!canWrite) return;
     const baseMin = extraHalfBaseMinutes(4);
     if (!window.confirm(`지금 시점을 연장 후반(4H) 시작(표시 ${baseMin}:00)으로 설정할까요?`)) return;
     const now = getCurrentClockMs();
-    clockRef.current = now;
     setFourthHalfStartAbsMs(now);
-    setRunning(false);
-    perfRef.current = null;
-    await apiFetch(`/matches/${id}/markers`, {
-      method: 'POST',
-      body: JSON.stringify({ marker_type: 'EXTRA_TIME_2_START', clock_ms: now }),
-    });
-    await saveState({ running: false, possessionTeam: 'NONE' });
-    await fetchAll();
+    markPeriodStart('EXTRA_TIME_2_START', now);
   };
 
-  const changePossession = async (team: PossessionTeam) => {
+  // 점유는 누르는 즉시 바뀐다(종전엔 서버 응답 뒤에 바뀌어 느린 순간 "안 눌린" 것처럼 보였다).
+  const changePossession = (team: PossessionTeam) => {
     if (!canWrite) return;
-    try {
-      await saveState(team === 'NONE' ? {possessionTeam: team} : {possessionTeam: team, selectedTeam: team});
-      setPossessionTeam(team);
-      if (team !== 'NONE') { setSelectedTeam(team); setXgTeam(team); }
-    } catch { setControlNotice('점유 팀을 저장하지 못했습니다. 다시 시도해 주세요.'); }
+    setControls(team === 'NONE' ? { possession_team: team } : { possession_team: team, selected_team: team });
+    if (team !== 'NONE') setXgTeam(team);
+    saveState(team === 'NONE' ? {possessionTeam: team} : {possessionTeam: team, selectedTeam: team});
   };
 
-  const selectEventTeam = async (team: Team) => {
-    setSelectedTeam(team);
+  const selectEventTeam = (team: Team) => {
+    setControls({ selected_team: team });
     setXgTeam(team);
-    if (canWrite) {
-      await saveState({ selectedTeam: team });
-    }
+    if (canWrite) saveState({ selectedTeam: team });
   };
 
-  const changeAttackDirection = async (direction: AttackLR) => {
+  const changeAttackDirection = (direction: AttackLR) => {
     if (!canWrite) return;
-    setAttackLR(direction);
-    await saveState({ attackLR: direction });
+    setControls({ attack_lr: direction });
+    saveState({ attackLR: direction });
   };
 
   const resetPossession = async () => {
     if (!canWrite || isResettingPossession) return;
-    if (!window.confirm('점유율 집계를 0:0으로 초기화할까요?')) return;
+    // 초기화 전에 누른 점유 입력이 초기화 뒤에 도착하면 지운 구간이 다시 생긴다 — 다 보낸 뒤에 한다.
+    if (inputsRef.current.hasPendingState()) {
+      setControlNotice('아직 저장 중인 점유 입력이 있습니다. 저장된 뒤 다시 눌러 주세요.');
+      return;
+    }
+    setPossessionResetConfirm(true);
+  };
+  // 점유 초기화 확인 창 — 기록 전체 삭제와 같은 방식(작은 글씨 버튼 + 확인 창에서 "초기화").
+  const [possessionResetConfirm, setPossessionResetConfirm] = useState(false);
+  const confirmResetPossession = async () => {
+    if (!canWrite || isResettingPossession) return;
+    setPossessionResetConfirm(false);
     setIsResettingPossession(true);
     try {
       let res = await apiFetch(`/matches/${id}/possession/reset`, {
@@ -824,8 +942,12 @@ function MatchControlPage() {
         body: JSON.stringify({}),
       });
       if (res.status === 409) {
-        const detail = await res.text();
-        const confirmLive = window.confirm(`${detail}\n\n계속 초기화할까요?`);
+        // 확인 창엔 한국어만. 서버 원문은 콘솔로, 판정은 상태 코드(409)로 한다.
+        const conflict = await errorFromResponse(res, {});
+        warnRaw('점유 초기화 409 — 한 번 더 확인', conflict);
+        const confirmLive = window.confirm(/blocked while match clock is running/.test(errorDetail(conflict))
+          ? '경기 시계가 돌고 있습니다. 그래도 점유율을 초기화할까요?'
+          : `${conflict.message}\n\n계속 초기화할까요?`);
         if (!confirmLive) return;
         res = await apiFetch(`/matches/${id}/possession/reset?confirm_live_action=true`, {
           method: 'POST',
@@ -837,8 +959,8 @@ function MatchControlPage() {
       } else {
         setPossessionLogs([]);
         lastPossessionLogSecondRef.current = -1;
-        setPossessionTeam('NONE');
-        await saveState({ possessionTeam: 'NONE' });
+        setControls({ possession_team: 'NONE' });
+        saveState({ possessionTeam: 'NONE' });
         setCopyMessage('Possession reset');
         await fetchAll();
       }
@@ -850,31 +972,38 @@ function MatchControlPage() {
     }
   };
 
-  const resetEvents = async () => {
+  // 기록 전체 삭제 확인 창 — 한 번 묻고 "삭제"를 누르면 지운다. 시계가 돌고 있으면 서버가
+  // 409 로 막으므로, 같은 창을 그 경고로 바꿔 한 번 더 누르게 한다(그때만 confirm_live_action).
+  const [resetConfirm, setResetConfirm] = useState<{ live: boolean } | null>(null);
+  const resetEvents = () => {
     if (!canWrite || isResettingEvents) return;
-    if (!window.confirm('공격방향/xG 이벤트를 모두 초기화할까요?')) return;
+    setResetConfirm({ live: false });
+  };
+  const confirmResetEvents = async () => {
+    if (!resetConfirm || !canWrite) return;
     setIsResettingEvents(true);
     try {
-      let res = await apiFetch(`/matches/${id}/events/reset`, {
+      const res = await apiFetch(`/matches/${id}/events/reset${resetConfirm.live ? '?confirm_live_action=true' : ''}`, {
         method: 'POST',
         body: JSON.stringify({}),
       });
-      if (res.status === 409) {
-        const detail = await res.text();
-        const confirmLive = window.confirm(`${detail}\n\n계속 초기화할까요?`);
-        if (!confirmLive) return;
-        res = await apiFetch(`/matches/${id}/events/reset?confirm_live_action=true`, {
-          method: 'POST',
-          body: JSON.stringify({}),
-        });
+      if (res.status === 409 && !resetConfirm.live) {
+        setResetConfirm({ live: true });
+        return;
       }
+      setResetConfirm(null);
       if (!res.ok) {
         setCopyMessage('Event reset failed');
       } else {
+        // 아직 못 보낸 기록도 "모두 삭제"에 들어간다 — 남겨 두면 삭제 뒤에 도착해 다시 나타난다.
+        inputsRef.current.discard((item) => item.kind === 'lane' || item.kind === 'shot');
+        deliveredRef.current.clear();
+        setDeliveredTick((t) => t + 1);
         setCopyMessage('Events reset');
         await fetchAll();
       }
     } catch {
+      setResetConfirm(null);
       setCopyMessage('Event reset failed');
     } finally {
       setIsResettingEvents(false);
@@ -882,17 +1011,12 @@ function MatchControlPage() {
     }
   };
 
-  const sendLane = async (lane: Lane) => {
-    if (!canWrite || lanePendingRef.current) return;
-    lanePendingRef.current = true;
-    try {
-      await apiJson(`/matches/${id}/events/attack_lane`, {
-        method: 'POST', body: JSON.stringify({ event_id: makeId(), team: selectedTeam, lane, clock_ms: getCurrentClockMs() }),
-      });
-      setControlNotice(`${selectedTeam === 'HOME' ? '홈' : '어웨이'} · ${{LEFT:'왼쪽',CENTER:'중앙',RIGHT:'오른쪽'}[lane]} 공격을 기록했습니다.`);
-      await fetchAll();
-    } catch { setControlNotice('공격 기록을 저장하지 못했습니다. 다시 시도해 주세요.'); }
-    finally { lanePendingRef.current = false; }
+  // 종전엔 앞 기록이 저장될 때까지 다음 클릭을 말없이 버렸다. 이제 누를 때마다 한 건씩 쌓이고 순서대로 보낸다.
+  const sendLane = (lane: Lane) => {
+    if (!canWrite) return;
+    const team = controlsRef.current.selected_team;
+    const clock = getCurrentClockMs();
+    inputsRef.current.enqueue('lane', { team, lane, clock_ms: Math.max(0, Math.round(clock)) }, clock);
   };
 
   const uploadLineupPdf = async (file: File | null) => {
@@ -909,8 +1033,7 @@ function MatchControlPage() {
         body: formData,
       });
       if (!response.ok) {
-        const problem = await response.json().catch(() => ({}));
-        throw new Error(typeof problem.detail === 'string' ? problem.detail : 'PDF 명단을 읽지 못했습니다.');
+        throw await errorFromResponse(response, { action: 'PDF 명단을 읽지 못했습니다', fallback: 'PDF 명단을 읽지 못했습니다. PDF 파일인지 확인하세요.' });
       }
       const data = await response.json();
       setMatch(data.match);
@@ -918,11 +1041,11 @@ function MatchControlPage() {
       const awayCount = data.lineups?.teams?.AWAY?.length || 0;
       setCopyMessage(`PDF 명단 반영: 홈 ${homeCount}명 · 어웨이 ${awayCount}명. 아래 유니폼 정보와 팀 방향을 확인하세요.`);
     } catch (error) {
-      setCopyMessage(error instanceof Error ? error.message : 'Lineup upload failed');
+      setCopyMessage(errorMessage(error, 'PDF 명단을 읽지 못했습니다. PDF 파일인지 확인하세요.'));
     } finally {
       setIsUploadingLineup(false);
       if (lineupInputRef.current) lineupInputRef.current.value = '';
-      setTimeout(() => setCopyMessage(''), 2500);
+      clearCopyMessageLater(2500);
     }
   };
 
@@ -940,7 +1063,7 @@ function MatchControlPage() {
         body: formData,
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || 'Excel lineup upload failed');
+        throw await errorFromResponse(response, { action: '엑셀 명단을 읽지 못했습니다', fallback: '엑셀 명단을 읽지 못했습니다. .xlsx 파일인지 확인하세요.' });
       }
       const data = await response.json();
       setMatch(data.match);
@@ -948,11 +1071,11 @@ function MatchControlPage() {
       const awayCount = data.lineups?.teams?.AWAY?.length || 0;
       setCopyMessage(`엑셀 명단 반영: 홈 ${homeCount}명 / 원정 ${awayCount}명`);
     } catch (error) {
-      setCopyMessage(error instanceof Error ? error.message : 'Excel lineup upload failed');
+      setCopyMessage(errorMessage(error, '엑셀 명단을 읽지 못했습니다. .xlsx 파일인지 확인하세요.'));
     } finally {
       setIsUploadingRecordSheet(false);
       if (recordSheetInputRef.current) recordSheetInputRef.current.value = '';
-      setTimeout(() => setCopyMessage(''), 3000);
+      clearCopyMessageLater(3000);
     }
   };
 
@@ -963,7 +1086,7 @@ function MatchControlPage() {
     try {
       const response = await apiFetch(`/matches/${id}/lineup/swap`, { method: 'POST' });
       if (!response.ok) {
-        throw new Error((await response.text()) || 'Lineup swap failed');
+        throw await errorFromResponse(response, 'Lineup swap failed');
       }
       const data = await response.json();
       setMatch(data.match);
@@ -971,10 +1094,10 @@ function MatchControlPage() {
       const awayCount = data.lineups?.teams?.AWAY?.length || 0;
       setCopyMessage(`Lineup swapped: HOME ${homeCount}, AWAY ${awayCount}`);
     } catch (error) {
-      setCopyMessage(error instanceof Error ? error.message : 'Lineup swap failed');
+      setCopyMessage(errorMessage(error, 'Lineup swap failed'));
     } finally {
       setIsSwappingLineup(false);
-      setTimeout(() => setCopyMessage(''), 2500);
+      clearCopyMessageLater(2500);
     }
   };
 
@@ -983,7 +1106,7 @@ function MatchControlPage() {
     const number = manualLineupNumber.trim();
     const name = manualLineupName.trim();
     if (!number || !name) {
-      setCopyMessage('Manual lineup needs number and name');
+      setCopyMessage('등번호와 이름을 입력하세요.');
       setTimeout(() => setCopyMessage(''), 2000);
       return;
     }
@@ -1000,7 +1123,7 @@ function MatchControlPage() {
         }),
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || 'Manual lineup save failed');
+        throw await errorFromResponse(response, { action: '선수를 저장하지 못했습니다', fallback: '선수를 저장하지 못했습니다.' });
       }
       const data = await response.json();
       setMatch(data.match);
@@ -1008,10 +1131,10 @@ function MatchControlPage() {
       setManualLineupName('');
       setCopyMessage(`Manual player saved: ${manualLineupSide} No.${number} ${name}`);
     } catch (error) {
-      setCopyMessage(error instanceof Error ? error.message : 'Manual lineup save failed');
+      setCopyMessage(errorMessage(error, '선수를 저장하지 못했습니다.'));
     } finally {
       setIsSavingManualLineup(false);
-      setTimeout(() => setCopyMessage(''), 2500);
+      clearCopyMessageLater(2500);
     }
   };
 
@@ -1025,25 +1148,21 @@ function MatchControlPage() {
         body: JSON.stringify({ side, number }),
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || 'Manual lineup delete failed');
+        throw await errorFromResponse(response, { action: '선수를 빼지 못했습니다', fallback: '선수를 빼지 못했습니다.' });
       }
       const data = await response.json();
       setMatch(data.match);
       setCopyMessage(`Manual player removed: ${side} No.${number}`);
     } catch (error) {
-      setCopyMessage(error instanceof Error ? error.message : 'Manual lineup delete failed');
+      setCopyMessage(errorMessage(error, '선수를 빼지 못했습니다.'));
     } finally {
       setIsSavingManualLineup(false);
-      setTimeout(() => setCopyMessage(''), 2500);
+      clearCopyMessageLater(2500);
     }
   };
 
-  const shots = usePendingShots(id,userId,canWrite,()=>{
-    void fetchAll().catch(()=>setLoadError('슈팅은 저장됐습니다. 목록 갱신이 지연되고 있어 다시 불러오는 중입니다.'));
-  });
-
-  const submitXg = async () => {
-    if (shotPendingRef.current || !canWrite) return;
+  const submitXg = () => {
+    if (!canWrite) return;
     const shotCoordinates=getShotCoordinates();
     if(!shotCoordinates){setControlNotice('피치에서 슈팅 위치를 선택한 뒤 기록해 주세요.');return;}
     const xg=isOwnGoal?0:Number(xgValue);
@@ -1053,8 +1172,11 @@ function MatchControlPage() {
       setXgotEstimateMeta('골문에서 슈팅 도착 위치를 선택해 주세요.');
       setControlNotice('골문에서 슈팅 도착 위치를 선택한 뒤 기록해 주세요.');return;
     }
-    const submission=shots.enqueue({
-      event_id:makeId(),clock_ms:getCurrentClockMs(),team:xgTeam,xg,
+    const clock=Math.max(0,Math.round(getCurrentClockMs()));
+    const eventId=makeId();
+    // 골 연속 입력이 막히지 않게 저장을 기다리지 않는다. 누른 순간 기록 목록·점수에 바로 들어간다.
+    const submission=inputsRef.current.enqueue('shot',{
+      event_id:eventId,clock_ms:clock,team:xgTeam,xg,
       player_name:isOwnGoal?null:selectedXgPlayer?.name||null,
       player_number:isOwnGoal?null:selectedXgPlayer?.number||null,
       is_goal:isOwnGoal||isGoalShot,is_own_goal:isOwnGoal,is_on_target:!isOwnGoal&&isOnTargetShot,
@@ -1063,16 +1185,13 @@ function MatchControlPage() {
       goalmouth_y:isOwnGoal?null:goalmouthCoordinates?.goalmouth_y??null,
       is_header:!isOwnGoal&&isHeaderShot,is_weak_foot:false,
       under_pressure:!isOwnGoal&&isUnderPressureShot,one_on_one:!isOwnGoal&&isOneOnOneShot,shot_pace_band:'MID',
-    });
+    },clock,eventId);
     if(!submission)return;
-    shotPendingRef.current=true;setIsSavingShot(true);
-    // The submitted snapshot is already in the pending list. Clear now, so a
-    // later acknowledgement cannot erase edits to the next shot.
+    // 보관함에 들어간 것은 누른 순간의 사본이다. 바로 비워 다음 슈팅을 이어서 입력하게 한다.
     setXgValue('0.10');setXgPlayerKey('');setXgotValue('0.000');setShotPoint(null);
     setIsOnTargetShot(false);setGoalmouthPoint(null);setIsHeaderShot(false);setIsGoalShot(false);
     setIsOwnGoal(false);setIsUnderPressureShot(false);setIsOneOnOneShot(false);
     setXgEstimateMeta('');setXgotEstimateMeta('');setControlNotice('');
-    try{await submission;}finally{shotPendingRef.current=false;setIsSavingShot(false);}
   };
 
   const attachRtmp = async () => {
@@ -1160,7 +1279,7 @@ function MatchControlPage() {
   const estimateXgFromPitch = async () => {
     const shotCoordinates = getShotCoordinates();
     if (!shotPoint || !shotCoordinates) {
-      setXgEstimateMeta('Click on the pitch first');
+      setXgEstimateMeta('피치에서 슈팅 위치를 먼저 선택하세요.');
       return;
     }
     if (isFutsal) {
@@ -1182,7 +1301,7 @@ function MatchControlPage() {
       }),
     });
     if (!res.ok) {
-      setXgEstimateMeta(`Estimate failed (${res.status})`);
+      setXgEstimateMeta(await responseMessage(res, { fixed: '계산하지 못했습니다. 다시 눌러 주세요.' }));
       return;
     }
     const data = await res.json();
@@ -1194,15 +1313,15 @@ function MatchControlPage() {
     const xg = Number(xgValue);
     const goalmouthCoordinates = getGoalmouthCoordinates();
     if (!Number.isFinite(xg) || xg < 0) {
-      setXgotEstimateMeta('Enter a valid xG first');
+      setXgotEstimateMeta('xG 값을 먼저 입력하세요.');
       return;
     }
     if (!isOnTargetShot) {
-      setXgotEstimateMeta('Turn on On Target first');
+      setXgotEstimateMeta('"유효슈팅"을 먼저 켜세요.');
       return;
     }
     if (!goalmouthCoordinates) {
-      setXgotEstimateMeta('Click the goalmouth map first');
+      setXgotEstimateMeta('골문에서 슈팅 도착 위치를 먼저 선택하세요.');
       return;
     }
     const res = await apiFetch('/xgot/estimate', {
@@ -1221,7 +1340,7 @@ function MatchControlPage() {
       }),
     });
     if (!res.ok) {
-      setXgotEstimateMeta(`Estimate failed (${res.status})`);
+      setXgotEstimateMeta(await responseMessage(res, { fixed: '계산하지 못했습니다. 다시 눌러 주세요.' }));
       return;
     }
     const data = await res.json();
@@ -1238,8 +1357,8 @@ function MatchControlPage() {
       body: JSON.stringify({}),
     });
     if (!response.ok) {
-      setCopyMessage('Lock acquire failed');
-      setTimeout(() => setCopyMessage(''), 1500);
+      setCopyMessage(await responseMessage(response, { fixed: '운영권을 가져오지 못했습니다. 다른 운영자가 쓰는 중인지 확인하세요.' }));
+      clearCopyMessageLater(1500);
       return;
     }
     await fetchAll();
@@ -1252,8 +1371,8 @@ function MatchControlPage() {
       body: JSON.stringify({}),
     });
     if (!response.ok) {
-      setCopyMessage('Lock release failed');
-      setTimeout(() => setCopyMessage(''), 1500);
+      setCopyMessage(await responseMessage(response, { fixed: '운영권을 해제하지 못했습니다.' }));
+      clearCopyMessageLater(1500);
       return;
     }
     await fetchAll();
@@ -1289,7 +1408,7 @@ function MatchControlPage() {
       } else if (e.code === 'KeyD') {
         setPendingLane('RIGHT');
       } else if (e.key === 'Enter') {
-        sendLane(pendingLane);
+        sendLane(pendingLaneRef.current);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1378,26 +1497,121 @@ function MatchControlPage() {
     return secondHalfStartAbsMs;
   }, [dominance, secondHalfStartAbsMs]);
 
+  // 운영자 화면에만 아직 안 보낸 기록을 얹는다(중계 오버레이·협업사 API 는 서버 확정 기록만 본다).
+  // 서버 목록에 같은 id 가 들어오면 그쪽을 쓴다 — 같은 기록이 두 줄로 보이거나 점수가 두 번 오르지 않게.
+  const displaySummary = useMemo(() => {
+    if (!summary) return summary;
+    const serverIds = new Set<string>((summary.events || []).map((e: any) => String(e.id)));
+    const local = [
+      ...inputs.items.filter((item) => item.kind === 'lane' || item.kind === 'shot')
+        .map((item) => outboxRecordRow(item, item.failed ? '저장 실패' : '저장 중')),
+      ...[...deliveredRef.current.values()].map(({ item }) => outboxRecordRow(item, '')),
+    ].filter((row) => !serverIds.has(row.id)).sort((a, b) => b.seq - a.seq);
+    if (!local.length) return summary;
+    const score = summary.score ? { ...summary.score } : null;
+    if (score) for (const row of local) if (row.type === 'XG' && row.is_goal) score[row.team === 'AWAY' ? 'away' : 'home'] += 1;
+    return { ...summary, events: [...local, ...(summary.events || [])], score };
+  }, [summary, inputs.items, deliveredTick]);
+  const unsentCount = inputs.pendingCount + inputs.failedCount;
+  const unsentRef = useRef(0);
+  unsentRef.current = unsentCount;
+
+  // 안 보낸 입력이 남은 채 나가려 하면 한 번 묻는다. 나가도 이 기기에 남아 있다가 경기를 다시 열면 보낸다.
+  const router = useRouter();
+  const [leaveAsk, setLeaveAsk] = useState<((ok: boolean) => void) | null>(null);
+  useEffect(() => {
+    const leave = () => unsentRef.current === 0 ? true : new Promise<boolean>((resolve) => setLeaveAsk(() => resolve));
+    const unregister = registerWorkspaceLeave(leave);
+    const unload = (e: BeforeUnloadEvent) => { if (unsentRef.current) { e.preventDefault(); e.returnValue = ''; } };
+    const navigate = (e: MouseEvent) => {
+      const a = (e.target as Element)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!unsentRef.current || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || !a || a.download || (a.target && a.target !== '_self') || a.origin !== location.origin || a.href === location.href) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      void Promise.resolve(leave()).then((ok) => { if (ok) router.push(a.pathname + a.search + a.hash); });
+    };
+    window.addEventListener('beforeunload', unload); document.addEventListener('click', navigate, true);
+    return () => { unregister(); window.removeEventListener('beforeunload', unload); document.removeEventListener('click', navigate, true); };
+  }, [router]);
+  const answerLeave = (ok: boolean) => { leaveAsk?.(ok); setLeaveAsk(null); };
+  const [discardFailedAsk, setDiscardFailedAsk] = useState(false);
+
   return (
     <main className="page-stack fla-match" data-mobile-view={mobileView}>
+      {possessionResetConfirm ? (
+        <ConfirmDialog
+          title="점유율을 초기화할까요?"
+          message={<p>홈·원정 점유 시간이 0:0 으로 돌아갑니다. 되돌릴 수 없습니다.</p>}
+          confirmLabel="초기화"
+          busy={isResettingPossession}
+          onConfirm={() => void confirmResetPossession()}
+          onCancel={() => setPossessionResetConfirm(false)}
+        />
+      ) : null}
+      {endMatchStep ? (
+        <ConfirmDialog
+          title="경기를 종료할까요?"
+          message={endMatchStep === 'running' ? <p>{endMatchNote || '경기를 마감하는 중…'}</p> : (
+            <>
+              <p><b>전반·후반 종료가 아니라, 경기가 완전히 끝났을 때 누르는 버튼입니다.</b></p>
+              <p>시계를 멈추고 남은 기록을 모두 저장한 뒤{isManualMatch ? '' : ' 송출을 멈추고 HLS 영상을 정리하고'} 경기를 보관합니다. 보관 후에는 기록을 고칠 수 없습니다(관리자만 Event Editor 에서 가능).</p>
+            </>
+          )}
+          confirmLabel="경기 종료"
+          busy={endMatchStep === 'running'}
+          onConfirm={() => void confirmEndMatch()}
+          onCancel={() => { setEndMatchStep(''); setEndMatchNote(''); }}
+        />
+      ) : null}
+      {leaveAsk ? (
+        <ConfirmDialog
+          title="저장 안 된 입력이 있습니다"
+          message={<p>서버에 아직 못 보낸 입력이 {unsentCount}건 있습니다. 나가도 이 기기에 남아 있고, 이 경기를 다시 열면 이어서 보냅니다.</p>}
+          confirmLabel="나가기"
+          onConfirm={() => answerLeave(true)}
+          onCancel={() => answerLeave(false)}
+        />
+      ) : null}
+      {discardFailedAsk ? (
+        <ConfirmDialog
+          title="저장 실패한 입력을 지울까요?"
+          message={<p>서버가 받지 않은 입력 {inputs.failedCount}건을 이 기기에서 지웁니다. 되돌릴 수 없습니다.</p>}
+          confirmLabel="지우기"
+          onConfirm={() => { inputs.discard((item) => !!item.failed); setDiscardFailedAsk(false); }}
+          onCancel={() => setDiscardFailedAsk(false)}
+        />
+      ) : null}
+      {resetConfirm ? (
+        <ConfirmDialog
+          title={resetConfirm.live ? '경기가 진행 중입니다' : '이 경기 기록을 모두 삭제할까요?'}
+          message={<p>{resetConfirm.live
+            ? '시계가 돌고 있습니다. 그래도 삭제하면 공격 방향·슈팅 기록이 모두 지워집니다. 되돌릴 수 없습니다.'
+            : '공격 방향·슈팅 기록이 모두 지워집니다. 되돌릴 수 없습니다.'}{(() => {
+              const n = inputs.items.filter((item) => item.kind === 'lane' || item.kind === 'shot').length;
+              return n ? ` 아직 저장 중인 기록 ${n}건도 함께 지웁니다.` : '';
+            })()}</p>}
+          busy={isResettingEvents}
+          onConfirm={() => void confirmResetEvents()}
+          onCancel={() => setResetConfirm(null)}
+        />
+      ) : null}
       {/* 분석(경기 타이머) 진행 중 전체화면 네온 글로우 — 시작됐음을 시각적으로 알린다. */}
       {running ? <div className="live-neon-overlay" aria-hidden /> : null}
       <header className="fla-match-heading">
-        <div><div className="row fla-match-context"><Link className="button-link button-compact btn-secondary fla-back-link" href="/admin/dashboard">← 대시보드</Link><span className="status-pill">{match?.competition_class || 'FLA'}</span>{match?.metadata?.design_preview ? <span className="status-pill tech">로컬 예시 경기</span> : null}<span className="muted">{isArchived ? '보관 경기 · 읽기 전용' : canWrite ? '기록 가능' : '읽기 전용'}</span></div><h2>{matchTeams ? `${matchTeams.homeTeam} vs ${matchTeams.awayTeam}` : match?.name || '경기 불러오는 중…'}</h2></div>
+        <div><div className="row fla-match-context"><Link className="button-link button-compact btn-secondary fla-back-link" href="/admin/dashboard">← 운영 현황</Link><span className="status-pill chip-tag">{match?.competition_class || 'FLA'}</span>{match?.metadata?.design_preview ? <span className="status-pill tech chip-tag">로컬 예시 경기</span> : null}<span className="muted">{isArchived ? '보관 경기 · 읽기 전용' : canWrite ? '기록 가능' : '읽기 전용'}</span>{inputs.pendingCount ? <span className="muted fla-sync-count" role="status">저장 대기 {inputs.pendingCount}건</span> : null}{canWrite && !isArchived ? <button type="button" className="btn-danger fla-end-match" onClick={() => setEndMatchStep('confirm')}>경기 종료</button> : null}</div><h2>{matchTeams ? `${matchTeams.homeTeam} vs ${matchTeams.awayTeam}` : match?.name || '경기 불러오는 중…'}</h2></div>
       </header>
           <details ref={setupRef} className="card fla-setup" id="match-setup"><summary>명단 · 운영권 · 데이터 내보내기</summary>
       <div className="row fla-setup-content" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div className="grid" style={{ gap: 6 }}>
           <div className="match-meta-group">
 
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : 'warning'}`}>
+            <span className={`meta-chip chip-tag ${streamMode === 'STREAM' ? 'tech' : 'warning'}`}>
               mode: {streamMode === 'MANUAL' ? 'Manual Field Mode' : 'Stream + HLS'}
             </span>
             {streamMode === 'STREAM' ? <>
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+            <span className={`meta-chip chip-tag ${streamMode === 'STREAM' ? 'tech' : ''}`}>
               RTMP 서버: {rtmpServer || '미설정'}
             </span>
-            <span className={`meta-chip ${streamMode === 'STREAM' ? 'tech' : ''}`}>
+            <span className={`meta-chip chip-tag ${streamMode === 'STREAM' ? 'tech' : ''}`}>
               스트림 키: {streamKey || '미설정'}
             </span>
             </> : null}
@@ -1409,7 +1623,7 @@ function MatchControlPage() {
             <button className="btn-secondary" onClick={() => copyText(pushUrl, 'Push URL')} disabled={!pushUrl}>Copy Full URL</button>
           </div>
           ) : null}
-          {copyMessage ? <div className="muted">{copyMessage}</div> : null}
+          {copyMessage ? <div className="muted">{copyMessage}<ErrorFold message={copyMessage} /></div> : null}
         </div>
         <div className="match-hero-actions">
           <div className="row" style={{ justifyContent: 'flex-end' }}>
@@ -1470,17 +1684,31 @@ function MatchControlPage() {
       <LineupUniforms lineup={match?.metadata?.lineups} />
 
           </details>
-      {loadError ? <div className="fla-feedback" role="alert">{loadError}</div> : null}
-      {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}</span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
+      {loadError ? <div className="fla-feedback" role="alert"><span>{loadError}<ErrorFold message={loadError} /></span></div> : null}
+      {inputs.blocked ? <div className="fla-feedback" role="alert"><span>1분 넘게 서버에 저장하지 못했습니다. 입력은 이 기기에 남아 있고, 연결되면 자동으로 보냅니다.</span></div> : null}
+      {inputs.failedCount ? <div className="fla-feedback" role="alert"><span>서버가 받지 않은 입력 {inputs.failedCount}건이 있습니다.</span><button className="btn-secondary button-compact" style={{ padding: '0 10px' }} onClick={inputs.retryFailed}>다시 보내기</button><button className="btn-secondary button-compact" style={{ padding: '0 10px' }} onClick={() => setDiscardFailedAsk(true)}>지우기</button></div> : null}
+      {inputs.storageError ? <div className="fla-feedback" role="alert"><span>브라우저 저장소를 쓸 수 없습니다. 저장 대기가 0건이 될 때까지 이 화면을 닫지 마세요.</span></div> : null}
+      {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}<ErrorFold message={controlNotice} /></span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
       <section className="card fla-clock" aria-label="경기 타이머">
         <div className="fla-clock-main"><div><span className="muted">{running ? '진행 중' : '일시정지'}</span><strong className="fla-clock-value">{displayClockLabel(clockMs)}{clockSpeed === 2 ? ' ×2' : ''}</strong></div>
+          {displaySummary?.score ? (
+            <div
+              className="fla-scoreboard"
+              aria-label={`현재 점수 ${matchTeams?.homeTeam || '홈'} ${displaySummary.score.home} 대 ${displaySummary.score.away} ${matchTeams?.awayTeam || '원정'}`}
+              title={`${matchTeams?.homeTeam || '홈'} ${displaySummary.score.home} : ${displaySummary.score.away} ${matchTeams?.awayTeam || '원정'}`}
+            >
+              <span className="team">{matchTeams?.homeTeam || '홈'}</span>
+              <strong className="home">{displaySummary.score.home}</strong><span className="sep">:</span><strong className="away">{displaySummary.score.away}</strong>
+              <span className="team">{matchTeams?.awayTeam || '원정'}</span>
+            </div>
+          ) : null}
           <div className="fla-period-controls" role="group" aria-label={isSinglePeriod ? "단일 경기" : "전후반 선택"}>
             <button className="btn-secondary" onClick={startFirstHalf} disabled={!canWrite}>{isSinglePeriod ? '경기 00:00' : '전반 00:00'}</button>
             {!isSinglePeriod ? <button className="btn-secondary" onClick={markSecondHalfStart} disabled={!canWrite}>후반 시작</button> : <span className="muted">전후반 없음 · {match?.first_half_minutes}분</span>}
           </div>
           <button className={running ? 'btn-secondary' : 'btn-primary'} onClick={(e) => { e.currentTarget.blur(); toggleRun(); }} disabled={!canWrite}>{running ? '일시정지' : '경기 시작'}</button>
         </div>
-        <details className="fla-clock-settings"><summary>{isSinglePeriod ? '시간 보정' : '시간 보정 · 연장 설정'}</summary><div className="grid">
+        <details className="fla-clock-settings"><summary>{isSinglePeriod ? '시간 보정' : '시간 보정 · 연장 설정'}{forgotSecondHalf ? <span className="fla-half-hint" role="status">후반 시작을 누르셨나요?</span> : null}</summary><div className="grid">
             {canUseX2 ? (
               <div className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
                 <button className={clockSpeed === 1 ? 'btn-active' : 'btn-secondary'} onClick={() => changeClockSpeed(1)} disabled={!canWrite}>
@@ -1539,21 +1767,12 @@ function MatchControlPage() {
           <MatchAttackCard attackLR={attackLR} selectedTeam={selectedTeam} pendingLane={pendingLane} matchTeams={matchTeams} summary={summary} canWrite={canWrite} changeAttackDirection={changeAttackDirection} selectEventTeam={selectEventTeam} setPendingLane={setPendingLane} sendLane={sendLane} />
         </section>
         <section className="fla-shots" aria-label="슈팅 입력">
-          <MatchShotCard isFutsal={isFutsal} xgTeam={xgTeam} setXgTeam={setXgTeam} xgPlayerKey={xgPlayerKey} setXgPlayerKey={setXgPlayerKey} xgPlayerOptions={xgPlayerOptions} isOnTargetShot={isOnTargetShot} setIsOnTargetShot={setIsOnTargetShot} isGoalShot={isGoalShot} setIsGoalShot={setIsGoalShot} isHeaderShot={isHeaderShot} setIsHeaderShot={setIsHeaderShot} isOwnGoal={isOwnGoal} setIsOwnGoal={setIsOwnGoal} shotPoint={shotPoint} goalmouthPoint={goalmouthPoint} canWrite={canWrite} canRecord={canWrite && !!shotPoint && (isOwnGoal || !isOnTargetShot || !!goalmouthPoint)} xgValue={xgValue} setXgValue={setXgValue} xgotValue={xgotValue} estimateXgFromPitch={estimateXgFromPitch} estimateXgotFromGoalmouth={estimateXgotFromGoalmouth} submitXg={submitXg} isSavingShot={isSavingShot} onGoalmouthClick={onGoalmouthClick} onPitchClick={onPitchClick} xgEstimateMeta={xgEstimateMeta} xgotEstimateMeta={xgotEstimateMeta} />
-          {shots.notice ? <p role="status" className="muted">{shots.notice}</p> : null}
-          {shots.storageError ? <p role="alert">브라우저 임시 저장소를 사용할 수 없습니다. 슈팅 저장이 확인될 때까지 이 화면을 닫지 마세요.</p> : null}
-          {shots.pending.length ? <div className="card grid" aria-label="저장 확인 대기 슈팅">
-            <strong>저장 확인 대기 · {shots.pending.length}건</strong>
-            {shots.pending.map(item=><div className="row" key={item.event_id}>
-              <span>{displayClockLabel(item.clock_ms)} · {item.team==='HOME'?'홈':'어웨이'} · {item.is_own_goal?'자책골':item.is_goal?'골':'슈팅'}</span>
-              <button disabled={!canWrite||shots.busy.includes(item.event_id)} onClick={()=>void shots.retry(item)}>{shots.busy.includes(item.event_id)?'저장 확인 중…':'원래 기록 재시도'}</button>
-            </div>)}
-          </div> : null}
+          <MatchShotCard isFutsal={isFutsal} xgTeam={xgTeam} setXgTeam={setXgTeam} xgPlayerKey={xgPlayerKey} setXgPlayerKey={setXgPlayerKey} xgPlayerOptions={xgPlayerOptions} isOnTargetShot={isOnTargetShot} setIsOnTargetShot={setIsOnTargetShot} isGoalShot={isGoalShot} setIsGoalShot={setIsGoalShot} isHeaderShot={isHeaderShot} setIsHeaderShot={setIsHeaderShot} isOwnGoal={isOwnGoal} setIsOwnGoal={setIsOwnGoal} shotPoint={shotPoint} goalmouthPoint={goalmouthPoint} canWrite={canWrite} canRecord={canWrite && !!shotPoint && (isOwnGoal || !isOnTargetShot || !!goalmouthPoint)} xgValue={xgValue} setXgValue={setXgValue} xgotValue={xgotValue} estimateXgFromPitch={estimateXgFromPitch} estimateXgotFromGoalmouth={estimateXgotFromGoalmouth} submitXg={submitXg} isSavingShot={false} onGoalmouthClick={onGoalmouthClick} onPitchClick={onPitchClick} xgEstimateMeta={xgEstimateMeta} xgotEstimateMeta={xgotEstimateMeta} />
 
 
         </section>
         <section className="fla-review grid" aria-label="경기 기록">
-          <MatchRecentRecords summary={summary} canWrite={canWrite} isResettingEvents={isResettingEvents} resetEvents={resetEvents} displayClockLabel={displayClockLabel} />
+          <MatchRecentRecords summary={displaySummary} canWrite={canWrite} isResettingEvents={isResettingEvents} resetEvents={resetEvents} displayClockLabel={displayClockLabel} />
           <MatchPossessionTimeline possessionLogs={possessionLogs} downloadPossessionCsv={downloadPossessionCsv} resetPossessionLogView={resetPossessionLogView} />
             {/* 하이라이트 — 점유 타임라인 옆. 운영자 전원에게 열지 않고 SUPERADMIN 에게만
                 보인다: 이 기록은 하이라이트 제작으로 곧장 이어지는 것이라, 경기 입력과
@@ -1578,7 +1797,7 @@ function MatchControlPage() {
                     로그 저장 (.json)
                   </button>
                 </div>
-                {hlNotice ? <span role="status" className="muted">{hlNotice}</span> : null}
+                {hlNotice ? <span role="status" className="muted">{hlNotice}<ErrorFold message={hlNotice} /></span> : null}
                 {pendingHighlights.length ? (
                   <div role="alert" className="grid" style={{ gap: 6 }}>
                     <strong>저장 미확인 {pendingHighlights.length}개</strong>
@@ -1629,18 +1848,27 @@ function MatchControlPage() {
 
         </section>
         <section className="fla-settings grid" aria-label="경기 설정">
+          {/* 중계 데이터 미리보기 — 축구만(중계 그래픽은 축구 경기에서만 만든다). 접혀 있으면 요청 0건. */}
+          {match && (match.sport || 'FOOTBALL') === 'FOOTBALL' ? <BroadcastPreviewPanel matchId={id} match={match} /> : null}
 
-      <div className="card card-utility">
-        <h3>데이터 전송 상태</h3>
-        <div className="grid">
-          {outbox.slice(0, 20).map((o) => (
-            <div key={o.id} className="row" style={{ justifyContent: 'space-between' }}>
-              <span>{o.kind} attempts={o.attempts}</span>
-              <span className="muted">{o.last_error || 'pending/scheduled'}</span>
+      {isSuperuser ? (() => {
+        // 협업사 전송(웹훅) 상태 — 이 경기 것만, 접어서 둔다. 오류 원문은 펼쳤을 때만 보인다.
+        const rows = outbox.filter((o) => !o.match_id || o.match_id === id);
+        const failed = rows.filter((o) => o.last_error).length;
+        return (
+          <details className="card card-utility fla-delivery">
+            <summary>데이터 전송 상태 · 대기 {rows.length - failed}건 · 실패 {failed}건</summary>
+            <div className="grid">
+              {rows.length ? rows.slice(0, 20).map((o) => (
+                <div key={o.id} className="row" style={{ justifyContent: 'space-between' }}>
+                  <span>{o.kind === 'EVENT' ? '기록' : o.kind === 'STATE' ? '시계·점유' : o.kind} · {o.attempts}회 시도</span>
+                  <span className="muted">{o.last_error ? <>전송 실패 · 자동으로 다시 보냅니다<ErrorFold info={{ message: '', raw: o.last_error, context: { '전송 ID': o.id } }} /></> : '전송 대기'}</span>
+                </div>
+              )) : <span className="muted">이 경기에서 보낼 것이 없습니다</span>}
             </div>
-          ))}
-        </div>
-      </div>
+          </details>
+        );
+      })() : null}
         </section>
       </div>
       {isManualLineupOpen ? (

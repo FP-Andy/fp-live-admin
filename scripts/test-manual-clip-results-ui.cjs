@@ -78,12 +78,12 @@ const matches = () => [
     });
 
     await page.goto(origin + '/admin/highlight/results', { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: '클립결과에 등록', exact: true }).click();
-    await page.getByRole('link', { name: '클립결과에서 분석', exact: true }).waitFor();
+    await page.getByRole('button', { name: '클립 검수·전송에 등록', exact: true }).click();
+    await page.getByRole('link', { name: '클립 검수·전송에서 분석', exact: true }).waitFor();
     assert.equal(registrationRequests, 1);
     assert(await page.getByRole('link', { name: '합본 다운로드', exact: true }).isVisible());
     await page.screenshot({ path: output + '/manual-results.png', fullPage: true });
-    await page.getByRole('link', { name: '클립결과에서 분석', exact: true }).click();
+    await page.getByRole('link', { name: '클립 검수·전송에서 분석', exact: true }).click();
     await page.getByRole('button', { name: '상세', exact: true }).first().waitFor();
     assert(jobClipRequests > 0);
     assert.equal(await page.getByRole('button', { name: /FinePlay로 전송/ }).count(), 0);
@@ -129,16 +129,16 @@ const matches = () => [
     await page.goto(origin + '/admin/highlight/results', { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '연결 재시도', exact: true }).waitFor();
     assert(await page.getByRole('link', { name: '합본 다운로드', exact: true }).isVisible());
-    assert(await page.getByRole('link', { name: '클립결과에서 분석', exact: true }).isVisible());
+    assert(await page.getByRole('link', { name: '클립 검수·전송에서 분석', exact: true }).isVisible());
     await page.getByRole('button', { name: '연결 재시도', exact: true }).click();
-    await page.getByText('클립결과 등록 완료 · 2개', { exact: true }).waitFor();
+    await page.getByText('클립 검수·전송 등록 완료 · 2개', { exact: true }).waitFor();
     registration = { status: 'running', completed: 0, total: 2 };
     await page.reload({ waitUntil: 'networkidle' });
     assert(!(await page.getByRole('button', { name: '연결 다시 요청', exact: true }).isDisabled()));
 
     await page.evaluate(() => localStorage.setItem('fineplay.selectedSport', 'BASKETBALL'));
     await page.reload({ waitUntil: 'networkidle' });
-    assert.equal(await page.getByRole('button', { name: /클립결과에 등록|연결 다시 요청|연결 재시도/ }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: /클립 검수·전송에 등록|연결 다시 요청|연결 재시도/ }).count(), 0);
     assert.deepEqual(errors, []);
     console.log('PASS: manual registration → existing clip detail/dual launch, MP4 pending/attachment/error, FinePlay controls preserved, retry and basketball isolation');
   } finally {

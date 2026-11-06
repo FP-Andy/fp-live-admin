@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { API_BASE, apiJson } from '../../../../../lib/api';
+import { errorMessage, responseMessage } from '../../../../../lib/error-messages';
+import { ErrorFold } from '../../../../../components/ErrorNotice';
 import type { BroadcastFullscreenGraphic, BroadcastGraphic, BroadcastSnapshot, BroadcastState } from '../../../../../components/live-coder/types';
 
 const ANALYSIS_OPTIONS: Array<{ value: BroadcastGraphic; label: string }> = [
@@ -76,7 +78,7 @@ export default function LiveCoderMatchPage() {
         const data = await apiJson<BroadcastSnapshot>(`/broadcast/matches/${id}/snapshot`);
         if (active) setSnapshot(data);
       } catch (error) {
-        if (active) setStatus(error instanceof Error ? error.message : 'Snapshot unavailable');
+        if (active) setStatus(errorMessage(error, '중계 데이터를 불러오지 못했습니다. 3초 뒤 다시 시도합니다.', { fixed: true }));
       }
     };
     tick();
@@ -113,7 +115,7 @@ export default function LiveCoderMatchPage() {
   const setClock = async () => {
     const clock_ms = parseClockInput(clockInput);
     if (clock_ms == null) {
-      setStatus('Clock format should be MM:SS or HH:MM:SS');
+      setStatus('시간은 분:초 형식으로 입력해 주세요. (예: 45:00)');
       return;
     }
     await updateState({ clock_ms } as Partial<BroadcastState>);
@@ -135,7 +137,7 @@ export default function LiveCoderMatchPage() {
       body,
     });
     if (!response.ok) {
-      setStatus(await response.text() || 'Logo upload failed');
+      setStatus(await responseMessage(response, 'Logo upload failed'));
       return;
     }
     const next = await response.json() as BroadcastState;
@@ -155,7 +157,7 @@ export default function LiveCoderMatchPage() {
       body,
     });
     if (!response.ok) {
-      setStatus(await response.text() || 'Fullscreen image upload failed');
+      setStatus(await responseMessage(response, 'Fullscreen image upload failed'));
       return;
     }
     const next = await response.json() as BroadcastState;
@@ -175,10 +177,10 @@ export default function LiveCoderMatchPage() {
   }, [now, snapshot]);
 
   return (
-    <main className="page-stack live-coder-page">
+    <main className="page-stack live-coder-page console-flat">
       <section className="card card-hero live-coder-hero">
         <div>
-          <span className="status-pill tech">OBS Overlay Pack</span>
+          <span className="status-pill tech chip-tag">OBS Overlay Pack</span>
           <h2>{snapshot?.match.name || 'Live Coder'}</h2>
           <div className="live-coder-hero-urls">
             {Object.entries(overlayUrls).map(([label, url]) => (
@@ -400,7 +402,7 @@ export default function LiveCoderMatchPage() {
             </div>
             <iframe className="live-coder-inline-preview" title="fullscreen preview" src={`/overlay/football/${id}/fullscreen`} />
           </div>
-          {status ? <p className="muted">{status}</p> : null}
+          {status ? <><p className="muted">{status}</p><ErrorFold message={status} /></> : null}
         </div>
 
       </section>

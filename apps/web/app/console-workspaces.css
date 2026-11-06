@@ -98,7 +98,7 @@
 .console-empty { display: grid; justify-items: start; gap: 12px; padding: 28px; background: #ffffff03; border: 1px dashed var(--border-soft); border-radius: 12px; color: var(--text-secondary); }
 .console-empty > div { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .console-feedback { display: flex; align-items: center; gap: 16px; justify-content: space-between; padding: 16px; border: 1px solid #2158e860; border-radius: 10px; background: #2158e812; }
-.console-workflow { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)) auto; gap: 8px; }
+.console-workflow { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)) auto auto; gap: 8px; }
 .console-workflow a { display: flex; align-items: center; gap: 10px; padding: 14px 16px; text-decoration: none; color: var(--text-secondary); background: #13161c; border: 1px solid var(--border-soft); border-radius: 10px; font-weight: 600; font-size: 15px; }
 .console-workflow a > span { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-content: center; border-radius: 50%; background: #ffffff09; color: var(--muted); font-size: 13px; }
 .console-workflow a[aria-current="page"] { border-color: #2158e8; color: #d4dfff; background: #2158e817; }
@@ -284,3 +284,97 @@
   .model-slot-picker { display: none; }
   .templates-page .fcm-template-grid > .page-stack > section:first-child .fcm-template-form-row { grid-template-columns: 1fr 1.5fr 1fr; }
 }
+
+/* FLA 매치 컨트롤 — 현재 점수판. 시계 옆에 둬서 경기 중 고개를 돌리지 않고 본다.
+   원칙: 점수판 때문에 진행 중 카드가 세로로 길어지면 안 된다(11-03 승준). 점수판은 원래 있던 줄의
+   빈 공간에만 들어가고, 폭이 모자라면 줄을 늘리는 대신 스스로 줄어든다 — 팀 이름을 숨기고 숫자만 남긴다.
+   이름이 빠져도 어느 팀 점수인지 알 수 있게 숫자를 팀 색(홈 주황·원정 파랑)으로 칠한다. */
+.fla-clock { container-type: inline-size; container-name: flaclock; }
+.fla-clock-value { white-space: nowrap; }
+.fla-scoreboard { display: inline-flex; flex-direction: row; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 10px; min-width: 0; padding: 8px 14px; border-radius: 10px; background: var(--surface-card-strong); white-space: nowrap; }
+.fla-scoreboard .team { color: var(--muted); font-size: 14px; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.fla-scoreboard strong { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+.fla-scoreboard strong.home { color: #ff8a3d; }
+.fla-scoreboard strong.away { color: #6f9bff; }
+.fla-scoreboard .sep { color: var(--muted); font-size: 22px; }
+
+/* 넓은 화면 — 한 줄. 시계는 줄지 않고, 점수판만 남는 폭을 받아 줄어든다. */
+@media (min-width: 761px) {
+  .fla-clock-main { display: flex; flex-wrap: nowrap; align-items: center; gap: 16px; }
+  .fla-clock-main > :first-child { flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+  .fla-clock-main > .fla-scoreboard { flex: 1 1 auto; margin-left: auto; max-width: max-content; overflow: hidden; }
+  .fla-clock-main > .fla-period-controls { flex: 0 0 auto; flex-wrap: nowrap; }
+  .fla-clock-main > button { flex: 0 0 auto; }
+}
+
+/* 좁은 화면 — 시계와 시작 버튼 사이 빈자리에 넣는다(새 줄을 만들지 않는다). */
+@media (max-width: 760px) {
+  .fla-clock-main { grid-template-columns: minmax(0, 1fr) auto auto; }
+  /* 테마의 좁은 화면 규칙(.fla-clock-main > div { display: grid })이 점수판까지 세로로 쌓지 않게 한다. */
+  .fla-clock-main > div.fla-scoreboard { display: inline-flex; grid-row: 1; grid-column: 2; align-self: center; padding: 6px 10px; gap: 6px; }
+  .fla-clock-main > button { grid-row: 1; grid-column: 3; }
+  .fla-clock-main > .fla-scoreboard .team { display: none; }
+  .fla-clock-main > .fla-scoreboard strong { font-size: 24px; }
+}
+
+/* 카드 폭 기준으로 팀 이름을 먼저 뺀다 — 사이드바가 열린 좁은 창에서도 한 줄을 지킨다. */
+@container flaclock (max-width: 900px) {
+  .fla-scoreboard .team { display: none; }
+  .fla-scoreboard { padding: 6px 12px; gap: 6px; }
+}
+
+/* 되돌릴 수 없는 삭제 — 자주 누르는 버튼과 같은 모양이면 안 된다. 작은 글씨 링크로 떼어 둔다. */
+.btn-link-danger { padding: 2px 4px; border: 0; background: transparent; color: var(--danger, #ff6b6b); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.btn-link-danger:disabled { opacity: .4; cursor: default; }
+/* 최근 기록 — 한 줄 25px 고정(줄바꿈 없이 말줄임), 제목 줄 높이 고정. 기록 수가 같으면 카드 높이도 같다. */
+.fla-records-head { display: flex; align-items: center; gap: 10px; height: 36px; }
+.fla-records-filters { display: flex; gap: 4px; margin-right: auto; }
+.fla-records-filters button { min-height: 0; height: 24px; padding: 0 8px; font-size: 12px; line-height: 24px; }
+.fla-record { display: grid; grid-template-columns: auto 52px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; height: 25px; line-height: 25px; padding: 0 6px; border-radius: 4px; white-space: nowrap; }
+.fla-record > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fla-record .clock { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 52px; }
+.fla-record .team { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text-secondary, var(--muted)); }
+.fla-record .team::before { content: ''; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.fla-record.home .team::before { background: #ff8a3d; }
+.fla-record.away .team::before { background: #6f9bff; }
+.fla-record .what b { font-weight: 600; }
+.fla-record .who { margin-left: 6px; color: var(--muted); }
+.fla-record .nums { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+/* 골 — 왼쪽 색 막대 없이(둥근 줄 위에서 'ㄷ'자로 보인다) 바탕 한 톤 + 굵은 글자로만. */
+.fla-record.goal { background: var(--surface-card-strong); }
+.fla-record.goal .what b { font-weight: 800; }
+.fla-record-empty { height: 25px; line-height: 25px; }
+/* 슈팅 계열은 알약으로 — 공격 방향 줄(글자만)과 한눈에 갈린다(11-04 승준: 더 크게·잘 보이게).
+   높이 21px 이라 25px 줄 높이는 그대로. 슈팅 = 진회색 면, 유효슈팅 = 파랑 면, 골 = 흰 면(화이트 모드는 검정 면). */
+.fla-record-tag { display: inline-flex; align-items: center; height: 21px; padding: 0 10px; border-radius: 999px; border: 1px solid #6b7486; background: #3a4252; color: #fff; font-size: 14px; font-weight: 800; line-height: 19px; vertical-align: 0; letter-spacing: .01em; }
+.fla-record-tag.on { border-color: #6f93f0; background: #2f5bd3; color: #fff; }
+.fla-record-tag.goal { border-color: #f3f4f7; background: #f3f4f7; color: #111318; }
+.fla-record.lane .nums { font-size: 12px; letter-spacing: .04em; }
+html[data-console-theme="light"] .fla-record-tag { border-color: #59616f; background: #59616f; color: #fff; }
+html[data-console-theme="light"] .fla-record-tag.on { border-color: #2158e8; background: #2158e8; color: #fff; }
+html[data-console-theme="light"] .fla-record-tag.goal { border-color: #17191e; background: #17191e; color: #fff; }
+/* 저장 대기 표시 — 줄 높이(25px)는 그대로 두고 글씨만 작게 붙인다. */
+.fla-record .fla-record-sync { margin-left: 8px; font-style: normal; font-size: 12px; color: var(--muted); }
+.fla-record .fla-record-sync.failed { color: #f59e0b; }
+.fla-sync-count { font-size: 13px; font-variant-numeric: tabular-nums; }
+.match-actions .match-delete { margin-left: 6px; padding-left: 10px; border-left: 1px solid var(--border-soft); border-radius: 0; text-decoration: none; }
+.match-actions .match-delete:hover { text-decoration: underline; }
+
+/* 데이터 전송 상태(관리자 전용) — 접어 두고 요약 한 줄만 보인다. */
+.fla-delivery > summary { cursor: pointer; font-weight: 600; }
+.fla-delivery[open] > summary { margin-bottom: 10px; }
+
+/* 되돌릴 수 없는 작업 확인 창(ConfirmDialog) */
+.confirm-dialog h3 { margin: 0; }
+.confirm-dialog-message p { margin: 0; line-height: 1.6; color: var(--text-secondary, var(--muted)); }
+.confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* 경기 종료 — 머리줄 오른쪽 끝. 시계 버튼들과 떨어뜨려 잘못 누르지 않게 한다. */
+.fla-match-context .fla-end-match { margin-left: auto; min-height: 36px; padding: 0 14px; font-weight: 700; }
+/* 후반 시작 알림 — "시간 보정" 줄 안에 한 줄로(카드 높이를 바꾸지 않는다). */
+.fla-clock-settings > summary .fla-half-hint { margin-left: 12px; color: #ffb14a; font-weight: 600; white-space: nowrap; }
+
+/* 대시보드 경기 검색 — 대회 필터 옆. 좁은 화면에서는 한 줄을 다 쓴다. */
+.console-dashboard .dashboard-filter-search { flex: 1 1 200px; min-width: 160px; max-width: 280px; margin-left: auto; }
+.console-dashboard .dashboard-filter-search input { width: 100%; }
+@media (max-width: 760px) { .console-dashboard .dashboard-filter-search { max-width: none; flex-basis: 100%; } }

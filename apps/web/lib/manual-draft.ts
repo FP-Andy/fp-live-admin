@@ -73,7 +73,7 @@ export function parseManualWork(raw: string, allowedKinds: string[]): SavedWork 
       || !finite(tag.t) || tag.t < 0 || (tag.kind !== undefined && !allowedKinds.includes(tag.kind))
       || (tag.label !== undefined && typeof tag.label !== 'string')
       || ['before', 'after'].some((key) => tag[key] !== undefined && (!finite(tag[key]) || tag[key] < 0))) {
-      throw new Error('태그의 시각·종류·식별자를 확인하세요.');
+      throw new Error('태그 시각·종류를 확인하세요.');
     }
     ids.add(tag.id);
   }
@@ -81,7 +81,7 @@ export function parseManualWork(raw: string, allowedKinds: string[]): SavedWork 
     ...value, padBefore: value.padBefore ?? 10, padAfter: value.padAfter ?? 3,
     clipTransition: typeof value.clipTransition === 'boolean' ? value.clipTransition : true,
   };
-  if (![work.padBefore, work.padAfter].every((n) => finite(n) && n >= 0)) throw new Error('패딩 값이 올바르지 않습니다.');
+  if (![work.padBefore, work.padAfter].every((n) => finite(n) && n >= 0)) throw new Error('클립 앞·뒤 초가 올바르지 않습니다.');
   for (const key of ['introDuration', 'musicVolume', 'originalVolume']) {
     if (value[key] !== undefined && (!finite(value[key]) || value[key] < 0 || value[key] > (key === 'introDuration' ? 15 : 200))) {
       throw new Error('인트로 길이 또는 음악 볼륨을 확인하세요.');
@@ -93,7 +93,7 @@ export function parseManualWork(raw: string, allowedKinds: string[]): SavedWork 
     throw new Error('점수판 설정이 올바르지 않습니다.');
   }
   if (value.watermark !== undefined && !fields(value.watermark, [], ['sizePct', 'opacity', 'posX', 'posY'], ['enabled'], ['posPxX', 'posPxY'])) {
-    throw new Error('워터마크 설정이 올바르지 않습니다.');
+    throw new Error('우리 로고 설정이 올바르지 않습니다.');
   }
   if (value.cards !== undefined) {
     const cards = value.cards;

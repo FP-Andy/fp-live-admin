@@ -191,14 +191,14 @@ export default function FpaSettingsPage() {
   const filteredGroups = actionGroups.filter(group => category === 'ALL' || group.title === category).map(group => ({ ...group, rows: group.rows.filter(row => row.join(' ').toLowerCase().includes(query.trim().toLowerCase())) })).filter(group => group.rows.length);
 
   return (
-    <main className="page-stack console-page code-guide-page">
+    <main className="page-stack console-page code-guide-page console-flat">
       <section className="card card-panel grid">
         <div className="section-heading">
           <div>
             <div className="sidebar-eyebrow">FPA Workspace</div>
             <h2 style={{ margin: 0 }}>Code Guide</h2>
           </div>
-          <span className="status-pill tech">Manual</span>
+          <span className="status-pill tech chip-tag">Manual</span>
         </div>
         <div className="muted">
           액션 코드를 검색하거나 입력 규칙과 태그, 점수 산식을 확인하세요.

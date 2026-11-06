@@ -31,7 +31,7 @@ let browser,page;
  await page.getByRole('button',{name:'영상 재생 정지',exact:true}).click();
  await page.getByRole('button',{name:'저장 다시 시도',exact:true}).waitFor();
  await page.getByRole('button',{name:'저장 다시 시도',exact:true}).click();
- await page.waitForFunction(()=>document.querySelector('.fv-error')?.textContent.includes('Failed to fetch'));
+ await page.waitForFunction(()=>document.querySelector('.fv-error')?.textContent.includes('서버에 연결하지 못했습니다'));
  const first=requests[0];assert(first.segments.length);assert(requests.length>=2);requests.forEach(p=>assert.deepEqual(p,first));
  await page.reload();await page.getByRole('button',{name:'저장 다시 시도',exact:true}).waitFor();
  const retryAt=requests.length;

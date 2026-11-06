@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
@@ -24,7 +25,7 @@ from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header,
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import desc, inspect, or_, text
+from sqlalchemy import desc, func, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 import os
@@ -51,7 +52,15 @@ from .auth import (
     session_user_id as _get_authenticated_user_id,
 )
 from .db import Base, SessionLocal, engine, get_db
-from .fcm_cards import GOALKEEPER_TEMPLATE_PATH, TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
+from .fcm_cards import (
+    GOALKEEPER_TEMPLATE_PATH,
+    TEMPLATE_DIR,
+    build_card_image,
+    build_cards_zip,
+    find_template_path,
+    render_player_maps,
+)
+from .fcm_stats import normalize_position, position_from_slot, select_player_stats
 from .xgot import estimate_xgot as _estimate_xgot
 from .fpa import (
     analyze_card_workbook,
@@ -364,6 +373,144 @@ def _fcm_workbook_path(match_id: UUID, team_side: str) -> Path:
 def _fcm_shared_workbook_path(match_id: UUID) -> Path:
     FCM_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     return FCM_RUNTIME_DIR / f"{match_id}_shared.xlsx"
+
+
+def _fcm_card_workbook_source(match_id: UUID, team_side: str) -> tuple[Path | None, str | None]:
+    """카드 생성과 데이터 제출 미리보기가 같이 쓰는 데이터 파일 선택 규칙.
+
+    팀별 파일(그 팀을 고른 상태에서 올린 파일·반영한 FPA 로그)이 있으면 그것, 없으면 공용 파일.
+    돌려주는 kind 는 'team' | 'shared', 파일이 없으면 (None, None).
+    """
+    team_path = _fcm_workbook_path(match_id, team_side)
+    if team_path.exists():
+        return team_path, "team"
+    shared_path = _fcm_shared_workbook_path(match_id)
+    if shared_path.exists():
+        return shared_path, "shared"
+    return None, None
+
+
+def _fcm_workbook_meta_path(workbook_path: Path) -> Path:
+    return workbook_path.with_name(f"{workbook_path.stem}.meta.json")
+
+
+def _write_fcm_workbook(workbook_path: Path, workbook: bytes, *, origin: str, filename: str | None = None) -> None:
+    """FCM 워크북을 쓰고 옆에 출처 메타({origin, filename, written_at})를 남긴다.
+
+    미리보기가 "사용한 데이터: FPA 로그 반영(시각)" / "업로드 파일 이름(날짜)"를 보여 준다.
+    메타는 워크북보다 먼저 쓴다 — 미리보기 캐시 키가 워크북 mtime 이라 순서가 바뀌어도 그림은 맞다.
+    """
+    meta = {
+        "origin": origin,
+        "filename": (filename or "").strip() or None,
+        "written_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        _fcm_workbook_meta_path(workbook_path).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    workbook_path.write_bytes(workbook)
+
+
+def _read_fcm_workbook_meta(workbook_path: Path) -> dict[str, Any] | None:
+    try:
+        meta = json.loads(_fcm_workbook_meta_path(workbook_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _store_fcm_uploaded_workbook(match_id: UUID, workbook: bytes, team_side: str | None, filename: str | None) -> None:
+    """파일 업로드: 공용 파일 + (팀을 골랐으면) 그 팀의 팀별 파일."""
+    side = _normalize_fcm_team_side(team_side) if team_side else None
+    _write_fcm_workbook(_fcm_shared_workbook_path(match_id), workbook, origin="upload", filename=filename)
+    if side:
+        _write_fcm_workbook(_fcm_workbook_path(match_id, side), workbook, origin="upload", filename=filename)
+
+
+def _store_fcm_fpa_log_workbook(match_id: UUID, workbook: bytes, team_side: str | None) -> None:
+    """FPA 로그 반영: 공용 파일 + 선택 팀의 팀별 파일을 새 로그 워크북으로 바꾼다.
+
+    팀별 파일이 공용 파일보다 앞서므로, 예전에 그 팀으로 올린 파일이 남아 있으면 카드가 옛
+    파일로 그려졌다. 다른 팀의 팀별 파일은 그 팀이 따로 올린 엑셀일 수 있어 건드리지 않는다.
+    """
+    side = _normalize_fcm_team_side(team_side) if team_side else None
+    _write_fcm_workbook(_fcm_shared_workbook_path(match_id), workbook, origin="fpa_log")
+    if side:
+        _write_fcm_workbook(_fcm_workbook_path(match_id, side), workbook, origin="fpa_log")
+
+
+_fcm_player_maps_cache: dict[tuple, dict[str, Any]] = {}
+_fcm_player_maps_cache_lock = threading.Lock()
+_FCM_PLAYER_MAPS_CACHE_LIMIT = 48
+
+
+def _fcm_png_base64(image: Any) -> str | None:
+    if image is None:
+        return None
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _fcm_player_maps_payload(match_id: UUID, team_side: str, player_id: str, team_name: str | None) -> dict[str, Any]:
+    """데이터 제출 화면 미리보기 — 카드 생성(_build_fcm_card_payload)과 같은 파일·같은 렌더 함수.
+
+    이미지는 렌더 함수 결과 원본(카드의 _fit_to_box 전)이다. 파일이 없으면 source=None 과 빈 결과.
+    같은 (파일, mtime, 팀, 선수) 결과는 짧게 캐시한다(matplotlib 렌더가 1초 남짓 걸린다).
+    """
+    result: dict[str, Any] = {
+        "heatmap_png": None,
+        "passmap_png": None,
+        "heatmap_points": 0,
+        "passes": 0,
+        "key_passes": 0,
+        "source": None,
+        "same_number_other_team": False,
+        "card_type_hint": None,
+        "render_error": None,
+    }
+    workbook_path, kind = _fcm_card_workbook_source(match_id, team_side)
+    if not workbook_path:
+        return result
+    try:
+        stat = workbook_path.stat()
+    except OSError:
+        return result
+    meta = _read_fcm_workbook_meta(workbook_path) or {}
+    result["source"] = {
+        "kind": kind,
+        "origin": meta.get("origin") or None,
+        "filename": meta.get("filename") or None,
+        "written_at": meta.get("written_at") or None,
+        "file_modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+    }
+    cache_key = (str(workbook_path), stat.st_mtime_ns, stat.st_size, team_side, team_name or "", player_id)
+    with _fcm_player_maps_cache_lock:
+        cached = _fcm_player_maps_cache.get(cache_key)
+    if cached is None:
+        rendered: dict[str, Any] = {}
+        try:
+            maps = render_player_maps(workbook_path.read_bytes(), player_id, team_side, team_name)
+            rendered = {
+                "heatmap_png": _fcm_png_base64(maps.heatmap),
+                "passmap_png": _fcm_png_base64(maps.passmap),
+                "heatmap_points": maps.heatmap_points,
+                "passes": maps.passes,
+                "key_passes": maps.key_passes,
+                "same_number_other_team": maps.other_team_rows > 0,
+                "card_type_hint": "GOALKEEPER" if maps.goalkeeper_actions > 0 else "PLAYER",
+            }
+        except Exception as ex:
+            # 카드 생성도 렌더 실패를 삼키고 빈 칸으로 낸다 — 미리보기는 그 사유를 같이 알려 준다.
+            rendered = {"render_error": str(ex) or ex.__class__.__name__}
+        cached = rendered
+        with _fcm_player_maps_cache_lock:
+            _fcm_player_maps_cache[cache_key] = cached
+            while len(_fcm_player_maps_cache) > _FCM_PLAYER_MAPS_CACHE_LIMIT:
+                _fcm_player_maps_cache.pop(next(iter(_fcm_player_maps_cache)))
+    result.update(cached)
+    return result
 
 
 def _ensure_runtime_schema() -> None:
@@ -2801,6 +2948,13 @@ def _require_basketball_match_for_partner(match_id: UUID, db: Session) -> Match:
     return row
 
 
+def _fcm_user_name(db: Session, user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    user = db.get(User, user_id)
+    return (user.name or None) if user else None
+
+
 def _serialize_fcm_submission(row: FcmSubmission, db: Session) -> dict:
     card_type = "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER"
     selected_stats = list(row.selected_stats or [])
@@ -2823,6 +2977,8 @@ def _serialize_fcm_submission(row: FcmSubmission, db: Session) -> dict:
         "card_type": card_type,
         "penalty_shootout": [value for value in list(row.penalty_shootout or []) if str(value).upper() in {"O", "X"}][:10],
         "submitted_by": row.submitted_by,
+        # 화면에는 사용자 ID(admin-25bf…) 대신 이름을 보인다. ID 는 그대로 두고 툴팁으로 볼 수 있게.
+        "submitted_by_name": _fcm_user_name(db, row.submitted_by),
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
@@ -2931,6 +3087,68 @@ def _sync_goalkeeper_card_stats(
     return synced
 
 
+def _fineplay_job_for_fpa_match(db: Session, match_id: UUID) -> HighlightJob | None:
+    """fpa_link.match_id 가 이 매치인 FinePlay 잡(get_fpa_fineplay_lineup 과 같은 기준)."""
+    target = str(match_id)
+    jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.mode == "fineplay")
+        .order_by(desc(HighlightJob.created_at))
+        .all()
+    )
+    return next(
+        (
+            j for j in jobs
+            if str(
+                ((j.job_metadata or {}).get("fpa_link") or {}).get("match_id")
+                or (j.job_metadata or {}).get("match_id")
+                or ""
+            ) == target
+        ),
+        None,
+    )
+
+
+def _fcm_fineplay_positions(db: Session, match_obj: Match) -> dict[tuple[str, str], str]:
+    """FinePlay 신청 라인업의 positionSlot 을 (HOME/AWAY, 등번호) → GK/DF/MF/FW 로 푼다."""
+    positions: dict[tuple[str, str], str] = {}
+    try:
+        job = _fineplay_job_for_fpa_match(db, match_obj.id)
+    except Exception:
+        return positions
+    if job is None:
+        return positions
+    for side, info in _fineplay_lineup_sides(job).items():
+        players = info.get("players") or []
+        slots = [str(player.get("positionSlot") or "") for player in players]
+        # 포메이션 키가 없을 때 마지막 라인(FW)을 명단의 최대 라인/행으로 정한다.
+        lines = [int(found.group(1)) for slot in slots if (found := re.fullmatch(r"player_(\d+)_\d+", slot))]
+        custom_rows = [int(found.group(1)) for slot in slots if (found := re.fullmatch(r"c(\d+)_\d+", slot))]
+        for player in players:
+            position = position_from_slot(
+                player.get("positionSlot"),
+                formation=str(info.get("formation") or ""),
+                max_line=max(lines) if lines else None,
+                max_custom_row=max(custom_rows) if custom_rows else None,
+            )
+            if position:
+                positions[(side.upper(), str(player.get("jersey") or "").strip())] = position
+    return positions
+
+
+def _fcm_player_side(team_marker: str, metadata: dict[str, Any]) -> str:
+    """분석 결과의 Team 값(home/away 또는 팀명)을 HOME/AWAY 로 맞춘다."""
+    marker = team_marker.strip()
+    if marker.upper() in {"HOME", "AWAY"}:
+        return marker.upper()
+    # 옛 FPA 엑셀은 Team 에 팀명이 들어 있다. 매치의 홈/원정 팀명과 같으면 그 사이드다.
+    for side, key in (("HOME", "home_team"), ("AWAY", "away_team")):
+        name = str(metadata.get(key) or "").strip()
+        if name and name == marker:
+            return side
+    return ""
+
+
 def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match | None, db: Session) -> dict[str, Any]:
     """Attach official lineup and FLA goalkeeper context to an FCM analysis."""
     if not match_obj:
@@ -2948,25 +3166,53 @@ def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match |
                     "name": str(entry.get("name") or "").strip(),
                     "position": str(entry.get("position") or "").upper(),
                 }
+    fineplay_positions: dict[tuple[str, str], str] | None = None
 
     for player in payload.get("players", []):
         if not isinstance(player, dict):
             continue
-        team_marker = str(player.get("team") or "").strip().upper()
-        side = team_marker if team_marker in {"HOME", "AWAY"} else ""
-        lineup = lookup.get((side, str(player.get("player_id") or "").strip())) if side else None
+        side = _fcm_player_side(str(player.get("team") or ""), metadata)
+        player["team_side"] = side
+        number = str(player.get("player_id") or "").strip()
+        lineup = lookup.get((side, number)) if side else None
         if lineup:
             player["player_name"] = lineup["name"]
             player["is_goalkeeper"] = bool(player.get("is_goalkeeper")) or lineup["position"] == "GK"
-        if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
+
+        if not bool(player.get("is_goalkeeper")):
+            # 포지션 우선순위: 경기 명단(기록지) → FinePlay 신청 라인업 → FPA 액션 위치 추정.
+            # 골키퍼 카드는 포지션과 무관하므로 이 조회를 건너뛴다.
+            position = normalize_position(lineup["position"]) if lineup else ""
+            source = "lineup" if position else ""
+            if not position and side:
+                if fineplay_positions is None:
+                    fineplay_positions = _fcm_fineplay_positions(db, match_obj)
+                position = fineplay_positions.get((side, number), "")
+                source = "fineplay_lineup" if position else ""
+            metrics = player.get("stat_metrics")
+            if position:
+                player["position"] = position
+                player["position_source"] = source
+                if isinstance(metrics, dict):
+                    # 명단 포지션이 FPA 위치 추정과 다를 수 있으니 규칙 선택을 다시 돈다.
+                    selection = select_player_stats(metrics, position)
+                    player["candidates"] = selection["candidates"]
+                    player["selected_stats"] = selection["selected"]
             continue
 
-        # Candidate selection and final PNG generation share the same FLA
-        # totals. Workbook-only matches retain the FPA candidate values.
-        opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
-        player["candidates"] = _sync_goalkeeper_card_stats(
-            list(player.get("candidates") or []), opponent_xg_events, include_save_candidate=True
-        )
+        player["position"] = "GK"
+        player["position_source"] = "lineup" if lineup and lineup["position"] == "GK" else (player.get("position_source") or "fpa_events")
+        # 명단상 GK 인데 FPA 에 선방 액션이 없던 선수도 골키퍼 후보를 쓴다.
+        if player.get("goalkeeper_candidates"):
+            player["candidates"] = list(player["goalkeeper_candidates"])
+        if side in {"HOME", "AWAY"}:
+            # Candidate selection and final PNG generation share the same FLA
+            # totals. Workbook-only matches retain the FPA candidate values.
+            opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
+            player["candidates"] = _sync_goalkeeper_card_stats(
+                list(player.get("candidates") or []), opponent_xg_events, include_save_candidate=True
+            )
+        player["selected_stats"] = list(player.get("candidates") or [])[:5]
     return payload
 
 
@@ -3134,14 +3380,9 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
     if not template_path:
         raise ValueError(f"{row.team_name}: 배경 템플릿 없음")
 
-    workbook_path = _fcm_workbook_path(row.match_id, row.team_side)
-    shared_workbook_path = _fcm_shared_workbook_path(row.match_id)
-    if workbook_path.exists():
-        workbook_bytes = workbook_path.read_bytes()
-    elif shared_workbook_path.exists():
-        workbook_bytes = shared_workbook_path.read_bytes()
-    else:
-        workbook_bytes = None
+    # 데이터 제출 화면 미리보기(/player-maps)와 같은 파일 선택 규칙(팀별 파일 → 공용 파일).
+    workbook_path, _workbook_kind = _fcm_card_workbook_source(row.match_id, row.team_side)
+    workbook_bytes = workbook_path.read_bytes() if workbook_path else None
 
     match_obj = db.get(Match, row.match_id)
     team_logo_path = _fcm_team_logo_path(match_obj, row.team_side) if match_obj and card_type == "GOALKEEPER" else None
@@ -3165,6 +3406,9 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
         team_logo_path=team_logo_path,
         replace_template_logo=card_type == "GOALKEEPER" and registered_template_path is None,
         fla_shot_events=goalkeeper_fla_shots,
+        # 같은 등번호가 양 팀에 있으면 등번호만으로는 상대 팀 기록이 섞인다 — 팀+등번호로 거른다.
+        team_side=row.team_side,
+        team_name=row.team_name,
     )
     filename = f"{league}-{round_number}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
     return filename, card_bytes
@@ -3655,6 +3899,7 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
             "current_lane": team_lane_events[-1].lane if team_lane_events else None,
         }
 
+    score = _football_score_from_events(match_id, db)
     return {
         "match": {
             "id": str(match_obj.id),
@@ -3672,6 +3917,9 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
                               int((match_obj.metadata_json or {}).get('fla_clock_speed') or 1))['state'] or {}),
         },
         "command_revision": int((match_obj.metadata_json or {}).get('fla_clock_revision') or 0),
+        # 매치 컨트롤에 현재 점수가 없었다(골은 최근 기록의 GOAL 표시로만 보였다).
+        # 중계 그래픽과 같은 계산(_football_score_from_events)을 써서 두 화면 점수가 어긋나지 않게 한다.
+        "score": {"home": score["HOME"], "away": score["AWAY"]},
         "possession": {
             "home_ms": home_ms,
             "away_ms": away_ms,
@@ -5525,10 +5773,7 @@ async def analyze_fcm_workbook(
     try:
         file_bytes = await file.read()
         if match_id:
-            _fcm_shared_workbook_path(match_id).write_bytes(file_bytes)
-            if team_side:
-                workbook_path = _fcm_workbook_path(match_id, _normalize_fcm_team_side(team_side))
-                workbook_path.write_bytes(file_bytes)
+            _store_fcm_uploaded_workbook(match_id, file_bytes, team_side, file.filename)
         match_obj = db.get(Match, match_id) if match_id else None
         return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(file_bytes), match_obj, db)
     except ValueError as ex:
@@ -5538,13 +5783,20 @@ async def analyze_fcm_workbook(
 
 
 @app.post("/api/fcm/matches/{match_id}/analyze-fpa-logs", response_model=FcmAnalyzeWorkbookResponse)
-def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+def analyze_fcm_from_saved_fpa_logs(
+    match_id: UUID,
+    team_side: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
     row = db.get(FpaSavedLog, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
+    normalized_side = _normalize_fcm_team_side(team_side) if team_side else None
     try:
         workbook = _build_fpa_workbook_from_saved_log(row)
-        _fcm_shared_workbook_path(match_id).write_bytes(workbook)
+        # 선택 팀(team_side)이 오면 그 팀의 팀별 파일도 바꾼다. 없으면 예전처럼 공용 파일만.
+        _store_fcm_fpa_log_workbook(match_id, workbook, normalized_side)
         return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(workbook), db.get(Match, match_id), db)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -5553,6 +5805,26 @@ def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
+
+
+@app.get("/api/fcm/matches/{match_id}/player-maps")
+def get_fcm_player_maps(
+    match_id: UUID,
+    team_side: str = Query(...),
+    player_id: str = Query(...),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """데이터 제출 화면의 히트맵·패스맵 미리보기 — 카드뉴스와 같은 파일·같은 그리기."""
+    side = _normalize_fcm_team_side(team_side)
+    clean_player = player_id.strip()
+    if not clean_player:
+        raise HTTPException(status_code=400, detail="player_id is required")
+    match_obj = db.get(Match, match_id)
+    metadata = match_obj.metadata_json if match_obj and isinstance(match_obj.metadata_json, dict) else {}
+    team_name = str(metadata.get("home_team" if side == "HOME" else "away_team") or "").strip()
+    payload = _fcm_player_maps_payload(match_id, side, clean_player, team_name)
+    return {**payload, "team_side": side, "team_name": team_name, "player_id": clean_player}
 
 
 @app.get("/api/fcm/submissions", response_model=list[FcmSubmissionResponse])
@@ -6504,6 +6776,7 @@ def list_dashboard_matches(
     sport: str = Query(default="FOOTBALL"),
     archived: bool = Query(default=False),
     competition_class: str | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=7, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -6521,6 +6794,14 @@ def list_dashboard_matches(
     page_scope = archived_scope if archived else active_scope
     if class_code:
         page_scope = page_scope.filter(Match.competition_class == class_code)
+    # 경기 검색 — 목록이 7개씩 서버에서 나뉘어 와서, 화면에서만 거르면 지금 쪽 안에서만 찾게 된다.
+    # 경기 이름(`[대회 | 29R] 홈 vs 원정`)에서 띄어쓰기를 무시하고 찾는다("FC 강릉" → "FC강릉").
+    needle = re.sub(r"\s+", "", q or "")
+    if needle:
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        page_scope = page_scope.filter(
+            func.replace(Match.name, " ", "").ilike(f"%{escaped}%", escape="\\")
+        )
 
     # These inexpensive aggregate counts keep the existing overview cards
     # accurate without forcing the browser to receive every historical row.
@@ -9229,6 +9510,8 @@ def outbox_debug(db: Session = Depends(get_db)):
             "ref_id": str(r.ref_id),
             "target_url": r.target_url,
             "attempts": r.attempts,
+            # 매치 컨트롤이 이 경기 것만 보여줄 수 있게 한다(종전엔 모든 경기 대기열이 섞여 나왔다).
+            "match_id": (r.payload or {}).get("match_id") if isinstance(r.payload, dict) else None,
             "next_attempt_at": r.next_attempt_at.isoformat(),
             "last_error": r.last_error,
             "created_at": r.created_at.isoformat(),

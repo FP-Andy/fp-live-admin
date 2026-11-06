@@ -19,7 +19,7 @@ export function useSubstitutionReport(draft:ReportDraft|null,apply:(r:Substituti
   w.onmessage=({data})=>{if(!active||data.ticket!==ticket)return;if(data.error){setError(data.error);setState('error');requested.current='';return;}if(data.progress){setProgress(data.progress.phase);return;}if(data.result){void applyRef.current(data.result).then(()=>{if(active&&data.ticket===ticket){setState(data.result.status);setProgress('');}}).catch(e=>{if(active){setError(e.message);setState('error');requested.current='';}});}};
   w.onerror=()=>{if(active){setError('교체 분석을 실행하지 못했습니다. 다시 시도하세요.');setState('error');requested.current='';}};
   const refresh=async()=>{if(busy||!active)return;busy=true;try{const [v,j]=await Promise.all([apiJson<{substitutions:SavedLog;can_write_substitutions?:boolean}>(`/futsal/fla-video/matches/${d.matchId}`),apiJson<{jobs:RecoveryJob[]}>(`/futsal/analysis-snapshots/${d.sourceSnapshot!.id}/recovery-jobs`)]);const r=await apiJson<RecoveryStatus>(`/futsal/analysis-snapshots/${d.sourceSnapshot!.id}/redetection?metadata=true`);if(!active)return;setRecoveryJob(j.jobs[0]||null);setSaved(v.substitutions);setRecovery(r);setCanWrite(!!v.can_write_substitutions);const key=d.sourceSnapshot!.id+':'+v.substitutions.revision+':'+(r.status==='ready'?r.id:r.status)+':'+(r.reviewedReportId||'');
-   if(r.status==='stale'){ticket++;setError('교체 시각 또는 팀이 변경되어 재탐지 후보를 다시 생성해야 합니다.');setState('error');requested.current='';return;}
+   if(r.status==='stale'){ticket++;setError('교체 시간이나 팀이 바뀌었습니다. \'RF-DETR로 짧은 추적 보강\'을 다시 눌러 주세요.');setState('error');requested.current='';return;}
    if(requested.current!==key){requested.current=key;setState('working');setError('');setProgress('추적 원본·교체로그 불러오는 중');w.postMessage({ticket:++ticket,snapshotId:d.sourceSnapshot!.id,jobId:d.sourceSnapshot!.jobId,saved:v.substitutions,redetectionId:r.status==='ready'?r.id:null,reviewedReportId:r.reviewedReportId});}
   }catch(e){if(active){setError(e instanceof Error?e.message:String(e));setState('error');}}finally{busy=false;}};
   refreshRef.current=refresh;const channel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('fpc-substitutions'):null;const onChange=()=>{void refresh();};if(channel)channel.onmessage=onChange;
@@ -43,10 +43,10 @@ export function useSubstitutionReport(draft:ReportDraft|null,apply:(r:Substituti
  async function assertFresh(expected=current.current){const d=expected;if(!d?.sourceSnapshot)return;
   if(state!=='ready'||!d.substitutionReport)throw Error('교체 연결 확인과 갱신을 완료한 뒤 추출하세요.');
   const [v,snapshots,r]=await Promise.all([apiJson<{substitutions:SavedLog}>(`/futsal/fla-video/matches/${d.matchId}`),apiJson<{snapshots:Array<{id:string;version:number}>}>(`/futsal/analysis-snapshots?job_id=${d.sourceSnapshot.jobId}`),apiJson<RecoveryStatus>(`/futsal/analysis-snapshots/${d.sourceSnapshot.id}/redetection?metadata=true`)]);
-  if(r.status==='stale'||(r.status==='ready'?r.id:undefined)!==d.substitutionReport.provenance.redetectionId){void refreshRef.current();throw Error('재탐지 후보가 변경되었습니다. 최신 연결을 확인한 뒤 추출하세요.');}
+  if(r.status==='stale'||(r.status==='ready'?r.id:undefined)!==d.substitutionReport.provenance.redetectionId){void refreshRef.current();throw Error('다시 찾은 후보가 바뀌었습니다. 교체 연결을 다시 확인한 뒤 PDF를 만드세요.');}
   if((r.reviewedReportId||undefined)!==d.substitutionReport.provenance.reviewedReportId){void refreshRef.current();throw Error('영상 검수 결과가 변경되었습니다. 갱신 후 다시 추출하세요.');}
   if(v.substitutions.revision!==d.substitutionReport.provenance.logRevision){void refreshRef.current();throw Error('교체로그가 변경되었습니다. 최신 결과로 갱신 후 다시 추출하세요.');}
-  if(snapshots.snapshots.some(s=>s.version>d.sourceSnapshot!.version))throw Error('새 분석 스냅샷이 있습니다. 최신 결과를 불러온 뒤 추출하세요.');
+  if(snapshots.snapshots.some(s=>s.version>d.sourceSnapshot!.version))throw Error('새 분석 결과가 있습니다. 최신 결과를 불러온 뒤 PDF를 만드세요.');
  }
  return {state,error,saved,recovery,canWrite,progress,recoveryJob,recoveryBusy,recoveryError,startRecovery,cancelRecovery,recoveryActive:!!recoveryJob&&['dispatching','queued','starting','running','cancelling'].includes(recoveryJob.status),refresh:()=>{requested.current='';return refreshRef.current();},confirm,assertFresh,blocked:!!draft?.sourceSnapshot&&state!=='ready'};
 }

@@ -5,6 +5,19 @@ import { FcmWorkflow, ConsoleToolbar, ConsoleEmpty } from './ConsoleTools';
 import { useEffect, useMemo, useState } from 'react';
 import { API_BASE, apiJson } from '../lib/api';
 import { RawMatchRecord, getEligibleFcmMatches } from '../lib/fcm';
+import ErrorNotice from './ErrorNotice';
+import { errorDetail, errorFromResponse, errorMessage } from '../lib/error-messages';
+
+const CARD_FAILED = '카드를 만들지 못했습니다';
+const CARD_RETRY = `${CARD_FAILED}. 다시 시도해 주세요.`;
+/**
+ * 카드 생성 실패 — 앞머리를 '카드를 만들지 못했습니다'로 맞춘다.
+ * 409 '생성 가능한 카드가 없습니다.'는 변환표가 이미 팀별 사유까지 붙여 주므로 그대로 쓴다(서버 원문 detail 로 판정).
+ */
+function cardErrorMessage(error: unknown): string {
+  if (errorDetail(error).startsWith('생성 가능한 카드가 없습니다.')) return errorMessage(error, CARD_RETRY);
+  return errorMessage(error, CARD_RETRY, { action: CARD_FAILED });
+}
 
 type CompetitionClass = {
   code: string;
@@ -25,6 +38,7 @@ type FcmSubmission = {
   player_name: string;
   selected_stats: string[];
   submitted_by?: string | null;
+  submitted_by_name?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -68,7 +82,7 @@ export default function FvcWorkspacePage() {
         if (!active) return;
         setMatches([]);
         setSubmissions([]);
-        setError(loadError instanceof Error ? loadError.message : '카드 큐를 불러오지 못했습니다.');
+        setError(errorMessage(loadError, '카드 만들 목록을 불러오지 못했습니다. 새로고침해 주세요.', { fixed: true }));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -154,7 +168,7 @@ export default function FvcWorkspacePage() {
         { credentials: 'include' },
       );
       if (!response.ok) {
-        throw new Error((await response.text()) || '카드 생성에 실패했습니다.');
+        throw await errorFromResponse(response, CARD_RETRY);
       }
 
       const blob = await response.blob();
@@ -167,7 +181,7 @@ export default function FvcWorkspacePage() {
       anchor.remove();
       window.URL.revokeObjectURL(url);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '카드 생성에 실패했습니다.');
+      setError(cardErrorMessage(loadError));
     } finally {
       setGenerating(false);
     }
@@ -186,7 +200,7 @@ export default function FvcWorkspacePage() {
       });
       const response = await fetch(`${API_BASE}/fcm/generate?${params.toString()}`, { credentials: 'include' });
       if (!response.ok) {
-        throw new Error((await response.text()) || '카드 생성에 실패했습니다.');
+        throw await errorFromResponse(response, CARD_RETRY);
       }
 
       const blob = await response.blob();
@@ -199,14 +213,14 @@ export default function FvcWorkspacePage() {
       anchor.remove();
       window.URL.revokeObjectURL(url);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '카드 생성에 실패했습니다.');
+      setError(cardErrorMessage(loadError));
     } finally {
       setGeneratingCardKey(null);
     }
   };
 
   return (
-    <div className="page-stack console-page fcm-workspace-page">
+    <div className="page-stack console-page fcm-workspace-page console-flat">
       <FcmWorkflow current="workspace" />
       <section className="fvc-workspace">
         <aside className="fvc-sidebar card card-panel">
@@ -294,11 +308,11 @@ export default function FvcWorkspacePage() {
                 <div className="sidebar-eyebrow">작업 목록</div>
                 <h3 style={{ margin: '6px 0 0' }}>카드 생성 대상 경기</h3>
               </div>
-              <span className="status-pill warning">{league} {round}R</span>
+              <span className="status-pill warning chip-tag">{league} {round}R</span>
             </div>
 
             {loading ? <p className="field-help">경기 목록을 불러오는 중입니다.</p> : null}
-            {error ? <p className="field-help" style={{ color: '#ff9c8f' }}>{error}</p> : null}
+            <ErrorNotice message={error} className="field-help" style={{ color: '#ff9c8f' }} />
 
             <ConsoleToolbar><label className="field-stack"><span className="field-label">제출 상태</span><select value={readiness} onChange={event => setReadiness(event.target.value)}><option value="ALL">전체 팀</option><option value="READY">제출 완료</option><option value="PENDING">미제출</option></select></label><p className="field-help">미제출 팀은 경기 상세에서 선수와 스탯을 먼저 제출하세요. 생성 전 템플릿도 확인하세요.</p></ConsoleToolbar>
             <div className="fvc-table-scroll">
@@ -310,7 +324,7 @@ export default function FvcWorkspacePage() {
                   return (
                     <div className="fvc-match-group" key={match.id}>
                       <div className="fvc-match-group-head">
-                        <span className="status-pill warning">경기 {index + 1}</span>
+                        <span className="status-pill warning chip-tag">경기 {index + 1}</span>
                         <strong>{match.homeTeam} vs {match.awayTeam}</strong>
                         <span className="field-help">{formatDateTime(match.archivedAt)}</span>
                       </div>
@@ -333,7 +347,7 @@ export default function FvcWorkspacePage() {
                           <span data-label="팀">{row.teamName}</span>
                           <span data-label="선수">{row.submission ? `NO.${row.submission.player_id} ${row.submission.player_name || ''}`.trim() : '-'}</span>
                           <span data-label="주요 스탯">{row.submission?.selected_stats?.[0] || '-'}</span>
-                          <span data-label="제출자">{row.submission?.submitted_by || match.operatorId || '미지정'}</span>
+                          <span data-label="제출자" title={row.submission?.submitted_by || undefined}>{row.submission ? (row.submission.submitted_by_name || '알 수 없는 사용자') : '미지정'}</span>
                           <span>
                             <Link className="button-link button-compact" href={`/admin/fcm/match-status/${match.id}`}>
                               {row.submission ? '제출 내용 수정' : '데이터 제출'}

@@ -39,7 +39,7 @@ export default function BasketballMediaPage(){
   async function copy(text:string){try{await navigator.clipboard.writeText(text);setNotice('복사했습니다.');}catch{setNotice('복사하지 못했습니다. 경기의 녹화·다운로드를 열어 직접 복사하세요.');}}
   const readyRows=rows.filter(row=>row.recording?.desired&&row.recording.stream_key);
   const chosen=rows.find(row=>row.match.id===selected);
-  return <main className="page-stack console-page">
+  return <main className="page-stack console-page console-flat">
     <section className="card card-panel grid">
       <div className="section-heading"><div><div className="sidebar-eyebrow">BASKETBALL · MEDIA</div><h2>농구 미디어</h2><p className="muted">송출 수신, 최근 저장 화면과 녹화 영상을 확인합니다. 약 10초마다 상태를 갱신합니다.</p></div><button className="btn" disabled={loading} onClick={()=>setRevision(value=>value+1)}>새로고침</button></div>
       <div className="basketball-media-server"><div><span className="muted">축구·농구 공통 RTMP 서버</span><code>{RTMP_SERVER}</code></div><button className="btn" onClick={()=>void copy(RTMP_SERVER)}>서버 주소 복사</button></div>

@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { API_BASE, apiJson } from '../../../../lib/api';
+import { errorMessage } from '../../../../lib/error-messages';
+import ErrorNotice from '../../../../components/ErrorNotice';
 
 type OperatorJob = {
   id: string;
@@ -53,7 +55,7 @@ export default function MyClipsPage() {
       setJobs(data);
       setError('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : '불러오기 실패');
+      setError(errorMessage(e, '불러오기 실패'));
     } finally {
       setLoading(false);
     }
@@ -66,7 +68,7 @@ export default function MyClipsPage() {
   }, []);
 
   return (
-    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: 18, margin: 0 }}>내 업로드</h2>
         <Link
@@ -77,7 +79,7 @@ export default function MyClipsPage() {
         </Link>
       </div>
 
-      {error ? <p style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</p> : null}
+      <ErrorNotice message={error} style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }} />
       {loading ? <p style={{ color: 'var(--muted, #999)', fontSize: 13 }}>불러오는 중...</p> : null}
       {!loading && jobs.length === 0 ? (
         <div style={{ ...card, textAlign: 'center', color: 'var(--muted, #999)', fontSize: 14 }}>

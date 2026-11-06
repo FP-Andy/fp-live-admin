@@ -28,7 +28,7 @@ export function sourceFingerprint(file: File): Promise<string> {
 
 export async function encodeAttachment(file: File, kind: 'intro' | 'music'): Promise<LogAttachment> {
   const limit = kind === 'intro' ? 20 : 40;
-  if (file.size > limit * 1024 * 1024) throw new Error(`${kind === 'intro' ? '인트로' : '음악'} 파일은 ${limit}MB까지 JSON에 포함할 수 있습니다.`);
+  if (file.size > limit * 1024 * 1024) throw new Error(`${kind === 'intro' ? '인트로' : '음악'} 파일은 ${limit}MB까지 하이라이트 로그에 넣을 수 있습니다.`);
   const bytes = new Uint8Array(await file.arrayBuffer());
   const chunks: string[] = [];
   for (let i = 0; i < bytes.length; i += 32768) chunks.push(String.fromCharCode(...bytes.subarray(i, i + 32768)));
@@ -43,7 +43,7 @@ export function decodeAttachment(value: unknown, kind: 'intro' | 'music'): File 
   if (!item || typeof item.name !== 'string' || !allowed.test(item.name) || typeof item.type !== 'string'
     || !Number.isInteger(item.size) || item.size < 0 || item.size > limit || typeof item.data !== 'string'
     || item.data.length > Math.ceil(limit / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(item.data)) {
-    throw new Error('JSON에 포함된 인트로 또는 음악 파일이 올바르지 않습니다.');
+    throw new Error('하이라이트 로그에 든 인트로 또는 음악 파일이 올바르지 않습니다.');
   }
   const raw = atob(item.data);
   if (raw.length !== item.size) throw new Error('첨부 파일 크기가 맞지 않습니다.');
@@ -68,17 +68,23 @@ export async function createHighlightLog(sport: string, sources: SourceFile[], w
 
 export function logBlob(log: HighlightLog): Blob {
   const blob = new Blob([JSON.stringify(log, null, 2)], { type: 'application/json' });
-  if (blob.size > MAX_LOG_BYTES) throw new Error('JSON 로그가 100MB를 넘습니다. 첨부 파일 크기를 줄여 주세요.');
+  if (blob.size > MAX_LOG_BYTES) throw new Error('하이라이트 로그가 100MB를 넘습니다. 첨부 파일 크기를 줄여 주세요.');
   return blob;
 }
 
 export async function readHighlightLog(raw: string, sport: string, sources: SourceFile[], allowedKinds: string[]) {
-  if (new Blob([raw]).size > MAX_LOG_BYTES) throw new Error('JSON 로그는 100MB까지 불러올 수 있습니다.');
-  const log = JSON.parse(raw);
+  if (new Blob([raw]).size > MAX_LOG_BYTES) throw new Error('하이라이트 로그는 100MB까지 불러올 수 있습니다.');
+  let log: any;
+  try {
+    log = JSON.parse(raw);
+  } catch (err) {
+    // 브라우저 원문(Unexpected token …)은 cause 로 남겨 화면이 자세히에 접는다.
+    throw Object.assign(new Error('하이라이트 로그 JSON을 읽지 못했습니다. 이 화면에서 내려받은 파일이 맞는지 확인하세요.'), { cause: err });
+  }
   const legacy = log?.format === 'fpc-manual-draft' && log.version === 1;
   if ((!legacy && (log?.format !== 'fpc-highlight-log' || log.version !== 1)) || log.sport !== sport
     || !Array.isArray(log.sources) || !sources.length || log.sources.length !== sources.length) {
-    throw new Error('종목과 원본 영상 개수가 일치하는 하이라이트 JSON을 선택하세요.');
+    throw new Error('종목과 원본 영상 개수가 맞는 하이라이트 로그를 선택하세요.');
   }
   for (let i = 0; i < sources.length; i++) {
     const source = log.sources[i], actual = sources[i];

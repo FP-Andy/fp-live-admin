@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { API_BASE, apiJson } from '../../../../lib/api';
+import { ErrorFold } from '../../../../components/ErrorNotice';
+import { errorFromResponse, errorMessage } from '../../../../lib/error-messages';
 
 type ModelPoint = {
   x: number;
@@ -143,7 +145,7 @@ function sortActionColumns(values: string[]) {
 }
 
 function notifyError(error: unknown, fallback: string) {
-  const message = error instanceof Error ? error.message : fallback;
+  const message = errorMessage(error, fallback);
   window.alert(message);
 }
 
@@ -166,7 +168,7 @@ export default function FpaReportsPage() {
         setSelectedSlotKey(data.slots[0].key);
       }
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : '모델을 불러오지 못했습니다.');
+      setLoadError(errorMessage(error, '모델을 불러오지 못했습니다.'));
     } finally { setLoading(false); }
   };
 
@@ -253,7 +255,7 @@ export default function FpaReportsPage() {
         body: formData,
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || '모델 업로드에 실패했습니다.');
+        throw await errorFromResponse(response, '모델 업로드에 실패했습니다.');
       }
       const data = (await response.json()) as { slot: ModelSlot; model: ModelVersion };
       setRoom((current) => ({
@@ -279,7 +281,7 @@ export default function FpaReportsPage() {
         credentials: 'include',
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || 'baseline 모델 생성에 실패했습니다.');
+        throw await errorFromResponse(response, 'baseline 모델 생성에 실패했습니다.');
       }
       const data = (await response.json()) as ModelRoomResponse & { models: ModelVersion[] };
       setRoom({ slots: data.slots });
@@ -294,7 +296,7 @@ export default function FpaReportsPage() {
   };
 
   return (
-    <div className="page-stack console-page models-page">
+    <div className="page-stack console-page models-page console-flat">
       <section className="card card-hero page-hero">
         <div className="section-heading">
           <div>
@@ -302,7 +304,7 @@ export default function FpaReportsPage() {
             <h2 style={{ margin: '6px 0 0' }}>Model Room</h2>
           </div>
           <div className="fpa-model-hero-actions">
-            <span className="status-pill tech">xG / xGOT / EPV / PC / xFP</span>
+            <span className="status-pill tech chip-tag">xG / xGOT / EPV / PC / xFP</span>
             <button className="btn-secondary" disabled={bootstrapping} type="button" onClick={() => void generateBaselines()}>
               {bootstrapping ? '생성 중…' : '기본 모델 생성'}
             </button>
@@ -314,7 +316,7 @@ export default function FpaReportsPage() {
       </section>
 
       {loading ? <p role="status">모델을 불러오는 중입니다.</p> : null}
-      {loadError ? <div className="console-feedback" role="alert">{loadError}<button type="button" onClick={() => void loadRoom()}>다시 불러오기</button></div> : null}
+      {loadError ? <div className="console-feedback" role="alert">{loadError}<button type="button" onClick={() => void loadRoom()}>다시 불러오기</button><ErrorFold message={loadError} /></div> : null}
       {slots.length ? <label className="field-stack model-slot-picker"><span className="field-label">확인할 모델</span><select value={selectedSlot?.key || ''} onChange={event => setSelectedSlotKey(event.target.value)}>{slots.map(slot => <option key={slot.key} value={slot.key}>{slot.label}</option>)}</select></label> : null}
       <section className="fpa-model-room-grid" aria-label="FPA model slots">
         {slots.map((slot) => {
@@ -400,7 +402,7 @@ export default function FpaReportsPage() {
               <div className="sidebar-eyebrow">Distribution Preview</div>
               <h3>{selectedSlot ? selectedSlot.label : 'Model'} Score Surface</h3>
             </div>
-            <span className="status-pill tech">
+            <span className="status-pill tech chip-tag">
               {activeModel ? activeModel.filename : 'No Active Model'}
             </span>
           </div>

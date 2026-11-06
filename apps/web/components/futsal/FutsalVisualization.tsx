@@ -83,7 +83,7 @@ export default function FutsalVisualization() {
             setExporting(false);
         }
     }
-    return <div className="futsal-viz">
+    return <div className="futsal-viz console-flat">
     <header className="futsal-viz-header"><div><small>FUTSAL · MATCH GRAPHICS</small><h1>Visualization</h1><p>경기 기록을 샷맵, 흐름, 공격방향 이미지로 다운로드하세요.</p></div>{view==='fla'&&<button className="btn btn-primary" disabled={loading || exporting || !cards.length} onClick={() => save()}>{exporting ? '이미지 만드는 중…' : '전체 PNG 다운로드 · ZIP'}</button>}</header>
     <section className="futsal-viz-toolbar" aria-label="시각화 설정">
       <label className="futsal-viz-match">경기<select value={selected} disabled={exporting || !matches.length} onChange={e => setSelected(e.target.value)}>{!matches.length && <option value="">경기 없음</option>}{matches.map(m => <option key={m.id} value={m.id}>{m.name}{m.archived ? ' · 종료' : ' · 진행 중'}</option>)}</select></label>

@@ -3,6 +3,8 @@
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE, apiFetch, apiJson } from '../../../../../lib/api';
+import { errorMessage } from '../../../../../lib/error-messages';
+import ErrorNotice, { ErrorFold } from '../../../../../components/ErrorNotice';
 
 type ClipInfo = { name: string; start: number; end: number; label: number };
 type OperatorJob = {
@@ -20,6 +22,7 @@ type OperatorJob = {
   owner_name?: string | null;
   job_metadata?: { clip_failures?: unknown[]; clip_info?: ClipInfo[]; progress?: { detail?: string; percent?: number } };
   stage?: string | null;
+  error_message?: string | null;
   progress?: number | null;
 };
 
@@ -209,7 +212,7 @@ export default function ProcessJobPage() {
       setError('');
       return data;
     } catch (e) {
-      setError(e instanceof Error ? e.message : '불러오기 실패');
+      setError(errorMessage(e, '불러오기 실패'));
       return null;
     }
   }, [jobId]);
@@ -274,7 +277,7 @@ export default function ProcessJobPage() {
       setBusy('클립 생성 중...');
       await loadJob();
     } catch (e) {
-      setBusy(e instanceof Error ? e.message : '클립 생성 실패');
+      setBusy(errorMessage(e, '클립 생성 실패'));
     }
   };
 
@@ -290,7 +293,7 @@ export default function ProcessJobPage() {
       setBusy('');
       await loadJob();
     } catch (e) {
-      setBusy(e instanceof Error ? e.message : '트림 실패');
+      setBusy(errorMessage(e, '트림 실패'));
     }
   };
 
@@ -306,7 +309,7 @@ export default function ProcessJobPage() {
       await apiJson(`/highlight/operator-jobs/${jobId}/merge`, { method: 'POST' });
       await loadJob();
     } catch (e) {
-      setBusy(e instanceof Error ? e.message : '합치기 실패');
+      setBusy(errorMessage(e, '합치기 실패'));
     }
   };
 
@@ -315,13 +318,13 @@ export default function ProcessJobPage() {
   };
 
   return (
-    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div>
         <h2 style={{ fontSize: 18, margin: 0 }}>{job?.display_name || job?.original_filename || '처리'}</h2>
         {job?.owner_name ? <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>업로더: {job.owner_name}</span> : null}
       </div>
 
-      {error ? <p style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</p> : null}
+      <ErrorNotice message={error} style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }} />
 
       {!!job?.job_metadata?.clip_failures?.length&&<p role="alert">{job.job_metadata.progress?.detail||"일부 클립을 생성하지 못했습니다. 생성된 클립은 보존했습니다."}</p>}
       {!videoReady ? (
@@ -329,7 +332,7 @@ export default function ProcessJobPage() {
           {job?.status === 'downloading' || job?.source_type === 'link' && job?.status === 'queued'
             ? '링크 영상을 다운로드하는 중입니다...'
             : job?.status === 'error'
-            ? `오류: ${job?.stage || ''}`
+            ? <>{`오류: ${job?.stage || ''}`}<ErrorFold message={`오류: ${job?.stage || ''}`} raw={job.error_message} /></>
             : '영상을 불러오는 중...'}
         </div>
       ) : (
@@ -473,7 +476,7 @@ export default function ProcessJobPage() {
         />
       ) : null}
 
-      {busy ? <p style={{ fontSize: 13, color: 'var(--muted, #999)' }}>{busy}</p> : null}
+      {busy ? <div style={{ fontSize: 13, color: 'var(--muted, #999)', margin: '13px 0' }}>{busy}<ErrorFold message={busy} /></div> : null}
     </div>
   );
 }

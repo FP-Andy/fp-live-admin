@@ -108,7 +108,7 @@ async function tagKey(page, code, key, time) {
     const c = await context('FOOTBALL');
     const page = await pageIn(c, `/admin/match/${matchId}`);
     await page.getByRole('button', { name: '⭐ 지금 하이라이트', exact: true }).click();
-    await page.getByText('저장을 확인하지 못했습니다.', { exact: false }).waitFor();
+    await page.getByText('저장되지 않았을 수 있습니다.', { exact: false }).waitFor();
     assert.equal(rows.size, 0);
     assert.equal(await page.getByText('하이라이트를 서버에 저장했습니다.', { exact: true }).count(), 0);
     const original = requests[0]; assert(original.request_id && original.clock_ms >= 0);
@@ -116,7 +116,7 @@ async function tagKey(page, code, key, time) {
     await page.getByRole('button', { name: '같은 시각으로 다시 요청', exact: true }).waitFor();
     mode = 'lost';
     await page.getByRole('button', { name: '같은 시각으로 다시 요청', exact: true }).click();
-    await page.getByText('저장을 확인하지 못했습니다.', { exact: false }).waitFor();
+    await page.getByText('저장되지 않았을 수 있습니다.', { exact: false }).waitFor();
     assert.equal(rows.size, 1);
     mode = 'ok';
     await page.getByRole('button', { name: '같은 시각으로 다시 요청', exact: true }).click();
@@ -188,7 +188,7 @@ async function tagKey(page, code, key, time) {
     report('JSON roundtrip preserves tags/padding/scoreboard/card placements/images/watermark; partial autosave is explicitly labeled');
     const wrong = { ...exported, sport: 'FOOTBALL' };
     await restored.getByLabel('수동 태깅 복구 파일').setInputFiles({ name: 'wrong.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(wrong)) });
-    await restored.getByText('종목과 원본 영상 개수가 일치하는 하이라이트 JSON을 선택하세요.', { exact: true }).waitFor();
+    await restored.getByText('종목과 원본 영상 개수가 맞는 하이라이트 로그를 선택하세요.', { exact: true }).waitFor();
     assert.deepEqual((await exportDraft(restored, 'unchanged.json')).work, exported.work);
     report('Wrong-sport recovery file is rejected without changing existing work');
     await r.close();

@@ -4,6 +4,8 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE, apiFetch, apiJson } from '../../lib/api';
 import { FPA_DRAFT_EVENT, FPA_DRAFT_STORAGE_KEY } from '../../lib/fpa-draft';
 import { useSportContext } from '../SportContext';
+import { ErrorFold } from '../ErrorNotice';
+import { errorMessage, responseMessage } from '../../lib/error-messages';
 
 type DualDotTeam = 'ally' | 'opponent';
 type TeamSide = 'home' | 'away';
@@ -1138,9 +1140,9 @@ function sceneStateForPersistence(scene: SavedScene, sceneIndex: number) {
 function validateMatchIdForSave(value: string) {
   const trimmed = value.trim();
   if (!trimmed || trimmed === 'ID') return '';
-  if (/\s/.test(trimmed)) return 'Match ID에는 띄어쓰기를 사용할 수 없습니다';
+  if (/\s/.test(trimmed)) return '경기 ID 형식이 맞지 않습니다. 비워 두면 자동으로 만듭니다';
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
-    return 'Match ID는 UUID 형식이어야 합니다. 비워두면 자동 생성됩니다';
+    return '경기 ID 형식이 맞지 않습니다. 비워 두면 자동으로 만듭니다';
   }
   return '';
 }
@@ -2731,7 +2733,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       });
 
       if (!response.ok) {
-        setStatus((await response.text()) || 'xGOT 계산 실패');
+        setStatus(await responseMessage(response, { action: 'xGOT를 계산하지 못했습니다', fallback: 'xGOT를 계산하지 못했습니다. 다시 시도해 주세요.' }));
         return null;
       }
 
@@ -2742,7 +2744,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         : `빗나간 위치 (${shotPoint.x.toFixed(3)}, ${shotPoint.y.toFixed(3)}) 선택됨 — Save로 기록`);
       return data;
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'xGOT 계산 실패');
+      setStatus(errorMessage(error, 'xGOT를 계산하지 못했습니다. 다시 시도해 주세요.'));
       return null;
     } finally {
       setXgotBusy(false);
@@ -2782,7 +2784,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         pendingXgot.canvas,
       );
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'xGOT 계산 실패');
+      setStatus(errorMessage(error, 'xGOT를 계산하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setXgotBusy(false);
     }
@@ -2888,7 +2890,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         }),
       });
       if (!response.ok) {
-        setStatus((await response.text()) || '패스 채점 실패');
+        setStatus(await responseMessage(response, { action: '채점하지 못했습니다', fallback: '채점하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       const data = await response.json() as { log_text: string; log_data: LogPreview };
@@ -2928,7 +2930,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       }
       setStatus(statInputIsGkClaimArrow(code) ? '골키퍼 처리 기록 완료 · 채점됨' : '패스 화살표 완성 · 채점됨');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '패스 채점 실패');
+      setStatus(errorMessage(error, '채점하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -2974,7 +2976,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         }),
       });
       if (!response.ok) {
-        setStatus((await response.text()) || '재채점 실패');
+        setStatus(await responseMessage(response, { action: '다시 채점하지 못했습니다', fallback: '다시 채점하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       const data = await response.json() as { log_text: string; log_data: LogPreview };
@@ -2985,7 +2987,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       (isEdit ? setEditRows : setRows)((prev) => prev.map((row, idx) => (idx === ri ? data.log_data : row)));
       setStatus('화살표 이동 · 재채점 완료');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '재채점 실패');
+      setStatus(errorMessage(error, '다시 채점하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -3234,7 +3236,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         }),
       });
       if (!response.ok) {
-        setStatus((await response.text()) || '패스 채점 실패');
+        setStatus(await responseMessage(response, { action: '채점하지 못했습니다', fallback: '채점하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       const data = await response.json() as { log_text: string; log_data: LogPreview };
@@ -3270,7 +3272,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       }
       setStatus(statInputIsGkClaimArrow(code) ? '수정용: 골키퍼 처리 기록 완료 · 채점됨' : '수정용 액션에 패스 추가 · 채점됨');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '패스 채점 실패');
+      setStatus(errorMessage(error, '채점하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -3356,7 +3358,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       });
 
       if (!response.ok) {
-        setStatus((await response.text()) || '로그 생성 실패');
+        setStatus(await responseMessage(response, { action: '로그를 만들지 못했습니다', fallback: '로그를 만들지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
 
@@ -3413,7 +3415,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         ? '액션 추가됨 · 행위자 번호는 상대 점에 안 붙었습니다 — 아군 점 선택 후 재지정하세요'
         : '수정용 장면에 액션 추가 완료');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '로그 생성 실패');
+      setStatus(errorMessage(error, '로그를 만들지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -3609,7 +3611,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       });
 
       if (!response.ok) {
-        setStatus((await response.text()) || '로그 생성 실패');
+        setStatus(await responseMessage(response, { action: '로그를 만들지 못했습니다', fallback: '로그를 만들지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
 
@@ -3689,7 +3691,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         setStatus('로그 추가 완료');
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '로그 생성 실패');
+      setStatus(errorMessage(error, '로그를 만들지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -3714,7 +3716,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       });
 
       if (!response.ok) {
-        setStatus((await response.text()) || '엑셀 생성 실패');
+        setStatus(await responseMessage(response, { action: '엑셀을 만들지 못했습니다', fallback: '엑셀을 만들지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
 
@@ -3731,7 +3733,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       URL.revokeObjectURL(url);
       setStatus('분석 및 내보내기 완료');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '엑셀 생성 실패');
+      setStatus(errorMessage(error, '엑셀을 만들지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -3752,7 +3754,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       });
 
       if (!response.ok) {
-        setStatus((await response.text()) || '로그 불러오기 실패');
+        setStatus(await responseMessage(response, { action: '로그를 불러오지 못했습니다', fallback: '로그를 불러오지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
 
@@ -3806,7 +3808,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       if (data.teamid_a) setTeamIdA(data.teamid_a);
       setStatus(`로그 ${data.logs?.length || 0}건 불러오기 완료`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '로그 불러오기 실패');
+      setStatus(errorMessage(error, '로그를 불러오지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       if (importInputRef.current) {
         importInputRef.current.value = '';
@@ -3974,7 +3976,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       setLineupSides(d.linked ? d.sides ?? {} : {});
       setStatus(`${name}(${jersey}번) 추가됨 — 이 경기 모든 클립에 반영됩니다`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '선수 추가 실패');
+      setStatus(errorMessage(error, '선수를 추가하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setAddingPlayer(false);
     }
@@ -4335,7 +4337,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
     } catch (error) {
       // 쌓아 둔 장면은 그대로 남는다 — 버튼을 꺼내 다시 올릴 수 있게 한다.
       setClipSaveFailed(true);
-      setStatus((error instanceof Error ? error.message : '클립 저장 실패')
+      setStatus(errorMessage(error, '클립에 저장하지 못했습니다')
         + ' — 찍은 것은 그대로 있습니다. "클립에 저장" 으로 다시 시도하세요');
       return false;
     } finally {
@@ -4378,7 +4380,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       if (requestId !== matchPickerRequestRef.current) return;
       setAvailableMatches([]);
       setMatchTotal(0);
-      setStatus(error instanceof Error ? error.message : '경기 목록 불러오기 실패');
+      setStatus(errorMessage(error, '경기 목록을 불러오지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       if (requestId === matchPickerRequestRef.current) setMatchPickerLoading(false);
     }
@@ -4452,7 +4454,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       setMatchPickerOpen(false);
       setStatus(saved.logs?.length ? `저장된 FPA 로그 ${saved.logs.length}건 불러오기 완료` : '경기 정보 불러오기 완료');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '경기 불러오기 실패');
+      setStatus(errorMessage(error, '경기를 불러오지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -4490,7 +4492,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         }),
       });
       if (!response.ok) {
-        setStatus((await response.text()) || 'FPA 로그 저장 실패');
+        setStatus(await responseMessage(response, { action: 'FPA 로그를 저장하지 못했습니다', fallback: 'FPA 로그를 저장하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       setMatchId(matchIdForSave);
@@ -4498,7 +4500,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       setTeamIdA(awayTeamForSave);
       setStatus(generatedMatchId ? `FPA 로그 ${allLogs.length}건 저장 완료 · Match ID 자동 생성됨` : `FPA 로그 ${allLogs.length}건 저장 완료`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'FPA 로그 저장 실패');
+      setStatus(errorMessage(error, 'FPA 로그를 저장하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -5931,7 +5933,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         workbench.send({type:'linked',eventId:cvRowId,role:cvRole,identity});
       }
       setStatus(`${identity.team==='home'?'홈':'어웨이'} ${identity.jersey}번 연결 · 관련 코드·선수 점·로그·지표 갱신${inEdit?' (수정 저장으로 확정)':''}`);
-    } catch(error){setStatus(error instanceof Error?error.message:'번호 연결 실패');}
+    } catch(error){setStatus(errorMessage(error,'번호를 연결하지 못했습니다. 다시 시도해 주세요.'));}
     finally{setBusy(false);}
   };
   const cvEditSingle = async () => {
@@ -5942,7 +5944,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
       setTeam(req.team);setDirection(req.direction);setHalf(req.half);setTimeline(req.timeline);setStatInput(req.stat_input);
       setDots(req.dots.map((p:{meter_x:number;meter_y:number})=>({...p,...screenFromMeter(p.meter_x,p.meter_y,'FUTSAL'),id:crypto.randomUUID()})));
       setCvSingleEditId(row.FpaEventId!);setCvView('pitch');setStatus('선택 로그를 입력창으로 불러왔습니다. 좌표·코드를 수정하고 Enter로 저장하세요');
-    } catch(error){setStatus(error instanceof Error?error.message:'로그 수정 불러오기 실패');}
+    } catch(error){setStatus(errorMessage(error,'수정할 로그를 불러오지 못했습니다. 다시 시도해 주세요.'));}
     finally{setBusy(false);}
   };
   cvMessageRef.current = (message:any) => {
@@ -6032,7 +6034,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
         <button type="button" className="fpa-cv-new" disabled={busy} onClick={cvNewInput}>＋ 새 이벤트 · 피치로</button>
       </div>
       {cvControls}
-      <div className="fpa-live-status" role="status"><span>{status}</span>{cvView==='pitch' && dots.length?<span>{dots.map(dot=>`(${dot.meter_x}, ${dot.meter_y})`).join(' → ')}</span>:null}</div>
+      <div className="fpa-live-status" role="status"><span>{status}</span><ErrorFold message={status} />{cvView==='pitch' && dots.length?<span>{dots.map(dot=>`(${dot.meter_x}, ${dot.meter_y})`).join(' → ')}</span>:null}</div>
     </section>
   </div>;
 
@@ -6229,6 +6231,7 @@ export default function FpaLiveEditor({ workbench }: { workbench?: FpaCvWorkbenc
 
         <div className="fpa-live-status">
           <span>{status}</span>
+          <ErrorFold message={status} />
           <span>
             {inputMode === 'dual'
               ? `레이어 ${currentLayer.label} / Before A${dualPointSummary.beforeAllyCount} O${dualPointSummary.beforeOpponentCount} / After A${dualPointSummary.afterAllyCount} O${dualPointSummary.afterOpponentCount}${selectedDualDot ? ` / 선택 ${selectedDualDot.side === 'before' ? 'B' : 'A'}${selectedDualDot.index + 1}` : ''}`

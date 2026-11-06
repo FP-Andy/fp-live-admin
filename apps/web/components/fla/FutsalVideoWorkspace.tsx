@@ -5,6 +5,8 @@ import {useRouter} from 'next/navigation';
 import {registerWorkspaceLeave} from '../../lib/workspace-leave';
 import {recordingJournal,recoverRecording,type PendingRecording} from '../../lib/fla-recording-recovery';
 import {apiJson,fetchSessionUser} from '../../lib/api';
+import {errorMessage} from '../../lib/error-messages';
+import {ErrorFold} from '../ErrorNotice';
 import {VideoClock,formatVideoTime as fmt,videoHotkey,type Team} from '../../lib/fla-video-clock';
 import {bufferedSeconds,sameVideoFile} from '../../lib/video-buffer';
 import {futsalPitchPoint} from '../../lib/futsal-pitch';
@@ -53,7 +55,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const redraw=()=>render(n=>n+1);
   const merge=(next:any)=>setData((old:any)=>({...old,...next}));
   function journal(){const c=clock.current;const record=unconfirmed.current||c.pending.length?{client:client.current,state:{...c.state},segments:c.pending.map(p=>({...p})),request:unconfirmed.current}:null;setStorageWarning(!recordingJournal(recoveryKey.current,record));}
-  const fail=(e:unknown)=>{failed.current=true;journal();video.current?.pause();clock.current.playing=false;setError(e instanceof Error?e.message:String(e));redraw();};
+  const fail=(e:unknown)=>{failed.current=true;journal();video.current?.pause();clock.current.playing=false;setError(errorMessage(e,'저장하지 못했습니다. 입력은 보관했습니다. 저장을 다시 시도해 주세요.'));redraw();};
   useEffect(()=>{
     let alive=true;
     Promise.all([request(`/matches/${id}`),request('/fixtures'),fetchSessionUser()]).then(([match,list,user])=>{
@@ -233,7 +235,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
   const series:any[]=[];chart.forEach((b:any,i:number)=>{const previous=chart[i-1];if(previous&&previous.dominance*b.dominance<0){series.push({minuteVal:previous.minuteVal+(b.minuteVal-previous.minuteVal)*(-previous.dominance)/(b.dominance-previous.dominance),dominance:0,positiveDominance:0,negativeDominance:0});}series.push({...b,positiveDominance:b.dominance>=0?b.dominance:null,negativeDominance:b.dominance<=0?b.dominance:null});});
   const timeline=(data?.segments||[]).filter((p:any)=>p.end_ms>timelineFrom).slice(-120).reverse().map((p:any)=>`${mediaLabel(p.start_ms)}–${mediaLabel(p.end_ms)} · ${names[p.team as Team]}`);
   if(!data)return <p role="status">{error||'경기 불러오는 중…'}</p>;
-  return <div className={`fv-workspace${expanded?' fv-expanded':''}`} ref={workspace} data-state={glow}>
+  return <div className={`fv-workspace console-flat${expanded?' fv-expanded':''}`} ref={workspace} data-state={glow}>
     {/* 분석(기록) 진행 중 전체화면 네온 글로우 — 시작됐음을 시각적으로 알린다. 전체화면에서도 보이게 안쪽에 둔다. */}
     {glow==='recording'?<div className="live-neon-overlay" aria-hidden />:null}
     {process.env.NEXT_PUBLIC_FLA_VIDEO_PREVIEW==='1'?<div className="fv-preview">로컬 검토 · 운영 데이터에 저장되지 않습니다 · 현재 영상은 기능 확인용 샘플입니다.</div>:null}
@@ -245,7 +247,7 @@ export default function FutsalVideoWorkspace({id}:{id:string}){
       <div className="fv-timer"><strong aria-label={s.configured?"경기 시간":"영상 시간"}>{fmt(s.configured?s.cursor_ms:mediaTime)}</strong><div><span role="status">{status}</span>{review?<small>마지막 기록 {fmt(s.frontier_ms)}</small>:null}</div></div>
       <div className="fv-top-actions">{!s.started&&!reviewOnly?<button className="btn-primary" onClick={start} disabled={!canWrite||!s.upload_id||!s.configured||uploadId!==s.upload_id||parseStart(startTime)!==s.offset_ms||busy}>경기 시작</button>:<><button onClick={toggle} disabled={Boolean(error)} className="btn-primary">{playing?'일시정지':'재생'} <kbd>Space</kbd></button><button className="btn-success" disabled={busy||reviewOnly} onClick={async()=>{video.current?.pause();try{await flush('finish');setNotice('경기 기록을 마쳤습니다. 영상을 탐색하며 교체 로그를 보완할 수 있습니다.');}catch{}}}>{reviewOnly?'기록 완료됨':'기록 완료'}</button></>}<button className="btn-danger fv-reset-button" disabled={!canWrite||busy} onClick={()=>reset('recording')}>기록 초기화</button><button className="btn-secondary" aria-label="작업 전체화면" onClick={()=>void fullscreen()}>⛶</button></div>
     </header>
-    {error?<div className="fv-error" role="alert">{error}<button onClick={()=>void flush().catch(()=>{})}>저장 다시 시도</button><button onClick={exportRecovery}>기록 복구 JSON 저장</button></div>:null}
+    {error?<div className="fv-error" role="alert">{error}<ErrorFold message={error}/><button onClick={()=>void flush().catch(()=>{})}>저장 다시 시도</button><button onClick={exportRecovery}>기록 복구 JSON 저장</button></div>:null}
     {storageWarning?<p role="alert">브라우저 복구 저장소를 사용하지 못합니다. 서버 저장 상태를 확인하고 실패 시 기록 복구 JSON을 저장하세요.</p>:null}
     {showSetup?<section id="fv-start-settings" className="fv-start-settings" aria-label="경기 시작 시각 설정">
       <div className="row"><strong>{s.configured?`영상 ${mediaLabel(s.offset_ms)} → 경기 00:00`:'킥오프 장면을 지정하고 저장하세요'}</strong>{s.started?<small>기록 중 · 시작 기준 고정</small>:null}</div>

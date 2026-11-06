@@ -141,6 +141,7 @@ class FcmSubmissionResponse(BaseModel):
     card_type: Literal["PLAYER", "GOALKEEPER"] = "PLAYER"
     penalty_shootout: list[Literal["O", "X"]] = Field(default_factory=list)
     submitted_by: str | None = None
+    submitted_by_name: str | None = None
     created_at: str
     updated_at: str
 

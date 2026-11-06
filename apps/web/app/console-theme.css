@@ -266,3 +266,22 @@
 .fla-feedback button { min-height: 32px; min-width: 32px; padding: 0; flex: 0 0 auto; }
 .fla-stream > summary, .fla-lane-stats > summary { cursor: pointer; font-size: 14px; color: var(--text-secondary); padding: 5px 0; }
 .fla-stream > .grid, .fla-lane-stats > .muted { margin-top: 12px; }
+
+/* 큰 기능 단위(FLA·FHL·FPA·FCM·Data Hub) 구분 — 단위마다 아래 가로선, 단위 색.
+   선택 전에도 약어 칸이 그 색이고, 선택하면 이름·약어 칸·펼친 메뉴의 선택 줄까지 같은 색이 된다
+   (종전엔 선택이 전부 주황 --accent 였다). 글씨 크기·구조·펼침 동작은 그대로. */
+[data-product="FLA"] { --product-color: #ff8a3d; --product-tint: rgba(255, 138, 61, 0.13); --product-line: rgba(255, 138, 61, 0.45); }
+[data-product="FHL"] { --product-color: #f2617a; --product-tint: rgba(242, 97, 122, 0.13); --product-line: rgba(242, 97, 122, 0.45); }
+[data-product="FPA"] { --product-color: #4ea1ff; --product-tint: rgba(78, 161, 255, 0.13); --product-line: rgba(78, 161, 255, 0.45); }
+[data-product="FCM"] { --product-color: #3ddc97; --product-tint: rgba(61, 220, 151, 0.13); --product-line: rgba(61, 220, 151, 0.45); }
+[data-product="DATA"] { --product-color: #b794ff; --product-tint: rgba(183, 148, 255, 0.13); --product-line: rgba(183, 148, 255, 0.45); }
+
+.app-shell .sidebar-section[data-product] { padding-bottom: 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.app-shell .sidebar-section[data-product] .product-monogram { color: var(--product-color); border-color: var(--product-line); }
+.app-shell .sidebar-section[data-product] button.product-badge.active { color: var(--product-color); }
+.app-shell .sidebar-section[data-product] button.product-badge.active .product-monogram { color: var(--product-color); background: var(--product-tint); border-color: var(--product-color); }
+.app-shell .sidebar-section[data-product] .product-toggle-icon.open { color: var(--product-color); }
+.app-shell .sidebar-section[data-product] .product-nav a.active { color: var(--product-color); background: var(--product-tint); border-left-color: var(--product-color); }
+.app-shell .sidebar-section[data-product] .product-nav a.active .nav-icon { color: var(--product-color); }
+.app-shell .sidebar-nav a.data-hub-nav-item[data-product] .nav-icon { color: var(--product-color); }
+.app-shell .sidebar-nav a.data-hub-nav-item[data-product].active { color: var(--product-color); background: var(--product-tint); }

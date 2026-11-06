@@ -1,5 +1,7 @@
 'use client';
 import {useRef,useState,useEffect} from 'react';
+import {errorMessage} from '../../lib/error-messages';
+import {ErrorFold} from '../ErrorNotice';
 import {validateSubstitutionLog,saveSubstitution,removeSubstitution,exportSubstitutionLog,substitutionCsv,parseLogTime,hasPlayerPair,formatLogTime as fmt,type SubstitutionLog,type LogVideo,type LogTeam} from '../../public/fla-video/substitution-log.mjs';
 export type SavedSubstitutions={revision:number;log:SubstitutionLog|null};
 type Props={matchId:string;video:LogVideo|null;saved:SavedSubstitutions;names:{home:string;away:string};canWrite:boolean;busy:boolean;gameClockKnown:boolean;observedTo:number;ended:boolean;
@@ -27,7 +29,7 @@ export default function FutsalSubstitutionLog(props:Props){
       setSaved(result);attempted.current=null;
       try{localStorage.setItem('fpc-substitutions-updated',JSON.stringify({matchId:props.matchId,revision:result.revision,at:Date.now()}));const channel=new BroadcastChannel('fpc-substitutions');channel.postMessage({matchId:props.matchId,revision:result.revision});channel.close();}catch{}
       setMessage('교체 시각 저장됨 · 리포트 자동 갱신');return true;
-    }catch(e){setError(e instanceof Error?e.message:String(e));return false;}finally{pending.current=false;setSaving(false);}
+    }catch(e){setError(errorMessage(e,'교체 기록을 저장하지 못했습니다. 다시 시도해 주세요.'));return false;}finally{pending.current=false;setSaving(false);}
   }
   const safely=(action:()=>void|Promise<void>)=>{setError('');Promise.resolve().then(action).catch(e=>setError(e.message||String(e)));};
   function resetEvent(){setEditing(null);setTime('');setNote('');}
@@ -89,6 +91,6 @@ export default function FutsalSubstitutionLog(props:Props){
     </>}
     <input ref={importer} type="file" hidden accept=".json" aria-label="교체 타임로그 JSON" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;safely(async()=>{if(file.size>5*1024*1024)throw Error('5MB 이하 JSON을 선택하세요.');const value=JSON.parse(await file.text());if(value.matchId&&value.matchId!==props.matchId)throw Error('다른 경기의 타임로그입니다.');const imported=value.sourceVideo?{...value,video:value.sourceVideo}:value;const next=validateSubstitutionLog(imported,props.video||undefined);if(log&&!confirm('현재 교체 타임로그를 이 파일로 바꿀까요?'))return;await commit(next);});}}/>
     <button className="btn-secondary" disabled={disabled||!props.video} onClick={()=>importer.current?.click()}>타임로그 JSON 불러오기</button>
-    <p role={error?'alert':'status'} className={error?'fv-log-error':'muted'}>{error||message}</p>
+    <p role={error?'alert':'status'} className={error?'fv-log-error':'muted'}>{error||message}</p>{error?<ErrorFold message={error}/>:null}
   </section>;
 }

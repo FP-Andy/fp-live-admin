@@ -2,6 +2,7 @@ import './globals.css';
 import './console-theme.css';
 import './console-workspaces.css';
 import './console-appearance.css';
+import './console-flat.css';
 import type { Metadata } from 'next';
 import PwaRegistrar from '../components/PwaRegistrar';
 import { ConsoleThemeProvider } from '../components/ConsoleTheme';
