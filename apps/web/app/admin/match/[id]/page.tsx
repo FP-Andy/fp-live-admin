@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import HlsPlayer from '../../../../components/HlsPlayer';
+import AgentEditNotice from '../../../../components/fla/AgentEditNotice';
 import { API_BASE, apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
 import { elapsedMatchMs, restoredMatchMs, matchControlJson } from '../../../../lib/match-control';
 import { useFlaOutbox, outboxRecordRow, type FlaOutboxItem } from '../../../../lib/fla-input-outbox';
@@ -1689,6 +1690,7 @@ function MatchControlPage() {
       {inputs.failedCount ? <div className="fla-feedback" role="alert"><span>서버가 받지 않은 입력 {inputs.failedCount}건이 있습니다.</span><button className="btn-secondary button-compact" style={{ padding: '0 10px' }} onClick={inputs.retryFailed}>다시 보내기</button><button className="btn-secondary button-compact" style={{ padding: '0 10px' }} onClick={() => setDiscardFailedAsk(true)}>지우기</button></div> : null}
       {inputs.storageError ? <div className="fla-feedback" role="alert"><span>브라우저 저장소를 쓸 수 없습니다. 저장 대기가 0건이 될 때까지 이 화면을 닫지 마세요.</span></div> : null}
       {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}<ErrorFold message={controlNotice} /></span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
+      <AgentEditNotice matchId={id} onChange={() => { void fetchAll().catch(() => {}); }} />
       <section className="card fla-clock" aria-label="경기 타이머">
         <div className="fla-clock-main"><div><span className="muted">{running ? '진행 중' : '일시정지'}</span><strong className="fla-clock-value">{displayClockLabel(clockMs)}{clockSpeed === 2 ? ' ×2' : ''}</strong></div>
           {displaySummary?.score ? (
