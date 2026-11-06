@@ -27,6 +27,7 @@ type SystemInfo = {
   highlight_worker: ServerStatus & {
     active_jobs?: number;
   };
+  gpu_auto_stop?: GpuAutoStop;
   health: {
     gateway_ok: boolean;
     running_streams: number;
@@ -82,6 +83,38 @@ type ServerStatus = {
   provider?: string | null;
   metrics?: ServerMetrics;
 };
+
+type GpuAutoStop = {
+  enabled: boolean;
+  idle_minutes: number;
+  slack_configured: boolean;
+  skip_today: boolean;
+  skip_by?: string | null;
+  last_state?: string | null;
+  last_checked_at?: string | null;
+  last_activity_at?: string | null;
+  idle_for_minutes?: number | null;
+  last_stop_requested_at?: string | null;
+  last_decision?: string | null;
+  last_error?: string | null;
+};
+
+// 서버 판단 코드(gpu_auto_stop.run_tick)를 운영자가 읽을 말로 바꾼다.
+const GPU_AUTO_STOP_DECISIONS: Record<string, string> = {
+  busy: 'GPU 작업 진행 중',
+  idle_waiting: '작업 없음 · 기다리는 중',
+  skipped_today: '오늘은 자동 종료 안 함',
+  not_running: 'GPU 꺼짐',
+  stopped: '자동으로 끔',
+  stop_pending: '종료 요청 보냄',
+  stop_failed: '종료 요청 실패 · 다음 확인 때 다시 시도',
+  status_failed: '상태 확인 실패 · 다음 확인 때 다시 시도',
+  fpa_unknown: 'FPA 분석 서버 확인 안 됨 · 보류',
+};
+
+function formatKst(value?: string | null) {
+  return value ? new Date(value).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) : '-';
+}
 
 type ResourceCardProps = {
   title: string;
@@ -242,6 +275,28 @@ export default function SystemPage() {
       setActionMessage(action === 'start' ? 'Media server start 요청을 보냈습니다.' : 'Media server stop 요청을 보냈습니다.');
     } catch (actionError) {
       setError(errorMessage(actionError, `Media ${action} failed`));
+    } finally {
+      setSubmittingAction('');
+    }
+  };
+
+  const setGpuAutoStopSkip = async (skip: boolean) => {
+    if (submittingAction) return;
+    setSubmittingAction('gpu-auto-stop');
+    setActionMessage('');
+    setError('');
+    try {
+      const response = await apiFetch('/admin/gpu-auto-stop/skip-today', {
+        method: 'POST',
+        body: JSON.stringify({ skip }),
+      });
+      if (!response.ok) {
+        throw await errorFromResponse(response, '자동 종료 설정을 바꾸지 못했습니다.');
+      }
+      await load();
+      setActionMessage(skip ? '오늘은 GPU를 자동으로 끄지 않습니다. 내일 0시(KST)에 다시 켜집니다.' : 'GPU 자동 종료를 다시 켰습니다.');
+    } catch (actionError) {
+      setError(errorMessage(actionError, '자동 종료 설정을 바꾸지 못했습니다.'));
     } finally {
       setSubmittingAction('');
     }
@@ -479,6 +534,41 @@ export default function SystemPage() {
               대기/처리 중 FHL 작업: {systemInfo?.highlight_worker?.active_jobs || 0}개. 작업이 있으면 stop 요청은 기본 차단됩니다.
             </div>
             {systemInfo?.highlight_worker?.detail ? <div className="muted">detail: {systemInfo.highlight_worker.detail}</div> : null}
+            {systemInfo?.gpu_auto_stop ? (() => {
+              const autoStop = systemInfo.gpu_auto_stop;
+              return (
+                <div className="grid" style={{ gap: 6 }}>
+                  <div>
+                    <strong>자동 종료</strong>{' '}
+                    {autoStop.enabled
+                      ? `켜짐 · GPU 작업이 ${autoStop.idle_minutes}분 동안 없으면 끕니다`
+                      : '꺼짐 (서버 설정 GPU_AUTO_STOP_ENABLED)'}
+                  </div>
+                  {autoStop.enabled ? (
+                    <>
+                      <div className="muted">
+                        상태: {GPU_AUTO_STOP_DECISIONS[autoStop.last_decision || ''] || autoStop.last_decision || '-'}
+                        {autoStop.idle_for_minutes != null ? ` · 작업 없이 ${Math.floor(autoStop.idle_for_minutes)}분` : ''}
+                        {' '}· 마지막 확인 {formatKst(autoStop.last_checked_at)}
+                      </div>
+                      <div className="muted">
+                        마지막 GPU 작업 {formatKst(autoStop.last_activity_at)} · 마지막 자동 종료 {formatKst(autoStop.last_stop_requested_at)}
+                      </div>
+                      {autoStop.last_error ? <div className="muted">확인 필요: {autoStop.last_error}</div> : null}
+                      <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={autoStop.skip_today}
+                          disabled={Boolean(submittingAction)}
+                          onChange={(event) => void setGpuAutoStopSkip(event.target.checked)}
+                        />
+                        오늘 자동 종료 안 함{autoStop.skip_today && autoStop.skip_by ? ` (${autoStop.skip_by})` : ''}
+                      </label>
+                    </>
+                  ) : null}
+                </div>
+              );
+            })() : null}
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               <button type="button" className="btn-primary" onClick={() => runHighlightWorkerAction('start')} disabled={Boolean(submittingAction)}>
                 {submittingAction === 'highlight-start' ? 'Working...' : 'Start FHL GPU Worker'}
