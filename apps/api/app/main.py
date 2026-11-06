@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import desc, func, inspect, or_, text
@@ -34,7 +34,7 @@ import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
 from .highlight_render_queue import HighlightRenderTask
-from .scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion
+from .scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion, find_task as find_scene_motion_task
 from .manual_highlight_log import router as manual_highlight_log_router
 from .competition_queue import (
     CompetitionSendWorker,
@@ -13741,46 +13741,67 @@ def clip_result_detail(
     return out
 
 
+def _clip_scene_motion_prefix(clip: HighlightClip) -> str:
+    """씬모션 mp4 를 둘 S3 경로 앞부분. 조회·다운로드·전송이 같은 값을 써야 같은 키가 나온다."""
+    return (clip.horizontal_s3_key.rsplit("/", 1)[0]
+            if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
+            else highlight_output_prefix())
+
+
+def _clip_scene_actions(db: Session, clip: HighlightClip) -> tuple[list[dict], list[str]]:
+    """클립 액션에 sceneData 를 붙여 돌려준다(장면 대표 행에만 붙는다). 렌더는 하지 않는다."""
+    actions = [_serialize_clip_action(a) for a in db.query(HighlightClipAction)
+               .filter(HighlightClipAction.clip_id == clip.id)
+               .order_by(HighlightClipAction.seq).all()]
+    warnings = attach_scene_motions(actions, None, clip_key=clip.id,
+                                    storage=None, prefix=_clip_scene_motion_prefix(clip))
+    return actions, warnings
+
+
 @app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions")
 def clip_result_scene_motions(
     clip_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """Return native scene data immediately; enqueue missing MP4s durably.
+    """장면 좌표(sceneData)와 '이미 만든' mp4 상태만 돌려준다. **mp4 를 새로 만들지 않는다.**
 
-    No BackgroundTasks, capture lock or S3 HEAD calls run in this request.
-    A separate service resolves the existing-object cache and renders serially.
+    예전에는 상세를 열 때마다 장면마다 mp4 렌더를 큐에 넣었다. 그런데 앱·콘솔 화면은
+    sceneData 로 그리고 mp4 는 다운로드할 때만 쓰여서, 열어 보기만 한 클립까지 렌더
+    대기열(scene-render)이 차고 정작 받으려는 장면이 뒤로 밀렸다. 이제 mp4 는 다운로드
+    요청(아래 download_clip_scene_motion)에서만 만든다.
+
+    S3 HEAD 도 하지 않는다 — 큐 기록(scene_motion_queue)만 본다. 큐 없이 올라간 mp4
+    (전송 시 'mp4 포함' 경로)는 여기서 url 이 비어 보여도 다운로드를 누르면 바로 받는다.
     """
     clip = db.get(HighlightClip, clip_id)
     if not clip:
         raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
     storage = highlight_default_storage()
-    if not storage.configured:
-        raise HTTPException(status_code=409, detail="S3 스토리지가 설정되지 않았습니다.")
-    actions = [_serialize_clip_action(a) for a in db.query(HighlightClipAction)
-               .filter(HighlightClipAction.clip_id == clip_id)
-               .order_by(HighlightClipAction.seq).all()]
-    motion_prefix = (clip.horizontal_s3_key.rsplit("/", 1)[0]
-                     if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
-                     else highlight_output_prefix())
-    warnings = attach_scene_motions(actions, None, clip_key=clip.id,
-                                    storage=None, prefix=motion_prefix)
+    # S3 는 mp4 주소를 만들 때만 필요하다. 장면 자체는 sceneData 로 브라우저가 그리므로, S3 가 없는
+    # 환경(로컬 등)에서도 목록은 돌려주고 mp4 다운로드만 막는다 — 종전엔 409 로 장면까지 통째로 안 보였다.
+    configured = bool(storage.configured)
+    actions, warnings = _clip_scene_actions(db, clip)
+    motion_prefix = _clip_scene_motion_prefix(clip)
     motions = []
     for action in actions:
         if not action.get("sceneData"):
             continue
-        key = scene_motion_key(motion_prefix, clip.id, action.get("seq"), action["sceneData"])
-        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"])
-        status = task.status if task else "deferred"
+        status = "none"
+        url = None
+        if configured:
+            key = scene_motion_key(motion_prefix, clip.id, action.get("seq"), action["sceneData"])
+            task = find_scene_motion_task(db, storage.bucket, key)
+            # none = 아직 아무도 다운로드를 누르지 않았다(화면은 sceneData 로 그린다).
+            status = task.status if task else "none"
+            url = storage.presigned_get(key, expires=3600) if status == "completed" else None
         motions.append({
             "seq": action.get("seq"),
-            "url": storage.presigned_get(key, expires=3600) if status == "completed" else None,
+            "url": url,
             "sceneData": action["sceneData"],
             "render_status": status,
         })
-    db.commit()
-    return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
+    return {"clip_id": clip_id, "motions": motions, "warnings": warnings, "storage_configured": configured}
 
 
 @app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions/{seq}/download")
@@ -13790,33 +13811,53 @@ def download_clip_scene_motion(
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """Sign the current scene's MP4 as an attachment; never download stale coordinates."""
+    """현재 좌표의 장면 mp4 를 받는다. 없으면 이때 처음 렌더를 큐에 넣는다.
+
+    - 이미 있으면 200 + 첨부 서명 url(옛 좌표의 mp4 는 키가 달라 절대 안 나간다).
+    - 아직 없으면 202 + status(queued/running/deferred/failed). 화면은 같은 주소를
+      몇 초마다 다시 불러 진행을 보여 주고, 200 이 오면 그때 내려받는다.
+    같은 장면은 키(좌표 지문 포함)가 같아 여러 번·여러 명이 눌러도 큐 작업은 하나다
+    (scene_motion_queue 의 fingerprint unique). 렌더는 이 요청 안에서 돌지 않는다.
+    """
     clip = db.get(HighlightClip, clip_id)
     if clip is None:
         raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
     storage = highlight_default_storage()
     if not storage.configured:
         raise HTTPException(status_code=409, detail="영상 저장소가 설정되지 않았습니다.")
-    actions = [_serialize_clip_action(action) for action in db.query(HighlightClipAction)
-               .filter_by(clip_id=clip_id).order_by(HighlightClipAction.seq).all()]
-    prefix = (clip.horizontal_s3_key.rsplit("/", 1)[0]
-              if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key else highlight_output_prefix())
-    attach_scene_motions(actions, None, clip_key=clip.id, storage=None, prefix=prefix)
+    actions, _warnings = _clip_scene_actions(db, clip)
     action = next((a for a in actions if a.get("seq") == seq and a.get("sceneData")), None)
     if action is None:
         raise HTTPException(status_code=404, detail="이 액션의 씬모션이 없습니다.")
-    key = scene_motion_key(prefix, clip.id, seq, action["sceneData"])
-    if not storage.exists(key):
-        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"], retry=True, missing=True)
-        status = task.status if task else "deferred"
-        db.commit()
-        detail = ("씬모션 대기열이 가득 찼습니다. 잠시 후 다시 다운로드하세요."
-                  if status == "deferred" else
-                  "현재 장면의 MP4를 준비 중입니다. 모션 새로고침 후 다시 다운로드하세요.")
-        raise HTTPException(status_code=409, detail=detail)
+    key = scene_motion_key(_clip_scene_motion_prefix(clip), clip.id, seq, action["sceneData"])
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", clip.id)[:100]
     filename = f"scene-motion-{safe_id}-action-{seq}.mp4"
-    return {"url": storage.presigned_download(key, filename, expires=600), "filename": filename}
+
+    def pending(status: str, detail: str):
+        return JSONResponse(status_code=202, content={
+            "status": status, "url": None, "filename": filename, "detail": detail})
+
+    # 만드는 중이면 S3 를 두드리지 않고 바로 답한다 — 화면이 몇 초마다 이 주소를 부른다.
+    task = find_scene_motion_task(db, storage.bucket, key)
+    if task is not None and task.status in ("queued", "running"):
+        return pending(task.status, "MP4를 만들고 있습니다.")
+    if not storage.exists(key):
+        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"], retry=True, missing=True)
+        db.commit()
+        if task is None:
+            return pending("deferred", "MP4 대기열이 가득 찼습니다. 자리가 나면 이어서 만듭니다.")
+        if task.status == "failed":
+            # 실패 직후 1분은 다시 넣지 않는다(enqueue 의 retry 규칙) — 같은 실패를 되풀이하지 않게.
+            return pending("failed", "MP4를 만들지 못했습니다. 1분 뒤 다시 눌러 주세요."
+                           + (f" ({task.error})" if task.error else ""))
+        return pending(task.status, "MP4를 만들고 있습니다.")
+    return {
+        "status": "ready",
+        "url": storage.presigned_download(key, filename, expires=600),
+        # 화면의 'MP4로 보기' 미리보기용(첨부 헤더 없는 서명).
+        "preview_url": storage.presigned_get(key, expires=3600),
+        "filename": filename,
+    }
 
 
 def _clip_team_metadata(job: HighlightJob, clip: HighlightClip, team: str | None) -> dict | None:

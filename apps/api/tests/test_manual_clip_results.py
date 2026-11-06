@@ -24,6 +24,7 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('DATABASE_URL', 'sqlite:////tmp/fpc-manual-import.db')
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.dialects.postgresql import JSONB
@@ -38,7 +39,7 @@ from app.highlight_storage import S3Storage
 from app.models import HighlightClip, HighlightClipAction, HighlightJob, Match, User, FpaSavedLog
 from app.highlight_render_queue import HighlightRenderTask
 from app.scene_motion import attach_scene_motions, scene_motion_key
-from app.scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion
+from app.scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion, find_task as find_scene_motion_task
 
 
 @compiles(JSONB, 'sqlite')
@@ -67,6 +68,7 @@ def route_app(storage):
              '_clip_job_context', '_fineplay_lineup_sides', '_carry_over_offsets',
              'clip_result_matches', 'clip_result_job_clips', 'clip_result_detail',
              'clip_result_put_actions', 'download_clip_scene_motion', 'clip_result_delete_clip',
+             '_clip_scene_motion_prefix', '_clip_scene_actions',
              'delete_highlight_job'}
     tree = ast.parse((Path(__file__).parents[1] / 'app/main.py').read_text())
     selected = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
@@ -350,7 +352,15 @@ class ManualClipTests(unittest.TestCase):
         self.assertTrue(first.json()['filename'].endswith('-action-1.mp4'))
         self.save_dual(x=35)
         self.storage.exists.side_effect = lambda key: key == first_key
-        self.assertEqual(self.client.get(url).status_code, 409)
+        # 좌표가 바뀐 장면은 옛 mp4 를 주지 않고 새로 만든다 — 202(만드는 중).
+        pending = self.client.get(url)
+        self.assertEqual(pending.status_code, 202, pending.text)
+        self.assertEqual(pending.json()['status'], 'queued')
+        self.assertIsNone(pending.json()['url'])
+        # 큐에서 끝난 것으로 치고(워커가 올렸다) 다시 부르면 받는다.
+        with self.Session() as db:
+            db.query(SceneMotionTask).update({'status': 'completed'})
+            db.commit()
         self.storage.exists.side_effect = None
         self.assertEqual(self.client.get(url).status_code, 200)
         self.assertNotEqual(self.storage.presigned_download.call_args.args[0], first_key)
