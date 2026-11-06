@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import SceneMotionView, { type SceneData } from '../../../../components/SceneMotionView';
-import { apiJson, type SessionUser } from '../../../../lib/api';
+import { apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
 
 // 클립 결과: match → clip → action 3계층 열람/편집.
 // 클립 상세에서 [FPA dual] 새 창으로 씬을 찍어 클립에 귀속시키고,
@@ -171,6 +171,25 @@ const nearSec = (a: number | null | undefined, b: number) => a != null && Math.a
 
 type Segment = { start: number; end: number };
 
+// 장면 모션 목록 한 줄. url 은 이미 만든 mp4 가 있을 때만 온다(render_status=completed).
+// none = 아직 아무도 다운로드를 누르지 않은 장면 — 화면은 sceneData 로 그린다.
+type SceneMotionRow = {
+  seq: number;
+  url: string | null;
+  sceneData?: SceneData | null;
+  render_status?: 'none' | 'queued' | 'running' | 'completed' | 'failed' | string;
+};
+
+// 다운로드 응답. 200 = ready(url 있음), 202 = 만드는 중/대기열 가득/실패.
+type MotionDownloadResponse = {
+  status: 'ready' | 'queued' | 'running' | 'deferred' | 'failed' | string;
+  url: string | null;
+  preview_url?: string;
+  filename: string;
+  detail?: string;
+};
+type MotionDownloadState = { status: string; detail: string };
+
 /** 경계 목록 → 칸 목록. 경계가 없으면 클립 전체가 한 칸이다(= 지금 동작). */
 function segmentsFrom(splits: number[], duration: number): Segment[] {
   if (!(duration > 0)) return [];
@@ -272,11 +291,15 @@ export default function ClipResultsPage() {
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
-  const [motions, setMotions] = useState<{ seq: number; url: string | null; sceneData?: SceneData | null }[]>([]);
+  const [motions, setMotions] = useState<SceneMotionRow[]>([]);
   const [motionMsg, setMotionMsg] = useState('');
-  const [downloadingMotion, setDownloadingMotion] = useState<number | null>(null);
+  // 장면별 MP4 다운로드 진행 — 누른 장면만 들어 있다. MP4 는 이때 처음 만들어진다.
+  const [motionDownloads, setMotionDownloads] = useState<Record<number, MotionDownloadState>>({});
   const activeClipId = useRef<string | null>(null);
   const motionRequest = useRef(0);
+  // 다운로드 대기(폴링) 세대. 다른 클립으로 가거나 닫으면 올려서 이전 대기를 멈춘다 —
+  // 같은 클립으로 금방 돌아와도 옛 대기가 살아 있다가 파일을 두 번 받지 않게.
+  const motionDownloadEpoch = useRef(0);
   const matchRequest = useRef(0);
   // xFP 게이지 미리보기(iframe). 선택 클립의 actions/길이를 postMessage 로 넣어 준다.
   const gaugeFrame = useRef<HTMLIFrameElement | null>(null);
@@ -297,11 +320,13 @@ export default function ClipResultsPage() {
   const closeDetail = () => {
     activeClipId.current = null;
     motionRequest.current += 1;
+    motionDownloadEpoch.current += 1;
     setDetail(null);
     setMotions([]);
-    setDownloadingMotion(null);
+    setMotionDownloads({});
   };
-  // 기본은 앱과 같은 네이티브 렌더. mp4 는 폴백으로 계속 나가는 산출물이라 토글로 남긴다.
+  // 기본은 앱과 같은 네이티브 렌더. 'MP4로 보기'는 다운로드로 만들어 둔 mp4 가 화면과 같은지
+  // 확인하는 용도다 — mp4 가 없는 장면은 서버에 만들라고 하지 않고 네이티브 렌더로 보여 준다.
   const [motionAsMp4, setMotionAsMp4] = useState(false);
   // 클립 팀(홈/어웨이) 수정 — 관리자 전용. 되돌리기 어려운 값이라 팝업으로 한 번 확인받는다.
   const [teamEdit, setTeamEdit] = useState<{ clip: ClipRow | ClipDetail; next: string | null } | null>(null);
@@ -392,9 +417,10 @@ export default function ClipResultsPage() {
 
   const openClip = useCallback(async (clipId: string) => {
     if (activeClipId.current !== clipId) {
+      motionDownloadEpoch.current += 1;
       setDetail(null);
       setMotions([]);
-      setDownloadingMotion(null);
+      setMotionDownloads({});
     }
     activeClipId.current = clipId;
     setMsg('');
@@ -434,22 +460,24 @@ export default function ClipResultsPage() {
     }
   }, []);
 
-  // 서버는 좌표(sceneData)만 바로 주고 mp4 렌더·업로드는 응답 뒤로 미룬다 — 예전엔 렌더를
-  // 다 기다리다 장면 많은 클립에서 504 가 났다. 그래서 이 호출 자체는 빠르지만, mp4 는 첫
-  // 조회 때 아직 없을 수 있다('모션 새로고침' 으로 다시 부르면 찬다).
+  // 서버는 좌표(sceneData)와 '이미 만든' mp4 주소만 준다. 상세를 연다고 mp4 를 만들지 않는다 —
+  // 화면은 sceneData 로 그리고, mp4 는 'MP4 다운로드'를 누른 장면만 그때 만든다(downloadMotion).
+  // 예전엔 열 때마다 장면 전부를 렌더 대기열에 넣어, 열어 보기만 한 클립 때문에 정작 받으려는
+  // 장면이 뒤로 밀렸다.
+  // mp4 저장소(S3) 사용 가능 여부 — 없으면 장면은 보이되 MP4 다운로드만 막는다(로컬 등).
+  const [mp4Storage, setMp4Storage] = useState(true);
   const loadMotions = useCallback(async (clipId: string) => {
     const request = ++motionRequest.current;
     setMotions([]);
     setMotionMsg('장면 모션 불러오는 중…');
     try {
-      const res = await apiJson<{
-        motions: { seq: number; url: string | null; sceneData?: SceneData | null }[];
-        warnings: string[];
-      }>(
+      const res = await apiJson<{ motions: SceneMotionRow[]; warnings: string[]; storage_configured?: boolean }>(
         `/highlight/clip-results/clips/${clipId}/scene-motions`,
       );
       if (activeClipId.current !== clipId || request !== motionRequest.current) return;
       setMotions(res.motions);
+      // 필드가 없는 예전 응답은 S3 가 있는 것으로 본다(그때는 S3 가 없으면 목록 자체가 409 였다).
+      setMp4Storage(res.storage_configured !== false);
       setMotionMsg(res.motions.length === 0
         ? '장면 모션 없음 — FPA dual 로 찍어 저장한 액션만 모션이 생성됩니다.'
         : (res.warnings?.length ? `일부 실패: ${res.warnings.join(' / ')}` : ''));
@@ -460,25 +488,58 @@ export default function ClipResultsPage() {
     }
   }, []);
 
+  // MP4 다운로드 = 그때 만들기. 서버가 202(만드는 중)를 주면 몇 초마다 다시 물어 진행을 보여 주고,
+  // 다 만들어지면(200) 바로 내려받는다. 같은 장면은 서버 큐가 하나로 묶으므로 다시 눌러도
+  // 렌더가 겹치지 않는다. 여러 장면을 동시에 걸어 둘 수 있다(장면별 상태).
   const downloadMotion = async (clipId: string, seq: number) => {
-    setDownloadingMotion(seq);
-    setMotionMsg('');
+    const epoch = motionDownloadEpoch.current;
+    const alive = () => activeClipId.current === clipId && motionDownloadEpoch.current === epoch;
+    const setState = (state: MotionDownloadState | null) => {
+      if (!alive()) return;
+      setMotionDownloads((prev) => {
+        const next = { ...prev };
+        if (state) next[seq] = state; else delete next[seq];
+        return next;
+      });
+    };
+    setState({ status: 'requesting', detail: '' });
+    // 워커가 장면 하나에 최대 5분·3번까지 시도한다. 그보다 넉넉히 기다리고 그 뒤엔 다시 누르게 한다.
+    const deadline = Date.now() + 20 * 60 * 1000;
     try {
-      const result = await apiJson<{ url: string; filename: string }>(
-        `/highlight/clip-results/clips/${clipId}/scene-motions/${seq}/download`,
-      );
-      if (activeClipId.current !== clipId) return;
-      // S3 supplies attachment headers. Navigating avoids cross-origin blob/CORS limits.
-      const link = document.createElement('a');
-      link.href = result.url;
-      link.download = result.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      while (alive()) {
+        const res = await apiFetch(`/highlight/clip-results/clips/${clipId}/scene-motions/${seq}/download`);
+        if (!res.ok) throw new Error(await res.text() || `Request failed (${res.status})`);
+        const body = await res.json() as MotionDownloadResponse;
+        if (!alive()) return;
+        if (res.status === 200 && body.url) {
+          // S3 supplies attachment headers. Navigating avoids cross-origin blob/CORS limits.
+          const link = document.createElement('a');
+          link.href = body.url;
+          link.download = body.filename;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          // 이제 있으니 'MP4로 보기' 에서도 영상으로 보인다.
+          if (body.preview_url) {
+            const previewUrl = body.preview_url;
+            setMotions((prev) => prev.map((m) => (m.seq === seq ? { ...m, url: previewUrl, render_status: 'completed' } : m)));
+          }
+          setState(null);
+          return;
+        }
+        if (body.status === 'failed') {
+          setState({ status: 'failed', detail: body.detail || 'MP4를 만들지 못했습니다.' });
+          return;
+        }
+        if (Date.now() > deadline) {
+          setState({ status: 'failed', detail: '아직 만드는 중입니다. 잠시 뒤 다시 눌러 주세요.' });
+          return;
+        }
+        setState({ status: body.status, detail: body.detail || '' });
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      }
     } catch (err) {
-      if (activeClipId.current === clipId) setMotionMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (activeClipId.current === clipId) setDownloadingMotion(null);
+      setState({ status: 'failed', detail: err instanceof Error ? err.message : String(err) });
     }
   };
 
@@ -1704,8 +1765,8 @@ export default function ClipResultsPage() {
               </button>
               <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                 {motionAsMp4
-                  ? '영상으로 재생합니다. 준비된 장면은 MP4로 다운로드할 수 있습니다.'
-                  : '분석한 장면을 재생합니다. MP4 준비 후 다운로드할 수 있습니다.'}
+                  ? '만들어 둔 MP4가 있는 장면만 영상으로 재생합니다.'
+                  : '분석한 장면을 재생합니다. MP4는 다운로드를 누르면 그때 만듭니다.'}
               </span>
             </div>
             {motionMsg ? (
@@ -1715,21 +1776,38 @@ export default function ClipResultsPage() {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
                 {motions.map((m) => {
                   const a = actions.find((x) => x.seq === m.seq);
+                  const job = motionDownloads[m.seq];
+                  const working = !!job && job.status !== 'failed';
+                  const label = !mp4Storage ? 'MP4 불가 · S3 미설정'
+                    : !job || job.status === 'failed' ? 'MP4 다운로드'
+                    : job.status === 'running' ? 'MP4 만드는 중…'
+                    : job.status === 'queued' || job.status === 'deferred' ? 'MP4 차례 기다리는 중…'
+                    : '확인 중…';
                   return (
                     <div key={m.seq} style={{
                       width: 300, borderRadius: 8, overflow: 'hidden',
                       background: 'var(--surface-input, #16161a)', border: '1px solid var(--border-ghost, #2c2c32)',
                     }}>
-                      {!motionAsMp4 && m.sceneData ? (
-                        <SceneMotionView data={m.sceneData} width={300} />
-                      ) : m.url ? (
+                      {/* MP4 는 누가 다운로드해야 생긴다. 'MP4로 보기' 여도 아직 없으면 서버에 만들라고
+                          하지 않고 같은 장면을 브라우저에서 그린다(SceneMotionView — MP4 도 이 화면을 캡처한 것). */}
+                      {motionAsMp4 && m.url ? (
                         <video src={m.url} muted autoPlay loop playsInline style={{ width: '100%', display: 'block' }} />
+                      ) : m.sceneData ? (
+                        <div style={{ position: 'relative' }}>
+                          <SceneMotionView data={m.sceneData} width={300} />
+                          {motionAsMp4 ? (
+                            <span style={{
+                              position: 'absolute', top: 6, left: 6, padding: '2px 6px', borderRadius: 4,
+                              fontSize: 11, background: 'rgba(0,0,0,0.6)', color: '#fff',
+                            }}>MP4 없음 · 앱 화면</span>
+                          ) : null}
+                        </div>
                       ) : (
                         <div style={{
                           height: 194, display: 'flex', alignItems: 'center', justifyContent: 'center',
                           fontSize: 12, color: 'var(--muted, #999)',
                         }}>
-                          {motionAsMp4 ? 'mp4 준비 중 — 잠시 뒤 모션 새로고침' : 'sceneData 없음'}
+                          sceneData 없음
                         </div>
                       )}
                       <div style={{ padding: '6px 10px', fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1739,12 +1817,18 @@ export default function ClipResultsPage() {
                       </div>
                       <div style={{ padding: '0 10px 10px' }}>
                         <button style={smallBtn}
-                          disabled={!m.url || downloadingMotion !== null}
+                          disabled={working || !mp4Storage}
                           onClick={() => void downloadMotion(detail.id, m.seq)}
-                          title={m.url ? '이 장면을 MP4 파일로 저장' : '잠시 뒤 모션 새로고침을 눌러 준비 상태를 확인하세요'}
+                          title={!mp4Storage ? 'S3 저장소가 설정되지 않은 환경이라 MP4를 만들 수 없습니다'
+                            : m.url ? '이 장면을 MP4 파일로 저장' : '누르면 MP4를 만들고, 다 되면 저장합니다'}
                         >
-                          {downloadingMotion === m.seq ? '다운로드 준비 중…' : m.url ? 'MP4 다운로드' : 'MP4 준비 중'}
+                          {label}
                         </button>
+                        {job?.status === 'failed' && job.detail ? (
+                          <div style={{ fontSize: 11, color: 'var(--danger, #e66)', marginTop: 4 }}>{job.detail}</div>
+                        ) : working && job.detail ? (
+                          <div style={{ fontSize: 11, color: 'var(--muted, #999)', marginTop: 4 }}>{job.detail} 다 되면 바로 받습니다.</div>
+                        ) : null}
                       </div>
                     </div>
                   );
