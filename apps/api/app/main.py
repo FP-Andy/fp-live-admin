@@ -5975,10 +5975,28 @@ def generate_fcm_cards(
     round: int = Query(..., ge=1, le=99),
     match_id: UUID | None = Query(default=None),
     team_side: str | None = Query(default=None),
+    targets: str | None = Query(default=None, max_length=8000),
     db: Session = Depends(get_db),
     _user: User = Depends(_require_session_user),
 ):
     normalized_league = _normalize_competition_class(league)
+    # 체크한 팀만 받기: "경기ID:HOME,경기ID:AWAY,…". 없으면 예전처럼 라운드 전체.
+    selected_keys: set[tuple[UUID, str]] | None = None
+    if targets is not None and not (match_id and team_side):
+        selected_keys = set()
+        for raw in targets.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            target_match, _, target_side = raw.partition(":")
+            try:
+                selected_keys.add((UUID(target_match), _normalize_fcm_team_side(target_side)))
+            except (ValueError, HTTPException) as ex:
+                raise HTTPException(status_code=400, detail=f"Invalid card target: {raw}") from ex
+        if not selected_keys:
+            raise HTTPException(status_code=400, detail="No card targets selected")
+        if len(selected_keys) > 200:
+            raise HTTPException(status_code=400, detail="Too many card targets")
     query = db.query(FcmSubmission).filter(
         FcmSubmission.competition_class == normalized_league,
         FcmSubmission.round_number == round,
@@ -6011,11 +6029,15 @@ def generate_fcm_cards(
     latest_rows: dict[tuple[UUID, str], FcmSubmission] = {}
     for row in rows:
         key = (row.match_id, row.team_side)
+        if selected_keys is not None and key not in selected_keys:
+            continue
         if key not in latest_rows:
             latest_rows[key] = row
 
     generated_cards: list[tuple[str, bytes]] = []
     skipped: list[str] = []
+    if selected_keys is not None:
+        skipped.extend(f"{key[0]}:{key[1]}: FCM submission not found" for key in selected_keys - latest_rows.keys())
 
     for row in latest_rows.values():
         try:
@@ -6030,15 +6052,11 @@ def generate_fcm_cards(
         raise HTTPException(status_code=409, detail=detail)
 
     zip_bytes = build_cards_zip(generated_cards)
+    zip_name = f"{normalized_league}-{round}R_{'selected_' if selected_keys is not None else ''}cards.zip"
     return Response(
         content=zip_bytes,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": _attachment_header(
-                f"{normalized_league}-{round}R_cards.zip",
-                f"{normalized_league}-{round}R_cards.zip",
-            )
-        },
+        headers={"Content-Disposition": _attachment_header(zip_name, zip_name)},
     )
 
 

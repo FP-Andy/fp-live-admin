@@ -163,7 +163,7 @@
 .fcm-workspace-page .fvc-table { min-width: 0; gap: 18px; }
 .fcm-workspace-page .fvc-match-group { gap: 10px; }
 .fcm-workspace-page .fvc-match-group-head { padding: 14px 0; }
-.fcm-workspace-page .fvc-table-row { grid-template-columns: 1fr 1.25fr 1fr 1fr 1.2fr 1fr .8fr; padding: 18px 14px; font-size: 14px; border-radius: 8px; }
+.fcm-workspace-page .fvc-table-row { grid-template-columns: 36px 1fr 1.25fr 1fr 1fr 1.2fr 1fr .8fr; padding: 18px 14px; font-size: 14px; border-radius: 8px; }
 .fcm-workspace-page .fvc-table-row .button-link { font-size: 13px; padding-inline: 10px; }
 .templates-page .fcm-template-grid { grid-template-columns: minmax(0,1fr); gap: 20px; }
 .templates-page .fcm-template-create { padding: 0; }
@@ -232,6 +232,7 @@
   .fcm-workspace-page .fvc-table-row > span[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 12px; }
   .fcm-workspace-page .fvc-table-row > span:last-child { grid-column: 1/-1; }
   .fcm-workspace-page .fvc-table-row > span:last-child button { width: 100%; }
+  .fcm-workspace-page .fvc-table-row > .fvc-check-cell { grid-column: 1/-1; }
   .fcm-workspace-page .fvc-table-head { display: none; }
   .fcm-workspace-page .fvc-match-group-head strong { flex: 1 1 100%; line-height: 1.5; }
   .templates-page .fcm-template-create { padding: 0; }
@@ -451,3 +452,12 @@ html[data-console-theme="light"] .app-shell .fpa-pick-caption { color: #1746bf; 
 .fpa-pick-dir { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); padding: 2px 8px; border-radius: 999px; background: rgba(14, 19, 32, .82); color: #cfe0ff; font-size: 11px; font-weight: 700; white-space: nowrap; }
 html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-pick .fpa-pick-dot { background: #2158e8; border-color: #fff; color: #fff; }
 html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-pick .fpa-pick-dot.end { background: #0e1320; border-color: #6f9bff; color: #cfe0ff; }
+
+/* FCM 카드 생성 — 체크한 팀만 받기 */
+.fcm-workspace-page .fvc-check { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; cursor: pointer; }
+.fcm-workspace-page .fvc-check input { width: 18px; height: 18px; margin: 0; cursor: pointer; accent-color: #2158e8; }
+.fcm-workspace-page .fvc-check input:disabled { cursor: not-allowed; }
+.fcm-workspace-page .fvc-select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.fcm-workspace-page .fvc-row-checked { box-shadow: inset 0 0 0 1px #4c74d9; background: rgba(76,116,217,.12); }
+html[data-console-theme="light"] .fcm-workspace-page .fvc-row-checked { background: #eaf0ff; box-shadow: inset 0 0 0 1px #2158e8; }
+.fcm-workspace-page .fvc-sidebar-section .btn-secondary { margin-top: 8px; width: 100%; }

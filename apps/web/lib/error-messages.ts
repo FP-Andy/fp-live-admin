@@ -155,6 +155,8 @@ const EXACT: Record<string, string> = {
   'You can submit at most 5 stats': '스탯은 5개까지 고를 수 있습니다.',
   'team_side must be HOME or AWAY': 'HOME·AWAY 중 하나를 고르세요.',
   'FCM submission not found': '저장된 제출이 없습니다.',
+  'No card targets selected': '다운로드할 팀을 체크하세요.',
+  'Too many card targets': '한 번에 200팀까지 받을 수 있습니다.',
   'FCM submissions are available for archived matches only': '카드는 보관된(끝난) 경기에서만 만들 수 있습니다.',
   'Competition class is required': '대회 클래스를 고르세요.',
   'Competition class does not exist': '없는 대회 클래스입니다.',
@@ -185,6 +187,7 @@ const name = (table: Record<string, string>, key: string) => table[key] || key;
 type Rule = [RegExp, (m: RegExpMatchArray) => string, boolean?];
 /** 변수가 들어가는 서버 문장. 위에서부터 처음 맞는 규칙을 쓴다. */
 const PATTERNS: Rule[] = [
+  [/^Invalid card target: /, () => '체크한 팀 정보가 올바르지 않습니다. 화면을 새로 고친 뒤 다시 체크하세요.'],
   [/^(Archive|Delete|Event reset|Possession reset) blocked while match clock is running\./,
     (m) => `경기 시계가 돌고 있어 ${LIVE_ACTION[m[1]]} 바로 할 수 없습니다. 한 번 더 확인하면 진행합니다.`],
   [/^Competition class is used by (\d+) match\(es\)$/, (m) => `이 대회에 경기 ${m[1]}개가 있어 지울 수 없습니다. 경기를 먼저 옮기거나 지우세요.`],
