@@ -381,3 +381,73 @@ html[data-console-theme="light"] .fla-record-tag.goal { border-color: #17191e; b
 .console-dashboard .dashboard-filter-search { flex: 1 1 200px; min-width: 160px; max-width: 280px; margin-left: auto; }
 .console-dashboard .dashboard-filter-search input { width: 100%; }
 @media (max-width: 760px) { .console-dashboard .dashboard-filter-search { max-width: none; flex-basis: 100%; } }
+
+/* FPA Live Logger — 기록된 로그 표 · 고른 로그 그 자리 수정 · 축구장 표시 (이사71) */
+
+/* 표 칸이 패널 밖(오른쪽 축구장 위)으로 밀려 나가지 않게: 패널은 한 칸, 머리 버튼은 줄바꿈. */
+.fpa-live-shell .fpa-log-panel { grid-template-columns: minmax(0, 1fr); }
+/* 표 쪽이 수정 칸으로 길어져도 축구장은 위에 붙어 있게. */
+.fpa-live-shell .fpa-live-main > .fpa-pitch-panel { align-content: start; align-self: start; }
+.fpa-live-shell .fpa-log-panel > .fpa-panel-header { flex-wrap: wrap; row-gap: 6px; }
+.fpa-live-shell .fpa-log-panel .fpa-panel-title { white-space: nowrap; }
+.fpa-live-shell .fpa-log-panel .fpa-panel-actions { flex-wrap: wrap; justify-content: flex-start; }
+
+/* 넓은 화면은 표 쪽을 조금 넓혀 Half~Receive Pos 가 가로 스크롤 없이 보이게. 1100px 이하는 위아래로 쌓는다. */
+@media (min-width: 1101px) {
+  .fpa-live-shell .fpa-live-main { grid-template-columns: minmax(0, 1.08fr) minmax(420px, 1.12fr); }
+}
+/* 한 줄 = 한 로그. 좁은 화면에서도 두 칸씩 접지 않고(한 로그가 8줄이 되던 것) 지표 칸만 가로로 넘긴다. */
+.fpa-live-shell .fpa-log-header,
+.fpa-live-shell .fpa-log-entry {
+  grid-template-columns: 28px 40px 40px 34px 40px minmax(66px, .6fr) 50px 72px 72px minmax(110px, 1fr) 42px 44px 44px 44px minmax(100px, .8fr);
+  gap: 4px;
+  padding-inline: 6px;
+  min-width: 960px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 고른 줄 = 한 톤 밝은 면 + 1px 파랑 (4차 디자인). inset 그림자라 열 정렬이 밀리지 않는다. */
+.fpa-live-shell .fpa-log-entry.selected { background: #1a2440; color: var(--text-primary, var(--text)); box-shadow: inset 0 0 0 1px #4c74d9; }
+.fpa-live-shell .fpa-log-entry:focus-visible { outline: 1px solid #4c74d9; outline-offset: -1px; }
+html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-log-entry.selected { background: #eaf0ff; color: var(--text); box-shadow: inset 0 0 0 1px #2158e8; }
+
+/* ── 고른 로그 수정 칸 ── */
+.fpa-log-edit { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid #4c74d9; border-radius: 5px; background: #151c2e; font-size: 12px; }
+.fpa-log-edit-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.fpa-log-edit-head strong { font-size: 13px; color: var(--text-primary, var(--text)); }
+.fpa-log-edit-now { color: var(--text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 120px; }
+.fpa-log-edit-code { color: var(--text-secondary); white-space: nowrap; }
+.fpa-log-edit-code code { padding: 1px 6px; border-radius: 4px; background: #0e1320; color: #9db8ff; font-size: 12px; }
+.fpa-log-edit-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 10px; align-items: start; }
+.fpa-log-edit-grid > .fpa-log-edit-wide { grid-column: span 2; }
+.fpa-log-edit-field { display: grid; gap: 4px; min-width: 0; }
+.fpa-log-edit-field > span:first-child { font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+.fpa-log-edit-field em { color: var(--muted); font-style: normal; }
+.fpa-live-shell .fpa-log-edit input { width: 100%; min-width: 0; height: 30px; min-height: 30px; padding: 0 8px; border-radius: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.fpa-live-shell .fpa-log-edit .fpa-segmented { min-height: 30px; }
+.fpa-live-shell .fpa-log-edit .fpa-segmented button { min-height: 26px; padding: 2px 8px; font-size: 12px; }
+.fpa-log-edit-point { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; min-width: 0; }
+.fpa-log-edit-point-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; align-items: center; }
+.fpa-live-shell .fpa-log-edit .fpa-log-edit-mini { height: 30px; min-height: 0; padding: 0 8px; font-size: 12px; }
+.fpa-log-edit-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.fpa-log-edit-hint { margin-right: auto; color: var(--muted); font-size: 11px; }
+.fpa-live-shell .fpa-log-edit-foot button { min-height: 30px; padding: 4px 12px; font-size: 12px; }
+html[data-console-theme="light"] .app-shell .fpa-log-edit { background: #f5f8ff; border-color: #2158e8; }
+html[data-console-theme="light"] .app-shell .fpa-log-edit-code code { background: #e8efff; color: #1746bf; }
+
+/* ── 축구장 위 고른 로그 ── */
+.fpa-pick-header { min-height: 20px; }
+.fpa-pick-caption { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #9db8ff; }
+html[data-console-theme="light"] .app-shell .fpa-pick-caption { color: #1746bf; }
+.fpa-pick { position: absolute; inset: 0; pointer-events: none; }
+.fpa-pick.faded { opacity: .35; }
+.fpa-pick-path { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.fpa-pick-path polyline { fill: none; stroke: #6f9bff; stroke-width: 3; stroke-dasharray: 10 6; vector-effect: non-scaling-stroke; }
+.fpa-pick-path polygon { fill: #6f9bff; }
+.fpa-live-shell .fpa-pick .fpa-pick-dot { position: absolute; transform: translate(-50%, -50%); width: 26px; height: 26px; min-height: 0; padding: 0; display: grid; place-items: center; border-radius: 999px; border: 2px solid #fff; background: #2158e8; color: #fff; font-size: 11px; font-weight: 800; box-shadow: 0 2px 8px rgba(0, 0, 0, .45); pointer-events: none; }
+.fpa-live-shell .fpa-pick .fpa-pick-dot.end { background: #0e1320; border-color: #6f9bff; color: #cfe0ff; }
+.fpa-live-shell .fpa-pick.editing .fpa-pick-dot { pointer-events: auto; cursor: grab; touch-action: none; }
+.fpa-live-shell .fpa-pick.editing .fpa-pick-dot:active { cursor: grabbing; }
+.fpa-pick-dir { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); padding: 2px 8px; border-radius: 999px; background: rgba(14, 19, 32, .82); color: #cfe0ff; font-size: 11px; font-weight: 700; white-space: nowrap; }
+html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-pick .fpa-pick-dot { background: #2158e8; border-color: #fff; color: #fff; }
+html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-pick .fpa-pick-dot.end { background: #0e1320; border-color: #6f9bff; color: #cfe0ff; }
