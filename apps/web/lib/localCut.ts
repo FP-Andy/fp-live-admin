@@ -1,5 +1,6 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import type { FFFSType } from '@ffmpeg/ffmpeg';
+import { foldRaw } from './error-messages';
 
 // enum 을 값으로 import 하면 번들러가 고르는 빌드에 따라 undefined 가 된다.
 // 런타임 값은 문자열 그대로이므로 리터럴을 쓴다.
@@ -156,10 +157,12 @@ export async function cutClipsLocally(
       }
 
       if (!bytes) {
-        throw new Error(
-          `${i + 1}번 클립을 만들지 못했습니다 (${start.toFixed(1)}~${end.toFixed(1)}초). `
-          + `원본을 이 브라우저에서 자를 수 없는 형식입니다 — ${failureReason()}`,
-        );
+        // ffmpeg 로그 원인(코덱 등)은 화면 문장과 묶어 자세히에 접는다.
+        throw new Error(foldRaw(
+          `${i + 1}번 클립을 자르지 못했습니다 (${start.toFixed(1)}~${end.toFixed(1)}초). `
+          + '이 브라우저에서 자를 수 없는 영상 형식입니다.',
+          failureReason(),
+        ));
       }
       clips.push({
         index: i + 1,

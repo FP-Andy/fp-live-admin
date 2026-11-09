@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
+import { errorFromResponse, errorMessage } from '../../../../lib/error-messages';
+import ErrorNotice from '../../../../components/ErrorNotice';
 
 type OperatorJob = {
   id: string;
@@ -40,7 +42,7 @@ export default function CompletedPage() {
       setJobs(data.filter((j) => j.status === 'done' || j.job_metadata?.completed));
       setError('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : '불러오기 실패');
+      setError(errorMessage(e, '불러오기 실패'));
     } finally {
       setLoading(false);
     }
@@ -53,10 +55,10 @@ export default function CompletedPage() {
     setBusy(id);
     try {
       const res = await apiFetch(`/highlight/operator-jobs/${id}/complete`, { method: 'POST' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw await errorFromResponse(res, '완료 처리 실패');
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '완료 처리 실패');
+      setError(errorMessage(e, '완료 처리 실패'));
     } finally {
       setBusy('');
     }
@@ -67,20 +69,20 @@ export default function CompletedPage() {
     setBusy(id);
     try {
       const res = await apiFetch(`/highlight/operator-jobs/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw await errorFromResponse(res, '삭제 실패');
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '삭제 실패');
+      setError(errorMessage(e, '삭제 실패'));
     } finally {
       setBusy('');
     }
   };
 
   return (
-    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <h2 style={{ fontSize: 18, margin: 0 }}>완료 관리</h2>
 
-      {error ? <p style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</p> : null}
+      <ErrorNotice message={error} style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }} />
       {loading ? <p style={{ color: 'var(--muted, #999)', fontSize: 13 }}>불러오는 중...</p> : null}
       {!loading && jobs.length === 0 ? (
         <div style={{ ...card, textAlign: 'center', color: 'var(--muted, #999)' }}>완성된 하이라이트가 없습니다.</div>

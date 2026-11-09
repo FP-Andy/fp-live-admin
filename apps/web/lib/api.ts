@@ -1,4 +1,7 @@
+import { errorFromBody, errorFromResponse, FpcError } from './error-messages';
+
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
+export { errorFromResponse, FpcError };
 
 export type SessionUser = {
   id: string;
@@ -69,10 +72,19 @@ export async function apiFetch(input: string, init?: RequestInit) {
   return response;
 }
 
+/** 농구 화면(/admin/basketball/**)은 apiJson 오류를 예전처럼 서버 본문 그대로 던진다. */
+function legacyErrorSurface(): boolean {
+  return typeof window !== 'undefined' && window.location.pathname.startsWith('/admin/basketball');
+}
+
 export async function apiJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await apiFetch(input, init);
   if (!response.ok) {
-    throw new Error(await response.text() || `Request failed (${response.status})`);
+    const text = await response.text().catch(() => '');
+    // 농구 화면은 대표 작업 중 — 보이는 오류 문구를 예전(서버 본문 그대로)과 똑같이 둔다.
+    if (legacyErrorSurface()) throw new Error(text || `Request failed (${response.status})`);
+    // 서버 detail 은 변환표를 거친 한국어로(message), 원문은 status·detail·raw 로 남긴다.
+    throw errorFromBody(response.status, text, { url: `${init?.method || 'GET'} ${API_BASE}${input}` });
   }
   return response.json() as Promise<T>;
 }

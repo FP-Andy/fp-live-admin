@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE, apiJson } from '../../../../lib/api';
+import { errorFromBody, errorMessage, jobErrorMessage } from '../../../../lib/error-messages';
+import { ErrorFold } from '../../../../components/ErrorNotice';
 import HighlightSubTabs from '../HighlightSubTabs';
 
 type Box = { cls: string; tid: number; cx: number; cy: number; w: number; h: number };
@@ -214,14 +216,14 @@ export default function PlayerClipPage() {
             setHasProxy(!!j.job_metadata?.proxy_file);
             setStatus(j.job_metadata?.message || '탐지 완료 — 공 잡는 순간 선수를 클릭하세요.');
             try { await loadDetection(jobId); }
-            catch (err) { setStatus(`탐지 데이터 로드 오류: ${err}`); }
+            catch (err) { setStatus(errorMessage(err, '탐지 결과를 불러오지 못했습니다. 새로고침하세요.', { fixed: true, context: { '작업 ID': jobId } })); }
           } else {
-            setStatus(`오류: ${j.error_message || '탐지 실패'}`);
+            setStatus(jobErrorMessage(j.error_message, '탐지하지 못했습니다. 다시 올려 주세요.', { '작업 ID': j.id }));
           }
         }
       } catch (err) {
         stopPolling();
-        setStatus(`폴링 오류: ${err}`);
+        setStatus(errorMessage(err, '진행 상황을 불러오지 못했습니다. 새로고침하세요.', { fixed: true, context: { '작업 ID': jobId } }));
       }
     }, 3000);
   }, [stopPolling, loadDetection]);
@@ -272,9 +274,9 @@ export default function PlayerClipPage() {
             }
             return;
           }
-          reject(new Error(xhr.responseText || `업로드 실패 (${xhr.status})`));
+          reject(errorFromBody(xhr.status, xhr.responseText || '', { fallback: '다시 시도해 주세요.', url: '/highlight/player-jobs' }));
         };
-        xhr.onerror = () => reject(new Error('업로드 연결 오류'));
+        xhr.onerror = () => reject(new Error('서버에 연결하지 못했습니다. 네트워크를 확인해 주세요.'));
         xhr.onabort = () => reject(new Error('업로드가 취소되었습니다.'));
         xhr.send(form);
       });
@@ -283,7 +285,7 @@ export default function PlayerClipPage() {
       setJob(j);
       startPolling(data.job_id);
     } catch (err) {
-      setStatus(`오류: ${err}`);
+      setStatus(errorMessage(err, '업로드하지 못했습니다. 다시 시도해 주세요.', { action: '업로드하지 못했습니다' }));
     } finally {
       setUploading(false);
     }
@@ -514,7 +516,7 @@ export default function PlayerClipPage() {
       setClipSel(new Set());
       setStatus(`추출 완료 — ${resp.clip_count}개 클립`);
     } catch (err) {
-      setStatus(`추출 오류: ${err}`);
+      setStatus(errorMessage(err, '클립을 추출하지 못했습니다. 다시 시도해 주세요.', { action: '클립을 추출하지 못했습니다', context: { '작업 ID': job.id } }));
     } finally {
       setExtracting(false);
     }
@@ -561,7 +563,7 @@ export default function PlayerClipPage() {
     setProxyInfo('재생용 저화질 영상 생성 중... (수 분 소요)');
     try {
       await fetch(`${API_BASE}/highlight/player-jobs/${job.id}/proxy`, { method: 'POST', credentials: 'include' });
-    } catch { setProxyInfo('요청 실패'); setProxyBusy(false); return; }
+    } catch { setProxyInfo('최적화를 요청하지 못했습니다. 다시 눌러 주세요.'); setProxyBusy(false); return; }
     if (proxyPollRef.current) clearInterval(proxyPollRef.current);
     proxyPollRef.current = setInterval(async () => {
       try {
@@ -589,9 +591,9 @@ export default function PlayerClipPage() {
   const sortedPicks = useMemo(() => [...picks].sort((a, b) => a.start - b.start), [picks]);
 
   return (
-    <div style={{ width: '100%', padding: 24, color: 'var(--text, #eee)' }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%', padding: 24, color: 'var(--text, #eee)' }}>
       <HighlightSubTabs />
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>🎯 개인 클립 추출</h1>
+      <h1 style={{ fontSize: 22, marginBottom: 4 }}>🎯 선수 개인 클립</h1>
       <p style={{ fontSize: 13, color: 'var(--muted, #999)', marginBottom: 20 }}>
         영상을 올리면 선수·공을 탐지합니다. 훑어보다가 <b>타깃 선수가 공을 잡는 순간 그 선수를 클릭</b>하세요.
         클릭은 <b>&quot;이 터치 = 내 선수&quot;</b> 표시일 뿐 추적을 따라가지 않으므로, track id 가 직후 바뀌어도 무관합니다.
@@ -611,7 +613,7 @@ export default function PlayerClipPage() {
             {uploading ? '업로드 중...' : detecting ? '탐지 중...' : '업로드 & 탐지'}
           </button>
         </div>
-        {status && <p style={{ fontSize: 13, marginTop: 12, color: 'var(--muted, #999)' }}>{status}</p>}
+        {status && <div style={{ fontSize: 13, margin: '12px 0 13px', color: 'var(--muted, #999)' }}>{status}<ErrorFold message={status} /></div>}
       </div>
 
       {detecting && (() => {

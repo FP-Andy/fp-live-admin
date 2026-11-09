@@ -16,7 +16,7 @@ export function substitutionScene(url:string):Promise<string>{
      if(attempt<2)await new Promise(done=>setTimeout(done,1500*(attempt+1)));
     }
     if(!response?.ok)throw Error('장면을 불러오지 못했습니다. 크게 보기를 다시 열어 주세요.');
-    const blob=await response.blob();if(!blob.type.startsWith('image/')||blob.size>4*1024*1024)throw Error('장면 이미지 형식을 확인하세요.');
+    const blob=await response.blob();if(!blob.type.startsWith('image/')||blob.size>4*1024*1024)throw Error('장면을 불러오지 못했습니다. 다시 열어 주세요.');
     const image=URL.createObjectURL(blob);cached.set(url,image);
     while(cached.size>32){const oldest=cached.keys().next().value!;URL.revokeObjectURL(cached.get(oldest)!);cached.delete(oldest);}
     resolve(image);

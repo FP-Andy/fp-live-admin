@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { apiJson } from './api';
+import { errorMessage } from './error-messages';
 
 type Highlight = { id: string; clock_ms: number };
 type Pending = { request_id: string; clock_ms: number };
@@ -80,8 +81,8 @@ export function useMatchHighlights(matchId: string, userId: string, canWrite: bo
         setHighlights((rows) => [...rows.filter((row) => row.id !== item.request_id), response.highlight].sort((a, b) => a.clock_ms - b.clock_ms));
         setNotice('하이라이트를 서버에 저장했습니다.');
       }
-    } catch {
-      if (current.current === scope) setNotice('저장을 확인하지 못했습니다. 아래 원래 시각으로 다시 요청할 수 있습니다.');
+    } catch (error) {
+      if (current.current === scope) setNotice(errorMessage(error, '저장되지 않았을 수 있습니다. 아래에서 다시 보내 주세요.', { fixed: true, context: { '요청 ID': item.request_id } }));
     } finally {
       active.current.delete(item.request_id);
       if (current.current === scope) setBusy([...active.current]);

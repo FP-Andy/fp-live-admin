@@ -1,0 +1,754 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   단색 정리안(3차, 2026-11-03 승준 확정) → 4차안(2026-11-04 승준 승인)으로 보완.
+   "반투명 색 채움 + 같은 색 진한 테두리" 조합이 콘솔 전반에서 AI 가 만든 화면처럼 보였다.
+   색 구분(홈 주황·원정 파랑, 버튼 종류별 색)은 그대로 두고 테두리 없는 불투명 단색으로만 바꾼다.
+   예외: 진행 중 주황 네온 테두리(live-neon-overlay)는 "지금 기록 중" 표시라 유지한다.
+   미리보기: _design_handoff/fpc-flat-style-preview-2026-11-03.html
+   범위를 넓힐 땐 아래 선택자 묶음(:is(...))에 화면 루트 클래스를 더한다.
+
+   4차안(미리보기: _design_handoff/fpc-flat-style-v4-2026-11-04.html) — 3차에서 테두리를 전부 빼자
+   ① 무엇이 선택됐는지 흐려지고 ② 버튼과 태그가 같은 단색 덩어리로 보였다. 그래서
+   · 버튼 = 면 + 같은 계열 1px 테두리 + 옅은 아래 그림자 + 굵은 글씨(600) → "누를 수 있다"
+   · 태그 = 알약 모양·높이 20px·12px 글자·테두리/그림자/마우스 반응 없음 → "표시일 뿐"(상태는 점+글자 그대로)
+   · 선택 = 강조색 면 + 1px 밝은 테두리, 목록·카드 선택 = 면 한 톤 + 1px 파랑, 탭 = 한 틀 안에서 고른 칸만 채움
+   버튼에는 원래 1px 테두리 자리가 있어(3차에서 투명으로만 둠) 색을 칠해도 상자 크기는 그대로다.
+   버튼 높이는 올리지 않는다(미리보기의 34px 는 예시일 뿐) — 같은 내용 ⇒ 같은 높이 원칙 유지.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* 버튼 글꼴 — 4차에서 버튼 글자를 굵게(SemiBold) 하는데, Pretendard 는 굵기마다 위아래 값(hhea ascent·descent)이 달라
+   15px 에서 SemiBold 줄 높이가 Regular 보다 1px 크다(실측 22→23px). 그대로 두면 기본 버튼이 전부 1px 커진다.
+   그래서 같은 Pretendard 파일을 'FP Button' 이라는 이름으로 한 번 더 등록하고, 4차가 "올린" 굵기에만 Regular 의 hhea 값
+   (ascent 2172 · descent 601 · lineGap 184 / 2048, 폰트 파일 실측)을 씌운다 — 10~36px 전 크기에서 Regular 와 줄 높이 일치 확인.
+   · 590 = SemiBold 글자 + Regular 줄 높이 → 4차 기본 굵기(종전 400 이던 버튼). 다른 글꼴로 대체될 땐 600 처럼 보인다.
+   · 690 = Bold 글자 + Regular 줄 높이 → 고른 팀 버튼(굵게 강조하되 옆 버튼과 같은 높이).
+   · 100~900 은 원래 값 그대로 — 화면이 이미 정해 둔 600·700·800(주요 버튼·단축키 칸 등)은 종전 높이를 지킨다.
+   파일 고르기 버튼(::file-selector-button)은 글꼴을 바꾸면 입력 칸이 1~2px 커져(실측) 원래 글꼴·굵기 그대로 둔다.
+   파일 주소는 layout.tsx 가 불러오는 Pretendard.css 와 같은 곳(같은 파일이라 다시 내려받지 않는다). */
+@font-face { font-family: 'FP Button'; font-weight: 100; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Thin.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Thin.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 200; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-ExtraLight.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-ExtraLight.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 300; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Light.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Light.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 400; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Regular.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Regular.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 500; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Medium.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Medium.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 590; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-SemiBold.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-SemiBold.woff') format('woff'); ascent-override: 106.0547%; descent-override: 29.3457%; line-gap-override: 8.9844%; }
+@font-face { font-family: 'FP Button'; font-weight: 600; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-SemiBold.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-SemiBold.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 690; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Bold.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Bold.woff') format('woff'); ascent-override: 106.0547%; descent-override: 29.3457%; line-gap-override: 8.9844%; }
+@font-face { font-family: 'FP Button'; font-weight: 700; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Bold.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Bold.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 800; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-ExtraBold.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-ExtraBold.woff') format('woff'); }
+@font-face { font-family: 'FP Button'; font-weight: 900; font-style: normal; font-display: swap; src: url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Black.woff2') format('woff2'), url('https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard/Pretendard-Black.woff') format('woff'); }
+.app-shell, .login-page { --fp-btn-font: 'FP Button', 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(button, .button-link),
+.app-shell :where(.console-flat) .console-section-nav a,
+.app-shell .confirm-dialog button,
+.login-page .console-theme-toggle { font-family: var(--fp-btn-font); }
+/* 버튼 굵기(4차 600 → 위 590) — 특이도를 버튼 기본값(button { font: inherit })과 같은 수준으로만 둔다.
+   화면이 따로 굵기를 정한 버튼(주요 700·슬롯 제목·태그 안 style 등)은 그 값이 이기고, 정하지 않은 버튼만 굵어진다.
+   달력 날짜·글자 링크형 위험 버튼은 글자처럼 보여야 해 제외. */
+:where(.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat)) button:where(:not(.day-cell, .btn-link-danger)),
+:where(.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat)) :where(.button-link, .console-section-nav a),
+:where(.app-shell .confirm-dialog) button,
+:where(.login-page) :where(.console-theme-toggle) { font-weight: 590; }
+
+/* 기본 버튼(4차) — 면 한 톤 + 회색 1px 테두리 + 옅은 아래 그림자(굵기는 위 590 규칙). 색 있는 버튼(주요·보조·위험·선택)은 제외한다.
+   테두리 폭은 원래 1px 이라 색만 바뀌고 크기는 그대로다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(button, .button-link):not(:is(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .selected, .btn-link-danger, .day-cell)) {
+  background: #232833;
+  border-color: #3a4150;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .35);
+}
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(button, .button-link):not(:is(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .selected, .btn-link-danger, .day-cell)):hover:not(:disabled) {
+  background: #2b313d;
+  border-color: #4b5466;
+}
+
+/* 주요 — 주황 면 + 한 톤 진한 주황 테두리. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-primary { border-color: #e56800; color: #15100a; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-primary:hover:not(:disabled) { border-color: #f27a12; }
+
+/* 보조(설정·계산·보관) — 진한 파랑 면 + 같은 계열 테두리. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-secondary { background: #1e3157; border-color: #2f4b80; color: #d6e1ff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-secondary:hover:not(:disabled) { background: #253c6a; border-color: #3d5d99; }
+
+/* 위험 — 평소엔 기본 버튼 + 빨간 글자(Primer 방식), 마우스를 올리면 어두운 빨강.
+   진한 빨강은 확인 창의 최종 "삭제"뿐이다(아래 .confirm-dialog). */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-danger { background: #232833; border-color: #3a4150; color: #ff8a8a; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-danger:hover:not(:disabled) { background: #3a1f23; border-color: #6b2c33; }
+
+/* 선택(토글) — 파랑 면 + 가는 밝은 파랑 테두리. 고르지 않은 옆 버튼은 회색 테두리라 차이가 분명하다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-active { background: #2158e8; border-color: #6b92f2; color: #fff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* 팀 선택 — 홈=주황, 원정=파랑은 팀 구분 색이라 유지하고, 선택되면 그 색 면 + 가는 밝은 테두리.
+   점유 버튼과 공격 기록 팀 버튼이 같은 규칙을 쓴다. 종전 2px 테두리는 고른 버튼만 2~3px 커지게 했다 —
+   옆 버튼과 같은 1px 로 맞춰 고르든 안 고르든 높이가 같다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .fla-home.selected { background: #ff7400; border: 1px solid #ffa463; color: #15100a; font-weight: 690; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .fla-away.selected { background: #2158e8; border: 1px solid #6b92f2; color: #fff; font-weight: 690; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* 단축키 표시(Q·W·E·A·S·D·Enter) — 흐린 글자로 바꿨더니 안 보인다는 의견(11-03 승준)으로 다시 눈에 띄게.
+   종전의 주황 반투명+테두리 대신 주황 단색 작은 칸 + 진한 글자. 바탕이 주황·파랑이면 칸 색을 바꿔 묻히지 않게 한다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .kbd {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px;
+  border: 0; border-radius: 3px; background: #ff7400; color: #15100a;
+  font-size: 11px; font-weight: 800; line-height: 1; letter-spacing: .02em; opacity: 1; vertical-align: middle;
+}
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(.btn-primary, .fla-home.selected) .kbd { background: #15100a; color: #ff9a47; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(.btn-active, .fla-away.selected) .kbd { background: #0c1a3d; color: #fff; }
+
+/* 카드(큰 단위 구역) — 회색 테두리는 유지한다. 구역을 나누는 데는 테두리가 더 명확하다(11-03 승준).
+   색 테두리·글로우만 없앤다. 테두리를 없애는 건 버튼·상태 표시 같은 작은 요소뿐이다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .card { border-color: var(--border-soft); box-shadow: none; }
+
+/* 상태 표시(K3·기록 가능·STOPPED·LIVE) — 상자 없이 점 + 글자. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .status-pill { padding: 0; border: 0; background: transparent; box-shadow: none; gap: 6px; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .status-pill:is(.running, .stopped, .warning, .archived)::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none;
+}
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .status-pill.running { color: #3ddc97; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .status-pill.stopped { color: var(--muted); }
+
+/* 안내 띠·점수판 */
+.app-shell :is(.fla-match, .console-dashboard) .fla-feedback { border: 0; background: #1e3157; color: #c9d7ff; }
+
+/* 되돌릴 수 없는 작업 확인 창 — 대시보드에선 <main> 밖에 뜨므로 범위 밖에서 따로 잡는다. */
+.app-shell .confirm-dialog { border-color: transparent; background: var(--surface-card-strong); }
+.app-shell .confirm-dialog .btn-secondary { background: #232833; border-color: #3a4150; color: var(--text); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell .confirm-dialog .btn-secondary:hover:not(:disabled) { background: #2b313d; border-color: #4b5466; }
+/* 최종 삭제·초기화만 진한 빨강 면 + 밝은 빨강 테두리 + 흰 글자. */
+.app-shell .confirm-dialog .btn-danger { background: #d64545; border-color: #e05a5a; color: #fff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell .confirm-dialog .btn-danger:hover:not(:disabled) { background: #e05050; border-color: #ea6f6f; }
+
+/* 사이드바 단위 약어 — 테두리 대신 단색. 펼친 단위는 그 색으로 채운다. */
+.app-shell .sidebar-section[data-product] .product-monogram { background: #232833; border-color: transparent; }
+.app-shell .sidebar-section[data-product] button.product-badge.active .product-monogram { background: var(--product-color); border-color: transparent; color: #0c0e12; }
+.app-shell .sidebar-section[data-product] .product-nav a.active { background: #232833; }
+
+/* ── 라이트 테마 — 같은 원칙(테두리 없이 단색), 흰 바탕에 맞춘 값 ── */
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(button, .button-link):not(:is(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .selected, .btn-link-danger, .day-cell)) { background: #f6f8fa; border-color: #d0d7de; color: var(--text); box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(button, .button-link):not(:is(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .selected, .btn-link-danger, .day-cell)):hover:not(:disabled) { background: #eef1f4; border-color: #b9c1cb; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-primary { border-color: #e56800; color: #15100a; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-secondary { background: #dfe7ff; border-color: #b6c8f5; color: #1d4ed8; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-secondary:hover:not(:disabled) { background: #d3defd; border-color: #9db5f0; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-danger { background: #f6f8fa; border-color: #d0d7de; color: #b42318; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-danger:hover:not(:disabled) { background: #fde4e4; border-color: #f1a8a8; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .btn-active { background: #2158e8; border-color: #1b4fd1; color: #fff; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .fla-home.selected { background: #ff7400; border-color: #e56800; color: #15100a; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .fla-away.selected { background: #2158e8; border-color: #1b4fd1; color: #fff; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .status-pill { background: transparent; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) .kbd { background: #ff7400; color: #15100a; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(.btn-primary, .fla-home.selected) .kbd { background: #15100a; color: #ff9a47; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(.btn-active, .fla-away.selected) .kbd { background: #0c1a3d; color: #fff; }
+html[data-console-theme="light"] .app-shell .confirm-dialog .btn-secondary { background: #f6f8fa; border-color: #d0d7de; color: var(--text); box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell .confirm-dialog .btn-secondary:hover:not(:disabled) { background: #eef1f4; border-color: #b9c1cb; }
+html[data-console-theme="light"] .app-shell .confirm-dialog .btn-danger { background: #d64545; border-color: #c43c3c; color: #fff; }
+html[data-console-theme="light"] .app-shell .sidebar-section[data-product] .product-monogram { background: #eef0f4; }
+html[data-console-theme="light"] .app-shell .sidebar-section[data-product] button.product-badge.active .product-monogram { background: var(--product-color); color: #fff; }
+html[data-console-theme="light"] .app-shell .sidebar-section[data-product] .product-nav a.active { background: #eef0f4; }
+
+/* 대시보드 지표 타일 — 테두리·위쪽 색 줄 대신 면만. 첫 타일(주황)·tech 타일(파랑) 구분은 숫자 색으로 남긴다. */
+.app-shell .console-dashboard .metric-tile { border-color: var(--border-soft); }
+.app-shell .console-dashboard .metric-tile:first-child,
+.app-shell .console-dashboard .metric-tile.tech { border-top: 1px solid var(--border-soft); }
+.app-shell .console-dashboard .metric-tile:first-child strong { color: #ff8a3d; }
+.app-shell .console-dashboard .metric-tile.tech strong { color: #6f9bff; }
+
+/* 달력 — 날짜 칸은 글자만(종전과 같다). 선택한 날은 파랑 면 + 가는 밝은 테두리(4차 선택 규칙). */
+.app-shell .console-dashboard .day-cell { background: transparent; border-color: transparent; }
+.app-shell .console-dashboard .day-cell:hover { background: #1d222b; }
+.app-shell .console-dashboard .day-cell.selected { background: #2158e8; border-color: #6b92f2; color: #fff; }
+.app-shell .console-dashboard .day-cell.selected .muted { color: #dbe5ff; }
+
+/* LIVE 표시는 자기 점(.live-indicator)이 이미 있다 — 점이 두 개 찍히지 않게 한다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) .status-pill:has(.live-indicator)::before { content: none; }
+
+/* 글자 링크형 위험 버튼(삭제·기록 전체 삭제) — 공통 버튼 면이 깔리지 않게. */
+.app-shell .btn-link-danger { background: transparent; border-color: transparent; box-shadow: none; }
+/* 라이트 테마 공통 규칙이 모든 버튼에 입력 칸 면을 깔아 글자 링크가 상자처럼 보였다 — 라이트에서도 글자 링크 그대로. */
+html[data-console-theme="light"] .app-shell .btn-link-danger[class] { background: transparent; border-color: transparent; box-shadow: none; }
+
+html[data-console-theme="light"] .app-shell .console-dashboard .day-cell.selected { background: #2158e8; border-color: #1b4fd1; color: #fff; }
+
+/* 모서리 — 둥근 느낌을 줄인다(대략 절반, 2026-11-03 승준). 카드 6 · 패널 5 · 버튼·입력 4px.
+   원형이어야 하는 요소(진행 점·라이브 표시)는 대상이 아니다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) { --radius-card: 6px; --radius-panel: 5px; --radius-control: 4px; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(button, .button-link, input, select, textarea) { border-radius: 4px; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(.card, .metric-tile, .fla-feedback, details.card) { border-radius: 6px; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor) :is(.fla-scoreboard, .day-cell) { border-radius: 4px; }
+.app-shell .confirm-dialog { border-radius: 6px; }
+.app-shell .confirm-dialog button { border-radius: 4px; }
+/* 사이드바·상단(모든 화면 공통 틀) */
+.app-shell :is(.product-nav a, .product-monogram, .topbar-badge, .sidebar-user, .sport-switcher-select, .sidebar-toggle, .sidebar-footer button) { border-radius: 4px; }
+
+/* 선택된 메뉴 줄의 왼쪽 색 막대 — 둥근 줄 위에서 'ㄷ'자로 휘어 보여 AI 티가 난다(11-03 승준).
+   막대 없이 면(단색)과 단위 색 글자로만 선택을 표시한다. */
+.app-shell .sidebar-section[data-product] .product-nav a:is(.active, :hover),
+.app-shell .sidebar-nav a:is(.active, :hover) { border-left-color: transparent; }
+
+/* 경기 생성 완료 안내의 왼쪽 파랑 막대 — 같은 'ㄷ'자 문제라 막대 대신 단색 면으로. */
+.app-shell .console-dashboard .match-create-success { border-left: 0; background: #1e3157; }
+
+/* 매치 컨트롤 "← 대시보드" — 작은 어두운 파랑이라 배경에 묻혔다(11-03 승준). 크게, 밝은 단색 면 + 흰 굵은 글자로. */
+.app-shell .fla-match .fla-match-context .fla-back-link {
+  min-height: 40px; padding: 0 16px; margin-right: 8px;
+  background: #343c4b; color: #fff; font-size: 15px; font-weight: 700; border-color: #4b5466;
+}
+.app-shell .fla-match .fla-match-context .fla-back-link:hover { background: #414a5c; border-color: #5b6578; }
+html[data-console-theme="light"] .app-shell .fla-match .fla-match-context .fla-back-link { background: #1d222b; border-color: #1d222b; color: #fff; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   콘솔 전체 확장(2026-11-03) — FLA 밖 화면(미디어·라이브 코더·FHL·FPA·FCM·풋살·농구·Data Hub·System·로그인).
+   화면 루트에 공통 클래스 .console-flat 을 붙인 곳에만 적용한다(방송 출력·쇼룸·렌더·FPA 라이브 로거·
+   풋살 CV 아이프레임에는 붙이지 않아 새지 않는다). FLA 세 화면은 위쪽 규칙을 그대로 쓰고 여기 규칙은 닿지 않는다.
+   범위 선택자를 :where(.console-flat) 로 감싼 이유: FLA 규칙처럼 특이도를 올리면 화면마다 따로 칠한
+   탭·선택 버튼(.active 등)의 색까지 덮어 선택 표시가 사라진다. 기본 버튼 규칙(.app-shell :is(button…))과
+   같은 특이도로만 이겨서, 기본 모양이던 버튼만 단색으로 바뀌고 화면 고유 상태색은 남게 한다.
+   상자 크기는 그대로 둔다 — 테두리는 0 이 아니라 투명으로, 상태 표시는 위아래 여백을 남긴다(같은 내용 ⇒ 같은 높이).
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* 모서리 — FLA 와 같은 절반 값(카드 6 · 패널 5 · 버튼·입력 4px). 기본 버튼·입력·카드는 이 변수로 모서리를 그린다.
+   버튼에 모서리를 직접 박지 않는 이유: 화면마다 원형(×·점 버튼)으로 그린 것까지 네모가 된다.
+   변수를 안 쓰고 값을 박아 둔 곳만 아래 화면별 보정에서 하나씩 맞춘다. */
+.app-shell .console-flat, .login-page { --radius-card: 6px; --radius-panel: 5px; --radius-control: 4px; }
+
+/* 기본 버튼(4차) — 면 한 톤 + 회색 1px 테두리 + 옅은 아래 그림자(굵기는 위 590 규칙). 색 있는 버튼·선택 상태는 아래에서 따로 칠한다.
+   테두리 폭은 원래 1px(3차에선 투명)이라 상자 크기는 그대로다. */
+.app-shell :where(.console-flat) :is(button, .button-link):not(:where(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .active, .selected, [aria-pressed="true"], .btn-link-danger)) {
+  background: #232833;
+  border-color: #3a4150;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .35);
+}
+.app-shell :where(.console-flat) :is(button, .button-link):not(:where(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .active, .selected, [aria-pressed="true"], .btn-link-danger)):hover:not(:disabled) { background: #2b313d; border-color: #4b5466; }
+
+/* 주요 — 주황 면 + 한 톤 진한 주황 테두리. */
+.app-shell :where(.console-flat) .btn-primary { border-color: #e56800; color: #15100a; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :where(.console-flat) .btn-primary:hover:not(:disabled) { border-color: #f27a12; }
+/* 보조 — 진한 파랑 면 + 같은 계열 테두리. */
+.app-shell :where(.console-flat) .btn-secondary { background: #1e3157; border-color: #2f4b80; color: #d6e1ff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :where(.console-flat) .btn-secondary:hover:not(:disabled) { background: #253c6a; border-color: #3d5d99; }
+/* 위험 — 평소엔 기본 버튼 + 빨간 글자, 마우스를 올리면 어두운 빨강. 진한 빨강은 확인 창의 최종 버튼뿐. */
+.app-shell :where(.console-flat) .btn-danger { background: #232833; border-color: #3a4150; color: #ff8a8a; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :where(.console-flat) .btn-danger:hover:not(:disabled) { background: #3a1f23; border-color: #6b2c33; }
+/* 선택(토글) — 파랑 면 + 가는 밝은 파랑 테두리. */
+.app-shell :where(.console-flat) .btn-active { background: #2158e8; border-color: #6b92f2; color: #fff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* 상태 표시(.status-pill)·정보 칩(.meta-chip·.data-pill) — 상자 없이 점 + 글자.
+   위아래 여백은 남겨 줄 높이가 그대로다. 점 색은 글자 색(currentColor)을 따른다. */
+.app-shell :where(.console-flat) :is(.status-pill, .meta-chip, .data-pill) {
+  padding-inline: 0; border-color: transparent; background: transparent; box-shadow: none; gap: 6px;
+}
+.app-shell :where(.console-flat) :is(.status-pill, .meta-chip, .data-pill)::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; opacity: .9;
+}
+.app-shell :where(.console-flat) :is(.status-pill, .meta-chip, .data-pill):has(.live-indicator, .status-dot)::before { content: none; }
+.app-shell :where(.console-flat) :is(.status-pill, .meta-chip, .data-pill) { color: var(--text-secondary); }
+.app-shell :where(.console-flat) :is(.status-pill.running, .status-pill.ok, .status-pill.success, .meta-chip.success, .data-pill.success) { color: #3ddc97; }
+.app-shell :where(.console-flat) :is(.status-pill.stopped, .status-pill.archived, .status-pill.neutral) { color: var(--muted); }
+.app-shell :where(.console-flat) :is(.status-pill.warning, .status-pill.live, .meta-chip.warning, .data-pill.warning) { color: #ffb44d; }
+.app-shell :where(.console-flat) :is(.status-pill.tech, .meta-chip.tech, .data-pill.tech) { color: #8fb0ff; }
+.app-shell :where(.console-flat) :is(.status-pill.danger, .status-pill.error, .meta-chip.danger, .data-pill.danger) { color: #ff8a8a; }
+
+/* 단축키 표시 — FLA 와 같은 주황 단색 칸. 테두리는 0 이 아니라 투명으로 — 칸 높이(버튼 높이)가 2px 줄지 않게. */
+.app-shell :where(.console-flat) .kbd {
+  border-color: transparent; border-radius: 3px; background: #ff7400; color: #15100a; font-weight: 800; opacity: 1;
+}
+.app-shell :where(.console-flat) :is(.btn-primary, .fla-home.selected) .kbd { background: #15100a; color: #ff9a47; }
+.app-shell :where(.console-flat) :is(.btn-active, .fla-away.selected) .kbd { background: #0c1a3d; color: #fff; }
+
+/* 카드·패널 — 회색 테두리는 유지, 색 테두리·글로우만 없앤다. */
+.app-shell :where(.console-flat) :is(.card, .console-disclosure) { border-color: var(--border-soft); box-shadow: none; }
+
+/* 지표 타일 — 대시보드와 같게: 반투명 파랑·초록 면+색 테두리 대신 회색 테두리 면, 구분은 숫자 색으로. */
+.app-shell :where(.console-flat) .metric-tile { background: #14171e; border-color: var(--border-soft); }
+.app-shell :where(.console-flat) .metric-tile.tech strong { color: #6f9bff; }
+.app-shell :where(.console-flat) .metric-tile.success strong { color: #3ddc97; }
+
+/* 단계 이동(1·2·3 단계)·구역 이동 링크 — 테두리 상자 대신 면. 큰 칸이라 회색 테두리 폭은 남기되 색을 면과 같게 해
+   크기가 변하지 않게 한다. 지금 단계는 4차 "카드 선택" 규칙 — 면 한 톤 밝게 + 1px 파랑 테두리, 글자는 보통 색.
+   구역 이동 링크는 누르는 것이라 기본 버튼과 같은 테두리·그림자. */
+.app-shell :where(.console-flat) .console-workflow a { background: #181c24; border-color: #181c24; }
+.app-shell :where(.console-flat) .console-workflow a:hover { background: #1f242e; border-color: #1f242e; }
+.app-shell :where(.console-flat) .console-workflow a[aria-current="page"] { background: #1d222b; border-color: #4c74d9; color: var(--text); }
+.app-shell :where(.console-flat) .console-section-nav a { background: #232833; border-color: #3a4150; border-radius: 4px; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :where(.console-flat) .console-section-nav a:hover { background: #2b313d; border-color: #4b5466; }
+.app-shell :where(.console-flat) :is(.console-workflow a, .console-disclosure) { border-radius: 6px; }
+
+/* 파일 고르기 버튼(브라우저 기본 회색 볼록 버튼) — 다른 기본 버튼과 같은 단색 면으로. */
+.app-shell :where(.console-flat) input[type="file"]::file-selector-button { background: #232833; border-color: #3a4150; border-radius: 4px; color: var(--text); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* 팀 선택(홈 주황·원정 파랑) — FLA 와 같은 규칙(면 + 가는 밝은 테두리, 옆 버튼과 같은 1px). 풋살 영상 기록의 점유·공격 기록 팀 버튼이 쓴다. */
+.app-shell :where(.console-flat) .fla-home.selected { background: #ff7400; border: 1px solid #ffa463; color: #15100a; font-weight: 690; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :where(.console-flat) .fla-away.selected { background: #2158e8; border: 1px solid #6b92f2; color: #fff; font-weight: 690; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* ── 화면별 보정 ─────────────────────────────────────────────────────────── */
+
+/* 모서리를 변수 대신 값으로 박아 둔 상자들 — 카드급 6px, 카드 안 작은 칸 5px. */
+.app-shell :where(.console-flat) :is(.fcm-match-card, .fcm-template-card, .fcm-guide-step, .fcm-guide-status, .fcm-selection-slot,
+  .queen-card-match-list, .queen-card-target, .basketball-media-server, .basketball-media-placeholder, .basketball-viz-toolbar,
+  .futsal-viz-card, .futsal-viz-toolbar, .fpa-model-slot-card, .mr-context) { border-radius: 6px; }
+.app-shell :where(.console-flat) :is(.fvc-table-row, .basketball-scoreboard, .basketball-lineup-table-wrap, .basketball-rebound-control-side,
+  .fpa-model-active-line, .fpa-model-preview-tabs, .fpa-model-empty-state, .fpa-replay-empty, .live-coder-select-row, .live-coder-hero-url,
+  .live-coder-score, .live-coder-clock-panel, .mr-overflow, .mr-notice) { border-radius: 5px; }
+.app-shell :where(.console-flat) :is(.fv-library-summary > div) { border-radius: 6px; }
+.app-shell :where(.console-flat) .futsal-viz-card img { border-radius: 5px; }
+.app-shell :where(.console-flat) :is(.mr-field input, .mr-field select, .mr-field textarea) { border-radius: 4px; }
+
+/* 라이브 코더 — 점수·코더 시계 칸의 주황 반투명 면+주황 테두리 → 회색 테두리 단색 면. 시계 숫자 주황은 남는다. */
+.app-shell :where(.console-flat) :is(.live-coder-score, .live-coder-clock-panel) { background: #181c24; border-color: var(--border-soft); }
+
+/* 농구 — 선택된 Made 버튼의 주황 글로우를 뗀다(주황 면만으로 충분히 보인다). 그림자는 4차 버튼 공통의 옅은 아래 그림자만. */
+.app-shell :where(.console-flat) .btn-primary { box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* FPA Model Room — 고른 슬롯 카드는 4차 "카드 선택"(면 한 톤 + 1px 파랑). 슬롯 제목(글자 버튼)은 면·테두리·그림자 없이 글자만.
+   분포 미리보기 탭은 이미 묶음 틀이 있는 세그먼트 — 틀 색만 4차 탭 틀로, 고르지 않은 칸은 비우고 고른 칸만 파랑 면.
+   이 탭 버튼은 원래 테두리가 0 이라 고른 칸의 밝은 테두리는 안쪽 그림자로 그린다(크기 그대로). */
+.app-shell :where(.console-flat) .fpa-model-slot-card.active { background: #1d222b; border-color: #4c74d9; }
+.app-shell :where(.console-flat) .fpa-model-slot-select { background: transparent; border-color: transparent; box-shadow: none; }
+.app-shell :where(.console-flat) .fpa-model-preview-tabs { background: #14171d; border-color: #3a4150; border-radius: 5px; }
+.app-shell :where(.console-flat) .fpa-model-preview-tabs button { border-radius: 4px; }
+.app-shell :where(.console-flat) .fpa-model-preview-tabs button:not(.active) { background: transparent; border-color: transparent; box-shadow: none; }
+.app-shell :where(.console-flat) .fpa-model-preview-tabs button.active { background: #2158e8; border-color: transparent; color: #fff; box-shadow: inset 0 0 0 1px #6b92f2; }
+
+/* Scene Motion — 고른 경기 줄은 4차 "목록 선택"(면 한 톤 + 1px 파랑, 글자 보통). 장면 번호 탭은 토글 선택(파랑 면 + 밝은 테두리).
+   재생 버튼은 파랑 면 그대로, 테두리는 같은 계열. */
+.app-shell :where(.console-flat) .fpa-replay-match-list button.active { background: #1d222b; border-color: #4c74d9; color: var(--text); box-shadow: none; }
+.app-shell :where(.console-flat) .fpa-replay-scene-tabs button.active { background: #2158e8; border-color: #6b92f2; color: #fff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell :where(.console-flat) .fpa-replay-controls button:nth-child(2) { background: #2158e8; border-color: #1b4ccc; color: #fff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* FCM — 경기 카드에 손을 올릴 때 파랑 테두리 대신 면만 밝힌다.
+   정보 칩(.fcm-chip: K3·operator·팀·템플릿 종류)은 4차 태그(알약·테두리 없음, 아래 태그 규칙).
+   경기 카드 안 "데이터 확인 · 제출 →" 만은 카드를 여는 행동이라 기본 버튼 모양(테두리·그림자).
+   아래 공통 태그 규칙보다 뒤·높게 잡아 원래 상자(여백 6px 10px · 1px 테두리)를 그대로 쓴다 — 높이 그대로. */
+.app-shell :where(.console-flat) .fcm-match-card:hover { background: #1b1f27; border-color: var(--border-soft); }
+.app-shell :is(.console-flat) .fcm-match-card .fcm-chip.fcm-chip[class] { padding: 6px 10px; min-height: 0; line-height: inherit; border: 1px solid #3a4150; border-radius: 4px; background: #232833; color: var(--text); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); font-weight: 600; letter-spacing: normal; }
+.app-shell :is(.console-flat) .fcm-match-card:hover .fcm-chip.fcm-chip[class] { background: #2b313d; border-color: #4b5466; }
+/* 고른 스탯 칸의 × — 원형은 그대로, 테두리 없이 면만. 손이 올라가면 어두운 빨강. */
+.app-shell :where(.console-flat) .fcm-selection-remove { background: #2b313d; border-color: transparent; }
+.app-shell :where(.console-flat) .fcm-selection-remove:is(:hover, :focus-visible) { background: #4a252a; border-color: transparent; }
+/* 업로드 칸 오른쪽 위 주황 번짐(글로우) — 걷어내고 점선 회색 틀만. */
+.app-shell :where(.console-flat) .fvc-dropzone { background: #14171e; }
+/* 가이드 단계 카드의 위쪽 파랑 줄('ㄷ'자) — 회색 1px 로. 빠진 1px 은 안쪽 여백으로 메워 높이를 지킨다. */
+.app-shell :where(.console-flat) .fcm-guide-step { border-top: 1px solid var(--border-soft); padding-top: 21px; }
+
+/* 매치 리포트(풋살) — 미리보기 시트(흰 종이, 분홍 선)는 내보내는 그림이라 건드리지 않는다.
+   편집·미리보기 탭은 4차 탭 묶음(아래 .console-seg 와 같은 틀), 넘침 경고는 빨강 테두리 대신 어두운 빨강 면. */
+.app-shell :where(.console-flat) .mr-overflow { background: #3a1f23; border-color: transparent; color: #ffc9c9; }
+.app-shell :where(.console-flat) .mr-sub-recovery { background: #2a2016; border-left-color: transparent; }
+
+/* 풋살 영상 기록 — 녹화 중 주황 테두리·번짐(--fv-recording-*)은 "지금 기록 중" 표시라 FLA 네온처럼 남긴다.
+   머리의 "기록 초기화"는 다른 위험 버튼과 같은 4차 위험(기본 버튼 + 빨간 글자, 손 올리면 어두운 빨강),
+   확인 창 안의 최종 초기화만 진한 빨강 면 + 밝은 빨강 테두리. */
+.app-shell .fv-workspace.console-flat .fv-top .fv-reset-button { background: #232833; border-color: #3a4150; color: #ff8a8a; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell .fv-workspace.console-flat .fv-top .fv-reset-button:hover:not(:disabled) { background: #3a1f23; border-color: #6b2c33; }
+.app-shell .fv-workspace.console-flat .fv-reset-dialog { border-radius: 6px; box-shadow: none; }
+.app-shell .fv-workspace.console-flat .fv-reset-dialog .fv-reset-button { background: #d64545; border-color: #e05a5a; color: #fff; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.app-shell .fv-workspace.console-flat .fv-reset-dialog .btn-secondary { background: #232833; border-color: #3a4150; color: var(--text); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+/* 아래 도움말 줄의 단축키(Space·Q W E·A S D) — 테두리 상자 대신 .kbd 와 같은 주황 단색 칸. */
+.app-shell .fv-workspace.console-flat kbd { border-color: transparent; border-radius: 3px; background: #ff7400; color: #15100a; opacity: 1; font-weight: 800; }
+
+/* 클립 결과 줄(FHL) — 왼쪽 색 띠('ㄷ'자)를 없애고, 손이 올라간 줄·방금 연 줄·지우려는 줄을 면 색으로 구분한다. */
+.app-shell :where(.console-flat) .hl-clip-row { border-radius: 5px; }
+.app-shell :where(.console-flat) .hl-clip-row::before { content: none; }
+.app-shell :where(.console-flat) .hl-clip-row:hover { background: #1b1f27; border-color: var(--border-soft); }
+.app-shell :where(.console-flat) .hl-clip-row.is-opened { background: #1d222b; border-color: #4c74d9; }   /* 4차 목록 선택 */
+.app-shell :where(.console-flat) .hl-clip-row:has(.hl-clip-delete:hover) { background: #3a1f23; border-color: var(--border-soft); }
+
+/* ── FHL(하이라이트) 화면 — 스타일을 태그 안(style=…)에 직접 써 둔 화면이라 CSS 가 이기려면 !important 가 필요하다.
+   그래서 범위를 .fhl-flat 루트로 더 좁히고, 손대는 속성도 테두리 색·그림자·모서리·선택 표시로만 한정한다(크기·글자 크기는 그대로).
+   기본 버튼 면(var(--button-dark))·카드 모서리(var(--radius-card))처럼 변수로 그린 곳은 변수만 바꾼다. ── */
+.app-shell .fhl-flat { --button-dark: #232833; }
+/* 버튼(4차) — 회색 1px 테두리 + 옅은 아래 그림자(굵기는 위 590 규칙). 점선 밑줄(제목 고치기 버튼)은 "누르면 고칠 수 있다"는 표시라 남긴다.
+   굵기는 공통 590 규칙(특이도 낮음) — 태그 안 style 로 굵기를 정한 버튼(선택 700 등)은 그 값을 지킨다.
+   모서리는 4px — 원형(50%·999px)으로 그린 것은 제외. */
+.app-shell .fhl-flat button:not([style*="dashed"]) { border-color: #3a4150 !important; box-shadow: 0 1px 0 rgba(0, 0, 0, .35) !important; }
+.app-shell .fhl-flat button:not([style*="dashed"]):hover:not(:disabled) { border-color: #4b5466 !important; }
+.app-shell .fhl-flat :is(button, label[style*="cursor: pointer"], a[style*="padding"][style*="border"]):not([style*="50%"], [style*="999px"]) { border-radius: 4px !important; }
+.app-shell .fhl-flat :is(label[style*="cursor: pointer"], a[style*="padding"][style*="border"]) { border-color: #3a4150 !important; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+/* 테두리도 면도 없던 아이콘·글자 버튼(☆·✕·시각 이동) — 버튼 틀을 씌우지 않는다. */
+.app-shell .fhl-flat button:is([style*="background: none"], [style*="background: transparent"][style*="solid transparent"]) { border-color: transparent !important; box-shadow: none !important; }
+/* 면이 바탕색(var(--bg))이거나 투명인데 테두리로만 버튼임을 보이던 것 — 기본 면을 깐다. */
+.app-shell .fhl-flat :is(button, label)[style*="background: var(--bg"] { background: #232833 !important; }
+.app-shell .fhl-flat button[style*="background: transparent"][style*="border: 1px solid"]:not([style*="solid transparent"]) { background: #232833 !important; }
+/* 주황으로 꽉 찬 버튼(주요·고른 영상·홈 팀) — 4차 주요 버튼: 한 톤 진한 주황 테두리 + 진한 글자. */
+.app-shell .fhl-flat :is(button, a)[style*="background: var(--accent"] { border-color: #e56800 !important; color: #15100a !important; }
+/* 원정 팀 표시(보라 #7c3aed) — 원정은 파랑이 규칙이다(4차). 태그 줄의 홈/어웨이 전환 버튼. */
+.app-shell .fhl-flat button[style*="124, 58, 237"] { background: #2158e8 !important; border-color: #1b4ccc !important; color: #fff !important; }
+/* 골 표시(초록 면) — 같은 계열 테두리. */
+.app-shell .fhl-flat button[style*="background: rgb(22, 163, 74)"] { border-color: #15803d !important; }
+/* 위험(빨강 테두리·글자로 보이던 삭제류) — 4차 위험: 평소엔 기본 버튼 + 빨간 글자, 손을 올리면 어두운 빨강.
+   초록(완료·설정)은 어두운 초록 면 + 같은 계열 테두리. 꽉 찬 색 버튼은 그대로. */
+.app-shell .fhl-flat button:is([style*="--button-dark"], [style*="background: transparent"]):is([style*="248, 113, 113"], [style*="#f87171"], [style*="--danger"]) { background: #232833 !important; border-color: #3a4150 !important; color: #ff8a8a !important; }
+.app-shell .fhl-flat button:is([style*="--button-dark"], [style*="background: transparent"]):is([style*="248, 113, 113"], [style*="#f87171"], [style*="--danger"]):hover:not(:disabled) { background: #3a1f23 !important; border-color: #6b2c33 !important; }
+.app-shell .fhl-flat button[style*="--button-dark"]:is([style*="border-color: rgb(34, 197, 94)"], [style*="border-color:#22c55e"]) { background: #173a2a !important; border-color: #24583f !important; color: #86efac !important; }
+/* 상자 모서리 — 값으로 박힌 8~16px 을 카드 6 · 안쪽 칸 5 로. */
+.app-shell .fhl-flat :is(div, section, aside)[style*="border-radius: 8px"] { border-radius: 5px !important; }
+.app-shell .fhl-flat :is(div, section, aside):is([style*="border-radius: 10px"], [style*="border-radius: 12px"], [style*="border-radius: 14px"], [style*="border-radius: 16px"]) { border-radius: 6px !important; }
+.app-shell .fhl-flat :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]), select, textarea) { border-radius: 4px !important; }
+.app-shell .fhl-flat input[type="file"]::file-selector-button { background: #232833; border-color: #3a4150; border-radius: 4px; color: var(--text); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+/* 작은 칩(span) — 4차 태그: 알약 모양, 테두리·그림자 없음, 600. 크기(글자·여백)는 태그 안 값 그대로 둬 줄 높이가 변하지 않게 한다.
+   홈 태그는 주황 면 + 진한 글자, 원정 태그는 보라 → 파랑. */
+.app-shell .fhl-flat span[style*="border"] { border-color: transparent !important; }
+.app-shell .fhl-flat span[style*="padding"][style*="background"][style*="border-radius"]:not([style*="50%"]) { border-radius: 999px !important; box-shadow: none !important; }
+.app-shell .fhl-flat span[style*="padding"][style*="background: var(--accent"] { color: #15100a !important; }
+.app-shell .fhl-flat span[style*="padding"][style*="124, 58, 237"] { background: #2158e8 !important; color: #fff !important; }
+/* 상단 하위 탭 — 4차 탭 묶음: 한 틀(회색 1px·5px·안쪽 2px) 안에서 고른 탭만 파랑 면 + 밝은 테두리, 나머지는 비운다.
+   틀이 생긴 만큼(위아래 3px·밑줄 1px) 아래 여백을 줄여 그 아래 내용 위치가 그대로다(59px = 탭 34 + 아래 여백 8 + 밑줄 1 + 간격 16). */
+.app-shell .fhl-flat .fhl-subtabs { width: fit-content; max-width: 100%; flex-wrap: wrap; gap: 2px !important; padding: 2px !important; border: 1px solid #3a4150 !important; border-radius: 5px; background: #14171d; margin-bottom: 19px !important; }
+.app-shell .fhl-flat .fhl-subtabs a[href^="/admin/highlight"] { border-color: transparent !important; border-radius: 4px !important; box-shadow: none !important; background: transparent !important; }
+.app-shell .fhl-flat .fhl-subtabs a[href^="/admin/highlight"]:hover { color: var(--text) !important; }
+.app-shell .fhl-flat .fhl-subtabs a[href^="/admin/highlight"][style*="--surface-card"] { background: #2158e8 !important; border-color: #6b92f2 !important; color: #fff !important; }
+/* 작업 목록 위 걸러 보기 칩(전체·xFP·하이라이트만·사전작업) — 4차 탭 묶음. 틀(위아래 3px)만큼 아래 여백을 줄인다. */
+.app-shell .fhl-flat .fhl-seg { width: fit-content; max-width: 100%; flex-wrap: wrap; gap: 2px !important; padding: 2px; border: 1px solid #3a4150; border-radius: 5px; background: #14171d; margin-bottom: 4px !important; }
+.app-shell .fhl-flat .fhl-seg button { background: transparent !important; border-color: transparent !important; box-shadow: none !important; color: var(--muted) !important; }
+.app-shell .fhl-flat .fhl-seg button:hover:not(:disabled) { color: var(--text) !important; }
+/* 주황 테두리로 고른 것을 표시하던 필터 칩·토글 — 4차 선택: 파랑 면 + 가는 밝은 파랑 테두리. */
+.app-shell .fhl-flat button:is([style*="solid var(--accent"], [style*="border-color: var(--accent"]) { background: #2158e8 !important; border-color: #6b92f2 !important; color: #fff !important; }
+.app-shell .fhl-flat .fhl-seg button[style*="solid var(--accent"] { background: #2158e8 !important; border-color: #6b92f2 !important; color: #fff !important; }
+/* 고른 작업 줄 — 4차 목록 선택: 면 한 톤 + 1px 파랑 테두리(원래 1px 테두리 자리). */
+.app-shell .fhl-flat div[style*="solid var(--accent"] { background: #1d222b !important; border-color: #4c74d9 !important; }
+/* 재생 중인 태그 줄 — 왼쪽 파랑 띠(inset 그림자)는 'ㄷ'자라 떼고, 목록 선택과 같은 면 + 1px 파랑.
+   이 줄은 테두리가 없어 안쪽 그림자로 그린다(크기 그대로). */
+.app-shell .fhl-flat div[style*="inset 3px 0 0"] { box-shadow: inset 0 0 0 1px #4c74d9 !important; background: #1d222b !important; }
+/* 클립 줄의 삭제 — 4차 위험(기본 버튼 + 빨간 글자, 손 올리면 어두운 빨강). */
+.app-shell .fhl-flat .hl-clip-delete { background: #232833 !important; border-color: #3a4150 !important; color: #ff8a8a !important; }
+.app-shell .fhl-flat .hl-clip-delete:hover:not(:disabled) { background: #3a1f23 !important; border-color: #6b2c33 !important; }
+
+/* ── 로그인 — 앱 틀(.app-shell) 밖이라 따로 잡는다. 모드 선택은 4차 탭 묶음(틀 안에서 고른 칸만 파랑 면 + 밝은 테두리),
+   테마 버튼은 기본 버튼, 로그인은 주요 버튼. ── */
+.login-page .login-modes { border-radius: 5px; border-color: #3a4150; background: #14171d; }
+.login-page .login-modes button:not([aria-pressed="true"]) { background: transparent; border-color: transparent; box-shadow: none; }
+.login-page .login-modes button[aria-pressed="true"] { background: #2158e8; border-color: #6b92f2; color: #fff; box-shadow: none; }
+.login-page .console-theme-toggle { background: #232833; border-color: #3a4150; border-radius: 4px; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.login-page .console-theme-toggle:hover { border-color: #4b5466; }
+.login-page .btn-primary { border-color: #e56800; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   4차 공통 — 태그 · 탭 묶음. FLA 세 화면과 .console-flat 화면에 같이 쓴다.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* 태그(누를 수 없는 표시: 리그 K3·라운드·종류·개수·팀) — 알약 모양, 높이 20px, 12px·600, 테두리·그림자·마우스 반응 없음.
+   상태(기록 가능·LIVE·STOPPED·Active 등)는 태그가 아니다 — 지금처럼 점 + 글자.
+   상태와 같은 클래스(.status-pill·.meta-chip)를 쓰던 표시라 표시 쪽에만 .chip-tag 를 붙여 구분한다.
+   위아래 여백 1px + 줄 높이 18px = 20px. 글이 길어 줄이 바뀌면 그만큼만 커진다(잘리지 않게).
+   [class] 로 한 단계 올린 이유: 상태 규칙(점+글자, :where/:is 묶음)보다 확실히 이겨야 한다. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.chip-tag, .fcm-chip)[class] {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 20px; height: auto; padding: 1px 9px; line-height: 18px;
+  border: 0; border-radius: 999px; background: #2a303b; color: var(--text-secondary); box-shadow: none;
+  font-size: 12px; font-weight: 600; letter-spacing: 0;
+}
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.chip-tag, .fcm-chip)[class]::before { content: none; }
+/* 색 있는 태그 — 같은 면 위 글자 색만 달리한 불투명 한 톤(반투명+테두리 금지). */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.tech)[class] { background: #1e2a44; color: #a8bfff; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.warning)[class] { background: #33291a; color: #ffc46b; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.running, .success)[class] { background: #173a2a; color: #86efac; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.archived)[class] { background: #2a303b; color: var(--muted); }
+/* 팀 태그 — 홈 주황 면 + 진한 글자, 원정 파랑 면 + 흰 글자. */
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag.chip-home[class] { background: #ff7400; color: #15100a; }
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag.chip-away[class] { background: #2158e8; color: #fff; }
+
+/* 탭 묶음·걸러 보기(대시보드 진행/보관 · 최근 기록 걸러 보기 · 매치 리포트 편집/미리보기 탭) — 한 틀(회색 1px·5px·안쪽 2px·어두운 바탕) 안에
+   항목은 면·테두리·그림자 없이 두고, 고른 것만 파랑 면 + 가는 밝은 테두리. 틀이 생긴 위아래 3px 은 항목 위아래 여백에서 빼
+   묶음 전체 높이가 종전 버튼 높이와 같다. 최근 기록 제목 줄은 36px 고정이라 항목(24px)을 그대로 두고 틀(30px)이 그 안에 들어간다. */
+.app-shell :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) {
+  display: inline-flex; width: fit-content; max-width: 100%; gap: 2px !important; padding: 2px; border: 1px solid #3a4150; border-radius: 5px; background: #14171d;
+}
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) > button:not(.btn-active, [aria-pressed="true"]) {
+  background: transparent; border-color: transparent; box-shadow: none; color: var(--muted);
+}
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) > button:not(.btn-active, [aria-pressed="true"]):hover:not(:disabled) {
+  background: #1d222b; border-color: transparent; color: var(--text);
+}
+.app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) > button:is(.btn-active, [aria-pressed="true"]) {
+  background: #2158e8; border-color: #6b92f2; color: #fff; box-shadow: none;
+}
+/* 항목 위아래 여백 −3px(틀 몫). 대시보드·편집 탭은 기본 버튼 여백 11px, 미리보기 탭은 7px 이었다. */
+.app-shell :is(.console-seg, .mr-editor-tabs) > button { padding-block: 8px; }
+.app-shell .mr-preview-bar > .mr-actions > button { padding-block: 4px; }
+/* 풋살 영상 기록의 최근 기록 걸러 보기 — 이 화면은 버튼이 최소 44px(fla-video.css)이라 틀(6px)만큼 항목을 38px 로 줄여 묶음 높이 44px 를 지킨다. */
+.app-shell .fv-inputs.fla-video-match-controls .fla-records-filters > button { min-height: 38px; padding-block: 7px; }
+
+/* ── 라이트 테마(콘솔 전체 확장분) — 같은 원칙, 흰 바탕 값. 라이트 공통 규칙(console-appearance.css)이
+   특이도가 높아 같은 수준으로 맞추고, 상태 표시처럼 더 높은 곳은 [class] 로 한 단계 올린다. ── */
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(button, .button-link):not(:where(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .active, .selected, [aria-pressed="true"], .btn-link-danger)) { background: #f6f8fa; border-color: #d0d7de; color: var(--text); box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(button, .button-link):not(:where(.btn-primary, .btn-secondary, .btn-danger, .btn-active, .active, .selected, [aria-pressed="true"], .btn-link-danger)):hover:not(:disabled) { background: #eef1f4; border-color: #b9c1cb; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .btn-primary { border-color: #e56800; color: #15100a; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .btn-secondary { background: #dfe7ff; border-color: #b6c8f5; color: #1d4ed8; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .btn-secondary:hover:not(:disabled) { background: #d3defd; border-color: #9db5f0; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .btn-danger { background: #f6f8fa; border-color: #d0d7de; color: #b42318; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .btn-danger:hover:not(:disabled) { background: #fde4e4; border-color: #f1a8a8; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .btn-active { background: #2158e8; border-color: #1b4fd1; color: #fff; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.status-pill, .meta-chip, .data-pill)[class] { background: transparent; border-color: transparent; color: var(--text-secondary); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.status-pill.running, .status-pill.ok, .status-pill.success, .meta-chip.success, .data-pill.success)[class] { color: #0f9960; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.status-pill.stopped, .status-pill.archived, .status-pill.neutral)[class] { color: var(--muted); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.status-pill.warning, .status-pill.live, .meta-chip.warning, .data-pill.warning)[class] { color: #b45309; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.status-pill.tech, .meta-chip.tech, .data-pill.tech)[class] { color: #2158e8; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.status-pill.danger, .status-pill.error, .meta-chip.danger, .data-pill.danger)[class] { color: #b42318; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .kbd { background: #ff7400; color: #15100a; border-color: transparent; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.btn-primary, .fla-home.selected) .kbd { background: #15100a; color: #ff9a47; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.btn-active, .fla-away.selected) .kbd { background: #0c1a3d; color: #fff; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fla-home.selected[class] { background: #ff7400; border-color: #e56800; color: #15100a; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fla-away.selected[class] { background: #2158e8; border-color: #1b4fd1; color: #fff; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .metric-tile { background: var(--surface-card); border-color: var(--border-soft); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .metric-tile.tech strong { color: #2158e8; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .metric-tile.success strong { color: #0f9960; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .console-workflow a { background: var(--surface-card); border-color: var(--border-soft); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .console-workflow a:hover { background: #f3f5f9; border-color: var(--border-soft); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .console-workflow a[aria-current="page"] { background: #f0f5ff; border-color: #4c74d9; color: var(--text); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .console-section-nav a { background: #f6f8fa; border-color: #d0d7de; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .console-section-nav a:hover { background: #eef1f4; border-color: #b9c1cb; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) input[type="file"]::file-selector-button { background: #f6f8fa; border-color: #d0d7de; color: var(--text); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.live-coder-score, .live-coder-clock-panel) { background: var(--surface-card-strong); border-color: var(--border-soft); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fpa-model-slot-card.active[class] { background: #f0f5ff; border-color: #4c74d9; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fpa-model-preview-tabs[class] { background: #f3f4f6; border-color: #d0d7de; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fpa-model-preview-tabs button.active[class] { background: #2158e8; border-color: transparent; color: #fff; box-shadow: inset 0 0 0 1px #1b4fd1; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fpa-replay-match-list button.active[class] { background: #f0f5ff; border-color: #4c74d9; color: var(--text); box-shadow: none; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fpa-replay-scene-tabs button.active[class] { background: #2158e8; border-color: #1b4fd1; color: #fff; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fpa-replay-controls button:nth-child(2)[class] { background: #2158e8; border-color: #1b4fd1; color: #fff; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fcm-match-card:hover { background: var(--surface-card-strong); border-color: var(--border-soft); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fcm-selection-remove { background: #eef0f4; border-color: transparent; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fcm-match-card .fcm-chip[class] { background: #f6f8fa; border-color: #d0d7de; color: var(--text); box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fvc-dropzone { background: var(--surface-card-strong); }
+
+html[data-console-theme="light"] .app-shell :where(.console-flat) .mr-overflow { background: #fde4e4; color: #8a1c12; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .mr-sub-recovery { background: #fff1e5; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .hl-clip-row:hover { background: var(--surface-card-strong); }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .hl-clip-row.is-opened { background: #f0f5ff; border-color: #4c74d9; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .hl-clip-row:has(.hl-clip-delete:hover) { background: #fde4e4; }
+html[data-console-theme="light"] .app-shell .fv-workspace.console-flat .fv-top .fv-reset-button { background: #f6f8fa; border-color: #d0d7de; color: #b42318; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell .fv-workspace.console-flat .fv-top .fv-reset-button:hover:not(:disabled) { background: #fde4e4; border-color: #f1a8a8; }
+html[data-console-theme="light"] .app-shell .fv-workspace.console-flat .fv-reset-dialog .btn-secondary { background: #f6f8fa; border-color: #d0d7de; color: var(--text); }
+html[data-console-theme="light"] .app-shell .fv-workspace.console-flat .fv-reset-dialog .fv-reset-button { background: #d64545; border-color: #c43c3c; color: #fff; }
+html[data-console-theme="light"] .app-shell .fhl-flat { --button-dark: #f6f8fa; }
+
+html[data-console-theme="light"] .app-shell .fhl-flat div[style*="solid var(--accent"] { background: #f0f5ff !important; border-color: #4c74d9 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat .hl-clip-delete { background: #f6f8fa !important; border-color: #d0d7de !important; color: #b42318 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat .hl-clip-delete:hover:not(:disabled) { background: #fde4e4 !important; border-color: #f1a8a8 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat input[type="file"]::file-selector-button { background: #f6f8fa; border-color: #d0d7de; }
+html[data-console-theme="light"] .login-page .console-theme-toggle { background: #fff; border-color: #d0d7de; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .login-page .login-modes { background: #f3f4f6; border-color: #d0d7de; }
+html[data-console-theme="light"] .login-page .login-modes button:not([aria-pressed="true"]) { background: transparent; border-color: transparent; }
+html[data-console-theme="light"] .login-page .login-modes button[aria-pressed="true"] { background: #2158e8; border-color: #1b4fd1; color: #fff; }
+html[data-console-theme="light"] .app-shell .fhl-flat :is(button, label)[style*="background: var(--bg"],
+html[data-console-theme="light"] .app-shell .fhl-flat button[style*="background: transparent"][style*="border: 1px solid"]:not([style*="solid transparent"]) { background: #f6f8fa !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button:is([style*="--button-dark"], [style*="background: transparent"]):is([style*="248, 113, 113"], [style*="#f87171"], [style*="--danger"]) { background: #f6f8fa !important; border-color: #d0d7de !important; color: #b42318 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button:is([style*="--button-dark"], [style*="background: transparent"]):is([style*="248, 113, 113"], [style*="#f87171"], [style*="--danger"]):hover:not(:disabled) { background: #fde4e4 !important; border-color: #f1a8a8 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button[style*="--button-dark"]:is([style*="border-color: rgb(34, 197, 94)"], [style*="border-color:#22c55e"]) { background: #dcfce7 !important; border-color: #a7e3bd !important; color: #15803d !important; }
+
+/* 라이브 코더 경기 목록 — 줄 사이 주황 점선을 회색 점선으로(색 테두리 금지). */
+.app-shell :where(.console-flat) .match-item { border-top-color: var(--border-soft); }
+/* 농구 — Made 선택 링(주황 번짐)·내보내기 버튼 모서리. */
+.app-shell :where(.console-flat) .basketball-shot-actions button.active { box-shadow: none; }
+.app-shell :where(.console-flat) .basketball-viz-export-actions button { border-radius: 4px; }
+/* Scene Motion 이전·재생·다음, 장면 번호 — 값으로 박힌 8px 모서리를 4px 로. */
+.app-shell :where(.console-flat) :is(.fpa-replay-controls, .fpa-replay-scene-tabs) button { border-radius: 4px; }
+/* 풋살 영상 기록 머리의 "시작 시각 설정" 작은 버튼 — 기본 버튼(4차: 면 + 회색 테두리 + 그림자). */
+.app-shell .fv-workspace.console-flat .fv-setup-toggle { background: #232833; border-color: #3a4150; box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+html[data-console-theme="light"] .app-shell .fv-workspace.console-flat .fv-setup-toggle { background: #f6f8fa; border-color: #d0d7de; }
+html[data-console-theme="light"] .app-shell .fhl-flat div[style*="inset 3px 0 0"] { background: #f0f5ff !important; box-shadow: inset 0 0 0 1px #4c74d9 !important; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.fpa-model-slot-select, .fpa-model-preview-tabs button:not(.active)) { background: transparent; }
+/* 풋살 영상 기록 목록 — 교체기록 표시(미입력·N건)도 상태 표시라 상자 없이 점 + 글자. 미리보기 꼬리표는 불투명 단색. */
+.app-shell :where(.console-flat) :is(.fv-substitution-empty, .fv-substitution-badge) { display: inline-flex; align-items: center; gap: 6px; padding-inline: 0; border-color: transparent; background: transparent; }
+.app-shell :where(.console-flat) :is(.fv-substitution-empty, .fv-substitution-badge)::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.app-shell :where(.console-flat) .fv-preview { background: #2a1d12; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .fv-preview { background: #fff1e5; }
+
+/* ── 4차 라이트 테마 — 위 4차 규칙의 흰 바탕 값. 같은 논리(버튼 = 면 + 회색 1px 테두리, 태그 = 테두리 없는 알약,
+   선택 = 강조색 면 + 테두리, 목록 선택 = 연파랑 면 + 1px 파랑, 탭 = 한 틀 안에서 고른 칸만 채움).
+   테두리 회색은 #d0d7de(GitHub Primer 라이트 버튼 테두리 계열). ── */
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.chip-tag, .fcm-chip)[class] { background: #e9ecf1; color: #4b5563; border: 0; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.tech)[class] { background: #e3ebff; color: #1d4ed8; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.warning)[class] { background: #fff1db; color: #9a4b00; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.running, .success)[class] { background: #dcfce7; color: #15803d; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag:is(.archived)[class] { background: #e9ecf1; color: var(--muted); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag.chip-home[class] { background: #ff7400; color: #15100a; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .chip-tag.chip-away[class] { background: #2158e8; color: #fff; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) .fcm-match-card .fcm-chip.fcm-chip[class] { background: #f6f8fa; border: 1px solid #d0d7de; color: var(--text); border-radius: 4px; }
+html[data-console-theme="light"] .app-shell :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) { background: #f3f4f6; border-color: #d0d7de; }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) > button:not(.btn-active, [aria-pressed="true"])[class],
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) > button:not(.btn-active, [aria-pressed="true"]):not([class]) { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) > button:not(.btn-active, [aria-pressed="true"]):hover:not(:disabled) { background: #e9ecf1; border-color: transparent; color: var(--text); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.console-seg, .fla-records-filters, .mr-editor-tabs, .mr-preview-bar > .mr-actions) > button:is(.btn-active, [aria-pressed="true"]) { background: #2158e8; border-color: #1b4fd1; color: #fff; box-shadow: none; }
+html[data-console-theme="light"] .app-shell .fhl-flat button:not([style*="dashed"]) { border-color: #d0d7de !important; box-shadow: 0 1px 0 rgba(31, 35, 40, .06) !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button:not([style*="dashed"]):hover:not(:disabled) { border-color: #b9c1cb !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat :is(label[style*="cursor: pointer"], a[style*="padding"][style*="border"]) { border-color: #d0d7de !important; box-shadow: 0 1px 0 rgba(31, 35, 40, .06); }
+html[data-console-theme="light"] .app-shell .fhl-flat button:is([style*="background: none"], [style*="background: transparent"][style*="solid transparent"]) { border-color: transparent !important; box-shadow: none !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat :is(button, label)[style*="background: var(--bg"] { background: #f6f8fa !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat :is(button, a)[style*="background: var(--accent"] { border-color: #e56800 !important; color: #15100a !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button[style*="124, 58, 237"] { border-color: #1b4fd1 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button:is([style*="solid var(--accent"], [style*="border-color: var(--accent"]) { background: #2158e8 !important; border-color: #1b4fd1 !important; color: #fff !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subtabs { background: #f3f4f6; border-color: #d0d7de !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subtabs a[href^="/admin/highlight"][style*="--surface-card"] { background: #2158e8 !important; border-color: #1b4fd1 !important; color: #fff !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-seg { background: #f3f4f6; border-color: #d0d7de; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-seg button { background: transparent !important; border-color: transparent !important; box-shadow: none !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-seg button[style*="solid var(--accent"] { background: #2158e8 !important; border-color: #1b4fd1 !important; color: #fff !important; }
+
+/* ── FHL 라이트 — 정의 안 된 변수(2026-11-04) ──────────────────────────────────────────────────────────────
+   하이라이트(FHL) 화면은 인라인 style 에 var(--surface-input, #16161a) 처럼 "변수 + 어두운 예비값"을 박아 두었는데,
+   --surface-input · --surface · --card · --fg · --border-strong 은 다크·라이트 어디에도 정의돼 있지 않다.
+   그래서 화이트 모드에서도 늘 어두운 예비값이 그려져 작업 줄·클립 줄·장면 모션 카드·액션 목록·입력 칸이 검게 남았다.
+   라이트에서만 정의한다 — 다크는 지금처럼 예비값을 그대로 쓴다. 같은 변수라도 곳에 따라 예비값이 다르기 때문에
+   (#16161a · #1b1b1f · #1a1a1f, #101014 · #1e1e24) 다크에 한 값을 정의하면 일부 화면이 달라진다.
+   값은 라이트 팔레트(console-appearance.css)에서 고른다: 입력·줄 = --control 과 같은 #f7f9fc(흰 카드 위 한 톤),
+   더 깊은 칸 = 바탕과 같은 #f3f5f9, 카드 = 흰색, 글자 = --text, 손 올린 줄 테두리 = 4차 버튼 hover 테두리 #b9c1cb.
+   영상·캔버스 자체(#000 등)는 내용이라 건드리지 않는다. */
+html[data-console-theme="light"] :is(.app-shell, .login-page) {
+  --surface-input: #f7f9fc; --surface: #f3f5f9; --card: #fff; --fg: var(--text); --border-strong: #b9c1cb;
+  /* --border · --text-muted 도 어디에도 정의돼 있지 않다(이사69 정리, 2026-11-05). 쓰는 곳은 FHL·매치 리포트(futsal-match-report.css)·
+     풋살 영상 기록(fla-video.css)뿐이라 라이트에서만 한 번에 정의한다. 지금까지 라이트에서 --border 는 어두운 예비값(#444·#363636·#2d323c)이
+     그려지거나(예비값 없는 곳은) 선이 아예 안 그려졌고, --text-muted 는 옅은 예비값(#9ca3af·#999, 흰 바탕 2.5~2.9:1)이거나 부모 색을 물려받았다.
+     다크는 지금처럼 예비값을 그대로 쓴다(다크에 정의하면 그 화면들의 선·글자가 달라진다). */
+  --border: #d0d7de; --text-muted: var(--muted);
+}
+/* 변수가 아닌 어두운 값으로 박힌 FHL 칸 — 라이트 값만 따로 준다(다크는 그대로).
+   · 낮은 화질(720p 미만) 원본 표시(FinePlay 작업): 어두운 빨강 면 → 4차 위험 태그 라이트(연빨강 면 + 진한 빨강 글자).
+   · 선수 클립의 인식된 선수 칸: 어두운 초록 면 → 연초록 면(초록 테두리는 그대로).
+   · 선수 클립의 선택 삭제: 어두운 빨강 면 → 4차 위험 버튼 라이트(기본 버튼 면 + 빨간 글자, 손 올리면 연빨강).
+   React 가 style 값을 hex 그대로 두기도(서버 렌더), rgb() 로 바꾸기도(브라우저 갱신) 해 두 꼴을 다 잡는다. */
+html[data-console-theme="light"] .app-shell .fhl-flat span:is([style*="#3b1d1d"], [style*="59, 29, 29"]) { background: #fde4e4 !important; color: #b42318 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat div:is([style*="#16240f"], [style*="22, 36, 15"]) { background: #e8f6ef !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button:is([style*="#7a2230"], [style*="122, 34, 48"]) { background: #f6f8fa !important; color: #b42318 !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat button:is([style*="#7a2230"], [style*="122, 34, 48"]):hover:not(:disabled) { background: #fde4e4 !important; border-color: #f1a8a8 !important; }
+
+/* ── FHL 상단 탭 묶음 — 단계 번호·설명 줄·되돌아가기(2026-11-04 메뉴 간편화) ─────────────────────────────
+   탭 틀(.fhl-subtabs)은 위 4차 규칙 그대로 쓰고, 아래 여백만 바깥 묶음(.fhl-subnav)으로 옮겨 설명 줄을 붙인다.
+   · 단계 번호: FinePlay 클립 묶음(1 신청·태깅 → 2 클립 검수·전송 → 3 보관함). 작은 숫자 칸, 모서리 4px.
+   · 설명 줄: 지금 화면이 무엇을 하는지 한 줄 — 작은 흐린 글씨.
+   · ← 수동 결과물: 수동 결과물에서 넘어온 클립 검수 화면에서만 탭 줄 오른쪽에 뜬다. */
+.app-shell .fhl-flat .fhl-subnav { margin-bottom: 16px; }
+.app-shell .fhl-flat .fhl-subnav-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.app-shell .fhl-flat .fhl-subnav .fhl-subtabs { margin-bottom: 0 !important; }
+.app-shell .fhl-flat .fhl-subnav-desc { margin: 7px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.app-shell .fhl-flat .fhl-subtab-step { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; margin-right: 6px; padding: 0 4px; border-radius: 4px; background: #232833; color: var(--muted); font-size: 10px; font-weight: 700; line-height: 1; vertical-align: 1px; }
+.app-shell .fhl-flat .fhl-subtabs a[href^="/admin/highlight"][style*="--surface-card"] .fhl-subtab-step { background: rgba(255, 255, 255, .22); color: #fff; }
+.app-shell .fhl-flat .fhl-subnav-back { padding: 6px 10px; border: 1px solid #3a4150; border-radius: 4px; color: var(--muted); font-size: 13px; font-weight: 600; text-decoration: none; }
+.app-shell .fhl-flat .fhl-subnav-back:hover { color: var(--text); }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subtab-step { background: #e5e8ec; color: #57606a; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subtabs a[href^="/admin/highlight"][style*="--surface-card"] .fhl-subtab-step { background: rgba(255, 255, 255, .25); color: #fff; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subnav-back { border-color: #d0d7de; background: #fff; }
+
+/* ── 카드 제작 · 주요스탯 선택 (11-04 승준) ──
+   고른 스탯이 한눈에 보이게: 고른 줄 = 연파랑 면 + 1px 파랑 + 왼쪽 순위 숫자, 안 고른 줄 = 기본 면.
+   5개가 다 차면 안 고른 줄은 흐리게. 커스텀 스탯은 넣을 순위를 고른다. */
+.app-shell .fcm-stat-list { gap: 6px; }
+.app-shell .fcm-stat-option { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 12px; border-radius: 5px; border: 1px solid #2a303b; background: #181c24; box-shadow: none; color: var(--text); font-weight: 500; }
+.app-shell .fcm-stat-option:hover:not(:disabled) { border-color: #4b5466; background: #1f242e; }
+.app-shell .fcm-stat-option .fcm-stat-rank { width: 22px; height: 22px; border-radius: 4px; border: 1px dashed #3a4150; display: grid; place-content: center; font-size: 12px; font-weight: 800; color: transparent; }
+.app-shell .fcm-stat-option .fcm-stat-text { min-width: 0; overflow-wrap: anywhere; }
+.app-shell .fcm-stat-option .fcm-stat-state { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.app-shell .fcm-stat-option.active { background: #1a2440; border-color: #4c74d9; }
+.app-shell .fcm-stat-option.active .fcm-stat-rank { border: 0; background: #4c74d9; color: #fff; }
+.app-shell .fcm-stat-option.active .fcm-stat-text { font-weight: 700; }
+.app-shell .fcm-stat-option.active .fcm-stat-state { color: #9db8ff; font-weight: 700; }
+.app-shell .fcm-stat-option.is-full { opacity: .55; }
+.app-shell .fcm-custom-stat { grid-template-columns: minmax(0, 1fr) 150px auto; }
+.app-shell .fcm-selection-move { position: absolute; right: 40px; top: 10px; display: inline-flex; gap: 4px; }
+.app-shell .fcm-selection-move button { width: 24px; height: 24px; min-height: 0; padding: 0; border-radius: 4px; font-size: 12px; line-height: 22px; }
+.app-shell .fcm-selection-slot.is-selected { padding-right: 18px; }
+/* 순서 버튼·× 는 STAT 머리 줄 높이에만 있으므로 스탯 글자는 칸 너비를 다 쓴다. */
+.app-shell .fcm-selection-slot.is-selected > .sidebar-eyebrow { min-height: 24px; line-height: 24px; }
+html[data-console-theme="light"] .app-shell .fcm-stat-option { background: #fff; border-color: #d0d7de; }
+html[data-console-theme="light"] .app-shell .fcm-stat-option:hover:not(:disabled) { background: #f6f8fa; border-color: #b9c1cb; }
+html[data-console-theme="light"] .app-shell .fcm-stat-option .fcm-stat-rank { border-color: #c5ccd6; }
+html[data-console-theme="light"] .app-shell .fcm-stat-option.active { background: #eaf0ff; border-color: #2158e8; }
+html[data-console-theme="light"] .app-shell .fcm-stat-option.active .fcm-stat-rank { background: #2158e8; }
+html[data-console-theme="light"] .app-shell .fcm-stat-option.active .fcm-stat-state { color: #2158e8; }
+.app-shell .fcm-stat-option .fcm-stat-custom { display: inline-flex; align-items: center; height: 18px; margin-left: 8px; padding: 0 7px; border-radius: 999px; border: 1px solid #5b6474; font-size: 11px; font-weight: 700; color: var(--text-secondary, var(--muted)); vertical-align: 1px; }
+html[data-console-theme="light"] .app-shell .fcm-stat-option .fcm-stat-custom { border-color: #b9c1cb; color: #4a5260; }
+/* 제출 칸 문구 고치기(연필) — 칸 안에서 바로 고친다. Enter 저장 · Esc 취소. */
+.app-shell .fcm-selection-move { right: 40px; }
+.app-shell .fcm-selection-edit { display: grid; gap: 6px; }
+.app-shell .fcm-selection-edit textarea { width: 100%; min-height: 52px; resize: vertical; font: inherit; font-size: 14px; font-weight: 600; padding: 6px 8px; border-radius: 4px; border: 1px solid #4c74d9; background: #12151b; color: var(--text); }
+.app-shell .fcm-selection-edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.app-shell .fcm-selection-edit-actions button { min-height: 0; height: 26px; padding: 0 10px; font-size: 12px; }
+html[data-console-theme="light"] .app-shell .fcm-selection-edit textarea { background: #fff; border-color: #2158e8; }
+.app-shell .fcm-selection-move button svg { display: block; margin: auto; }
+
+/* ── 이사69 화이트 모드 글자 대비 전면 개선(2026-11-05) ─────────────────────────────────────────────────────────
+   측정: 콘솔 45화면(사이드바 메뉴 전부 + 확인 창·작업 선택·상세 등 상태)의 보이는 글자마다 실제 글자색·배경색 대비(WCAG)를 쟀다
+   (_exports/delegation/i69). 토큰(--muted 등)은 4.6~5.1:1 이라 "흐린 회색"으로 보였고, 기준 미달(4.5:1 미만)은 대부분
+   ① 다크용으로 박힌 밝은 색(#929aa8 · #ff8a3d · #6f9bff · #0f9960 · rgba(255,255,255,.x)) ② 강조색 #ff7400 을 글자에 그대로 씀
+   ③ 비활성 버튼 opacity .4~.55 ④ 입력 안내 opacity .85 ⑤ FHL 인라인 style 의 다크용 색이었다.
+   기준: 본문·표·라벨·안내 7:1 목표(최소 4.5) · 보조 4.5 · 비활성만 3:1(모양으로도 구분) · 색 글씨도 4.5.
+   전부 html[data-console-theme="light"] 아래라 다크는 그대로다. 글자 색 톤(라이트):
+   주황 #b94b00 · 파랑 #2158e8/#1d4ed8 · 초록 #147d51 · 빨강 #b42318 · 노랑 #946000(FHL 배지 #7a5000) · 보라 #6b45c9. */
+
+/* 1) 비활성 — 흐리게(opacity) 대신 회색 면 + 회색 글자 + 그림자 없음. 3:1 이상, 누를 수 있는 버튼(1px 테두리 + 아래 그림자)과 모양이 다르다.
+      고른 상태(활성 칸)가 비활성이면 연파랑 면을 남겨 "골라져 있음"은 보이게 한다. 인라인 opacity 를 이기려고 !important.
+      홈/원정 팀 버튼(.fla-home/.fla-away)은 팀 색(주황/파랑)을 지켜야 해서 뺀다. */
+html[data-console-theme="light"] .app-shell :is(button, .button-link):disabled:not(.fla-home, .fla-away),
+html[data-console-theme="light"] .app-shell .button-link[aria-disabled="true"] {
+  opacity: 1 !important; color: var(--text-disabled) !important; background: #eef1f5 !important; background-image: none !important;
+  border-color: #dde2e9 !important; box-shadow: none !important;
+}
+html[data-console-theme="light"] .app-shell :is(button, .button-link):disabled:not(.fla-home, .fla-away) :is(span, small, strong, b, kbd, .kbd) { color: inherit !important; opacity: 1 !important; }
+html[data-console-theme="light"] .app-shell :is(button, .button-link):disabled:not(.fla-home, .fla-away) .kbd { background: transparent !important; border-color: #cfd6df !important; }
+html[data-console-theme="light"] .app-shell :is(button, .button-link):disabled:is(.btn-active, .selected, .active, [aria-pressed="true"]) { color: #1746bf !important; background: #e3eafc !important; border-color: #b7c7f2 !important; }
+html[data-console-theme="light"] .app-shell :is(button, .button-link):disabled:is(.btn-link-danger, .match-delete) { background: transparent !important; border-color: transparent !important; }
+html[data-console-theme="light"] .login-page button:disabled { opacity: 1; color: var(--text-disabled); background: #eef1f5; border-color: #dde2e9; box-shadow: none; }
+
+/* 2) 입력 안내(placeholder) — opacity .85 를 없애고 전용 회색(4.5:1↑). 입력한 값(--text)보다는 옅다. */
+html[data-console-theme="light"] :is(.app-shell, .login-page) :is(input, textarea)::placeholder { color: var(--text-placeholder) !important; opacity: 1 !important; }
+
+/* 3) 강조색 #ff7400 을 글자에 쓰던 곳(흰 바탕 2.5:1) → 주황 글자 톤. 면·네온·버튼 채움의 #ff7400 은 그대로. */
+html[data-console-theme="light"] .app-shell :is(.sport-context-badge, .sidebar-system-link.active, .create-plus, .live-coder-hero-url strong, .live-coder-score span, .fv-eyebrow, .futsal-viz-header small, .fv-timer > div) { color: #b94b00; }
+html[data-console-theme="light"] .app-shell .console-dashboard .day-cell .muted[style*="var(--accent)"] { color: #b94b00 !important; }
+html[data-console-theme="light"] .app-shell .console-dashboard .day-cell.selected .muted[style*="var(--accent)"] { color: #fff !important; }
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: var(--accent"], [style*=" color: var(--accent"], [style^="color:var(--accent"], [style*=";color:var(--accent"]):not(button, a) { color: #b94b00 !important; }
+
+/* 4) 점수·지표 숫자 — 홈 주황 / 원정 파랑 / 성공 초록의 다크용 밝은 톤 → 라이트 진한 톤. */
+html[data-console-theme="light"] .app-shell .fla-scoreboard strong.home, html[data-console-theme="light"] .app-shell .console-dashboard .metric-tile:first-child strong { color: #b94b00; }
+html[data-console-theme="light"] .app-shell .fla-scoreboard strong.away, html[data-console-theme="light"] .app-shell .console-dashboard .metric-tile.tech strong { color: #2158e8; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) .metric-tile.success strong { color: #147d51; }
+html[data-console-theme="light"] .app-shell :where(.console-flat) :is(.status-pill.running, .status-pill.ok, .status-pill.success, .meta-chip.success, .data-pill.success)[class] { color: #147d51; }
+html[data-console-theme="light"] .app-shell .fpa-replay-action-item span.positive, html[data-console-theme="light"] .app-shell .fpa-replay-metric.positive strong { color: #147d51; }
+html[data-console-theme="light"] .app-shell .fpa-replay-action-item span.negative, html[data-console-theme="light"] .app-shell .fpa-replay-metric.negative strong { color: #c83838; }
+html[data-console-theme="light"] .app-shell .fla-clock-settings > summary .fla-half-hint { color: #946000; }
+
+/* 5) 다크용 밝은 회색으로 박힌 보조 글씨 → --muted. */
+html[data-console-theme="light"] .app-shell :is(.metric-index, .fv-fixture-date > span, .fv-library-summary span, .fv-player-note, .fv-match-name a) { color: var(--muted); }
+
+/* 6) 색 면 위 흰 글씨 — 면을 한 톤 진하게(흰 글씨 4.5:1↑). 확인 창 최종 버튼은 진한 빨강 그대로 한 톤만.
+      손 올림은 지금까지 다크용 #e05050(테마 구분 없는 규칙, 흰 글씨 3.9:1)이 라이트에도 걸렸다 → 라이트는 한 톤 더 진하게. */
+html[data-console-theme="light"] .app-shell :is(.confirm-dialog .btn-danger, .fv-workspace.console-flat .fv-reset-dialog .fv-reset-button) { background: #c42f2f; border-color: #a82626; }
+html[data-console-theme="light"] .app-shell :is(.confirm-dialog .btn-danger, .fv-workspace.console-flat .fv-reset-dialog .fv-reset-button):hover:not(:disabled) { background: #a82626; border-color: #8f1f1f; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subtabs a[href^="/admin/highlight"][style*="--surface-card"] .fhl-subtab-step { background: rgba(0, 0, 0, .22); color: #fff; }
+html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-live-brandmark { color: #fff; }
+
+/* 7) 풋살 영상 기록 재생 줄 — 다크 면(#101a25)이 라이트에서도 남아 그 위 글자(--text)가 안 보였다 → 라이트 면. */
+html[data-console-theme="light"] .app-shell .fv-player-controls { background: #f3f5f9; }
+
+/* 8) FHL(하이라이트) 화면 인라인 style 의 다크용 글자색 → 라이트 진한 톤. React 가 style 을 rgb() 로 쓰기도(브라우저 갱신)
+      #hex 그대로 두기도(서버 렌더) 해 두 꼴을 다 잡는다. "color:" 가 맨 앞이거나 "; " 뒤일 때만 — background-color·border-color 는 안 건드린다. */
+/* 초록(완료·성공): #22c55e #4ade80 #39d353 #86efac #bbf7d0 #a7f3d0 → #147d51 */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(34, 197, 94)"], [style*=" color: rgb(34, 197, 94)"], [style^="color:#22c55e"], [style*=";color:#22c55e"], [style^="color: rgb(74, 222, 128)"], [style*=" color: rgb(74, 222, 128)"], [style^="color:#4ade80"], [style*=";color:#4ade80"], [style^="color: rgb(57, 211, 83)"], [style*=" color: rgb(57, 211, 83)"], [style^="color:#39d353"], [style*=";color:#39d353"], [style^="color: rgb(134, 239, 172)"], [style*=" color: rgb(134, 239, 172)"], [style^="color:#86efac"], [style*=";color:#86efac"], [style^="color: rgb(187, 247, 208)"], [style*=" color: rgb(187, 247, 208)"], [style^="color:#bbf7d0"], [style*=";color:#bbf7d0"], [style^="color: rgb(167, 243, 208)"], [style*=" color: rgb(167, 243, 208)"], [style^="color:#a7f3d0"], [style*=";color:#a7f3d0"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #147d51 !important; }
+/* 청록(득점 장면 안내): #99f6e4 → #0f766e */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(153, 246, 228)"], [style*=" color: rgb(153, 246, 228)"], [style^="color:#99f6e4"], [style*=";color:#99f6e4"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #0f766e !important; }
+/* 빨강(실패·삭제): #f87171 #ef4444 #fca5a5 #fecaca #ff8a8a #ff5a5a #e8452f → #b42318 */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(248, 113, 113)"], [style*=" color: rgb(248, 113, 113)"], [style^="color:#f87171"], [style*=";color:#f87171"], [style^="color: rgb(239, 68, 68)"], [style*=" color: rgb(239, 68, 68)"], [style^="color:#ef4444"], [style*=";color:#ef4444"], [style^="color: rgb(252, 165, 165)"], [style*=" color: rgb(252, 165, 165)"], [style^="color:#fca5a5"], [style*=";color:#fca5a5"], [style^="color: rgb(254, 202, 202)"], [style*=" color: rgb(254, 202, 202)"], [style^="color:#fecaca"], [style*=";color:#fecaca"], [style^="color: rgb(255, 138, 138)"], [style*=" color: rgb(255, 138, 138)"], [style^="color:#ff8a8a"], [style*=";color:#ff8a8a"], [style^="color: rgb(255, 90, 90)"], [style*=" color: rgb(255, 90, 90)"], [style^="color:#ff5a5a"], [style*=";color:#ff5a5a"], [style^="color: rgb(232, 69, 47)"], [style*=" color: rgb(232, 69, 47)"], [style^="color:#e8452f"], [style*=";color:#e8452f"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #b42318 !important; }
+/* 노랑(대기·주의): #f59e0b #fbbf24 #fde68a #ffd166 → #7a5000 (연노랑 배지 면 위에서도 4.5:1↑) */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(245, 158, 11)"], [style*=" color: rgb(245, 158, 11)"], [style^="color:#f59e0b"], [style*=";color:#f59e0b"], [style^="color: rgb(251, 191, 36)"], [style*=" color: rgb(251, 191, 36)"], [style^="color:#fbbf24"], [style*=";color:#fbbf24"], [style^="color: rgb(253, 230, 138)"], [style*=" color: rgb(253, 230, 138)"], [style^="color:#fde68a"], [style*=";color:#fde68a"], [style^="color: rgb(255, 209, 102)"], [style*=" color: rgb(255, 209, 102)"], [style^="color:#ffd166"], [style*=";color:#ffd166"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #7a5000 !important; }
+/* 주황(강조·홈): #f97316 #fb923c #ff7400 → #b94b00 */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(249, 115, 22)"], [style*=" color: rgb(249, 115, 22)"], [style^="color:#f97316"], [style*=";color:#f97316"], [style^="color: rgb(251, 146, 60)"], [style*=" color: rgb(251, 146, 60)"], [style^="color:#fb923c"], [style*=";color:#fb923c"], [style^="color: rgb(255, 116, 0)"], [style*=" color: rgb(255, 116, 0)"], [style^="color:#ff7400"], [style*=";color:#ff7400"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #b94b00 !important; }
+/* 보라(xFP·사전작업): #c084fc #a78bfa #c4b5fd → #6b45c9 */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(192, 132, 252)"], [style*=" color: rgb(192, 132, 252)"], [style^="color:#c084fc"], [style*=";color:#c084fc"], [style^="color: rgb(167, 139, 250)"], [style*=" color: rgb(167, 139, 250)"], [style^="color:#a78bfa"], [style*=";color:#a78bfa"], [style^="color: rgb(196, 181, 253)"], [style*=" color: rgb(196, 181, 253)"], [style^="color:#c4b5fd"], [style*=";color:#c4b5fd"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #6b45c9 !important; }
+/* 파랑(수동 태깅·링크·패스): #93c5fd #2f6fed #60a5fa #3b82f6 → #1d4ed8 */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(147, 197, 253)"], [style*=" color: rgb(147, 197, 253)"], [style^="color:#93c5fd"], [style*=";color:#93c5fd"], [style^="color: rgb(47, 111, 237)"], [style*=" color: rgb(47, 111, 237)"], [style^="color:#2f6fed"], [style*=";color:#2f6fed"], [style^="color: rgb(96, 165, 250)"], [style*=" color: rgb(96, 165, 250)"], [style^="color:#60a5fa"], [style*=";color:#60a5fa"], [style^="color: rgb(59, 130, 246)"], [style*=" color: rgb(59, 130, 246)"], [style^="color:#3b82f6"], [style*=";color:#3b82f6"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #1d4ed8 !important; }
+/* 회색(보조 글씨): #9ca3af #a1a1aa #8f939b #94a3b8 → var(--muted) */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(156, 163, 175)"], [style*=" color: rgb(156, 163, 175)"], [style^="color:#9ca3af"], [style*=";color:#9ca3af"], [style^="color: rgb(161, 161, 170)"], [style*=" color: rgb(161, 161, 170)"], [style^="color:#a1a1aa"], [style*=";color:#a1a1aa"], [style^="color: rgb(143, 147, 155)"], [style*=" color: rgb(143, 147, 155)"], [style^="color:#8f939b"], [style*=";color:#8f939b"], [style^="color: rgb(148, 163, 184)"], [style*=" color: rgb(148, 163, 184)"], [style^="color:#94a3b8"], [style*=";color:#94a3b8"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: var(--muted) !important; }
+/* 밝은 회색 강조 글씨(현재 선택): #e5e7eb → var(--text) */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(229, 231, 235)"], [style*=" color: rgb(229, 231, 235)"], [style^="color:#e5e7eb"], [style*=";color:#e5e7eb"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: var(--text) !important; }
+/* 원본 영상 미리보기 칸(검은 면) 안내 — 라이트에서만 밝게(검은 면 대비 4.2 → 8:1). */
+html[data-console-theme="light"] .app-shell .fhl-flat :is([style^="color: rgb(115, 115, 115)"], [style*=" color: rgb(115, 115, 115)"], [style^="color:#737373"], [style*=";color:#737373"]):not(:is([style*="linear-gradient(rgb(16, 18, 21)"], [style*="linear-gradient(180deg, #101215"]) *) { color: #a3a3a3 !important; }
+/* 클립 줄 제목 옆 ✎ — opacity .55 를 라이트에서만 올린다(3:1 → 5:1). */
+html[data-console-theme="light"] .app-shell .fhl-flat button > span[style*="opacity: 0.55"] { opacity: .9 !important; }
+/* 하이라이트 오버레이의 영상 타임라인(어두운 그라데이션 띠)은 영상처럼 두 테마 모두 어둡다 → 위 FHL 글자색 바꾸기에서 뺐다(원래 밝은 글자 유지).
+   "현재 선택" 상자(#111317)는 콘솔 카드라 라이트에서 밝은 면으로 바꾼다(글자는 위 규칙의 진한 톤). */
+html[data-console-theme="light"] .app-shell .fhl-flat div:is([style*="background: rgb(17, 19, 23)"], [style*="background:#111317"]) { background: #f7f9fc !important; border-color: #d0d7de !important; }
+/* 참고 이미지 자르기 칸(검은 사진 면, 두 테마 공통) 안 안내 — 라이트에서 --muted 가 진해져 검은 면 위에서 안 보이므로 밝은 회색. */
+html[data-console-theme="light"] .app-shell div[style*="background: rgb(0, 0, 0)"] > div[style*="color: var(--muted"] { color: #c4cad3 !important; }
+/* 매치 컨트롤 기록 차트의 득점 표시(recharts 라벨 fill 속성) — 홈 주황·원정 파랑 라이트 진한 톤. */
+html[data-console-theme="light"] .app-shell .recharts-reference-dot text.recharts-label[fill="#f97316"] { fill: #b94b00; }
+html[data-console-theme="light"] .app-shell .recharts-reference-dot text.recharts-label[fill="#60a5fa"] { fill: #2158e8; }
+/* 9) 회색 보조 글씨 7:1 맞추기 — 기록 차트 축 숫자(recharts 기본 #666, 5.7:1), 정보 칩·FHL 단계 번호(연회색 면 위 6.4·5.2:1),
+      매치 리포트·풋살 영상 기록의 opacity 로 흐린 작은 글씨(.65~.8). 흐림 대신 보조 회색 한 가지로. */
+html[data-console-theme="light"] .app-shell .recharts-cartesian-axis-tick-value { fill: var(--muted); }
+html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, .fla-editor, .console-flat) :is(.chip-tag, .fcm-chip)[class]:not(.home, .away, .chip-home, .chip-away, .tech, .running, .success, .warning, .danger, .archived, .fcm-match-card *) { color: #334055; }
+html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subtab-step { color: #334055; }
+html[data-console-theme="light"] .app-shell :is(.mr-field > span, .mr-source, .mr-preview-bar small, .mr-phases small, .fv-log-quick small) { opacity: 1; color: var(--muted); }
+html[data-console-theme="light"] .app-shell .fv-workspace kbd { opacity: 1; }

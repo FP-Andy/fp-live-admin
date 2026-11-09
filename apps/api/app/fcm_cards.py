@@ -271,10 +271,128 @@ def _build_pitch(
     return fig, ax
 
 
-def _render_reference_heatmap(workbook_bytes: bytes, player_id: str) -> Image.Image | None:
-    df = pd.read_excel(io.BytesIO(workbook_bytes), sheet_name="Data")
-    df["Player"] = df["Player"].map(_normalize_player_value)
-    player_df = df.loc[df["Player"] == _normalize_player_value(player_id)].copy()
+_TEAM_SIDE_MARKERS = {"HOME", "AWAY"}
+GOALKEEPER_ACTIONS = {"save", "catching", "punching"}
+
+
+def _team_marker_text(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def _team_name_key(value: object) -> str:
+    return re.sub(r"\s+", "", _team_marker_text(value)).lower()
+
+
+def _team_match_mask(
+    df: pd.DataFrame,
+    rows: pd.DataFrame,
+    team_side: str | None,
+    team_name: str | None,
+) -> pd.Series:
+    """``rows`` 중 이 팀(사이드·팀명) 기록인 행.
+
+    FPA 로그 워크북은 Team 이 home/away 이고 옛 엑셀은 팀명이다. 주요스탯 분석
+    (``fpa.analyze_card_workbook`` 의 (Team, Player) 묶음 + ``main._fcm_player_side``)과
+    같은 판정이다: home/away 면 사이드로, 팀명이면 팀명으로 비교한다.
+    - Team 열이 없거나 팀 정보가 없으면 거르지 않는다(등번호만 — 예전 동작).
+    - 팀명이 데이터에 아예 없으면(경기 정보와 엑셀 팀명이 다른 경우) 팀명 행은 거르지 않는다.
+    - Team 이 빈 행은 어느 팀인지 몰라 남긴다.
+    """
+    keep = pd.Series(True, index=rows.index)
+    if rows.empty or "Team" not in rows.columns:
+        return keep
+    side = str(team_side or "").strip().upper()
+    side = side if side in _TEAM_SIDE_MARKERS else ""
+    name_key = _team_name_key(team_name)
+    if not side and not name_key:
+        return keep
+    markers = rows["Team"].map(_team_marker_text)
+    upper = markers.str.upper()
+    is_side = upper.isin(_TEAM_SIDE_MARKERS)
+    if side:
+        keep &= ~is_side | (upper == side)
+    named = ~is_side & (markers != "")
+    if name_key and named.any():
+        all_markers = df["Team"].map(_team_name_key)
+        if (all_markers == name_key).any():
+            keep &= ~named | (markers.map(_team_name_key) == name_key)
+    return keep
+
+
+def _player_rows(
+    df: pd.DataFrame,
+    player_id: str,
+    team_side: str | None = None,
+    team_name: str | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """이 팀 이 등번호 선수의 행과, 같은 등번호지만 다른 팀이라 뺀 행 수."""
+    if "Player" not in df.columns:
+        return df.iloc[0:0].copy(), 0
+    numbers = df["Player"].map(_normalize_player_value)
+    same_number = df.loc[numbers == _normalize_player_value(player_id)].copy()
+    same_number["Player"] = numbers.loc[same_number.index]
+    keep = _team_match_mask(df, same_number, team_side, team_name)
+    return same_number.loc[keep].copy(), int((~keep).sum())
+
+
+def _read_card_data(workbook_bytes: bytes) -> pd.DataFrame:
+    return pd.read_excel(io.BytesIO(workbook_bytes), sheet_name="Data")
+
+
+@dataclass
+class PlayerMaps:
+    """카드 히트맵·패스맵 렌더 결과(카드 생성과 미리보기가 같이 쓴다)."""
+
+    heatmap: Image.Image | None = None
+    passmap: Image.Image | None = None
+    heatmap_points: int = 0
+    passes: int = 0
+    key_passes: int = 0
+    other_team_rows: int = 0
+    goalkeeper_actions: int = 0
+
+
+def render_player_maps(
+    workbook_bytes: bytes,
+    player_id: str,
+    team_side: str | None = None,
+    team_name: str | None = None,
+) -> PlayerMaps:
+    """주요선수 카드에 들어가는 히트맵·패스맵을 그린다(팀+등번호로 거른 행만)."""
+    df = _read_card_data(workbook_bytes)
+    player_df, other_team_rows = _player_rows(df, player_id, team_side, team_name)
+    result = PlayerMaps(other_team_rows=other_team_rows)
+    if "Action" in player_df.columns:
+        actions = player_df["Action"].fillna("").astype(str)
+        result.goalkeeper_actions = int(actions.str.strip().str.lower().isin(GOALKEEPER_ACTIONS).sum())
+    result.heatmap_points = len(_coerce_pitch_coordinates(player_df, "StartX_adj", "StartY_adj"))
+    result.heatmap = _heatmap_from_rows(player_df)
+    pass_rows = _pass_rows(player_df)
+    result.passes = len(pass_rows)
+    if not pass_rows.empty and "Tags" in pass_rows.columns:
+        result.key_passes = int(pass_rows["Tags"].fillna("").astype(str).str.contains("Key").sum())
+    result.passmap = _passmap_from_pass_rows(pass_rows)
+    return result
+
+
+def _render_reference_heatmap(
+    workbook_bytes: bytes,
+    player_id: str,
+    team_side: str | None = None,
+    team_name: str | None = None,
+) -> Image.Image | None:
+    player_df, _ = _player_rows(_read_card_data(workbook_bytes), player_id, team_side, team_name)
+    return _heatmap_from_rows(player_df)
+
+
+def _heatmap_from_rows(player_df: pd.DataFrame) -> Image.Image | None:
     player_df = _coerce_pitch_coordinates(player_df, "StartX_adj", "StartY_adj")
     if len(player_df) < 3:
         return None
@@ -326,18 +444,29 @@ def _render_reference_heatmap(workbook_bytes: bytes, player_id: str) -> Image.Im
     return _buffer_to_image(buffer)
 
 
-def _render_reference_passmap(workbook_bytes: bytes, player_id: str) -> Image.Image | None:
-    df = pd.read_excel(io.BytesIO(workbook_bytes), sheet_name="Data")
-    df["Player"] = df["Player"].map(_normalize_player_value)
-    player_df = df.loc[df["Player"] == _normalize_player_value(player_id)].copy()
+def _render_reference_passmap(
+    workbook_bytes: bytes,
+    player_id: str,
+    team_side: str | None = None,
+    team_name: str | None = None,
+) -> Image.Image | None:
+    player_df, _ = _player_rows(_read_card_data(workbook_bytes), player_id, team_side, team_name)
+    return _passmap_from_pass_rows(_pass_rows(player_df))
+
+
+def _pass_rows(player_df: pd.DataFrame) -> pd.DataFrame:
+    """패스맵에 그릴 패스·크로스(시작·끝 좌표가 있는 행)."""
     passes = player_df[player_df["Action"].astype(str).isin(["Pass", "Cross"])].copy()
     passes = _coerce_pitch_coordinates(passes, "StartX_adj", "StartY_adj")
     if passes.empty:
-        return None
+        return passes
+    return _coerce_pitch_coordinates(passes, "EndX_adj", "EndY_adj")
 
-    end_coords = _coerce_pitch_coordinates(passes, "EndX_adj", "EndY_adj")
+
+def _passmap_from_pass_rows(end_coords: pd.DataFrame) -> Image.Image | None:
     if end_coords.empty:
         return None
+    end_coords = end_coords.copy()
     end_coords["pass_category"] = end_coords["Tags"].apply(_classify_pass_tag)
 
     style = PassMapStyle()
@@ -373,12 +502,16 @@ def _render_reference_passmap(workbook_bytes: bytes, player_id: str) -> Image.Im
     return _buffer_to_image(buffer)
 
 
-def render_reference_heatmap(workbook_bytes: bytes, player_id: str) -> Image.Image | None:
-    return _render_reference_heatmap(workbook_bytes, player_id)
+def render_reference_heatmap(
+    workbook_bytes: bytes, player_id: str, team_side: str | None = None, team_name: str | None = None
+) -> Image.Image | None:
+    return _render_reference_heatmap(workbook_bytes, player_id, team_side, team_name)
 
 
-def render_reference_passmap(workbook_bytes: bytes, player_id: str) -> Image.Image | None:
-    return _render_reference_passmap(workbook_bytes, player_id)
+def render_reference_passmap(
+    workbook_bytes: bytes, player_id: str, team_side: str | None = None, team_name: str | None = None
+) -> Image.Image | None:
+    return _render_reference_passmap(workbook_bytes, player_id, team_side, team_name)
 
 
 def _fit_to_box(image: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
@@ -427,6 +560,8 @@ def _goalkeeper_event_markers(
     workbook_bytes: bytes,
     player_id: str,
     fla_shot_events: list[dict[str, object]] | None = None,
+    team_side: str | None = None,
+    team_name: str | None = None,
 ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
     """Return save/conceded marker coordinates mapped into a 0..1 goal mouth.
 
@@ -460,8 +595,8 @@ def _goalkeeper_event_markers(
     df = pd.read_excel(io.BytesIO(workbook_bytes), sheet_name="Data")
     if df.empty or "Player" not in df.columns or "Action" not in df.columns:
         return [], []
-    df["Player"] = df["Player"].map(_normalize_player_value)
-    player_df = df.loc[df["Player"] == _normalize_player_value(player_id)].copy()
+    # 양 팀이 같은 등번호를 쓰므로 팀+등번호로 거른다(팀 정보가 없으면 등번호만).
+    player_df, _ = _player_rows(df, player_id, team_side, team_name)
     if player_df.empty:
         return [], []
 
@@ -551,6 +686,8 @@ def build_goalkeeper_card_image(
     replace_template_logo: bool = True,
     penalty_shootout: list[str] | None = None,
     fla_shot_events: list[dict[str, object]] | None = None,
+    team_side: str | None = None,
+    team_name: str | None = None,
 ) -> bytes:
     """Build the 1920×1080 Paperlogy goalkeeper card from the supplied design."""
     template_path = background_path if background_path and background_path.exists() else GOALKEEPER_TEMPLATE_PATH
@@ -575,7 +712,9 @@ def build_goalkeeper_card_image(
 
     if workbook_bytes or fla_shot_events is not None:
         try:
-            save_points, conceded_points = _goalkeeper_event_markers(workbook_bytes or b"", player_id, fla_shot_events)
+            save_points, conceded_points = _goalkeeper_event_markers(
+                workbook_bytes or b"", player_id, fla_shot_events, team_side=team_side, team_name=team_name
+            )
             if save_path.exists():
                 marker = Image.open(save_path).convert("RGBA")
                 for horizontal, vertical in save_points:
@@ -648,6 +787,8 @@ def build_card_image(
     team_logo_path: Path | None = None,
     replace_template_logo: bool = False,
     fla_shot_events: list[dict[str, object]] | None = None,
+    team_side: str | None = None,
+    team_name: str | None = None,
 ) -> bytes:
     if card_type.upper() == "GOALKEEPER":
         return build_goalkeeper_card_image(
@@ -660,6 +801,8 @@ def build_card_image(
             replace_template_logo=replace_template_logo,
             penalty_shootout=penalty_shootout,
             fla_shot_events=fla_shot_events,
+            team_side=team_side,
+            team_name=team_name,
         )
     card_layout = layout or FcmCardLayout()
     player_font, stat_font = _load_fonts(card_layout)
@@ -672,8 +815,10 @@ def build_card_image(
 
     if workbook_bytes:
         try:
-            heatmap = _render_reference_heatmap(workbook_bytes, player_id)
-            passmap = _render_reference_passmap(workbook_bytes, player_id)
+            # 데이터 제출 화면의 미리보기(/player-maps)와 같은 함수로 그린다.
+            maps = render_player_maps(workbook_bytes, player_id, team_side, team_name)
+            heatmap = maps.heatmap
+            passmap = maps.passmap
             if heatmap:
                 heatmap_layer = _fit_to_box(heatmap, card_layout.heatmap_box)
                 composite.alpha_composite(heatmap_layer, (card_layout.heatmap_box[0], card_layout.heatmap_box[1]))
@@ -689,8 +834,17 @@ def build_card_image(
     title_x = card_layout.name_center_x - ((title_box[2] - title_box[0]) // 2)
     _draw_shadowed_text(draw, (title_x, card_layout.name_y), title_text, player_font)
 
+    stat_text_x = card_layout.stat_x + (card_layout.bullet_radius * 2) + card_layout.bullet_gap
+    stat_max_width = card_layout.output_size[0] - stat_text_x - 48
     for index, stat in enumerate(selected_stats[:5]):
         y = card_layout.stat_y + (index * card_layout.stat_gap)
+        # 수비 스탯을 ' / '로 묶은 줄(예: 인터셉트 : 3회 / 차단 : 3회 / 클리어 : 3회)은
+        # 기본 56px 로는 카드 오른쪽을 넘는다. 넘칠 때만 글자 크기를 줄인다.
+        line_font = stat_font
+        line_size = card_layout.stat_font_size
+        while line_size > 36 and draw.textlength(stat, font=line_font) > stat_max_width:
+            line_size -= 2
+            line_font = ImageFont.truetype(str(FONT_REGULAR), line_size)
         bullet_top = y + card_layout.bullet_offset_y
         bullet_left = card_layout.stat_x
         draw.ellipse(
@@ -704,9 +858,10 @@ def build_card_image(
         )
         _draw_shadowed_text(
             draw,
-            (card_layout.stat_x + (card_layout.bullet_radius * 2) + card_layout.bullet_gap, y),
+            # 줄인 글자도 기본 크기 줄과 세로 가운데가 맞게 내린다.
+            (stat_text_x, y + (card_layout.stat_font_size - line_size) // 2),
             stat,
-            stat_font,
+            line_font,
         )
 
     output = io.BytesIO()

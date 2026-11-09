@@ -1,8 +1,11 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import { API_BASE, apiJson } from '../../../../lib/api';
+import { errorDetail, errorFromBody, errorFromResponse, errorMessage, foldRaw, FpcError, jobErrorMessage, responseMessage, warnRaw } from '../../../../lib/error-messages';
+import { ErrorFold } from '../../../../components/ErrorNotice';
 import {
   DEFAULT_SCOREBOARD, DEFAULT_WATERMARK, MARK_RATIO, MARK_SRC,
   OverlayPlacer, boardPlacement, markPlacement,
@@ -77,6 +80,8 @@ type FpJob = {
   job_metadata?: {
     display_name?: string | null;
     analysis_request_id?: number | string;
+    // 이 작업이 만든 클립이 묶이는 매치 — 클립 검수 화면 딥링크(?matchId=)에 쓴다.
+    match_id?: string | null;
     manifest?: {
       videos?: { durationSeconds?: number }[];
       // 신청한 팀. 홈/어웨이 중 어느 쪽인지는 claim 때 정해진다(컨벤션: 홈 = 신청팀).
@@ -307,6 +312,11 @@ function partSizeFor(fileSize: number): number {
   return Math.max(PART_SIZE_MIN, Math.ceil(fileSize / 10000 / MB) * MB);
 }
 
+/** 할 일 기준 한 줄 + 서버 사유. 사유가 없으면 "{할 일}. 다시 시도해 주세요." 원문은 자세히. */
+function failMessage(err: unknown, action: string, context?: Record<string, string | number | null | undefined>): string {
+  return errorMessage(err, `${action}. 다시 시도해 주세요.`, { action, context });
+}
+
 // 파트 하나 PUT. ETag 를 돌려줘야 완료 요청에서 순서를 맞출 수 있다.
 function putPart(url: string, blob: Blob, onLoaded: (bytes: number) => void): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -331,7 +341,9 @@ function putPart(url: string, blob: Blob, onLoaded: (bytes: number) => void): Pr
       }
       const etag = xhr.getResponseHeader('ETag');
       if (!etag) {
-        reject(new Error('파트 ETag 를 읽지 못했습니다 — 버킷 CORS 의 ExposeHeaders 에 ETag 를 추가하세요.'));
+        // 원인(버킷 CORS ExposeHeaders 에 ETag 없음)은 자세히에 남긴다.
+        reject(new Error(foldRaw('업로드 설정 문제로 멈췄습니다. 개발팀에 알려 주세요.',
+          '파트 ETag 를 읽지 못했습니다 — 버킷 CORS 의 ExposeHeaders 에 ETag 를 추가하세요.')));
         return;
       }
       resolve(etag);
@@ -469,6 +481,8 @@ export default function FineplayJobsPage() {
   const [makeVertical, setMakeVertical] = useState(false);
   const [producing, setProducing] = useState(false);
   const [produceMsg, setProduceMsg] = useState('');
+  // 클립 생성이 끝난 작업 — '클립 검수로 →' 링크를 띄운다(다른 작업을 고르면 지운다).
+  const [producedLink, setProducedLink] = useState<{ jobId: string; href: string } | null>(null);
   const [produceError, setProduceError] = useState('');
 
   // FPA dual 연결 — 선택한 FPA 매치의 씬을 클립에 순서 매칭해 분석 데이터를 함께 보낸다.
@@ -506,7 +520,7 @@ export default function FineplayJobsPage() {
         // 준비상태 조회 실패는 목록을 막지 않는다 — 버튼은 비활성으로 남는다.
       }
     } catch (err) {
-      setListError(err instanceof Error ? err.message : String(err));
+      setListError(failMessage(err, '목록을 불러오지 못했습니다'));
     }
   }, []);
 
@@ -657,7 +671,7 @@ export default function FineplayJobsPage() {
       setPreFiles([]);
       await loadJobs();
     } catch (err) {
-      setPreMsg(err instanceof Error ? err.message : String(err));
+      setPreMsg(failMessage(err, '사전 작업을 만들지 못했습니다'));
     } finally {
       setPreBusy(false);
     }
@@ -692,14 +706,14 @@ export default function FineplayJobsPage() {
       await loadJobs();
       if (selected?.id === job.id) await selectJob(job);
     } catch (err) {
-      setPollMsg(err instanceof Error ? err.message : String(err));
+      setPollMsg(failMessage(err, '원본 정보를 새로 받지 못했습니다', { '작업 ID': job.id }));
     }
   };
 
   // 사전 작업 원본 삭제 — 보관비 정리. 클립·데이터는 그대로, 재제작만 불가.
   const deleteSource = async (job: FpJob) => {
     const ok = window.confirm(
-      '원본 영상을 S3에서 삭제할까요?\n클립·FPA 데이터는 유지되지만, 원본 재생과 클립 재제작은 불가능해집니다.',
+      '원본 영상을 삭제할까요?\n클립·FPA 데이터는 유지되지만, 원본 재생과 클립 재제작은 불가능해집니다.',
     );
     if (!ok) return;
     try {
@@ -707,7 +721,7 @@ export default function FineplayJobsPage() {
       setPollMsg(`원본 삭제 완료 — ${job.id}`);
       await loadJobs();
     } catch (err) {
-      setPollMsg(err instanceof Error ? err.message : String(err));
+      setPollMsg(failMessage(err, '원본 영상을 삭제하지 못했습니다', { '작업 ID': job.id }));
     }
   };
 
@@ -721,7 +735,7 @@ export default function FineplayJobsPage() {
     if (!window.confirm(
       `사전 작업 "${name}" 을 통째로 지울까요?\n\n`
       + '클립·태깅 데이터·매치·원본 영상이 모두 사라집니다. 되돌릴 수 없습니다.\n'
-      + "목록에서만 빼려면 '아카이브' 를 쓰세요.",
+      + "목록에서만 빼려면 '보관' 을 쓰세요.",
     )) return;
     try {
       const res = await apiJson<{ clips: number; match_deleted: boolean; s3_removed: number; s3_failed: number }>(
@@ -735,15 +749,18 @@ export default function FineplayJobsPage() {
       );
       await loadJobs();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
       // 신청이 연결돼 있으면 서버가 409 로 막는다 — 한 번 더 물어보고 강행할 수 있게.
-      if (!force && msg.includes('신청이 연결')) {
-        if (window.confirm(`${msg}\n\n그래도 삭제할까요? 앱 쪽에 고아 데이터가 남을 수 있습니다.`)) {
+      // 번역된 message 가 아니라 서버 원문(detail)으로 판정한다.
+      const detail = errorDetail(err);
+      if (!force && detail.includes('신청이 연결')) {
+        warnRaw('사전 작업 삭제 — 신청 연결됨', err instanceof FpcError ? err : { detail });
+        const sides = detail.match(/\(([^)]*)\)/)?.[1]?.toUpperCase();
+        if (window.confirm(`신청이 연결돼 있습니다${sides ? ` (${sides})` : ''}.\n\n그래도 삭제할까요? 앱에 짝 없는 신청이 남을 수 있습니다.`)) {
           await deleteStandaloneJob(job, true);
           return;
         }
       }
-      setPollMsg(msg);
+      setPollMsg(failMessage(err, '삭제하지 못했습니다', { '작업 ID': job.id }));
     }
   };
 
@@ -754,10 +771,10 @@ export default function FineplayJobsPage() {
         method: 'POST',
         body: JSON.stringify({ archived: true }),
       });
-      setPollMsg(`아카이브 완료 — ${job.id}. 클립 결과 목록에서도 빠지고 '아카이브' 탭으로 이동합니다.`);
+      setPollMsg(`보관 완료 — ${job.id}. 클립 검수·전송 목록에서도 빠지고 '보관함' 탭으로 이동합니다.`);
       await loadJobs();
     } catch (err) {
-      setPollMsg(err instanceof Error ? err.message : String(err));
+      setPollMsg(failMessage(err, '보관하지 못했습니다', { '작업 ID': job.id }));
     }
   };
 
@@ -784,7 +801,7 @@ export default function FineplayJobsPage() {
       { method: 'POST', body: fd, credentials: 'include' },
     );
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.detail || `업로드 실패 (${res.status})`);
+    if (!res.ok) throw errorFromBody(res.status, JSON.stringify(data ?? {}), { fallback: '기록지를 읽지 못했습니다. 다시 시도해 주세요.' });
     return data as { applied: boolean; sheets: SheetRow[]; sides?: Record<string, { team: string; count: number }> };
   };
 
@@ -796,7 +813,7 @@ export default function FineplayJobsPage() {
       setSheetRows(data.sheets || []);
       setSheetMsg(`시트 ${data.sheets?.length ?? 0}개 — 이 경기에 해당하는 시트를 고르세요.`);
     } catch (err) {
-      setSheetMsg(err instanceof Error ? err.message : String(err));
+      setSheetMsg(failMessage(err, '기록지를 읽지 못했습니다', { '작업 ID': job.id }));
     } finally { setSheetBusy(false); }
   };
 
@@ -810,7 +827,7 @@ export default function FineplayJobsPage() {
       setSheetMsg(`${sheet} 적용 완료 — ${parts.join(' · ')}`);
       await loadJobs();
     } catch (err) {
-      setSheetMsg(err instanceof Error ? err.message : String(err));
+      setSheetMsg(failMessage(err, '기록지를 적용하지 못했습니다', { '작업 ID': job.id, '시트': sheet }));
     } finally { setSheetBusy(false); }
   };
 
@@ -829,7 +846,7 @@ export default function FineplayJobsPage() {
 
   const saveLink = async (job: FpJob) => {
     if (!linkRid.trim()) {
-      setLinkMsg('analysisRequestId 를 입력하세요.');
+      setLinkMsg('신청 번호를 입력하세요.');
       return;
     }
     setLinkBusy(true);
@@ -853,7 +870,7 @@ export default function FineplayJobsPage() {
       setLinkTeamName('');
       await loadJobs();
     } catch (err) {
-      setLinkMsg(err instanceof Error ? err.message : String(err));
+      setLinkMsg(failMessage(err, '신청을 연결하지 못했습니다', { '작업 ID': job.id, '팀': linkSide.toUpperCase() }));
     } finally {
       setLinkBusy(false);
     }
@@ -864,7 +881,7 @@ export default function FineplayJobsPage() {
       await apiJson(`/highlight/fineplay-jobs/${job.id}/links/${side}`, { method: 'DELETE' });
       await loadJobs();
     } catch (err) {
-      setLinkMsg(err instanceof Error ? err.message : String(err));
+      setLinkMsg(failMessage(err, '연결을 해제하지 못했습니다', { '작업 ID': job.id, '팀': side.toUpperCase() }));
     }
   };
 
@@ -890,7 +907,7 @@ export default function FineplayJobsPage() {
         const hidden = res.existing_hidden ?? 0;
         parts.push(
           seen || hidden
-            ? `이미 있음 ${res.existing}(목록에 보임 ${seen} · 아카이브 ${hidden})`
+            ? `이미 있음 ${res.existing}(목록에 보임 ${seen} · 보관함 ${hidden})`
             : `이미 있음 ${res.existing}`,
         );
       }
@@ -917,7 +934,7 @@ export default function FineplayJobsPage() {
       );
       await loadJobs();
     } catch (err) {
-      setPollMsg(err instanceof Error ? err.message : String(err));
+      setPollMsg(failMessage(err, '새 신청을 가져오지 못했습니다'));
     } finally {
       setPolling(false);
     }
@@ -942,7 +959,7 @@ export default function FineplayJobsPage() {
       setFpaMatchName(name || (home && away ? `${home} vs ${away}` : matchId.slice(0, 8)));
       if (!sceneIndexes.size) setFpaMsg('이 매치에는 저장된 dual 씬이 없습니다.');
     } catch (err) {
-      setFpaMsg(err instanceof Error ? err.message : String(err));
+      setFpaMsg(failMessage(err, 'FPA 기록을 불러오지 못했습니다', { '경기 ID': matchId }));
     }
   };
 
@@ -962,7 +979,7 @@ export default function FineplayJobsPage() {
         Number(b.competition_class === 'FPA') - Number(a.competition_class === 'FPA'));
       setFpaMatches(sorted);
     } catch (err) {
-      setFpaMsg(err instanceof Error ? err.message : String(err));
+      setFpaMsg(failMessage(err, '경기 목록을 불러오지 못했습니다'));
     }
   };
 
@@ -977,6 +994,7 @@ export default function FineplayJobsPage() {
     setPlaying(false);
     setProduceMsg('');
     setProduceError('');
+    setProducedLink(null);
     setFpaPickerOpen(false);
     const link = job.job_metadata?.fpa_link;
     if (link?.match_id) {
@@ -1000,7 +1018,7 @@ export default function FineplayJobsPage() {
       setYtCookieHealth(res.cookieHealth || '');
       setYtPotHealth(res.potHealth || '');
     } catch (err) {
-      setSourceError(err instanceof Error ? err.message : String(err));
+      setSourceError(errorMessage(err, '원본 영상을 불러오지 못했습니다. 새로고침 후 다시 열어 주세요.', { fixed: true, context: { '작업 ID': job.id } }));
     }
   };
 
@@ -1048,7 +1066,7 @@ export default function FineplayJobsPage() {
           : v
       )));
     } catch (err) {
-      setSourceError(err instanceof Error ? err.message : String(err));
+      setSourceError(failMessage(err, '원본을 다시 받지 못했습니다', { '작업 ID': selected.id }));
     }
   };
 
@@ -1279,7 +1297,7 @@ export default function FineplayJobsPage() {
             colors: { home_color: scoreboard.homeColor, away_color: scoreboard.awayColor },
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw await errorFromResponse(res, '점수판 미리보기를 그리지 못했습니다.');
         const url = URL.createObjectURL(await res.blob());
         if (!alive) { URL.revokeObjectURL(url); return; }
         setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
@@ -1299,6 +1317,7 @@ export default function FineplayJobsPage() {
     if (!selected || !tags.length || producing) return;
     setProducing(true);
     setProduceError('');
+    setProducedLink(null);
     try {
       // '점수만' 태그는 장면을 만들지 않는다 — 점수판에만 반영된다(위 runningScores).
       const clips = tags.flatMap((tag, ti) => {
@@ -1362,14 +1381,22 @@ export default function FineplayJobsPage() {
           const n = meta.result_payload?.clips?.length ?? tags.length;
           const fpaNote = meta.fpa_enrich_status ? `, FPA: ${meta.fpa_enrich_status}` : '';
           setProduceMsg(`완료 — 클립 ${n}개 업로드, 콜백: ${meta.callback_status || '-'}${fpaNote}`);
+          // 클립 검수 화면은 ?matchId=(매치로 묶인 클립) 또는 ?jobId=(매치 없는 클립)로 그 경기를 바로 연다.
+          const matchId = meta.match_id || selected.job_metadata?.match_id;
+          setProducedLink({
+            jobId: selected.id,
+            href: matchId
+              ? `/admin/highlight/clips?matchId=${encodeURIComponent(matchId)}`
+              : `/admin/highlight/clips?jobId=${encodeURIComponent(selected.id)}`,
+          });
           break;
         }
-        if (job.status === 'error') throw new Error(job.error_message || '생성 실패');
+        if (job.status === 'error') throw new Error(jobErrorMessage(job.error_message, '클립을 만들지 못했습니다. 다시 시도해 주세요.', { '작업 ID': selected.id }));
         setProduceMsg(job.job_metadata?.progress?.detail || '처리 중...');
       }
       await loadJobs();
     } catch (err) {
-      setProduceError(err instanceof Error ? err.message : String(err));
+      setProduceError(errorMessage(err, '클립을 만들지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': selected.id } }));
       setProduceMsg('');
     } finally {
       setProducing(false);
@@ -1403,7 +1430,7 @@ export default function FineplayJobsPage() {
         method: 'POST', credentials: 'include', body: form,
       });
       if (!res.ok) {
-        setBulkMsg((await res.text()) || '기록지 처리 실패');
+        setBulkMsg(await responseMessage(res, { action: '기록지를 처리하지 못했습니다', fallback: '기록지를 처리하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       const data = await res.json() as BulkResponse;
@@ -1416,19 +1443,19 @@ export default function FineplayJobsPage() {
         : `미리보기 — 시트 ${data.total}장 중 ${data.matched}건 자동 매칭${data.unmatched ? ` · ${data.unmatched}건은 작업을 직접 고르세요` : ''}`);
       if (apply) void loadJobs();
     } catch (err) {
-      setBulkMsg(err instanceof Error ? err.message : '기록지 처리 실패');
+      setBulkMsg(failMessage(err, '기록지를 처리하지 못했습니다'));
     } finally {
       setBulkBusy(false);
     }
   };
 
   return (
-    <div style={{ width: '100%' }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%' }}>
       <HighlightSubTabs />
 
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <h2 style={{ fontSize: 18, margin: 0 }}>FinePlay 분석 작업</h2>
+          <h2 style={{ fontSize: 18, margin: 0 }}>신청·태깅</h2>
           <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => setPreOpen((v) => !v)}>
             {preOpen ? '－ 사전 작업 닫기' : '＋ 사전 작업 (신청 없이)'}
           </button>
@@ -1538,7 +1565,7 @@ export default function FineplayJobsPage() {
             </div>
           ) : null}
 
-          {bulkMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{bulkMsg}</p> : null}
+          {bulkMsg ? <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{bulkMsg}<ErrorFold message={bulkMsg} /></div> : null}
           <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
             홈/어웨이 팀명 두 개로 사전 작업을 찾습니다. 제목은 바뀔 수 있어 쓰지 않습니다.
             이미 등록한 경기의 대회 인입 양식이 비어 있으면 <strong>머리글만 갱신</strong>을 쓰세요 —
@@ -1553,14 +1580,15 @@ export default function FineplayJobsPage() {
         </p>
         {/* 사유가 여러 줄로 올 수 있다 — 줄바꿈이 보여야 '왜 0건인지' 를 읽을 수 있다. */}
         {pollMsg ? (
-          <p style={{
+          <div style={{
             fontSize: 12, color: 'var(--muted, #999)', margin: '6px 0 0',
             whiteSpace: 'pre-wrap',
           }}>
             {pollMsg}
-          </p>
+            <ErrorFold message={pollMsg} />
+          </div>
         ) : null}
-        {listError ? <p style={{ fontSize: 12, color: '#ef4444', margin: '6px 0 0' }}>{listError}</p> : null}
+        {listError ? <div style={{ fontSize: 12, color: '#ef4444', margin: '6px 0 0' }}>{listError}<ErrorFold message={listError} /></div> : null}
       </div>
 
       {preOpen ? (
@@ -1652,7 +1680,7 @@ export default function FineplayJobsPage() {
               ))}
             </div>
           ) : null}
-          {preMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{preMsg}</p> : null}
+          {preMsg ? <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{preMsg}<ErrorFold message={preMsg} /></div> : null}
         </div>
       ) : null}
 
@@ -1664,7 +1692,7 @@ export default function FineplayJobsPage() {
         </div>
       ) : (
         <div style={card}>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+          <div className="fhl-seg" style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             {([
               ['all', `전체 ${jobs.length}`],
               ['xfp', `🟣 xFP ${jobs.filter((j) => planView(j) === 'xfp').length}`],
@@ -1729,7 +1757,7 @@ export default function FineplayJobsPage() {
                       {meta.standalone && !meta.source_deleted ? (
                         <button
                           style={{ ...smallBtn, color: '#f87171' }}
-                          title="S3 원본 삭제 (보관비 정리) — 클립·데이터는 유지, 재제작 불가"
+                          title="원본 영상 삭제 — 클립·데이터는 남지만 클립을 다시 만들 수는 없습니다"
                           onClick={() => void deleteSource(job)}
                         >
                           원본 삭제
@@ -1741,14 +1769,14 @@ export default function FineplayJobsPage() {
                         style={{ ...smallBtn, opacity: readiness[job.id]?.ready ? 1 : 0.45 }}
                         disabled={!readiness[job.id]?.ready}
                         title={readiness[job.id]?.ready
-                          ? '아카이브 룸으로 이동 — 이 목록과 클립 결과에서 빠집니다. 데이터는 그대로, 언제든 해제·수정 가능'
-                          : `클립 결과 화면에서 '작업 완료' 를 먼저 눌러 주세요 — 완료한 작업만 아카이브합니다`
+                          ? '보관함으로 이동 — 이 목록과 클립 검수·전송에서 빠집니다. 데이터는 그대로, 언제든 해제·수정 가능'
+                          : `클립 검수·전송 화면에서 '작업 완료' 를 먼저 눌러 주세요 — 완료한 작업만 보관합니다`
                             + (readiness[job.id]?.needs_fpa
                               ? ` (FPA ${readiness[job.id]?.clips_with_actions ?? 0}/${readiness[job.id]?.clip_count ?? '?'} 클립)`
                               : '')}
                         onClick={() => void archiveJob(job)}
                       >
-                        📦 아카이브{readiness[job.id] && !readiness[job.id].ready && readiness[job.id].needs_fpa
+                        📦 보관{readiness[job.id] && !readiness[job.id].ready && readiness[job.id].needs_fpa
                           ? ` (${readiness[job.id].clips_with_actions}/${readiness[job.id].clip_count})`
                           : ''}
                       </button>
@@ -1757,7 +1785,7 @@ export default function FineplayJobsPage() {
                   {meta.standalone ? (
                     <button
                       style={{ ...smallBtn, color: '#f87171', borderColor: '#f87171' }}
-                      title="사전 작업 삭제 — 클립·태깅·매치·원본이 모두 사라집니다. 목록에서만 빼려면 아카이브를 쓰세요"
+                      title="사전 작업 삭제 — 클립·태깅·매치·원본이 모두 사라집니다. 목록에서만 빼려면 보관을 쓰세요"
                       onClick={() => void deleteStandaloneJob(job)}
                     >
                       🗑 삭제
@@ -1871,7 +1899,7 @@ export default function FineplayJobsPage() {
                         {linkBusy ? '연결 중…' : '연결'}
                       </button>
                     </div>
-                    {linkMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{linkMsg}</p> : null}
+                    {linkMsg ? <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{linkMsg}<ErrorFold message={linkMsg} /></div> : null}
 
                     <div style={{ borderTop: '1px dashed var(--border-ghost, #2c2c32)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1917,14 +1945,14 @@ export default function FineplayJobsPage() {
                           ))}
                         </div>
                       ) : null}
-                      {sheetMsg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{sheetMsg}</p> : null}
+                      {sheetMsg ? <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: 0 }}>{sheetMsg}<ErrorFold message={sheetMsg} /></div> : null}
                       <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
                         신청이 없는 사전 작업은 라인업이 비어 태깅 등번호 검증이 돌지 않습니다. 기록지 시트 하나가 경기 하나입니다.
                       </p>
                     </div>
 
                     <p style={{ fontSize: 12, color: 'var(--muted, #777)', margin: 0 }}>
-                      전송(클립 결과 탭)하면 연결된 사이드별로 각 팀 클립만, 그 팀 라인업으로 재매칭돼 나갑니다. 상대편 액션은 익명 처리됩니다.
+                      전송(클립 검수·전송 탭)하면 연결된 사이드별로 각 팀 클립만, 그 팀 라인업으로 재매칭돼 나갑니다. 상대편 액션은 익명 처리됩니다.
                     </p>
                   </div>
                 ) : null}
@@ -1951,7 +1979,7 @@ export default function FineplayJobsPage() {
               fontSize: 12, color: '#9ca3af', margin: '0 0 10px', padding: '8px 10px', borderRadius: 6,
               background: 'rgba(156,163,175,.10)', border: '1px dashed var(--border-ghost, #2c2c32)',
             }}>
-              하이라이트만 신청입니다 — 태깅·클립 생성은 똑같이 하고 <strong>클립 결과에 그대로 보관</strong>됩니다.
+              하이라이트만 신청입니다 — 태깅·클립 생성은 똑같이 하고 <strong>클립 검수·전송에 그대로 보관</strong>됩니다.
               다만 전송할 때 FPA 채점·씬모션이 실리지 않으니, <strong>FPA 를 찍지 않아도 됩니다</strong>(찍어두면
               나중에 유료 전환 시 재전송만으로 나갑니다).
             </p>
@@ -2175,7 +2203,7 @@ export default function FineplayJobsPage() {
           ) : null}
 
           {sourceError ? (
-            <p style={{ fontSize: 13, color: '#ef4444' }}>원본 재생 실패: {sourceError}</p>
+            <div style={{ fontSize: 13, color: '#ef4444', margin: '13px 0' }}>{sourceError}<ErrorFold message={sourceError} /></div>
           ) : failedFetch ? (
             <div
               style={{
@@ -2605,7 +2633,7 @@ export default function FineplayJobsPage() {
                   </p>
                 ) : null}
                 {fpaMsg ? (
-                  <p style={{ fontSize: 12, color: '#f59e0b', margin: '0 0 8px' }}>{fpaMsg}</p>
+                  <div style={{ fontSize: 12, color: '#f59e0b', margin: '0 0 8px' }}>{fpaMsg}<ErrorFold message={fpaMsg} /></div>
                 ) : null}
                 {fpaPickerOpen && !fpaMatchId ? (
                   <div style={{
@@ -2815,7 +2843,7 @@ export default function FineplayJobsPage() {
                       한다. 여기서 바로 보내면 구간을 다듬기 전에 나가고, 전송 창구가
                       둘로 갈려 무엇이 언제 나갔는지 한 곳에서 안 보인다. */}
                   <button style={primaryBtn} onClick={() => void produce()} disabled={producing || !clipTags.length}>
-                    {producing ? '처리 중...' : `🎬 클립 ${clipTags.length}개 생성 (클립 결과에 보관)`}
+                    {producing ? '처리 중...' : `🎬 클립 ${clipTags.length}개 생성 (클립 검수·전송에 보관)`}
                   </button>
                   <label style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input type="checkbox" checked={makeVertical} onChange={(e) => setMakeVertical(e.target.checked)} />
@@ -2823,6 +2851,9 @@ export default function FineplayJobsPage() {
                   </label>
                   {produceMsg ? (
                     <span style={{ fontSize: 13, color: producing ? 'var(--muted, #999)' : '#22c55e' }}>{produceMsg}</span>
+                  ) : null}
+                  {!producing && producedLink && producedLink.jobId === selected.id ? (
+                    <Link href={producedLink.href} style={{ fontSize: 13, fontWeight: 600 }}>클립 검수로 →</Link>
                   ) : null}
                 </div>
                 {producing ? (
@@ -2842,7 +2873,8 @@ export default function FineplayJobsPage() {
                     marginTop: 12, padding: 12, borderRadius: 8, fontSize: 13,
                     background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
                   }}>
-                    실패: {produceError}
+                    {produceError}
+                    <ErrorFold message={produceError} />
                   </div>
                 ) : null}
               </div>

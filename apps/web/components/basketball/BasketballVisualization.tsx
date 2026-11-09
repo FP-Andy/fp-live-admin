@@ -712,11 +712,11 @@ export default function BasketballVisualization() {
   };
 
   if (loading) {
-    return <main className="page-stack"><section className="card card-panel"><p className="muted">농구 시각화를 준비하고 있습니다.</p></section></main>;
+    return <main className="page-stack console-flat"><section className="card card-panel"><p className="muted">농구 시각화를 준비하고 있습니다.</p></section></main>;
   }
 
   return (
-    <main className="page-stack basketball-viz-page">
+    <main className="page-stack basketball-viz-page console-flat">
       <section className="basketball-viz-toolbar">
         <div>
           <div className="sidebar-eyebrow">Basketball FLA</div>

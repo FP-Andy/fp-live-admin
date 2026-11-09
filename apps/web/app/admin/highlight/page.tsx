@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE, apiJson } from '../../../lib/api';
+import { errorFromBody, errorMessage, jobErrorMessage } from '../../../lib/error-messages';
+import ErrorNotice, { ErrorFold } from '../../../components/ErrorNotice';
 import HighlightSubTabs from './HighlightSubTabs';
 
 type ClipTimestamp = { start: number; end: number };
@@ -250,7 +252,7 @@ export default function HighlightPage() {
           reject(err);
         }
       } else {
-        reject(new Error(xhr.responseText || `Upload failed (${xhr.status})`));
+        reject(errorFromBody(xhr.status, xhr.responseText || '', { fixed: '업로드하지 못했습니다. 다시 시도해 주세요.', url: '/highlight/jobs' }));
       }
     };
     xhr.onerror = () => reject(new Error('Upload failed'));
@@ -289,7 +291,7 @@ export default function HighlightPage() {
       startPolling(data.job_id);
       loadJobs();
     } catch (err) {
-      setStatus(`오류: ${err}`);
+      setStatus(errorMessage(err, '업로드하지 못했습니다. 다시 시도해 주세요.', { fixed: true }));
     } finally {
       setUploading(false);
     }
@@ -321,7 +323,7 @@ export default function HighlightPage() {
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     } catch (err) {
-      setStatus(`내보내기 오류: ${err}`);
+      setStatus(errorMessage(err, '합치지 못했습니다. 다시 시도해 주세요.', { fixed: true, context: { '작업 ID': activeJob.id } }));
     } finally {
       setExporting(false);
     }
@@ -340,7 +342,7 @@ export default function HighlightPage() {
       loadJobs();
       setStatus('삭제 완료');
     } catch (err) {
-      setStatus(`삭제 오류: ${err}`);
+      setStatus(errorMessage(err, '삭제하지 못했습니다. 다시 시도해 주세요.', { fixed: true, context: { '작업 ID': jobId } }));
     }
   };
 
@@ -364,7 +366,7 @@ export default function HighlightPage() {
   const selectedCount = Object.values(selectedClips).filter(Boolean).length;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+    <div className="console-flat fhl-flat" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
     <HighlightSubTabs />
     <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', flexWrap: 'wrap' }}>
 
@@ -487,7 +489,7 @@ export default function HighlightPage() {
           )}
 
           {status && (
-            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>{status}</div>
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>{status}<ErrorFold message={status} /></div>
           )}
         </div>
 
@@ -588,7 +590,7 @@ export default function HighlightPage() {
         {activeJob?.status === 'error' && (
           <div style={{ background: 'var(--danger-soft)', borderRadius: 'var(--radius-card)', padding: 24, border: '1px solid var(--border-danger)' }}>
             <div style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 8 }}>ERROR</div>
-            <div style={{ fontSize: 13 }}>{activeJob.error_message}</div>
+            <ErrorNotice style={{ fontSize: 13 }} message={jobErrorMessage(activeJob.error_message, '분석에 실패했습니다. 다시 시도해 주세요.', { '작업 ID': activeJob.id })} />
           </div>
         )}
 

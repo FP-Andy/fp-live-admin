@@ -1,8 +1,10 @@
 /** Shared cards extracted from the FLA match controller. Both workspaces use this UI. */
-import {Fragment, type Dispatch, type SetStateAction, type MouseEvent} from 'react';
+import {Fragment, useRef, useState, type Dispatch, type SetStateAction, type MouseEvent} from 'react';
 import {ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine, ResponsiveContainer} from 'recharts';
 import AttackDirectionPitch from '../AttackDirectionPitch';
 import {FutsalShotPitch} from './FutsalShotPitch';
+import { ErrorFold } from '../ErrorNotice';
+import { useWidthFlags } from '../../lib/width-flags';
 type Team='HOME'|'AWAY';
 type Lane='LEFT'|'CENTER'|'RIGHT';
 type AttackLR='L2R'|'R2L';
@@ -18,8 +20,9 @@ export function MatchPossessionCard({possessionTeam, matchTeams, summary, canWri
  return (<div className="card card-panel grid" style={{ minHeight: 180, gap: 8 }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ margin: 0 }}>점유 팀</h3>
-                <button className="btn-danger" onClick={resetPossession} disabled={!canWrite || isResettingPossession}>
-                  {isResettingPossession ? '초기화 중…' : '초기화'}
+                {/* 점유 초기화는 작은 글씨로 — 제목 옆 빨간 버튼이라 잘못 누르기 쉬웠다. 확인 창을 거친다. */}
+                <button className="btn-link-danger" onClick={resetPossession} disabled={!canWrite || isResettingPossession}>
+                  {isResettingPossession ? '초기화 중…' : '점유 초기화…'}
                 </button>
               </div>
               <div className="row">
@@ -39,7 +42,11 @@ export function MatchPossessionCard({possessionTeam, matchTeams, summary, canWri
 }
 
 export function MatchAttackCard({attackLR, selectedTeam, pendingLane, matchTeams, summary, canWrite, canRecord=canWrite, changeAttackDirection, selectEventTeam, setPendingLane, sendLane}:{attackLR:AttackLR; selectedTeam:Team; pendingLane:Lane; matchTeams:{homeTeam?:string;awayTeam?:string}|null; summary:any; canWrite:boolean; canRecord?:boolean; changeAttackDirection:(direction:AttackLR)=>void; selectEventTeam:(team:Team)=>void; setPendingLane:(lane:Lane)=>void; sendLane:(lane:Lane)=>void;}){
- return (<div className="card card-panel grid fla-attack-card" role="group" aria-label="공격 방향 기록">
+ const cardRef=useRef<HTMLDivElement|null>(null);
+ // 컨트롤 · 방향 그림 두 칸은 안쪽 폭 680 넘을 때만 — 반쪽 창(736px, 672)에서 레인 버튼이 줄바꿈되던 것.
+ // 1920 화면 카드(689)는 그대로 두 칸(이사71, 전에는 560)
+ useWidthFlags(cardRef,{narrow:680});
+ return (<div ref={cardRef} className="card card-panel grid fla-attack-card" role="group" aria-label="공격 방향 기록">
               <h3>공격 방향 기록</h3>
               <div className="fla-attack-layout">
               <div className="fla-attack-controls">
@@ -50,8 +57,8 @@ export function MatchAttackCard({attackLR, selectedTeam, pendingLane, matchTeams
               </div>
               <div className="row">
                 <span className="fla-control-label">기록 팀</span>
-                <button className={selectedTeam === 'HOME' ? 'btn-active' : ''} aria-pressed={selectedTeam === 'HOME'} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>{matchTeams?.homeTeam || '홈'}</button>
-                <button className={selectedTeam === 'AWAY' ? 'btn-active' : ''} aria-pressed={selectedTeam === 'AWAY'} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>{matchTeams?.awayTeam || '어웨이'}</button>
+                <button className={`fla-home ${selectedTeam === 'HOME' ? 'selected' : ''}`} aria-pressed={selectedTeam === 'HOME'} onClick={() => selectEventTeam('HOME')} disabled={!canWrite}>{matchTeams?.homeTeam || '홈'}</button>
+                <button className={`fla-away ${selectedTeam === 'AWAY' ? 'selected' : ''}`} aria-pressed={selectedTeam === 'AWAY'} onClick={() => selectEventTeam('AWAY')} disabled={!canWrite}>{matchTeams?.awayTeam || '어웨이'}</button>
 
               </div>
               <div className="row">
@@ -76,7 +83,10 @@ export function MatchAttackCard({attackLR, selectedTeam, pendingLane, matchTeams
 }
 
 export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPlayerKey, xgPlayerOptions, isOnTargetShot, setIsOnTargetShot, isGoalShot, setIsGoalShot, isHeaderShot, setIsHeaderShot, isOwnGoal, setIsOwnGoal, shotPoint, goalmouthPoint, canWrite, canRecord=canWrite, xgValue, setXgValue, xgotValue, estimateXgFromPitch, estimateXgotFromGoalmouth, submitXg, isSavingShot, onGoalmouthClick, onPitchClick, xgEstimateMeta, xgotEstimateMeta}:{isFutsal:boolean; xgTeam:Team; setXgTeam:(team:Team)=>void; xgPlayerKey:string; setXgPlayerKey:(value:string)=>void; xgPlayerOptions:LineupPlayer[]; isOnTargetShot:boolean; setIsOnTargetShot:Dispatch<SetStateAction<boolean>>; isGoalShot:boolean; setIsGoalShot:Dispatch<SetStateAction<boolean>>; isHeaderShot:boolean; setIsHeaderShot:Dispatch<SetStateAction<boolean>>; isOwnGoal:boolean; setIsOwnGoal:Dispatch<SetStateAction<boolean>>; shotPoint:Point|null; goalmouthPoint:Point|null; canWrite:boolean; canRecord?:boolean; xgValue:string; setXgValue:(value:string)=>void; xgotValue:string; estimateXgFromPitch:()=>void; estimateXgotFromGoalmouth:()=>void; submitXg:()=>void; isSavingShot:boolean; onGoalmouthClick:(event:MouseEvent<HTMLDivElement>)=>void; onPitchClick:(event:MouseEvent<HTMLDivElement>)=>void; xgEstimateMeta:string; xgotEstimateMeta:string;}){
- return (<div className="card card-panel grid fla-shot-card">
+ const cardRef=useRef<HTMLDivElement|null>(null);
+ // 반쪽 창(736px)에서 xGOT 칸이 잘리지 않게 도구 줄을 720 이하에서 접는다(이사71, 전에는 660)
+ useWidthFlags(cardRef,{mid:720,narrow:460});
+ return (<div ref={cardRef} className="card card-panel grid fla-shot-card">
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <h3 style={{ margin: 0 }}>{isFutsal ? '슈팅 위협도 기록' : '슈팅 기록'}</h3>
@@ -108,15 +118,15 @@ export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPl
                 className={isOwnGoal ? 'btn-active' : ''}
                 onClick={() => setIsOwnGoal((prev) => !prev)}
                 disabled={!canWrite}
-                title="Own goal — counts on the scoreboard for the selected team"
+                title="위에서 고른 팀(HOME/AWAY)의 득점으로 올라갑니다"
               >
-                OG
+                자책골
               </button>
               <span className="muted">
                 {isOwnGoal
-                  ? `Own goal → ${xgTeam} scores. Click pitch, then Record OG.`
+                  ? `자책골 — ${xgTeam} 득점으로 올라갑니다. 피치를 찍고 "슈팅 기록"을 누르세요.`
                   : shotPoint
-                  ? `shot=(${shotPoint.x}, ${shotPoint.y})`
+                  ? `슈팅 위치 (${shotPoint.x}, ${shotPoint.y})`
                   : '피치에서 슈팅 위치를 선택하세요'}
               </span>
             </div>
@@ -133,7 +143,10 @@ export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPl
                 <button className="btn-secondary" onClick={estimateXgotFromGoalmouth} disabled={!canWrite}>xGOT 계산</button>
               </div> : null}
             </div>
-            {!shotPoint ? <p className="muted">피치에서 슈팅 위치를 선택해 주세요.</p> : isOnTargetShot && !isOwnGoal && !goalmouthPoint ? <p className="muted">골문에서 슈팅 도착 위치를 선택해 주세요.</p> : null}
+            {/* 안내가 없을 때도 자리를 남겨 둔다 — 빠지면 "슈팅 기록" 버튼이 xGOT 옆으로 올라간다. */}
+            <p className="muted fla-shot-hint" aria-hidden={shotPoint && !(isOnTargetShot && !isOwnGoal && !goalmouthPoint) ? true : undefined}>
+              {!shotPoint ? '피치에서 슈팅 위치를 선택해 주세요.' : isOnTargetShot && !isOwnGoal && !goalmouthPoint ? '골문에서 슈팅 도착 위치를 선택해 주세요.' : ' '}
+            </p>
             <button className="btn-primary fla-shot-submit" onClick={submitXg} disabled={!canRecord || isSavingShot}>{isSavingShot ? '저장 중…' : isOwnGoal ? '자책골 기록' : '슈팅 기록'}</button>
             </div>
             <div className="fla-shot-surfaces">
@@ -348,42 +361,68 @@ export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPl
             </div>
 
             <div className="muted">{isFutsal ? '풋살 20 × 20m 공격 하프의 골문 거리·각도로 Shot Threat(최대 0.800)를 추정합니다.' : '위치를 선택한 뒤 xG를 계산하거나 직접 입력하고 기록하세요.'}</div>
-            {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
-            {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}</div> : null}
+            {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}<ErrorFold message={xgEstimateMeta} /></div> : null}
+            {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}<ErrorFold message={xgotEstimateMeta} /></div> : null}
 
           </div>);
 }
 
+const LANE_LABEL: Record<string, string> = { LEFT: '왼쪽', CENTER: '중앙', RIGHT: '오른쪽' };
+type RecordFilter = 'ALL' | 'SHOT' | 'LANE';
+
+/** 기록 한 건을 사람이 읽는 말로 — 종전엔 `XG HOME @ 39:18 xg=0.03 xgot=0 No.5` 같은 개발자 형식이었다.
+ *  저장 데이터는 그대로이고 보여주는 방식만 바꾼다. 자책골은 저장 때 선수를 받지 않고 득점이 올라간 팀으로 기록된다. */
+// 최근 기록 한 줄(11-04 승준): 공격 방향과 슈팅이 한눈에 갈리게 — 슈팅 계열은 알약 표시로,
+// 공격 방향은 "공격방향 · 오른쪽" 글자 + 오른쪽 끝에 원래 값(RIGHT)을 흐리게 둔다.
+function describeRecord(e: any): { kind: 'shot' | 'lane' | 'other'; what: string; who: string; nums: string; goal: boolean; onTarget: boolean } {
+  if (e.type === 'ATTACK_LANE') {
+    return { kind: 'lane', what: `공격방향 · ${LANE_LABEL[e.lane] || e.lane || '-'}`, who: '', nums: e.lane ? String(e.lane) : '', goal: false, onTarget: false };
+  }
+  if (e.type === 'XG') {
+    const who = e.player_name ? `#${e.player_number || '-'} ${e.player_name}` : '';
+    if (e.is_own_goal) return { kind: 'shot', what: '⚽ 자책골', who, nums: '', goal: true, onTarget: true };
+    const what = e.is_goal ? '⚽ 골' : e.is_on_target ? '유효슈팅' : '슈팅';
+    const xg = typeof e.xg === 'number' ? `xG ${e.xg.toFixed(2)}` : '';
+    const xgot = e.is_on_target && typeof e.xgot === 'number' && e.xgot > 0 ? `xGOT ${e.xgot.toFixed(2)}` : '';
+    return { kind: 'shot', what: e.is_header ? `${what} · 헤더` : what, who, nums: [xg, xgot].filter(Boolean).join(' · '), goal: Boolean(e.is_goal), onTarget: Boolean(e.is_on_target || e.is_goal) };
+  }
+  return { kind: 'other', what: String(e.type || '기록'), who: '', nums: '', goal: false, onTarget: false };
+}
+
 export function MatchRecentRecords({summary, canWrite, isResettingEvents, resetEvents, displayClockLabel}:{summary:any; canWrite:boolean; isResettingEvents:boolean; resetEvents:()=>void; displayClockLabel:(ms:number)=>string;}){
- return (<div className="card card-utility grid" style={{ minHeight: 280 }}>
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+  const [filter, setFilter] = useState<RecordFilter>('ALL');
+  const events = (summary?.events || []).filter((e: any) => (
+    filter === 'ALL' || (filter === 'SHOT' ? e.type === 'XG' : e.type === 'ATTACK_LANE')
+  )).slice(0, 40);
+  // 높이 원칙(11-03 승준): 기록 수가 같으면 카드 높이도 같다 — 한 줄 25px 고정(줄바꿈 없이 말줄임),
+  // 목록 220px 고정, 걸러 보기·전체 삭제는 높이가 고정된 제목 줄 안에 둔다.
+  return (<div className="card card-utility grid fla-records" style={{ minHeight: 280 }}>
+            <div className="fla-records-head">
               <h3 style={{ margin: 0 }}>최근 기록</h3>
-              <button className="btn-danger" onClick={resetEvents} disabled={!canWrite || isResettingEvents}>
-                {isResettingEvents ? '초기화 중…' : '기록 초기화'}
+              <div className="fla-records-filters" role="group" aria-label="기록 걸러 보기">
+                {([['ALL', '전체'], ['SHOT', '슈팅·골'], ['LANE', '공격 방향']] as [RecordFilter, string][]).map(([key, label]) => (
+                  <button key={key} type="button" className={filter === key ? 'btn-active' : ''} aria-pressed={filter === key} onClick={() => setFilter(key)}>{label}</button>
+                ))}
+              </div>
+              {/* 전체 삭제는 작은 글씨로 — 자주 누르는 자리 옆에 있으면 안 된다. 확인 창을 거친다. */}
+              <button className="btn-link-danger" onClick={resetEvents} disabled={!canWrite || isResettingEvents}>
+                {isResettingEvents ? '삭제 중…' : '기록 전체 삭제…'}
               </button>
             </div>
-            <div
-              className="grid fla-record-list"
-              style={{
-                height: 220,
-                overflowY: 'auto',
-                paddingRight: 4,
-              }}
-            >
-              {(summary?.events || []).slice(0, 40).map((e: any) => (
-                <div key={e.id} className="row" style={{ justifyContent: 'space-between' }}>
-                  <span>
-                    {e.type} {e.team}{' '}
-                    {e.is_own_goal ? <strong style={{ color: '#f97316' }}>OG⚽</strong> : e.is_goal ? <strong style={{ color: '#22c55e' }}>GOAL⚽</strong> : ''}{' '}
-                    @ {displayClockLabel(e.clock_ms)} {e.lane ? `lane=${e.lane}` : ''}{' '}
-                    {e.is_own_goal ? '' : typeof e.xg === 'number' ? `xg=${e.xg}` : ''}{' '}
-                    {e.is_own_goal ? '' : typeof e.xgot === 'number' ? `xgot=${e.xgot}` : ''}{' '}
-                    {e.player_name ? `No.${e.player_number || '-'} ${e.player_name}` : ''}{' '}
-                    {e.is_own_goal ? '' : e.is_on_target ? 'on-target' : ''}
-                  </span>
-                  <span className="muted">{formatCreatedAtKst(e.created_at)}</span>
-                </div>
-              ))}
+            <div className="grid fla-record-list" style={{ height: 220, overflowY: 'auto', paddingRight: 4 }}>
+              {events.map((e: any) => {
+                const d = describeRecord(e);
+                return (
+                  <div key={e.id} className={`fla-record ${d.kind} ${e.team === 'AWAY' ? 'away' : 'home'} ${d.goal ? 'goal' : ''} ${e.sync ? 'unsent' : ''}`} title={`입력 ${formatCreatedAtKst(e.created_at)}`}>
+                    <span className="clock">{displayClockLabel(e.clock_ms)}</span>
+                    <span className="team">{e.team}</span>
+                    <span className="what">{d.kind === 'shot' ? <span className={`fla-record-tag${d.goal ? ' goal' : d.onTarget ? ' on' : ''}`}>{d.what}</span> : <b>{d.what}</b>}{d.who ? <span className="who">{d.who}</span> : null}</span>
+                    {/* 운영자 화면에만 있는 아직 서버에 없는 기록. 같은 25px 줄 안에 작은 글씨로만 표시해 카드 높이를 바꾸지 않는다. */}
+                    <span className="nums">{d.nums}{e.sync ? <em className={`fla-record-sync ${e.sync === '저장 실패' ? 'failed' : ''}`}>{e.sync}</em> : null}</span>
+                  </div>
+                );
+              })}
+              {!events.length ? <div className="muted fla-record-empty">기록이 없습니다</div> : null}
             </div>
           </div>);
 }

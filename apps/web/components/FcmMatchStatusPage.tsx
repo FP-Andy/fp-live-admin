@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { FcmWorkflow, ConsoleEmpty } from './ConsoleTools';
 import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../lib/api';
+import ErrorNotice from './ErrorNotice';
+import { errorMessage } from '../lib/error-messages';
 import { RawMatchRecord, getEligibleFcmMatches } from '../lib/fcm';
 
 type CompetitionClass = {
@@ -47,7 +49,7 @@ export default function FcmMatchStatusPage() {
       } catch (loadError) {
         if (!active) return;
         setMatches([]);
-        setError(loadError instanceof Error ? loadError.message : '매치 상태를 불러오지 못했습니다.');
+        setError(errorMessage(loadError, '경기 목록을 불러오지 못했습니다. 새로고침해 주세요.', { fixed: true }));
       } finally {
         if (active) setLoading(false);
       }
@@ -111,7 +113,7 @@ export default function FcmMatchStatusPage() {
   }, [archivedMatches, classFilter, filteredMatches]);
 
   return (
-    <div className="page-stack console-page fcm-status-page">
+    <div className="page-stack console-page fcm-status-page console-flat">
       <FcmWorkflow current="match-status" />
       <section className="fcm-status-layout">
         <aside className="card card-panel fcm-filter-panel">
@@ -191,7 +193,7 @@ export default function FcmMatchStatusPage() {
             </div>
 
             {loading ? <p className="field-help">경기 목록을 불러오는 중입니다.</p> : null}
-            {error ? <p className="field-help" style={{ color: '#ff9c8f' }}>{error}</p> : null}
+            <ErrorNotice message={error} className="field-help" style={{ color: '#ff9c8f' }} />
 
             <div className="fcm-match-list">
               {filteredMatches.map((match) => (
@@ -202,7 +204,7 @@ export default function FcmMatchStatusPage() {
                       <strong>{match.name}</strong>
                     </div>
                     <div className="row" style={{ gap: 8 }}>
-                      <span className="status-pill warning">R{match.roundNumber}</span>
+                      <span className="status-pill warning chip-tag">R{match.roundNumber}</span>
                       <span className="status-pill archived">ARCHIVED</span>
                     </div>
                   </div>

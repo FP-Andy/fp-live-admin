@@ -32,6 +32,7 @@ jobs:
         run: |
           python apps/api/tests/test_auth.py -v
           python apps/api/tests/test_match_write_access.py -v
+          python apps/api/tests/test_agent_fla.py -v
           python apps/api/tests/test_outbox_recovery.py -v
           PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_fla_video.py -v
           PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_analysis_snapshots.py -v
@@ -58,6 +59,7 @@ jobs:
         run: |
           node apps/web/node_modules/typescript/bin/tsc --noEmit --incremental false -p apps/web/tsconfig.json
           node --test apps/web/tests/match-control.test.cjs
+          node --test apps/web/tests/fpa-log-edit.test.cjs
           node scripts/test-manual-draft.cjs
           node scripts/test-highlight-log.cjs
           node scripts/test-report-recovery.cjs
@@ -152,5 +154,6 @@ jobs:
           FPC_TEST_DATABASE_URL: postgresql+psycopg2://postgres:fpc_local_test_only@127.0.0.1:5432/fpc_release_qa
         run: |
           python apps/api/tests/test_match_write_access.py -v
+          python apps/api/tests/test_agent_fla.py -v
           python apps/api/tests/test_highlight_render_queue.py
           python apps/api/tests/test_scene_motion_queue.py -v

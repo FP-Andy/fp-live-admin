@@ -5,7 +5,7 @@
 .app-shell .sidebar-system-link.active { color: var(--accent); background: var(--accent-soft); }
 .fla-match-context { gap: 12px; }
 .fla-match-context .fla-back-link { min-height: 36px; margin-right: 4px; }
-.fla-attack-card { container-type: inline-size; }
+/* 카드 폭 분기는 data-w-* 속성(lib/width-flags.ts)으로 한다 — container-type 을 쓰면 Safari 가 창 크기를 바꾼 뒤 좁은 화면 스타일을 못 푼다(이사71). */
 .fla-attack-layout { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(210px,1fr); gap: 24px; align-items: center; }
 .fla-attack-controls { display: grid; gap: 14px; min-width: 0; }
 .fla-attack-controls .row { gap: 8px; }
@@ -23,12 +23,9 @@
 .fla-direction-lines { stroke: #b6d6c788; }
 .fla-direction-arrow { stroke: var(--direction-color); fill: var(--direction-color); }
 .fla-direction-goals { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 12px; }
-@container (max-width:560px) {
-  .fla-attack-layout { grid-template-columns: minmax(0,1fr); gap: 20px; }
-  .fla-direction-pitch { border-top: 1px solid var(--border-soft); padding-top: 16px; }
-  .fla-direction-pitch svg { max-height: 180px; }
-}
-.fla-shot-card { container-type: inline-size; }
+.fla-attack-card[data-w-narrow] .fla-attack-layout { grid-template-columns: minmax(0,1fr); gap: 20px; }
+.fla-attack-card[data-w-narrow] .fla-direction-pitch { border-top: 1px solid var(--border-soft); padding-top: 16px; }
+.fla-attack-card[data-w-narrow] .fla-direction-pitch svg { max-height: 180px; }
 .fla-shot-surfaces { display: grid; gap: 20px; width: 100%; max-width: 520px; justify-self: center; margin-top: 4px; min-width: 0; }
 .fla-goalmouth { position: relative; width: 100%; min-width: 0; }
 .fla-shot-toolbar { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; align-items: center; }
@@ -40,15 +37,11 @@
 .fla-shot-toolbar > .fla-shot-submit { min-width: 120px; min-height: 46px; white-space: nowrap; }
 .fla-shot-values-futsal { grid-template-columns: minmax(0,1fr); }
 .fla-shot-values-futsal .fla-shot-value-row { grid-template-columns: 104px minmax(60px,1fr) 104px; }
-@container (max-width: 660px) {
-  .fla-shot-toolbar { grid-template-columns: minmax(0,1fr); gap: 12px; }
-}
-@container (max-width: 460px) {
-  .fla-shot-values { grid-template-columns: minmax(0,1fr); gap: 10px; }
-  .fla-shot-value-row { grid-template-columns: 60px minmax(0,1fr) 104px; gap: 8px; }
-  .fla-shot-values-futsal .fla-shot-value-row { grid-template-columns: minmax(0,1fr) 104px; }
-  .fla-shot-values-futsal .fla-shot-value-row > label { grid-column: 1/-1; font-size: 18px; }
-}
+.fla-shot-card[data-w-mid] .fla-shot-toolbar { grid-template-columns: minmax(0,1fr); gap: 12px; }
+.fla-shot-card[data-w-narrow] .fla-shot-values { grid-template-columns: minmax(0,1fr); gap: 10px; }
+.fla-shot-card[data-w-narrow] .fla-shot-value-row { grid-template-columns: 60px minmax(0,1fr) 104px; gap: 8px; }
+.fla-shot-card[data-w-narrow] .fla-shot-values-futsal .fla-shot-value-row { grid-template-columns: minmax(0,1fr) 104px; }
+.fla-shot-card[data-w-narrow] .fla-shot-values-futsal .fla-shot-value-row > label { grid-column: 1/-1; font-size: 18px; }
 .fla-clock-main { display: grid; grid-template-columns: minmax(0,1fr) auto auto; }
 .fla-clock-main > .fla-period-controls { display: flex; gap: 8px; flex-wrap: wrap; }
 .fla-period-controls button { white-space: nowrap; }
@@ -98,7 +91,7 @@
 .console-empty { display: grid; justify-items: start; gap: 12px; padding: 28px; background: #ffffff03; border: 1px dashed var(--border-soft); border-radius: 12px; color: var(--text-secondary); }
 .console-empty > div { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .console-feedback { display: flex; align-items: center; gap: 16px; justify-content: space-between; padding: 16px; border: 1px solid #2158e860; border-radius: 10px; background: #2158e812; }
-.console-workflow { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)) auto; gap: 8px; }
+.console-workflow { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)) auto auto; gap: 8px; }
 .console-workflow a { display: flex; align-items: center; gap: 10px; padding: 14px 16px; text-decoration: none; color: var(--text-secondary); background: #13161c; border: 1px solid var(--border-soft); border-radius: 10px; font-weight: 600; font-size: 15px; }
 .console-workflow a > span { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-content: center; border-radius: 50%; background: #ffffff09; color: var(--muted); font-size: 13px; }
 .console-workflow a[aria-current="page"] { border-color: #2158e8; color: #d4dfff; background: #2158e817; }
@@ -170,7 +163,7 @@
 .fcm-workspace-page .fvc-table { min-width: 0; gap: 18px; }
 .fcm-workspace-page .fvc-match-group { gap: 10px; }
 .fcm-workspace-page .fvc-match-group-head { padding: 14px 0; }
-.fcm-workspace-page .fvc-table-row { grid-template-columns: 1fr 1.25fr 1fr 1fr 1.2fr 1fr .8fr; padding: 18px 14px; font-size: 14px; border-radius: 8px; }
+.fcm-workspace-page .fvc-table-row { grid-template-columns: 36px 1fr 1.25fr 1fr 1fr 1.2fr 1fr .8fr; padding: 18px 14px; font-size: 14px; border-radius: 8px; }
 .fcm-workspace-page .fvc-table-row .button-link { font-size: 13px; padding-inline: 10px; }
 .templates-page .fcm-template-grid { grid-template-columns: minmax(0,1fr); gap: 20px; }
 .templates-page .fcm-template-create { padding: 0; }
@@ -239,6 +232,7 @@
   .fcm-workspace-page .fvc-table-row > span[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 12px; }
   .fcm-workspace-page .fvc-table-row > span:last-child { grid-column: 1/-1; }
   .fcm-workspace-page .fvc-table-row > span:last-child button { width: 100%; }
+  .fcm-workspace-page .fvc-table-row > .fvc-check-cell { grid-column: 1/-1; }
   .fcm-workspace-page .fvc-table-head { display: none; }
   .fcm-workspace-page .fvc-match-group-head strong { flex: 1 1 100%; line-height: 1.5; }
   .templates-page .fcm-template-create { padding: 0; }
@@ -284,3 +278,186 @@
   .model-slot-picker { display: none; }
   .templates-page .fcm-template-grid > .page-stack > section:first-child .fcm-template-form-row { grid-template-columns: 1fr 1.5fr 1fr; }
 }
+
+/* FLA 매치 컨트롤 — 현재 점수판. 시계 옆에 둬서 경기 중 고개를 돌리지 않고 본다.
+   원칙: 점수판 때문에 진행 중 카드가 세로로 길어지면 안 된다(11-03 승준). 점수판은 원래 있던 줄의
+   빈 공간에만 들어가고, 폭이 모자라면 팀 이름을 숨기고 숫자만 남긴다(숫자는 줄지 않는다).
+   이름이 빠져도 어느 팀 점수인지 알 수 있게 숫자를 팀 색(홈 주황·원정 파랑)으로 칠한다.
+
+   배치는 카드 폭만 보고 정한다(page.tsx useWidthFlags, data-w-*). 시계 글자 길이(44:59 → 1H 45+0:01)나
+   점수 자릿수가 바뀌어도 카드 높이·버튼 위치가 그대로여야 한다 — 이사71: 노트북 반쪽 창(16인치 856px)에서
+   전반 추가시간에 들어서면 시작 버튼이 화면 밖으로 밀리고 점수가 ':' 만 남던 문제. */
+.fla-clock-value { white-space: nowrap; }
+.fla-scoreboard { display: inline-flex; flex-direction: row; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 10px; padding: 8px 14px; border-radius: 10px; background: var(--surface-card-strong); white-space: nowrap; }
+.fla-scoreboard .team { flex: 0 1 auto; color: var(--muted); font-size: 14px; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.fla-scoreboard :is(strong, .sep) { flex: none; }
+.fla-scoreboard strong { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+.fla-scoreboard strong.home { color: #ff8a3d; }
+.fla-scoreboard strong.away { color: #6f9bff; }
+.fla-scoreboard .sep { color: var(--muted); font-size: 22px; }
+
+/* 넓은 카드 — 한 줄: 시계 · 점수 · 전후반 · 시작. 폭이 모자라 접히는 일은 data-w-narrow 가 먼저 막는다.
+   그래도 넘치면(예상 밖 글꼴) 화면 밖으로 밀지 않고 다음 줄로 내린다. */
+@media (min-width: 761px) {
+  .fla-clock-main { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+  .fla-clock-main > :first-child { flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+  /* 줄 나눔은 숫자 자리(두 자리 점수까지 7.5em)로 계산하고, 남는 폭이 있으면 이름까지 늘어난다. */
+  .fla-clock-main > .fla-scoreboard { flex: 1 1 0; margin-left: auto; min-width: 7.5em; max-width: max-content; overflow: hidden; }
+  .fla-clock-main > .fla-period-controls { flex: 0 0 auto; flex-wrap: nowrap; }
+  .fla-clock-main > button { flex: 0 0 auto; }
+}
+
+/* 좁은 화면·좁은 카드 — 두 줄: [시계 · 점수 · 시작] / [전반 · 후반]. 폭이 같으면 늘 같은 높이다. */
+@media (max-width: 760px) {
+  .fla-clock-main { grid-template-columns: minmax(0, 1fr) auto auto; }
+  /* 테마의 좁은 화면 규칙(.fla-clock-main > div { display: grid })이 점수판까지 세로로 쌓지 않게 한다. */
+  .fla-clock-main > div.fla-scoreboard { display: inline-flex; grid-row: 1; grid-column: 2; align-self: center; padding: 6px 10px; gap: 6px; }
+  .fla-clock-main > button { grid-row: 1; grid-column: 3; }
+  .fla-clock-main > .fla-scoreboard .team { display: none; }
+  .fla-clock-main > .fla-scoreboard strong { font-size: 24px; }
+}
+.fla-clock[data-w-narrow] .fla-clock-main { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; }
+.fla-clock[data-w-narrow] .fla-clock-main > :first-child { display: grid; gap: 2px; }
+.fla-clock[data-w-narrow] .fla-clock-main > div.fla-scoreboard { display: inline-flex; grid-row: 1; grid-column: 2; align-self: center; margin-left: 0; padding: 6px 10px; gap: 6px; }
+.fla-clock[data-w-narrow] .fla-clock-main > button { grid-row: 1; grid-column: 3; }
+.fla-clock[data-w-narrow] .fla-clock-main > .fla-period-controls { grid-row: 2; grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; }
+.fla-clock[data-w-narrow] .fla-scoreboard strong { font-size: 24px; }
+
+/* 카드 폭 기준으로 팀 이름을 먼저 뺀다(전에는 컨테이너 쿼리 900px). */
+.fla-clock:is([data-w-tight], [data-w-narrow]) .fla-scoreboard .team { display: none; }
+.fla-clock[data-w-tight] .fla-scoreboard { padding: 6px 12px; gap: 6px; }
+
+/* 되돌릴 수 없는 삭제 — 자주 누르는 버튼과 같은 모양이면 안 된다. 작은 글씨 링크로 떼어 둔다. */
+.btn-link-danger { padding: 2px 4px; border: 0; background: transparent; color: var(--danger, #ff6b6b); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.btn-link-danger:disabled { opacity: .4; cursor: default; }
+/* 최근 기록 — 한 줄 25px 고정(줄바꿈 없이 말줄임), 제목 줄 높이 고정. 기록 수가 같으면 카드 높이도 같다. */
+.fla-records-head { display: flex; align-items: center; gap: 10px; height: 36px; }
+.fla-records-filters { display: flex; gap: 4px; margin-right: auto; }
+.fla-records-filters button { min-height: 0; height: 24px; padding: 0 8px; font-size: 12px; line-height: 24px; }
+.fla-record { display: grid; grid-template-columns: auto 52px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; height: 25px; line-height: 25px; padding: 0 6px; border-radius: 4px; white-space: nowrap; }
+.fla-record > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fla-record .clock { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 52px; }
+.fla-record .team { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text-secondary, var(--muted)); }
+.fla-record .team::before { content: ''; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.fla-record.home .team::before { background: #ff8a3d; }
+.fla-record.away .team::before { background: #6f9bff; }
+.fla-record .what b { font-weight: 600; }
+.fla-record .who { margin-left: 6px; color: var(--muted); }
+.fla-record .nums { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+/* 골 — 왼쪽 색 막대 없이(둥근 줄 위에서 'ㄷ'자로 보인다) 바탕 한 톤 + 굵은 글자로만. */
+.fla-record.goal { background: var(--surface-card-strong); }
+.fla-record.goal .what b { font-weight: 800; }
+.fla-record-empty { height: 25px; line-height: 25px; }
+/* 슈팅 계열은 알약으로 — 공격 방향 줄(글자만)과 한눈에 갈린다(11-04 승준: 더 크게·잘 보이게).
+   높이 21px 이라 25px 줄 높이는 그대로. 슈팅 = 진회색 면, 유효슈팅 = 파랑 면, 골 = 흰 면(화이트 모드는 검정 면). */
+.fla-record-tag { display: inline-flex; align-items: center; height: 21px; padding: 0 10px; border-radius: 999px; border: 1px solid #6b7486; background: #3a4252; color: #fff; font-size: 14px; font-weight: 800; line-height: 19px; vertical-align: 0; letter-spacing: .01em; }
+.fla-record-tag.on { border-color: #6f93f0; background: #2f5bd3; color: #fff; }
+.fla-record-tag.goal { border-color: #f3f4f7; background: #f3f4f7; color: #111318; }
+.fla-record.lane .nums { font-size: 12px; letter-spacing: .04em; }
+html[data-console-theme="light"] .fla-record-tag { border-color: #59616f; background: #59616f; color: #fff; }
+html[data-console-theme="light"] .fla-record-tag.on { border-color: #2158e8; background: #2158e8; color: #fff; }
+html[data-console-theme="light"] .fla-record-tag.goal { border-color: #17191e; background: #17191e; color: #fff; }
+/* 저장 대기 표시 — 줄 높이(25px)는 그대로 두고 글씨만 작게 붙인다. */
+.fla-record .fla-record-sync { margin-left: 8px; font-style: normal; font-size: 12px; color: var(--muted); }
+.fla-record .fla-record-sync.failed { color: #f59e0b; }
+.fla-sync-count { font-size: 13px; font-variant-numeric: tabular-nums; }
+.match-actions .match-delete { margin-left: 6px; padding-left: 10px; border-left: 1px solid var(--border-soft); border-radius: 0; text-decoration: none; }
+.match-actions .match-delete:hover { text-decoration: underline; }
+
+/* 데이터 전송 상태(관리자 전용) — 접어 두고 요약 한 줄만 보인다. */
+.fla-delivery > summary { cursor: pointer; font-weight: 600; }
+.fla-delivery[open] > summary { margin-bottom: 10px; }
+
+/* 되돌릴 수 없는 작업 확인 창(ConfirmDialog) */
+.confirm-dialog h3 { margin: 0; }
+.confirm-dialog-message p { margin: 0; line-height: 1.6; color: var(--text-secondary, var(--muted)); }
+.confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* 경기 종료 — 머리줄 오른쪽 끝. 시계 버튼들과 떨어뜨려 잘못 누르지 않게 한다. */
+.fla-match-context .fla-end-match { margin-left: auto; min-height: 36px; padding: 0 14px; font-weight: 700; }
+/* 후반 시작 알림 — "시간 보정" 줄 안에 한 줄로(카드 높이를 바꾸지 않는다). */
+.fla-clock-settings > summary .fla-half-hint { margin-left: 12px; color: #ffb14a; font-weight: 600; white-space: nowrap; }
+
+/* 대시보드 경기 검색 — 대회 필터 옆. 좁은 화면에서는 한 줄을 다 쓴다. */
+.console-dashboard .dashboard-filter-search { flex: 1 1 200px; min-width: 160px; max-width: 280px; margin-left: auto; }
+.console-dashboard .dashboard-filter-search input { width: 100%; }
+@media (max-width: 760px) { .console-dashboard .dashboard-filter-search { max-width: none; flex-basis: 100%; } }
+
+/* FPA Live Logger — 기록된 로그 표 · 고른 로그 그 자리 수정 · 축구장 표시 (이사71) */
+
+/* 표 칸이 패널 밖(오른쪽 축구장 위)으로 밀려 나가지 않게: 패널은 한 칸, 머리 버튼은 줄바꿈. */
+.fpa-live-shell .fpa-log-panel { grid-template-columns: minmax(0, 1fr); }
+/* 표 쪽이 수정 칸으로 길어져도 축구장은 위에 붙어 있게. */
+.fpa-live-shell .fpa-live-main > .fpa-pitch-panel { align-content: start; align-self: start; }
+.fpa-live-shell .fpa-log-panel > .fpa-panel-header { flex-wrap: wrap; row-gap: 6px; }
+.fpa-live-shell .fpa-log-panel .fpa-panel-title { white-space: nowrap; }
+.fpa-live-shell .fpa-log-panel .fpa-panel-actions { flex-wrap: wrap; justify-content: flex-start; }
+
+/* 넓은 화면은 표 쪽을 조금 넓혀 Half~Receive Pos 가 가로 스크롤 없이 보이게. 1100px 이하는 위아래로 쌓는다. */
+@media (min-width: 1101px) {
+  .fpa-live-shell .fpa-live-main { grid-template-columns: minmax(0, 1.08fr) minmax(420px, 1.12fr); }
+}
+/* 한 줄 = 한 로그. 좁은 화면에서도 두 칸씩 접지 않고(한 로그가 8줄이 되던 것) 지표 칸만 가로로 넘긴다. */
+.fpa-live-shell .fpa-log-header,
+.fpa-live-shell .fpa-log-entry {
+  grid-template-columns: 28px 40px 40px 34px 40px minmax(66px, .6fr) 50px 72px 72px minmax(110px, 1fr) 42px 44px 44px 44px minmax(100px, .8fr);
+  gap: 4px;
+  padding-inline: 6px;
+  min-width: 960px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 고른 줄 = 한 톤 밝은 면 + 1px 파랑 (4차 디자인). inset 그림자라 열 정렬이 밀리지 않는다. */
+.fpa-live-shell .fpa-log-entry.selected { background: #1a2440; color: var(--text-primary, var(--text)); box-shadow: inset 0 0 0 1px #4c74d9; }
+.fpa-live-shell .fpa-log-entry:focus-visible { outline: 1px solid #4c74d9; outline-offset: -1px; }
+html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-log-entry.selected { background: #eaf0ff; color: var(--text); box-shadow: inset 0 0 0 1px #2158e8; }
+
+/* ── 고른 로그 수정 칸 ── */
+.fpa-log-edit { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid #4c74d9; border-radius: 5px; background: #151c2e; font-size: 12px; }
+.fpa-log-edit-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.fpa-log-edit-head strong { font-size: 13px; color: var(--text-primary, var(--text)); }
+.fpa-log-edit-now { color: var(--text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 120px; }
+.fpa-log-edit-code { color: var(--text-secondary); white-space: nowrap; }
+.fpa-log-edit-code code { padding: 1px 6px; border-radius: 4px; background: #0e1320; color: #9db8ff; font-size: 12px; }
+.fpa-log-edit-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 10px; align-items: start; }
+.fpa-log-edit-grid > .fpa-log-edit-wide { grid-column: span 2; }
+.fpa-log-edit-field { display: grid; gap: 4px; min-width: 0; }
+.fpa-log-edit-field > span:first-child { font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+.fpa-log-edit-field em { color: var(--muted); font-style: normal; }
+.fpa-live-shell .fpa-log-edit input { width: 100%; min-width: 0; height: 30px; min-height: 30px; padding: 0 8px; border-radius: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.fpa-live-shell .fpa-log-edit .fpa-segmented { min-height: 30px; }
+.fpa-live-shell .fpa-log-edit .fpa-segmented button { min-height: 26px; padding: 2px 8px; font-size: 12px; }
+.fpa-log-edit-point { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; min-width: 0; }
+.fpa-log-edit-point-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; align-items: center; }
+.fpa-live-shell .fpa-log-edit .fpa-log-edit-mini { height: 30px; min-height: 0; padding: 0 8px; font-size: 12px; }
+.fpa-log-edit-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.fpa-log-edit-hint { margin-right: auto; color: var(--muted); font-size: 11px; }
+.fpa-live-shell .fpa-log-edit-foot button { min-height: 30px; padding: 4px 12px; font-size: 12px; }
+html[data-console-theme="light"] .app-shell .fpa-log-edit { background: #f5f8ff; border-color: #2158e8; }
+html[data-console-theme="light"] .app-shell .fpa-log-edit-code code { background: #e8efff; color: #1746bf; }
+
+/* ── 축구장 위 고른 로그 ── */
+.fpa-pick-header { min-height: 20px; }
+.fpa-pick-caption { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #9db8ff; }
+html[data-console-theme="light"] .app-shell .fpa-pick-caption { color: #1746bf; }
+.fpa-pick { position: absolute; inset: 0; pointer-events: none; }
+.fpa-pick.faded { opacity: .35; }
+.fpa-pick-path { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.fpa-pick-path polyline { fill: none; stroke: #6f9bff; stroke-width: 3; stroke-dasharray: 10 6; vector-effect: non-scaling-stroke; }
+.fpa-pick-path polygon { fill: #6f9bff; }
+.fpa-live-shell .fpa-pick .fpa-pick-dot { position: absolute; transform: translate(-50%, -50%); width: 26px; height: 26px; min-height: 0; padding: 0; display: grid; place-items: center; border-radius: 999px; border: 2px solid #fff; background: #2158e8; color: #fff; font-size: 11px; font-weight: 800; box-shadow: 0 2px 8px rgba(0, 0, 0, .45); pointer-events: none; }
+.fpa-live-shell .fpa-pick .fpa-pick-dot.end { background: #0e1320; border-color: #6f9bff; color: #cfe0ff; }
+.fpa-live-shell .fpa-pick.editing .fpa-pick-dot { pointer-events: auto; cursor: grab; touch-action: none; }
+.fpa-live-shell .fpa-pick.editing .fpa-pick-dot:active { cursor: grabbing; }
+.fpa-pick-dir { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); padding: 2px 8px; border-radius: 999px; background: rgba(14, 19, 32, .82); color: #cfe0ff; font-size: 11px; font-weight: 700; white-space: nowrap; }
+html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-pick .fpa-pick-dot { background: #2158e8; border-color: #fff; color: #fff; }
+html[data-console-theme="light"] .app-shell .fpa-live-shell .fpa-pick .fpa-pick-dot.end { background: #0e1320; border-color: #6f9bff; color: #cfe0ff; }
+
+/* FCM 카드 생성 — 체크한 팀만 받기 */
+.fcm-workspace-page .fvc-check { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; cursor: pointer; }
+.fcm-workspace-page .fvc-check input { width: 18px; height: 18px; margin: 0; cursor: pointer; accent-color: #2158e8; }
+.fcm-workspace-page .fvc-check input:disabled { cursor: not-allowed; }
+.fcm-workspace-page .fvc-select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.fcm-workspace-page .fvc-row-checked { box-shadow: inset 0 0 0 1px #4c74d9; background: rgba(76,116,217,.12); }
+html[data-console-theme="light"] .fcm-workspace-page .fvc-row-checked { background: #eaf0ff; box-shadow: inset 0 0 0 1px #2158e8; }
+.fcm-workspace-page .fvc-sidebar-section .btn-secondary { margin-top: 8px; width: 100%; }

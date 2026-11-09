@@ -19,7 +19,7 @@ export default function FpaPlaceholderPage({
             <div className="sidebar-eyebrow">{eyebrow}</div>
             <h2 style={{ margin: '6px 0 0' }}>{title}</h2>
           </div>
-          <span className="status-pill tech">FPA</span>
+          <span className="status-pill tech chip-tag">FPA</span>
         </div>
         <p className="field-help" style={{ margin: 0, maxWidth: '72ch' }}>
           {description}

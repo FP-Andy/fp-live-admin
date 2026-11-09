@@ -4235,6 +4235,22 @@ a:focus-visible {
   padding: 22px;
 }
 
+/* FCM 데이터 제출 — 히트맵·패스맵 미리보기(Input Pipeline 아래). 카드 칸과 같은 627:425.
+   그림은 투명 배경에 흰 선이라 칸 바탕은 테마와 상관없이 어두운 잔디색으로 둔다. */
+.fcm-left-stack { min-width: 0; }
+.fcm-map-preview .fcm-map-subtitle { margin: -6px 0 12px; }
+.fcm-map-stack { display: grid; gap: 12px; }
+.fcm-map-cell { margin: 0; border: 1px solid var(--border-soft); border-radius: 5px; overflow: hidden; background: var(--surface-card-strong); }
+.fcm-map-cell figcaption { display: flex; justify-content: space-between; gap: 8px; padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--border-soft); color: var(--text); }
+.fcm-map-cell figcaption span { color: var(--muted); }
+.fcm-map-frame { position: relative; aspect-ratio: 627 / 425; background: #1d3b2c; display: grid; place-items: center; }
+.fcm-map-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.fcm-map-empty { padding: 0 18px; font-size: 13px; line-height: 1.5; text-align: center; color: #d5ddd8; }
+.fcm-map-preview .fcm-map-meta { margin: 10px 0 0; }
+.fcm-map-preview .fcm-map-warn { margin: 6px 0 0; color: #e5a400; }
+html[data-console-theme="light"] .fcm-map-preview .fcm-map-warn { color: #9a6700; }
+html[data-console-theme="light"] .fcm-map-frame { background: #2c5a42; }
+
 .fcm-detail-grid .section-heading {
   margin-bottom: 16px;
 }
@@ -7410,35 +7426,21 @@ a:focus-visible {
   }
 }
 
-/* Live tagging: full-screen neon pulse while the match timer is running */
+/* Live tagging: full-screen neon frame while the match timer is running.
+   깜빡임(1.8초 주기 밝기 45↔100%)이 경기 내내 눈에 거슬린다는 의견으로 켜진 상태로 고정하고,
+   테두리 굵기를 2px → 1px 로 줄였다(2026-11-03 승준). "기록 중" 표시라는 역할은 그대로다. */
 .live-neon-overlay {
   position: fixed;
   inset: 0;
   z-index: 120;
   pointer-events: none;
   box-shadow:
-    inset 0 0 0 2px var(--accent),
+    inset 0 0 0 1px var(--accent),
     inset 0 0 26px 4px var(--accent-glow),
     inset 0 0 110px 30px var(--accent-glow);
-  animation: liveNeonPulse 1.8s ease-in-out infinite;
+  opacity: 0.8;
 }
 
-@keyframes liveNeonPulse {
-  0%,
-  100% {
-    opacity: 0.45;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .live-neon-overlay {
-    animation: none;
-    opacity: 0.7;
-  }
-}
 
 .team-combobox {
   position: relative;

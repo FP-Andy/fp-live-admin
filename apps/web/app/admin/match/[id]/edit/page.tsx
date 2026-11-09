@@ -5,6 +5,8 @@ import { useParams } from 'next/navigation';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Area, CartesianGrid, ComposedChart, Line, ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { apiFetch, apiJson, type SessionUser } from '../../../../../lib/api';
+import { errorMessage, responseMessage } from '../../../../../lib/error-messages';
+import ErrorNotice, { ErrorFold } from '../../../../../components/ErrorNotice';
 
 const HALF_PITCH_LENGTH = 52.5;
 const XG_VISIBLE_LENGTH = 40;
@@ -397,7 +399,7 @@ export default function MatchEventEditorPage() {
     load()
       .then(() => setError(''))
       .catch((loadError) => {
-        setError(loadError instanceof Error ? loadError.message : 'Failed to load event editor');
+        setError(errorMessage(loadError, '기록을 불러오지 못했습니다. 새로고침해 주세요.'));
       });
   }, [id, filterType, filterTeam]);
 
@@ -526,7 +528,7 @@ export default function MatchEventEditorPage() {
   const estimateXgFromPitch = async () => {
     const shotCoordinates = getShotCoordinates();
     if (!shotPoint || !shotCoordinates) {
-      setXgEstimateMeta('Click on the pitch first');
+      setXgEstimateMeta('피치에서 슈팅 위치를 먼저 선택해 주세요.');
       return;
     }
     const res = await apiFetch('/xg/estimate', {
@@ -541,7 +543,7 @@ export default function MatchEventEditorPage() {
       }),
     });
     if (!res.ok) {
-      setXgEstimateMeta(`Estimate failed (${res.status})`);
+      setXgEstimateMeta(await responseMessage(res, { fixed: '계산하지 못했습니다. 다시 눌러 주세요.' }));
       return;
     }
     const data = await res.json();
@@ -553,15 +555,15 @@ export default function MatchEventEditorPage() {
     const xg = Number(form.xg);
     const goalmouthCoordinates = getGoalmouthCoordinates();
     if (!Number.isFinite(xg) || xg < 0) {
-      setXgotEstimateMeta('Enter a valid xG first');
+      setXgotEstimateMeta('xG 값을 먼저 넣어 주세요.');
       return;
     }
     if (!form.is_on_target) {
-      setXgotEstimateMeta('Turn on On Target first');
+      setXgotEstimateMeta('유효슈팅을 먼저 켜 주세요.');
       return;
     }
     if (!goalmouthCoordinates) {
-      setXgotEstimateMeta('Click the goalmouth map first');
+      setXgotEstimateMeta('골문에서 슈팅 도착 위치를 선택해 주세요.');
       return;
     }
     const res = await apiFetch('/xgot/estimate', {
@@ -580,7 +582,7 @@ export default function MatchEventEditorPage() {
       }),
     });
     if (!res.ok) {
-      setXgotEstimateMeta(`Estimate failed (${res.status})`);
+      setXgotEstimateMeta(await responseMessage(res, { fixed: '계산하지 못했습니다. 다시 눌러 주세요.' }));
       return;
     }
     const data = await res.json();
@@ -605,14 +607,14 @@ export default function MatchEventEditorPage() {
             body: JSON.stringify(payload),
           });
       if (!response.ok) {
-        setError((await response.text()) || 'Save failed');
+        setError(await responseMessage(response, { action: '저장하지 못했습니다', fallback: '저장하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       await load();
       setClockHint('');
       setMessage(selectedItem ? 'Item updated' : 'Item created');
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Save failed');
+      setError(errorMessage(saveError, '저장하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -622,7 +624,7 @@ export default function MatchEventEditorPage() {
     if (!canEdit || matchNameSaving) return;
     const nextName = matchNameDraft.trim();
     if (!nextName) {
-      setError('Match name is required');
+      setError('경기 이름을 입력하세요.');
       return;
     }
     setMatchNameSaving(true);
@@ -634,7 +636,7 @@ export default function MatchEventEditorPage() {
         body: JSON.stringify({ name: nextName }),
       });
       if (!response.ok) {
-        setError((await response.text()) || 'Match name update failed');
+        setError(await responseMessage(response, { action: '저장하지 못했습니다', fallback: '저장하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       const nextMatch = await response.json() as MatchInfo;
@@ -642,7 +644,7 @@ export default function MatchEventEditorPage() {
       setMatchNameDraft(nextMatch.name || nextName);
       setMessage('Match name updated');
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Match name update failed');
+      setError(errorMessage(saveError, '저장하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setMatchNameSaving(false);
     }
@@ -659,7 +661,7 @@ export default function MatchEventEditorPage() {
         method: 'DELETE',
       });
       if (!response.ok) {
-        setError((await response.text()) || 'Delete failed');
+        setError(await responseMessage(response, { action: '삭제하지 못했습니다', fallback: '삭제하지 못했습니다. 다시 시도해 주세요.' }));
         return;
       }
       setSelectedId(null);
@@ -669,14 +671,14 @@ export default function MatchEventEditorPage() {
       await load();
       setMessage('Item deleted');
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Delete failed');
+      setError(errorMessage(deleteError, '삭제하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <main className="page-stack">
+    <main className="page-stack fla-editor">
       <section className="card card-panel grid">
         <div className="section-heading">
           <div>
@@ -718,9 +720,9 @@ export default function MatchEventEditorPage() {
           </button>
         </div>
         {!canEdit && !error ? (
-          <div className="form-error">Archived matches can be edited by admin only.</div>
+          <div className="form-error">경기를 종료한 뒤 최고 관리자만 수정할 수 있습니다.</div>
         ) : null}
-        {error ? <div className="form-error">{error}</div> : null}
+        {error ? <ErrorNotice className="form-error" message={error} /> : null}
         {message ? <div className="muted">{message}</div> : null}
       </section>
 
@@ -1240,8 +1242,8 @@ export default function MatchEventEditorPage() {
                     {shotPoint ? `shot=(${shotPoint.x}, ${shotPoint.y})` : 'Click pitch to set shot location'}
                   </div>
                   <div className="muted">Half-pitch clicks are evaluated in attacking-half coordinates so the same UI works for both teams.</div>
-                  {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}</div> : null}
-                  {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}</div> : null}
+                  {xgEstimateMeta ? <div className="muted">{xgEstimateMeta}<ErrorFold message={xgEstimateMeta} /></div> : null}
+                  {xgotEstimateMeta ? <div className="muted">{xgotEstimateMeta}<ErrorFold message={xgotEstimateMeta} /></div> : null}
                 </>
               ) : null}
             </>
@@ -1441,9 +1443,9 @@ export default function MatchEventEditorPage() {
                     <td style={{ padding: '10px 8px' }}>{bin.dominance.toFixed(3)}</td>
                     <td style={{ padding: '10px 8px' }}>
                       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                        {bin.annotations?.goal_summary?.home ? <span className="status-pill">⚽ HOME{bin.annotations.goal_summary.home > 1 ? ` x${bin.annotations.goal_summary.home}` : ''}</span> : null}
-                        {bin.annotations?.goal_summary?.away ? <span className="status-pill">⚽ AWAY{bin.annotations.goal_summary.away > 1 ? ` x${bin.annotations.goal_summary.away}` : ''}</span> : null}
-                        {bin.annotations?.markers?.includes('HT') ? <span className="status-pill archived">HT</span> : null}
+                        {bin.annotations?.goal_summary?.home ? <span className="status-pill chip-tag chip-home">⚽ HOME{bin.annotations.goal_summary.home > 1 ? ` x${bin.annotations.goal_summary.home}` : ''}</span> : null}
+                        {bin.annotations?.goal_summary?.away ? <span className="status-pill chip-tag chip-away">⚽ AWAY{bin.annotations.goal_summary.away > 1 ? ` x${bin.annotations.goal_summary.away}` : ''}</span> : null}
+                        {bin.annotations?.markers?.includes('HT') ? <span className="status-pill archived chip-tag">HT</span> : null}
                         {!bin.annotations?.goal_summary?.total && !bin.annotations?.markers?.length ? <span className="muted">-</span> : null}
                       </div>
                     </td>

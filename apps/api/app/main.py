@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
@@ -21,10 +22,10 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import desc, inspect, or_, text
+from sqlalchemy import desc, func, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 import os
@@ -33,7 +34,8 @@ import pandas as pd
 from PIL import Image
 from .lineup_pdf import parse_lineup_pdf
 from .highlight_render_queue import HighlightRenderTask
-from .scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion
+from . import gpu_auto_stop
+from .scene_motion_queue import SceneMotionTask, enqueue as enqueue_scene_motion, find_task as find_scene_motion_task
 from .manual_highlight_log import router as manual_highlight_log_router
 from .competition_queue import (
     CompetitionSendWorker,
@@ -51,7 +53,15 @@ from .auth import (
     session_user_id as _get_authenticated_user_id,
 )
 from .db import Base, SessionLocal, engine, get_db
-from .fcm_cards import GOALKEEPER_TEMPLATE_PATH, TEMPLATE_DIR, build_card_image, build_cards_zip, find_template_path
+from .fcm_cards import (
+    GOALKEEPER_TEMPLATE_PATH,
+    TEMPLATE_DIR,
+    build_card_image,
+    build_cards_zip,
+    find_template_path,
+    render_player_maps,
+)
+from .fcm_stats import normalize_position, position_from_slot, select_player_stats
 from .xgot import estimate_xgot as _estimate_xgot
 from .fpa import (
     analyze_card_workbook,
@@ -191,9 +201,11 @@ app.include_router(auth_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
 from .futsal_analysis_snapshots import router as analysis_snapshots_router
+from .agent_fla import router as agent_fla_router, tombstone_reply as _agent_fla_tombstone_reply
 from . import futsal_substitution_redetection  # register private review evidence routes
 from . import futsal_recovery_jobs  # persistent, bounded RF-DETR jobs
 app.include_router(analysis_snapshots_router)
+app.include_router(agent_fla_router)  # /api/agent/fla/** — 직원 에이전트 토큰 전용(이사68)
 
 origins = [v.strip() for v in os.getenv("CORS_ORIGINS", "*").split(",") if v.strip()]
 app.add_middleware(
@@ -210,6 +222,7 @@ competition_send_worker: CompetitionSendWorker | None = None
 system_monitor_task: asyncio.Task | None = None
 schedule_slack_task: asyncio.Task | None = None
 broadcast_asset_task: asyncio.Task | None = None
+gpu_auto_stop_task: asyncio.Task | None = None
 PUBLIC_HLS_BASE = os.getenv("PUBLIC_HLS_BASE", "https://console.fineludens.kr").rstrip("/")
 # Console 대시보드는 운영 화면을 열 때마다 gateway 상태를 확인한다. 미디어 서버가 꺼진
 # 상태에서는 이 확인이 전체 화면을 기다리게 해서는 안 된다.
@@ -364,6 +377,144 @@ def _fcm_workbook_path(match_id: UUID, team_side: str) -> Path:
 def _fcm_shared_workbook_path(match_id: UUID) -> Path:
     FCM_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     return FCM_RUNTIME_DIR / f"{match_id}_shared.xlsx"
+
+
+def _fcm_card_workbook_source(match_id: UUID, team_side: str) -> tuple[Path | None, str | None]:
+    """카드 생성과 데이터 제출 미리보기가 같이 쓰는 데이터 파일 선택 규칙.
+
+    팀별 파일(그 팀을 고른 상태에서 올린 파일·반영한 FPA 로그)이 있으면 그것, 없으면 공용 파일.
+    돌려주는 kind 는 'team' | 'shared', 파일이 없으면 (None, None).
+    """
+    team_path = _fcm_workbook_path(match_id, team_side)
+    if team_path.exists():
+        return team_path, "team"
+    shared_path = _fcm_shared_workbook_path(match_id)
+    if shared_path.exists():
+        return shared_path, "shared"
+    return None, None
+
+
+def _fcm_workbook_meta_path(workbook_path: Path) -> Path:
+    return workbook_path.with_name(f"{workbook_path.stem}.meta.json")
+
+
+def _write_fcm_workbook(workbook_path: Path, workbook: bytes, *, origin: str, filename: str | None = None) -> None:
+    """FCM 워크북을 쓰고 옆에 출처 메타({origin, filename, written_at})를 남긴다.
+
+    미리보기가 "사용한 데이터: FPA 로그 반영(시각)" / "업로드 파일 이름(날짜)"를 보여 준다.
+    메타는 워크북보다 먼저 쓴다 — 미리보기 캐시 키가 워크북 mtime 이라 순서가 바뀌어도 그림은 맞다.
+    """
+    meta = {
+        "origin": origin,
+        "filename": (filename or "").strip() or None,
+        "written_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        _fcm_workbook_meta_path(workbook_path).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    workbook_path.write_bytes(workbook)
+
+
+def _read_fcm_workbook_meta(workbook_path: Path) -> dict[str, Any] | None:
+    try:
+        meta = json.loads(_fcm_workbook_meta_path(workbook_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _store_fcm_uploaded_workbook(match_id: UUID, workbook: bytes, team_side: str | None, filename: str | None) -> None:
+    """파일 업로드: 공용 파일 + (팀을 골랐으면) 그 팀의 팀별 파일."""
+    side = _normalize_fcm_team_side(team_side) if team_side else None
+    _write_fcm_workbook(_fcm_shared_workbook_path(match_id), workbook, origin="upload", filename=filename)
+    if side:
+        _write_fcm_workbook(_fcm_workbook_path(match_id, side), workbook, origin="upload", filename=filename)
+
+
+def _store_fcm_fpa_log_workbook(match_id: UUID, workbook: bytes, team_side: str | None) -> None:
+    """FPA 로그 반영: 공용 파일 + 선택 팀의 팀별 파일을 새 로그 워크북으로 바꾼다.
+
+    팀별 파일이 공용 파일보다 앞서므로, 예전에 그 팀으로 올린 파일이 남아 있으면 카드가 옛
+    파일로 그려졌다. 다른 팀의 팀별 파일은 그 팀이 따로 올린 엑셀일 수 있어 건드리지 않는다.
+    """
+    side = _normalize_fcm_team_side(team_side) if team_side else None
+    _write_fcm_workbook(_fcm_shared_workbook_path(match_id), workbook, origin="fpa_log")
+    if side:
+        _write_fcm_workbook(_fcm_workbook_path(match_id, side), workbook, origin="fpa_log")
+
+
+_fcm_player_maps_cache: dict[tuple, dict[str, Any]] = {}
+_fcm_player_maps_cache_lock = threading.Lock()
+_FCM_PLAYER_MAPS_CACHE_LIMIT = 48
+
+
+def _fcm_png_base64(image: Any) -> str | None:
+    if image is None:
+        return None
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _fcm_player_maps_payload(match_id: UUID, team_side: str, player_id: str, team_name: str | None) -> dict[str, Any]:
+    """데이터 제출 화면 미리보기 — 카드 생성(_build_fcm_card_payload)과 같은 파일·같은 렌더 함수.
+
+    이미지는 렌더 함수 결과 원본(카드의 _fit_to_box 전)이다. 파일이 없으면 source=None 과 빈 결과.
+    같은 (파일, mtime, 팀, 선수) 결과는 짧게 캐시한다(matplotlib 렌더가 1초 남짓 걸린다).
+    """
+    result: dict[str, Any] = {
+        "heatmap_png": None,
+        "passmap_png": None,
+        "heatmap_points": 0,
+        "passes": 0,
+        "key_passes": 0,
+        "source": None,
+        "same_number_other_team": False,
+        "card_type_hint": None,
+        "render_error": None,
+    }
+    workbook_path, kind = _fcm_card_workbook_source(match_id, team_side)
+    if not workbook_path:
+        return result
+    try:
+        stat = workbook_path.stat()
+    except OSError:
+        return result
+    meta = _read_fcm_workbook_meta(workbook_path) or {}
+    result["source"] = {
+        "kind": kind,
+        "origin": meta.get("origin") or None,
+        "filename": meta.get("filename") or None,
+        "written_at": meta.get("written_at") or None,
+        "file_modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+    }
+    cache_key = (str(workbook_path), stat.st_mtime_ns, stat.st_size, team_side, team_name or "", player_id)
+    with _fcm_player_maps_cache_lock:
+        cached = _fcm_player_maps_cache.get(cache_key)
+    if cached is None:
+        rendered: dict[str, Any] = {}
+        try:
+            maps = render_player_maps(workbook_path.read_bytes(), player_id, team_side, team_name)
+            rendered = {
+                "heatmap_png": _fcm_png_base64(maps.heatmap),
+                "passmap_png": _fcm_png_base64(maps.passmap),
+                "heatmap_points": maps.heatmap_points,
+                "passes": maps.passes,
+                "key_passes": maps.key_passes,
+                "same_number_other_team": maps.other_team_rows > 0,
+                "card_type_hint": "GOALKEEPER" if maps.goalkeeper_actions > 0 else "PLAYER",
+            }
+        except Exception as ex:
+            # 카드 생성도 렌더 실패를 삼키고 빈 칸으로 낸다 — 미리보기는 그 사유를 같이 알려 준다.
+            rendered = {"render_error": str(ex) or ex.__class__.__name__}
+        cached = rendered
+        with _fcm_player_maps_cache_lock:
+            _fcm_player_maps_cache[cache_key] = cached
+            while len(_fcm_player_maps_cache) > _FCM_PLAYER_MAPS_CACHE_LIMIT:
+                _fcm_player_maps_cache.pop(next(iter(_fcm_player_maps_cache)))
+    result.update(cached)
+    return result
 
 
 def _ensure_runtime_schema() -> None:
@@ -1571,6 +1722,38 @@ async def system_monitor_worker(stop_event: asyncio.Event) -> None:
             pass
 
 
+def _gpu_auto_stop_tick(settings: gpu_auto_stop.Settings) -> None:
+    db = SessionLocal()
+    try:
+        result = gpu_auto_stop.run_tick(
+            db,
+            now=datetime.utcnow(),
+            settings=settings,
+            control=_highlight_worker_control_request,
+            notify=gpu_auto_stop.slack_notifier(settings.slack_webhook_url),
+        )
+        if result.error or result.stopped:
+            print(f"gpu auto-stop: {result.decision} {result.error or ''}".rstrip())
+    finally:
+        db.close()
+
+
+async def gpu_auto_stop_worker(stop_event: asyncio.Event) -> None:
+    # 기본은 꺼짐(GPU_AUTO_STOP_ENABLED=1 일 때만). 제어 URL이 없으면 끌 방법이 없으니 돌지 않는다.
+    settings = gpu_auto_stop.Settings.from_env()
+    while not stop_event.is_set():
+        if settings.enabled and HIGHLIGHT_WORKER_CONTROL_URL:
+            try:
+                await asyncio.to_thread(_gpu_auto_stop_tick, settings)
+            except Exception as ex:
+                # DB 연결 끊김 같은 예외도 루프를 죽이지 않는다. 다음 차례에 다시 본다.
+                print(f"gpu auto-stop failed: {ex}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=settings.check_seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
 def _probe_hls_url(hls_url: str | None) -> dict:
     normalized_url = _normalize_hls_url(hls_url)
     if not normalized_url:
@@ -1602,7 +1785,7 @@ def _probe_hls_url(hls_url: str | None) -> dict:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global worker_task, system_monitor_task, schedule_slack_task, broadcast_asset_task, competition_send_worker
+    global worker_task, system_monitor_task, schedule_slack_task, broadcast_asset_task, competition_send_worker, gpu_auto_stop_task
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
     ensure_highlight_runtime_dirs()
@@ -1619,6 +1802,7 @@ async def startup() -> None:
     system_monitor_task = asyncio.create_task(system_monitor_worker(worker_stop_event))
     schedule_slack_task = asyncio.create_task(schedule_slack_worker(worker_stop_event))
     broadcast_asset_task = asyncio.create_task(broadcast_asset_worker(worker_stop_event))
+    gpu_auto_stop_task = asyncio.create_task(gpu_auto_stop_worker(worker_stop_event))
 
 
 @app.on_event("shutdown")
@@ -1634,6 +1818,8 @@ async def shutdown() -> None:
         await schedule_slack_task
     if broadcast_asset_task:
         await broadcast_asset_task
+    if gpu_auto_stop_task:
+        await gpu_auto_stop_task
 
 
 def _require_write_lock(match_obj: Match, user: User | None) -> None:
@@ -2801,6 +2987,13 @@ def _require_basketball_match_for_partner(match_id: UUID, db: Session) -> Match:
     return row
 
 
+def _fcm_user_name(db: Session, user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    user = db.get(User, user_id)
+    return (user.name or None) if user else None
+
+
 def _serialize_fcm_submission(row: FcmSubmission, db: Session) -> dict:
     card_type = "GOALKEEPER" if str(row.card_type or "").upper() == "GOALKEEPER" else "PLAYER"
     selected_stats = list(row.selected_stats or [])
@@ -2823,6 +3016,8 @@ def _serialize_fcm_submission(row: FcmSubmission, db: Session) -> dict:
         "card_type": card_type,
         "penalty_shootout": [value for value in list(row.penalty_shootout or []) if str(value).upper() in {"O", "X"}][:10],
         "submitted_by": row.submitted_by,
+        # 화면에는 사용자 ID(admin-25bf…) 대신 이름을 보인다. ID 는 그대로 두고 툴팁으로 볼 수 있게.
+        "submitted_by_name": _fcm_user_name(db, row.submitted_by),
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
@@ -2931,6 +3126,68 @@ def _sync_goalkeeper_card_stats(
     return synced
 
 
+def _fineplay_job_for_fpa_match(db: Session, match_id: UUID) -> HighlightJob | None:
+    """fpa_link.match_id 가 이 매치인 FinePlay 잡(get_fpa_fineplay_lineup 과 같은 기준)."""
+    target = str(match_id)
+    jobs = (
+        db.query(HighlightJob)
+        .filter(HighlightJob.mode == "fineplay")
+        .order_by(desc(HighlightJob.created_at))
+        .all()
+    )
+    return next(
+        (
+            j for j in jobs
+            if str(
+                ((j.job_metadata or {}).get("fpa_link") or {}).get("match_id")
+                or (j.job_metadata or {}).get("match_id")
+                or ""
+            ) == target
+        ),
+        None,
+    )
+
+
+def _fcm_fineplay_positions(db: Session, match_obj: Match) -> dict[tuple[str, str], str]:
+    """FinePlay 신청 라인업의 positionSlot 을 (HOME/AWAY, 등번호) → GK/DF/MF/FW 로 푼다."""
+    positions: dict[tuple[str, str], str] = {}
+    try:
+        job = _fineplay_job_for_fpa_match(db, match_obj.id)
+    except Exception:
+        return positions
+    if job is None:
+        return positions
+    for side, info in _fineplay_lineup_sides(job).items():
+        players = info.get("players") or []
+        slots = [str(player.get("positionSlot") or "") for player in players]
+        # 포메이션 키가 없을 때 마지막 라인(FW)을 명단의 최대 라인/행으로 정한다.
+        lines = [int(found.group(1)) for slot in slots if (found := re.fullmatch(r"player_(\d+)_\d+", slot))]
+        custom_rows = [int(found.group(1)) for slot in slots if (found := re.fullmatch(r"c(\d+)_\d+", slot))]
+        for player in players:
+            position = position_from_slot(
+                player.get("positionSlot"),
+                formation=str(info.get("formation") or ""),
+                max_line=max(lines) if lines else None,
+                max_custom_row=max(custom_rows) if custom_rows else None,
+            )
+            if position:
+                positions[(side.upper(), str(player.get("jersey") or "").strip())] = position
+    return positions
+
+
+def _fcm_player_side(team_marker: str, metadata: dict[str, Any]) -> str:
+    """분석 결과의 Team 값(home/away 또는 팀명)을 HOME/AWAY 로 맞춘다."""
+    marker = team_marker.strip()
+    if marker.upper() in {"HOME", "AWAY"}:
+        return marker.upper()
+    # 옛 FPA 엑셀은 Team 에 팀명이 들어 있다. 매치의 홈/원정 팀명과 같으면 그 사이드다.
+    for side, key in (("HOME", "home_team"), ("AWAY", "away_team")):
+        name = str(metadata.get(key) or "").strip()
+        if name and name == marker:
+            return side
+    return ""
+
+
 def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match | None, db: Session) -> dict[str, Any]:
     """Attach official lineup and FLA goalkeeper context to an FCM analysis."""
     if not match_obj:
@@ -2948,25 +3205,53 @@ def _enrich_fcm_analysis_with_lineup(payload: dict[str, Any], match_obj: Match |
                     "name": str(entry.get("name") or "").strip(),
                     "position": str(entry.get("position") or "").upper(),
                 }
+    fineplay_positions: dict[tuple[str, str], str] | None = None
 
     for player in payload.get("players", []):
         if not isinstance(player, dict):
             continue
-        team_marker = str(player.get("team") or "").strip().upper()
-        side = team_marker if team_marker in {"HOME", "AWAY"} else ""
-        lineup = lookup.get((side, str(player.get("player_id") or "").strip())) if side else None
+        side = _fcm_player_side(str(player.get("team") or ""), metadata)
+        player["team_side"] = side
+        number = str(player.get("player_id") or "").strip()
+        lineup = lookup.get((side, number)) if side else None
         if lineup:
             player["player_name"] = lineup["name"]
             player["is_goalkeeper"] = bool(player.get("is_goalkeeper")) or lineup["position"] == "GK"
-        if not bool(player.get("is_goalkeeper")) or side not in {"HOME", "AWAY"}:
+
+        if not bool(player.get("is_goalkeeper")):
+            # 포지션 우선순위: 경기 명단(기록지) → FinePlay 신청 라인업 → FPA 액션 위치 추정.
+            # 골키퍼 카드는 포지션과 무관하므로 이 조회를 건너뛴다.
+            position = normalize_position(lineup["position"]) if lineup else ""
+            source = "lineup" if position else ""
+            if not position and side:
+                if fineplay_positions is None:
+                    fineplay_positions = _fcm_fineplay_positions(db, match_obj)
+                position = fineplay_positions.get((side, number), "")
+                source = "fineplay_lineup" if position else ""
+            metrics = player.get("stat_metrics")
+            if position:
+                player["position"] = position
+                player["position_source"] = source
+                if isinstance(metrics, dict):
+                    # 명단 포지션이 FPA 위치 추정과 다를 수 있으니 규칙 선택을 다시 돈다.
+                    selection = select_player_stats(metrics, position)
+                    player["candidates"] = selection["candidates"]
+                    player["selected_stats"] = selection["selected"]
             continue
 
-        # Candidate selection and final PNG generation share the same FLA
-        # totals. Workbook-only matches retain the FPA candidate values.
-        opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
-        player["candidates"] = _sync_goalkeeper_card_stats(
-            list(player.get("candidates") or []), opponent_xg_events, include_save_candidate=True
-        )
+        player["position"] = "GK"
+        player["position_source"] = "lineup" if lineup and lineup["position"] == "GK" else (player.get("position_source") or "fpa_events")
+        # 명단상 GK 인데 FPA 에 선방 액션이 없던 선수도 골키퍼 후보를 쓴다.
+        if player.get("goalkeeper_candidates"):
+            player["candidates"] = list(player["goalkeeper_candidates"])
+        if side in {"HOME", "AWAY"}:
+            # Candidate selection and final PNG generation share the same FLA
+            # totals. Workbook-only matches retain the FPA candidate values.
+            opponent_xg_events = _goalkeeper_fla_shot_events(db, match_obj.id, side)
+            player["candidates"] = _sync_goalkeeper_card_stats(
+                list(player.get("candidates") or []), opponent_xg_events, include_save_candidate=True
+            )
+        player["selected_stats"] = list(player.get("candidates") or [])[:5]
     return payload
 
 
@@ -3134,14 +3419,9 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
     if not template_path:
         raise ValueError(f"{row.team_name}: 배경 템플릿 없음")
 
-    workbook_path = _fcm_workbook_path(row.match_id, row.team_side)
-    shared_workbook_path = _fcm_shared_workbook_path(row.match_id)
-    if workbook_path.exists():
-        workbook_bytes = workbook_path.read_bytes()
-    elif shared_workbook_path.exists():
-        workbook_bytes = shared_workbook_path.read_bytes()
-    else:
-        workbook_bytes = None
+    # 데이터 제출 화면 미리보기(/player-maps)와 같은 파일 선택 규칙(팀별 파일 → 공용 파일).
+    workbook_path, _workbook_kind = _fcm_card_workbook_source(row.match_id, row.team_side)
+    workbook_bytes = workbook_path.read_bytes() if workbook_path else None
 
     match_obj = db.get(Match, row.match_id)
     team_logo_path = _fcm_team_logo_path(match_obj, row.team_side) if match_obj and card_type == "GOALKEEPER" else None
@@ -3165,6 +3445,9 @@ def _build_fcm_card_payload(db: Session, row: FcmSubmission, league: str, round_
         team_logo_path=team_logo_path,
         replace_template_logo=card_type == "GOALKEEPER" and registered_template_path is None,
         fla_shot_events=goalkeeper_fla_shots,
+        # 같은 등번호가 양 팀에 있으면 등번호만으로는 상대 팀 기록이 섞인다 — 팀+등번호로 거른다.
+        team_side=row.team_side,
+        team_name=row.team_name,
     )
     filename = f"{league}-{round_number}R-{row.team_name}-{row.player_id}-{row.player_name}.png"
     return filename, card_bytes
@@ -3332,11 +3615,14 @@ def _apply_editor_item_updates(
         event.under_pressure = body.under_pressure
         event.one_on_one = body.one_on_one
         event.shot_pace_band = body.shot_pace_band
+        # 기록 수정 화면은 이 값을 보내지 않는다(None) — 그때는 저장된 자책골 표시를 그대로 둔다.
+        if body.is_own_goal is not None:
+            event.is_own_goal = body.is_own_goal
         return xgot_meta
 
-    if body.kind == "MARKER" and body.type == "HALFTIME_START":
+    if body.kind == "MARKER" and body.type in {"HALFTIME_START", "EXTRA_TIME_1_START", "EXTRA_TIME_2_START"}:
         assert marker is not None
-        marker.marker_type = "HALFTIME_START"
+        marker.marker_type = body.type
         marker.clock_ms = body.clock_ms
         return None
 
@@ -3655,6 +3941,7 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
             "current_lane": team_lane_events[-1].lane if team_lane_events else None,
         }
 
+    score = _football_score_from_events(match_id, db)
     return {
         "match": {
             "id": str(match_obj.id),
@@ -3672,6 +3959,9 @@ def _build_match_summary(match_id: UUID, db: Session) -> dict:
                               int((match_obj.metadata_json or {}).get('fla_clock_speed') or 1))['state'] or {}),
         },
         "command_revision": int((match_obj.metadata_json or {}).get('fla_clock_revision') or 0),
+        # 매치 컨트롤에 현재 점수가 없었다(골은 최근 기록의 GOAL 표시로만 보였다).
+        # 중계 그래픽과 같은 계산(_football_score_from_events)을 써서 두 화면 점수가 어긋나지 않게 한다.
+        "score": {"home": score["HOME"], "away": score["AWAY"]},
         "possession": {
             "home_ms": home_ms,
             "away_ms": away_ms,
@@ -5525,10 +5815,7 @@ async def analyze_fcm_workbook(
     try:
         file_bytes = await file.read()
         if match_id:
-            _fcm_shared_workbook_path(match_id).write_bytes(file_bytes)
-            if team_side:
-                workbook_path = _fcm_workbook_path(match_id, _normalize_fcm_team_side(team_side))
-                workbook_path.write_bytes(file_bytes)
+            _store_fcm_uploaded_workbook(match_id, file_bytes, team_side, file.filename)
         match_obj = db.get(Match, match_id) if match_id else None
         return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(file_bytes), match_obj, db)
     except ValueError as ex:
@@ -5538,13 +5825,20 @@ async def analyze_fcm_workbook(
 
 
 @app.post("/api/fcm/matches/{match_id}/analyze-fpa-logs", response_model=FcmAnalyzeWorkbookResponse)
-def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db), _user: User = Depends(_require_session_user)):
+def analyze_fcm_from_saved_fpa_logs(
+    match_id: UUID,
+    team_side: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
     row = db.get(FpaSavedLog, match_id)
     if not row:
         raise HTTPException(status_code=404, detail="No saved FPA logs for this match")
+    normalized_side = _normalize_fcm_team_side(team_side) if team_side else None
     try:
         workbook = _build_fpa_workbook_from_saved_log(row)
-        _fcm_shared_workbook_path(match_id).write_bytes(workbook)
+        # 선택 팀(team_side)이 오면 그 팀의 팀별 파일도 바꾼다. 없으면 예전처럼 공용 파일만.
+        _store_fcm_fpa_log_workbook(match_id, workbook, normalized_side)
         return _enrich_fcm_analysis_with_lineup(analyze_card_workbook(workbook), db.get(Match, match_id), db)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -5553,6 +5847,26 @@ def analyze_fcm_from_saved_fpa_logs(match_id: UUID, db: Session = Depends(get_db
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
+
+
+@app.get("/api/fcm/matches/{match_id}/player-maps")
+def get_fcm_player_maps(
+    match_id: UUID,
+    team_side: str = Query(...),
+    player_id: str = Query(...),
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_session_user),
+):
+    """데이터 제출 화면의 히트맵·패스맵 미리보기 — 카드뉴스와 같은 파일·같은 그리기."""
+    side = _normalize_fcm_team_side(team_side)
+    clean_player = player_id.strip()
+    if not clean_player:
+        raise HTTPException(status_code=400, detail="player_id is required")
+    match_obj = db.get(Match, match_id)
+    metadata = match_obj.metadata_json if match_obj and isinstance(match_obj.metadata_json, dict) else {}
+    team_name = str(metadata.get("home_team" if side == "HOME" else "away_team") or "").strip()
+    payload = _fcm_player_maps_payload(match_id, side, clean_player, team_name)
+    return {**payload, "team_side": side, "team_name": team_name, "player_id": clean_player}
 
 
 @app.get("/api/fcm/submissions", response_model=list[FcmSubmissionResponse])
@@ -5661,10 +5975,28 @@ def generate_fcm_cards(
     round: int = Query(..., ge=1, le=99),
     match_id: UUID | None = Query(default=None),
     team_side: str | None = Query(default=None),
+    targets: str | None = Query(default=None, max_length=8000),
     db: Session = Depends(get_db),
     _user: User = Depends(_require_session_user),
 ):
     normalized_league = _normalize_competition_class(league)
+    # 체크한 팀만 받기: "경기ID:HOME,경기ID:AWAY,…". 없으면 예전처럼 라운드 전체.
+    selected_keys: set[tuple[UUID, str]] | None = None
+    if targets is not None and not (match_id and team_side):
+        selected_keys = set()
+        for raw in targets.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            target_match, _, target_side = raw.partition(":")
+            try:
+                selected_keys.add((UUID(target_match), _normalize_fcm_team_side(target_side)))
+            except (ValueError, HTTPException) as ex:
+                raise HTTPException(status_code=400, detail=f"Invalid card target: {raw}") from ex
+        if not selected_keys:
+            raise HTTPException(status_code=400, detail="No card targets selected")
+        if len(selected_keys) > 200:
+            raise HTTPException(status_code=400, detail="Too many card targets")
     query = db.query(FcmSubmission).filter(
         FcmSubmission.competition_class == normalized_league,
         FcmSubmission.round_number == round,
@@ -5697,11 +6029,15 @@ def generate_fcm_cards(
     latest_rows: dict[tuple[UUID, str], FcmSubmission] = {}
     for row in rows:
         key = (row.match_id, row.team_side)
+        if selected_keys is not None and key not in selected_keys:
+            continue
         if key not in latest_rows:
             latest_rows[key] = row
 
     generated_cards: list[tuple[str, bytes]] = []
     skipped: list[str] = []
+    if selected_keys is not None:
+        skipped.extend(f"{key[0]}:{key[1]}: FCM submission not found" for key in selected_keys - latest_rows.keys())
 
     for row in latest_rows.values():
         try:
@@ -5716,15 +6052,11 @@ def generate_fcm_cards(
         raise HTTPException(status_code=409, detail=detail)
 
     zip_bytes = build_cards_zip(generated_cards)
+    zip_name = f"{normalized_league}-{round}R_{'selected_' if selected_keys is not None else ''}cards.zip"
     return Response(
         content=zip_bytes,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": _attachment_header(
-                f"{normalized_league}-{round}R_cards.zip",
-                f"{normalized_league}-{round}R_cards.zip",
-            )
-        },
+        headers={"Content-Disposition": _attachment_header(zip_name, zip_name)},
     )
 
 
@@ -6504,6 +6836,7 @@ def list_dashboard_matches(
     sport: str = Query(default="FOOTBALL"),
     archived: bool = Query(default=False),
     competition_class: str | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=7, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -6521,6 +6854,14 @@ def list_dashboard_matches(
     page_scope = archived_scope if archived else active_scope
     if class_code:
         page_scope = page_scope.filter(Match.competition_class == class_code)
+    # 경기 검색 — 목록이 7개씩 서버에서 나뉘어 와서, 화면에서만 거르면 지금 쪽 안에서만 찾게 된다.
+    # 경기 이름(`[대회 | 29R] 홈 vs 원정`)에서 띄어쓰기를 무시하고 찾는다("FC 강릉" → "FC강릉").
+    needle = re.sub(r"\s+", "", q or "")
+    if needle:
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        page_scope = page_scope.filter(
+            func.replace(Match.name, " ", "").ilike(f"%{escaped}%", escape="\\")
+        )
 
     # These inexpensive aggregate counts keep the existing overview cards
     # accurate without forcing the browser to receive every historical row.
@@ -7234,6 +7575,7 @@ def get_admin_system(db: Session = Depends(get_db), _user: User = Depends(_requi
             **highlight_worker,
             "active_jobs": active_highlight_jobs,
         },
+        "gpu_auto_stop": gpu_auto_stop.status_payload(db, datetime.utcnow(), gpu_auto_stop.Settings.from_env()),
         "health": {
             "gateway_ok": bool(gateway_status.get("ok")),
             "running_streams": len(gateway_status.get("running_match_ids") or []),
@@ -7353,6 +7695,8 @@ def get_highlight_worker_status(db: Session = Depends(get_db), _user: User = Dep
 @app.post("/api/admin/ec2/highlight-worker-start")
 def start_highlight_worker(db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
     data = _highlight_worker_control_request("start")
+    # 자동 종료가 방금 켠 서버를 예전 유휴 기록으로 바로 끄지 않게 시계를 다시 맞춘다.
+    gpu_auto_stop.note_manual_start(db, datetime.utcnow())
     _audit(
         db,
         "HIGHLIGHT_WORKER_EC2_START",
@@ -7384,6 +7728,7 @@ def stop_highlight_worker(confirm_live_action: bool = Query(default=False), db: 
         )
 
     data = _highlight_worker_control_request("stop", confirmed_live_action=confirm_live_action)
+    gpu_auto_stop.note_manual_stop(db, datetime.utcnow())
     _audit(
         db,
         "HIGHLIGHT_WORKER_EC2_STOP",
@@ -7403,6 +7748,33 @@ def stop_highlight_worker(confirm_live_action: bool = Query(default=False), db: 
         "highlight_worker": _highlight_worker_control_status(),
         "result": data,
     }
+
+
+@app.get("/api/admin/gpu-auto-stop")
+def get_gpu_auto_stop(db: Session = Depends(get_db), _user: User = Depends(_require_superuser)):
+    return {"ok": True, "gpu_auto_stop": gpu_auto_stop.status_payload(db, datetime.utcnow(), gpu_auto_stop.Settings.from_env())}
+
+
+@app.post("/api/admin/gpu-auto-stop/skip-today")
+def set_gpu_auto_stop_skip_today(body: dict = Body(default={}), db: Session = Depends(get_db), user: User = Depends(_require_superuser)):
+    # "오늘 자동 종료 안 함" — 긴 작업을 띄워 둔 날 GPU가 중간에 꺼지지 않게 하는 수동 예외.
+    # 한국 날짜 기준으로 저장해 다음 날 0시(KST)에 저절로 풀린다.
+    skip = body.get("skip")
+    if not isinstance(skip, bool):
+        raise HTTPException(status_code=400, detail="skip 은 true/false 로 보내 주세요.")
+    now = datetime.utcnow()
+    state = gpu_auto_stop.set_skip_today(db, now, skip, user.name or user.id)
+    _audit(
+        db,
+        "GPU_AUTO_STOP_SKIP_TODAY",
+        "system",
+        actor=user,
+        target_id=gpu_auto_stop.STATE_ID,
+        severity="INFO",
+        details={"skip": skip, "date_kst": state.skip_date or gpu_auto_stop.kst_date(now)},
+    )
+    db.commit()
+    return {"ok": True, "gpu_auto_stop": gpu_auto_stop.status_payload(db, now, gpu_auto_stop.Settings.from_env())}
 
 
 @app.get("/api/admin/media")
@@ -8414,6 +8786,11 @@ def post_attack_lane(
     if existing:
         require_same_request(existing, match_id, {'type': 'ATTACK_LANE', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'lane': body.lane})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
+    # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실) → 되살리지 않고 저장 확인만.
+    # 같은 id 가 다른 경기·종류로 오면 기존 기록이 있을 때처럼 409.
+    tombstone = _agent_fla_tombstone_reply(db, body.event_id, match_id, "ATTACK_LANE")
+    if tombstone:
+        return tombstone
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8474,6 +8851,11 @@ def post_xg(
     if existing:
         require_same_request(existing, match_id, {'type': 'XG', 'clock_ms': body.clock_ms if body.clock_ms is not None else existing.clock_ms, 'team': body.team, 'xg': body.xg, 'player_name': (body.player_name or "").strip() or None, 'player_number': (body.player_number or "").strip() or None, 'is_goal': body.is_goal, 'is_own_goal': body.is_own_goal, 'is_on_target': body.is_on_target, 'shot_x': body.shot_x, 'shot_y': body.shot_y, 'goalmouth_x': body.goalmouth_x, 'goalmouth_y': body.goalmouth_y, 'is_header': body.is_header, 'is_weak_foot': body.is_weak_foot, 'under_pressure': body.under_pressure, 'one_on_one': body.one_on_one, 'shot_pace_band': body.shot_pace_band})
         return {"ok": True, "idempotent": True, "event_id": existing.id}
+    # 에이전트가 지운 기록을 운영자 보관함이 같은 id 로 다시 보냈다(앞선 응답 유실) → 되살리지 않고 저장 확인만.
+    # 같은 id 가 다른 경기·종류로 오면 기존 기록이 있을 때처럼 409.
+    tombstone = _agent_fla_tombstone_reply(db, body.event_id, match_id, "XG")
+    if tombstone:
+        return tombstone
 
     clock_ms = body.clock_ms
     if clock_ms is None:
@@ -8566,6 +8948,20 @@ def post_xg(
     return {"ok": True, "event_id": body.event_id, "xgot": xgot_meta["xgot"], "xgot_meta": xgot_meta}
 
 
+def _parse_archived_match_name(db: Session, name: str) -> tuple[str, str, int, str, str]:
+    """기록 수정 화면의 경기 이름 규칙. 에이전트 수정(agent_fla)도 같은 규칙을 쓴다."""
+    next_name = name.strip()
+    name_match = MATCH_NAME_PATTERN.match(next_name)
+    if not name_match:
+        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
+
+    next_class = _normalize_competition_class(name_match.group("class"))
+    if not db.get(CompetitionClass, next_class):
+        raise HTTPException(status_code=400, detail="Unknown competition class")
+    next_round = int(name_match.group("round"))
+    return next_name, next_class, next_round, name_match.group("home").strip(), name_match.group("away").strip()
+
+
 @app.patch("/api/admin/matches/{match_id}", response_model=MatchResponse)
 def update_archived_match(
     match_id: UUID,
@@ -8578,17 +8974,7 @@ def update_archived_match(
         raise HTTPException(status_code=404, detail="Match not found")
     _require_archived_editor_access(match_obj, user)
 
-    next_name = body.name.strip()
-    name_match = MATCH_NAME_PATTERN.match(next_name)
-    if not name_match:
-        raise HTTPException(status_code=400, detail="Match name must follow '[CLASS | 1R] HOME vs AWAY' format")
-
-    next_class = _normalize_competition_class(name_match.group("class"))
-    if not db.get(CompetitionClass, next_class):
-        raise HTTPException(status_code=400, detail="Unknown competition class")
-    next_round = int(name_match.group("round"))
-    home_team = name_match.group("home").strip()
-    away_team = name_match.group("away").strip()
+    next_name, next_class, next_round, home_team, away_team = _parse_archived_match_name(db, body.name)
 
     previous_name = match_obj.name
     metadata = dict(match_obj.metadata_json or {})
@@ -9229,6 +9615,8 @@ def outbox_debug(db: Session = Depends(get_db)):
             "ref_id": str(r.ref_id),
             "target_url": r.target_url,
             "attempts": r.attempts,
+            # 매치 컨트롤이 이 경기 것만 보여줄 수 있게 한다(종전엔 모든 경기 대기열이 섞여 나왔다).
+            "match_id": (r.payload or {}).get("match_id") if isinstance(r.payload, dict) else None,
             "next_attempt_at": r.next_attempt_at.isoformat(),
             "last_error": r.last_error,
             "created_at": r.created_at.isoformat(),
@@ -13458,46 +13846,67 @@ def clip_result_detail(
     return out
 
 
+def _clip_scene_motion_prefix(clip: HighlightClip) -> str:
+    """씬모션 mp4 를 둘 S3 경로 앞부분. 조회·다운로드·전송이 같은 값을 써야 같은 키가 나온다."""
+    return (clip.horizontal_s3_key.rsplit("/", 1)[0]
+            if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
+            else highlight_output_prefix())
+
+
+def _clip_scene_actions(db: Session, clip: HighlightClip) -> tuple[list[dict], list[str]]:
+    """클립 액션에 sceneData 를 붙여 돌려준다(장면 대표 행에만 붙는다). 렌더는 하지 않는다."""
+    actions = [_serialize_clip_action(a) for a in db.query(HighlightClipAction)
+               .filter(HighlightClipAction.clip_id == clip.id)
+               .order_by(HighlightClipAction.seq).all()]
+    warnings = attach_scene_motions(actions, None, clip_key=clip.id,
+                                    storage=None, prefix=_clip_scene_motion_prefix(clip))
+    return actions, warnings
+
+
 @app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions")
 def clip_result_scene_motions(
     clip_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """Return native scene data immediately; enqueue missing MP4s durably.
+    """장면 좌표(sceneData)와 '이미 만든' mp4 상태만 돌려준다. **mp4 를 새로 만들지 않는다.**
 
-    No BackgroundTasks, capture lock or S3 HEAD calls run in this request.
-    A separate service resolves the existing-object cache and renders serially.
+    예전에는 상세를 열 때마다 장면마다 mp4 렌더를 큐에 넣었다. 그런데 앱·콘솔 화면은
+    sceneData 로 그리고 mp4 는 다운로드할 때만 쓰여서, 열어 보기만 한 클립까지 렌더
+    대기열(scene-render)이 차고 정작 받으려는 장면이 뒤로 밀렸다. 이제 mp4 는 다운로드
+    요청(아래 download_clip_scene_motion)에서만 만든다.
+
+    S3 HEAD 도 하지 않는다 — 큐 기록(scene_motion_queue)만 본다. 큐 없이 올라간 mp4
+    (전송 시 'mp4 포함' 경로)는 여기서 url 이 비어 보여도 다운로드를 누르면 바로 받는다.
     """
     clip = db.get(HighlightClip, clip_id)
     if not clip:
         raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
     storage = highlight_default_storage()
-    if not storage.configured:
-        raise HTTPException(status_code=409, detail="S3 스토리지가 설정되지 않았습니다.")
-    actions = [_serialize_clip_action(a) for a in db.query(HighlightClipAction)
-               .filter(HighlightClipAction.clip_id == clip_id)
-               .order_by(HighlightClipAction.seq).all()]
-    motion_prefix = (clip.horizontal_s3_key.rsplit("/", 1)[0]
-                     if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key
-                     else highlight_output_prefix())
-    warnings = attach_scene_motions(actions, None, clip_key=clip.id,
-                                    storage=None, prefix=motion_prefix)
+    # S3 는 mp4 주소를 만들 때만 필요하다. 장면 자체는 sceneData 로 브라우저가 그리므로, S3 가 없는
+    # 환경(로컬 등)에서도 목록은 돌려주고 mp4 다운로드만 막는다 — 종전엔 409 로 장면까지 통째로 안 보였다.
+    configured = bool(storage.configured)
+    actions, warnings = _clip_scene_actions(db, clip)
+    motion_prefix = _clip_scene_motion_prefix(clip)
     motions = []
     for action in actions:
         if not action.get("sceneData"):
             continue
-        key = scene_motion_key(motion_prefix, clip.id, action.get("seq"), action["sceneData"])
-        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"])
-        status = task.status if task else "deferred"
+        status = "none"
+        url = None
+        if configured:
+            key = scene_motion_key(motion_prefix, clip.id, action.get("seq"), action["sceneData"])
+            task = find_scene_motion_task(db, storage.bucket, key)
+            # none = 아직 아무도 다운로드를 누르지 않았다(화면은 sceneData 로 그린다).
+            status = task.status if task else "none"
+            url = storage.presigned_get(key, expires=3600) if status == "completed" else None
         motions.append({
             "seq": action.get("seq"),
-            "url": storage.presigned_get(key, expires=3600) if status == "completed" else None,
+            "url": url,
             "sceneData": action["sceneData"],
             "render_status": status,
         })
-    db.commit()
-    return {"clip_id": clip_id, "motions": motions, "warnings": warnings}
+    return {"clip_id": clip_id, "motions": motions, "warnings": warnings, "storage_configured": configured}
 
 
 @app.get("/api/highlight/clip-results/clips/{clip_id}/scene-motions/{seq}/download")
@@ -13507,33 +13916,53 @@ def download_clip_scene_motion(
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """Sign the current scene's MP4 as an attachment; never download stale coordinates."""
+    """현재 좌표의 장면 mp4 를 받는다. 없으면 이때 처음 렌더를 큐에 넣는다.
+
+    - 이미 있으면 200 + 첨부 서명 url(옛 좌표의 mp4 는 키가 달라 절대 안 나간다).
+    - 아직 없으면 202 + status(queued/running/deferred/failed). 화면은 같은 주소를
+      몇 초마다 다시 불러 진행을 보여 주고, 200 이 오면 그때 내려받는다.
+    같은 장면은 키(좌표 지문 포함)가 같아 여러 번·여러 명이 눌러도 큐 작업은 하나다
+    (scene_motion_queue 의 fingerprint unique). 렌더는 이 요청 안에서 돌지 않는다.
+    """
     clip = db.get(HighlightClip, clip_id)
     if clip is None:
         raise HTTPException(status_code=404, detail="클립을 찾을 수 없습니다.")
     storage = highlight_default_storage()
     if not storage.configured:
         raise HTTPException(status_code=409, detail="영상 저장소가 설정되지 않았습니다.")
-    actions = [_serialize_clip_action(action) for action in db.query(HighlightClipAction)
-               .filter_by(clip_id=clip_id).order_by(HighlightClipAction.seq).all()]
-    prefix = (clip.horizontal_s3_key.rsplit("/", 1)[0]
-              if clip.horizontal_s3_key and "/" in clip.horizontal_s3_key else highlight_output_prefix())
-    attach_scene_motions(actions, None, clip_key=clip.id, storage=None, prefix=prefix)
+    actions, _warnings = _clip_scene_actions(db, clip)
     action = next((a for a in actions if a.get("seq") == seq and a.get("sceneData")), None)
     if action is None:
         raise HTTPException(status_code=404, detail="이 액션의 씬모션이 없습니다.")
-    key = scene_motion_key(prefix, clip.id, seq, action["sceneData"])
-    if not storage.exists(key):
-        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"], retry=True, missing=True)
-        status = task.status if task else "deferred"
-        db.commit()
-        detail = ("씬모션 대기열이 가득 찼습니다. 잠시 후 다시 다운로드하세요."
-                  if status == "deferred" else
-                  "현재 장면의 MP4를 준비 중입니다. 모션 새로고침 후 다시 다운로드하세요.")
-        raise HTTPException(status_code=409, detail=detail)
+    key = scene_motion_key(_clip_scene_motion_prefix(clip), clip.id, seq, action["sceneData"])
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", clip.id)[:100]
     filename = f"scene-motion-{safe_id}-action-{seq}.mp4"
-    return {"url": storage.presigned_download(key, filename, expires=600), "filename": filename}
+
+    def pending(status: str, detail: str):
+        return JSONResponse(status_code=202, content={
+            "status": status, "url": None, "filename": filename, "detail": detail})
+
+    # 만드는 중이면 S3 를 두드리지 않고 바로 답한다 — 화면이 몇 초마다 이 주소를 부른다.
+    task = find_scene_motion_task(db, storage.bucket, key)
+    if task is not None and task.status in ("queued", "running"):
+        return pending(task.status, "MP4를 만들고 있습니다.")
+    if not storage.exists(key):
+        task = enqueue_scene_motion(db, storage.bucket, key, action["sceneData"], retry=True, missing=True)
+        db.commit()
+        if task is None:
+            return pending("deferred", "MP4 대기열이 가득 찼습니다. 자리가 나면 이어서 만듭니다.")
+        if task.status == "failed":
+            # 실패 직후 1분은 다시 넣지 않는다(enqueue 의 retry 규칙) — 같은 실패를 되풀이하지 않게.
+            return pending("failed", "MP4를 만들지 못했습니다. 1분 뒤 다시 눌러 주세요."
+                           + (f" ({task.error})" if task.error else ""))
+        return pending(task.status, "MP4를 만들고 있습니다.")
+    return {
+        "status": "ready",
+        "url": storage.presigned_download(key, filename, expires=600),
+        # 화면의 'MP4로 보기' 미리보기용(첨부 헤더 없는 서명).
+        "preview_url": storage.presigned_get(key, expires=3600),
+        "filename": filename,
+    }
 
 
 def _clip_team_metadata(job: HighlightJob, clip: HighlightClip, team: str | None) -> dict | None:

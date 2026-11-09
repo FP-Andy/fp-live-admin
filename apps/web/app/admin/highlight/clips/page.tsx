@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
 import SceneMotionView, { type SceneData } from '../../../../components/SceneMotionView';
-import { apiJson, type SessionUser } from '../../../../lib/api';
+import { apiFetch, apiJson, type SessionUser } from '../../../../lib/api';
+import { errorDetail, errorFromResponse, errorMessage, foldRaw, FpcError, jobErrorMessage, warnRaw } from '../../../../lib/error-messages';
+import { ErrorFold } from '../../../../components/ErrorNotice';
 
 // 클립 결과: match → clip → action 3계층 열람/편집.
 // 클립 상세에서 [FPA dual] 새 창으로 씬을 찍어 클립에 귀속시키고,
@@ -145,6 +147,13 @@ const numInput: React.CSSProperties = {
   fontSize: 12,
 };
 
+/** 서버 경고 "scene-motion {clipKey}-a{seq}: {예외}" → 화면 한 줄. 원문은 자세히에 남긴다. */
+function sceneMotionWarning(warnings: string[], clipId: string): string {
+  const seqs = warnings.map((w) => w.match(/-a(\d+):/)?.[1]).filter((v): v is string => !!v);
+  const where = seqs.length ? ` — 액션 ${seqs[0]}번${warnings.length > 1 ? ' 등' : ''}` : '';
+  return foldRaw(`씬 모션 ${warnings.length}개를 불러오지 못했습니다${where}`, warnings.join('\n'), { '클립 ID': clipId });
+}
+
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00';
   const m = Math.floor(sec / 60);
@@ -170,6 +179,25 @@ const round1 = (v: number) => Math.round(v * 10) / 10;
 const nearSec = (a: number | null | undefined, b: number) => a != null && Math.abs(a - b) <= SEG_EPS;
 
 type Segment = { start: number; end: number };
+
+// 장면 모션 목록 한 줄. url 은 이미 만든 mp4 가 있을 때만 온다(render_status=completed).
+// none = 아직 아무도 다운로드를 누르지 않은 장면 — 화면은 sceneData 로 그린다.
+type SceneMotionRow = {
+  seq: number;
+  url: string | null;
+  sceneData?: SceneData | null;
+  render_status?: 'none' | 'queued' | 'running' | 'completed' | 'failed' | string;
+};
+
+// 다운로드 응답. 200 = ready(url 있음), 202 = 만드는 중/대기열 가득/실패.
+type MotionDownloadResponse = {
+  status: 'ready' | 'queued' | 'running' | 'deferred' | 'failed' | string;
+  url: string | null;
+  preview_url?: string;
+  filename: string;
+  detail?: string;
+};
+type MotionDownloadState = { status: string; detail: string };
 
 /** 경계 목록 → 칸 목록. 경계가 없으면 클립 전체가 한 칸이다(= 지금 동작). */
 function segmentsFrom(splits: number[], duration: number): Segment[] {
@@ -216,7 +244,7 @@ function ArchivedBadge() {
       fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5,
       background: 'rgba(148,163,184,.18)', color: '#94a3b8',
     }}>
-      아카이브됨
+      보관됨
     </span>
   );
 }
@@ -272,11 +300,15 @@ export default function ClipResultsPage() {
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
-  const [motions, setMotions] = useState<{ seq: number; url: string | null; sceneData?: SceneData | null }[]>([]);
+  const [motions, setMotions] = useState<SceneMotionRow[]>([]);
   const [motionMsg, setMotionMsg] = useState('');
-  const [downloadingMotion, setDownloadingMotion] = useState<number | null>(null);
+  // 장면별 MP4 다운로드 진행 — 누른 장면만 들어 있다. MP4 는 이때 처음 만들어진다.
+  const [motionDownloads, setMotionDownloads] = useState<Record<number, MotionDownloadState>>({});
   const activeClipId = useRef<string | null>(null);
   const motionRequest = useRef(0);
+  // 다운로드 대기(폴링) 세대. 다른 클립으로 가거나 닫으면 올려서 이전 대기를 멈춘다 —
+  // 같은 클립으로 금방 돌아와도 옛 대기가 살아 있다가 파일을 두 번 받지 않게.
+  const motionDownloadEpoch = useRef(0);
   const matchRequest = useRef(0);
   // xFP 게이지 미리보기(iframe). 선택 클립의 actions/길이를 postMessage 로 넣어 준다.
   const gaugeFrame = useRef<HTMLIFrameElement | null>(null);
@@ -297,11 +329,13 @@ export default function ClipResultsPage() {
   const closeDetail = () => {
     activeClipId.current = null;
     motionRequest.current += 1;
+    motionDownloadEpoch.current += 1;
     setDetail(null);
     setMotions([]);
-    setDownloadingMotion(null);
+    setMotionDownloads({});
   };
-  // 기본은 앱과 같은 네이티브 렌더. mp4 는 폴백으로 계속 나가는 산출물이라 토글로 남긴다.
+  // 기본은 앱과 같은 네이티브 렌더. 'MP4로 보기'는 다운로드로 만들어 둔 mp4 가 화면과 같은지
+  // 확인하는 용도다 — mp4 가 없는 장면은 서버에 만들라고 하지 않고 네이티브 렌더로 보여 준다.
   const [motionAsMp4, setMotionAsMp4] = useState(false);
   // 클립 팀(홈/어웨이) 수정 — 관리자 전용. 되돌리기 어려운 값이라 팝업으로 한 번 확인받는다.
   const [teamEdit, setTeamEdit] = useState<{ clip: ClipRow | ClipDetail; next: string | null } | null>(null);
@@ -309,6 +343,10 @@ export default function ClipResultsPage() {
 
   // FinePlay 전송은 SUPERADMIN 전용 — operator 에겐 버튼을 렌더하지 않는다 (서버 resend API 도 superadmin 게이트).
   const [role, setRole] = useState<SessionUser['role'] | null>(null);
+  const [fromManualJob, setFromManualJob] = useState(false);
+  useEffect(() => {
+    setFromManualJob(new URLSearchParams(window.location.search).has('jobId'));
+  }, []);
   const [showArchived, setShowArchived] = useState(false);
   // 씬모션 mp4 포함(기본 OFF). 앱은 sceneData 로 씬모션을 네이티브 재렌더하므로 mp4
   // (sceneMotionKey)는 보통 불필요하다 — 켰을 때만 전송 시 mp4 를 렌더·업로드해 싣는다.
@@ -367,7 +405,7 @@ export default function ClipResultsPage() {
         }
       }
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '목록을 불러오지 못했습니다. 다시 시도해 주세요.'));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showArchived]);
@@ -386,15 +424,16 @@ export default function ClipResultsPage() {
       if (request !== matchRequest.current) return;
       setClips(res.clips);
     } catch (err) {
-      if (request === matchRequest.current) setMsg(err instanceof Error ? err.message : String(err));
+      if (request === matchRequest.current) setMsg(errorMessage(err, '클립 목록을 불러오지 못했습니다. 다시 시도해 주세요.'));
     }
   };
 
   const openClip = useCallback(async (clipId: string) => {
     if (activeClipId.current !== clipId) {
+      motionDownloadEpoch.current += 1;
       setDetail(null);
       setMotions([]);
-      setDownloadingMotion(null);
+      setMotionDownloads({});
     }
     activeClipId.current = clipId;
     setMsg('');
@@ -415,7 +454,7 @@ export default function ClipResultsPage() {
       }
       setSplits(mergeSplits(remembered, duration));
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '클립을 불러오지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': clipId } }));
     }
   }, []);
 
@@ -434,51 +473,86 @@ export default function ClipResultsPage() {
     }
   }, []);
 
-  // 서버는 좌표(sceneData)만 바로 주고 mp4 렌더·업로드는 응답 뒤로 미룬다 — 예전엔 렌더를
-  // 다 기다리다 장면 많은 클립에서 504 가 났다. 그래서 이 호출 자체는 빠르지만, mp4 는 첫
-  // 조회 때 아직 없을 수 있다('모션 새로고침' 으로 다시 부르면 찬다).
+  // 서버는 좌표(sceneData)와 '이미 만든' mp4 주소만 준다. 상세를 연다고 mp4 를 만들지 않는다 —
+  // 화면은 sceneData 로 그리고, mp4 는 'MP4 다운로드'를 누른 장면만 그때 만든다(downloadMotion).
+  // 예전엔 열 때마다 장면 전부를 렌더 대기열에 넣어, 열어 보기만 한 클립 때문에 정작 받으려는
+  // 장면이 뒤로 밀렸다.
+  // mp4 저장소(S3) 사용 가능 여부 — 없으면 장면은 보이되 MP4 다운로드만 막는다(로컬 등).
+  const [mp4Storage, setMp4Storage] = useState(true);
   const loadMotions = useCallback(async (clipId: string) => {
     const request = ++motionRequest.current;
     setMotions([]);
     setMotionMsg('장면 모션 불러오는 중…');
     try {
-      const res = await apiJson<{
-        motions: { seq: number; url: string | null; sceneData?: SceneData | null }[];
-        warnings: string[];
-      }>(
+      const res = await apiJson<{ motions: SceneMotionRow[]; warnings: string[]; storage_configured?: boolean }>(
         `/highlight/clip-results/clips/${clipId}/scene-motions`,
       );
       if (activeClipId.current !== clipId || request !== motionRequest.current) return;
       setMotions(res.motions);
+      // 필드가 없는 예전 응답은 S3 가 있는 것으로 본다(그때는 S3 가 없으면 목록 자체가 409 였다).
+      setMp4Storage(res.storage_configured !== false);
       setMotionMsg(res.motions.length === 0
         ? '장면 모션 없음 — FPA dual 로 찍어 저장한 액션만 모션이 생성됩니다.'
-        : (res.warnings?.length ? `일부 실패: ${res.warnings.join(' / ')}` : ''));
+        : (res.warnings?.length ? sceneMotionWarning(res.warnings, clipId) : ''));
     } catch (err) {
       if (activeClipId.current === clipId && request === motionRequest.current) {
-        setMotionMsg(err instanceof Error ? err.message : String(err));
+        setMotionMsg(errorMessage(err, '장면 모션을 불러오지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': clipId } }));
       }
     }
   }, []);
 
+  // MP4 다운로드 = 그때 만들기. 서버가 202(만드는 중)를 주면 몇 초마다 다시 물어 진행을 보여 주고,
+  // 다 만들어지면(200) 바로 내려받는다. 같은 장면은 서버 큐가 하나로 묶으므로 다시 눌러도
+  // 렌더가 겹치지 않는다. 여러 장면을 동시에 걸어 둘 수 있다(장면별 상태).
   const downloadMotion = async (clipId: string, seq: number) => {
-    setDownloadingMotion(seq);
-    setMotionMsg('');
+    const epoch = motionDownloadEpoch.current;
+    const alive = () => activeClipId.current === clipId && motionDownloadEpoch.current === epoch;
+    const setState = (state: MotionDownloadState | null) => {
+      if (!alive()) return;
+      setMotionDownloads((prev) => {
+        const next = { ...prev };
+        if (state) next[seq] = state; else delete next[seq];
+        return next;
+      });
+    };
+    setState({ status: 'requesting', detail: '' });
+    // 워커가 장면 하나에 최대 5분·3번까지 시도한다. 그보다 넉넉히 기다리고 그 뒤엔 다시 누르게 한다.
+    const deadline = Date.now() + 20 * 60 * 1000;
     try {
-      const result = await apiJson<{ url: string; filename: string }>(
-        `/highlight/clip-results/clips/${clipId}/scene-motions/${seq}/download`,
-      );
-      if (activeClipId.current !== clipId) return;
-      // S3 supplies attachment headers. Navigating avoids cross-origin blob/CORS limits.
-      const link = document.createElement('a');
-      link.href = result.url;
-      link.download = result.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      while (alive()) {
+        const res = await apiFetch(`/highlight/clip-results/clips/${clipId}/scene-motions/${seq}/download`);
+        if (!res.ok) throw await errorFromResponse(res, { action: 'MP4를 만들지 못했습니다', fallback: 'MP4를 만들지 못했습니다. 1분 뒤 다시 눌러 주세요.', context: { '클립 ID': clipId, '액션': seq } });
+        const body = await res.json() as MotionDownloadResponse;
+        if (!alive()) return;
+        if (res.status === 200 && body.url) {
+          // S3 supplies attachment headers. Navigating avoids cross-origin blob/CORS limits.
+          const link = document.createElement('a');
+          link.href = body.url;
+          link.download = body.filename;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          // 이제 있으니 'MP4로 보기' 에서도 영상으로 보인다.
+          if (body.preview_url) {
+            const previewUrl = body.preview_url;
+            setMotions((prev) => prev.map((m) => (m.seq === seq ? { ...m, url: previewUrl, render_status: 'completed' } : m)));
+          }
+          setState(null);
+          return;
+        }
+        if (body.status === 'failed') {
+          setState({ status: 'failed', detail: jobErrorMessage(body.detail, 'MP4를 만들지 못했습니다. 1분 뒤 다시 눌러 주세요.', { '클립 ID': clipId, '액션': seq }) });
+          return;
+        }
+        if (Date.now() > deadline) {
+          setState({ status: 'failed', detail: '아직 만드는 중입니다. 잠시 뒤 다시 눌러 주세요.' });
+          return;
+        }
+        setState({ status: body.status, detail: body.detail || '' });
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      }
     } catch (err) {
-      if (activeClipId.current === clipId) setMotionMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (activeClipId.current === clipId) setDownloadingMotion(null);
+      setState({ status: 'failed', detail: errorMessage(err, 'MP4를 만들지 못했습니다. 1분 뒤 다시 눌러 주세요.', { context: { '클립 ID': clipId, '액션': seq } }) });
     }
   };
 
@@ -539,7 +613,7 @@ export default function ClipResultsPage() {
         ? '대표 지정 해제 — 자동 규칙(골>슈팅>… · 나중 액션 우선)으로 돌아갑니다. 재전송해야 반영됩니다.'
         : `액션 ${res.primary_seq} 를 대표로 지정했습니다. 재전송해야 반영됩니다.`);
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '대표 액션을 바꾸지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': detail.id } }));
     } finally {
       setBusy(false);
     }
@@ -643,7 +717,7 @@ export default function ClipResultsPage() {
       setActions(res.actions);
       setMsg('액션 저장 완료');
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '액션을 저장하지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': detail.id } }));
     } finally {
       setBusy(false);
     }
@@ -668,7 +742,7 @@ export default function ClipResultsPage() {
       setMsg(`제목을 "${name}" 로 바꿨습니다.`);
       await loadMatches();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '제목을 바꾸지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': selectedMatch.job_id } }));
     } finally {
       setBusy(false);
     }
@@ -690,9 +764,13 @@ export default function ClipResultsPage() {
         res = await call(false);
       } catch (err) {
         // FPA 미완 경고 — 사용자가 확인하면 그대로 진행한다. 다른 오류는 그대로 띄운다.
-        const detail = err instanceof Error ? err.message : String(err);
+        // 번역된 message 가 아니라 서버 원문(detail)으로 판정한다.
+        const detail = errorDetail(err);
         if (!done || !detail.includes('FPA 데이터가')) throw err;
-        if (!window.confirm(`${detail}\n\n그래도 작업 완료로 표시할까요?`)) {
+        warnRaw('작업 완료 FPA 확인', err instanceof FpcError ? err : { detail });
+        const coverage = detail.match(/FPA 데이터가\s*(\d+)\s*\/\s*(\d+)/);
+        const counts = coverage ? ` (${coverage[1]}/${coverage[2]} 클립)` : '';
+        if (!window.confirm(`FPA 분석이 덜 된 클립이 있습니다${counts}.\n\n그래도 작업 완료로 표시할까요?`)) {
           setMsg('작업 완료를 취소했습니다.');
           return;
         }
@@ -700,11 +778,11 @@ export default function ClipResultsPage() {
       }
       setSelectedMatch({ ...selectedMatch, work_done: res.work_done });
       setMsg(res.work_done
-        ? `작업 완료 — FPA ${res.fpa_acted}/${res.fpa_total} 클립. 이제 아카이브할 수 있습니다.`
+        ? `작업 완료 — FPA ${res.fpa_acted}/${res.fpa_total} 클립. 이제 보관할 수 있습니다.`
         : '작업 완료 해제 — 다시 작업 중으로 표시됩니다.');
       await loadMatches();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '작업 완료를 바꾸지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': selectedMatch.job_id } }));
     } finally {
       setBusy(false);
     }
@@ -726,13 +804,13 @@ export default function ClipResultsPage() {
     try {
       await apiJson(`/highlight/clip-results/clips/${clip.id}`, { method: 'DELETE' });
       setMsg(selectedMatch?.source_mode === 'manual'
-        ? `클립 ${clip.order_index + 1}번과 해당 분석을 클립결과에서 지웠습니다. 수동 결과물의 합본과 원본 클립은 유지됩니다.`
-        : `클립 ${clip.order_index + 1}번을 지웠습니다 — 다시 만들려면 FinePlay 작업 탭에서 태깅 후 클립 생성하세요.`);
+        ? `클립 ${clip.order_index + 1}번과 해당 분석을 클립 검수·전송에서 지웠습니다. 수동 결과물의 합본과 원본 클립은 유지됩니다.`
+        : `클립 ${clip.order_index + 1}번을 지웠습니다 — 다시 만들려면 신청·태깅 탭에서 태깅 후 클립 생성하세요.`);
       closeDetail();
       if (selectedMatch) await openMatch(selectedMatch);
       await loadMatches();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '클립을 지우지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': clip.id } }));
     } finally {
       setBusy(false);
     }
@@ -744,7 +822,7 @@ export default function ClipResultsPage() {
     if (!window.confirm(
       `이 매치의 클립 ${clips.length}개를 전부 지울까요?\n`
       + '태깅한 액션도 같이 지워집니다. 되돌릴 수 없습니다.\n\n'
-      + '원본 영상과 작업은 남으므로 FinePlay 작업 탭에서 다시 태깅할 수 있습니다.',
+      + '원본 영상과 작업은 남으므로 신청·태깅 탭에서 다시 태깅할 수 있습니다.',
     )) return;
     setBusy(true);
     setMsg('');
@@ -753,12 +831,12 @@ export default function ClipResultsPage() {
         `/highlight/clip-results/matches/${selectedMatch.job_id}/clips`,
         { method: 'DELETE' },
       );
-      setMsg(`클립 ${res.deleted}개를 지웠습니다 — FinePlay 작업 탭에서 다시 태깅하세요.`);
+      setMsg(`클립 ${res.deleted}개를 지웠습니다 — 신청·태깅 탭에서 다시 태깅하세요.`);
       setDetail(null);
       setSelectedMatch(null);
       await loadMatches();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '클립을 지우지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': selectedMatch.job_id } }));
     } finally {
       setBusy(false);
     }
@@ -778,11 +856,11 @@ export default function ClipResultsPage() {
       });
       setSelectedMatch({ ...selectedMatch, archived });
       setMsg(archived
-        ? "아카이브 완료 — 클립 결과 목록에서 빠지고 '아카이브' 탭에서 관리합니다. 이 화면에선 계속 수정할 수 있습니다."
-        : '아카이브 해제 — 클립 결과·FinePlay 작업 목록으로 돌아왔습니다.');
+        ? "보관 완료 — 클립 검수·전송 목록에서 빠지고 '보관함' 탭에서 관리합니다. 이 화면에선 계속 수정할 수 있습니다."
+        : '보관 해제 — 클립 검수·전송과 신청·태깅 목록으로 돌아왔습니다.');
       await loadMatches();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '보관 상태를 바꾸지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': selectedMatch.job_id } }));
     } finally {
       setBusy(false);
     }
@@ -808,7 +886,7 @@ export default function ClipResultsPage() {
         + ' · 앱에 반영하려면 전송하세요.',
       );
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '팀을 바꾸지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': teamEdit.clip.id } }));
     } finally {
       setTeamSaving(false);
     }
@@ -831,7 +909,7 @@ export default function ClipResultsPage() {
       setTitleEdit(null);
       setMsg(res.title ? '제목 저장 — 전송해야 앱에 반영됩니다.' : '제목 해제 — 자동 제목으로 돌아갑니다.');
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '제목을 저장하지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': titleEdit.id } }));
     } finally {
       setTitleSaving(false);
     }
@@ -901,7 +979,7 @@ export default function ClipResultsPage() {
       }
       await loadMatches();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, 'FinePlay로 보내지 못했습니다. 다시 시도해 주세요.', { context: { '경기 ID': selectedMatch.match_id } }));
     } finally {
       setBusy(false);
     }
@@ -911,7 +989,7 @@ export default function ClipResultsPage() {
   // 팀은 이름·선수는 등번호로 싣고 매칭은 FinePlay 스테이징에서 한다. fpcMatchId 로 멱등.
   const sendCompetition = async () => {
     if (!selectedMatch?.match_id || !compForm) return;
-    if (!compForm.fpcCompetitionId.trim()) { setMsg('대회 ID(fpcCompetitionId)는 필수입니다.'); return; }
+    if (!compForm.fpcCompetitionId.trim()) { setMsg('대회를 고르세요.'); return; }
     setBusy(true);
     setMsg('');
     try {
@@ -950,7 +1028,7 @@ export default function ClipResultsPage() {
       void watchCompetitionSend(selectedMatch.job_id);
     } catch (err) {
       // 수신부 400(계약 위반)은 errors 를 담아 던진다 — 본문을 그대로 보여준다.
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '대회로 보내지 못했습니다. 다시 시도해 주세요.', { context: { '경기 ID': selectedMatch.match_id } }));
     } finally {
       setBusy(false);
     }
@@ -987,7 +1065,7 @@ export default function ClipResultsPage() {
       setMsg('대회 전송을 취소했습니다 — 다시 보낼 수 있습니다.');
       await loadMatches();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err));
+      setMsg(errorMessage(err, '대회 전송을 취소하지 못했습니다. 다시 시도해 주세요.', { context: { '경기 ID': selectedMatch.match_id } }));
     } finally {
       setBusy(false);
     }
@@ -1028,14 +1106,18 @@ export default function ClipResultsPage() {
   // 오른쪽 버튼 묶음(전체삭제·작업완료·아카이브)에서 'marginLeft: auto'(묶음을 오른쪽으로
   // 밀기)는 **맨 앞 하나만** 가져야 한다. 전체삭제가 보이면 그쪽이, 아니면 작업완료가 가진다.
   const showDeleteAll = Boolean(clips.length) && Boolean(selectedMatch?.match_id) && !selectedMatch?.archived;
+  // 수동 결과물에서 넘어왔으면(?jobId=) 또는 연 매치가 수동 출처면 탭 줄 옆에 '← 수동 결과물' 을 보인다.
+  // 매치를 열고 나면 그 매치의 출처로 판단한다. 수동 결과물은 SUPERADMIN 화면이다.
+  const backToResults = role === 'SUPERADMIN'
+    && (selectedMatch ? selectedMatch.source_mode === 'manual' : fromManualJob);
 
   return (
-    <div style={{ width: '100%' }}>
-      <HighlightSubTabs />
+    <div className="console-flat fhl-flat" style={{ width: '100%' }}>
+      <HighlightSubTabs backToResults={backToResults} />
 
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h2 style={{ fontSize: 18, margin: 0 }}>클립 결과</h2>
+          <h2 style={{ fontSize: 18, margin: 0 }}>클립 검수·전송</h2>
           {selectedMatch ? (
             <>
               <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>›</span>
@@ -1070,10 +1152,10 @@ export default function ClipResultsPage() {
                     onClick={() => void toggleWorkDone(!selectedMatch.work_done)}
                     disabled={busy || selectedMatch.archived}
                     title={selectedMatch.archived
-                      ? '아카이브된 작업입니다 — 먼저 아카이브를 해제하세요'
+                      ? '보관된 작업입니다 — 먼저 보관을 해제하세요'
                       : selectedMatch.work_done
                         ? '작업 완료 해제 — 다시 작업 중으로 표시합니다'
-                        : '이 작업을 완료로 표시합니다 — 아카이브의 전제입니다'}
+                        : '이 작업을 완료로 표시합니다 — 보관의 전제입니다'}
                   >
                     {selectedMatch.work_done ? '✓ 작업 완료' : '작업 완료로 표시'}
                   </button>
@@ -1082,12 +1164,12 @@ export default function ClipResultsPage() {
                     onClick={() => void toggleArchive(!selectedMatch.archived)}
                     disabled={busy || (!selectedMatch.archived && !selectedMatch.work_done)}
                     title={selectedMatch.archived
-                      ? '아카이브 해제 — 클립 결과·FinePlay 작업 목록으로 되돌립니다'
+                      ? '보관 해제 — 클립 검수·전송과 신청·태깅 목록으로 되돌립니다'
                       : !selectedMatch.work_done
-                        ? "먼저 '작업 완료' 를 눌러 주세요 — 완료한 작업만 아카이브합니다"
-                        : '아카이브로 이동 — 목록에서 빠지지만 데이터는 그대로, 언제든 해제 가능'}
+                        ? "먼저 '작업 완료' 를 눌러 주세요 — 완료한 작업만 보관합니다"
+                        : '보관함으로 이동 — 목록에서 빠지지만 데이터는 그대로, 언제든 해제 가능'}
                   >
-                    {selectedMatch.archived ? '↩ 아카이브 해제' : '📦 아카이브'}
+                    {selectedMatch.archived ? '↩ 보관 해제' : '📦 보관'}
                   </button>
                   <button
                     style={primaryBtn}
@@ -1159,15 +1241,15 @@ export default function ClipResultsPage() {
                   borderColor: showArchived ? 'transparent' : 'var(--border-ghost, #3a3a42)',
                 }}
                 onClick={() => setShowArchived((v) => !v)}
-                title="아카이브된 매치까지 함께 보기"
+                title="보관된 매치까지 함께 보기"
               >
-                {showArchived ? '아카이브 포함 ✓' : '아카이브 포함'}
+                {showArchived ? '보관함 포함 ✓' : '보관함 포함'}
               </button>
               <button style={btn} onClick={() => void loadMatches()}>새로고침</button>
             </>
           )}
         </div>
-        {msg ? <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}</p> : null}
+        {msg ? <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}<ErrorFold message={msg} /></div> : null}
       </div>
 
       {compForm ? (
@@ -1274,8 +1356,8 @@ export default function ClipResultsPage() {
           {visibleMatches.length === 0 ? (
             <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
               {matches.length === 0
-                ? '추출된 클립이 없습니다. FinePlay 작업이나 축구 수동 태깅에서 만든 개별 클립이 여기에 쌓입니다.'
-                : "진행 중인 작업이 없습니다 — 모두 아카이브됨. '아카이브 포함'을 켜거나 '아카이브' 탭에서 볼 수 있습니다."}
+                ? '추출된 클립이 없습니다. 신청·태깅이나 축구 수동 태깅에서 만든 개별 클립이 여기에 쌓입니다.'
+                : "진행 중인 작업이 없습니다 — 모두 보관됨. '보관함 포함'을 켜거나 '보관함' 탭에서 볼 수 있습니다."}
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1478,7 +1560,7 @@ export default function ClipResultsPage() {
               style={{ width: '100%', maxHeight: '62vh', minHeight: 320, background: '#000', borderRadius: 8 }}
             />
           ) : (
-            <p style={{ fontSize: 13, color: 'var(--muted, #999)' }}>영상 URL 을 불러올 수 없습니다 (S3 설정 확인).</p>
+            <p style={{ fontSize: 13, color: 'var(--muted, #999)' }} title="영상 주소(video_url)가 비어 있습니다 — S3 설정 확인">영상을 불러오지 못했습니다. 새로고침해 보고, 계속되면 관리자에게 알려 주세요.</p>
           )}
 
           <div style={{ marginTop: 14 }}>
@@ -1704,32 +1786,49 @@ export default function ClipResultsPage() {
               </button>
               <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
                 {motionAsMp4
-                  ? '영상으로 재생합니다. 준비된 장면은 MP4로 다운로드할 수 있습니다.'
-                  : '분석한 장면을 재생합니다. MP4 준비 후 다운로드할 수 있습니다.'}
+                  ? '만들어 둔 MP4가 있는 장면만 영상으로 재생합니다.'
+                  : '분석한 장면을 재생합니다. MP4는 다운로드를 누르면 그때 만듭니다.'}
               </span>
             </div>
             {motionMsg ? (
-              <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '0 0 8px' }}>{motionMsg}</p>
+              <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '0 0 8px' }}>{motionMsg}<ErrorFold message={motionMsg} /></div>
             ) : null}
             {motions.length > 0 ? (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
                 {motions.map((m) => {
                   const a = actions.find((x) => x.seq === m.seq);
+                  const job = motionDownloads[m.seq];
+                  const working = !!job && job.status !== 'failed';
+                  const label = !mp4Storage ? 'MP4 불가 · S3 미설정'
+                    : !job || job.status === 'failed' ? 'MP4 다운로드'
+                    : job.status === 'running' ? 'MP4 만드는 중…'
+                    : job.status === 'queued' || job.status === 'deferred' ? 'MP4 차례 기다리는 중…'
+                    : '확인 중…';
                   return (
                     <div key={m.seq} style={{
                       width: 300, borderRadius: 8, overflow: 'hidden',
                       background: 'var(--surface-input, #16161a)', border: '1px solid var(--border-ghost, #2c2c32)',
                     }}>
-                      {!motionAsMp4 && m.sceneData ? (
-                        <SceneMotionView data={m.sceneData} width={300} />
-                      ) : m.url ? (
+                      {/* MP4 는 누가 다운로드해야 생긴다. 'MP4로 보기' 여도 아직 없으면 서버에 만들라고
+                          하지 않고 같은 장면을 브라우저에서 그린다(SceneMotionView — MP4 도 이 화면을 캡처한 것). */}
+                      {motionAsMp4 && m.url ? (
                         <video src={m.url} muted autoPlay loop playsInline style={{ width: '100%', display: 'block' }} />
+                      ) : m.sceneData ? (
+                        <div style={{ position: 'relative' }}>
+                          <SceneMotionView data={m.sceneData} width={300} />
+                          {motionAsMp4 ? (
+                            <span style={{
+                              position: 'absolute', top: 6, left: 6, padding: '2px 6px', borderRadius: 4,
+                              fontSize: 11, background: 'rgba(0,0,0,0.6)', color: '#fff',
+                            }}>MP4 없음 · 앱 화면</span>
+                          ) : null}
+                        </div>
                       ) : (
                         <div style={{
                           height: 194, display: 'flex', alignItems: 'center', justifyContent: 'center',
                           fontSize: 12, color: 'var(--muted, #999)',
                         }}>
-                          {motionAsMp4 ? 'mp4 준비 중 — 잠시 뒤 모션 새로고침' : 'sceneData 없음'}
+                          sceneData 없음
                         </div>
                       )}
                       <div style={{ padding: '6px 10px', fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1739,12 +1838,18 @@ export default function ClipResultsPage() {
                       </div>
                       <div style={{ padding: '0 10px 10px' }}>
                         <button style={smallBtn}
-                          disabled={!m.url || downloadingMotion !== null}
+                          disabled={working || !mp4Storage}
                           onClick={() => void downloadMotion(detail.id, m.seq)}
-                          title={m.url ? '이 장면을 MP4 파일로 저장' : '잠시 뒤 모션 새로고침을 눌러 준비 상태를 확인하세요'}
+                          title={!mp4Storage ? 'S3 저장소가 설정되지 않은 환경이라 MP4를 만들 수 없습니다'
+                            : m.url ? '이 장면을 MP4 파일로 저장' : '누르면 MP4를 만들고, 다 되면 저장합니다'}
                         >
-                          {downloadingMotion === m.seq ? '다운로드 준비 중…' : m.url ? 'MP4 다운로드' : 'MP4 준비 중'}
+                          {label}
                         </button>
+                        {job?.status === 'failed' && job.detail ? (
+                          <div style={{ fontSize: 11, color: 'var(--danger, #e66)', marginTop: 4 }}>{job.detail}<ErrorFold message={job.detail} /></div>
+                        ) : working && job.detail ? (
+                          <div style={{ fontSize: 11, color: 'var(--muted, #999)', marginTop: 4 }}>{job.detail} 다 되면 바로 받습니다.</div>
+                        ) : null}
                       </div>
                     </div>
                   );

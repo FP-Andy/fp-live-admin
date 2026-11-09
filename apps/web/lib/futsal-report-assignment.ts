@@ -14,14 +14,14 @@ export function assignmentPlayers(raw:unknown):AssignmentPlayer[]{
  if(!Array.isArray(raw)||!raw.length||raw.length>30)throw Error('초기 선수 배정 정보를 확인하세요.');
  const ids=new Set<string>();
  return raw.map(p=>{
-  if(!p||typeof p.id!=='string'||ids.has(p.id)||!['home','home_gk','away','away_gk','referee'].includes(p.group)||!Array.isArray(p.box)||p.box.length!==4||!p.box.every((n:unknown)=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&n<=1)||p.box[0]>=p.box[2]||p.box[1]>=p.box[3]||typeof p.jersey!=='string'||!p.jersey||p.jersey.length>12)throw Error('초기 선수 좌표·번호를 확인하세요.');
+  if(!p||typeof p.id!=='string'||ids.has(p.id)||!['home','home_gk','away','away_gk','referee'].includes(p.group)||!Array.isArray(p.box)||p.box.length!==4||!p.box.every((n:unknown)=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&n<=1)||p.box[0]>=p.box[2]||p.box[1]>=p.box[3]||typeof p.jersey!=='string'||!p.jersey||p.jersey.length>12)throw Error('선수 배정 정보가 올바르지 않습니다. 초기 설정을 다시 저장하세요.');
   ids.add(p.id);return {id:p.id,group:p.group,number:p.jersey,box:[...p.box] as AssignmentPlayer['box']};
  });
 }
 export function validateAssignment(value:ReportAssignment){
  if(!value||!validId(value.jobId)||!Number.isFinite(value.time)||value.time<0||!Number.isFinite(value.width)||!Number.isFinite(value.height)||value.width<=0||value.height<=0||typeof value.image!=='string'||value.image.length>6000000||!/^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(value.image))throw Error('선수 배정표의 초기 장면을 확인하세요.');
  if(value.court&&!courtCoordinates(value.court))throw Error('선수 배정표의 코트 좌표를 확인하세요.');
- if(value.geometryVersion!==undefined&&value.geometryVersion!==1)throw Error('선수 배정표의 좌표 버전을 확인하세요.');
+ if(value.geometryVersion!==undefined&&value.geometryVersion!==1)throw Error('선수 배정표를 다시 불러오세요.');
  assignmentPlayers(value.players.map(p=>({...p,jersey:p.number})));return value;
 }
 export async function loadReportAssignment(jobId:string):Promise<ReportAssignment>{

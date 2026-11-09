@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { ConsoleToolbar, ConsoleEmpty } from '../../../components/ConsoleTools';
 import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../../../lib/api';
+import { errorMessage } from '../../../lib/error-messages';
+import ErrorNotice from '../../../components/ErrorNotice';
 import type { MatchListItem } from '../../../components/live-coder/types';
 
 type MatchPage = { items: MatchListItem[]; total: number };
@@ -25,7 +27,7 @@ export default function LiveCoderPage() {
           setError('');
         }
       } catch (loadError) {
-        if (active) setError(loadError instanceof Error ? loadError.message : 'Live Coder matches unavailable');
+        if (active) setError(errorMessage(loadError, '경기 목록을 불러오지 못했습니다. 5초 뒤 다시 시도합니다.', { fixed: true }));
       } finally { if (active) setLoading(false); }
     };
     load();
@@ -39,10 +41,10 @@ export default function LiveCoderPage() {
   const activeMatches = useMemo(() => matches.filter(match => match.name.toLowerCase().includes(query.trim().toLowerCase()) && (scoreboardFilter === 'ALL' || (match.metadata?.broadcast?.scoreboard_visible === false ? 'OFF' : 'ON') === scoreboardFilter)), [matches, query, scoreboardFilter]);
 
   return (
-    <main className="page-stack console-page live-coder-page">
+    <main className="page-stack console-page live-coder-page console-flat">
       <p className="panel-note">경기를 선택해 OBS 중계 그래픽과 스코어보드를 제어하세요.</p>
 
-      {error ? <div className="card card-danger">{error}</div> : null}
+      {error ? <ErrorNotice className="card card-danger" message={error} /> : null}
 
       <section className="card card-panel">
         <div className="section-heading">
@@ -58,7 +60,7 @@ export default function LiveCoderPage() {
                 <div className="match-item-main">
                   <div className="row">
                     <strong>{match.name}</strong>
-                    <span className="status-pill">{match.competition_class} · {match.round_number}R</span>
+                    <span className="status-pill chip-tag">{match.competition_class} · {match.round_number}R</span>
                     <span className={`status-pill ${broadcast?.scoreboard_visible === false ? 'warning' : 'running'}`}>
                       스코어보드 {broadcast?.scoreboard_visible === false ? '숨김' : '표시'}
                     </span>
@@ -78,7 +80,7 @@ export default function LiveCoderPage() {
               </div>
             );
           })}
-          {!activeMatches.length ? <ConsoleEmpty title={loading ? "경기를 불러오는 중…" : "조건에 맞는 경기가 없습니다"}><Link href="/admin/dashboard">대시보드에서 경기 확인 →</Link></ConsoleEmpty> : null}
+          {!activeMatches.length ? <ConsoleEmpty title={loading ? "경기를 불러오는 중…" : "조건에 맞는 경기가 없습니다"}><Link href="/admin/dashboard">운영 현황에서 경기 확인 →</Link></ConsoleEmpty> : null}
         </div>
       </section>
     </main>

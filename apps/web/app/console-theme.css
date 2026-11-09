@@ -209,7 +209,8 @@
 .fla-workspace > section, .fla-workspace .card, .fla-workspace .row { min-width: 0; }
 .fla-controls, .fla-review, .fla-settings { gap: 16px; }
 .fla-review, .fla-settings { grid-column: 1 / -1; }
-.fla-review { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+/* 최근 기록·점유 타임라인 — 두 칸은 한 칸이 440px 이상일 때만. 반쪽 창에서 제목·탭이 글자 단위로 꺾이던 것(이사71). */
+.fla-review { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(440px, calc((100% - 16px) / 2))), 1fr)); }
 .fla-review > :last-child { grid-column: 1 / -1; }
 .fla-possession-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .fla-possession-buttons button { min-height: 62px; font-size: 16px; overflow-wrap: anywhere; }
@@ -234,19 +235,10 @@
   .app-shell .topbar-actions { margin-left: auto; }
   .fla-match { gap: 12px; }
   .fla-match .card { padding: 16px; }
-  .fla-match :is(button, input, select) { font-size: 16px; }
-  .fla-match .kbd { display: none; }
   .fla-clock { top: 0; padding: 12px 14px !important; }
   .fla-clock-main > div { display: grid; gap: 2px; }
   .fla-clock-main > button { min-width: 108px; }
   .fla-clock-settings summary { min-height: 32px; }
-  .fla-mobile-nav { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 5px; background: var(--bg); padding: 4px 0; }
-  .fla-mobile-nav button { padding: 10px 4px; font-size: 14px; }
-  .fla-workspace { display: block; }
-  .fla-match[data-mobile-view="control"] .fla-workspace > :not(.fla-controls),
-  .fla-match[data-mobile-view="shots"] .fla-workspace > :not(.fla-shots),
-  .fla-match[data-mobile-view="review"] .fla-workspace > :not(.fla-review),
-  .fla-match[data-mobile-view="settings"] .fla-workspace > :not(.fla-settings) { display: none; }
   .fla-review { grid-template-columns: minmax(0,1fr); }
   .fla-match .row > span { overflow-wrap: anywhere; }
   .fla-shots .fla-goalmouth-row { display: flex; align-items: flex-end; gap: 8px; }
@@ -258,6 +250,19 @@
 }
 @media (max-width: 760px) {
   .app-shell .topbar-actions > .topbar-badge { display: none; }
+}
+/* 휴대폰·태블릿(터치)만 — 아래 탭으로 한 칸씩 보여 준다. 노트북 반쪽 창(마우스·트랙패드)은 폭이 760 아래여도
+   모든 칸과 단축키 표시를 그대로 보여 준다(이사71: 반쪽 창에서 탭 배치와 넓은 배치가 760 경계로 오가던 것). */
+@media (max-width: 760px) and (pointer: coarse) {
+  .fla-match :is(button, input, select) { font-size: 16px; }
+  .fla-match .kbd { display: none; }
+  .fla-mobile-nav { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 5px; background: var(--bg); padding: 4px 0; }
+  .fla-mobile-nav button { padding: 10px 4px; font-size: 14px; }
+  .fla-workspace { display: block; }
+  .fla-match[data-mobile-view="control"] .fla-workspace > :not(.fla-controls),
+  .fla-match[data-mobile-view="shots"] .fla-workspace > :not(.fla-shots),
+  .fla-match[data-mobile-view="review"] .fla-workspace > :not(.fla-review),
+  .fla-match[data-mobile-view="settings"] .fla-workspace > :not(.fla-settings) { display: none; }
   .fla-match { padding-bottom: 78px; }
   .fla-mobile-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border-soft); background: #11141af5; box-shadow: 0 -6px 20px #0003; }
   .fla-mobile-nav button { min-height: 48px; }
@@ -266,3 +271,22 @@
 .fla-feedback button { min-height: 32px; min-width: 32px; padding: 0; flex: 0 0 auto; }
 .fla-stream > summary, .fla-lane-stats > summary { cursor: pointer; font-size: 14px; color: var(--text-secondary); padding: 5px 0; }
 .fla-stream > .grid, .fla-lane-stats > .muted { margin-top: 12px; }
+
+/* 큰 기능 단위(FLA·FHL·FPA·FCM·Data Hub) 구분 — 단위마다 아래 가로선, 단위 색.
+   선택 전에도 약어 칸이 그 색이고, 선택하면 이름·약어 칸·펼친 메뉴의 선택 줄까지 같은 색이 된다
+   (종전엔 선택이 전부 주황 --accent 였다). 글씨 크기·구조·펼침 동작은 그대로. */
+[data-product="FLA"] { --product-color: #ff8a3d; --product-tint: rgba(255, 138, 61, 0.13); --product-line: rgba(255, 138, 61, 0.45); }
+[data-product="FHL"] { --product-color: #f2617a; --product-tint: rgba(242, 97, 122, 0.13); --product-line: rgba(242, 97, 122, 0.45); }
+[data-product="FPA"] { --product-color: #4ea1ff; --product-tint: rgba(78, 161, 255, 0.13); --product-line: rgba(78, 161, 255, 0.45); }
+[data-product="FCM"] { --product-color: #3ddc97; --product-tint: rgba(61, 220, 151, 0.13); --product-line: rgba(61, 220, 151, 0.45); }
+[data-product="DATA"] { --product-color: #b794ff; --product-tint: rgba(183, 148, 255, 0.13); --product-line: rgba(183, 148, 255, 0.45); }
+
+.app-shell .sidebar-section[data-product] { padding-bottom: 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.app-shell .sidebar-section[data-product] .product-monogram { color: var(--product-color); border-color: var(--product-line); }
+.app-shell .sidebar-section[data-product] button.product-badge.active { color: var(--product-color); }
+.app-shell .sidebar-section[data-product] button.product-badge.active .product-monogram { color: var(--product-color); background: var(--product-tint); border-color: var(--product-color); }
+.app-shell .sidebar-section[data-product] .product-toggle-icon.open { color: var(--product-color); }
+.app-shell .sidebar-section[data-product] .product-nav a.active { color: var(--product-color); background: var(--product-tint); border-left-color: var(--product-color); }
+.app-shell .sidebar-section[data-product] .product-nav a.active .nav-icon { color: var(--product-color); }
+.app-shell .sidebar-nav a.data-hub-nav-item[data-product] .nav-icon { color: var(--product-color); }
+.app-shell .sidebar-nav a.data-hub-nav-item[data-product].active { color: var(--product-color); background: var(--product-tint); }

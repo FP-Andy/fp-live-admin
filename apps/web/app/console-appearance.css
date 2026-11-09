@@ -49,7 +49,10 @@ html[data-console-theme="light"] :is(.app-shell, .login-page) {
   --border-soft: #dfe5ee; --border-ghost: #cdd5e2; --border-emphasis: #ff740060;
   --border-tech: #2158e840; --border-success: #147d5140; --border-danger: #c8383840;
   --text: #172236; --text-primary: #172236; --text-secondary: #42516a;
-  --muted: #616f85; --text-tertiary: #63718a; --text-tech: #2158e8;
+  /* 화이트 모드 글자 회색은 2단계 + 비활성(이사69, 2026-11-05): 본문 --text / 보조 --text-secondary = --muted = --text-tertiary(흰 바탕 8:1, 연회색 면 7:1)
+     / 입력 안내 --text-placeholder(4.5:1↑) / 비활성 --text-disabled(3:1↑). 위계는 회색 농도 대신 굵기·크기로 준다. */
+  --muted: #42516a; --text-tertiary: #42516a; --text-tech: #2158e8;
+  --text-placeholder: #5d6a80; --text-disabled: #687386;
   --accent: #ff7400; --accent-strong: #b94b00; --accent-soft: #fff1e5;
   --accent-secondary: #2158e8; --accent-secondary-strong: #1746bf;
   --accent-secondary-soft: #edf2ff; --tech-soft: #edf2ff;
@@ -114,7 +117,7 @@ html[data-console-theme="light"] .app-shell .fpa-live-shell {
   --surface-card: #ffffff; --surface-card-strong: #edf1f7; --surface-floating: #ffffff;
   --line: #d4dce8; --line-strong: #b9c5d7;
   --border-soft: #d4dce8; --border-ghost: #c5cfdd; --border-emphasis: #2158e8;
-  --text: #172033; --text-secondary: #45536b; --muted: #63718a; --text-tertiary: #63718a; --dim: #63718a;
+  --text: #172033; --text-secondary: #42516a; --muted: #42516a; --text-tertiary: #42516a; --dim: #42516a;
   --control: #f1f4f9; --control-border: #c5cfdd;
   --accent: #b94b00; --accent-strong: #b94b00; --accent-soft: #fff0e3;
   --success: #147d51; --warning: #946000; --danger: #c83838;
@@ -213,3 +216,36 @@ html[data-console-theme="light"] .console-dashboard .metric-strip-overview .metr
   .team-logo-item img { width: 42px; height: 42px; }
   .lineup-uniform-team { padding: 16px; }
 }
+
+/* 라이트 테마의 단위 색 — 흰 바탕에서 읽히도록 진하게. 규칙은 console-theme.css 의 단위 색 블록을 그대로 쓴다. */
+html[data-console-theme="light"] [data-product="FLA"] { --product-color: #a94400; --product-tint: #fff1e5; --product-line: #f3c39a; }
+html[data-console-theme="light"] [data-product="FHL"] { --product-color: #b0234a; --product-tint: #ffe9ee; --product-line: #f2b3c1; }
+html[data-console-theme="light"] [data-product="FPA"] { --product-color: #1d5fd6; --product-tint: #e9f1ff; --product-line: #b3cdf6; }
+html[data-console-theme="light"] [data-product="FCM"] { --product-color: #0e6e4a; --product-tint: #e6f7ef; --product-line: #a9dec7; }
+html[data-console-theme="light"] [data-product="DATA"] { --product-color: #6b45c9; --product-tint: #f1ebff; --product-line: #cdbcf3; }
+html[data-console-theme="light"] .app-shell .sidebar-section[data-product] { border-bottom-color: var(--border-soft); }
+
+/* 오류 안내 + "자세히"(원문 접기) — components/ErrorNotice. 4차: 모서리 4px, 왼쪽 색 막대 없음, 다크/라이트. */
+.fpc-error-notice { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fpc-error-notice .fpc-error-text { white-space: pre-line; overflow-wrap: anywhere; }
+.fpc-error-fold { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; color: var(--muted, #9aa3b2); text-align: left; }
+.fpc-error-fold > summary { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; list-style: none; text-decoration: underline; text-underline-offset: 3px; user-select: none; }
+.fpc-error-fold > summary::-webkit-details-marker { display: none; }
+.fpc-error-fold > summary::before { content: '▸'; font-size: 10px; text-decoration: none; }
+.fpc-error-fold[open] > summary::before { content: '▾'; }
+.fpc-error-fold-body { position: relative; margin-top: 6px; }
+.fpc-error-fold pre {
+  margin: 0; padding: 8px 56px 8px 10px; max-height: 220px; overflow: auto;
+  border: 1px solid var(--border-soft, #2a303b); border-radius: 4px;
+  background: var(--surface-card-strong, #1d222b); color: var(--text-secondary, #c9d1dc);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.fpc-error-fold .fpc-error-copy {
+  position: absolute; top: 6px; right: 6px; min-height: 0; padding: 2px 8px;
+  border: 1px solid var(--border-soft, #2a303b); border-radius: 4px;
+  background: var(--panel, #13161c); color: var(--text, #e8ecf2); font-size: 11px; line-height: 1.6; cursor: pointer;
+}
+.fpc-error-fold .fpc-error-copy:hover { border-color: var(--border-ghost, #3a4150); }
+html[data-console-theme="light"] .fpc-error-fold { color: var(--muted, #616f85); }
+html[data-console-theme="light"] .fpc-error-fold pre { background: #f6f8fa; border-color: #d0d7de; color: #24292f; }
+html[data-console-theme="light"] .fpc-error-fold .fpc-error-copy { background: #fff; border-color: #d0d7de; color: #24292f; }

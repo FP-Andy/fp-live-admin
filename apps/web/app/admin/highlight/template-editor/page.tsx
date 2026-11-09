@@ -15,6 +15,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { API_BASE, apiJson } from '../../../../lib/api';
+import { errorFromResponse, errorMessage } from '../../../../lib/error-messages';
+import ErrorNotice from '../../../../components/ErrorNotice';
+import HighlightSubTabs from '../HighlightSubTabs';
 
 type Analyzed = {
   token: string;
@@ -645,7 +648,7 @@ export default function TemplateEditorPage() {
       const res = await fetch(`${API_BASE}/highlight/card-templates/analyze`, {
         method: 'POST', credentials: 'include', body: form,
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw await errorFromResponse(res, { fallback: '파일을 분석하지 못했습니다. 다시 시도해 주세요.' });
       const data: Analyzed = await res.json();
       if (side === 'start') {
         setStart(data); setStartRoles({}); setStartObj({}); setStartManual([]); setStartDraft('');
@@ -653,7 +656,7 @@ export default function TemplateEditorPage() {
         setBoard(data); setBoardRoles({}); setBoardObj({}); setBoardManual([]); setBoardDraft('');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '파일을 분석하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy('');
     }
@@ -674,7 +677,7 @@ export default function TemplateEditorPage() {
           body: JSON.stringify({ ...spec, kind: 'start', width: 720,
                                  values: sampleValues(start, startRoles, startManual) }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw await errorFromResponse(res, '초안을 그리지 못했습니다.');
         const url = URL.createObjectURL(await res.blob());
         if (seq !== draftSeq.current) { URL.revokeObjectURL(url); return; }
         setStartDraft((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
@@ -702,7 +705,7 @@ export default function TemplateEditorPage() {
           body: JSON.stringify({ ...spec, kind: 'board', width: 720,
                                  values: sampleValues(board, boardRoles, boardManual) }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw await errorFromResponse(res, '초안을 그리지 못했습니다.');
         const url = URL.createObjectURL(await res.blob());
         setBoardDraft((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
       } catch {
@@ -741,7 +744,7 @@ export default function TemplateEditorPage() {
       const res = await fetch(`${API_BASE}/highlight/card-templates/custom`, {
         method: 'POST', credentials: 'include', body: form,
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw await errorFromResponse(res, { action: '템플릿을 저장하지 못했습니다', fallback: '템플릿을 저장하지 못했습니다. 다시 시도해 주세요.' });
       const data = await res.json();
       setMade(data.id);
       const pv = await fetch(`${API_BASE}/highlight/card-preview`, {
@@ -757,7 +760,7 @@ export default function TemplateEditorPage() {
       setStartManual([]); setBoardManual([]); setStartDraft(''); setBoardDraft('');
       loadTemplates();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '템플릿을 저장하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setBusy('');
     }
@@ -769,12 +772,13 @@ export default function TemplateEditorPage() {
       await apiJson(`/highlight/card-templates/${id}`, { method: 'DELETE' });
       loadTemplates();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '템플릿을 지우지 못했습니다. 다시 시도해 주세요.', { context: { '템플릿 ID': id } }));
     }
   };
 
   return (
-    <div style={{ maxWidth: 1080 }}>
+    <div className="console-flat fhl-flat" style={{ maxWidth: 1080 }}>
+      <HighlightSubTabs />
       <h2 style={{ fontSize: 18, margin: '0 0 4px' }}>템플릿 에디터</h2>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--muted, #999)' }}>
         배경을 올리고, 팔레트에서 항목(팀 로고·대회명·팀명…)을 추가해 배경 위에 끌어
@@ -872,7 +876,7 @@ export default function TemplateEditorPage() {
           템플릿 만들기
         </button>
         {busy ? <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>{busy}</span> : null}
-        {error ? <span style={{ fontSize: 12, color: '#f87171' }}>{error}</span> : null}
+        <ErrorNotice message={error} style={{ fontSize: 12, color: '#f87171' }} />
         {made && !busy ? <span style={{ fontSize: 12, color: '#4ade80' }}>만들었습니다 — 수동 태깅의 드롭다운에 떴습니다</span> : null}
       </div>
       {previewUrl ? (

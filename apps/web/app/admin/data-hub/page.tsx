@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConsoleToolbar } from '../../../components/ConsoleTools';
 import { API_BASE, apiJson } from '../../../lib/api';
 import { useSportContext } from '../../../components/SportContext';
+import { ErrorFold } from '../../../components/ErrorNotice';
+import { errorMessage } from '../../../lib/error-messages';
 
 type HubMatch = {
   id: string;
@@ -38,7 +40,7 @@ export default function DataHubPage() {
       setStatus('');
     } catch (error) {
       if (requestId !== loadRequestRef.current) return;
-      setStatus(error instanceof Error ? error.message : 'Data hub unavailable');
+      setStatus(errorMessage(error, 'Data hub unavailable'));
     }
   };
 
@@ -57,7 +59,7 @@ export default function DataHubPage() {
     && (dataFilter === 'ALL' || dataFilter === 'FLA' && match.has_fla_data || dataFilter === 'FPA' && match.has_fpa_logs));
 
   return (
-    <main className="page-stack console-page data-hub-page">
+    <main className="page-stack console-page data-hub-page console-flat">
 
       <section className="card card-panel grid">
         <div className="section-heading">
@@ -80,7 +82,7 @@ export default function DataHubPage() {
           </div>
         </div>
         <ConsoleToolbar><label className="field-stack console-search"><span className="field-label">경기 검색</span><input type="search" placeholder="팀명 또는 경기명" value={query} onChange={e => setQuery(e.target.value)} /></label><label className="field-stack"><span className="field-label">보유 데이터</span><select value={dataFilter} onChange={e => setDataFilter(e.target.value)}><option value="ALL">전체</option><option value="FLA">FLA 데이터 있음</option><option value="FPA">FPA 기록 있음</option></select></label><span className="muted" role="status">{visibleMatches.length}개 경기</span><button onClick={() => { setQuery(''); setDataFilter('ALL'); setCompetitionFilter('ALL'); }}>초기화</button></ConsoleToolbar>
-        {status ? <div className="panel-note">{status}</div> : null}
+        {status ? <div className="panel-note">{status}<ErrorFold message={status} /></div> : null}
         <div className="fcm-guide-table-wrap">
           <table className="fcm-guide-table console-responsive-table">
             <thead>

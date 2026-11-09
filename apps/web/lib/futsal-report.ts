@@ -18,7 +18,7 @@ export const blankPlayer=(p?:HeatPlayer):PlayerText=>({name:p?.name||'',jersey:p
 export const emptyDraft=():ReportDraft=>({schema:'fpc-futsal-report/v1',id:crypto.randomUUID(),title:'새 매치 리포트',updatedAt:new Date().toISOString(),heatmap:null,fpa:null,fpaLabel:'',matchId:'',matchName:'',homeName:'',awayName:'',homeScore:'',awayScore:'',homeDirection:'right',selected:'manual',players:{manual:blankPlayer()}});
 export function validateHeatmap(raw:unknown):HeatSource {
  const h=raw as HeatSource;
- if(!h||h.schema!=='fpa-heatmaps/v1'||typeof h.datasetId!=='string'||typeof h.video!=='string'||!Number.isFinite(h.from)||!Number.isFinite(h.to)||!(h.to>h.from)||!Number.isInteger(h.width)||!Number.isInteger(h.height)||h.width<1||h.height<1||h.width*h.height>20000||!Number.isFinite(h.scale)||h.scale<=0||!Array.isArray(h.players)||!h.players.length||h.players.length>100)throw Error('FPA의 좌표·품질 JSON 파일을 선택하세요.');
+ if(!h||h.schema!=='fpa-heatmaps/v1'||typeof h.datasetId!=='string'||typeof h.video!=='string'||!Number.isFinite(h.from)||!Number.isFinite(h.to)||!(h.to>h.from)||!Number.isInteger(h.width)||!Number.isInteger(h.height)||h.width<1||h.height<1||h.width*h.height>20000||!Number.isFinite(h.scale)||h.scale<=0||!Array.isArray(h.players)||!h.players.length||h.players.length>100)throw Error('히트맵 좌표·품질 JSON 파일을 선택하세요.');
  if(h.turn!==undefined&&(!Number.isInteger(h.turn)||h.turn<0||h.turn>3))throw Error('히트맵 회전 방향을 확인하세요.');
  if(h.point!==undefined&&!['bottom','center'].includes(h.point))throw Error('히트맵 기준점을 확인하세요.');
  const ids=new Set();
@@ -29,7 +29,7 @@ export function validateHeatmap(raw:unknown):HeatSource {
   if(p.activeFrom!==undefined&&p.positions.some(o=>o.t<p.activeFrom!-.002||o.t+o.seconds>p.activeTo!+.002))throw Error('출전 구간 밖 좌표가 있습니다.');
   ids.add(p.id);let end=h.from,observed=0;const expectedGrid=new Float64Array(h.width*h.height);
   for(const o of p.positions){if(!o||![o.x,o.y,o.t,o.seconds].every(Number.isFinite)||o.x<0||o.x>1||o.y<0||o.y>1||o.seconds<=0||o.t<end-.002||o.t+o.seconds>h.to+.002)throw Error('히트맵 관측 좌표가 올바르지 않습니다.');end=o.t+o.seconds;observed+=o.seconds;expectedGrid[Math.min(h.height-1,Math.floor(o.y*h.height))*h.width+Math.min(h.width-1,Math.floor(o.x*h.width))]+=o.seconds;}
-  if(Math.abs(p.grid.reduce((a,b)=>a+b,0)-observed)>Math.max(.05,observed*.00001)||p.grid.some((v,i)=>Math.abs(v-expectedGrid[i])>Math.max(.05,expectedGrid[i]*.00001)))throw Error('히트맵 눈금별 시간과 관측 좌표가 다릅니다. 원본 JSON을 보관하고 다시 생성하세요.');
+  if(Math.abs(p.grid.reduce((a,b)=>a+b,0)-observed)>Math.max(.05,observed*.00001)||p.grid.some((v,i)=>Math.abs(v-expectedGrid[i])>Math.max(.05,expectedGrid[i]*.00001)))throw Error('히트맵 좌표·품질 JSON 이 맞지 않습니다. FPA에서 다시 받아 주세요.');
  }
  validateHeatmapAugmentation(h);
  return h;
@@ -37,8 +37,8 @@ export function validateHeatmap(raw:unknown):HeatSource {
 export function parseFpaSource(raw:unknown):SavedFpa {
  const data=raw as {schema?:string;rows?:unknown;logs?:unknown;events?:Array<{row:unknown;log:unknown}>};
  const source=data?.schema==='fpa-review/v1'?{rows:data.events?.map(e=>e.row),logs:data.events?.map(e=>e.log)}:data;
- if(!source||!Array.isArray(source.rows)||source.rows.length>200000)throw Error('FPA 로그 JSON 또는 검수 JSON을 선택하세요.');
- const rows=source.rows.map((r:unknown)=>{if(!r||typeof r!=='object'||Array.isArray(r))throw Error('FPA 데이터 행을 확인하세요.');return Object.fromEntries(Object.entries(r).map(([k,v])=>{if(v!=null&&typeof v!=='string'&&typeof v!=='number')throw Error('FPA 값이 올바르지 않습니다.');return [k,String(v??'')];}));});
+ if(!source||!Array.isArray(source.rows)||source.rows.length>200000)throw Error('FPA 로그·검수 JSON 파일을 선택하세요.');
+ const rows=source.rows.map((r:unknown)=>{if(!r||typeof r!=='object'||Array.isArray(r))throw Error('FPA 로그·검수 JSON 이 올바르지 않습니다.');return Object.fromEntries(Object.entries(r).map(([k,v])=>{if(v!=null&&typeof v!=='string'&&typeof v!=='number')throw Error('FPA 값이 올바르지 않습니다.');return [k,String(v??'')];}));});
  return {rows,logs:Array.isArray(source.logs)?source.logs.map(v=>String(v??'')):[]};
 }
 export function restoreDraft(raw:unknown):ReportDraft {
@@ -51,7 +51,7 @@ export function restoreDraft(raw:unknown):ReportDraft {
  if(d.matchStartSeconds!==undefined&&(!Number.isFinite(d.matchStartSeconds)||d.matchStartSeconds<0))throw Error('경기 시작 시점을 확인하세요.');
  if(d.teamReport)validateTeamReport(d.teamReport);
  if(d.fla){validateMatchReportData(d.fla);if(d.fla.matchId!==d.matchId)throw Error('FLA와 리포트의 경기가 다릅니다.');}
- if(d.sourceSnapshot&&(!/^[a-f0-9]{32}$/.test(d.sourceSnapshot.id)||!Number.isInteger(d.sourceSnapshot.version)||d.sourceSnapshot.version<1||typeof d.sourceSnapshot.createdAt!=='string'||typeof d.sourceSnapshot.jobId!=='string'))throw Error('분석 스냅샷 참조를 확인하세요.');
+ if(d.sourceSnapshot&&(!/^[a-f0-9]{32}$/.test(d.sourceSnapshot.id)||!Number.isInteger(d.sourceSnapshot.version)||d.sourceSnapshot.version<1||typeof d.sourceSnapshot.createdAt!=='string'||typeof d.sourceSnapshot.jobId!=='string'))throw Error('연결된 분석 결과 정보가 맞지 않습니다. 리포트를 다시 불러오세요.');
  for(const field of ['title','updatedAt','fpaLabel','matchId','matchName','homeName','awayName','homeScore','awayScore','selected'] as const)if(typeof d[field]!=='string'||d[field].length>2000)throw Error('리포트 경기 정보를 확인하세요.');
  for(const p of Object.values(d.players)){
   if(p.flaNumber!==undefined&&(typeof p.flaNumber!=='string'||p.flaNumber.length>12))throw Error('FLA 등번호를 확인하세요.');

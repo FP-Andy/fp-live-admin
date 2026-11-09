@@ -2,6 +2,8 @@
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiJson } from '../../../../lib/api';
+import { errorFromResponse, errorMessage, jobErrorMessage } from '../../../../lib/error-messages';
+import ErrorNotice, { ErrorFold } from '../../../../components/ErrorNotice';
 
 type OverlayMatch = {
   id: string;
@@ -215,7 +217,7 @@ export default function BroadcastOverlayPage() {
       setMatches(rows);
       setSelectedMatchId((current) => current && rows.some((row) => row.id === current) ? current : (rows[0]?.id || ''));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '경기 목록을 불러오지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setLoadingMatches(false);
     }
@@ -233,7 +235,7 @@ export default function BroadcastOverlayPage() {
       setOptions(data);
       setSelectedGraphic((current) => current || data.asset_types[0]?.value || '');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '그래픽 목록을 불러오지 못했습니다. 다시 시도해 주세요.', { context: { '경기 ID': matchId } }));
     } finally {
       setLoadingOptions(false);
     }
@@ -386,7 +388,7 @@ export default function BroadcastOverlayPage() {
       seek(start);
       setSaveMessage(`${broadcastItem.label}을(를) Broadcast PNG로 ${fmt(start)}–${fmt(end)} 구간에 넣었습니다.`);
     } catch (err) {
-      setSaveMessage(err instanceof Error ? err.message : String(err));
+      setSaveMessage(errorMessage(err, '그래픽을 넣지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setRenderingGraphic(false);
     }
@@ -432,7 +434,7 @@ export default function BroadcastOverlayPage() {
       setOutputUrl(project.output_url || '');
       setSaveMessage('저장 완료. 이제 이 편집안을 기준으로 영상 렌더링 작업을 등록할 수 있습니다.');
     } catch (err) {
-      setSaveMessage(err instanceof Error ? err.message : String(err));
+      setSaveMessage(errorMessage(err, '편집안을 저장하지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setSaving(false);
     }
@@ -444,10 +446,10 @@ export default function BroadcastOverlayPage() {
       const project = await apiJson<OverlayProject>(`/highlight/broadcast-overlay/projects/${projectId}`);
       setRenderStatus(project.status || 'draft');
       setOutputUrl(project.output_url || '');
-      if (project.status === 'error') setSaveMessage(project.error_message || '영상 렌더링에 실패했습니다.');
+      if (project.status === 'error') setSaveMessage(jobErrorMessage(project.error_message, "최종 영상을 만들지 못했습니다. '최종 영상 렌더'를 다시 눌러 주세요.", { '편집안 ID': project.id }));
       if (project.status === 'done') setSaveMessage('영상 렌더링이 완료되었습니다. 결과 영상을 확인하세요.');
     } catch (err) {
-      setSaveMessage(err instanceof Error ? err.message : String(err));
+      setSaveMessage(errorMessage(err, '렌더 상태를 불러오지 못했습니다. 다시 시도해 주세요.', { context: { '편집안 ID': projectId } }));
     }
   }, [projectId]);
 
@@ -463,7 +465,7 @@ export default function BroadcastOverlayPage() {
       return false;
     }
     if (file.size > 4.5 * 1024 * 1024 * 1024) {
-      setSaveMessage('5GB 이상 원본은 다음 단계의 멀티파트 업로드로 올려야 합니다.');
+      setSaveMessage('4.5GB가 넘는 영상은 아직 올릴 수 없습니다. 영상을 나누거나 용량을 줄여 올려 주세요.');
       return false;
     }
     setUploadingSource(true);
@@ -478,12 +480,12 @@ export default function BroadcastOverlayPage() {
         headers: { 'Content-Type': destination.content_type },
         body: file,
       });
-      if (!response.ok) throw new Error(`원본 업로드 실패 (${response.status})`);
+      if (!response.ok) throw await errorFromResponse(response, { fixed: '원본을 올리지 못했습니다. 다시 눌러 주세요.', context: { '편집안 ID': projectId } });
       setRenderStatus('draft');
       setSaveMessage('원본 영상 업로드 완료. 이제 최종 영상 렌더를 시작할 수 있습니다.');
       return true;
     } catch (err) {
-      setSaveMessage(err instanceof Error ? err.message : String(err));
+      setSaveMessage(errorMessage(err, '원본을 올리지 못했습니다. 다시 눌러 주세요.', { context: { '편집안 ID': projectId } }));
       return false;
     } finally {
       setUploadingSource(false);
@@ -502,7 +504,7 @@ export default function BroadcastOverlayPage() {
       setOutputUrl(project.output_url || '');
       setSaveMessage('최종 영상 렌더를 대기열에 등록했습니다. 완료되면 이 화면에 결과가 표시됩니다.');
     } catch (err) {
-      setSaveMessage(err instanceof Error ? err.message : String(err));
+      setSaveMessage(errorMessage(err, '최종 영상을 요청하지 못했습니다. 다시 시도해 주세요.', { context: { '편집안 ID': projectId } }));
     }
   };
 
@@ -569,7 +571,7 @@ export default function BroadcastOverlayPage() {
     : '전·후반 시작과 종료 지점을 지정하면 FLA 시간축과 영상 구간이 정확히 연결됩니다.';
 
   return (
-    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div>
@@ -604,7 +606,7 @@ export default function BroadcastOverlayPage() {
         </div>
       </div>
 
-      {error ? <div style={{ ...card, borderColor: '#ef4444', color: '#fecaca', fontSize: 13 }}>{error}</div> : null}
+      <ErrorNotice message={error} style={{ ...card, borderColor: '#ef4444', color: '#fecaca', fontSize: 13 }} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 330px', gap: 16, alignItems: 'start' }}>
         <section style={card}>
@@ -730,7 +732,7 @@ export default function BroadcastOverlayPage() {
         ) : <div style={{ padding: 24, border: '1px dashed #42444b', borderRadius: 8, color: '#8f939b', fontSize: 13, textAlign: 'center' }}>타임라인에서 구간을 정하고 시각화를 삽입하면 이곳에 쌓입니다.</div>}
         {renderStatus ? <p style={{ fontSize: 12, margin: '12px 0 0', color: renderStatus === 'done' ? '#a7f3d0' : renderStatus === 'error' ? '#fca5a5' : '#fde68a' }}>렌더 상태: {renderStatus === 'queued' ? '대기 중' : renderStatus === 'rendering' ? '렌더링 중' : renderStatus === 'done' ? '완료' : renderStatus === 'error' ? '오류' : '편집안'}</p> : null}
         {outputUrl ? <a href={outputUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 8, color: '#86efac', fontSize: 13, fontWeight: 800 }}>완성 영상 열기 · 다운로드</a> : null}
-        {saveMessage ? <p style={{ fontSize: 12, margin: '12px 0 0', color: saveMessage.includes('완료') ? '#a7f3d0' : '#c4b5fd' }}>{saveMessage}</p> : null}
+        {saveMessage ? <div style={{ fontSize: 12, margin: '12px 0 0', color: saveMessage.includes('완료') ? '#a7f3d0' : '#c4b5fd' }}>{saveMessage}<ErrorFold message={saveMessage} /></div> : null}
       </section>
     </div>
   );

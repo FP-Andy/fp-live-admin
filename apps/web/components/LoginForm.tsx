@@ -3,6 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useRef, useState, type FormEvent } from 'react';
 import { apiFetch, primeSessionUser, type SessionUser } from '../lib/api';
+import { responseMessage } from '../lib/error-messages';
+import ErrorNotice from './ErrorNotice';
 
 export default function LoginForm({ nextPath }: { nextPath: string }) {
   const router = useRouter();
@@ -29,8 +31,12 @@ export default function LoginForm({ nextPath }: { nextPath: string }) {
         method: 'POST', body: JSON.stringify({ name, access_key: accessKey, mode }),
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        setError(typeof payload.detail === 'string' ? payload.detail : '로그인 정보를 확인해 주세요.');
+        // 서버는 관리자·운영자에게 같은 문장을 준다 — 화면에서 모드에 맞게 바꾼다(원문은 자세히).
+        const login = '아이디 또는 액세스 키가 올바르지 않습니다.';
+        setError(await responseMessage(response, {
+          fallback: '로그인 정보를 확인해 주세요.',
+          overrides: { [login]: mode === 'ADMIN' ? '아이디 또는 비밀번호가 올바르지 않습니다.' : '액세스 키가 올바르지 않습니다.' },
+        }));
         return;
       }
       primeSessionUser(await response.json() as SessionUser);
@@ -59,7 +65,7 @@ export default function LoginForm({ nextPath }: { nextPath: string }) {
       <label className="field-stack" htmlFor="access-key"><span className="field-label">{admin ? '비밀번호' : '액세스 키'}</span>
         <input id="access-key" autoComplete="current-password" type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} placeholder={admin ? '비밀번호 입력' : '관리자가 공유한 코드 입력'} maxLength={200} required disabled={submitting} aria-describedby="login-mode-help" />
       </label>
-      {error ? <div className="form-error" role="alert">{error}</div> : null}
+      {error ? <ErrorNotice className="form-error" message={error} /> : null}
       <button type="submit" className="btn-primary login-submit" disabled={submitting}>{submitting ? '로그인 중…' : `${admin ? '관리자' : '운영자'}로 로그인`}</button>
     </form>
   );

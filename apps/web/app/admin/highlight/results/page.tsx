@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { API_BASE, apiFetch, apiJson } from '../../../../lib/api';
+import { errorFromResponse, errorMessage, jobErrorMessage } from '../../../../lib/error-messages';
+import ErrorNotice from '../../../../components/ErrorNotice';
 import HighlightSubTabs from '../HighlightSubTabs';
 import { useSportContext } from '../../../../components/SportContext';
 import { ProgressBar, LeaveBadge } from '../../../../components/HlProgress';
@@ -85,7 +87,7 @@ export default function ManualResultsPage() {
       setJobs(rows);
       setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '목록을 불러오지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setLoading(false);
     }
@@ -114,7 +116,7 @@ export default function ManualResultsPage() {
       await apiJson(`/highlight/manual-jobs/${job.id}/clip-results`, { method: 'POST' });
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '클립 검수·전송에 올리지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': job.id } }));
     } finally {
       setRegistering(null);
     }
@@ -123,23 +125,23 @@ export default function ManualResultsPage() {
   const retryMerge = async (job: ManualJob) => {
     setRegistering(job.id); setError('');
     try { await apiJson(`/highlight/manual-jobs/${job.id}/merge`, { method: 'POST', body: '{}' }); await load(); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    catch (err) { setError(errorMessage(err, '합치기를 다시 요청하지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': job.id } })); }
     finally { setRegistering(null); }
   };
 
   const remove = async (job: ManualJob) => {
-    if (!window.confirm(`"${job.display_name || job.original_filename}" 을(를) 삭제할까요?\n클립·합본 파일과 클립결과에 등록한 FPA dual 분석이 함께 지워집니다.`)) return;
+    if (!window.confirm(`"${job.display_name || job.original_filename}"을(를) 지울까요?\n클립·합본 파일과, 클립 검수·전송에 올린 분석도 함께 지워집니다.`)) return;
     try {
       const res = await apiFetch(`/highlight/jobs/${job.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text() || '삭제 실패');
+      if (!res.ok) throw await errorFromResponse(res, { fallback: '삭제하지 못했습니다. 다시 시도해 주세요.', context: { '작업 ID': job.id } });
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err, '삭제하지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': job.id } }));
     }
   };
 
   return (
-    <div style={{ width: '100%' }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%' }}>
       <HighlightSubTabs />
 
       <div style={card}>
@@ -152,18 +154,15 @@ export default function ManualResultsPage() {
         </p>
       </div>
 
-      {error ? (
-        <div
-          style={{
-            ...card,
-            background: 'rgba(239,68,68,0.12)',
-            border: '1px solid rgba(239,68,68,0.4)',
-            fontSize: 13,
-          }}
-        >
-          {error}
-        </div>
-      ) : null}
+      <ErrorNotice
+        message={error}
+        style={{
+          ...card,
+          background: 'rgba(239,68,68,0.12)',
+          border: '1px solid rgba(239,68,68,0.4)',
+          fontSize: 13,
+        }}
+      />
 
       {loading ? (
         <div style={card}><p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>불러오는 중...</p></div>
@@ -195,7 +194,10 @@ export default function ManualResultsPage() {
                     {job.status !== 'done' && job.stage ? ` — ${job.stage}` : ''}
                   </div>
                   {job.error_message ? (
-                    <div style={{ fontSize: 12, color: '#ef4444', marginTop: 4 }}>{job.error_message}</div>
+                    <ErrorNotice
+                      message={jobErrorMessage(job.error_message, "합치기 실패 · '합치기 다시 요청'을 눌러 주세요", { '작업 ID': job.id })}
+                      style={{ fontSize: 12, color: '#ef4444', marginTop: 4 }}
+                    />
                   ) : null}
                 </div>
 
@@ -222,24 +224,29 @@ export default function ManualResultsPage() {
               {sport === 'FOOTBALL' && job.status === 'done' && clips.length > 0 ? (
                 <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
                   <span>
-                    {registration?.status === 'ready' ? `클립결과 등록 완료 · ${registration.completed ?? clips.length}개`
-                      : connecting ? `클립결과 연결 중 · ${registration?.completed ?? 0}/${registration?.total ?? clips.length}개`
-                        : registration?.status === 'error' ? '클립결과 연결 실패 · 합본은 다운로드할 수 있습니다.'
-                          : '개별 클립을 클립결과에 등록하면 각각 FPA dual로 분석할 수 있습니다.'}
+                    {registration?.status === 'ready' ? `클립 검수·전송 등록 완료 · ${registration.completed ?? clips.length}개`
+                      : connecting ? `클립 검수·전송 연결 중 · ${registration?.completed ?? 0}/${registration?.total ?? clips.length}개`
+                        : registration?.status === 'error' ? '클립 검수·전송 연결 실패 · 합본은 다운로드할 수 있습니다.'
+                          : '개별 클립을 클립 검수·전송에 등록하면 각각 FPA dual로 분석할 수 있습니다.'}
                   </span>
                   {(registration?.completed ?? 0) > 0 ? (
                     <Link href={`/admin/highlight/clips?jobId=${encodeURIComponent(job.id)}`}
-                      style={{ ...btn, textDecoration: 'none' }}>클립결과에서 분석</Link>
+                      style={{ ...btn, textDecoration: 'none' }}>클립 검수·전송에서 분석</Link>
                   ) : null}
                   {registration?.status !== 'ready' ? (
                     <button style={btn} disabled={registering !== null}
                       onClick={() => void registerClips(job)}
                       title={connecting ? '진행 중이면 그대로 이어가고, 중단된 연결은 다시 시작합니다. 저장한 분석은 유지됩니다.' : undefined}>
                       {registering === job.id ? '요청 중…' : connecting ? '연결 다시 요청'
-                        : registration?.status === 'error' ? '연결 재시도' : '클립결과에 등록'}
+                        : registration?.status === 'error' ? '연결 재시도' : '클립 검수·전송에 등록'}
                     </button>
                   ) : null}
-                  {registration?.error ? <span role="alert" style={{ color: '#ef4444', width: '100%' }}>{registration.error}</span> : null}
+                  {registration?.error ? (
+                    <ErrorNotice
+                      message={jobErrorMessage(registration.error, '클립 검수·전송에 올리지 못했습니다. 다시 올려 주세요.', { '작업 ID': job.id })}
+                      style={{ color: '#ef4444', width: '100%' }}
+                    />
+                  ) : null}
                 </div>
               ) : null}
 

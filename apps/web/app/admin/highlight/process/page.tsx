@@ -3,6 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { apiJson } from '../../../../lib/api';
+import { errorMessage } from '../../../../lib/error-messages';
+import ErrorNotice from '../../../../components/ErrorNotice';
 
 type OperatorJob = {
   id: string;
@@ -55,7 +57,7 @@ export default function ProcessListPage() {
       setJobs(data);
       setError('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : '불러오기 실패');
+      setError(errorMessage(e, '불러오기 실패'));
     } finally {
       setLoading(false);
     }
@@ -76,10 +78,10 @@ export default function ProcessListPage() {
   }
 
   return (
-    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 18 }}>
       <h2 style={{ fontSize: 18, margin: 0 }}>업로드 처리</h2>
 
-      {error ? <p style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</p> : null}
+      <ErrorNotice message={error} style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }} />
       {loading ? <p style={{ color: 'var(--muted, #999)', fontSize: 13 }}>불러오는 중...</p> : null}
       {!loading && jobs.length === 0 ? (
         <div style={{ ...card, textAlign: 'center', color: 'var(--muted, #999)' }}>처리할 업로드가 없습니다.</div>

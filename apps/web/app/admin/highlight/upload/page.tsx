@@ -3,6 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
 import { API_BASE } from '../../../../lib/api';
+import { errorFromBody } from '../../../../lib/error-messages';
+import { ErrorFold } from '../../../../components/ErrorNotice';
 import ReferenceCropper from './ReferenceCropper';
 import ColorPicker from './ColorPicker';
 
@@ -97,7 +99,7 @@ export default function HighlightUploadPage() {
         reset();
         router.push('/admin/highlight/my');
       } else {
-        setStatus(xhr.responseText || `업로드 실패 (${xhr.status})`);
+        setStatus(errorFromBody(xhr.status, xhr.responseText || '', { fallback: `업로드 실패 (${xhr.status})`, url: '/highlight/operator-jobs' }).message);
       }
     };
     xhr.onerror = () => { setUploading(false); setStatus('업로드 실패'); };
@@ -105,7 +107,7 @@ export default function HighlightUploadPage() {
   };
 
   return (
-    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ ...card, width: '100%' }}>
         <h2 style={{ fontSize: 18, marginTop: 0, marginBottom: 4 }}>영상 업로드</h2>
         <p style={{ fontSize: 13, color: 'var(--muted, #999)', marginTop: 0 }}>
@@ -231,7 +233,7 @@ export default function HighlightUploadPage() {
         </button>
 
         {status ? (
-          <p style={{ fontSize: 13, color: 'var(--muted, #999)', marginBottom: 0 }}>{status}</p>
+          <div style={{ fontSize: 13, color: 'var(--muted, #999)', margin: '13px 0 0' }}>{status}<ErrorFold message={status} /></div>
         ) : null}
       </div>
     </div>

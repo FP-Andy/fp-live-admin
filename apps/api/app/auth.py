@@ -64,6 +64,10 @@ def bootstrap_admin_accounts(db: Session, source: str | None = None) -> int:
             account.password_hash = entry["password_hash"]
             account.active = True
     for account in db.scalars(select(AdminAccount).where(AdminAccount.login.not_in(seen))):
+        if account.active:
+            # 비활성화된 관리자에게 묶인 에이전트 토큰도 함께 폐기(이사68 지시 02 R3)
+            from .agent_fla import revoke_tokens_for_user
+            revoke_tokens_for_user(db, account.user_id, reason="admin_deactivated")
         account.active = False
     db.commit()
     return len(accounts)

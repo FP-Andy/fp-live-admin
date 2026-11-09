@@ -527,7 +527,7 @@ export default function BasketballMatchPage({ params }: { params: { id: string }
   };
 
   return (
-    <main className="page-stack basketball-page">
+    <main className="page-stack basketball-page console-flat">
       {/* 분석(경기 타이머) 진행 중 전체화면 네온 글로우 — 시작됐음을 시각적으로 알린다. */}
       {timerRunning ? <div className="live-neon-overlay" aria-hidden /> : null}
       <div role="status" aria-label="농구 저장 상태" className="card card-panel"><strong>{saveStatus}</strong>{saveFailed?<><button onClick={()=>void writer.current?.flush().catch(()=>{})}>저장 다시 시도</button><button onClick={exportPending}>농구 기록 JSON 보관</button><button onClick={()=>void loadServer()}>서버 기록 불러오기</button></>:null}</div>

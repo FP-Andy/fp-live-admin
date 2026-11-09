@@ -1,9 +1,12 @@
 'use client';
 
 import AccessManagement from '../../../components/AccessManagement';
+import AgentTokenManagement from '../../../components/AgentTokenManagement';
 import { ConsoleSectionNav } from '../../../components/ConsoleTools';
 import { useEffect, useState } from 'react';
 import { apiFetch, apiJson, displayRole, type SessionUser } from '../../../lib/api';
+import ErrorNotice from '../../../components/ErrorNotice';
+import { errorFromResponse, errorMessage } from '../../../lib/error-messages';
 
 type SystemInfo = {
   ok: boolean;
@@ -25,6 +28,7 @@ type SystemInfo = {
   highlight_worker: ServerStatus & {
     active_jobs?: number;
   };
+  gpu_auto_stop?: GpuAutoStop;
   health: {
     gateway_ok: boolean;
     running_streams: number;
@@ -80,6 +84,38 @@ type ServerStatus = {
   provider?: string | null;
   metrics?: ServerMetrics;
 };
+
+type GpuAutoStop = {
+  enabled: boolean;
+  idle_minutes: number;
+  slack_configured: boolean;
+  skip_today: boolean;
+  skip_by?: string | null;
+  last_state?: string | null;
+  last_checked_at?: string | null;
+  last_activity_at?: string | null;
+  idle_for_minutes?: number | null;
+  last_stop_requested_at?: string | null;
+  last_decision?: string | null;
+  last_error?: string | null;
+};
+
+// 서버 판단 코드(gpu_auto_stop.run_tick)를 운영자가 읽을 말로 바꾼다.
+const GPU_AUTO_STOP_DECISIONS: Record<string, string> = {
+  busy: 'GPU 작업 진행 중',
+  idle_waiting: '작업 없음 · 기다리는 중',
+  skipped_today: '오늘은 자동 종료 안 함',
+  not_running: 'GPU 꺼짐',
+  stopped: '자동으로 끔',
+  stop_pending: '종료 요청 보냄',
+  stop_failed: '종료 요청 실패 · 다음 확인 때 다시 시도',
+  status_failed: '상태 확인 실패 · 다음 확인 때 다시 시도',
+  fpa_unknown: 'FPA 분석 서버 확인 안 됨 · 보류',
+};
+
+function formatKst(value?: string | null) {
+  return value ? new Date(value).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) : '-';
+}
 
 type ResourceCardProps = {
   title: string;
@@ -191,7 +227,7 @@ export default function SystemPage() {
       })
       .catch((loadError) => {
         if (!active) return;
-        setError(loadError instanceof Error ? loadError.message : 'System dashboard unavailable');
+        setError(errorMessage(loadError, 'System dashboard unavailable'));
       });
 
     loadIfActive();
@@ -221,7 +257,7 @@ export default function SystemPage() {
       });
 
       if (response.status === 409 && isStop) {
-        const detail = await response.text();
+        const detail = (await errorFromResponse(response, {})).message;
         const confirmLive = window.confirm(`${detail}\n\n그래도 중지할까요?`);
         if (!confirmLive) {
           setSubmittingAction('');
@@ -233,13 +269,35 @@ export default function SystemPage() {
       }
 
       if (!response.ok) {
-        throw new Error((await response.text()) || `Media ${action} failed`);
+        throw await errorFromResponse(response, `Media ${action} failed`);
       }
 
       await load();
       setActionMessage(action === 'start' ? 'Media server start 요청을 보냈습니다.' : 'Media server stop 요청을 보냈습니다.');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : `Media ${action} failed`);
+      setError(errorMessage(actionError, `Media ${action} failed`));
+    } finally {
+      setSubmittingAction('');
+    }
+  };
+
+  const setGpuAutoStopSkip = async (skip: boolean) => {
+    if (submittingAction) return;
+    setSubmittingAction('gpu-auto-stop');
+    setActionMessage('');
+    setError('');
+    try {
+      const response = await apiFetch('/admin/gpu-auto-stop/skip-today', {
+        method: 'POST',
+        body: JSON.stringify({ skip }),
+      });
+      if (!response.ok) {
+        throw await errorFromResponse(response, '자동 종료 설정을 바꾸지 못했습니다.');
+      }
+      await load();
+      setActionMessage(skip ? '오늘은 GPU를 자동으로 끄지 않습니다. 내일 0시(KST)에 다시 켜집니다.' : 'GPU 자동 종료를 다시 켰습니다.');
+    } catch (actionError) {
+      setError(errorMessage(actionError, '자동 종료 설정을 바꾸지 못했습니다.'));
     } finally {
       setSubmittingAction('');
     }
@@ -264,7 +322,7 @@ export default function SystemPage() {
       });
 
       if (response.status === 409 && isStop) {
-        const detail = await response.text();
+        const detail = (await errorFromResponse(response, {})).message;
         const confirmLive = window.confirm(`${detail}\n\n그래도 중지할까요?`);
         if (!confirmLive) {
           setSubmittingAction('');
@@ -276,13 +334,13 @@ export default function SystemPage() {
       }
 
       if (!response.ok) {
-        throw new Error((await response.text()) || `FHL GPU worker ${action} failed`);
+        throw await errorFromResponse(response, `FHL GPU worker ${action} failed`);
       }
 
       await load();
       setActionMessage(action === 'start' ? 'FHL GPU worker start 요청을 보냈습니다.' : 'FHL GPU worker stop 요청을 보냈습니다.');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : `FHL GPU worker ${action} failed`);
+      setError(errorMessage(actionError, `FHL GPU worker ${action} failed`));
     } finally {
       setSubmittingAction('');
     }
@@ -290,10 +348,10 @@ export default function SystemPage() {
 
   if (error) {
     return (
-      <main className="page-stack console-page system-page">
+      <main className="page-stack console-page system-page console-flat">
         <section className="card card-panel grid">
         <h2 style={{ margin: 0 }}>System</h2>
-        <div className="form-error" role="alert">{error}</div><button onClick={() => void load()} type="button">다시 불러오기</button>
+        <ErrorNotice message={error} className="form-error" /><button onClick={() => void load()} type="button">다시 불러오기</button>
       </section>
       <AccessManagement />
       </main>
@@ -301,9 +359,10 @@ export default function SystemPage() {
   }
 
   return (
-    <main className="page-stack console-page system-page">
-      <ConsoleSectionNav items={[{ id: "system-access", label: "계정 · 접근" }, { id: "system-health", label: "알림" }, { id: "system-resources", label: "서버 상태" }, { id: "system-media", label: "미디어 제어" }, { id: "system-worker", label: "GPU 제어" }, { id: "system-audit", label: "작업 이력" }]} />
+    <main className="page-stack console-page system-page console-flat">
+      <ConsoleSectionNav items={[{ id: "system-access", label: "계정 · 접근" }, { id: "system-agent-tokens", label: "에이전트 토큰" }, { id: "system-health", label: "알림" }, { id: "system-resources", label: "서버 상태" }, { id: "system-media", label: "미디어 제어" }, { id: "system-worker", label: "GPU 제어" }, { id: "system-audit", label: "작업 이력" }]} />
       <AccessManagement />
+      <AgentTokenManagement />
       <section id="system-health" className="card card-utility grid">
         <div className="section-heading">
           <div>
@@ -332,7 +391,7 @@ export default function SystemPage() {
             <div className="sidebar-eyebrow">Admin</div>
             <h2 style={{ margin: 0 }}>System Control</h2>
           </div>
-          <span className="status-pill running">{displayRole(sessionUser?.role) || 'ROLE'}</span>
+          <span className="status-pill running chip-tag">{displayRole(sessionUser?.role) || 'ROLE'}</span>
         </div>
         <div className="muted">
           서버 자원, 송출 상태와 최근 작업 이력을 확인하고 미디어 서버와 GPU 작업자를 제어합니다.
@@ -393,7 +452,7 @@ export default function SystemPage() {
             <div className="sidebar-eyebrow">Live Resources</div>
             <h3 style={{ margin: 0 }}>서버 자원 현황</h3>
           </div>
-          <span className="status-pill tech">15s refresh</span>
+          <span className="status-pill tech chip-tag">15s refresh</span>
         </div>
         <div className="resource-grid">
           <ResourceCard title="App / API / DB" subtitle="live-admin-app" server={systemInfo?.app_server} showMemory showDisk />
@@ -477,6 +536,41 @@ export default function SystemPage() {
               대기/처리 중 FHL 작업: {systemInfo?.highlight_worker?.active_jobs || 0}개. 작업이 있으면 stop 요청은 기본 차단됩니다.
             </div>
             {systemInfo?.highlight_worker?.detail ? <div className="muted">detail: {systemInfo.highlight_worker.detail}</div> : null}
+            {systemInfo?.gpu_auto_stop ? (() => {
+              const autoStop = systemInfo.gpu_auto_stop;
+              return (
+                <div className="grid" style={{ gap: 6 }}>
+                  <div>
+                    <strong>자동 종료</strong>{' '}
+                    {autoStop.enabled
+                      ? `켜짐 · GPU 작업이 ${autoStop.idle_minutes}분 동안 없으면 끕니다`
+                      : '꺼짐 (서버 설정 GPU_AUTO_STOP_ENABLED)'}
+                  </div>
+                  {autoStop.enabled ? (
+                    <>
+                      <div className="muted">
+                        상태: {GPU_AUTO_STOP_DECISIONS[autoStop.last_decision || ''] || autoStop.last_decision || '-'}
+                        {autoStop.idle_for_minutes != null ? ` · 작업 없이 ${Math.floor(autoStop.idle_for_minutes)}분` : ''}
+                        {' '}· 마지막 확인 {formatKst(autoStop.last_checked_at)}
+                      </div>
+                      <div className="muted">
+                        마지막 GPU 작업 {formatKst(autoStop.last_activity_at)} · 마지막 자동 종료 {formatKst(autoStop.last_stop_requested_at)}
+                      </div>
+                      {autoStop.last_error ? <div className="muted">확인 필요: {autoStop.last_error}</div> : null}
+                      <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={autoStop.skip_today}
+                          disabled={Boolean(submittingAction)}
+                          onChange={(event) => void setGpuAutoStopSkip(event.target.checked)}
+                        />
+                        오늘 자동 종료 안 함{autoStop.skip_today && autoStop.skip_by ? ` (${autoStop.skip_by})` : ''}
+                      </label>
+                    </>
+                  ) : null}
+                </div>
+              );
+            })() : null}
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               <button type="button" className="btn-primary" onClick={() => runHighlightWorkerAction('start')} disabled={Boolean(submittingAction)}>
                 {submittingAction === 'highlight-start' ? 'Working...' : 'Start FHL GPU Worker'}

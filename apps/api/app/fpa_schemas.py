@@ -113,7 +113,16 @@ class FcmAnalyzedPlayer(BaseModel):
     team: str = ""
     ranking_score: float = 0
     candidates: list[str] = Field(default_factory=list)
+    # 가이드 규칙으로 고른 기본 5줄. candidates 의 앞부분과 같다(수비 스탯 묶음 줄 포함).
+    selected_stats: list[str] = Field(default_factory=list)
     is_goalkeeper: bool = False
+    # GK/DF/MF/FW. position_source: lineup(경기 명단) | fineplay_lineup(신청 라인업) | fpa_events(액션 위치 추정)
+    position: str = ""
+    position_source: str = ""
+    # GOAL | ASSIST | POSITION — 어떤 우선순위 규칙으로 골랐는지
+    stat_case: str = ""
+    # HOME | AWAY. 분석 결과의 Team(home/away 또는 팀명)을 매치 사이드로 맞춘 값. 모르면 빈 값.
+    team_side: str = ""
 
 
 class FcmAnalyzeWorkbookResponse(BaseModel):

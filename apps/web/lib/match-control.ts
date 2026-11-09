@@ -1,4 +1,4 @@
-import { apiFetch } from './api';
+import { apiFetch, errorFromResponse } from './api';
 
 /** A suspended browser can stop performance.now on some platforms. Wall time
  * restores that interval; the monotonic clock protects against backward edits. */
@@ -20,7 +20,8 @@ export async function matchControlJson<T = any>(path: string, init?: RequestInit
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await apiFetch(path, { ...init, signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    // 상태 코드·서버 원문은 FpcError(status·detail·raw)에 남고, message 는 변환표를 거친 한국어다.
+    if (!response.ok) throw await errorFromResponse(response, {});
     return await response.json() as T;
   } finally {
     clearTimeout(timeout);

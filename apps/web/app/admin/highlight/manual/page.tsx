@@ -11,6 +11,8 @@ import {
   type PlacedItem, type Scoreboard, type Watermark,
 } from '../../../../components/HighlightOverlay';
 import { API_BASE, apiJson, fetchSessionUser, type SessionUser } from '../../../../lib/api';
+import { errorFromResponse, errorMessage, foldRaw, jobErrorMessage } from '../../../../lib/error-messages';
+import { ErrorFold } from '../../../../components/ErrorNotice';
 import {manualOwnerKey,rememberManualWork,recoverManualWork} from '../../../../lib/manual-recovery';
 import {registerWorkspaceLeave} from '../../../../lib/workspace-leave';
 import type { CutClip, CutProgress } from '../../../../lib/localCut';
@@ -539,7 +541,7 @@ export default function ManualHighlightPage() {
       window.setTimeout(stopMusicPreview, MUSIC_PREVIEW_SEC * 1000);
     } catch (err) {
       stopMusicPreview();
-      setMusicError(err instanceof Error ? err.message : '미리 듣기에 실패했습니다.');
+      setMusicError(errorMessage(err, '이 음악 파일은 미리 들을 수 없습니다. mp3나 m4a 파일로 바꿔 보세요.', { fixed: true }));
     }
   };
 
@@ -807,7 +809,7 @@ export default function ManualHighlightPage() {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setRecoveryMessage('골·하이라이트·교체 로그와 출력 설정을 JSON으로 저장했습니다. 같은 원본을 선택한 뒤 불러오면 다시 제작할 수 있습니다.');
     } catch (error) {
-      setRecoveryMessage(error instanceof Error ? error.message : 'JSON 로그를 저장하지 못했습니다.');
+      setRecoveryMessage(errorMessage(error, '하이라이트 로그를 받지 못했습니다.'));
     } finally { setLogBusy(false); }
   };
   const importDraft = async (file: File | undefined) => {
@@ -815,10 +817,10 @@ export default function ManualHighlightPage() {
     const expectedKey = storageKey;
     setLogBusy(true);
     try {
-      if (file.size > MAX_LOG_BYTES) throw new Error('JSON 로그는 100MB까지 불러올 수 있습니다.');
+      if (file.size > MAX_LOG_BYTES) throw new Error('하이라이트 로그는 100MB까지 불러올 수 있습니다.');
       const restored = await readHighlightLog(await file.text(), sport, sources, tagKinds.map((kind) => kind.key));
       if (currentDraftKeyRef.current !== expectedKey) return;
-      if (tags.length && !window.confirm('현재 태그와 출력 설정을 JSON 로그의 내용으로 바꿀까요?')) return;
+      if (tags.length && !window.confirm('지금 태그와 출력 설정을 불러온 하이라이트 로그로 바꿀까요?')) return;
       applyDraft(restored.work);
       pickIntro(restored.intro);
       setMusicFile(restored.music);
@@ -826,7 +828,12 @@ export default function ManualHighlightPage() {
       setLogImported(true);
       setRecoveryMessage(`JSON 로그에서 태그 ${restored.work.tags.length}개를 불러왔습니다. 구간을 확인한 뒤 ‘로그로 하이라이트 제작’을 누르세요.${restored.legacy ? ' 이전 복구 파일의 인트로·음악은 다시 선택해 주세요.' : ''}`);
     } catch (error) {
-      if (currentDraftKeyRef.current === expectedKey) setRecoveryMessage(error instanceof Error ? error.message : 'JSON 로그를 읽지 못했습니다.');
+      if (currentDraftKeyRef.current === expectedKey) {
+        // JSON 해석 실패는 브라우저 원문을 cause 로 실어 온다 — 자세히에 접는다.
+        const message = errorMessage(error, '하이라이트 로그를 읽지 못했습니다.');
+        const cause = (error as { cause?: unknown } | null)?.cause;
+        setRecoveryMessage(cause ? foldRaw(message, String(cause)) : message);
+      }
     } finally { setLogBusy(false); }
   };
   const currentDraftKeyRef = useRef(storageKey);
@@ -838,7 +845,7 @@ export default function ManualHighlightPage() {
       const key=currentDraftKeyRef.current;if(key!==expectedKey)return;if(!key||!window.confirm('기존 공용 초안의 소유자를 확인했으며 현재 계정으로 복사할까요? 원본은 유지됩니다.'))return;
       const raw=localStorage.getItem(legacyStorageKey);if(!raw)throw Error('이전 초안이 없습니다.');
       applyDraft(parseManualWork(raw,tagKinds.map(k=>k.key)));setLoadedDraftKey(key);setRecoveryMessage('이전 공용 초안을 현재 계정으로 복사했습니다. 원본은 보존했습니다.');
-    }catch(error){setRecoveryMessage(error instanceof Error?error.message:'이전 초안을 복구하지 못했습니다.');}
+    }catch(error){setRecoveryMessage(errorMessage(error,'이전 초안을 복구하지 못했습니다.'));}
   };
 
   useEffect(() => {
@@ -1020,13 +1027,13 @@ export default function ManualHighlightPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        if (!res.ok) throw new Error(await res.text() || '미리보기 실패');
+        if (!res.ok) throw await errorFromResponse(res, { fixed: '카드 미리보기를 불러오지 못했습니다. 잠시 뒤 다시 시도하세요.' });
         const url = URL.createObjectURL(await res.blob());
         if (!alive) { URL.revokeObjectURL(url); return; }
         setCardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
         setCardPreviewError('');
       } catch (err) {
-        if (alive) setCardPreviewError(err instanceof Error ? err.message : String(err));
+        if (alive) setCardPreviewError(errorMessage(err, '카드 미리보기를 불러오지 못했습니다. 잠시 뒤 다시 시도하세요.', { fixed: true }));
       } finally {
         if (alive) setCardPreviewBusy(false);
       }
@@ -1104,7 +1111,7 @@ export default function ManualHighlightPage() {
             colors: { home_color: scoreboard.homeColor, away_color: scoreboard.awayColor },
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw await errorFromResponse(res, '점수판 미리보기를 그리지 못했습니다.');
         const url = URL.createObjectURL(await res.blob());
         if (!alive) { URL.revokeObjectURL(url); return; }
         setBoardPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
@@ -1334,7 +1341,7 @@ export default function ManualHighlightPage() {
       }
       return { clips: made, tagIndex: fromTag };
     } catch (err) {
-      setCutError(err instanceof Error ? err.message : String(err));
+      setCutError(errorMessage(err, '클립을 자르지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setCutting(false);
     }
@@ -1369,7 +1376,7 @@ export default function ManualHighlightPage() {
       const logResponse = await fetch(`${API_BASE}/highlight/manual-jobs/${jobId}/log`, {
         method: 'PUT', credentials: 'include', body: logForm,
       });
-      if (!logResponse.ok) throw new Error(await logResponse.text() || 'JSON 로그 보관 실패');
+      if (!logResponse.ok) throw await errorFromResponse(logResponse, { action: '업로드하지 못했습니다', fallback: '업로드하지 못했습니다. 다시 시도해 주세요.', context: { '작업 ID': jobId, '항목': '하이라이트 로그' } });
 
       // 병렬 업로드 — 클립을 하나씩 줄세우지 않고 여러 개를 동시에 올려 네트워크 왕복
       // 지연이 겹치게 한다(특히 서버가 멀 때 큼). 다만 서버(t3.medium)를 독점하지 않도록
@@ -1407,7 +1414,7 @@ export default function ManualHighlightPage() {
           credentials: 'include',
           body: form,
         });
-        if (!res.ok) throw new Error(await res.text() || `클립 ${clip.index} 업로드 실패`);
+        if (!res.ok) throw await errorFromResponse(res, { action: '업로드하지 못했습니다', fallback: '업로드하지 못했습니다. 다시 시도해 주세요.', context: { '작업 ID': jobId, '클립': clip.index } });
         uploaded += 1;
         setUploadProgress({ done: uploaded, total: batchClips.length });
         setPublishMsg(`클립 업로드 ${uploaded} / ${batchClips.length}`);
@@ -1437,7 +1444,7 @@ export default function ManualHighlightPage() {
           credentials: 'include',
           body: introForm,
         });
-        if (!introRes.ok) throw new Error(await introRes.text() || '인트로 사진 업로드 실패');
+        if (!introRes.ok) throw await errorFromResponse(introRes, { action: '업로드하지 못했습니다', fallback: '업로드하지 못했습니다. 다시 시도해 주세요.', context: { '작업 ID': jobId, '항목': '인트로 사진' } });
       }
 
       // 배경음악도 같은 자리에서 올린다. 클립보다 먼저 올릴 이유가 없다.
@@ -1450,7 +1457,7 @@ export default function ManualHighlightPage() {
           credentials: 'include',
           body: musicForm,
         });
-        if (!musicRes.ok) throw new Error(await musicRes.text() || '배경음악 업로드 실패');
+        if (!musicRes.ok) throw await errorFromResponse(musicRes, { action: '업로드하지 못했습니다', fallback: '업로드하지 못했습니다. 다시 시도해 주세요.', context: { '작업 ID': jobId, '항목': '배경음악' } });
       }
 
       // 여기서부터는 서버 몫 — 탭을 닫아도 합치기는 끝나고 "수동 결과물"에 뜬다.
@@ -1544,14 +1551,14 @@ export default function ManualHighlightPage() {
           setPublishMsg('완료되었습니다.');
           break;
         }
-        if (job.status === 'error') throw new Error(job.error_message || '합치기 실패');
+        if (job.status === 'error') throw new Error(jobErrorMessage(job.error_message, "하이라이트를 합치지 못했습니다. 수동 결과물에서 '합치기 다시 요청'을 눌러 주세요.", { '작업 ID': jobId }));
         const waiting = job.status === 'render_queued';
         setPublishPhase(waiting ? 'queued' : 'merging');
         setPublishMsg(waiting ? `합치기 대기 ${job.render_queue?.position ?? 1}번째 — 탭을 닫아도 진행됩니다.`
           : job.job_metadata?.progress?.detail || '처리 중...');
       }
     } catch (err) {
-      setPublishError(err instanceof Error ? err.message : String(err));
+      setPublishError(errorMessage(err, '하이라이트를 만들지 못했습니다. 다시 시도해 주세요.'));
       setPublishMsg('');
       setPublishPhase('idle');
     } finally {
@@ -1585,14 +1592,14 @@ export default function ManualHighlightPage() {
       // 브라우저가 저장을 시작할 여유를 준 뒤 해제한다.
       setTimeout(() => URL.revokeObjectURL(url), 30000);
     } catch (err) {
-      setCutError(err instanceof Error ? err.message : String(err));
+      setCutError(errorMessage(err, '클립을 자르지 못했습니다. 다시 시도해 주세요.'));
     } finally {
       setPreviewBusy(null);
     }
   };
 
   return (
-    <div style={{ width: '100%' }}>
+    <div className="console-flat fhl-flat" style={{ width: '100%' }}>
       <HighlightSubTabs />
 
       <div style={card}>
@@ -1675,7 +1682,7 @@ export default function ManualHighlightPage() {
             }}
           >
             이 브라우저가 열 수 없는 코덱입니다 (HEVC 등으로 추정). 서버 변환이 필요하니
-            <strong> Player Clips </strong> 탭의 기존 업로드 방식을 사용하세요.
+            <strong> 선수 개인 클립 </strong> 탭의 기존 업로드 방식을 사용하세요.
           </div>
         ) : null}
 
@@ -1701,7 +1708,7 @@ export default function ManualHighlightPage() {
             <p style={{ fontSize: 12, marginBottom: 0 }}>JSON에는 골·하이라이트·교체 시각, 구간, 출력 설정, 선택한 인트로·음악이 포함됩니다. 원본 영상은 포함하지 않습니다. 같은 원본을 같은 순서로 선택하고 JSON을 불러오세요. FPC의 카드 템플릿은 해당 디자인을 그대로 사용합니다.</p>
             <p style={{fontSize:12}}>초안 소유자: {draftOwner?.name||'로그인 확인 중'}. 같은 계정과 원본 영상을 선택하면 복원됩니다.</p>
             {legacyAvailable?<div><p>이 영상의 이전 공용 초안은 원본을 보존하고 별도로 보관했습니다. 관리자에게 소유자 확인 후 복구를 요청하세요.</p>{draftOwner?.role==='SUPERADMIN'?<button style={smallBtn} onClick={()=>void restoreLegacyDraft()}>이전 공용 태그를 내 계정으로 복사</button>:null}</div>:null}
-            {recoveryMessage ? <p role="status">{recoveryMessage}</p> : null}
+            {recoveryMessage ? <div role="status" style={{ margin: '12px 0' }}>{recoveryMessage}<ErrorFold message={recoveryMessage} /></div> : null}
           </div>
           <div style={card}>
             <video
@@ -2195,7 +2202,7 @@ export default function ManualHighlightPage() {
                       ) : null}
                     </div>
                     {cardPreviewError ? (
-                      <p style={{ margin: 0, fontSize: 12, color: '#f87171' }}>{cardPreviewError}</p>
+                      <div style={{ margin: 0, fontSize: 12, color: '#f87171' }}>{cardPreviewError}<ErrorFold message={cardPreviewError} /></div>
                     ) : null}
                     {previewIsHalfVideo ? (
                       <div style={{ maxWidth: 520 }}>
@@ -2945,7 +2952,8 @@ export default function ManualHighlightPage() {
                     background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
                   }}
                 >
-                  추출 실패: {cutError}
+                  {cutError}
+                  <ErrorFold message={cutError} />
                 </div>
               ) : null}
 
@@ -3093,7 +3101,7 @@ export default function ManualHighlightPage() {
                     )}
                   </div>
                   {musicError ? (
-                    <p style={{ fontSize: 12, color: '#f59e0b', margin: '-8px 0 14px' }}>{musicError}</p>
+                    <div style={{ fontSize: 12, color: '#f59e0b', margin: '-8px 0 14px' }}>{musicError}<ErrorFold message={musicError} /></div>
                   ) : null}
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button style={primaryBtn} onClick={() => void publish()} disabled={publishing}>
@@ -3147,7 +3155,8 @@ export default function ManualHighlightPage() {
                         background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
                       }}
                     >
-                      실패: {publishError}
+                      {publishError}
+                      <ErrorFold message={publishError} />
                     </div>
                   ) : null}
 
@@ -3167,10 +3176,10 @@ export default function ManualHighlightPage() {
                         합본 다운로드
                       </a>
                       <Link href="/admin/highlight/results" style={{ ...smallBtn, textDecoration: 'none' }}>
-                        {sport === 'FOOTBALL' ? '결과물 · 클립결과 연결 확인' : '결과물 목록'}
+                        {sport === 'FOOTBALL' ? '결과물 · 클립 검수·전송 연결 확인' : '결과물 목록'}
                       </Link>
                       {sport === 'FOOTBALL' ? <span style={{ width: '100%', color: 'var(--muted, #999)' }}>
-                        개별 클립을 클립결과에 연결하고 있습니다. 결과물 목록에서 진행 상태를 확인하고, 연결된 클립마다 FPA dual 분석을 시작할 수 있습니다.
+                        개별 클립을 클립 검수·전송에 연결하고 있습니다. 결과물 목록에서 진행 상태를 확인하고, 연결된 클립마다 FPA dual 분석을 시작할 수 있습니다.
                       </span> : null}
                     </div>
                   ) : null}

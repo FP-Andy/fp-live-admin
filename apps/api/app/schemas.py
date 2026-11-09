@@ -141,6 +141,7 @@ class FcmSubmissionResponse(BaseModel):
     card_type: Literal["PLAYER", "GOALKEEPER"] = "PLAYER"
     penalty_shootout: list[Literal["O", "X"]] = Field(default_factory=list)
     submitted_by: str | None = None
+    submitted_by_name: str | None = None
     created_at: str
     updated_at: str
 
@@ -304,6 +305,8 @@ class TimelineEditorUpsertRequest(BaseModel):
     under_pressure: bool = False
     one_on_one: bool = False
     shot_pace_band: Literal["LOW", "MID", "HIGH"] = "MID"
+    # None = 저장된 값 유지(기록 수정 화면). 에이전트 수정은 항상 값을 보낸다.
+    is_own_goal: bool | None = None
 
 
 class TimelineEditorListItem(BaseModel):

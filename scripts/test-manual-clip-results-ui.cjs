@@ -21,6 +21,9 @@ const sceneData = { v: 1, players: [{ team: 'home', x: 20, y: 20, toX: 60, toY: 
 let registration = null;
 let ready = false;
 let failDownload = false;
+// 다운로드를 누르면 그때 만든다 — 처음 몇 번은 202(만드는 중), 그다음 200(준비됨).
+let pendingPolls = 0;
+let downloadRequests = 0;
 let registrationRequests = 0;
 let jobClipRequests = 0;
 const job = () => ({ id: jobId, status: 'done', original_filename: '수동 테스트 경기.mp4',
@@ -68,44 +71,56 @@ const matches = () => [
       }
       if (path === '/api/highlight/clip-results/matches/existing-match/clips') return respond({ clips: [clips[0]] });
       if (path.endsWith('/scene-motions/1/download')) {
-        if (failDownload) return route.fulfill({ status: 409, json: { detail: '현재 장면의 MP4를 준비 중입니다.' } });
-        return respond({ url: 'https://media.fixture.invalid/current.mp4', filename: 'scene-motion-fixture-action-1.mp4' });
+        downloadRequests++;
+        const filename = 'scene-motion-fixture-action-1.mp4';
+        if (failDownload) return route.fulfill({ status: 202, json: { status: 'failed', url: null, filename, detail: 'MP4를 만들지 못했습니다. 1분 뒤 다시 눌러 주세요.' } });
+        if (pendingPolls > 0) {
+          pendingPolls--;
+          return route.fulfill({ status: 202, json: { status: 'running', url: null, filename, detail: 'MP4를 만들고 있습니다.' } });
+        }
+        ready = true;
+        return respond({ status: 'ready', url: 'https://media.fixture.invalid/current.mp4', preview_url: '/fixture-ready.mp4', filename });
       }
-      if (path.endsWith('/scene-motions')) return respond({ motions: [{ seq: 1, sceneData, url: ready ? '/fixture-ready.mp4' : null }], warnings: [] });
+      if (path.endsWith('/scene-motions')) return respond({ motions: [{ seq: 1, sceneData, url: ready ? '/fixture-ready.mp4' : null, render_status: ready ? 'completed' : 'none' }], warnings: [] });
       const clip = clips.find(c => path === `/api/highlight/clip-results/clips/${c.id}`);
       if (clip) return respond({ ...clip, video_url: '/fixture-clip.mp4', match_id: null, job_id: jobId, team_labels: { home: '홈 테스트', away: '원정 테스트' }, actions });
       return route.fulfill({ status: 404, json: { detail: `Unexpected fixture request: ${path}` } });
     });
 
     await page.goto(origin + '/admin/highlight/results', { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: '클립결과에 등록', exact: true }).click();
-    await page.getByRole('link', { name: '클립결과에서 분석', exact: true }).waitFor();
+    await page.getByRole('button', { name: '클립 검수·전송에 등록', exact: true }).click();
+    await page.getByRole('link', { name: '클립 검수·전송에서 분석', exact: true }).waitFor();
     assert.equal(registrationRequests, 1);
     assert(await page.getByRole('link', { name: '합본 다운로드', exact: true }).isVisible());
     await page.screenshot({ path: output + '/manual-results.png', fullPage: true });
-    await page.getByRole('link', { name: '클립결과에서 분석', exact: true }).click();
+    await page.getByRole('link', { name: '클립 검수·전송에서 분석', exact: true }).click();
     await page.getByRole('button', { name: '상세', exact: true }).first().waitFor();
     assert(jobClipRequests > 0);
     assert.equal(await page.getByRole('button', { name: /FinePlay로 전송/ }).count(), 0);
     await page.getByRole('button', { name: '상세', exact: true }).first().click();
-    const pending = page.getByRole('button', { name: 'MP4 준비 중', exact: true });
-    await pending.waitFor();
-    assert(await pending.isDisabled());
+    // 상세를 열어도 MP4 를 만들지 않는다 — 버튼은 바로 누를 수 있고, 다운로드 요청도 없다.
+    const downloadButton = page.getByRole('button', { name: 'MP4 다운로드', exact: true });
+    await downloadButton.waitFor();
+    assert(!(await downloadButton.isDisabled()));
+    assert.equal(downloadRequests, 0);
     await page.waitForFunction(() => document.querySelector('video')?.readyState >= 1);
     assert.equal(await page.locator('video').first().evaluate(video => video.duration), 5);
     // Keep the actual dual launch route; its save/restore API is covered by Python tests.
     await page.evaluate(() => { window.open = url => { window.__dualTarget = url; return null; }; });
     await page.getByRole('button', { name: '🎯 FPA dual', exact: true }).click();
     assert.equal(await page.evaluate(() => window.__dualTarget), `/admin/fpa/live?clipId=${clipId}&embed=1`);
-    ready = true;
-    await page.getByRole('button', { name: '모션 새로고침', exact: true }).click();
-    const downloadButton = page.getByRole('button', { name: 'MP4 다운로드', exact: true });
-    await downloadButton.waitFor();
-    assert(!(await downloadButton.isDisabled()));
+    // 아직 MP4 가 없을 때 'MP4로 보기' 는 브라우저 화면(SceneMotionView)으로 대신 보여 준다.
+    await page.getByRole('button', { name: 'MP4로 보기', exact: true }).click();
+    await page.getByText('MP4 없음 · 앱 화면', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '앱 화면으로', exact: true }).click();
     await page.screenshot({ path: output + '/manual-clip-detail.png', fullPage: true });
-    const downloadPromise = page.waitForEvent('download');
+    pendingPolls = 1;
+    const downloadPromise = page.waitForEvent('download', { timeout: 15000 });
     await downloadButton.click();
+    await page.getByRole('button', { name: 'MP4 만드는 중…', exact: true }).waitFor();
+    await page.screenshot({ path: output + '/manual-clip-mp4-working.png', fullPage: true });
     const download = await downloadPromise;
+    assert.equal(downloadRequests, 2);
     assert.equal(download.suggestedFilename(), 'scene-motion-fixture-action-1.mp4');
     await download.saveAs(output + '/download-fixture.mp4');
     assert.deepEqual(fs.readFileSync(output + '/download-fixture.mp4'), media);
@@ -114,8 +129,8 @@ const matches = () => [
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 1));
     await page.getByRole('button', { name: '앱 화면으로', exact: true }).click();
     failDownload = true;
-    await downloadButton.click();
-    await page.getByText('현재 장면의 MP4를 준비 중입니다.', { exact: false }).waitFor();
+    await page.getByRole('button', { name: 'MP4 다운로드', exact: true }).click();
+    await page.getByText('MP4를 만들지 못했습니다.', { exact: false }).waitFor();
     failDownload = false;
     await page.getByRole('button', { name: '매치 목록', exact: true }).click();
     const existingRow = page.locator('div').filter({ has: page.getByText('기존 자동 클립 경기', { exact: true }) })
@@ -129,16 +144,16 @@ const matches = () => [
     await page.goto(origin + '/admin/highlight/results', { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '연결 재시도', exact: true }).waitFor();
     assert(await page.getByRole('link', { name: '합본 다운로드', exact: true }).isVisible());
-    assert(await page.getByRole('link', { name: '클립결과에서 분석', exact: true }).isVisible());
+    assert(await page.getByRole('link', { name: '클립 검수·전송에서 분석', exact: true }).isVisible());
     await page.getByRole('button', { name: '연결 재시도', exact: true }).click();
-    await page.getByText('클립결과 등록 완료 · 2개', { exact: true }).waitFor();
+    await page.getByText('클립 검수·전송 등록 완료 · 2개', { exact: true }).waitFor();
     registration = { status: 'running', completed: 0, total: 2 };
     await page.reload({ waitUntil: 'networkidle' });
     assert(!(await page.getByRole('button', { name: '연결 다시 요청', exact: true }).isDisabled()));
 
     await page.evaluate(() => localStorage.setItem('fineplay.selectedSport', 'BASKETBALL'));
     await page.reload({ waitUntil: 'networkidle' });
-    assert.equal(await page.getByRole('button', { name: /클립결과에 등록|연결 다시 요청|연결 재시도/ }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: /클립 검수·전송에 등록|연결 다시 요청|연결 재시도/ }).count(), 0);
     assert.deepEqual(errors, []);
     console.log('PASS: manual registration → existing clip detail/dual launch, MP4 pending/attachment/error, FinePlay controls preserved, retry and basketball isolation');
   } finally {

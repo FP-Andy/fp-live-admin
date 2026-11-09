@@ -1,6 +1,6 @@
 /* Real football/futsal controls with delayed, revision-checked fixture writes. */
 const assert = require('node:assert/strict'), fs = require('node:fs');
-const { chromium } = require('../apps/web/node_modules/playwright-core');
+const { chromium } = require(process.env.PLAYWRIGHT_CORE_PATH || '../apps/web/node_modules/playwright-core');
 const origin = process.env.FPC_QA_ORIGIN || 'http://127.0.0.1:4354';
 assert(['127.0.0.1', 'localhost'].includes(new URL(origin).hostname));
 const output = process.env.FPC_CLOCK_QA_OUTPUT || '/tmp/fpc-possession-clock-qa';
@@ -8,6 +8,12 @@ fs.mkdirSync(output, { recursive: true });
 const id = '11111111-1111-4111-8111-111111111111';
 const result = { passed: false, cases: [], failures: [], errors: [] };
 let browser;
+// Input is local-first (apps/web/lib/fla-input-outbox.ts): the screen changes on click and the
+// server write follows in order. Wait for the mock server to see the write, not for a notice.
+const until = async (check, message, timeout = 15000) => {
+  const end = Date.now() + timeout;
+  for (;;) { const value = check(); if (value) return value; if (Date.now() > end) throw Error(message); await new Promise(r => setTimeout(r, 50)); }
+};
 async function run(sport, scenario) {
   let state = { clock_ms: 10000, running: scenario !== 'queued-start', possession_team: 'NONE', selected_team: 'HOME', attack_lr: 'L2R' };
   let revision = 0, delay = scenario === 'queued-start' ? 450 : 1400;
@@ -35,7 +41,7 @@ async function run(sport, scenario) {
     if (path === `/api/matches/${id}/state`) {
       const body = route.request().postDataJSON(); requests.push(body);
       await new Promise(resolve => setTimeout(resolve, delay));
-      if (body.command_revision !== revision) return route.fulfill({ status: 409, json: { detail: 'stale revision' } });
+      if (body.command_revision !== revision) return route.fulfill({ status: 409, json: { detail: { reason: 'stale_command_revision', command_revision: revision, state } } });
       if (body.update_kind === 'sample' && (body.clock_ms < state.clock_ms || ['running', 'possession_team', 'selected_team', 'attack_lr'].some(key => body[key] !== state[key]))) return respond({ ok: true, ignored: true, state, command_revision: revision });
       const time = body.allow_clock_rewind ? body.clock_ms : Math.max(state.clock_ms, body.clock_ms);
       if (state.running && state.possession_team !== 'NONE') totals[state.possession_team] += time - state.clock_ms;
@@ -43,6 +49,8 @@ async function run(sport, scenario) {
       if (body.update_kind === 'command') revision++;
       return respond({ ok: true, state, command_revision: revision });
     }
+    // FLA 에이전트 수정 알림(AgentEditNotice) 폴링 — 이 회귀와 무관, 빈 목록.
+    if (path === `/api/matches/${id}/agent-edits`) return respond({ items: [], server_now: new Date().toISOString() });
     throw Error(`Unexpected API: ${path}`);
   });
   const page = await context.newPage(); page.on('pageerror', e => result.errors.push(e.message));
@@ -58,13 +66,16 @@ async function run(sport, scenario) {
       await page.getByRole('button', { name: '경기 시작', exact: true }).click(); await started;
       await home().click();
       await page.waitForFunction(() => document.querySelector('.fla-possession-buttons .fla-home')?.getAttribute('aria-pressed') === 'true');
-      assert.equal(requests[1].running, true, 'A possession click queued behind start must inherit the accepted running state');
+      const possession = await until(() => requests.find(r => r.update_kind === 'command' && r.possession_team === 'HOME'), 'Queued possession command was never sent');
+      assert.equal(requests.indexOf(possession), 1, 'Possession must be sent right after start, in click order');
+      assert.equal(possession.running, true, 'A possession click queued behind start must inherit the accepted running state');
       const before = await clock(); await page.waitForTimeout(1200);
       assert.notEqual(await clock(), before, 'Clock must keep advancing after selecting possession');
       const stopped = request();
       await page.getByRole('button', { name: '일시정지', exact: true }).click(); await stopped;
       await away().click();
       await page.waitForFunction(() => document.querySelector('.fla-possession-buttons .fla-away')?.getAttribute('aria-pressed') === 'true');
+      await until(() => state.possession_team === 'AWAY', 'Queued AWAY possession was never saved');
       assert.equal(state.running, false, 'A possession click queued behind pause must not restart the clock');
       const paused = await clock(); await page.waitForTimeout(1200); assert.equal(await clock(), paused);
     } else {
@@ -83,12 +94,27 @@ async function run(sport, scenario) {
         await page.waitForTimeout(1700);
         assert.equal(state.selected_team, 'AWAY');
         await attack.getByRole('button', { name: /공격 기록/ }).click();
-        await page.getByText('어웨이 · 중앙 공격을 기록했습니다.', { exact: true }).waitFor();
+        // The removed "어웨이 · 중앙 공격을 기록했습니다." notice is replaced by the recent-record row,
+        // shown at once (before the 1.4s delayed write lands) with the "저장 중" sync label.
+        const records = page.locator('.fla-records .fla-record-list');
+        const lane = records.locator('.fla-record.lane.away', { hasText: '공격방향 · 중앙' });
+        await lane.waitFor();
+        assert.equal(await lane.locator('.nums').innerText().then(t => t.startsWith('CENTER')), true, 'Lane row must show the raw value CENTER');
+        assert.equal(await lane.locator('.team').innerText(), 'AWAY');
+        assert.equal(events.length, 0, 'Lane row must appear before the server write completes');
+        await lane.locator('.fla-record-sync', { hasText: '저장 중' }).waitFor();
         await page.getByLabel(sport === 'FUTSAL' ? '풋살 슛 위치 입력 피치' : '슈팅 위치 선택', { exact: true }).click({ position: { x: 120, y: 80 } });
         await page.getByRole('button', { name: '슈팅 기록', exact: true }).click();
-        await page.getByText('슈팅을 기록했습니다. 기록 탭에서 확인할 수 있습니다.', { exact: true }).waitFor();
-        assert.equal(events.length, 2);
+        const shot = records.locator('.fla-record.shot.away', { has: page.locator('.fla-record-tag') });
+        await shot.waitFor();
+        await until(() => events.length === 2, `Both records must be saved, got ${events.length}`);
+        await page.waitForFunction(() => !document.querySelector('.fla-records .fla-record-sync'));
+        assert.equal(await records.locator('.fla-record.lane').count(), 1, 'Lane must appear once after save');
+        assert.equal(await records.locator('.fla-record.shot').count(), 1, 'Shot must appear once after save');
+        assert.deepEqual(events.map(e => e.type), ['ATTACK_LANE', 'XG'], 'Records must be saved in click order');
+        assert.equal(events[0].lane, 'CENTER');
         assert(events.every(e => e.team === 'AWAY' && e.clock_ms >= 10000));
+        assert.equal(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('fpc.fla-outbox.v1:')).length), 0, 'Outbox must be empty after save');
       } else {
       await home().click();
       await page.waitForFunction(() => document.querySelector('.fla-possession-buttons .fla-home')?.getAttribute('aria-pressed') === 'true');

@@ -3,6 +3,8 @@
 import type { CSSProperties } from 'react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { apiJson } from '../../../../lib/api';
+import { ErrorFold } from '../../../../components/ErrorNotice';
+import { errorMessage } from '../../../../lib/error-messages';
 
 type TeamSide = 'home' | 'away';
 type DotTeam = 'ally' | 'opponent';
@@ -501,7 +503,7 @@ export default function FpaReplayPage() {
         setMatches(filtered);
         setStatus(filtered.length ? `듀얼모드 FPA 경기 ${filtered.length}개` : '듀얼모드 FPA 데이터가 있는 경기가 없습니다');
       } catch (error) {
-        if (active) setStatus(error instanceof Error ? error.message : '경기 목록을 불러오지 못했습니다');
+        if (active) setStatus(errorMessage(error, '경기 목록을 불러오지 못했습니다. 새로고침해 주세요.', { fixed: true }));
       } finally {
         if (active) setBusy(false);
       }
@@ -567,12 +569,13 @@ export default function FpaReplayPage() {
   };
 
   return (
-    <main className="fpa-replay-page console-page replay-page">
+    <main className="fpa-replay-page console-page replay-page console-flat">
       <section className="card card-panel fpa-replay-hero">
         <div>
           <p>저장된 듀얼 피치 장면을 Before에서 After로 이어지는 3초 모션으로 확인합니다.</p>
         </div>
         <span className="status-pill tech">{status}</span>
+        <ErrorFold message={status} />
       </section>
 
       <section className="fpa-replay-layout">
