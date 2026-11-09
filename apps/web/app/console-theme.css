@@ -209,7 +209,8 @@
 .fla-workspace > section, .fla-workspace .card, .fla-workspace .row { min-width: 0; }
 .fla-controls, .fla-review, .fla-settings { gap: 16px; }
 .fla-review, .fla-settings { grid-column: 1 / -1; }
-.fla-review { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+/* 최근 기록·점유 타임라인 — 두 칸은 한 칸이 440px 이상일 때만. 반쪽 창에서 제목·탭이 글자 단위로 꺾이던 것(이사71). */
+.fla-review { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(440px, calc((100% - 16px) / 2))), 1fr)); }
 .fla-review > :last-child { grid-column: 1 / -1; }
 .fla-possession-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .fla-possession-buttons button { min-height: 62px; font-size: 16px; overflow-wrap: anywhere; }
@@ -234,19 +235,10 @@
   .app-shell .topbar-actions { margin-left: auto; }
   .fla-match { gap: 12px; }
   .fla-match .card { padding: 16px; }
-  .fla-match :is(button, input, select) { font-size: 16px; }
-  .fla-match .kbd { display: none; }
   .fla-clock { top: 0; padding: 12px 14px !important; }
   .fla-clock-main > div { display: grid; gap: 2px; }
   .fla-clock-main > button { min-width: 108px; }
   .fla-clock-settings summary { min-height: 32px; }
-  .fla-mobile-nav { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 5px; background: var(--bg); padding: 4px 0; }
-  .fla-mobile-nav button { padding: 10px 4px; font-size: 14px; }
-  .fla-workspace { display: block; }
-  .fla-match[data-mobile-view="control"] .fla-workspace > :not(.fla-controls),
-  .fla-match[data-mobile-view="shots"] .fla-workspace > :not(.fla-shots),
-  .fla-match[data-mobile-view="review"] .fla-workspace > :not(.fla-review),
-  .fla-match[data-mobile-view="settings"] .fla-workspace > :not(.fla-settings) { display: none; }
   .fla-review { grid-template-columns: minmax(0,1fr); }
   .fla-match .row > span { overflow-wrap: anywhere; }
   .fla-shots .fla-goalmouth-row { display: flex; align-items: flex-end; gap: 8px; }
@@ -258,6 +250,19 @@
 }
 @media (max-width: 760px) {
   .app-shell .topbar-actions > .topbar-badge { display: none; }
+}
+/* 휴대폰·태블릿(터치)만 — 아래 탭으로 한 칸씩 보여 준다. 노트북 반쪽 창(마우스·트랙패드)은 폭이 760 아래여도
+   모든 칸과 단축키 표시를 그대로 보여 준다(이사71: 반쪽 창에서 탭 배치와 넓은 배치가 760 경계로 오가던 것). */
+@media (max-width: 760px) and (pointer: coarse) {
+  .fla-match :is(button, input, select) { font-size: 16px; }
+  .fla-match .kbd { display: none; }
+  .fla-mobile-nav { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 5px; background: var(--bg); padding: 4px 0; }
+  .fla-mobile-nav button { padding: 10px 4px; font-size: 14px; }
+  .fla-workspace { display: block; }
+  .fla-match[data-mobile-view="control"] .fla-workspace > :not(.fla-controls),
+  .fla-match[data-mobile-view="shots"] .fla-workspace > :not(.fla-shots),
+  .fla-match[data-mobile-view="review"] .fla-workspace > :not(.fla-review),
+  .fla-match[data-mobile-view="settings"] .fla-workspace > :not(.fla-settings) { display: none; }
   .fla-match { padding-bottom: 78px; }
   .fla-mobile-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border-soft); background: #11141af5; box-shadow: 0 -6px 20px #0003; }
   .fla-mobile-nav button { min-height: 48px; }

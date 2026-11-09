@@ -1,9 +1,10 @@
 /** Shared cards extracted from the FLA match controller. Both workspaces use this UI. */
-import {Fragment, useState, type Dispatch, type SetStateAction, type MouseEvent} from 'react';
+import {Fragment, useRef, useState, type Dispatch, type SetStateAction, type MouseEvent} from 'react';
 import {ComposedChart, Area, Line, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine, ResponsiveContainer} from 'recharts';
 import AttackDirectionPitch from '../AttackDirectionPitch';
 import {FutsalShotPitch} from './FutsalShotPitch';
 import { ErrorFold } from '../ErrorNotice';
+import { useWidthFlags } from '../../lib/width-flags';
 type Team='HOME'|'AWAY';
 type Lane='LEFT'|'CENTER'|'RIGHT';
 type AttackLR='L2R'|'R2L';
@@ -41,7 +42,11 @@ export function MatchPossessionCard({possessionTeam, matchTeams, summary, canWri
 }
 
 export function MatchAttackCard({attackLR, selectedTeam, pendingLane, matchTeams, summary, canWrite, canRecord=canWrite, changeAttackDirection, selectEventTeam, setPendingLane, sendLane}:{attackLR:AttackLR; selectedTeam:Team; pendingLane:Lane; matchTeams:{homeTeam?:string;awayTeam?:string}|null; summary:any; canWrite:boolean; canRecord?:boolean; changeAttackDirection:(direction:AttackLR)=>void; selectEventTeam:(team:Team)=>void; setPendingLane:(lane:Lane)=>void; sendLane:(lane:Lane)=>void;}){
- return (<div className="card card-panel grid fla-attack-card" role="group" aria-label="공격 방향 기록">
+ const cardRef=useRef<HTMLDivElement|null>(null);
+ // 컨트롤 · 방향 그림 두 칸은 안쪽 폭 680 넘을 때만 — 반쪽 창(736px, 672)에서 레인 버튼이 줄바꿈되던 것.
+ // 1920 화면 카드(689)는 그대로 두 칸(이사71, 전에는 560)
+ useWidthFlags(cardRef,{narrow:680});
+ return (<div ref={cardRef} className="card card-panel grid fla-attack-card" role="group" aria-label="공격 방향 기록">
               <h3>공격 방향 기록</h3>
               <div className="fla-attack-layout">
               <div className="fla-attack-controls">
@@ -78,7 +83,10 @@ export function MatchAttackCard({attackLR, selectedTeam, pendingLane, matchTeams
 }
 
 export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPlayerKey, xgPlayerOptions, isOnTargetShot, setIsOnTargetShot, isGoalShot, setIsGoalShot, isHeaderShot, setIsHeaderShot, isOwnGoal, setIsOwnGoal, shotPoint, goalmouthPoint, canWrite, canRecord=canWrite, xgValue, setXgValue, xgotValue, estimateXgFromPitch, estimateXgotFromGoalmouth, submitXg, isSavingShot, onGoalmouthClick, onPitchClick, xgEstimateMeta, xgotEstimateMeta}:{isFutsal:boolean; xgTeam:Team; setXgTeam:(team:Team)=>void; xgPlayerKey:string; setXgPlayerKey:(value:string)=>void; xgPlayerOptions:LineupPlayer[]; isOnTargetShot:boolean; setIsOnTargetShot:Dispatch<SetStateAction<boolean>>; isGoalShot:boolean; setIsGoalShot:Dispatch<SetStateAction<boolean>>; isHeaderShot:boolean; setIsHeaderShot:Dispatch<SetStateAction<boolean>>; isOwnGoal:boolean; setIsOwnGoal:Dispatch<SetStateAction<boolean>>; shotPoint:Point|null; goalmouthPoint:Point|null; canWrite:boolean; canRecord?:boolean; xgValue:string; setXgValue:(value:string)=>void; xgotValue:string; estimateXgFromPitch:()=>void; estimateXgotFromGoalmouth:()=>void; submitXg:()=>void; isSavingShot:boolean; onGoalmouthClick:(event:MouseEvent<HTMLDivElement>)=>void; onPitchClick:(event:MouseEvent<HTMLDivElement>)=>void; xgEstimateMeta:string; xgotEstimateMeta:string;}){
- return (<div className="card card-panel grid fla-shot-card">
+ const cardRef=useRef<HTMLDivElement|null>(null);
+ // 반쪽 창(736px)에서 xGOT 칸이 잘리지 않게 도구 줄을 720 이하에서 접는다(이사71, 전에는 660)
+ useWidthFlags(cardRef,{mid:720,narrow:460});
+ return (<div ref={cardRef} className="card card-panel grid fla-shot-card">
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <h3 style={{ margin: 0 }}>{isFutsal ? '슈팅 위협도 기록' : '슈팅 기록'}</h3>

@@ -15,6 +15,7 @@ import { elapsedMatchMs, restoredMatchMs, matchControlJson } from '../../../../l
 import { useFlaOutbox, outboxRecordRow, type FlaOutboxItem } from '../../../../lib/fla-input-outbox';
 import { registerWorkspaceLeave } from '../../../../lib/workspace-leave';
 import { useMatchHighlights } from '../../../../lib/use-match-highlights';
+import { useWidthFlags } from '../../../../lib/width-flags';
 import { errorDetail, errorFromResponse, errorMessage, lookupErrorInfo, responseMessage, warnRaw } from '../../../../lib/error-messages';
 import { ErrorFold } from '../../../../components/ErrorNotice';
 import BroadcastPreviewPanel from '../../../../components/fla/BroadcastPreviewPanel';
@@ -113,6 +114,9 @@ function MatchControlPage() {
   const [isSavingManualLineup, setIsSavingManualLineup] = useState(false);
   const [isManualLineupOpen, setIsManualLineupOpen] = useState(false);
   const setupRef = useRef<HTMLDetailsElement | null>(null);
+  // 시계 카드 배치는 카드 폭으로만 정한다(console-workspaces.css · lib/width-flags.ts).
+  const clockCardRef = useRef<HTMLElement | null>(null);
+  useWidthFlags(clockCardRef, { narrow: 800, tight: 900 });
   const lineupInputRef = useRef<HTMLInputElement | null>(null);
   const recordSheetInputRef = useRef<HTMLInputElement | null>(null);
   const [shotPoint, setShotPoint] = useState<{ x: number; y: number } | null>(null);
@@ -1691,7 +1695,7 @@ function MatchControlPage() {
       {inputs.storageError ? <div className="fla-feedback" role="alert"><span>브라우저 저장소를 쓸 수 없습니다. 저장 대기가 0건이 될 때까지 이 화면을 닫지 마세요.</span></div> : null}
       {controlNotice ? <div className="fla-feedback" role="status"><span>{controlNotice}<ErrorFold message={controlNotice} /></span><button aria-label="알림 닫기" onClick={() => setControlNotice('')}>×</button></div> : null}
       <AgentEditNotice matchId={id} onChange={() => { void fetchAll().catch(() => {}); }} />
-      <section className="card fla-clock" aria-label="경기 타이머">
+      <section ref={clockCardRef} className="card fla-clock" aria-label="경기 타이머">
         <div className="fla-clock-main"><div><span className="muted">{running ? '진행 중' : '일시정지'}</span><strong className="fla-clock-value">{displayClockLabel(clockMs)}{clockSpeed === 2 ? ' ×2' : ''}</strong></div>
           {displaySummary?.score ? (
             <div
