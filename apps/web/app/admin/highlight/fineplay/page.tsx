@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
+import FinalScorePanel from './FinalScorePanel';
 import { API_BASE, apiJson } from '../../../../lib/api';
 import { errorDetail, errorFromBody, errorFromResponse, errorMessage, foldRaw, FpcError, jobErrorMessage, responseMessage, warnRaw } from '../../../../lib/error-messages';
 import { ErrorFold } from '../../../../components/ErrorNotice';
@@ -1810,6 +1811,23 @@ export default function FineplayJobsPage() {
                     {active ? '선택됨' : job.status === 'done' ? '다시 열기' : '태깅하기'}
                   </button>
                 </div>
+                {/* 분석관 확정 최종 점수(FinePlay C-21 ②) — 만든 잡·지금 연 잡에만. 확정한 값만 결과에 실린다 */}
+                {job.status === 'done' || active ? (
+                  <FinalScorePanel
+                    jobId={job.id}
+                    standalone={!!meta.standalone}
+                    tagScore={active && tags.length ? finalScore : null}
+                    labels={meta.standalone
+                      ? { home: meta.links?.home?.team_name || '홈', away: meta.links?.away?.team_name || '원정' }
+                      : (() => {
+                          const ours = String(meta.manifest?.team?.teamName || '신청팀');
+                          const theirs = String(meta.manifest?.opponent?.name || '상대');
+                          return meta.fpa_link?.our_side === 'away'
+                            ? { home: theirs, away: ours } : { home: ours, away: theirs };
+                        })()}
+                    buttonStyle={smallBtn}
+                  />
+                ) : null}
                 {meta.standalone && linkJobId === job.id ? (
                   <div style={{
                     margin: '4px 0 4px 12px', padding: '10px 12px', borderRadius: 6,
