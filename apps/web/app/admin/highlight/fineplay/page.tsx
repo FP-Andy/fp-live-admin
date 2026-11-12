@@ -60,22 +60,61 @@ function argbToCss(argb?: number | null): string | null {
   return `#${hex.slice(2)}`;   // 앞 두 자리는 알파 — 스와치에는 쓰지 않는다
 }
 
-// 유니폼 색 견본 — 우리·상대 두 개(2026-11-12 [이사91]). 자체전이면 "A팀 조끼·B팀 조끼".
-// 색이 없으면(옛 신청·미정) 견본 없이 이름표만 둔다.
-function JerseySwatch({ argb, label }: { argb?: number | null; label: string }) {
+// 신청 때 고른 유니폼 통째로(FinePlay 2026-11-13 [이사93]) — 일정에서 들어온 신청만 매니페스트에 온다.
+// kind HOME | AWAY | VEST · 색 ARGB · imageUrl = 앱이 그린 앞면 PNG(presign 1시간).
+type FpUniform = {
+  kind?: string | null;
+  patternKey?: string | null;
+  primaryArgb?: number | null;
+  secondaryArgb?: number | null;
+  tertiaryArgb?: number | null;
+  imageUrl?: string | null;
+};
+
+const UNIFORM_KIND_LABEL: Record<string, string> = { HOME: '홈', AWAY: '원정', VEST: '조끼' };
+
+function ColorChip({ argb, title }: { argb?: number | null; title: string }) {
   const css = argbToCss(argb);
+  if (!css) return null;
+  return (
+    <span
+      title={`${title} ${css}`}
+      style={{
+        width: 16, height: 16, borderRadius: 4, display: 'inline-block',
+        background: css, border: '1px solid rgba(255,255,255,0.35)',
+      }}
+    />
+  );
+}
+
+// 유니폼 견본 — 우리·상대 두 개(2026-11-12 [이사91]). 자체전이면 "A팀 조끼·B팀 조끼".
+// 2026-11-13 [이사93]: 유니폼 스냅샷이 있으면 유니폼 그림 + 색 견본 세 개(주·보조·포인트).
+// 그림이 없거나(옛 신청·자체전 조끼) 주소가 만료돼 못 읽으면 색 견본만. 색도 없으면 이름표만.
+function JerseySwatch({ argb, label, uniform }: { argb?: number | null; label: string; uniform?: FpUniform | null }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const kind = uniform?.kind ? UNIFORM_KIND_LABEL[uniform.kind] ?? uniform.kind : null;
+  const showImage = Boolean(uniform?.imageUrl) && !imageFailed;
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--muted, #999)' }}>
-      {css ? (
-        <span
-          title={`${label} ${css}`}
-          style={{
-            width: 16, height: 16, borderRadius: 4, display: 'inline-block',
-            background: css, border: '1px solid rgba(255,255,255,0.35)',
-          }}
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element -- presign 주소(외부 S3)라 next/image 최적화 대상 아님
+        <img
+          src={uniform!.imageUrl as string}
+          alt={`${label} 유니폼`}
+          onError={() => setImageFailed(true)}
+          style={{ width: 34, height: 40, objectFit: 'contain' }}
         />
       ) : null}
-      {label}
+      {uniform ? (
+        <>
+          <ColorChip argb={uniform.primaryArgb ?? argb} title={`${label} 주색`} />
+          <ColorChip argb={uniform.secondaryArgb} title={`${label} 보조색`} />
+          <ColorChip argb={uniform.tertiaryArgb} title={`${label} 포인트색`} />
+        </>
+      ) : (
+        <ColorChip argb={argb} title={`${label} 유니폼 색`} />
+      )}
+      {kind ? `${label} · ${kind}` : label}
     </span>
   );
 }
@@ -106,8 +145,8 @@ type FpJob = {
     manifest?: {
       videos?: { durationSeconds?: number }[];
       // 신청한 팀. 홈/어웨이 중 어느 쪽인지는 claim 때 정해진다(컨벤션: 홈 = 신청팀).
-      team?: { teamName?: string; jerseyColorArgb?: number; score?: number | null } | null;
-      opponent?: { name?: string; score?: number | null; jerseyColorArgb?: number | null } | null;
+      team?: { teamName?: string; jerseyColorArgb?: number; score?: number | null; uniform?: FpUniform | null } | null;
+      opponent?: { name?: string; score?: number | null; jerseyColorArgb?: number | null; uniform?: FpUniform | null } | null;
       // 라커룸 자체전(C-21) — A팀 = team, B팀 = opponent(같은 팀 선수)
       matchKind?: string | null;
       lineup?: unknown[];
@@ -2038,11 +2077,15 @@ export default function FineplayJobsPage() {
             >
               <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>신청팀</span>
               <JerseySwatch
+                key={`team-${selected.id}`}
                 argb={selected.job_metadata.manifest.team.jerseyColorArgb}
+                uniform={selected.job_metadata.manifest.team.uniform}
                 label={selected.job_metadata.manifest.matchKind === 'SCRIMMAGE' ? 'A팀 조끼' : '우리'}
               />
               <JerseySwatch
+                key={`opponent-${selected.id}`}
                 argb={selected.job_metadata.manifest.opponent?.jerseyColorArgb}
+                uniform={selected.job_metadata.manifest.opponent?.uniform}
                 label={selected.job_metadata.manifest.matchKind === 'SCRIMMAGE' ? 'B팀 조끼' : '상대'}
               />
               <strong style={{ fontSize: 14 }}>
