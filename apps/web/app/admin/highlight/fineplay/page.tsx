@@ -60,6 +60,26 @@ function argbToCss(argb?: number | null): string | null {
   return `#${hex.slice(2)}`;   // 앞 두 자리는 알파 — 스와치에는 쓰지 않는다
 }
 
+// 유니폼 색 견본 — 우리·상대 두 개(2026-11-12 [이사91]). 자체전이면 "A팀 조끼·B팀 조끼".
+// 색이 없으면(옛 신청·미정) 견본 없이 이름표만 둔다.
+function JerseySwatch({ argb, label }: { argb?: number | null; label: string }) {
+  const css = argbToCss(argb);
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--muted, #999)' }}>
+      {css ? (
+        <span
+          title={`${label} ${css}`}
+          style={{
+            width: 16, height: 16, borderRadius: 4, display: 'inline-block',
+            background: css, border: '1px solid rgba(255,255,255,0.35)',
+          }}
+        />
+      ) : null}
+      {label}
+    </span>
+  );
+}
+
 // 산출 지시 — 신청 옵션(BASIC_HIGHLIGHT / FREE_XFP_TOKEN / XFP_SINGLE / FULL_REPORT)
 // 으로 서버가 판정한다. basic 이면 FPA dual 태깅 없이 구간만 잘라 보내면 된다.
 type PlanTier = 'xfp' | 'basic';
@@ -87,7 +107,9 @@ type FpJob = {
       videos?: { durationSeconds?: number }[];
       // 신청한 팀. 홈/어웨이 중 어느 쪽인지는 claim 때 정해진다(컨벤션: 홈 = 신청팀).
       team?: { teamName?: string; jerseyColorArgb?: number; score?: number | null } | null;
-      opponent?: { name?: string; score?: number | null } | null;
+      opponent?: { name?: string; score?: number | null; jerseyColorArgb?: number | null } | null;
+      // 라커룸 자체전(C-21) — A팀 = team, B팀 = opponent(같은 팀 선수)
+      matchKind?: string | null;
       lineup?: unknown[];
       // 신청 시 필수로 받는 최종 스코어(앱 AnalysisRequest.isStep1Complete).
       // 키 위치가 확정 전이라 아래 requestScore() 가 후보를 돌며 찾는다.
@@ -2015,16 +2037,14 @@ export default function FineplayJobsPage() {
               }}
             >
               <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>신청팀</span>
-              {argbToCss(selected.job_metadata.manifest.team.jerseyColorArgb) ? (
-                <span
-                  title={`유니폼 색 ${argbToCss(selected.job_metadata.manifest.team.jerseyColorArgb)}`}
-                  style={{
-                    width: 16, height: 16, borderRadius: 4, display: 'inline-block',
-                    background: argbToCss(selected.job_metadata.manifest.team.jerseyColorArgb) as string,
-                    border: '1px solid rgba(255,255,255,0.35)',
-                  }}
-                />
-              ) : null}
+              <JerseySwatch
+                argb={selected.job_metadata.manifest.team.jerseyColorArgb}
+                label={selected.job_metadata.manifest.matchKind === 'SCRIMMAGE' ? 'A팀 조끼' : '우리'}
+              />
+              <JerseySwatch
+                argb={selected.job_metadata.manifest.opponent?.jerseyColorArgb}
+                label={selected.job_metadata.manifest.matchKind === 'SCRIMMAGE' ? 'B팀 조끼' : '상대'}
+              />
               <strong style={{ fontSize: 14 }}>
                 {selected.job_metadata.manifest.team.teamName || '(팀명 없음)'}
               </strong>
