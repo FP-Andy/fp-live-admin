@@ -11,5 +11,13 @@ node_modules
 # ffmpeg 코어는 prebuild 스크립트가 node_modules 에서 다시 복사한다 (31MB).
 public/ffmpeg
 
+# Local/demo match imagery and derived player poses are not public web assets.
+# Keep these available to the local preview, but never copy them into an image.
+public/kbl-grayzone/frames
+public/kbl-grayzone/posters
+public/kbl-grayzone/review-survey
+public/kbl-grayzone/assets/poses
+public/kbl-grayzone/data
+
 .DS_Store
 *.log

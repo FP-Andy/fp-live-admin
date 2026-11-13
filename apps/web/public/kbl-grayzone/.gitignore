@@ -1,0 +1,6 @@
+# Local game frames, records, posters and pose-derived assets stay private.
+/frames/
+/posters/
+/review-survey/
+/assets/poses/
+/data/
