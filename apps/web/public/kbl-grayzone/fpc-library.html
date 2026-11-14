@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head><script>try{if(window.parent!==window){const theme=window.parent.document.documentElement.dataset.consoleTheme;if(theme==="dark"||theme==="light")document.documentElement.dataset.consoleTheme=theme;}}catch{}</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>경기 라이브러리 — KBL COURTSIDE</title>
+  <link rel="icon" type="image/svg+xml" href="./icon.svg">
+  <link rel="preload" href="./fonts/KBLJump_R.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/KBLJump_B.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/KBLCourt_EB.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./brand.css">
+  <link rel="stylesheet" href="./library.css">
+  <link rel="stylesheet" href="./wide-preparation.css">
+<link rel="stylesheet" href="./courtside-ui.css"></head>
+<body class="catalog">
+  <header class="catalog-header">
+    <a class="brand" href="./fpc-library.html" aria-label="KBL Courtside 경기 목록"><img class="brand-logo" src="./assets/kbl-ci.svg" width="60" height="36" alt="KBL"><span class="brand-wordmark">COURTSIDE<small>REFEREE VISION LAB</small></span></a>
+    <a class="catalog-nav" href="./fpc-library.html">경기 라이브러리</a>
+
+
+
+    <span class="catalog-local"><i class="online-dot"></i>FPC WORKSPACE</span>
+  </header>
+  <main class="catalog-main">
+    <nav id="catalogBreadcrumb" class="catalog-breadcrumb" aria-label="현재 위치" hidden><a href="./fpc-library.html">경기 목록</a><span>/</span><span>경기 영상</span></nav>
+    <section class="catalog-heading">
+      <div><div class="eyebrow" id="catalogEyebrow">MATCH LIBRARY / 경기 라이브러리</div><h1 id="catalogTitle" tabindex="-1">장면을 살펴볼 경기를 선택하세요.</h1><p id="catalogDescription">경기를 선택하면 해당 경기의 영상과 심판 정보를 확인할 수 있습니다.</p></div>
+      <div id="catalogStats" class="catalog-stats" aria-label="라이브러리 요약"></div>
+    </section>
+    <div id="libraryActions" class="library-actions"><span>FPC 경기 선택 → 자료 등록 → 프레임·객체·관절 검수 → 리포트</span></div>
+    <div id="catalogToolbar" class="catalog-toolbar">
+      <h2>전체 경기 <span id="matchCount">—</span></h2>
+      <label class="match-search"><span>경기 검색</span><input id="matchSearch" type="search" placeholder="팀명 또는 지역으로 검색" autocomplete="off"></label>
+    </div>
+    <div id="matchRoster" class="match-roster" hidden></div>
+    <p id="catalogState" class="catalog-state" role="status">경기 목록을 불러오는 중입니다.</p>
+    <section id="matchList" class="match-list" aria-label="경기 목록"></section>
+    <section id="clipGallery" class="clip-gallery" aria-label="선택 경기의 영상 목록" hidden></section>
+    <div id="emptyMatches" class="catalog-empty" hidden><strong>검색한 경기가 없습니다.</strong><p>다른 팀명이나 지역으로 검색해 보세요.</p><button id="clearSearch" class="secondary">전체 경기 보기</button></div>
+    <a id="catalogBack" class="catalog-back" href="./fpc-library.html" hidden>← 전체 경기로 돌아가기</a>
+    <footer class="catalog-footer"><span>COURTSIDE <b>×</b> FPC</span><span>iTop Sports · KBL referee visibility demo</span><span>FPC 녹화 영상 · 판독 작업</span></footer>
+  </main>
+  <script type="module" src="./fpc-library.mjs"></script>
+</body>
+</html>

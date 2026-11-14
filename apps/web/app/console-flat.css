@@ -752,3 +752,29 @@ html[data-console-theme="light"] .app-shell :is(.fla-match, .console-dashboard, 
 html[data-console-theme="light"] .app-shell .fhl-flat .fhl-subtab-step { color: #334055; }
 html[data-console-theme="light"] .app-shell :is(.mr-field > span, .mr-source, .mr-preview-bar small, .mr-phases small, .fv-log-quick small) { opacity: 1; color: var(--muted); }
 html[data-console-theme="light"] .app-shell .fv-workspace kbd { opacity: 1; }
+/* Courtside keeps the console controls in the existing KBL header. */
+.app-shell .courtside-shell { position: relative; grid-template-rows: minmax(0, 1fr); }
+.app-shell .courtside-shell > .app-content { padding: 0; min-width: 0; }
+.app-shell .courtside-frame { display: block; width: 100%; height: 100dvh; border: 0; background: transparent; }
+@media (min-width: 1101px) {
+  .app-shell.courtside-workspace > .sidebar { height: 100dvh; min-height: 0; overflow-y: auto; }
+}
+.app-shell .courtside-topbar { position:absolute; inset:0 0 auto; height:0; min-height:0; padding:0; border:0; background:transparent; z-index:40; pointer-events:none; }
+.app-shell .courtside-topbar .topbar-leading > div,
+.app-shell .courtside-topbar .topbar-badge { display:none; }
+.app-shell .courtside-topbar :is(.topbar-sidebar-toggle,.console-theme-toggle) {
+  position:absolute; top:var(--courtside-control-y,40px); transform:translateY(-50%); pointer-events:auto;
+  display:grid; place-items:center; width:36px; min-width:36px; height:36px; padding:0;
+  color:#657185; background:transparent; border:0; border-radius:8px; box-shadow:none;
+}
+.app-shell .courtside-topbar .topbar-sidebar-toggle { left:16px; }
+.app-shell .courtside-topbar .topbar-sidebar-toggle[aria-expanded="true"] { visibility:hidden; pointer-events:none; }
+.app-shell .courtside-topbar .console-theme-toggle { right:20px; }
+.app-shell .courtside-topbar .console-theme-toggle span { display:none; }
+.app-shell .courtside-topbar :is(.topbar-sidebar-toggle,.console-theme-toggle):hover { background:#eef1f5; color:#18223b; }
+html[data-console-theme="dark"] .app-shell .courtside-topbar :is(.topbar-sidebar-toggle,.console-theme-toggle) { color:#c0c8d6; background:transparent; border:0; box-shadow:none; }
+html[data-console-theme="dark"] .app-shell .courtside-topbar :is(.topbar-sidebar-toggle,.console-theme-toggle):hover { background:#343a46; color:#fff; }
+.app-shell .courtside-topbar[data-header-visible="false"] { visibility:hidden; pointer-events:none; }
+.app-shell .courtside-topbar :is(.topbar-sidebar-toggle,.console-theme-toggle):focus-visible { outline:2px solid #ed713b; outline-offset:2px; }
+html[data-console-theme="light"] .app-shell .courtside-topbar :is(.topbar-sidebar-toggle,.console-theme-toggle) { color:#657185; background:transparent; border:0; box-shadow:none; }
+html[data-console-theme="light"] .app-shell .courtside-topbar :is(.topbar-sidebar-toggle,.console-theme-toggle):hover { background:#eef1f5; color:#18223b; }
