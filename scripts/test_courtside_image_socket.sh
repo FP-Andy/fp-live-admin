@@ -12,8 +12,8 @@ trap cleanup EXIT
 store="$work/store"
 mkdir -p "$store/scripts/kbl_grayzone" "$store/apps/web/public/kbl-grayzone" "$store/run"
 touch "$store/scripts/fpa_cv_bytetrack.py" "$store/scripts/fpa_cv_uniforms.py"
-sudo chown -R 1000:1000 "$work"
 chmod 700 "$work" "$store"
+sudo chown -R 1000:1000 "$work"
 docker run -d --name "$worker" --network none --read-only --user 1000:1000 \
   --tmpfs /tmp:rw,nosuid,nodev,size=512m \
   -v "$store:/workspace" \
