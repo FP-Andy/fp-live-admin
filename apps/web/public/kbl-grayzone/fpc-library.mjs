@@ -18,7 +18,7 @@ async function reportStatus(mid){
 async function firstRecording(mid){
  return fetchFirstRecording(mid,
   id=>fetch(`/api/recordings/matches/${encodeURIComponent(id)}/courtside-first-frame`),
-  id=>api(`/api/recordings/matches/${encodeURIComponent(id)}/courtside-parts`));
+  id=>api(`/api/courtside/matches/${encodeURIComponent(id)}/recording-parts`));
 }
 async function cardDetails(mid){
  const [recording,report]=await Promise.allSettled([firstRecording(mid),reportStatus(mid)]);

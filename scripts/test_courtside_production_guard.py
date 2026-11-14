@@ -55,6 +55,8 @@ class ProductionGuardTests(unittest.TestCase):
   self.assertEqual(data['services']['web']['build']['args']['NEXT_PUBLIC_COURTSIDE_ENABLED'],'1')
   self.assertEqual(data['services']['api']['environment']['COURTSIDE_ALLOW_GPU_ACTIONS'],'1')
   self.assertEqual(data['services']['api']['environment']['COURTSIDE_ALLOW_RECORDING_RELAY'],'1')
+  self.assertEqual(data['services']['api']['environment']['COURTSIDE_RECORDING_ROOT'],'/courtside-recordings')
+  self.assertIn('recording_data:/courtside-recordings:ro',data['services']['api']['volumes'])
   self.assertEqual(self.worker['network_mode'],'none');self.assertTrue(all(v.endswith(':ro') for v in worker['volumes']))
   self.assertNotIn('COURTSIDE_GPU_STAGING_MODE',worker['environment'])
   self.assertEqual(broker['networks'],['courtside-eic-egress']);self.assertNotIn('ports',broker)

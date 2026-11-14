@@ -4,9 +4,12 @@
 # feature is enabled at build time; no AWS access keys or SSH keys are mounted.
 services:
   api:
+    volumes:
+      - recording_data:/courtside-recordings:ro
     environment:
       COURTSIDE_ALLOW_GPU_ACTIONS: '1'
       COURTSIDE_ALLOW_RECORDING_RELAY: '1'
+      COURTSIDE_RECORDING_ROOT: /courtside-recordings
   web:
     build:
       args:

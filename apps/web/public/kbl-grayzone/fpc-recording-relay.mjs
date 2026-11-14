@@ -16,7 +16,7 @@ export function mountFpcRecordingRelay(host,{intakeId,onPrepared=()=>{},canPrepa
  async function get(url,opts){const response=await fetch(url,opts);const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:'FPC 녹화 원본을 확인하지 못했습니다.');return data;}
  $('load').onclick=async()=>{stopPreview();busy=true;controls();try{
   // Existing authentication; the dedicated response contains no stream key.
-  const data=await get(new URL('api/recordings/matches/'+encodeURIComponent(mid)+'/courtside-parts',location.origin+'/'));
+  const data=await get(new URL('api/courtside/matches/'+encodeURIComponent(mid)+'/recording-parts',location.origin+'/'));
   const rows=Array.isArray(data.recordings)?data.recordings:[];
   sessions=rows.map(r=>({id:r.id,createdAt:r.created_at,parts:Array.isArray(r.parts)?r.parts.map(p=>({number:p.number,name:p.sourcePartName,duration:p.duration})):[]}));
   $('session').replaceChildren(new Option('녹화 선택',''),...sessions.map(r=>new Option((r.createdAt?new Date(r.createdAt).toLocaleString('ko-KR'):'녹화')+' · '+r.parts.length+'개 조각',r.id)));
