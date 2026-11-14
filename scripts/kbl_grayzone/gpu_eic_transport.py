@@ -63,7 +63,7 @@ def authorize(settings,key):
     from botocore.config import Config
     limits=Config(connect_timeout=3,read_timeout=8,retries={'max_attempts':1})
     session=boto3.Session(region_name=settings['region'])
-    credentials=session.client('sts',config=limits).assume_role(RoleArn=settings['role'],RoleSessionName='courtside-t4',DurationSeconds=900)['Credentials']
+    credentials=session.client('sts',config=limits).assume_role(RoleArn=settings['role'],RoleSessionName='courtside-t4',ExternalId=settings['externalId'],DurationSeconds=900)['Credentials']
     client=session.client('ec2-instance-connect',aws_access_key_id=credentials['AccessKeyId'],
         aws_secret_access_key=credentials['SecretAccessKey'],aws_session_token=credentials['SessionToken'],config=limits)
     response=client.send_ssh_public_key(InstanceId=settings['instance'],AvailabilityZone=settings['zone'],
@@ -72,8 +72,9 @@ def authorize(settings,key):
 
 def validate(settings):
     if not isinstance(settings,dict):raise ValueError('invalid broker settings')
-    if set(settings)!={'role','region','instance','zone','user','address','port','peerUid'}:raise ValueError('invalid broker settings')
+    if set(settings)!={'role','region','instance','zone','user','address','port','peerUid','externalId'}:raise ValueError('invalid broker settings')
     if not re.fullmatch(r'arn:aws(?:-[a-z-]+)?:iam::\d{12}:role/[A-Za-z0-9_+=,.@/-]+',settings['role']):raise ValueError('invalid role')
+    if not isinstance(settings['externalId'],str) or not re.fullmatch(r'[A-Za-z0-9_+=,.@:/-]{32,128}',settings['externalId']):raise ValueError('invalid external id')
     if not re.fullmatch(r'[a-z]{2}(?:-gov)?-[a-z]+-\d',settings['region']):raise ValueError('invalid region')
     if not re.fullmatch(r'i-[0-9a-f]{8}(?:[0-9a-f]{9})?',settings['instance']):raise ValueError('invalid instance')
     if not re.fullmatch(re.escape(settings['region'])+r'[a-z]',settings['zone']):raise ValueError('invalid availability zone')
@@ -165,7 +166,10 @@ def main():
     server=sub.add_parser('broker');server.add_argument('--socket',required=True);server.add_argument('--config',required=True)
     client=sub.add_parser('proxy');client.add_argument('--socket',required=True);client.add_argument('--public-key',required=True)
     args=parser.parse_args()
-    if args.action=='broker':broker(args.socket,json.loads(Path(args.config).read_text()))
+    if args.action=='broker':
+        path=Path(args.config);info=path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode & 0o077:raise ValueError('broker config must be private')
+        broker(args.socket,json.loads(path.read_text()))
     else:proxy(args.socket,args.public_key)
 
 if __name__=='__main__':main()

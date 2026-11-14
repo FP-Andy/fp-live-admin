@@ -17,7 +17,7 @@ KEY='ssh-ed25519 '+base64.b64encode(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x2
 
 def settings():
  return {'role':'arn:aws:iam::123456789012:role/test','region':'us-east-1','instance':'i-12345678901234567',
-         'zone':'us-east-1a','user':'ubuntu','address':'127.0.0.1','port':22,'peerUid':os.getuid()}
+         'zone':'us-east-1a','user':'ubuntu','address':'127.0.0.1','port':22,'peerUid':os.getuid(),'externalId':'a'*32}
 
 class TransportTests(unittest.TestCase):
  def test_bootstrap_generates_private_key_and_pins_host(self):
@@ -37,7 +37,7 @@ class TransportTests(unittest.TestCase):
 
  def test_fixed_target_configuration_rejects_unexpected_targets(self):
   values=settings();self.assertEqual(transport.validate(values),values)
-  for key,value in [('user','root'),('port',443),('address','attacker.invalid'),('peerUid',0),('instance','i-bad'),('zone','us-west-1a')]:
+  for key,value in [('user','root'),('port',443),('address','attacker.invalid'),('peerUid',0),('instance','i-bad'),('zone','us-west-1a'),('externalId','short')]:
    with self.subTest(key=key),self.assertRaises(ValueError):transport.validate({**values,key:value})
 
  @unittest.skipUnless(hasattr(socket,'SO_PEERCRED'),'Linux peer credentials required')

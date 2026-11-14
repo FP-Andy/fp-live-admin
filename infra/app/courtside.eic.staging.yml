@@ -1,6 +1,8 @@
 # Explicit staging overlay; never use as a production deployment by itself.
 # The broker config, reviewed gpu.json and pinned T4 known-hosts file are
-# operator-provided read-only files. No private SSH or AWS key is mounted.
+# operator-provided read-only files. The broker config contains the role's
+# ExternalId and must be owned by UID 1000 with mode 0600 or stricter, outside
+# directories mounted by other services. No private SSH or AWS key is mounted.
 services:
   api:
     environment:
