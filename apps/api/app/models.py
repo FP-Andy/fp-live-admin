@@ -410,6 +410,8 @@ class HighlightClip(Base):
     end_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     main_action: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 골 클립인가 — 태깅 시점 '골'(Q/R) vs '장면'(W/E) 구분. 앱 전송 payload 에 isGoal 로 실린다.
+    is_goal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 운영자가 손으로 붙인 클립 제목. NULL 이면 FPA 대표 액션에서 자동 생성한
     # 제목이 그대로 나간다 — 값이 있을 때만 그 자리를 덮어쓰는 오버라이드다.
     title: Mapped[str | None] = mapped_column(String, nullable=True)
