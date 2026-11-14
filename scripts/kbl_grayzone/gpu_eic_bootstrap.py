@@ -27,6 +27,8 @@ def main():
   ForwardAgent no
   ProxyCommand '''+PROXY+'\n')
     CONFIG.chmod(0o600)
+    if os.environ.get('COURTSIDE_GPU_STAGING_MODE')=='1':
+        subprocess.run([sys.executable,'scripts/kbl_grayzone/cloud_preflight.py','--require-staging-gpu'],check=True,timeout=30)
     os.execv(sys.executable,[sys.executable,'scripts/kbl_grayzone/serve_socket.py','--socket','run/courtside.sock'])
 
 if __name__=='__main__':main()

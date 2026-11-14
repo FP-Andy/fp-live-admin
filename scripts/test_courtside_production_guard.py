@@ -28,4 +28,25 @@ class ProductionGuardTests(unittest.TestCase):
   self.assertIn('COURTSIDE_WORKER_IMAGE:?',self.worker['image'])
   self.assertIn('no-new-privileges:true',self.worker['security_opt'])
   compile(self.worker['healthcheck']['test'][-1],'<healthcheck>','exec')
+ def test_staging_t4_bridge_has_no_direct_worker_network_or_static_keys(self):
+  data=yaml.safe_load((ROOT/'infra/app/courtside.eic.staging.yml').read_text())
+  worker=data['services']['courtside-v2'];broker=data['services']['courtside-eic']
+  self.assertEqual(self.worker['network_mode'],'none')
+  self.assertEqual(worker['entrypoint'][-1],'scripts/kbl_grayzone/gpu_eic_bootstrap.py')
+  self.assertEqual(worker['environment']['KBL_GPU_DISABLED'],'0')
+  self.assertEqual(worker['environment']['COURTSIDE_GPU_STAGING_MODE'],'1')
+  self.assertIn('COURTSIDE_STAGING_GPU_WORKSPACE:?',worker['environment']['COURTSIDE_STAGING_GPU_WORKSPACE'])
+  self.assertIn('COURTSIDE_STAGING_GPU_SHARED_LOCK:?',worker['environment']['COURTSIDE_STAGING_GPU_SHARED_LOCK'])
+  self.assertEqual(broker['user'],'1000:1000');self.assertTrue(broker['read_only'])
+  self.assertEqual(broker['cap_drop'],['ALL']);self.assertNotIn('ports',broker)
+  self.assertEqual(broker['networks'],['courtside-eic-egress'])
+  self.assertNotIn('AWS_ACCESS_KEY_ID',broker.get('environment',{}))
+  self.assertTrue(all(v.endswith(':ro') for v in broker['volumes'][1:]))
+  self.assertTrue(all(v.endswith(':ro') for v in worker['volumes']))
+ def test_staging_video_tools_are_mounted_read_only(self):
+  data=yaml.safe_load((ROOT/'infra/app/courtside.video.staging.yml').read_text())
+  worker=data['services']['courtside-v2']
+  self.assertEqual(worker['environment']['KBL_VIDEO_RENDER_ENABLED'],'1')
+  self.assertEqual(worker['environment']['KBL_BLENDER'],'/opt/courtside-blender/blender')
+  self.assertTrue(all(v.endswith(':ro') for v in worker['volumes']))
 if __name__=='__main__':unittest.main()

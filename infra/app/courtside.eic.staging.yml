@@ -9,6 +9,9 @@ services:
     entrypoint: ['/usr/local/bin/python', 'scripts/kbl_grayzone/gpu_eic_bootstrap.py']
     environment:
       KBL_GPU_DISABLED: '0'
+      COURTSIDE_GPU_STAGING_MODE: '1'
+      COURTSIDE_STAGING_GPU_WORKSPACE: ${COURTSIDE_STAGING_GPU_WORKSPACE:?Set isolated T4 staging workspace}
+      COURTSIDE_STAGING_GPU_SHARED_LOCK: ${COURTSIDE_STAGING_GPU_SHARED_LOCK:?Set shared T4 worker lock}
     volumes:
       - ${COURTSIDE_EIC_GPU_CONFIG:?Set reviewed gpu.json}:/workspace/runtime/kbl-cv/gpu.json:ro
       - ${COURTSIDE_EIC_KNOWN_HOSTS:?Set pinned T4 host key}:/run/courtside-credentials/t4-known-hosts:ro
