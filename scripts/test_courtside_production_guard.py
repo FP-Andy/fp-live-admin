@@ -49,4 +49,15 @@ class ProductionGuardTests(unittest.TestCase):
   self.assertEqual(worker['environment']['KBL_VIDEO_RENDER_ENABLED'],'1')
   self.assertEqual(worker['environment']['KBL_BLENDER'],'/opt/courtside-blender/blender')
   self.assertTrue(all(v.endswith(':ro') for v in worker['volumes']))
+ def test_explicit_enabled_overlay_keeps_credentials_and_worker_isolated(self):
+  data=yaml.safe_load((ROOT/'infra/app/courtside.production.enabled.yml').read_text())
+  worker=data['services']['courtside-v2'];broker=data['services']['courtside-eic']
+  self.assertEqual(data['services']['web']['build']['args']['NEXT_PUBLIC_COURTSIDE_ENABLED'],'1')
+  self.assertEqual(data['services']['api']['environment']['COURTSIDE_ALLOW_GPU_ACTIONS'],'1')
+  self.assertEqual(data['services']['api']['environment']['COURTSIDE_ALLOW_RECORDING_RELAY'],'1')
+  self.assertEqual(self.worker['network_mode'],'none');self.assertTrue(all(v.endswith(':ro') for v in worker['volumes']))
+  self.assertNotIn('COURTSIDE_GPU_STAGING_MODE',worker['environment'])
+  self.assertEqual(broker['networks'],['courtside-eic-egress']);self.assertNotIn('ports',broker)
+  self.assertEqual(broker['user'],'1000:1000');self.assertEqual(broker['cap_drop'],['ALL'])
+  self.assertTrue(broker['volumes'][1].endswith(':ro'));self.assertNotIn('AWS_ACCESS_KEY_ID',broker['environment'])
 if __name__=='__main__':unittest.main()
