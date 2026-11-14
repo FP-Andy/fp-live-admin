@@ -1,0 +1,10 @@
+{
+  "host": "courtside-stage-t4",
+  "sshConfig": "/run/secrets/courtside/ssh_config",
+  "image": "REPLACE_WITH_EXISTING_T4_IMAGE",
+  "workspace": "/home/ubuntu/courtside-stage-0123456789abcdef01234567",
+  "workerLock": "/home/ubuntu/REPLACE_WITH_LIVE_T4_WORKSPACE/worker.lock",
+  "instanceId": "i-REPLACE",
+  "region": "REPLACE_WITH_EXISTING_T4_REGION",
+  "autoStart": false
+}

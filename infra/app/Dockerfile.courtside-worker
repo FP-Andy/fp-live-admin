@@ -1,0 +1,26 @@
+# Candidate only: Linux amd64, immutable upstream and dated OS package index.
+# No media, credentials, user data, GPU models are baked in; report fonts are worker-only.
+FROM python:3.11.18-slim-trixie@sha256:b701198cb708b68d9413ca67d6311bd97c9389a2c5fe4da0511fc652642366cd
+ARG DEBIAN_SNAPSHOT=20261113T000000Z
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+ && printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s trixie main\ndeb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && apt-get install -y --no-install-recommends ffmpeg openssh-client g++ libgl1 libglib2.0-0 libsm6 libice6 libx11-6 libxext6 libxfixes3 libxi6 libxrender1 libxkbcommon0 fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
+COPY infra/app/courtside-linux-amd64-py311.lock /tmp/courtside-requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/courtside-requirements.lock \
+ && python -m pip check \
+ && rm /tmp/courtside-requirements.lock
+RUN useradd --uid 1000 --create-home courtside \
+ && mkdir -p /workspace/outputs /workspace/runtime /workspace/run /workspace/apps/web/public/kbl-grayzone/assets/report-fonts \
+ && chown -R 1000:1000 /workspace
+COPY --chown=1000:1000 scripts/kbl_grayzone /workspace/scripts/kbl_grayzone
+COPY --chown=1000:1000 scripts/fpa_cv_bytetrack.py scripts/fpa_cv_uniforms.py /workspace/scripts/
+COPY --chown=1000:1000 apps/web/public/kbl-grayzone /workspace/apps/web/public/kbl-grayzone
+# Private to the worker image; these are not under the public web root.
+COPY --chown=1000:1000 assets/courtside-report /opt/courtside-report
+WORKDIR /workspace
+ENV COURTSIDE_REPORT_ASSETS=/opt/courtside-report PYTHONDONTWRITEBYTECODE=1 KBL_DELIVERY_MODE=web KBL_GPU_DISABLED=1 KBL_VIDEO_RENDER_ENABLED=0
+USER 1000:1000
+ENTRYPOINT ["python", "scripts/kbl_grayzone/serve_socket.py"]
+CMD ["--socket", "run/courtside.sock"]

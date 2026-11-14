@@ -1,0 +1,41 @@
+# Explicit opt-in staging override. Use only with an isolated compose project,
+# staging database and an empty, dedicated store; never with production data.
+# The image must be an independently built and reviewed Courtside worker image.
+services:
+  api:
+    volumes:
+      - ${COURTSIDE_STAGING_ROOT:?Set COURTSIDE_STAGING_ROOT to an isolated test store}:/courtside
+    environment:
+      COURTSIDE_DATA_ROOT: /courtside
+      COURTSIDE_WORKBENCH_URL: http://127.0.0.1:4350
+      COURTSIDE_WORKBENCH_SOCKET: run/courtside.sock
+      COURTSIDE_PUBLIC_ORIGIN: ${COURTSIDE_STAGING_ORIGIN:?Set the staging HTTPS origin}
+      COURTSIDE_ALLOW_RECORDING_RELAY: ${COURTSIDE_STAGING_RELAY:-0}
+      COURTSIDE_ALLOW_GPU_ACTIONS: '0'
+  courtside-staging-worker:
+    image: ${COURTSIDE_STAGING_WORKER_IMAGE:?Set the reviewed worker image}
+    network_mode: none
+    read_only: true
+    init: true
+    restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 2g
+    working_dir: /workspace
+    entrypoint: ["/usr/local/bin/python", "scripts/kbl_grayzone/serve_socket.py", "--socket", "run/courtside.sock"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+      KBL_GPU_DISABLED: '1'
+      KBL_VIDEO_RENDER_ENABLED: '0'
+      KBL_DELIVERY_MODE: web
+      COURTSIDE_REPORT_ASSETS: /opt/courtside-report
+      KBL_RENDER_CACHE_DIR: /run/courtside-render-cache
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m
+      - /run/courtside-render-cache:rw,nosuid,nodev,exec,size=64m,uid=1000,gid=1000,mode=0700
+    volumes:
+      - ${COURTSIDE_STAGING_ROOT:?Set COURTSIDE_STAGING_ROOT to an isolated test store}:/workspace
+      - ../../scripts/kbl_grayzone:/workspace/scripts/kbl_grayzone:ro
+      - ../../scripts/fpa_cv_bytetrack.py:/workspace/scripts/fpa_cv_bytetrack.py:ro
+      - ../../scripts/fpa_cv_uniforms.py:/workspace/scripts/fpa_cv_uniforms.py:ro
+      - ../../assets/courtside-report:/opt/courtside-report:ro
+      - ../../apps/web/public/kbl-grayzone:/workspace/apps/web/public/kbl-grayzone:ro
