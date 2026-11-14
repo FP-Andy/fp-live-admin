@@ -26,3 +26,18 @@ test('production build rejects every local game imagery and pose directory', () 
     assert.doesNotThrow(() => assertProductionRoutes(root));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('production build rejects hard-coded local game entry points', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'courtside-local-entry-'));
+  try {
+    const dir = path.join(root, 'public', 'kbl-grayzone');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const file of ['index.html', 'case.html', 'case.mjs']) {
+      const target = path.join(dir, file);
+      fs.writeFileSync(target, 'local-only');
+      assert.throws(() => assertProductionRoutes(root), /로컬 경기 전용 화면/);
+      fs.rmSync(target);
+    }
+    assert.doesNotThrow(() => assertProductionRoutes(root));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

@@ -4,3 +4,7 @@
 /review-survey/
 /assets/poses/
 /data/
+# Legacy local game-specific entry points are not FPC release assets.
+/index.html
+/case.html
+/case.mjs
