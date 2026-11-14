@@ -52,6 +52,8 @@ from .auth import (
     require_admin as _require_superuser,
     session_user_id as _get_authenticated_user_id,
 )
+from .courtside_access import router as courtside_access_router
+from .courtside_bridge import router as courtside_bridge_router
 from .db import Base, SessionLocal, engine, get_db
 from .fcm_cards import (
     GOALKEEPER_TEMPLATE_PATH,
@@ -198,6 +200,8 @@ from .xg import estimate_xg as shared_estimate_xg, is_in_penalty_area as shared_
 app = FastAPI(title="Live Match Admin API")
 app.include_router(manual_highlight_log_router)
 app.include_router(auth_router)
+app.include_router(courtside_access_router)
+app.include_router(courtside_bridge_router)
 from .fpa_cv import router as fpa_cv_router
 app.include_router(fpa_cv_router)
 from .futsal_analysis_snapshots import router as analysis_snapshots_router
