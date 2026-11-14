@@ -1,5 +1,5 @@
 """GPU routing must fail closed and report fresh selected-frame processing accurately."""
-import json,tempfile,unittest
+import json,sys,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 import gpu_bridge as gpu
@@ -71,6 +71,10 @@ class GPUBridgeTests(unittest.TestCase):
 if __name__=='__main__':unittest.main()
 
 class WorkerControlTests(unittest.TestCase):
+ def test_private_broker_does_not_start_or_query_ec2(self):
+  with patch.dict(sys.modules,{'boto3':None}):
+   gpu.ensure_running({'transport':'fixed-eic-broker','autoStart':False,'instanceId':'i-test'},lambda _:None)
+   with self.assertRaises(ValueError):gpu.ensure_running({'transport':'fixed-eic-broker','autoStart':True},lambda _:None)
  def test_user_stop_cannot_be_undone_by_auto_start(self):
   import sys,types
   from unittest.mock import Mock

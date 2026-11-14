@@ -1,4 +1,4 @@
-import io,json,os,tempfile,unittest,uuid
+import io,json,os,subprocess,sys,tempfile,unittest,uuid
 import hashlib
 from types import SimpleNamespace
 from pathlib import Path
@@ -10,6 +10,23 @@ class S3:
  def get_object(self,**kw):return {'ContentLength':4,'ETag':'v1','Body':io.BytesIO(b'test')}
 
 class RecordingExternalTests(unittest.TestCase):
+ @unittest.skipUnless(hasattr(os,'geteuid') and os.geteuid()==0,'requires isolated root test container')
+ def test_root_api_copy_is_readable_by_unprivileged_store_owner(self):
+  with tempfile.TemporaryDirectory() as folder:
+   root=Path(folder);os.chown(root,1000,1000)
+   mid=str(uuid.uuid4());sid=str(uuid.uuid4())
+   result=copy_part_to_shared_store(S3(),'bucket',root,mid,'a'*24,sid,'take-00001-part-000001.mp4')
+   path=root/result['relativePath']
+   def drop_privileges():
+    os.setgroups([]);os.setgid(1000);os.setuid(1000)
+   proc=subprocess.run([sys.executable,'-c','import pathlib,sys;sys.stdout.buffer.write(pathlib.Path(sys.argv[1]).read_bytes())',str(path)],
+                       preexec_fn=drop_privileges,capture_output=True,check=True)
+   self.assertEqual(proc.stdout,b'test')
+   self.assertEqual(path.stat().st_uid,1000)
+   self.assertEqual((root/'outputs/kbl-fpc-relay'/mid).stat().st_uid,1000)
+   # A later idempotent request can reuse the same completed file.
+   self.assertEqual(copy_part_to_shared_store(S3(),'bucket',root,mid,'a'*24,sid,'take-00001-part-000001.mp4')['sha256'],result['sha256'])
+
  def test_space_pressure_cleanup_runs_before_rechecking_free_space(self):
   with tempfile.TemporaryDirectory() as folder:
    root=Path(folder);mid=str(uuid.uuid4());sid=str(uuid.uuid4());cleanup=unittest.mock.Mock()

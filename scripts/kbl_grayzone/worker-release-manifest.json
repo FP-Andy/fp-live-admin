@@ -1,16 +1,18 @@
 {
   "schema": "courtside-worker-source/v1",
   "entrypoints": [
-    "serve_socket",
+    "build_mpfb_assets",
+    "build_pose_assets",
+    "cloud_preflight",
+    "gpu_eic_bootstrap",
+    "gpu_eic_transport",
     "gpu_worker",
     "process",
+    "serve_socket",
     "video_cpu_worker",
-    "video_renderer_cpu",
     "video_depth",
     "video_pose_refit",
-    "cloud_preflight",
-    "build_pose_assets",
-    "build_mpfb_assets"
+    "video_renderer_cpu"
   ],
   "modules": [
     "action_window",
@@ -42,6 +44,8 @@
     "fpc_sources",
     "gpu_bridge",
     "gpu_control",
+    "gpu_eic_bootstrap",
+    "gpu_eic_transport",
     "gpu_worker",
     "image_bounds",
     "job_store",

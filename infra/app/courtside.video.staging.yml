@@ -1,0 +1,10 @@
+# Explicit staging overlay for the reviewed immutable Blender/MPFB release.
+# It does not change production until intentionally incorporated into deployment.
+services:
+  courtside-v2:
+    environment:
+      KBL_VIDEO_RENDER_ENABLED: '1'
+      KBL_BLENDER: /opt/courtside-blender/blender
+    volumes:
+      - ${COURTSIDE_BLENDER_ROOT:?Set the verified Blender release}:/opt/courtside-blender:ro
+      - ${COURTSIDE_MPFB_ROOT:?Set the verified MPFB release}:/workspace/runtime/kbl-mpfb/mpfb2-master:ro
