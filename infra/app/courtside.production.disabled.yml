@@ -1,6 +1,8 @@
 # Review/validation scaffold only. Do not add to production deployment while
 # GPU, recording relay, durable backups, and authenticated E2E remain unverified.
 # The release directory must be an immutable export of the reviewed Git SHA.
+# The dedicated store root must be owned by the worker UID:GID 1000:1000;
+# the API uses that ownership when creating shared recording relay files.
 services:
   api:
     volumes:

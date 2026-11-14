@@ -173,6 +173,12 @@ jobs:
           docker run --rm --network none -e COURTSIDE_ISOLATED_QA=1 -e COURTSIDE_QA_TOKEN=ci-only-not-secret \
             -e PYTHONPATH=/workspace/scripts/kbl_grayzone -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
             --entrypoint /bin/sh courtside-worker-ci -c 'printf %s ci-only-not-secret > /workspace/.isolated-courtside-test && python scripts/kbl_grayzone/test_private_pdf_smoke.py -v'
+      - name: S3 relay remains readable by unprivileged worker
+        run: |
+          docker run --rm --network none --read-only --user 0 --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$PWD/apps/api/app/courtside_recording_source.py:/qa/source.py:ro" \
+            -v "$PWD/apps/api/tests/test_courtside_recording_external.py:/qa/test.py:ro" \
+            --entrypoint /bin/sh courtside-worker-ci -c 'mkdir /tmp/app && cp /qa/source.py /tmp/app/courtside_recording_source.py && touch /tmp/app/__init__.py && PYTHONPATH=/tmp python /qa/test.py -v'
 
   postgres-contracts:
     runs-on: ubuntu-latest
