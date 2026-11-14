@@ -6,7 +6,7 @@
     "copy:ffmpeg": "mkdir -p public/ffmpeg && cp node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm public/ffmpeg/",
     "predev": "npm run copy:ffmpeg && npm run build:fpa-cv",
     "dev": "NEXT_DIST_DIR=.next-dev next dev",
-    "prebuild": "npm run copy:ffmpeg && npm run build:fpa-cv",
+    "prebuild": "node scripts/check-production-routes.cjs && npm run copy:ffmpeg && npm run build:fpa-cv",
     "build": "next build",
     "start": "next start",
     "preview:api": "node ../../scripts/preview-console.cjs",

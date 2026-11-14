@@ -59,6 +59,7 @@ jobs:
         run: |
           node apps/web/node_modules/typescript/bin/tsc --noEmit --incremental false -p apps/web/tsconfig.json
           node --test apps/web/tests/match-control.test.cjs
+          node --test apps/web/tests/courtside-production-routes.test.cjs
           node --test apps/web/tests/fpa-log-edit.test.cjs
           node scripts/test-manual-draft.cjs
           node scripts/test-highlight-log.cjs
