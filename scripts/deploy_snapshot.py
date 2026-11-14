@@ -184,6 +184,17 @@ def snapshot(repo, destination, target=None):
     return manifest
 
 
+def prepare(repo, destination, target):
+    """Guard ignored paths and preserve a dirty checkout before reset/clean."""
+    repo, destination = repo.resolve(), destination.resolve()
+    check_ignored_collisions(repo, target)
+    if status(repo):
+        return snapshot(repo, destination, target)
+    # No snapshot is needed for an unchanged checkout, but the target's
+    # ignored-path collisions must still be checked before checkout changes.
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -191,6 +202,10 @@ def main():
     save.add_argument("repo", type=Path)
     save.add_argument("destination", type=Path)
     save.add_argument("--target-ref")
+    preflight = sub.add_parser("prepare")
+    preflight.add_argument("repo", type=Path)
+    preflight.add_argument("destination", type=Path)
+    preflight.add_argument("--target-ref", required=True)
     recover = sub.add_parser("restore")
     recover.add_argument("backup", type=Path)
     recover.add_argument("destination", type=Path)
@@ -199,6 +214,9 @@ def main():
     if args.command == "snapshot":
         result = snapshot(args.repo, args.destination, args.target_ref)
         print(f"Verified checkout backup: {len(result['files'])} paths; {args.destination}")
+    elif args.command == "prepare":
+        result = prepare(args.repo, args.destination, args.target_ref)
+        print(f"Verified checkout backup: {len(result['files'])} paths; {args.destination}" if result else "Checkout clean and ignored paths verified")
     else:
         restore(args.backup.resolve(), args.destination.resolve())
         print(f"Restored checkout and staging: {args.destination}")

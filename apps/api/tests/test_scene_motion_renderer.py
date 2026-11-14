@@ -38,7 +38,7 @@ class SceneRendererTests(unittest.TestCase):
         def render(value, target): calls.append(value); target.write_bytes(b'native MP4')
         with patch.object(motion, 'render_scene_data', side_effect=render):
             for _ in range(2):
-                self.assertEqual(motion.attach_scene_motions(actions, payload, clip_key='clip', storage=storage, prefix='prefix'), [])
+                self.assertEqual(motion.attach_scene_motions(actions, payload, clip_key='clip', storage=storage, prefix='prefix', render_mp4=True), [])
         self.assertEqual(calls, [data])
         self.assertEqual(storage.uploads, [key])
         self.assertEqual(payload[0]['sceneMotionKey'], key)
@@ -49,10 +49,19 @@ class SceneRendererTests(unittest.TestCase):
         actions = [{'seq': 1, 'extra': {'sceneState': SCENE}}]
         storage = Storage()
         with patch.object(motion, 'render_scene_data', side_effect=RuntimeError('fixture failure')):
-            errors = motion.attach_scene_motions(actions, None, clip_key='clip', storage=storage, prefix='prefix')
+            errors = motion.attach_scene_motions(actions, None, clip_key='clip', storage=storage, prefix='prefix', render_mp4=True)
         self.assertEqual(len(errors), 1)
         self.assertFalse(storage.uploads)
         self.assertNotIn('sceneMotionKey', actions[0])
+        self.assertTrue(actions[0]['sceneData'])
+
+    def test_default_keeps_scene_data_without_rendering_mp4(self):
+        actions = [{'seq': 1, 'extra': {'sceneState': SCENE}}]
+        storage = Storage()
+        with patch.object(motion, 'render_scene_data') as render:
+            self.assertEqual(motion.attach_scene_motions(actions, None, clip_key='clip', storage=storage, prefix='prefix'), [])
+        render.assert_not_called()
+        self.assertFalse(storage.uploads)
         self.assertTrue(actions[0]['sceneData'])
 
     def test_private_renderer_response_and_atomic_file(self):

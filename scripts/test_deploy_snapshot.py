@@ -61,6 +61,26 @@ class CheckoutRestore(unittest.TestCase):
         self.assertEqual((restored / "binary.bin").read_bytes(), b"\x00latest unstaged\xff")
         self.assertEqual((restored / "한글 space\nfile.txt").read_text(), "untracked contents")
 
+    def test_prepare_preserves_untracked_content_before_cleanup(self):
+        (self.repo / "notes.txt").write_text("untracked user work")
+        (self.repo / "binary.bin").write_bytes(b"\x00changed\xff")
+        expected_status = snapshot.status(self.repo)
+        result = snapshot.prepare(self.repo, self.backup, "HEAD")
+        self.assertIsNotNone(result)
+        self.assertTrue((self.backup / "VERIFIED").exists())
+        self.git("reset", "--hard", "HEAD")
+        self.git("clean", "-fd")
+        self.assertFalse((self.repo / "notes.txt").exists())
+        restored = self.root / "restored-after-clean"
+        snapshot.restore(self.backup, restored)
+        self.assertEqual(snapshot.status(restored), expected_status)
+        self.assertEqual((restored / "notes.txt").read_text(), "untracked user work")
+        self.assertEqual((restored / "binary.bin").read_bytes(), b"\x00changed\xff")
+
+    def test_prepare_clean_checkout_does_not_create_unneeded_backup(self):
+        self.assertIsNone(snapshot.prepare(self.repo, self.backup, "HEAD"))
+        self.assertFalse(self.backup.exists())
+
     def test_staged_deletion_addition_and_rename(self):
         self.git("rm", "delete.txt")
         self.git("mv", "text.txt", "renamed.txt")
