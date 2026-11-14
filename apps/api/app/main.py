@@ -136,6 +136,7 @@ from .fineplay_fpa import (
     pick_primary as fineplay_pick_primary,
     rematch_action_players as fineplay_rematch_action_players,
     scene_action_rows as fineplay_scene_action_rows,
+    scrimmage_opponent_lineup as fineplay_scrimmage_opponent_lineup,
 )
 from .fineplay_models import parse_manifest as fineplay_parse_manifest
 from .fineplay_plan import (
@@ -13546,6 +13547,15 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
             "formation": str(manifest.get("formation") or "").strip(),
             "players": manifest_players,
         }
+    # 라커룸 자체전 — 반대편 명단은 매니페스트 B팀 라인업(신청 연결이 따로 있으면 그쪽이 덮는다)
+    scrimmage_b = _players(fineplay_scrimmage_opponent_lineup(manifest))
+    if scrimmage_b:
+        opposite = "away" if our_side == "home" else "home"
+        sides[opposite] = {
+            "team_name": str((manifest.get("opponent") or {}).get("name") or ""),
+            "formation": str(manifest.get("opponentFormation") or "").strip(),
+            "players": scrimmage_b,
+        }
     for side, link in (metadata.get("links") or {}).items():
         if side not in ("home", "away") or not isinstance(link, dict):
             continue
@@ -14124,7 +14134,11 @@ def clip_result_put_actions(
     if body.get("rows"):
         rows = list(body["rows"])
         scene = FineplayFpaScene(index=0, rows=rows, primary_row=fineplay_pick_primary(rows))
-        actions = fineplay_scene_action_rows(scene, our_side=our_side, lineup=lineup)
+        actions = fineplay_scene_action_rows(
+            scene, our_side=our_side, lineup=lineup,
+            # 라커룸 자체전 — 반대편(B팀)도 매칭한다. 일반 경기는 None 이라 그대로
+            opponent_lineup=fineplay_scrimmage_opponent_lineup(((job.job_metadata if job else None) or {}).get("manifest")),
+        )
         # 콘솔에서 맞춘 구간은 다시 찍어 저장해도 유지한다(_carry_over_offsets).
         carried = _carry_over_offsets(db, clip_id, actions)
     else:
@@ -14363,6 +14377,7 @@ def _build_clip_result_payload(
     include_analysis: bool = True,
     render_scene_motion_mp4: bool = False,
     on_clip: Callable[[str], None] | None = None,
+    opponent_lineup: list[dict] | None = None,
 ) -> dict:
     """DB의 clip·action 으로 FinePlay 결과 페이로드를 조립한다.
 
@@ -14373,6 +14388,8 @@ def _build_clip_result_payload(
     include_analysis=False (하이라이트만 신청) 면 액션·채점·씬모션을 조립하지
     않는다 — DB 에 태깅 데이터가 남아 있어도 전송에는 싣지 않는다(나중에 유료로
     전환되면 True 로 재전송하면 그대로 나간다).
+
+    opponent_lineup(라커룸 자체전 B팀)을 주면 반대편 행도 그 라인업으로 매칭한다.
     """
     metadata = dict(job.job_metadata or {})
     fpa_match_id = (metadata.get("fpa_link") or {}).get("match_id")
@@ -14417,7 +14434,8 @@ def _build_clip_result_payload(
         for a in actions:
             a.pop("id", None)
         if lineup is not None:
-            actions = fineplay_rematch_action_players(actions, our_side=our_side, lineup=lineup)
+            actions = fineplay_rematch_action_players(
+                actions, our_side=our_side, lineup=lineup, opponent_lineup=opponent_lineup)
         # FPA 장면 좌표(sceneData)를 항상 붙인다 — 앱이 네이티브로 재렌더한다.
         # sceneMotionKey(mp4)는 render_scene_motion_mp4=True 일 때만 렌더·업로드해 단다.
         motion_prefix = (
@@ -14443,6 +14461,7 @@ def _build_clip_result_payload(
             team_labels=labels,
             fpa_match_id=fpa_match_id,
             lineup=lineup,
+            opponent_lineup=opponent_lineup,
         )
         video: dict = {}
         if c.horizontal_s3_key:
@@ -14587,6 +14606,7 @@ def clip_result_resend(
         team_id=team_id,
         include_analysis=fineplay_xfp_enabled(metadata),
         render_scene_motion_mp4=bool(metadata.get("include_scene_motion_mp4")),
+        opponent_lineup=fineplay_scrimmage_opponent_lineup(manifest),
     )
     payload = fineplay_prepare_payload(payload, metadata)
     metadata["result_payload"] = payload
