@@ -9,6 +9,7 @@ import { apiFetch, clearCachedSessionUser, displayRole, fetchSessionUser, type S
 import { clearFpaDraft, FPA_DRAFT_WARNING_MESSAGE, hasFpaDraft } from './FpaDraftGuard';
 import { SportProvider, SPORTS, useSportContext, type Sport } from './SportContext';
 import {allowWorkspaceLeave} from '../lib/workspace-leave';
+import { courtsideEnabled } from '../lib/courtside-feature';
 
 type NavItem = {
   href: string;
@@ -66,6 +67,12 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
     icon: '◌',
     match: (pathname) => pathname.startsWith('/admin/basketball/visualization'),
   },
+  ...(courtsideEnabled ? [{
+    href: '/admin/basketball/courtside',
+    label: 'Courtside',
+    icon: '◇',
+    match: (pathname: string) => pathname.startsWith('/admin/basketball/courtside'),
+  }] : []),
 ];
 
 // 퀸컵은 수동 FLA/FPA 기록만 사용한다. 미디어·라이브 코더 메뉴를 노출하지 않는다.
@@ -277,6 +284,9 @@ function getPageMeta(pathname: string) {
   if (pathname.startsWith('/admin/futsal/visualization')) {
     return { product: 'FLA', eyebrow: 'Futsal FLA', title: 'Visualization' };
   }
+  if (pathname.startsWith('/admin/basketball/courtside')) {
+    return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Courtside' };
+  }
   if (pathname.startsWith('/admin/basketball/visualization')) {
     return { product: 'FLA', eyebrow: 'Basketball FLA', title: 'Visualization' };
   }
@@ -387,6 +397,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   const pendingSportChangeRef = useRef<Sport | null>(null);
   const currentPath = pathname || '/admin/dashboard';
+  const isCourtside = currentPath.startsWith('/admin/basketball/courtside') || currentPath === '/courtside-preview';
   const pageMeta = getPageMeta(currentPath);
   const [expandedProduct, setExpandedProduct] = useState<string | null>(pageMeta.product);
   useEffect(() => { setExpandedProduct(pageMeta.product); }, [pageMeta.product]);
@@ -479,7 +490,7 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className={`app-shell ${sidebarOpen ? 'expanded' : 'collapsed'}`}>
+    <div className={`app-shell ${sidebarOpen ? 'expanded' : 'collapsed'}${isCourtside ? ' courtside-workspace' : ''}`}>
       <aside id="console-sidebar" className="sidebar" hidden={!sidebarOpen} onKeyDown={(event) => { if (event.key === 'Escape') { toggleSidebar(false); sidebarToggleRef.current?.focus(); } }}>
         <div className="sidebar-brand">
           <button className="sidebar-toggle" onClick={() => { toggleSidebar(false); sidebarToggleRef.current?.focus(); }} aria-label="사이드바 숨기기" aria-controls="console-sidebar" aria-expanded={sidebarOpen}>
@@ -574,8 +585,8 @@ function AdminShellContent({ children }: { children: React.ReactNode }) {
         ) : null}
       </aside>
 
-      <div className="app-main" onKeyDown={(event) => { if (event.key === 'Escape' && sidebarOpen) { toggleSidebar(false); sidebarToggleRef.current?.focus(); } }}>
-        <header className="topbar">
+      <div className={`app-main${isCourtside ? ' courtside-shell' : ''}`} onKeyDown={(event) => { if (event.key === 'Escape' && sidebarOpen) { toggleSidebar(false); sidebarToggleRef.current?.focus(); } }}>
+        <header className={`topbar${isCourtside ? ' courtside-topbar' : ''}`}>
           <div className="topbar-leading">
             <button
               ref={sidebarToggleRef}

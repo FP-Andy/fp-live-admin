@@ -1,0 +1,21 @@
+KBL MPFB free prototype / mpfb-core-20261023-v1
+
+Generated offline using MPFB 2.0.18 and Blender 4.5.9 LTS.
+MPFB source: https://github.com/makehumancommunity/mpfb2
+Pinned source commit: b1a2dc98776da9d1eea751b159d42cf61778fe2e
+Core basemesh, macro targets, game_engine rig and tights/hair/eye helpers: CC0 1.0.
+https://static.makehumancommunity.org/about/license.html
+Full core-asset license: LICENSE-CC0.txt
+
+Fineplay derivation: athletic generic body; clipped uniforms; short hair;
+neutral/wide arm poses; reduced geometry; canonical metre coordinates.
+This does not reproduce an identified athlete or referee's face or measured pose.
+No third-party paid clothing, textures or animation packs are included.
+The MPFB application code is GPLv3 and stays in the offline runtime; it is not
+bundled with the browser application. These generated asset files are CC0.
+
+Rebuild: scripts/kbl_grayzone/build_mpfb_assets.py
+Web data: mpfb-court-v1.json (positions, material-group triangle indices).
+The same float32 vertices, role/pose and scale are used for rendering and ray tests.
+The geometry SHA-256 is stored in the JSON and captured report metadata.
+Do not add decorative or animated body geometry without updating the shared mesh.

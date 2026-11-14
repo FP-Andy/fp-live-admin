@@ -1,0 +1,12 @@
+KBL Jump R / KBL Jump B / KBL Court EB
+Copyright and intellectual property: KBL (Korean Basketball League).
+
+Source: OTF.zip supplied by the user on 2026-10-20.
+Local WOFF2 copies were losslessly repackaged from the supplied OTF files
+using fontTools; outlines and character coverage were preserved.
+These fonts are served locally; no external font service is required.
+
+Official font information: https://www.kbl.or.kr/intro/font
+The official page states that personal and corporate users may distribute
+and commercially use the typefaces. Selling the font itself is prohibited;
+distorting the typeface is discouraged.
