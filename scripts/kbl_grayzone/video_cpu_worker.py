@@ -52,13 +52,22 @@ def camera_plan(scene,pose,referees=None,allow_incomplete_crew=False):
   point=entities.get(scene['state'].get('targetId'))
   if not point:raise ValueError('2D 코트의 판독 지점 또는 대상 인물을 먼저 지정하세요.')
  K=np.asarray(pose['camera']['K'],float);R0=np.asarray(pose['camera']['worldToCamera'],float);t0=np.asarray(pose['camera']['translation'],float)
- c0=-R0.T@t0;target=np.array([point['x'],point['y'],scene['state'].get('targetHeight',1.1)]);conversion=np.diag([1.,-1.,1.]);points=[]
+ if R0.shape!=(3,3) or not np.isfinite(R0).all() or not np.allclose(R0@R0.T,np.eye(3),atol=1e-3):raise ValueError('저장된 영상 카메라 회전을 확인하세요.')
+ determinant=float(np.linalg.det(R0))
+ if not np.isfinite(determinant) or abs(abs(determinant)-1)>1e-3:raise ValueError('저장된 영상 카메라 회전을 확인하세요.')
+ # Court calibration can produce either handedness: its planar solution may
+ # reflect the unconstrained vertical axis. Interpolate only within the saved
+ # camera's handedness, so the first and final broadcast views remain exact.
+ reflected=determinant<0;conversion=np.diag([1.,-1.,1.]) if reflected else np.eye(3)
+ c0=-R0.T@t0;target=np.array([point['x'],point['y'],scene['state'].get('targetHeight',1.1)]);points=[]
  def look(c,destination):
   f=np.asarray(destination,float)-c;norm=np.linalg.norm(f)
   if norm<.1:raise ValueError('판독 지점과 카메라 위치를 확인하세요.')
   f/=norm;right=np.cross([0.,0.,1.],f);norm=np.linalg.norm(right)
   if norm<1e-5:raise ValueError('카메라 방향을 확인하세요.')
-  right/=norm;return np.array([right,-np.cross(f,right),f])
+  right/=norm
+  if not reflected:right=-right
+  return np.array([right,-np.cross(f,right) if reflected else np.cross(f,right),f])
  def add(c,R,focal,duration,label='',hide=None):
   points.append((np.asarray(c,float),Rotation.from_matrix(conversion@R),float(focal),duration,label,hide))
  # Full-court keyframe is fitted to the court, both baskets and all people.

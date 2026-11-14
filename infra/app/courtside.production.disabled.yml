@@ -1,0 +1,54 @@
+# Review/validation scaffold only. Do not add to production deployment while
+# GPU, recording relay, durable backups, and authenticated E2E remain unverified.
+# The release directory must be an immutable export of the reviewed Git SHA.
+# The dedicated store root must be owned by the worker UID:GID 1000:1000;
+# the API uses that ownership when creating shared recording relay files.
+services:
+  api:
+    volumes:
+      - ${COURTSIDE_STORE_HOST:?Set dedicated EFS-backed Courtside store}:/courtside-data
+    environment:
+      COURTSIDE_DATA_ROOT: /courtside-data
+      COURTSIDE_WORKBENCH_URL: http://127.0.0.1:4350
+      COURTSIDE_WORKBENCH_SOCKET: run/courtside.sock
+      COURTSIDE_PUBLIC_ORIGIN: ${COURTSIDE_PUBLIC_ORIGIN:?Set the exact HTTPS origin}
+      COURTSIDE_ALLOW_RECORDING_RELAY: '0'
+      COURTSIDE_ALLOW_GPU_ACTIONS: '0'
+  courtside-v2:
+    profiles: [courtside]
+    image: ${COURTSIDE_WORKER_IMAGE:?Set the reviewed immutable worker image}
+    container_name: fpc-courtside-v2
+    init: true
+    restart: unless-stopped
+    user: '1000:1000'
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 256
+    working_dir: /workspace
+    entrypoint: ['/usr/local/bin/python', 'scripts/kbl_grayzone/serve_socket.py', '--socket', 'run/courtside.sock']
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+      KBL_GPU_DISABLED: '1'
+      KBL_VIDEO_RENDER_ENABLED: '0'
+      KBL_DELIVERY_MODE: web
+      COURTSIDE_REPORT_ASSETS: /opt/courtside-report
+      KBL_RENDER_CACHE_DIR: /run/courtside-render-cache
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m
+      - /run/courtside-render-cache:rw,nosuid,nodev,exec,size=64m,uid=1000,gid=1000,mode=0700
+    volumes:
+      - ${COURTSIDE_STORE_HOST:?Set dedicated EFS-backed Courtside store}:/workspace
+      - ${COURTSIDE_RELEASE_ROOT:?Set immutable reviewed release root}/scripts/kbl_grayzone:/workspace/scripts/kbl_grayzone:ro
+      - ${COURTSIDE_RELEASE_ROOT:?Set immutable reviewed release root}/scripts/fpa_cv_bytetrack.py:/workspace/scripts/fpa_cv_bytetrack.py:ro
+      - ${COURTSIDE_RELEASE_ROOT:?Set immutable reviewed release root}/scripts/fpa_cv_uniforms.py:/workspace/scripts/fpa_cv_uniforms.py:ro
+      - ${COURTSIDE_RELEASE_ROOT:?Set immutable reviewed release root}/apps/web/public/kbl-grayzone:/workspace/apps/web/public/kbl-grayzone:ro
+      - ${COURTSIDE_RELEASE_ROOT:?Set immutable reviewed release root}/assets/courtside-report:/opt/courtside-report:ro
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/python', '-c', 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect("/workspace/run/courtside.sock"); s.sendall(b"GET /api/internal/store-identity HTTP/1.0\r\nHost: 127.0.0.1:4350\r\n\r\n"); assert b" 200 " in s.recv(256)']
+      interval: 30s
+      timeout: 5s
+      retries: 3

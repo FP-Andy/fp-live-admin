@@ -31,6 +31,19 @@ class CloudPreflightTests(unittest.TestCase):
    with patch.object(preflight,'ssh_configuration',return_value=True):result=preflight.checks(root)
    self.assertTrue(result['gpuConfig']);self.assertTrue(result['gpuSshPolicy']);self.assertTrue(result['gpuAutoStartDisabled'])
    self.assertNotIn('gpuVerified',result)
+ def test_eic_proxy_only_accepts_fixed_private_transport(self):
+  from gpu_eic_bootstrap import PROXY
+  with tempfile.TemporaryDirectory() as folder:
+   path=Path(folder)/'ssh_config';path.write_text('Host courtside-t4\n  ProxyCommand '+PROXY+'\n')
+   config={'host':'courtside-t4','sshConfig':'/tmp/courtside-t4/ssh_config','transport':'fixed-eic-broker','autoStart':False}
+   output=('stricthostkeychecking true\nidentityfile /tmp/courtside-t4/id_ed25519\n'
+           'userknownhostsfile /run/courtside-credentials/t4-known-hosts\nhostname 127.0.0.1\n'
+           'hostkeyalias courtside-t4\nuser ubuntu\nproxycommand '+PROXY+'\n')
+   def mapped(value):return path if value==config['sshConfig'] else Path(value)
+   with patch.object(preflight,'Path',side_effect=mapped),patch.object(preflight,'executable',return_value=True),patch.object(preflight.subprocess,'run',return_value=SimpleNamespace(stdout=output)):
+    self.assertTrue(preflight.ssh_configuration(config))
+    path.write_text('Host courtside-t4\n  ProxyCommand '+PROXY+' extra\n');self.assertFalse(preflight.ssh_configuration(config))
+    path.write_text('Host courtside-t4\n  ProxyCommand '+PROXY+'\nMatch exec true\n');self.assertFalse(preflight.ssh_configuration(config))
  def test_render_cache_rejects_noexec_or_shared_paths(self):
   with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'KBL_RENDER_CACHE_DIR':folder}),patch.object(os,'ST_NOEXEC',8,create=True):
    path=Path(folder);path.chmod(0o700)

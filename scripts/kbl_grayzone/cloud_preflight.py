@@ -44,16 +44,31 @@ def ssh_configuration(config):
         # dynamic directives so this probe cannot execute operator commands.
         text=Path(ssh_config).read_text()
         if len(text)>65536:return False
-        blocked={'match','include','proxycommand','localcommand','knownhostscommand','canonicalizehostname','pkcs11provider'}
+        eic=config.get('transport')=='fixed-eic-broker'
+        if eic and (host!='courtside-t4' or ssh_config!='/tmp/courtside-t4/ssh_config'):return False
+        blocked={'match','include','localcommand','knownhostscommand','canonicalizehostname','pkcs11provider'}
+        proxy_count=0
         for line in text.splitlines():
             key=re.split(r'[=\s]',line.strip(),maxsplit=1)[0].lower() if line.strip() and not line.lstrip().startswith('#') else ''
             if key in blocked:return False
+            if key=='proxycommand':
+                if not eic:return False
+                from gpu_eic_bootstrap import PROXY
+                if line.strip()!='ProxyCommand '+PROXY:return False
+                proxy_count+=1
+        if eic and proxy_count!=1:return False
         result=subprocess.run(['ssh','-F',ssh_config,'-G',host],capture_output=True,text=True,timeout=10,check=True)
         values={}
         for line in result.stdout.splitlines():
             key,_,value=line.partition(' ')
             values.setdefault(key,[]).append(value.strip())
         known=values.get('userknownhostsfile',[])
+        if eic:
+            from gpu_eic_bootstrap import PROXY
+            if (values.get('proxycommand')!=[PROXY] or values.get('hostname')!=['127.0.0.1']
+                or values.get('hostkeyalias')!=['courtside-t4'] or values.get('user')!=['ubuntu']
+                or values.get('identityfile')!=['/tmp/courtside-t4/id_ed25519']
+                or known!=['/run/courtside-credentials/t4-known-hosts']):return False
         return values.get('stricthostkeychecking')==['true'] and bool(values.get('identityfile')) and bool(known) and not any('/dev/null' in value for value in known)
     except (OSError,ValueError,KeyError,subprocess.SubprocessError):return False
 

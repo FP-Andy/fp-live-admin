@@ -147,13 +147,15 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r infra/app/courtside-qa-requirements.txt
+      - name: Verify disabled production wiring
+        run: python scripts/test_courtside_production_guard.py -v
       - name: Verify explicit worker build context
         run: python scripts/test_courtside_worker_context.py -v
       - name: Isolated worker, upload recovery, renderer and GPU contracts
         env:
           PYTHONPATH: scripts/kbl_grayzone
         run: |
-          python -m unittest test_report_assets test_worker_release_manifest test_pose_mesh_builder test_gpu_bridge test_cloud_preflight test_video_depth test_video_jobs test_private_worker_smoke -v
+          python -m unittest test_report_assets test_worker_release_manifest test_pose_mesh_builder test_gpu_bridge test_gpu_eic_transport test_cloud_preflight test_video_depth test_video_jobs test_private_worker_smoke -v
 
   courtside-worker-image:
     runs-on: ubuntu-latest
@@ -174,6 +176,12 @@ jobs:
           docker run --rm --network none -e COURTSIDE_ISOLATED_QA=1 -e COURTSIDE_QA_TOKEN=ci-only-not-secret \
             -e PYTHONPATH=/workspace/scripts/kbl_grayzone -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
             --entrypoint /bin/sh courtside-worker-ci -c 'printf %s ci-only-not-secret > /workspace/.isolated-courtside-test && python scripts/kbl_grayzone/test_private_pdf_smoke.py -v'
+      - name: S3 relay remains readable by unprivileged worker
+        run: |
+          docker run --rm --network none --read-only --user 0 --tmpfs /tmp:rw,nosuid,nodev,size=3g \
+            -v "$PWD/apps/api/app/courtside_recording_source.py:/qa/source.py:ro" \
+            -v "$PWD/apps/api/tests/test_courtside_recording_external.py:/qa/test.py:ro" \
+            --entrypoint /bin/sh courtside-worker-ci -c 'mkdir /tmp/app && cp /qa/source.py /tmp/app/courtside_recording_source.py && touch /tmp/app/__init__.py && PYTHONPATH=/tmp python /qa/test.py -v'
 
   postgres-contracts:
     runs-on: ubuntu-latest

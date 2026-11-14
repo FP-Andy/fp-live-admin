@@ -53,6 +53,18 @@ class BridgeTests(unittest.TestCase):
  def test_no_session_and_wrong_match_are_denied(self):
   self.assertEqual(self.client.get(self.base+'workflow.html').status_code,401);self.user()
   self.assertEqual(self.client.get(self.base.replace(self.case,'other')+'workflow.html').status_code,404)
+ def test_recording_catalogue_requires_edit_access_and_hides_secrets(self):
+  path=f'/api/courtside/matches/{self.mid}/recording-parts';sid=str(uuid.uuid4());name='take-00001-part-000001.mp4'
+  recording=self.root/'recordings';(recording/sid).mkdir(parents=True)
+  (recording/sid/'state.json').write_text(json.dumps({'id':sid,'match_id':str(self.mid),'stream_key':'private-key',
+   'parts':[{'name':name,'key':f'prelaunch/recordings/{self.mid}/{sid}/{name}','duration':10}]}))
+  with patch.dict(os.environ,{'COURTSIDE_ALLOW_RECORDING_RELAY':'1','COURTSIDE_RECORDING_ROOT':str(recording)}):
+   self.assertEqual(self.client.get(path).status_code,401)
+   self.user('other');self.assertEqual(self.client.get(path).status_code,403)
+   self.user('owner');response=self.client.get(path);self.assertEqual(response.status_code,200)
+   self.assertEqual(response.json()['recordings'][0]['parts'][0]['sourcePartName'],name)
+   self.assertNotIn('private-key',response.text);self.assertEqual(response.headers['cache-control'],'private, no-store')
+  with patch.dict(os.environ,{'COURTSIDE_ALLOW_RECORDING_RELAY':'0'}):self.assertEqual(self.client.get(path).status_code,503)
  def test_bridge_is_unavailable_without_explicit_worker_configuration(self):
   self.user()
   with patch.dict(os.environ,{'COURTSIDE_DATA_ROOT':'','COURTSIDE_WORKBENCH_URL':''}):

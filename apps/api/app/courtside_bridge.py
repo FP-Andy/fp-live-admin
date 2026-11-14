@@ -209,6 +209,17 @@ def cases(match_id:UUID,db:Session=Depends(get_db),user:User=Depends(require_ses
         out.append({'id':row['caseId'],'home':row.get('home',''),'away':row.get('away',''),'date':row.get('date','')})
     return JSONResponse({'cases':out},headers={'Cache-Control':'private, no-store'})
 
+@router.get('/api/courtside/matches/{match_id}/recording-parts')
+def recording_parts(match_id:UUID,db:Session=Depends(get_db),user:User=Depends(require_session_user)):
+    authorized_match(match_id,db,user,True)
+    root=os.environ.get('COURTSIDE_RECORDING_ROOT','')
+    if os.environ.get('COURTSIDE_ALLOW_RECORDING_RELAY')!='1' or not Path(root).is_absolute():
+        raise HTTPException(503,'FPC 녹화 원본 연결이 아직 설정되지 않았습니다.')
+    from .courtside_recording_catalogue import parts_for_match
+    try:rows=parts_for_match(root,match_id)
+    except (OSError,ValueError,OverflowError):raise HTTPException(503,'FPC 녹화 목록을 확인할 수 없습니다.') from None
+    return JSONResponse({'recordings':rows},headers={'Cache-Control':'private, no-store'})
+
 @router.post('/api/courtside/matches/{match_id}/intakes')
 async def create_intake(match_id:UUID,request:Request,db:Session=Depends(get_db),user:User=Depends(require_session_user)):
     match=authorized_match(match_id,db,user,True);require_origin(request);root,base=config();home,away=match_teams(match)

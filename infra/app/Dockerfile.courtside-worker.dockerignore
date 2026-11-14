@@ -221,3 +221,6 @@
 !scripts/kbl_grayzone/work_progress.py
 !scripts/kbl_grayzone/work_session.py
 !scripts/kbl_grayzone/worker-release-manifest.json
+!scripts/kbl_grayzone/gpu_eic_bootstrap.py
+!scripts/kbl_grayzone/gpu_eic_transport.py
+!scripts/kbl_grayzone/test_gpu_eic_transport.py

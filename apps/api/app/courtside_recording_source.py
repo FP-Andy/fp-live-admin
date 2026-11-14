@@ -127,6 +127,19 @@ def copy_part_to_shared_store(s3, bucket, shared_root, match_id, intake_id, sess
         raise ValueError('접수 식별자를 확인하세요.')
     recording_key(mid, sid, filename)
     root = Path(shared_root).resolve(strict=True)
+    # The FPC API normally runs as root, while the isolated worker runs as the
+    # owner of the shared store. A root-owned 0700 relay tree would be invisible
+    # to that worker even though the copy itself succeeded. Never infer an ID
+    # from a request; use the already-configured shared store's owner.
+    owner = root.stat()
+    def share_with_worker(fd):
+        info = os.fstat(fd)
+        if info.st_uid not in (owner.st_uid, os.geteuid()):
+            raise ValueError('공유 녹화 저장소 소유자를 확인하세요.')
+        if (info.st_uid, info.st_gid) != (owner.st_uid, owner.st_gid):
+            if os.geteuid() != 0:
+                raise ValueError('공유 녹화 저장소 접근 권한을 확인하세요.')
+            os.fchown(fd, owner.st_uid, owner.st_gid)
     logical_parts = ['outputs', 'kbl-fpc-relay', mid, intake_id, sid]
     external=external_relay_base(root)
     parts = [mid,intake_id,sid] if external else logical_parts
@@ -140,6 +153,9 @@ def copy_part_to_shared_store(s3, bucket, shared_root, match_id, intake_id, sess
             except FileExistsError: pass
             try: next_directory = os.open(component, flags, dir_fd=directory)
             except OSError: raise ValueError('공유 저장소 경로를 확인하세요.') from None
+            try: share_with_worker(next_directory)
+            except BaseException:
+                os.close(next_directory);raise
             os.close(directory); directory = next_directory
         key=recording_key(mid,sid,filename)
         head=s3.head_object(Bucket=bucket,Key=key)
@@ -173,6 +189,7 @@ def copy_part_to_shared_store(s3, bucket, shared_root, match_id, intake_id, sess
         with os.fdopen(fd, 'r+b') as target:
             info=os.fstat(target.fileno())
             if not stat.S_ISREG(info.st_mode):raise ValueError('이어받을 파일을 확인하세요.')
+            share_with_worker(target.fileno())
             if info.st_size>size:target.truncate(0);info=os.fstat(target.fileno())
             offset=info.st_size;digest=sha256()
             for block in iter(lambda:target.read(CHUNK_BYTES),b''):digest.update(block)
@@ -201,6 +218,7 @@ def copy_part_to_shared_store(s3, bucket, shared_root, match_id, intake_id, sess
                 info = os.fstat(existing.fileno())
                 if not stat.S_ISREG(info.st_mode) or info.st_size != meta['bytes']:
                     raise ValueError('기존 보관 구간을 확인하세요.') from None
+                share_with_worker(existing.fileno())
                 check = sha256()
                 for block in iter(lambda: existing.read(CHUNK_BYTES), b''):
                     check.update(block)
