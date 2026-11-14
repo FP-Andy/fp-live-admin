@@ -1,4 +1,5 @@
 import io,json,tempfile,unittest
+import numpy as np
 from pathlib import Path
 from unittest.mock import patch
 import video_jobs as jobs
@@ -28,6 +29,23 @@ class VideoJobTests(unittest.TestCase):
   with patch.dict(jobs.os.environ,{'KBL_VIDEO_RENDER_ENABLED':'0'}),patch.object(jobs,'inputs') as inputs:
    with self.assertRaises(RuntimeError):jobs.submit('case-a','review-1')
    inputs.assert_not_called()
+ def test_camera_path_preserves_both_valid_saved_handednesses(self):
+  from video_cpu_worker import camera_plan
+  entities=[{'id':'p','role':'player','x':14.,'y':7.5},
+            {'id':'r1','role':'referee','x':2.,'y':2.,'viewHeading':0.5},
+            {'id':'r2','role':'referee','x':24.,'y':2.,'viewHeading':2.5},
+            {'id':'r3','role':'referee','x':14.,'y':14.,'viewHeading':-1.5}]
+  scene={'state':{'entities':entities,'reviewPoint':{'x':14.,'y':7.5},'hfov':100,'vfov':70},
+         'crewAnalysis':{'rows':[{'id':e['id']} for e in entities[1:]]}}
+  proper=np.array([[1.,0.,0.],[0.,0.,-1.],[0.,1.,0.]])
+  for expected in (proper,np.diag([1.,-1.,1.])@proper):
+   with self.subTest(determinant=np.linalg.det(expected)):
+    centre=np.array([14.,-10.,12.]);pose={'camera':{'K':[[1500,0,960],[0,1500,540],[0,0,1]],
+         'worldToCamera':expected.tolist(),'translation':(-expected@centre).tolist()}}
+    frames,_,initial,_=camera_plan(scene,pose)
+    self.assertTrue(np.allclose(initial,expected));self.assertTrue(np.allclose(frames[0][0],expected))
+    self.assertTrue(np.allclose(frames[-1][0],expected))
+    self.assertTrue(all(np.linalg.det(item[0])*np.linalg.det(expected)>.999 for item in frames))
  def test_image_only_camera_uses_reviewed_court_without_mutating_pose(self):
   pose={'poseSource':'image-only-inferred','camera':None,'people':[{'id':'p','accepted':False}]}
   frame={'courtRevision':'reviewed','court':{'visuallyReviewed':True}}
