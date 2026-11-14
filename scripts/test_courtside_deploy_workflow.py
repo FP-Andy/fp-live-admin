@@ -20,6 +20,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
      'infra/app/docker-compose.yml':'services: {}\n',
      'infra/app/nginx/templates/default.conf.template':'synthetic nginx\n',
      'infra/app/Dockerfile.courtside-worker':'FROM scratch\n',
+     'infra/app/courtside-linux-amd64-py311.lock':'# synthetic\n',
      'infra/app/courtside.production.disabled.yml':'services: {}\n',
      'infra/app/courtside.production.enabled.yml':'services: {}\n',
      'scripts/kbl_grayzone/example.py':'print("synthetic")\n',
@@ -74,7 +75,11 @@ if os.environ.get('DOCKER_FAIL_S3')=='1' and 'run' in sys.argv and '--entrypoint
      public=next(i for i,v in enumerate(flat) if 'up -d potoken api web' in v)
      self.assertLess(worker,preflight);self.assertLess(preflight,t4);self.assertLess(t4,public)
      self.assertTrue(any('courtside.production.enabled.yml' in v for v in flat))
-     self.assertTrue(any(call and call[0]=='build' and 'Dockerfile.courtside-worker' in ' '.join(call) for call in calls))
+     build=next(call for call in calls if call and call[0]=='build' and 'Dockerfile.courtside-worker' in ' '.join(call))
+     context=Path(build[-1]);self.assertEqual(context.parent,(repo/'runtime/courtside-releases').resolve())
+     self.assertEqual(Path(build[build.index('-f')+1]),context/'infra/app/Dockerfile.courtside-worker')
+     self.assertTrue((context/'infra/app/courtside-linux-amd64-py311.lock').is_file())
+     self.assertFalse((context/'infra/app/.env').exists())
     else:
      self.assertFalse(any('courtside.production.enabled.yml' in v for v in flat))
      self.assertFalse(any('courtside-v2' in v for v in flat))

@@ -85,7 +85,9 @@ jobs:
           compose() { docker compose "${COMPOSE_OPTIONS[@]}" "$@"; }
           compose config --quiet
           if [ "$COURTSIDE_ACTIVE" = true ]; then
-            DOCKER_BUILDKIT=0 docker build --cpu-period 100000 --cpu-quota 200000 --memory 3g -t "$COURTSIDE_WORKER_IMAGE" -f infra/app/Dockerfile.courtside-worker .
+            # Build only the validated Git export, never the live checkout:
+            # it contains private/privileged files such as certbot accounts.
+            DOCKER_BUILDKIT=0 docker build --cpu-period 100000 --cpu-quota 200000 --memory 3g -t "$COURTSIDE_WORKER_IMAGE" -f "$COURTSIDE_RELEASE_ROOT/infra/app/Dockerfile.courtside-worker" "$COURTSIDE_RELEASE_ROOT"
           fi
           compose build api web highlight-render scene-render
 

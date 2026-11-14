@@ -16,7 +16,8 @@ import tempfile
 import uuid
 
 PATHS=('scripts/kbl_grayzone','scripts/fpa_cv_bytetrack.py','scripts/fpa_cv_uniforms.py',
-       'apps/web/public/kbl-grayzone','assets/courtside-report')
+       'apps/web/public/kbl-grayzone','assets/courtside-report',
+       'infra/app/Dockerfile.courtside-worker','infra/app/courtside-linux-amd64-py311.lock')
 
 def export(repo,commit,parent):
     repo=Path(repo).resolve(strict=True);parent=Path(parent).resolve(strict=True)
