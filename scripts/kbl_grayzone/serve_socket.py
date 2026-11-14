@@ -18,6 +18,10 @@ def main():
     with (path.parent/(path.name+'.lock')).open('a') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise RuntimeError('another Courtside worker owns this socket') from None
+        # The FPC bridge reads the catalog before the first intake is created.
+        # Initialize a new store before advertising the socket as ready.
+        import match_library
+        match_library.initialize()
         if path.exists():
             if not stat.S_ISSOCK(path.stat().st_mode):raise RuntimeError('socket path is occupied by a non-socket file')
             with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
