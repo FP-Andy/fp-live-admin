@@ -57,6 +57,7 @@
     "process",
     "read_context",
     "referee_roster",
+    "report_assets",
     "report_bundle",
     "report_commentary",
     "report_delivery",

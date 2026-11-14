@@ -3,7 +3,7 @@ import copy,hashlib,json,math,os,re,shutil,signal,subprocess,sys,threading,time,
 from pathlib import Path
 from job_store import atomic,busy,digest,lease,now
 import case_store,broadcast_reconstruction as reconstruction,broadcast_pose,pose_jobs,review_videos,report_inputs
-import storage_policy
+import storage_policy,report_assets
 from video_safety import has_position_only
 
 ROOT=case_store.ROOT/'outputs/kbl-video-jobs'
@@ -101,7 +101,7 @@ def inputs(case,event,player_orientation='map',allow_incomplete_crew=False):
  if not isinstance(name,str) or Path(name).name!=name:raise ValueError('중계 원본을 확인하세요.')
  source=root/'broadcast'/name
  if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(root) or sha(source)!=broadcast.get('sha256'):raise ValueError('중계 원본이 변경됐습니다.')
- scene_file=root/'reconstructions'/event/'current.json';mesh=(pose_variant.folder(case,event,variant) if variant else pose_jobs.folder(job))/'meshes.json';library=case_store.ROOT/'apps/web/public/kbl-grayzone/assets/humans/mpfb-court-v1.json';font=case_store.ROOT/'apps/web/public/kbl-grayzone/assets/report-fonts/KBLJump_B.ttf'
+ scene_file=root/'reconstructions'/event/'current.json';mesh=(pose_variant.folder(case,event,variant) if variant else pose_jobs.folder(job))/'meshes.json';library=case_store.ROOT/'apps/web/public/kbl-grayzone/assets/humans/mpfb-court-v1.json';font=report_assets.report_assets_dir()/'KBLJump_B.ttf'
  for p in (scene_file,mesh,library,font,HERE/'video_cpu_worker.py',HERE/'video_renderer_cpu.py',HERE/'video_depth.py',HERE/'video_depth_raster.cpp',HERE/'video_safety.py',HERE/'video-assets/procedural-court.png'):
   if p.is_symlink() or not p.is_file():raise ValueError('영상 제작에 필요한 저장 파일이 없습니다.')
  if player_orientation=='refit':

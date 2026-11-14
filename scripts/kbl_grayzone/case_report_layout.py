@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from report_assets import report_assets_dir
 from case_evidence import extract_frame, sample_boxes
 from case_store import broadcast_packet
 from report_commentary import entity_labels, target_label
@@ -141,7 +142,7 @@ def create_packet(case_id,case,root,rows,spatial,notes,poses,inputs,output,progr
     map_paths=prepare_map_presentations(root,case,spatial) if all(s.get('caseId') for s in spatial.values()) else {}
     lookup={r['eventId']:r for r in rows};pages=[];commands=[];current_commands={'text':[],'images':[]};page_count=1+len(case['events']);page_map=[];proofs={}
     fonts=root/'report-fonts'
-    if not fonts.exists():fonts=Path(__file__).resolve().parents[2]/'apps/web/public/kbl-grayzone/assets/report-fonts'
+    if not fonts.exists():fonts=report_assets_dir()
     pages_dir=root/'report-pages'/'summary-clips-v12';pages_dir.mkdir(parents=True,exist_ok=True)
     @lru_cache(None)
     # Measure with the same TrueType faces embedded in the PDF so wrapping
@@ -347,7 +348,7 @@ def create_packet(case_id,case,root,rows,spatial,notes,poses,inputs,output,progr
     pdf.setTitle(f"KBL 경기{case['gameNumber']} {case['title']} - 경기 판독 리포트")
     pdf.setAuthor('Fineplay');pdf.setSubject('경기 요약 1페이지 + 장면별 1페이지. 기록 사실과 조건부 시야 재구성의 대조.')
     for name,file in [('KBLReportR','KBLJump_R.ttf'),('KBLReportB','KBLJump_B.ttf')]:
-        if name not in pdfmetrics.getRegisteredFontNames():pdfmetrics.registerFont(TTFont(name,str(Path(__file__).resolve().parents[2]/'apps/web/public/kbl-grayzone/assets/report-fonts'/file)))
+        if name not in pdfmetrics.getRegisteredFontNames():pdfmetrics.registerFont(TTFont(name,str(report_assets_dir()/file)))
     scale=A4[0]/W
     for i,p in enumerate(pages):
         if progress:progress('PDF 페이지 저장',i,len(pages),'페이지')
