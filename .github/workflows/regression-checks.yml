@@ -135,6 +135,21 @@ jobs:
             ${{ runner.temp }}/fpc-*-qa/*.png
           retention-days: 7
 
+  courtside-worker-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r infra/app/courtside-qa-requirements.txt
+      - name: Isolated worker, upload recovery, renderer and GPU contracts
+        env:
+          PYTHONPATH: scripts/kbl_grayzone
+        run: |
+          python -m unittest test_worker_release_manifest test_pose_mesh_builder test_gpu_bridge test_cloud_preflight test_video_depth test_video_jobs test_private_worker_smoke -v
+
   postgres-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 15

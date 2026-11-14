@@ -1,0 +1,30 @@
+# Optional, isolated staging only. Do not include in production deploy.
+# Use a dedicated T4 staging workspace and the *same* worker.lock as live jobs.
+# Apply host/VPC egress rules so this worker can reach only its T4 and required
+# AWS services before enabling; Docker's bridge alone does not restrict egress.
+# All four files must be private operator-provisioned files, never Git assets.
+services:
+  api:
+    environment:
+      COURTSIDE_ALLOW_GPU_ACTIONS: ${COURTSIDE_STAGING_ENABLE_GPU:-0}
+  courtside-staging-worker:
+    network_mode: bridge
+    environment:
+      COURTSIDE_STAGE_GPU_ENABLED: ${COURTSIDE_STAGING_ENABLE_GPU:-0}
+      COURTSIDE_GPU_STAGING_MODE: '1'
+      COURTSIDE_STAGING_GPU_WORKSPACE: ${COURTSIDE_STAGING_GPU_WORKSPACE:?Set a dedicated T4 staging workspace}
+      COURTSIDE_STAGING_GPU_SHARED_LOCK: ${COURTSIDE_STAGING_GPU_SHARED_LOCK:?Set the live worker.lock path}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        if [ "$$COURTSIDE_STAGE_GPU_ENABLED" = 1 ]; then
+          export KBL_GPU_DISABLED=0
+          /opt/courtside-venv/bin/python scripts/kbl_grayzone/cloud_preflight.py --require-staging-gpu
+        fi
+        exec /opt/courtside-venv/bin/python scripts/kbl_grayzone/serve_socket.py --socket run/courtside.sock
+    volumes:
+      - ${COURTSIDE_STAGING_GPU_CONFIG:?Set the private staging GPU config}:/workspace/runtime/kbl-cv/gpu.json:ro
+      - ${COURTSIDE_STAGING_SSH_CONFIG:?Set the private SSH config}:/run/secrets/courtside/ssh_config:ro
+      - ${COURTSIDE_STAGING_SSH_KEY:?Set the dedicated SSH key}:/run/secrets/courtside/ssh_key:ro
+      - ${COURTSIDE_STAGING_KNOWN_HOSTS:?Set pinned T4 host keys}:/run/secrets/courtside/known_hosts:ro

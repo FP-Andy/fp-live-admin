@@ -1,0 +1,8 @@
+# QA-only Python dependencies. Production must use a separately pinned image.
+numpy==2.1.2
+opencv-python-headless==4.13.0.92
+scipy==1.17.1
+pillow==13.0.0
+reportlab==4.4.10
+boto3==1.42.0
+supervision==0.27.0.post1

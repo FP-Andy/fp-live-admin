@@ -1,0 +1,8 @@
+# Isolated QA image only. Supply the already reviewed Linux worker image by
+# immutable digest; this is not included in the production deploy workflow.
+ARG COURTSIDE_BASE_IMAGE
+FROM ${COURTSIDE_BASE_IMAGE}
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ libsm6 libice6 libx11-6 libxext6 libxfixes3 libxi6 libxrender1 libxkbcommon0 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
