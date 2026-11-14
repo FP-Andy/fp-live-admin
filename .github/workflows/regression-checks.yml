@@ -144,6 +144,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r infra/app/courtside-qa-requirements.txt
+      - name: Verify disabled production wiring
+        run: python scripts/test_courtside_production_guard.py -v
       - name: Verify explicit worker build context
         run: python scripts/test_courtside_worker_context.py -v
       - name: Isolated worker, upload recovery, renderer and GPU contracts
