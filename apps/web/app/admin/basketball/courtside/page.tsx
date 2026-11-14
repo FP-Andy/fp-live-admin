@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { courtsideEnabled } from '../../../../lib/courtside-feature';
 
 /** Keep the original Courtside workspace inside the authenticated FPC shell. */
 export default function CourtsidePage() {
@@ -66,6 +67,7 @@ export default function CourtsidePage() {
     }
   }
 
+  if (!courtsideEnabled) return <div role="status">코트사이드를 준비하고 있습니다.</div>;
   return <iframe
     ref={frame}
     className="courtside-frame"
