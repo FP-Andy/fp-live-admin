@@ -40,11 +40,14 @@ class PrivateWorkerSmoke(unittest.TestCase):
         shutil.copytree(REPO/'scripts/kbl_grayzone', self.root/'scripts/kbl_grayzone',
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         self.sock = self.root/'run/test.sock'
+        self.start_worker()
+        self.addCleanup(self.stop_worker)
+
+    def start_worker(self):
         env = {**os.environ, 'KBL_GPU_DISABLED': '1', 'KBL_VIDEO_RENDER_ENABLED': '0'}
         self.worker = subprocess.Popen([sys.executable, str(self.root/'scripts/kbl_grayzone/serve_socket.py'),
                                         '--socket', 'run/test.sock'], cwd=self.root, env=env,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        self.addCleanup(self.stop_worker)
         deadline = time.monotonic()+15
         while not self.sock.exists() and self.worker.poll() is None and time.monotonic()<deadline:
             time.sleep(.05)
@@ -73,6 +76,17 @@ class PrivateWorkerSmoke(unittest.TestCase):
             response = conn.getresponse(); raw = response.read()
             return response.status, json.loads(raw) if raw else None
         finally: conn.close()
+
+    def test_new_store_catalog_is_created_and_existing_catalog_preserved(self):
+        catalog = self.root/'outputs/kbl-library/matches.json'
+        self.assertEqual(json.loads(catalog.read_text()), {'matches': []})
+        saved = {'matches': [{'id': 'existing', 'home': 'A', 'away': 'B'}]}
+        catalog.write_text(json.dumps(saved))
+        self.stop_worker()
+        # A terminated server can leave a stale Unix socket behind.
+        if self.sock.exists(): self.sock.unlink()
+        self.start_worker()
+        self.assertEqual(json.loads(catalog.read_text()), saved)
 
     def test_create_upload_resume_and_choose_frame(self):
         source = self.root/'synthetic.mp4'

@@ -69,6 +69,13 @@ def read():
 def write(data):
     atomic(STORE,data)
 
+def initialize():
+    """Create a catalog once, retaining any existing case seeds."""
+    with LOCK,lease(STORE.with_suffix('.lock')) as acquired:
+        if not acquired:raise RuntimeError('다른 경기 등록을 저장 중입니다. 잠시 후 다시 시도하세요.')
+        if STORE.is_symlink():raise RuntimeError('경기 목록 저장 위치를 확인하세요.')
+        if not STORE.exists():write(read())
+
 def attach_case(key,case_id,referees):
     """Keep earlier case links when another intake is registered for a match."""
     if not isinstance(case_id,str) or not re.fullmatch(r'[a-z0-9-]+',case_id):raise ValueError('판독 자료 ID를 확인하세요.')
