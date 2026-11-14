@@ -39,20 +39,25 @@ jobs:
           cd "$APP_DIR"
           mkdir -p "$BACKUP_ROOT"
 
-          if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
-            BACKUP_DIR="$BACKUP_ROOT/$DEPLOY_ID"
-            mkdir -p "$BACKUP_DIR"
-            git status --porcelain=v1 --untracked-files=all > "$BACKUP_DIR/status.txt"
-            git diff > "$BACKUP_DIR/worktree.patch" || true
-            git diff --cached > "$BACKUP_DIR/index.patch" || true
-            git ls-files --others --exclude-standard > "$BACKUP_DIR/untracked.txt"
-            echo "Saved pre-deploy working tree snapshot to $BACKUP_DIR"
+          git fetch origin main
+          DEPLOY_SHA="$(git rev-parse origin/main)"
+          if [ "$DEPLOY_SHA" != "${{ github.sha }}" ]; then
+            echo "origin/main changed after this deployment was requested; review the new revision and rerun"
+            exit 1
           fi
 
-          git fetch origin main
-          git reset --hard origin/main
+          # Run the reviewed helper from the exact target revision, never from
+          # a possibly modified working tree. A dirty checkout is reset only
+          # after its tracked and untracked bytes pass an isolated restore test.
+          umask 077
+          DEPLOY_HELPER="$(mktemp "$BACKUP_ROOT/prepare-XXXXXXXX.py")"
+          trap 'rm -f "$DEPLOY_HELPER"' EXIT
+          git show "$DEPLOY_SHA:scripts/deploy_snapshot.py" > "$DEPLOY_HELPER"
+          python3 "$DEPLOY_HELPER" prepare "$APP_DIR" "$BACKUP_ROOT/$DEPLOY_ID" --target-ref "$DEPLOY_SHA"
+
+          git reset --hard "$DEPLOY_SHA"
           git clean -fd
-          git checkout -B main origin/main
+          git checkout -B main "$DEPLOY_SHA"
 
           docker compose -f "$COMPOSE_FILE" build api web highlight-render scene-render
 
