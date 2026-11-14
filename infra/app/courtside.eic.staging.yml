@@ -1,0 +1,35 @@
+# Explicit staging overlay; never use as a production deployment by itself.
+# The broker config, reviewed gpu.json and pinned T4 known-hosts file are
+# operator-provided read-only files. No private SSH or AWS key is mounted.
+services:
+  api:
+    environment:
+      COURTSIDE_ALLOW_GPU_ACTIONS: '1'
+  courtside-v2:
+    entrypoint: ['/usr/local/bin/python', 'scripts/kbl_grayzone/gpu_eic_bootstrap.py']
+    environment:
+      KBL_GPU_DISABLED: '0'
+    volumes:
+      - ${COURTSIDE_EIC_GPU_CONFIG:?Set reviewed gpu.json}:/workspace/runtime/kbl-cv/gpu.json:ro
+      - ${COURTSIDE_EIC_KNOWN_HOSTS:?Set pinned T4 host key}:/run/courtside-credentials/t4-known-hosts:ro
+  courtside-eic:
+    profiles: [courtside-eic]
+    image: ${COURTSIDE_WORKER_IMAGE:?Set the reviewed immutable worker image}
+    init: true
+    restart: unless-stopped
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 48
+    entrypoint: ['/usr/local/bin/python', '/workspace/scripts/kbl_grayzone/gpu_eic_transport.py', 'broker', '--socket', '/workspace/run/t4.sock', '--config', '/run/courtside-credentials/broker.json']
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+    volumes:
+      - ${COURTSIDE_STORE_HOST:?Set dedicated isolated store}/run:/workspace/run
+      - ${COURTSIDE_EIC_BROKER_CONFIG:?Set reviewed broker config}:/run/courtside-credentials/broker.json:ro
+    networks: [courtside-eic-egress]
+networks:
+  courtside-eic-egress: {}

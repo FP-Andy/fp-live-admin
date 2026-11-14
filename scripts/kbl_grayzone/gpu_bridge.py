@@ -31,6 +31,11 @@ def scp_many(c,sources,dest,**kw):
     """Transfer a job's immutable dispatch files over one SCP connection."""
     return call(['scp','-q','-F',c['sshConfig'],*multiplex_options(),*[str(p) for p in sources],str(dest)],**kw)
 def ensure_running(c,stage):
+    # In the EIC deployment the network-isolated worker cannot inspect or start
+    # EC2. A stopped instance produces a recoverable connection error instead.
+    if c.get('transport')=='fixed-eic-broker':
+        if c.get('autoStart') is not False:raise ValueError('T4 자동 시작 설정을 확인하세요.')
+        return
     if not c.get('instanceId'):return
     import boto3
     client=boto3.client('ec2',region_name=c['region'])
