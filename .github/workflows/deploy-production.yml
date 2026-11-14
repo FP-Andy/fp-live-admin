@@ -59,11 +59,39 @@ jobs:
           git clean -fd
           git checkout -B main "$DEPLOY_SHA"
 
-          docker compose -f "$COMPOSE_FILE" build api web highlight-render scene-render
+          # Once provisioned, all later FPC deployments retain the same
+          # Courtside mounts and feature flag. With no private env file the
+          # original FPC-only deployment remains unchanged.
+          COURTSIDE_ENV="/home/ubuntu/.config/courtside/deploy.env"
+          COMPOSE_OPTIONS=(-f "$COMPOSE_FILE")
+          COURTSIDE_ACTIVE=false
+          if [ -e "$COURTSIDE_ENV" ]; then
+            python3 - "$COURTSIDE_ENV" <<'PYCONFIG'
+          import os, stat, sys
+          info=os.lstat(sys.argv[1])
+          assert stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and not info.st_mode & 0o077, "Invalid private Courtside configuration permissions"
+          PYCONFIG
+            test -f "$APP_DIR/infra/app/.env"
+            test -f infra/app/courtside.production.disabled.yml
+            test -f infra/app/courtside.production.enabled.yml
+            RELEASE_PARENT="$APP_DIR/runtime/courtside-releases"
+            mkdir -p -m 700 "$RELEASE_PARENT"
+            [ "$(findmnt -n -T "$RELEASE_PARENT" -o FSTYPE)" = nfs4 ] || { echo 'Courtside release storage is not mounted'; exit 1; }
+            export COURTSIDE_RELEASE_ROOT="$(python3 scripts/courtside_export_release.py "$APP_DIR" "$DEPLOY_SHA" "$RELEASE_PARENT")"
+            export COURTSIDE_WORKER_IMAGE="courtside-worker:$DEPLOY_SHA"
+            COMPOSE_OPTIONS=(--env-file "$APP_DIR/infra/app/.env" --env-file "$COURTSIDE_ENV" -f "$COMPOSE_FILE" -f infra/app/courtside.production.disabled.yml -f infra/app/courtside.production.enabled.yml --profile courtside --profile courtside-eic)
+            COURTSIDE_ACTIVE=true
+          fi
+          compose() { docker compose "${COMPOSE_OPTIONS[@]}" "$@"; }
+          compose config --quiet
+          if [ "$COURTSIDE_ACTIVE" = true ]; then
+            DOCKER_BUILDKIT=0 docker build --cpu-period 100000 --cpu-quota 200000 --memory 3g -t "$COURTSIDE_WORKER_IMAGE" -f infra/app/Dockerfile.courtside-worker .
+          fi
+          compose build api web highlight-render scene-render
 
           # Reject a missing/invalid private account manifest before replacing
           # the running API. This check imports no DB code or delivery workers.
-          docker compose -f "$COMPOSE_FILE" run --rm --no-deps -T --entrypoint python api - <<'PY'
+          compose run --rm --no-deps -T --entrypoint python api - <<'PY'
           import json, os
           from pathlib import Path
           from app.auth_security import normalize_login, valid_secret_hash
@@ -80,11 +108,103 @@ jobs:
           print(f"Private administrator manifest verified: {len(accounts)} accounts")
           PY
 
+          # Verify the actual read-only recording mount and an existing S3
+          # object without disclosing a match, object key, or stream key.
+          # The running recorder is never restarted or modified.
+          if [ "$COURTSIDE_ACTIVE" = true ]; then
+            if ! compose run --rm --no-deps -T --entrypoint python api - <<'PYS3'
+          import json, os, stat, sys
+          from uuid import UUID
+          import boto3
+          from botocore.config import Config
+          from app.courtside_recording_catalogue import parts_for_match
+          from app.courtside_recording_source import recording_key
+          root=os.environ.get('COURTSIDE_RECORDING_ROOT','')
+          bucket=os.environ.get('HIGHLIGHT_S3_BUCKET','')
+          if os.environ.get('COURTSIDE_ALLOW_RECORDING_RELAY')!='1' or not bucket or not os.path.isabs(root):
+              raise SystemExit('Recording connection is not configured')
+          if not os.statvfs(root).f_flag & os.ST_RDONLY:
+              raise SystemExit('Recording volume is not read-only')
+          found=None; flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+          rootfd=os.open(root,flags)
+          try:
+              with os.scandir(rootfd) as entries:
+                  for entry in entries:
+                      try:
+                          if not entry.is_dir(follow_symlinks=False):continue
+                          directory=os.open(entry.name,flags,dir_fd=rootfd)
+                          try:
+                              fd=os.open('state.json',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)
+                              with os.fdopen(fd,'rb') as source:
+                                  info=os.fstat(source.fileno())
+                                  if not stat.S_ISREG(info.st_mode) or info.st_size>16*1024*1024:continue
+                                  raw=source.read(16*1024*1024+1)
+                                  if len(raw)>16*1024*1024:continue
+                                  match=str(UUID(str(json.loads(raw)['match_id'])))
+                          finally:os.close(directory)
+                          rows=parts_for_match(root,match)
+                          found=next(((match,row['id'],part['sourcePartName']) for row in rows for part in row['parts']),None)
+                          if found:break
+                      except (OSError,ValueError,KeyError,TypeError):continue
+          finally:os.close(rootfd)
+          if not found:raise SystemExit('No uploaded recording available for S3 preflight')
+          try:
+              client=boto3.client('s3',region_name=os.environ.get('HIGHLIGHT_S3_REGION') or None,
+                                  config=Config(connect_timeout=5,read_timeout=15,retries={'max_attempts':1}))
+              head=client.head_object(Bucket=bucket,Key=recording_key(*found))
+              if type(head.get('ContentLength')) is not int or head['ContentLength']<=0:raise ValueError()
+          except Exception:raise SystemExit('S3 recording preflight failed') from None
+          print('Read-only recorder and S3 object verified')
+          PYS3
+            then
+              echo 'Courtside recording preflight failed'; exit 1
+            fi
+          fi
+
+          # Confirm the isolated worker, its persistent store, Blender and the
+          # real T4 connection before exposing the new FPC API or web menu.
+          if [ "$COURTSIDE_ACTIVE" = true ]; then
+            # Keep the currently running worker's exact image and source mount
+            # so a failed preflight can restore it before touching API/web.
+            previous_image="$(docker inspect -f '{{.Config.Image}}' fpc-courtside-v2 2>/dev/null || true)"
+            previous_source="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/workspace/scripts/kbl_grayzone"}}{{.Source}}{{end}}{{end}}' fpc-courtside-v2 2>/dev/null || true)"
+            previous_root=''
+            case "$previous_source" in */scripts/kbl_grayzone) previous_root="${previous_source%/scripts/kbl_grayzone}" ;; esac
+            restore_worker() {
+              if [ -n "$previous_image" ] && [ -n "$previous_root" ] && [ -d "$previous_root/scripts/kbl_grayzone" ]; then
+                export COURTSIDE_WORKER_IMAGE="$previous_image" COURTSIDE_RELEASE_ROOT="$previous_root"
+                compose up -d --no-deps courtside-eic courtside-v2 || echo '::error::Previous Courtside worker restoration failed'
+              else
+                compose stop courtside-v2 courtside-eic || true
+              fi
+            }
+            if ! compose up -d --no-deps courtside-eic courtside-v2; then
+              restore_worker; echo 'Courtside worker could not start'; exit 1
+            fi
+            worker_healthy=false
+            for i in $(seq 1 30); do
+              if [ "$(docker inspect -f '{{.State.Health.Status}}' fpc-courtside-v2 2>/dev/null || true)" = healthy ]; then
+                worker_healthy=true; break
+              fi
+              sleep 2
+            done
+            if [ "$worker_healthy" != true ]; then
+              compose logs --tail=30 courtside-eic courtside-v2
+              restore_worker; echo 'Courtside worker did not become healthy'; exit 1
+            fi
+            if ! compose exec -T courtside-v2 python scripts/kbl_grayzone/cloud_preflight.py --require-full; then
+              restore_worker; echo 'Courtside worker preflight failed'; exit 1
+            fi
+            if ! compose exec -T courtside-v2 ssh -F /tmp/courtside-t4/ssh_config -o BatchMode=yes -o ConnectTimeout=25 courtside-t4 'nvidia-smi -L >/dev/null'; then
+              restore_worker; echo 'Courtside T4 connection failed'; exit 1
+            fi
+          fi
+
           # potoken(유튜브 PO 토큰 발급기)도 함께 띄운다. 빌드가 없는 기성 이미지라
           # up 만으로 받는다. 이걸 빼먹어서 코드만 배포되고 컨테이너가 안 생겨,
           # 유튜브 취득이 360p 로 떨어진 적이 있다(2026-09-30).
-          docker compose -f "$COMPOSE_FILE" up -d potoken api web highlight-render scene-capture scene-render
-          docker compose -f "$COMPOSE_FILE" ps potoken api web highlight-render scene-capture scene-render
+          compose up -d potoken api web highlight-render scene-capture scene-render
+          compose ps potoken api web highlight-render scene-capture scene-render
 
           # `up -d` returns once the container process starts, but uvicorn only
           # binds :8000 after startup (schema migration + seeding + workers).
@@ -93,7 +213,7 @@ jobs:
           echo "Waiting for api to become healthy..."
           api_healthy=false
           for i in $(seq 1 30); do
-            if docker compose -f "$COMPOSE_FILE" exec -T api \
+            if compose exec -T api \
                  python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" >/dev/null 2>&1; then
               echo "api healthy after ${i} attempt(s)"
               api_healthy=true
@@ -103,10 +223,10 @@ jobs:
           done
           if [ "$api_healthy" != "true" ]; then
             echo "api did not become healthy within ~60s"
-            docker compose -f "$COMPOSE_FILE" logs --tail=80 api
+            compose logs --tail=80 api
             exit 1
           fi
-          docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
+          compose exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
 
           scene_healthy=false
           for i in $(seq 1 20); do
@@ -124,7 +244,7 @@ jobs:
           echo "Checking potoken (YouTube PO token provider)..."
           potoken_ok=false
           for i in $(seq 1 10); do
-            if docker compose -f "$COMPOSE_FILE" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://potoken:4416/ping', timeout=3)" >/dev/null 2>&1; then
+            if compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://potoken:4416/ping', timeout=3)" >/dev/null 2>&1; then
               echo "potoken healthy after ${i} attempt(s)"
               potoken_ok=true
               break
@@ -133,7 +253,7 @@ jobs:
           done
           if [ "$potoken_ok" != "true" ]; then
             echo "::warning::potoken 이 응답하지 않습니다 — 유튜브 취득이 저화질로 떨어질 수 있습니다"
-            docker compose -f "$COMPOSE_FILE" logs --tail=30 potoken || true
+            compose logs --tail=30 potoken || true
           fi
 
           # api/web are recreated above, so nginx needs a reload to resolve
@@ -145,18 +265,18 @@ jobs:
           # 그래서 비교 대상도 만들어진 결과가 아니라 컨테이너에 마운트된 템플릿 원본이다.
           # (옛 컨테이너에는 이 파일이 없어 해시가 비고, 첫 배포 때 한 번 다시 만들어진다.)
           source_nginx_hash="$(sha256sum "$APP_DIR/infra/app/nginx/templates/default.conf.template" | awk '{print $1}')"
-          loaded_nginx_hash="$(docker compose -f "$COMPOSE_FILE" exec -T nginx sha256sum /etc/nginx/templates/default.conf.template 2>/dev/null | awk '{print $1}' || true)"
+          loaded_nginx_hash="$(compose exec -T nginx sha256sum /etc/nginx/templates/default.conf.template 2>/dev/null | awk '{print $1}' || true)"
           if [ "$source_nginx_hash" != "$loaded_nginx_hash" ]; then
             echo "Nginx config changed; recreating nginx to mount the current file"
-            docker compose -f "$COMPOSE_FILE" up -d --force-recreate nginx
+            compose up -d --force-recreate nginx
           else
             # HLS_UPSTREAM 같은 환경변수만 바뀐 경우 compose 가 다시 만들고, 같으면 아무 일도 하지 않는다.
             # 다시 만들었다면 새 nginx 가 막 뜨는 중이라 reload 를 보내지 않는다(아래 외부 확인이 기다린다).
-            nginx_before="$(docker compose -f "$COMPOSE_FILE" ps -q nginx)"
-            docker compose -f "$COMPOSE_FILE" up -d --no-deps nginx
-            nginx_after="$(docker compose -f "$COMPOSE_FILE" ps -q nginx)"
+            nginx_before="$(compose ps -q nginx)"
+            compose up -d --no-deps nginx
+            nginx_after="$(compose ps -q nginx)"
             if [ "$nginx_before" = "$nginx_after" ]; then
-              docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload
+              compose exec -T nginx nginx -s reload
             else
               echo "Nginx environment changed; recreated nginx"
             fi
