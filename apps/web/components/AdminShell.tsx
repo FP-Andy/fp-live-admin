@@ -9,6 +9,7 @@ import { apiFetch, clearCachedSessionUser, displayRole, fetchSessionUser, type S
 import { clearFpaDraft, FPA_DRAFT_WARNING_MESSAGE, hasFpaDraft } from './FpaDraftGuard';
 import { SportProvider, SPORTS, useSportContext, type Sport } from './SportContext';
 import {allowWorkspaceLeave} from '../lib/workspace-leave';
+import { courtsideEnabled } from '../lib/courtside-feature';
 
 type NavItem = {
   href: string;
@@ -66,12 +67,12 @@ const BASKETBALL_FLA_ITEMS: NavItem[] = [
     icon: '◌',
     match: (pathname) => pathname.startsWith('/admin/basketball/visualization'),
   },
-  {
+  ...(courtsideEnabled ? [{
     href: '/admin/basketball/courtside',
     label: 'Courtside',
     icon: '◇',
-    match: (pathname) => pathname.startsWith('/admin/basketball/courtside'),
-  },
+    match: (pathname: string) => pathname.startsWith('/admin/basketball/courtside'),
+  }] : []),
 ];
 
 // 퀸컵은 수동 FLA/FPA 기록만 사용한다. 미디어·라이브 코더 메뉴를 노출하지 않는다.
