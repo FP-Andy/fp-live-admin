@@ -21,7 +21,7 @@ services:
     cpus: 1.0
     mem_limit: 2g
     working_dir: /workspace
-    entrypoint: ["/opt/courtside-venv/bin/python", "scripts/kbl_grayzone/serve_socket.py", "--socket", "run/courtside.sock"]
+    entrypoint: ["/usr/local/bin/python", "scripts/kbl_grayzone/serve_socket.py", "--socket", "run/courtside.sock"]
     environment:
       PYTHONDONTWRITEBYTECODE: '1'
       KBL_GPU_DISABLED: '1'

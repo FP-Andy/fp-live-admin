@@ -20,9 +20,9 @@ services:
       - |
         if [ "$$COURTSIDE_STAGE_GPU_ENABLED" = 1 ]; then
           export KBL_GPU_DISABLED=0
-          /opt/courtside-venv/bin/python scripts/kbl_grayzone/cloud_preflight.py --require-staging-gpu
+          /usr/local/bin/python scripts/kbl_grayzone/cloud_preflight.py --require-staging-gpu
         fi
-        exec /opt/courtside-venv/bin/python scripts/kbl_grayzone/serve_socket.py --socket run/courtside.sock
+        exec /usr/local/bin/python scripts/kbl_grayzone/serve_socket.py --socket run/courtside.sock
     volumes:
       - ${COURTSIDE_STAGING_GPU_CONFIG:?Set the private staging GPU config}:/workspace/runtime/kbl-cv/gpu.json:ro
       - ${COURTSIDE_STAGING_SSH_CONFIG:?Set the private SSH config}:/run/secrets/courtside/ssh_config:ro

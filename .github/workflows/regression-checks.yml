@@ -159,6 +159,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build worker from pinned Linux inputs
         run: docker build --platform linux/amd64 -f infra/app/Dockerfile.courtside-worker -t courtside-worker-ci .
+      - name: Shared store and worker socket
+        run: bash scripts/test_courtside_image_socket.sh courtside-worker-ci
       - name: Worker contracts in isolated container
         run: |
           docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,nosuid,nodev,size=3g,mode=1777 \
