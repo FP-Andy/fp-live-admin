@@ -15,6 +15,7 @@ from fastapi import APIRouter,Depends,HTTPException,Request
 from fastapi.responses import JSONResponse,Response,StreamingResponse
 from sqlalchemy.orm import Session
 from .auth import require_session_user
+from .courtside_access import can_edit_courtside
 from .db import get_db
 from .models import Match,User
 
@@ -66,7 +67,7 @@ def safe_read(root,relative):
 def authorized_match(match_id,db,user,write=False):
     m=db.get(Match,match_id)
     if not m or m.sport!='BASKETBALL':raise HTTPException(404,'농구 경기를 찾을 수 없습니다.')
-    if write and (m.archived or (user.role!='SUPERADMIN' and m.operator_id and m.operator_id!=user.id)):
+    if write and not can_edit_courtside(m,user):
         raise HTTPException(403,'이 경기의 작업 권한이 없습니다.')
     return m
 
