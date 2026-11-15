@@ -89,7 +89,11 @@ jobs:
             # it contains private/privileged files such as certbot accounts.
             DOCKER_BUILDKIT=0 docker build --cpu-period 100000 --cpu-quota 200000 --memory 3g -t "$COURTSIDE_WORKER_IMAGE" -f "$COURTSIDE_RELEASE_ROOT/infra/app/Dockerfile.courtside-worker" "$COURTSIDE_RELEASE_ROOT"
           fi
-          compose build api web highlight-render scene-render
+          # Export images one at a time to avoid exhausting the app server's
+          # disk while several Docker images are unpacked concurrently.
+          for service in api web highlight-render scene-render; do
+            compose build "$service"
+          done
 
           # Reject a missing/invalid private account manifest before replacing
           # the running API. This check imports no DB code or delivery workers.
