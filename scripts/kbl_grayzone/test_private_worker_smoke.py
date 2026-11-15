@@ -96,7 +96,7 @@ class PrivateWorkerSmoke(unittest.TestCase):
             for i in range(60): writer.write(np.full((1080,1920,3), i, dtype=np.uint8))
         finally: writer.release()
         media = source.read_bytes(); self.assertGreater(len(media), 0)
-        fields = ['경기번호','경기일','홈팀','원정팀','판독횟수','쿼터','경기시간','소요시간(초)',
+        fields = ['경기번호','경기일','홈팀','원정팀','판독횟수','쿼터','경기시간','판독소요시간(초)',
                   '판독구분','요청팀','판독결과','판독결과(직접입력)','기록시각','작성자','심판1']
         csv_file = io.StringIO(); csv_writer = csv.DictWriter(csv_file, fieldnames=fields); csv_writer.writeheader()
         csv_writer.writerow(dict(zip(fields,['999','2026-11-13','Test Home','Test Away','1','1','5:22','30',
