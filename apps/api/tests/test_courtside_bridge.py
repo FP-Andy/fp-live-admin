@@ -54,6 +54,7 @@ class BridgeTests(unittest.TestCase):
   self.assertEqual(self.client.get(self.base+'workflow.html').status_code,401);self.user()
   self.assertEqual(self.client.get(self.base.replace(self.case,'other')+'workflow.html').status_code,404)
  def test_recording_catalogue_requires_edit_access_and_hides_secrets(self):
+  self.match.archived=True
   path=f'/api/courtside/matches/{self.mid}/recording-parts';sid=str(uuid.uuid4());name='take-00001-part-000001.mp4'
   recording=self.root/'recordings';(recording/sid).mkdir(parents=True)
   (recording/sid/'state.json').write_text(json.dumps({'id':sid,'match_id':str(self.mid),'stream_key':'private-key',
@@ -89,6 +90,20 @@ class BridgeTests(unittest.TestCase):
   self.assertEqual(self.client.post(self.base+'api/gpu/start',headers={'origin':'http://testserver'},json={'action':'start'}).status_code,404)
   self.assertEqual(self.client.post(self.base+'api/cases/'+self.case,headers={'origin':'http://testserver'},json={'ok':True}).status_code,200)
   self.assertEqual(self.requests[-1][2]['origin'],'http://127.0.0.1:4350');self.assertNotIn('cookie',self.requests[-1][2])
+ def test_archived_match_allows_owner_and_admin_review_writes_only(self):
+  self.match.archived=True
+  intake=f'/api/courtside/matches/{self.mid}/intakes'
+  case=self.base+'api/cases/'+self.case
+  payload={'csvText':'x','media':[],'confirmUnverifiedDate':True}
+  headers={'origin':'http://testserver'}
+  self.user('other')
+  self.assertEqual(self.client.post(intake,headers=headers,json=payload).status_code,403)
+  self.assertEqual(self.client.post(case,headers=headers,json={}).status_code,403)
+  for user,role in [('owner','OPERATOR'),('admin','SUPERADMIN')]:
+   self.user(user,role)
+   self.assertEqual(self.client.post(intake,headers=headers,json=payload).status_code,200)
+   self.assertEqual(self.client.post(case,headers=headers,json={}).status_code,200)
+  self.assertTrue(self.match.archived)
  def test_range_and_static_url_rewrite(self):
   self.user();r=self.client.get(self.base+'case-assets/'+self.case+'/broadcast/a.mp4',headers={'range':'bytes=0-3'});self.assertEqual((r.status_code,r.content),(206,b'1234'));self.assertEqual(r.headers['content-range'],'bytes 0-3/100');self.assertEqual(self.requests[-1][2]['range'],'bytes=0-3')
   r=self.client.get(self.base+'workflow.mjs');self.assertIn(self.base+'api/cases/',r.text)
@@ -138,6 +153,7 @@ class BridgeTests(unittest.TestCase):
   self.user('other');self.assertEqual(self.client.post(base,headers={'origin':'http://testserver'},json={'csvText':'x','media':[]}).status_code,403)
 
  def test_selected_recording_copy_is_opt_in_and_match_scoped(self):
+  self.match.archived=True
   sid=uuid.uuid4();name='take-00001-part-000001.mp4'
   path=f'/api/courtside/matches/{self.mid}/intakes/{self.intake}/recording-sessions/{sid}/parts/{name}/prepare'
   self.user('other')
