@@ -1,9 +1,14 @@
 """Immutable map-bound pose shared by spatial analysis, reports and video."""
-import copy,hashlib,json,re,shutil,tempfile,uuid
+import copy,hashlib,json,re,shutil,tempfile,threading,uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import case_store,broadcast_pose
 import storage_policy
 from job_store import atomic,digest,lease,now
+
+_POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='pose-variant')
+_LOCK=threading.Lock()
+_ACTIVE=set()
 
 def folder(case,event,variant):
  if case not in case_store.CASES or not re.fullmatch(r'review-\d+',str(event)) or not re.fullmatch(r'[a-f0-9]{24}',str(variant)):raise ValueError('보정 자세 식별자를 확인하세요.')
@@ -26,6 +31,69 @@ def load(case,event,variant,state,base):
  for person in pose['people']:
   if person.get('accepted') and person.get('spatialEligible',True) and person.get('meshKey') not in mesh['assets']:raise RuntimeError('보정 인체 메시가 누락됐습니다.')
  return pose,mesh,meta
+
+def reusable(case,event,scene,base):
+ """Reuse only a complete result tied to the exact saved source scene."""
+ root=case_store.CASES[case]/'reconstructions'/event/'pose-variants'
+ for target in sorted(root.glob('*'),reverse=True):
+  if not re.fullmatch(r'[a-f0-9]{24}',target.name):continue
+  try:
+   meta=json.loads((target/'meta.json').read_text())
+   if meta.get('sourceCaptureId')!=scene['captureId'] or meta.get('selectionVersion') not in ('map-placed-2d-v1','map-heading-leg-v1'):continue
+   pose,mesh,meta=load(case,event,target.name,scene['state'],base)
+   if meta.get('meshSha256')!=mesh['geometrySha256'] or pose.get('variantId')!=target.name or not isinstance(meta.get('selected'),dict):continue
+   return {'variantId':target.name,'pose':pose,'selectedCount':len(meta['selected']),'meshSha256':mesh['geometrySha256']}
+  except (OSError,ValueError,RuntimeError,TypeError,KeyError,json.JSONDecodeError):continue
+ return None
+
+def job_path(case,event,job):
+ if case not in case_store.CASES or not re.fullmatch(r'review-\d+',str(event)) or not re.fullmatch(r'[a-f0-9]{24}',str(job)):raise ValueError('자세 보정 작업을 확인하세요.')
+ return case_store.CASES[case]/'reconstructions'/event/'pose-variant-jobs'/job/'status.json'
+
+def job_status(case,event,job):
+ try:data=json.loads(job_path(case,event,job).read_text())
+ except (OSError,ValueError) as exc:raise ValueError('자세 보정 작업을 찾을 수 없습니다.') from exc
+ if data.get('caseId')!=case or data.get('eventId')!=event or data.get('jobId')!=job:raise ValueError('자세 보정 작업을 확인하세요.')
+ with _LOCK:active=job in _ACTIVE
+ if data.get('state') in ('queued','running') and not active:
+  return {**data,'state':'interrupted','error':'서버가 다시 시작되어 자세 보정이 중단됐습니다. 다시 시도하면 완료된 결과부터 확인합니다.'}
+ return data
+
+def submit(case,event,capture_id):
+ import broadcast_reconstruction as reconstruction
+ if not isinstance(capture_id,str) or not re.fullmatch(r'[a-f0-9]{24}',capture_id):raise ValueError('저장된 장면을 확인하세요.')
+ job_path(case,event,'0'*24) # Validate the case and event before touching paths.
+ root=case_store.CASES[case]/'reconstructions'/event
+ scene=reconstruction.current(case,event,strict=True)
+ if not scene or scene.get('captureId')!=capture_id:raise RuntimeError('저장된 공간 장면이 변경됐습니다. 다시 불러오세요.')
+ with _LOCK,lease(root/'pose-variant-submit.lock') as held:
+  if not held:raise RuntimeError('자세 보정 요청을 확인 중입니다. 다시 시도하세요.')
+  for path in (root/'pose-variant-jobs').glob('*/status.json'):
+   try:data=json.loads(path.read_text())
+   except (OSError,ValueError):continue
+   if data.get('jobId') in _ACTIVE and data.get('state') in ('queued','running'):
+    if data.get('captureId')==capture_id:return {'job':data}
+    raise RuntimeError('이 장면의 자세를 보정 중입니다. 완료 후 다시 확인하세요.')
+  job=uuid.uuid4().hex[:24]
+  data={'jobId':job,'caseId':case,'eventId':event,'captureId':capture_id,'state':'queued','stage':'자세 보정 대기','createdAt':now()}
+  atomic(job_path(case,event,job),data);_ACTIVE.add(job)
+  try:_POOL.submit(_run_job,case,event,job,capture_id)
+  except Exception:
+   _ACTIVE.discard(job);data.update(state='failed',error='자세 보정 작업을 시작하지 못했습니다.');atomic(job_path(case,event,job),data);raise
+  return {'job':data}
+
+def _run_job(case,event,job,capture_id):
+ path=job_path(case,event,job);data=json.loads(path.read_text())
+ try:
+  data.update(state='running',stage='자세 인체 보정 중',updatedAt=now());atomic(path,data)
+  result=create(case,event,capture_id)
+  data.update(state='complete',stage='자세 보정 완료',result=result,completedAt=now());atomic(path,data)
+ except Exception as exc:
+  from diagnostics import safe
+  message=safe(exc)[:300] if isinstance(exc,(ValueError,RuntimeError,OSError)) else '자세 보정을 마치지 못했습니다. 서버 상태를 확인하세요.'
+  data.update(state='failed',stage='자세 보정 확인 필요',error=message,completedAt=now());atomic(path,data)
+ finally:
+  with _LOCK:_ACTIVE.discard(job)
 
 def pending_placed_people(scene,pose):
  entities={e['id']:e for e in scene['state']['entities']}
@@ -71,6 +139,8 @@ def create(case,event,capture_id):
   scene=reconstruction.current(case,event,strict=True)
   if not scene or scene['captureId']!=capture_id:raise RuntimeError('저장된 공간 장면이 변경됐습니다. 다시 불러오세요.')
   base=broadcast_pose.validate_pose(case,event,scene['poseJobId'],scene['state']['entities'])
+  previous=reusable(case,event,scene,base)
+  if previous:return previous
   import pose_jobs
   base_mesh=json.loads((pose_jobs.folder(base['jobId'])/'meshes.json').read_text())
   working,working_mesh=base,base_mesh

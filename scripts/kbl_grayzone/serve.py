@@ -364,6 +364,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(broadcast_pose.review(key,event,data) if action else broadcast_pose.submit(key,event,data))
             except (ValueError,TypeError,KeyError) as e:return self.json({'error':str(e)},code=400)
             except RuntimeError as e:return self.json({'error':str(e)},code=409)
+        match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/events/(review-\d+)/pose-variant-jobs',path)
+        if match:
+            try:
+                if origin!=f'http://{self.headers.get("Host")}':return self.send_error(403)
+                if self.headers.get('Content-Type','').split(';')[0]!='application/json':return self.send_error(415)
+                size=int(self.headers.get('Content-Length',0))
+                if not 0<size<=1000:return self.send_error(413)
+                payload=json.loads(self.rfile.read(size))
+                if not isinstance(payload,dict) or set(payload)!={'captureId'}:raise ValueError('저장된 장면을 확인하세요.')
+                import pose_variant,review_flow
+                review_flow.require_stage(match[1],'spatial',match[2])
+                return self.json(pose_variant.submit(*match.groups(),payload['captureId']))
+            except (ValueError,TypeError,KeyError) as e:return self.json({'error':str(e)},code=400)
+            except RuntimeError as e:return self.json({'error':str(e)},code=409)
         match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/events/(review-\d+)/pose-variants',path)
         if match:
             try:
@@ -685,6 +699,12 @@ class Handler(BaseHTTPRequestHandler):
                 import broadcast_pose
                 return self.json({'pose':broadcast_pose.current(*match.groups())},head)
             except (ValueError,KeyError,OSError,RuntimeError) as e:return self.json({'error':str(e)},head,409)
+        match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/events/(review-\d+)/pose-variant-jobs/([a-f0-9]{24})',path)
+        if match:
+            try:
+                import pose_variant
+                return self.json({'job':pose_variant.job_status(*match.groups())},head)
+            except (ValueError,KeyError,OSError,RuntimeError,TypeError) as e:return self.json({'error':str(e)},head,409)
         match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/events/(review-\d+)/pose-variants/([a-f0-9]{24})',path)
         if match:
             try:

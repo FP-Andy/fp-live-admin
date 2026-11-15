@@ -83,6 +83,7 @@
 !apps/web/public/kbl-grayzone/reconstruction.css
 !apps/web/public/kbl-grayzone/reconstruction.html
 !apps/web/public/kbl-grayzone/reconstruction.mjs
+!apps/web/public/kbl-grayzone/pose-variant-jobs.mjs
 !apps/web/public/kbl-grayzone/referee-roster.mjs
 !apps/web/public/kbl-grayzone/renderer.mjs
 !apps/web/public/kbl-grayzone/report-download.mjs
@@ -198,6 +199,8 @@
 !scripts/kbl_grayzone/test_phase_handoff.mjs
 !scripts/kbl_grayzone/test_pose_focus.mjs
 !scripts/kbl_grayzone/test_pose_mesh_builder.py
+!scripts/kbl_grayzone/test_pose_variant_async.py
+!scripts/kbl_grayzone/test_pose_variant_jobs.mjs
 !scripts/kbl_grayzone/test_private_pdf_smoke.py
 !scripts/kbl_grayzone/test_private_worker_smoke.py
 !scripts/kbl_grayzone/test_release_assets.mjs

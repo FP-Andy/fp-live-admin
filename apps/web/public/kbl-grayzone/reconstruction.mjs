@@ -5,6 +5,7 @@ import {createWidePositionMode} from './wide-position-mode.mjs';
 import {mountManualCourt} from './manual-court.mjs';
 import {createSceneDraft} from './scene-draft.mjs';
 import {mountReviewVideos} from './review-videos.mjs';
+import {createPoseVariant} from './pose-variant-jobs.mjs';
 import {analyzeCrew,crewObservers} from './crew-analysis.mjs';
 import {reconcileScene} from './scene-handoff.mjs';
 import {loadCourtAsset} from './court-asset.mjs';
@@ -48,7 +49,7 @@ const mapWrapper=document.createElement('div'),mapCanvas=$('map');mapWrapper.sty
 function drawWidePreview(){const x=wideOverlay.getContext('2d');x.clearRect(0,0,1280,800);const p=widePositionMode.preview;if(!p)return;const [cx,cy]=mapPoint(p);x.save();x.beginPath();x.arc(cx,cy,16,0,2*Math.PI);x.fillStyle='#ff8a21';x.fill();x.lineWidth=4;x.setLineDash([5,4]);x.strokeStyle='#101633';x.stroke();x.setLineDash([]);x.font='bold 22px sans-serif';x.lineWidth=5;x.strokeStyle='#fff';x.strokeText('새 광각 심판 · 저장 전',cx+20,cy-16);x.fillStyle='#101633';x.fillText('새 광각 심판 · 저장 전',cx+20,cy-16);x.restore();}
 const message=s=>$('status').textContent=s;
 const flow=mountFlow({stage:'spatial',caseId,eventId:()=>event?.id,save:async()=>{setBusy(true);try{await save();dirtyScene=false;}finally{setBusy(false);}},isDirty:()=>dirtyScene||!!wideReferencePanel?.dirty,isBusy:()=>busy||!!mapDrag,message});
-async function json(url,options){const r=await fetch(url,options);const d=await r.json();if(!r.ok){if(options?.method==='POST'&&url.endsWith('/reconstruction')&&d.error?.includes('공간 편집 화면이 업데이트'))throw Error('마네킹 모델을 저장하려면 현재 화면을 열어 둔 채 로컬 서버를 다시 시작한 다음 다시 저장하세요.');throw Error(d.error||`HTTP ${r.status}`);}return d;}
+async function json(url,options){const r=await fetch(url,options);let d;try{d=await r.json();}catch{throw Error(r.ok?'서버 응답을 확인할 수 없습니다.':`서버 연결을 확인하세요. (HTTP ${r.status})`);}if(!r.ok){if(options?.method==='POST'&&url.endsWith('/reconstruction')&&d.error?.includes('공간 편집 화면이 업데이트'))throw Error('마네킹 모델을 저장하려면 현재 화면을 열어 둔 채 로컬 서버를 다시 시작한 다음 다시 저장하세요.');throw Error(d.error||`HTTP ${r.status}`);}return d;}
 const nextPaint=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 function fill(select,items,value){select.replaceChildren(...items.map(e=>new Option(`${roleNames[e.role]} ${e.id}`,e.id)));select.value=value;}
 function selectPlacement(id){
@@ -177,7 +178,7 @@ async function applySharedPose(keepExisting=false,forceRefresh=false){
  if(!currentCapture?.captureId||!poseResult?.jobId)throw Error('현재 장면과 자세를 먼저 저장하세요.');
  setBusy(true);$('applySharedPose').disabled=true;message('2D 방향을 유지하며 자세를 보정하고 있습니다.');
  try{
-  const result=await json(`/api/cases/${caseId}/events/${event.id}/pose-variants`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({captureId:currentCapture.captureId})});
+  const result=await createPoseVariant(json,`/api/cases/${caseId}/events/${event.id}/pose-variant-jobs`,currentCapture.captureId,{onProgress:stage=>message(stage)});
   const meshes=await json(result.pose.meshUrl);appendHumanMeshes(meshes);poseResult=result.pose;poseVariantId=result.variantId;dirtyScene=true;render();await save();
   message(`보정 자세 ${result.selectedCount}명 적용 · 시야와 공간 장면을 다시 저장했습니다. 리포트 코멘트를 확인하세요.`);
  }finally{$('applySharedPose').disabled=false;setBusy(false);}
