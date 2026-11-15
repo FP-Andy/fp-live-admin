@@ -197,6 +197,9 @@ jobs:
             if ! compose exec -T courtside-v2 python scripts/kbl_grayzone/cloud_preflight.py --require-full; then
               restore_worker; echo 'Courtside worker preflight failed'; exit 1
             fi
+            if ! compose exec -T -e COURTSIDE_MAP_QA=1 -e PYTHONPATH=/workspace/scripts/kbl_grayzone courtside-v2 python -m unittest test_report_map_runtime -q; then
+              restore_worker; echo 'Courtside report map preflight failed'; exit 1
+            fi
             if ! compose exec -T courtside-v2 ssh -F /tmp/courtside-t4/ssh_config -o BatchMode=yes -o ConnectTimeout=25 courtside-t4 'nvidia-smi -L >/dev/null'; then
               restore_worker; echo 'Courtside T4 connection failed'; exit 1
             fi

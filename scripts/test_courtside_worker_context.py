@@ -14,7 +14,7 @@ class WorkerContextTests(unittest.TestCase):
   self.assertTrue(all('*' not in name and '?' not in name for name in allowed))
   args=['git','ls-files','-z','--','scripts/kbl_grayzone','apps/web/public/kbl-grayzone','assets/courtside-report']
   expected={p for p in subprocess.check_output(args,cwd=ROOT,text=True).split('\0') if p}
-  expected.update(['scripts/fpa_cv_bytetrack.py','scripts/fpa_cv_uniforms.py','infra/app/courtside-linux-amd64-py311.lock'])
+  expected.update(['scripts/fpa_cv_bytetrack.py','scripts/fpa_cv_uniforms.py','infra/app/courtside-linux-amd64-py311.lock','infra/app/courtside-playwright-package.json','infra/app/courtside-playwright-package-lock.json'])
   self.assertEqual(allowed,expected)
   for name in allowed:
    self.assertFalse(any(part in name for part in ('/frames/','/posters/','/review-survey/','/assets/poses/','/data/')),name)

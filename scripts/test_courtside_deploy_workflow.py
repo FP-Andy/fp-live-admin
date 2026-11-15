@@ -21,6 +21,8 @@ class DeploymentWorkflowTests(unittest.TestCase):
      'infra/app/nginx/templates/default.conf.template':'synthetic nginx\n',
      'infra/app/Dockerfile.courtside-worker':'FROM scratch\n',
      'infra/app/courtside-linux-amd64-py311.lock':'# synthetic\n',
+     'infra/app/courtside-playwright-package.json':'{}\n',
+     'infra/app/courtside-playwright-package-lock.json':'{}\n',
      'infra/app/courtside.production.disabled.yml':'services: {}\n',
      'infra/app/courtside.production.enabled.yml':'services: {}\n',
      'scripts/kbl_grayzone/example.py':'print("synthetic")\n',

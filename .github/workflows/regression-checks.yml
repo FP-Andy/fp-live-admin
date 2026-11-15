@@ -197,6 +197,11 @@ jobs:
           docker run --rm --network none -e COURTSIDE_ISOLATED_QA=1 -e COURTSIDE_QA_TOKEN=ci-only-not-secret \
             -e PYTHONPATH=/workspace/scripts/kbl_grayzone -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
             --entrypoint /bin/sh courtside-worker-ci -c 'printf %s ci-only-not-secret > /workspace/.isolated-courtside-test && python scripts/kbl_grayzone/test_private_pdf_smoke.py -v'
+      - name: Render and verify report maps without network
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,nosuid,nodev,size=3g,mode=1777 \
+            -e COURTSIDE_MAP_QA=1 -e PYTHONPATH=/workspace/scripts/kbl_grayzone \
+            --entrypoint python courtside-worker-ci -m unittest test_report_map_runtime -v
       - name: S3 relay remains readable by unprivileged worker
         run: |
           docker run --rm --network none --read-only --user 0 --tmpfs /tmp:rw,nosuid,nodev,size=3g \
