@@ -71,6 +71,9 @@ const server=http.createServer((req,res)=>{
  assert.match(await page.locator('[data-relay="part"] option').nth(2).textContent(),/원본 누적 0:01부터/);
  assert.equal(await page.locator('.relay-panel').evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(32, 36, 45)');
  if(process.env.COURTSIDE_QA_SCREENSHOT)await page.screenshot({path:process.env.COURTSIDE_QA_SCREENSHOT});
+ await page.evaluate(()=>{document.documentElement.dataset.consoleTheme='light';});
+ assert.equal(await page.locator('.relay-panel').evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(250, 251, 254)');
+ await page.evaluate(()=>{document.documentElement.dataset.consoleTheme='dark';});
  await page.locator('[data-relay="part"]').selectOption(file);
  await page.getByRole('button',{name:'선택 구간 미리보기'}).click();
  await page.waitForFunction(()=>{const v=document.querySelector('[data-relay="video"]');return v.readyState>=2 && v.videoWidth===320;});
