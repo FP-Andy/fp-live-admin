@@ -96,6 +96,10 @@ jobs:
           sudo apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
       # Match the supported operator browser, including H.264 MP4 decoding.
       - run: node apps/web/node_modules/playwright-core/cli.js install --with-deps chrome
+      - name: Courtside wide preview and theme
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node scripts/test-courtside-wide-preview.cjs
       - name: Browser failure and recovery contracts (fixture APIs only)
         env:
           CHROME_PATH: /usr/bin/google-chrome

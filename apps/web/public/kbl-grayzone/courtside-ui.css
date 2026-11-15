@@ -48,6 +48,8 @@ html[data-console-theme="dark"] .flow-time,html[data-console-theme="dark"] .flow
 html[data-console-theme="dark"] :is(.catalog-state,.catalog-empty,.match-row,.clip-card,.intake-row,.create-panel,.crew-section,.controls,.map-tools,.partial-placement,.record-correction,.wide-preparation,.referee-roster) {
   background:#222731; border-color:#3c4451; color:#e9edf5;
 }
+html[data-console-theme="dark"] .wide-preparation .wide-link { background:#282f3b; border-color:#46505d; color:#e9edf5; }
+html[data-console-theme="dark"] .relay-panel label { color:#e9edf5; }
 html[data-console-theme="dark"] :is(.match-row,.clip-card,.intake-row):hover { border-color:#a76142; box-shadow:0 5px 18px #0003; }
 html[data-console-theme="dark"] :is(.catalog-nav,.catalog-toolbar h2,.clip-open,.catalog-breadcrumb a,.catalog-back,.intake-row,.intake-row a,.match-info h2) { color:#e9edf5; }
 html[data-console-theme="dark"] :is(.match-date,.match-referees,.match-clip-count,.catalog-stat span,.catalog-heading p,.catalog-local,.match-search,.clip-recording,.roster-label) { color:#aeb8c8; }
