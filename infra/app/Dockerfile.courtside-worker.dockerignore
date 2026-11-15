@@ -14,6 +14,7 @@
 !scripts/kbl_grayzone/report_coverage.mjs
 !scripts/kbl_grayzone/review-package-guide.md
 !scripts/kbl_grayzone/test_report_map_runtime.py
+!scripts/kbl_grayzone/test_case_report_pose.py
 !apps/web/public/
 !scripts/kbl_grayzone/video-assets/
 !apps/web/public/kbl-grayzone/

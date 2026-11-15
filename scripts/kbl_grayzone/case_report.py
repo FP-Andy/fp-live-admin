@@ -36,13 +36,21 @@ def annotated(image,row,pose=None,display_labels=None):
         x,y=point;d=sv.Detections(xyxy=np.asarray([[x-11,y-11,x+11,y+11]],dtype=np.float32),class_id=np.asarray([0],dtype=int))
         out=sv.CircleAnnotator(color=sv.Color.from_hex('#ffe42b'),thickness=3).annotate(scene=out,detections=d)
     if pose and pose['people']:
-        xy=np.asarray([p['keypoints'] for p in pose['people']],dtype=np.float32)
-        visible=np.asarray([p['scores'] for p in pose['people']])>=.3
-        points=sv.KeyPoints(xy=xy,visible=visible)
-        edges=[(a+1,b+1) for a,b in [(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]]
-        color=sv.Color.from_hex('#75ff85')
-        out=sv.EdgeAnnotator(color=color,thickness=2,edges=edges).annotate(out,points)
-        out=sv.VertexAnnotator(color=color,radius=3).annotate(out,points)
+        # Draw only sufficiently confident joints and edges. Supervision 0.27
+        # no longer accepts a visibility mask and its vertex annotator ignores
+        # confidence, so relying on it would draw unsupported joints.
+        edges=[(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]
+        color=(0x85,0xff,0x75)  # #75ff85 in OpenCV's BGR order
+        height,width=out.shape[:2]
+        for person in pose['people']:
+            xy=person.get('keypoints',[]);scores=person.get('scores',[]);points={}
+            for i,(point,score) in enumerate(zip(xy,scores)):
+                if valid(point,2) and isinstance(score,(int,float)) and not isinstance(score,bool) and math.isfinite(score) and score>=.3:
+                    x,y=map(round,point)
+                    if 0<=x<width and 0<=y<height:points[i]=(x,y)
+            for a,b in edges:
+                if a in points and b in points:cv2.line(out,points[a],points[b],color,2,cv2.LINE_AA)
+            for point in points.values():cv2.circle(out,point,3,color,-1,cv2.LINE_AA)
     return out
 
 
