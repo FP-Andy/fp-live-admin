@@ -180,6 +180,7 @@
 !scripts/kbl_grayzone/spatial.py
 !scripts/kbl_grayzone/storage_policy.py
 !scripts/kbl_grayzone/test_button_usage.mjs
+!scripts/kbl_grayzone/test_case_intake.py
 !scripts/kbl_grayzone/test_cloud_preflight.py
 !scripts/kbl_grayzone/test_frame_interaction.mjs
 !scripts/kbl_grayzone/test_gpu_bridge.py
