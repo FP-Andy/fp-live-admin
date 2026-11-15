@@ -105,6 +105,9 @@
     "work_session"
   ],
   "assets": [
+    "render_report_maps.mjs",
+    "report_coverage.mjs",
+    "review-package-guide.md",
     "video_depth_raster.cpp",
     "video-assets/procedural-court.png"
   ],
