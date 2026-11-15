@@ -1,10 +1,11 @@
 import {mountFlow,flowUrl} from './review-flow.mjs';
 import {bindReportDownload} from './report-download.mjs';
 import {mountReportVideoBox} from './report-video-box.mjs';
+import {planCommentImport,FIELD_LABELS} from './comment-csv.mjs';
 const $=id=>document.getElementById(id),caseId=new URLSearchParams(location.search).get('id')||'';
 const keys=['focus','observation','difficultyFactors','viewComment','initialCall','callerBasis','decisionBasis','takeaway','assessment'];
 let data,editorial,active,busy=false;const drafts=new Map(),dirty=new Set();
-let videoBox;
+let videoBox,pendingImport=null,commentImportGeneration=0;
 const message=s=>$('status').textContent=s;
 bindReportDownload($('download'),caseId,message);
 const flow=mountFlow({stage:'report',caseId,eventId:()=>active||location.hash.slice(1)||data?.events[0]?.id,message});
@@ -29,6 +30,38 @@ $('eventSelect').onchange=()=>{capture();location.hash=$('eventSelect').value;re
 window.addEventListener('hashchange',()=>{const id=location.hash.slice(1);if(!busy&&editorial?.events.some(e=>e.id===id)&&id!==active){capture();renderEvent(id);}});
 for(const k of keys)$(k).addEventListener('input',()=>changed(k));$('callerNumber').onchange=()=>changed('callerNumber');$('recheck').onchange=()=>changed('recheck');
 $('saveAll').onclick=async()=>{busy=true;buttonState();try{await persist();}catch(e){message(e.message);}finally{busy=false;buttonState();}};
+function clearCommentImport(){commentImportGeneration++;pendingImport=null;$('commentImportPreview').hidden=true;$('commentImportChanges').replaceChildren();$('commentCsv').value='';}
+$('commentCsv').onchange=async()=>{
+ const file=$('commentCsv').files?.[0],generation=++commentImportGeneration;if(!file)return;
+ $('commentImportPreview').hidden=true;pendingImport=null;$('commentImportNote').textContent='';
+ try{
+  if(busy||!editorial)throw Error('리포트 정보를 불러온 뒤 다시 시도하세요.');
+  if(dirty.size)throw Error('저장하지 않은 입력이 있습니다. 먼저 저장한 뒤 CSV를 불러오세요.');
+  if(file.size>512*1024)throw Error('CSV 파일은 512KB 이하여야 합니다.');
+  const text=await file.text();if(generation!==commentImportGeneration)return;if(busy||dirty.size)throw Error('입력이 변경됐습니다. 먼저 저장한 뒤 CSV를 불러오세요.');if(text.includes('\uFFFD'))throw Error('UTF-8로 저장한 CSV 파일을 선택하세요.');
+  const plan=planCommentImport(text,editorial);pendingImport=plan;
+  $('commentImportWarning').textContent=plan.stale?'자료 묶음을 만든 뒤 기존 입력이 변경됐습니다. 변경 전후를 주의해서 대조하세요.':'기존 문안과 가져올 문안을 대조해 주세요.';
+  const list=$('commentImportChanges');list.replaceChildren();
+  for(const change of plan.changes){
+   const section=document.createElement('section'),heading=document.createElement('h4');heading.textContent=`판독 ${change.number}`;section.append(heading);
+   for(const [key,value] of Object.entries(change.fields)){
+    const field=document.createElement('div'),title=document.createElement('strong'),before=document.createElement('p'),after=document.createElement('p');
+    field.className='comment-import-diff';title.textContent=FIELD_LABELS[key];before.textContent='기존: '+(drafts.get(change.id).fields[key]||'미입력');after.textContent='가져올 문안: '+value;field.append(title,before,after);section.append(field);
+   }
+   list.append(section);
+  }
+  $('commentImportPreview').hidden=false;$('commentImportNote').textContent=`${plan.changes.length}개 장면의 변경 내용을 확인하세요.`;message('');
+ }catch(error){if(generation!==commentImportGeneration)return;$('commentImportNote').textContent=error.message;message(error.message);$('commentCsv').value='';}
+};
+$('commentImportCancel').onclick=()=>{clearCommentImport();$('commentImportNote').textContent='가져오기를 취소했습니다.';message('');};
+$('commentImportApply').onclick=()=>{
+ if(!pendingImport)return;
+ if(busy||dirty.size||editorial.version!==pendingImport.version){clearCommentImport();return message('입력이 변경됐습니다. 먼저 저장한 뒤 CSV를 다시 확인하세요.');}
+ const count=pendingImport.changes.length;
+ for(const change of pendingImport.changes){Object.assign(drafts.get(change.id).fields,change.fields);dirty.add(change.id);}
+ clearCommentImport();$('download').hidden=true;$('packageDownload').hidden=true;$('packageNote').textContent='입력이 바뀌었어요. 최신 문안으로 ZIP을 다시 만들어 주세요.';
+ renderEvent(active);buttonState();$('commentImportNote').textContent=`${count}개 장면의 문안을 입력에 반영했습니다. 검토 후 입력 저장을 눌러주세요.`;message('CSV 문안을 가져왔습니다. 각 장면을 검토하고 입력 저장을 눌러주세요.');
+};
 $('compose').onclick=async()=>{busy=true;buttonState();capture();try{const result=await api(`/api/cases/${caseId}/report-editorial/preview`,{version:editorial.version,revision:editorial.revision,events:[drafts.get(active)]});$('assessment').value=result.previews[active].assessment;changed('assessment');$('draftNotice').textContent='입력한 관찰·근거·시사점으로 구성했어요. 내용을 확인하고 저장하세요.';}catch(e){message(e.message);}finally{busy=false;buttonState();}};
 $('generate').onclick=async()=>{busy=true;buttonState();try{await persist();await refreshFlow();if(!data.reportReady)throw Error('변경된 장면의 검수를 먼저 완료하세요.');if(videoBox.selected()){await videoBox.start(data.revision);message('PDF와 판독 영상 제작을 시작했습니다. 영상은 장면별로 순서대로 제작됩니다.');return;}message('리포트를 생성하고 있습니다.');let job=(await api(`/api/cases/${caseId}/report-jobs`,{revision:data.revision})).job;while(['queued','running'].includes(job.state)){const p=job.progress;message(`${job.stage}${p?.total?` · ${p.completed}/${p.total}${p.unit||'개'}`:''}`);await new Promise(resolve=>setTimeout(resolve,1000));job=(await api(`/api/report-jobs/${job.jobId}`)).job;}if(job.state!=='complete')throw Error(job.error||'PDF 작업이 중단됐습니다. 저장된 이전 개정은 보존되어 있습니다.');const r=job.result;$('download').href=r.pdf;$('download').hidden=false;await loadVersions();const delivery=r.delivery?.state==='complete'?'아이탑 전달 폴더 저장됨':r.delivery?.state==='ready-for-download'?'PDF 다운로드 준비됨':r.delivery?.state==='failed'?`전달 폴더 저장 실패: ${r.delivery.message}`:'전달 폴더 저장 상태 확인 필요';message(`${r.pageCount}페이지 PDF 개정 보관 완료 · ${delivery}`);}catch(e){message(e.message);}finally{busy=false;buttonState();}};
 $('exportPackage').onclick=async()=>{busy=true;buttonState();$('packageDownload').hidden=true;try{await persist();await refreshFlow();if(!data.reportReady)throw Error('변경된 장면의 검수를 먼저 완료하세요.');$('packageNote').textContent='현재 입력을 저장하고 장면별 자료를 모으고 있습니다.';const r=await api(`/api/cases/${caseId}/review-package`,{revision:editorial.revision,version:editorial.version});$('packageDownload').href=r.download;$('packageDownload').download=`KBL-${caseId}-해설자료.zip`;$('packageDownload').hidden=false;$('packageNote').textContent=`${r.sceneCount}개 장면 · ${(r.bytes/1024/1024).toFixed(1)} MB · ${r.pdfIncluded?'현재 PDF 포함':'PDF는 생성 후 다시 묶으면 포함됩니다.'}`;message('해설 자료 ZIP을 만들었습니다. 내려받은 파일과 추가 설명을 AI에 전달하세요.');}catch(e){$('packageNote').textContent=e.message;message(e.message);}finally{busy=false;buttonState();}};

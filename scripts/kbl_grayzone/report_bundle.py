@@ -3,6 +3,7 @@
 Only selected frames and explicitly selected data fields leave the case folder.
 No inference, remote service, credentials, mesh weights, or full videos are used.
 """
+import csv
 import hashlib
 import json
 import re
@@ -28,6 +29,17 @@ EVENT_FIELDS=('id','number','quarter','gameClock','gameClockSeconds','reviewDura
 BOX_FIELDS=('id','box','pixelBox','confidence','role','roleHint','roleSource','roleConfidence','roleProbabilities','team','teamSource','teamConfidence','source','boxSource','boxEvidenceTimes','footpointPixels','footpointStatus','footpointEvidence','footpointNote','spatialExcluded','manuallyReviewed')
 POSE_FIELDS=('jobId','frameIndex','datasetId','revision','pipelineVersion','threshold','modelSha256','meshSha256','poseSource','depthMeasured','poseMeasured','limitations','manualJointCount','manualArmCount')
 PERSON_FIELDS=('id','role','team','x','y','pixelBox','keypoints','scores','accepted','autoAccepted','spatialEligible','spatialReason','bodyHeading','bodyDirection','jointWorld','jointUsable','fallbackBones','armQuality','status','armRig','eyeLocal')
+COMMENT_FIELDS=('focus','observation','difficultyFactors','viewComment','initialCall','decisionBasis','takeaway','assessment')
+COMMENT_CSV_HEADERS=('case_id','event_id','capture_id','case_revision','records_version','editorial_version',*COMMENT_FIELDS)
+
+def write_comment_template(path,case,captures,version):
+    """Bind blank comment rows to the exact case and saved spatial captures."""
+    with path.open('w',encoding='utf-8-sig',newline='') as stream:
+        writer=csv.DictWriter(stream,fieldnames=COMMENT_CSV_HEADERS,lineterminator='\r\n')
+        writer.writeheader()
+        for event in case['events']:
+            writer.writerow({'case_id':case['id'],'event_id':event['id'],'capture_id':captures[event['id']],
+                'case_revision':case['revision'],'records_version':case.get('recordsVersion') or '','editorial_version':version})
 
 def pick(value,keys):return {k:value[k] for k in keys if k in value}
 def digest(path):
@@ -215,6 +227,7 @@ def build(case_id,payload):
             comments={'schema':'kbl-comment-writing-draft/v1','caseId':case_id,'fieldLimits':report_inputs.LIMITS,
                 'events':[{'id':s['event']['id'],'captureId':s['source']['captureId'],'commentsMatchCurrentScene':s['commentsMatchCurrentScene'],'fields':s['comments']['fields']} for s in scenes]}
             write_json(files/'comments.json',comments)
+            write_comment_template(files/'comment-template.csv',case,captures,version)
             pdf_included=include_pdf(case_id,case,captures,version,files)
             readme=[f"# {case['title']} · 판독 해설 자료 묶음",'',f"경기 {case['gameNumber']} · {case['date']} · {len(scenes)}개 장면",'',
                 '## 이 파일 하나로 요청하기','',
@@ -223,7 +236,8 @@ def build(case_id,payload):
                 '1. [작성 가이드](COMMENT_GUIDE.md): 해석 범위, 질문, 문안 형식과 길이',
                 '2. [경기·판독 기록](game.json) — 정정한 현재 기록을 기준으로 해석' +(' 및 [원본 CSV](reviews.csv)' if source else ' — 원본 CSV 파일이 없어 구조화된 기록으로 제공'),
                 '3. 아래 장면별 설명·이미지·수치',
-                '4. [현재 입력 문안](comments.json): 스텝 4 필드와 대응. 자동 가져오기용 파일은 아님','원본 CSV는 업로드 당시 기록이며, 이후 정정은 game.json 및 장면별 data.json의 현재 시각·결과에 반영됩니다.','',
+                '4. [코멘트 CSV 양식](comment-template.csv): 장면별 문안을 작성해 리포트 화면에서 불러옵니다.',
+                '5. [현재 입력 문안](comments.json): 기존 문안 확인용','원본 CSV는 업로드 당시 기록이며, 이후 정정은 game.json 및 장면별 data.json의 현재 시각·결과에 반영됩니다.','',
                 '## 판독 장면','']
             for s in scenes:
                 e=s['event'];readme.append(f"- [장면 {e['number']} · {e['quarter']}Q {e['gameClock']} · {e['recordedDecision']}](clips/{e['id']}/scene.md)")

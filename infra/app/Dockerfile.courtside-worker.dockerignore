@@ -15,6 +15,8 @@
 !scripts/kbl_grayzone/review-package-guide.md
 !scripts/kbl_grayzone/test_report_map_runtime.py
 !scripts/kbl_grayzone/test_case_report_pose.py
+!scripts/kbl_grayzone/test_comment_csv.mjs
+!scripts/kbl_grayzone/test_comment_template.py
 !apps/web/public/
 !scripts/kbl_grayzone/video-assets/
 !apps/web/public/kbl-grayzone/
@@ -37,6 +39,7 @@
 !apps/web/public/kbl-grayzone/brand.css
 !apps/web/public/kbl-grayzone/broadcast.mjs
 !apps/web/public/kbl-grayzone/button-usage.mjs
+!apps/web/public/kbl-grayzone/comment-csv.mjs
 !apps/web/public/kbl-grayzone/case.css
 !apps/web/public/kbl-grayzone/colors.mjs
 !apps/web/public/kbl-grayzone/court-asset.mjs
