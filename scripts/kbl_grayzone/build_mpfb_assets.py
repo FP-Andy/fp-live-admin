@@ -3,13 +3,22 @@ Run from repo root with Blender --background --factory-startup --python this_fil
 The exported triangles are shared by WebGL rendering and CPU BVH occlusion.
 """
 from pathlib import Path
-import sys, json, math, hashlib
+import sys, json, math, hashlib, tempfile
 import bpy, bmesh
 from mathutils import Vector, Matrix
 ROOT=Path.cwd(); WORK=ROOT/'runtime/kbl-mpfb'; OUT=ROOT/'apps/web/public/kbl-grayzone/assets/humans'
 OUT.mkdir(parents=True,exist_ok=True)
 sys.path.insert(0,str(WORK/'mpfb2-master/src'))
-bpy.utils.extension_path_user=lambda *a,**kw:str(WORK/'user')
+# MPFB writes logs and user data during registration. Background workers run
+# with a read-only home and release, so give each Blender process its own
+# writable, automatically cleaned user directory without changing the model.
+_mpfb_scratch=tempfile.TemporaryDirectory(prefix='kbl-mpfb-')
+_mpfb_user=Path(_mpfb_scratch.name)
+_resource_path=bpy.utils.resource_path
+def _mpfb_resource_path(kind,*args,**kwargs):
+    return str(_mpfb_user) if kind=='USER' else _resource_path(kind,*args,**kwargs)
+bpy.utils.resource_path=_mpfb_resource_path
+bpy.utils.extension_path_user=lambda *a,**kw:str(_mpfb_user/'user')
 import mpfb
 bpy.context.preferences.addons.new().module='mpfb'; mpfb.register()
 from mpfb.services.humanservice import HumanService
