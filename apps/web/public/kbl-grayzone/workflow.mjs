@@ -3,7 +3,7 @@ import {mountFramePairing} from './frame-pairing.mjs';
 import {mountRefereeRoster} from './referee-roster.mjs';
 import {mountFlow,flowUrl} from './review-flow.mjs';
 import {mountWidePreparation} from './wide-preparation.mjs';
-import {isFpcReviewPath,mountFpcRecordingRelay} from './fpc-recording-relay.mjs';
+import {isFpcReviewPath} from './fpc-recording-relay.mjs';
 const $=id=>document.getElementById(id);let data,event,media,mode='auto',busy=false,presented=null,requested=null,loadGeneration=0;
 let flow=null,linkedReady=false,momentDirty=false;const params=new URLSearchParams(location.search);let libraryMatchId=params.get('match');
 const msg=s=>$('status').textContent=s;
@@ -11,11 +11,9 @@ const roster=mountRefereeRoster($('refereeRoster'),{api,scope:()=>data?.id||para
 const pairPicker=mountFramePairing($('framePairing'),{api,broadcast:()=>({frame:media?current():null,sha:media?.sha256,pause:()=>$('video').pause(),seeking:()=>$('video').seeking||$('video').readyState<2}),message:msg,onChange:()=>{linkedReady=false;flow?.update();}});
 const sequence=mountSequenceSync($('sequenceSync'),{api,broadcast:()=>({video:$('video'),fps:media?.fps||0,sha:media?.sha256||null}),message:msg});
 roster.load();
-let widePanel=null,wideMatch=null,recordingRelay=null,recordingIntake=null;
+let widePanel=null,wideMatch=null;
 const fpcWorkflow=isFpcReviewPath(location.pathname);
-function connectRecording(){if(!data?.id||recordingIntake===data.id)return;recordingRelay?.dispose();recordingIntake=data.id;const host=fpcWorkflow?$('workflowWide'):$('fpcRecordingRelay');recordingRelay=mountFpcRecordingRelay(host,{intakeId:data.id,inline:fpcWorkflow,canPrepare:()=>!pairPicker.dirty(),onPrepared:()=>pairPicker.refresh()});if(fpcWorkflow){$('widePreparationPanel').hidden=false;if($('widePreparationPanel').open)recordingRelay.load();}}
 function connectWide(){if(fpcWorkflow||!libraryMatchId||wideMatch===libraryMatchId)return;widePanel?.dispose();wideMatch=libraryMatchId;$('widePreparationPanel').hidden=false;widePanel=mountWidePreparation($('workflowWide'),{matchId:libraryMatchId});}
-$('widePreparationPanel').addEventListener('toggle',()=>{if(fpcWorkflow&&$('widePreparationPanel').open)recordingRelay?.load();});
 connectWide();
 async function api(path,body){const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.error||'요청을 처리하지 못했습니다.');return d;}
 function lock(value){busy=value;for(const id of ['upload','sample','confirm','continue','report','saveOrder','resumeMatching'])$(id).disabled=value;flow?.update();}
@@ -46,7 +44,6 @@ $('saveOrder').onclick=async()=>{
  lock(true);try{data=await api(`/api/intake/${data.id}/media-assignments`,{revision:data.revision,assignments});show();$('reviewPanel').scrollIntoView({behavior:'smooth'});msg('영상 연결을 저장했습니다. 각 장면의 판독 프레임을 확인하세요.');}catch(e){msg(e.message);}finally{lock(false);}
 };
 function show(){
- connectRecording();
  roster.load();
  updateSla();$('uploadPanel').hidden=true;renderOrder();
  const canReview=!!data.mediaAssignments||data.events.some(e=>e.selection);
