@@ -1,6 +1,7 @@
 // Presentation-only map refresh. Saved coordinates, meshes and nine-ray results
 // are verified before drawing the same full canvas used by Step 3.
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
@@ -11,8 +12,13 @@ const {chromium}=require('playwright-core');
 const publicRoot=path.join(root,'apps/web/public/kbl-grayzone');
 const jobs=JSON.parse(await fs.readFile(process.argv[2],'utf8'));
 const executablePath=process.env.KBL_CHROME_PATH||(process.platform==='darwin'?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':undefined);
-const browser=await chromium.launch({headless:true,executablePath,args:['--disable-gpu','--renderer-process-limit=1']});
+// The production container has a read-only home directory. Chromium needs a
+// writable crash database and profile even though it never accesses the network.
+const browserHome=await fs.mkdtemp(path.join(os.tmpdir(),'courtside-map-browser-'));
+let browser;
 try{
+ browser=await chromium.launch({headless:true,executablePath,args:['--disable-gpu','--renderer-process-limit=1'],
+  env:{...process.env,HOME:browserHome,XDG_CONFIG_HOME:path.join(browserHome,'config'),XDG_CACHE_HOME:path.join(browserHome,'cache')}});
  const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:1});
  await page.route('**/*',async route=>{
   const url=new URL(route.request().url());
@@ -41,4 +47,4 @@ try{
   const temporary=job.output+'.'+process.pid+'.tmp';
   await fs.writeFile(temporary,Buffer.from(data,'base64'));await fs.rename(temporary,job.output);
  }
-}finally{await browser.close();}
+}finally{if(browser)await browser.close();await fs.rm(browserHome,{recursive:true,force:true});}
