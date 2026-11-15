@@ -97,7 +97,7 @@ def _view(key):
                 warnings=(snapshot.get('sceneEvidence') or {}).get('qualityWarnings',[]),
                 preview=scene_commentary(case,event,snapshot,item))
         events.append(entry)
-    return {'caseId':key,'revision':case['revision'],'version':version(key),'referees':case['referees'],'events':events,'limits':LIMITS}
+    return {'caseId':key,'revision':case['revision'],'recordsVersion':case.get('recordsVersion') or '', 'version':version(key),'referees':case['referees'],'events':events,'limits':LIMITS}
 
 def view(key):
     with LOCK:return _view(key)
