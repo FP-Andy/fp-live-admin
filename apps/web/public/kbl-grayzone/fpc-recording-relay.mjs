@@ -6,6 +6,42 @@ export function recordingPreviewUrl(origin,mid,sid,part){
 }
 const fpcReviewPath=/^\/api\/courtside\/matches\/([0-9a-f-]+)\/(?:intakes|cases)\/[^/]+\/bridge\//i;
 export const isFpcReviewPath=path=>fpcReviewPath.test(path);
+// Remote recordings can be played immediately. Preparing a chosen segment
+// separately binds its exact bytes to the saved frame and downstream analysis.
+export function fpcFrameSources(intakeId){
+ const match=location.pathname.match(fpcReviewPath);
+ if(!match||! /^[a-f0-9]{24}$/.test(intakeId||''))return null;
+ const mid=match[1],origin=location.origin;
+ async function get(url,opts){const response=await fetch(url,opts);let body;try{body=await response.json();}catch{throw Error('광각 녹화 응답을 확인할 수 없습니다.');}if(!response.ok)throw Error(typeof body.detail==='string'?body.detail:'광각 녹화를 확인하지 못했습니다.');return body;}
+ return {
+  async list(){
+   const data=await get(new URL('api/courtside/matches/'+encodeURIComponent(mid)+'/recording-parts',origin+'/'));
+   const result=[];
+   for(const record of Array.isArray(data.recordings)?data.recordings:[]){
+    let elapsed=0,expected=1;const sid=record.id;
+    for(const part of Array.isArray(record.parts)?record.parts:[]){
+     const number=part.number,name=part.sourcePartName,duration=part.duration;
+     if(!Number.isSafeInteger(number)||number<1||typeof name!=='string'||!/^take-[0-9]{5,}-part-[0-9]{6,}\.mp4$/.test(name))continue;
+     if(number!==expected)elapsed=null;expected=number+1;const start=elapsed;
+     if(elapsed!==null)elapsed=Number.isFinite(duration)&&duration>0?elapsed+duration:null;
+     const preview=recordingPreviewUrl(origin,mid,sid,number);if(!preview)continue;
+     const stamp=record.created_at?new Date(record.created_at).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'FPC 녹화';
+     const time=start===null?'시간 확인 필요':`${Math.floor(start/60)}:${String(Math.floor(start%60)).padStart(2,'0')}부터`;
+     result.push({id:`remote-${sid}-${number}`,label:`${stamp} · ${time} · 구간 ${number}`,remote:true,
+      matchId:mid,sessionId:sid,partName:name,part:number-1,startSeconds:start,duration,previewUrl:preview});
+    }
+   }
+   return result;
+  },
+  async prepare(row){
+   const base=new URL('api/courtside/matches/'+encodeURIComponent(mid)+'/intakes/'+encodeURIComponent(intakeId)+'/',origin+'/');
+   const url=new URL('recording-sessions/'+encodeURIComponent(row.sessionId)+'/parts/'+encodeURIComponent(row.partName)+'/prepare',base);
+   const result=await get(url,{method:'POST'});
+   if(result.status!=='stored-unpaired'||result.sessionId!==row.sessionId||result.partName!==row.partName||!/^[a-f0-9]{64}$/.test(result.sha256||''))throw Error('광각 구간의 준비 결과를 확인하세요.');
+   return result;
+  }
+ };
+}
 export function mountFpcRecordingRelay(host,{intakeId,onPrepared=()=>{},canPrepare=()=>true,inline=false}={}){
  const match=location.pathname.match(fpcReviewPath);
  if(!match||! /^[a-f0-9]{24}$/.test(intakeId||''))return {dispose(){}};
