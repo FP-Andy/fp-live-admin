@@ -22,9 +22,15 @@ def refresh_view_text(case,event,scene,item):
     """Replace only clearly isolated reconstruction sentences; preserve facts."""
     from report_editorial import scene_commentary
     review=item.get('review',{})
-    related=re.compile(r'재구성|시야|가림|가려|별표|가시|\bR[1-9]\b|심판.{0,20}(?:방향|잘 보|보이|열려)')
+    related=re.compile(r'재구성|시야|가림|가려|별표|가시|(?<![A-Za-z0-9])(?:R|P)[1-9][0-9]*(?![0-9])|심판.{0,20}(?:방향|잘 보|보이|열려)')
+    referee_names=[r.get('name','') for r in case.get('referees',[]) if r.get('name')]
     for field in ('focus','observation','difficultyFactors','decisionBasis','takeaway','initialCall','callerBasis'):
-        if related.search(review.get(field,'') or ''):return False
+        text=review.get(field,'') or ''
+        # A recommendation to check a less-obstructed angle is not a claim
+        # about which referee or player was visible in the previous model.
+        if field=='takeaway' and not any(name in text for name in referee_names) and not re.search(r'심판|#\d|(?<![A-Za-z0-9])(?:R|P)[1-9][0-9]*(?![0-9])',text) and re.search(r'확인(?:해야|할|이 필요)',text):
+            text=re.sub(r'가림이\s*적은\s*(?:각도|시점)(?:를|에서|로)?','다른 각도',text)
+        if related.search(text):return False
     old=review.get('assessment','') or '';sentences=re.split(r'(?<=[.!?。])\s+',old) if old else []
     indices=[]
     for index,sentence in enumerate(sentences):
@@ -32,17 +38,47 @@ def refresh_view_text(case,event,scene,item):
         if '재구성' not in sentence or re.search(r'판독 결과|파울|취소|선언|터치|공격권|경기 재개',sentence):return False
         indices.append(index)
     preview=copy.deepcopy(item);preview.setdefault('review',{})['viewComment']=''
-    view=scene_commentary(case,event,scene,preview)['viewComment']
+    commentary=scene_commentary(case,event,scene,preview)
+    view=commentary['viewComment']
+    rows=scene.get('crewAnalysis',{}).get('rows',[])
+    labels=commentary.get('labels',{})
+    # The default summary mentions the most blocked direction. Preserve the
+    # other blocked referee directions as well when refreshing authored text.
+    for row in rows:
+        label=row.get('label','')
+        if not re.fullmatch(r'R[1-9][0-9]*',label) or not row.get('counts',{}).get('blocked') or re.search(r'(?<![A-Za-z0-9])'+re.escape(label)+r'(?![0-9])',view):continue
+        blockers=[labels.get(ident,'다른 인물') for ident in row.get('blockers',[])]
+        view+=f" {label} 방향도 "+('·'.join(blockers)+'에' if blockers else '다른 인물에')+' 가려지는 부분이 있습니다.'
+    # Use only the operator's saved referee assignments; a visibility leader
+    # is not evidence that this referee made the original call.
+    roster={r.get('number'):r.get('name') for r in case.get('referees',[]) if r.get('number') is not None and r.get('name')}
+    assignments=review.get('refereeAssignments') or {}
+    for row in rows:
+        label=row.get('label','');name=roster.get(assignments.get(row.get('id')))
+        if name and re.fullmatch(r'R[1-9][0-9]*',label):
+            view=re.sub(r'(?<![A-Za-z0-9])'+re.escape(label)+r'(?![0-9])',lambda match:f'{name} 심판({label})',view)
     if len(view)>report_inputs.LIMITS['viewComment']:return False
     if indices:
         result=[]
         for i,sentence in enumerate(sentences):
-            if i==indices[0]:result.append(view)
+            if i==indices[0]:
+                # Keep an independent action point after the scene-specific
+                # clause, instead of discarding the author's conclusion.
+                parts=re.split(r'(?:므로|때문에),\s*',sentence,maxsplit=1)
+                if len(parts)==2:
+                    if related.search(parts[1]):return False
+                    result.extend((view,parts[1]))
+                else:result.append(view)
             elif i not in indices:result.append(sentence)
         updated=' '.join(result)
         if len(updated)>report_inputs.LIMITS['assessment']:return False
         review['assessment']=updated
-    review['viewComment']=view
+    # Keep independent instructional sentences, while replacing claims
+    # tied to the old visibility model with the new scene's view summary.
+    extra=[sentence for sentence in re.split(r'(?<=[.!?。])\s+',review.get('viewComment','') or '') if sentence and not related.search(sentence)]
+    updated_view=' '.join([view,*extra])
+    if len(updated_view)>report_inputs.LIMITS['viewComment']:return False
+    review['viewComment']=updated_view
     return True
 
 def finalize(case,event,payload):
@@ -69,7 +105,11 @@ def finalize(case,event,payload):
         if changed and item:
             case_data=case_store.load_case(case);event_data=next(e for e in case_data['events'] if e['id']==event)
             if not refresh_view_text(case_data,event_data,new,item):
-                return {'carried':False,'reason':'보정 후 시야가 달라졌고 기존 코멘트에 함께 검토할 내용이 있습니다. 시야와 코멘트를 확인해 주세요.','eventId':event}
+                # The scene check remains valid even if an authored comment
+                # cannot be changed safely. Keep the comment stale for review
+                # in the report rather than sending the user back to 2D/3D.
+                review_flow.complete(case,event,{'stage':'spatial','token':step['token']},source='automatic-pose-report-review-required')
+                return {'carried':False,'reason':'보정 후 시야가 달라졌습니다. 리포트에서 기존 코멘트를 확인해 주세요.','eventId':event}
         if item:
             p=report_inputs.path(case);archive=p.parent/'report-editorial-history';archive.mkdir(exist_ok=True)
             backup=archive/(payload['version']+'.json')

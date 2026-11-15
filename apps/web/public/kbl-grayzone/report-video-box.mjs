@@ -69,7 +69,7 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared})
      const row=pending[i];progress.replaceChildren(p(`자세 자동 보정 ${i+1}/${pending.length} · ${row.number}번 장면`),p('보정이 끝날 때까지 이 화면을 열어 두세요.'));
      const result=await prepareScene(row);
      const finalized=await api(path+`/events/${row.eventId}/auto-pose-finalize`,{previousCaptureId:result.previousCaptureId,captureId:result.captureId,version:editorial.version});
-     if(!finalized.carried){const line=p(`${row.number}번 · ${finalized.reason} `),a=document.createElement('a');a.href=spatialUrl(caseId,row.eventId);a.textContent='장면 확인 →';line.append(a);progress.replaceChildren(line);throw Error(finalized.reason);}
+     if(!finalized.carried){progress.replaceChildren(p(`${row.number}번 · ${finalized.reason}`));throw Error(finalized.reason);}
      editorial=await api(path+'/report-editorial');
     }
     await onPrepared();

@@ -7,7 +7,7 @@ import {createSceneDraft} from './scene-draft.mjs';
 import {mountReviewVideos} from './review-videos.mjs';
 import {createPoseVariant} from './pose-variant-jobs.mjs';
 import {analyzeCrew,crewObservers} from './crew-analysis.mjs';
-import {reconcileScene} from './scene-handoff.mjs';
+import {reconcileScene,currentPoseVariant} from './scene-handoff.mjs';
 import {loadCourtAsset} from './court-asset.mjs';
 import {drawSceneMap,drawCrewMap,mapPoint,mapCourt,directionHandle} from './scene-map.mjs';
 import {EditHistory} from './edit-history.mjs';
@@ -128,7 +128,8 @@ async function open(id){
  const pose=(await json(`/api/cases/${caseId}/events/${nextEvent.id}/pose`)).pose;if(current!==token)return;
  poseResult=pose?.job.state==='complete'?pose.job.result:null;
  basePoseResult=poseResult;
- poseVariantId=saved?.poseVariantId||null;
+ poseVariantId=currentPoseVariant(saved,poseResult?.jobId);
+ const previousPoseStale=!!saved?.poseVariantId&&!poseVariantId;
  if(poseVariantId){poseResult=(await json(`/api/cases/${caseId}/events/${nextEvent.id}/pose-variants/${poseVariantId}`)).pose;if(current!==token)return;}
  if(poseResult){const meshes=await json(poseResult.meshUrl);if(current!==token)return;appendHumanMeshes(meshes);}
  $('frameReview').href=`./workflow.html?case=${caseId}#${nextEvent.id}`;
@@ -158,7 +159,7 @@ async function open(id){
  dirtyScene=Boolean(saved?.targetSamplingStale||saved?.poseStale||saved?.uniformStale||saved?.rendererStale||saved?.objectStale||saved?.evidenceStale||saved?.courtStale);configureDraft();overview.setMode($('overviewMode').value);eye.setMode('eye');render();draftBaseline=JSON.stringify(state);draftTracking=true;await flow.refresh();history.replaceState(null,'',`?id=${caseId}#${event.id}`);
  await refreshCrew();
  wideReferencePanel?.dispose();widePositionMode.cancel();drawWidePreview();wideReferencePanel=mountWideReference($('wideReferencePanel'),{caseId,eventId:event.id,onDirty:()=>flow.update(),beforeChange:async()=>{if(dirtyScene)await save(true);},onChanged:async()=>{widePositionMode.cancel();drawWidePreview();dirtyScene=false;await open(event.id);dirtyScene=true;flow.update();message('광각 심판 보완을 반영했습니다. 현재 공간 이미지를 저장해 3심 화면과 리포트를 갱신하세요.');},onCancelPosition:()=>{widePositionMode.cancel();drawWidePreview();},onPickPosition:callback=>{cancelMapDrag();aimMode=false;pointMode=false;moveMode=false;partialPick=null;widePositionMode.begin(callback);render();message('새 광각 심판 위치 지정 중입니다. 코트를 누르면 주황색 임시 표식이 표시되며 다시 눌러 옮길 수 있습니다.');$('map').scrollIntoView({block:'center'});}});
- message(!refs.length?'심판 역할이 확정된 인물이 없습니다. 객체 단계에서 심판 역할을 확인하세요. 지정 전에는 심판 시야나 PDF를 저장할 수 없습니다.':saved?'저장된 공간 장면을 불러왔습니다.':'초기 재구성입니다. 심판·대상과 방향을 확인한 뒤 저장하세요.');
+ message(!refs.length?'심판 역할이 확정된 인물이 없습니다. 객체 단계에서 심판 역할을 확인하세요. 지정 전에는 심판 시야나 PDF를 저장할 수 없습니다.':previousPoseStale?'저장 후 기준 자료가 바뀌어 이전 보정 자세는 제외했습니다. 기존 수동 위치를 불러왔으며, 배치와 시야를 확인한 뒤 현재 상태를 저장하세요.':saved?'저장된 공간 장면을 불러왔습니다.':'초기 재구성입니다. 심판·대상과 방향을 확인한 뒤 저장하세요.');
 }
 function setBusy(value){busy=value;$('refreshCrew').disabled=value;$('saveAll').hidden=!flow.current?.stages?.spatial?.complete;for(const id of ['save','saveAll','pdf'])$(id).disabled=value;document.querySelectorAll('#events button,.controls input,.controls select,.controls button,.map-tools input,.map-tools button,.map-tools select').forEach(b=>b.disabled=value);if(!value){$('angle').disabled=state?.headingMode==='target-assumption';editFields();$('mapUndo').disabled=!mapHistory.past.length;}placementControls();flow.update();}
 async function save(allowWideDraft=false){
@@ -292,6 +293,7 @@ $('viewpoint').onchange=()=>selectMap($('viewpoint').value);
 $('refereeView').onclick=()=>selectMap(state.observerId);
 window.addEventListener('beforeunload',e=>{if(dirtyScene||wideReferencePanel?.dirty){e.preventDefault();e.returnValue='';}});
 window.addEventListener('pagehide',preserveDraft);
+setBusy(true);
 try{
  data=await json(`/api/cases/${caseId}`);event=data.events.find(e=>e.id===location.hash.slice(1))||data.events[0];await flow.refresh();
  if(flow.available){
