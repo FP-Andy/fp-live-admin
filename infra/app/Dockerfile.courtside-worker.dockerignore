@@ -200,6 +200,8 @@
 !scripts/kbl_grayzone/test_pose_focus.mjs
 !scripts/kbl_grayzone/test_pose_mesh_builder.py
 !scripts/kbl_grayzone/test_pose_variant_async.py
+!scripts/kbl_grayzone/test_auto_pose_continuity.py
+!scripts/kbl_grayzone/test_review_flow_stale_scene.py
 !scripts/kbl_grayzone/test_pose_variant_jobs.mjs
 !scripts/kbl_grayzone/test_private_pdf_smoke.py
 !scripts/kbl_grayzone/test_private_worker_smoke.py

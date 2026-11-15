@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {stageAllowed,nextWork} from '../../apps/web/public/kbl-grayzone/flow-progress.mjs';
-import {reconcileScene} from '../../apps/web/public/kbl-grayzone/scene-handoff.mjs';
+import {reconcileScene,currentPoseVariant} from '../../apps/web/public/kbl-grayzone/scene-handoff.mjs';
 import {restoreObjects} from '../../apps/web/public/kbl-grayzone/edit-history.mjs';
 const data={events:Array.from({length:4},(_,i)=>({id:`r${i+1}`,stages:{objects:{complete:i===0},joints:{complete:false},spatial:{complete:false}}})),stages:{objects:{available:true},joints:{available:false},spatial:{available:false}},activeStage:'objects',nextEventId:'r2',reportReady:false};
 assert.deepEqual(nextWork(data,'objects'),{stage:'objects',eventId:'r2'});
@@ -15,6 +15,19 @@ const result=reconcileScene(frame,previous,{heading:0});
 assert.deepEqual(result.entities.map(e=>e.id),['R','P2']);assert.equal(result.entities[0].role,'referee');
 assert.equal(result.entities[0].teamSource,undefined);assert.equal(result.entities[0].x,8);assert.equal(result.entities[0].viewHeading,.8);
 assert.equal(result.entities[1].x,3);assert.equal(result.entities[1].positionSource,'manual-footpoint-proxy');assert.equal(previous.entities[0].role,'player');
+const savedPose={poseVariantId:'v',poseJobId:'job'};
+assert.equal(currentPoseVariant(savedPose,'job'),'v');
+assert.equal(currentPoseVariant({...savedPose,courtStale:true},'job'),null);
+assert.equal(currentPoseVariant({...savedPose,poseStale:true},'job'),null);
+assert.equal(currentPoseVariant({...savedPose,evidenceStale:true},'job'),null);
+assert.equal(currentPoseVariant({...savedPose,uniformStale:true},'job'),null);
+assert.equal(currentPoseVariant(savedPose,'new-job'),null);
+assert.equal(currentPoseVariant(savedPose,null),null);
+const staleFrame={boxes:[{id:'manual-ref',roleHint:'referee'},{id:'manual-player',roleHint:'player'}],floorPositions:[]};
+const staleSaved={entities:[{id:'manual-ref',role:'referee',x:10,y:15,positionSource:'manual'},
+ {id:'manual-player',role:'player',x:8,y:12,positionSource:'manual'}]};
+assert.deepEqual(reconcileScene(staleFrame,staleSaved,{}).entities.map(({id,x,y})=>({id,x,y})),
+ [{id:'manual-ref',x:10,y:15},{id:'manual-player',x:8,y:12}]);
 const o={id:'P',role:'player',excluded:false};assert.equal(restoreObjects([{...o,spatialExcluded:true}],[o]).dirty.has('P'),true);
 assert.equal(restoreObjects([{...o,spatialExcluded:false}],[o]).dirty.size,0);
 console.log('Match-wide phase gates, next clip, authoritative scene membership/roles, retained directions and image-only undo passed.');

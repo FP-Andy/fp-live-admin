@@ -1,5 +1,9 @@
 // Object review owns membership and roles; spatial review owns direction,
 // team overrides and explicitly edited court positions.
+export function currentPoseVariant(saved,currentJobId){
+ if(!saved?.poseVariantId||saved.courtStale||saved.poseStale||saved.objectStale||saved.evidenceStale||saved.rendererStale||saved.uniformStale||saved.targetSamplingStale||!currentJobId||saved.poseJobId!==currentJobId)return null;
+ return saved.poseVariantId;
+}
 export function reconcileScene(frame,previous,defaults){
  const old=new Map((previous?.entities||[]).map(e=>[e.id,e]));
  const boxes=new Map(frame.boxes.map(b=>[b.id,b]));

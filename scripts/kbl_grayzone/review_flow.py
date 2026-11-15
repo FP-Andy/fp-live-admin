@@ -21,8 +21,15 @@ def event_state(key,event,checks):
     except (RuntimeError,ValueError,OSError,StopIteration):pass
     tokens={'objects':base,'joints':digest([base,pose['jobId'] if pose else None,pose.get('reviewedPeople',{}) if pose else None]),
             'spatial':digest([base,pose['jobId'] if pose else None,scene['captureId'] if scene else None])}
-    placed_manually={e['id'] for e in (scene or {}).get('state',{}).get('entities',[]) if e.get('positionSource')=='manual'}
-    unresolved=[o['id'] for o in objects['objects'] if not o['excluded'] and o['role'] in ('player','referee') and not o.get('hasFloorPosition',True) and not o.get('spatialExcluded') and o['id'] not in placed_manually] if objects else []
+    # A changed court or pose invalidates saved images, but does not erase the
+    # operator's manually placed people. Recover those placements for the same
+    # source frame while keeping spatial readiness dependent on a fresh scene.
+    prior_scene=scene
+    if prior_scene is None:
+        try:prior_scene=broadcast_reconstruction.current(key,event['id'],strict=False)
+        except (RuntimeError,ValueError,OSError,StopIteration):pass
+    placed_manually={(e['id'],e['role']) for e in (prior_scene or {}).get('state',{}).get('entities',[]) if e.get('positionSource')=='manual'}
+    unresolved=[o['id'] for o in objects['objects'] if not o['excluded'] and o['role'] in ('player','referee') and not o.get('hasFloorPosition',True) and not o.get('spatialExcluded') and (o['id'],o['role']) not in placed_manually] if objects else []
     court_pending=bool(objects and objects.get('courtCalibrationRequired'))
     # Image/object review is independent of court placement. Keep unresolved
     # people visible and require a spatial decision at the 2D/3D checkpoint.
