@@ -6959,6 +6959,7 @@ def get_dashboard_bootstrap(
 def list_match_page(
     sport: str = Query(default="FOOTBALL"),
     archived: bool | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=30, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     compact: bool = Query(default=True),
@@ -6969,8 +6970,16 @@ def list_match_page(
     query = db.query(Match).filter(Match.sport == _normalize_sport(sport))
     if archived is not None:
         query = query.filter(Match.archived.is_(archived))
+    needle = re.sub(r"\s+", "", q or "")
+    if needle:
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        filters = [func.replace(Match.name, " ", "").ilike(f"%{escaped}%", escape="\\")]
+        if re.fullmatch(r"[\d.\-]+", needle):
+            date_needle = escaped.replace(".", "-")
+            filters.extend(Match.metadata_json[key].astext.ilike(f"%{date_needle}%", escape="\\") for key in ("match_date", "game_date", "scheduled_at", "kickoff_at", "date"))
+        query = query.filter(or_(*filters))
     total = query.order_by(None).count()
-    rows = query.order_by(desc(Match.created_at)).offset(offset).limit(limit).all()
+    rows = query.order_by(desc(Match.created_at), desc(Match.id)).offset(offset).limit(limit).all()
     return {"items": [_serialize_match(row, compact=compact) for row in rows], "total": total, "limit": limit, "offset": offset}
 
 

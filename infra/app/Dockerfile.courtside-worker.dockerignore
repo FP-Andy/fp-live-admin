@@ -220,6 +220,8 @@
 !scripts/kbl_grayzone/video-assets/procedural-court.png
 !scripts/kbl_grayzone/video_cpu_worker.py
 !scripts/kbl_grayzone/video_delivery.py
+!scripts/kbl_grayzone/delivery_archive.py
+!scripts/kbl_grayzone/test_delivery_archive.py
 !scripts/kbl_grayzone/video_depth.py
 !scripts/kbl_grayzone/video_depth_raster.cpp
 !scripts/kbl_grayzone/video_jobs.py
