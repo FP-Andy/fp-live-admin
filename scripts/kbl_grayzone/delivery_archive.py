@@ -6,6 +6,7 @@ from pathlib import Path
 
 import case_store
 import report_delivery
+import report_jobs
 import report_versions
 import review_videos
 import video_delivery
@@ -20,6 +21,19 @@ def plan(case_id):
         pdf = report_versions.latest_file(case_id)
     except (ValueError, OSError, RuntimeError) as exc:
         raise RuntimeError('저장된 PDF를 확인해 주세요.') from exc
+    # A batch may continue rendering after comments change. Do not silently
+    # bundle its older PDF with videos from the current inputs. Older reports
+    # without a recorded report job retain their existing download behaviour.
+    fingerprints = set()
+    for status in report_jobs.ROOT.glob('*/status.json'):
+        try:
+            job = json.loads(status.read_text())
+            if job.get('caseId') == case_id and job.get('state') == 'complete' and job.get('result', {}).get('reportId') == pdf.stem and job.get('fingerprint'):
+                fingerprints.add(job['fingerprint'])
+        except (OSError, ValueError, TypeError):
+            continue
+    if fingerprints and report_jobs.stamp(case_id) not in fingerprints:
+        raise RuntimeError('저장된 PDF가 현재 코멘트 또는 장면과 다릅니다. 최신 PDF를 생성한 뒤 ZIP을 내려받으세요.')
     group, _ = video_delivery.names(case, events[0])
     files = [(report_delivery.filename(case), pdf)]
     missing = []

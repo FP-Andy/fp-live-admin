@@ -3,12 +3,17 @@ import json,re,threading,time,uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import case_store,report_jobs,video_jobs,broadcast_reconstruction,review_flow
-from job_store import atomic,lease,now
+from job_store import atomic,digest,lease,now
 
 ROOT=case_store.ROOT/'outputs/kbl-report-video-batches'
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='report-video-batch')
 ACTIVE=set()
 LOCK=threading.Lock()
+CASE_LOCKS={}
+CASE_LOCKS_GUARD=threading.Lock()
+
+def case_lock(case):
+    with CASE_LOCKS_GUARD:return CASE_LOCKS.setdefault(case,threading.Lock())
 
 def path(job):
     if not re.fullmatch(r'[a-f0-9]{24}',str(job)):raise ValueError('작업 ID를 확인하세요.')
@@ -29,6 +34,32 @@ def latest(case):
             if item.get('caseId')==case:found.append(item)
         except (OSError,ValueError,KeyError,json.JSONDecodeError):continue
     return max(found,key=lambda x:x.get('createdAt',''),default=None)
+
+def active(case):
+    for p in ROOT.glob('*/status.json'):
+        try:
+            item=status(p.parent.name)
+            if item.get('caseId')==case and item.get('state') in ('queued','running'):return item
+        except (OSError,ValueError,KeyError,TypeError):continue
+    return None
+
+def save_automatic_scene(case,event,payload):
+    """Do not let a second automatic preparation replace an active video scene."""
+    with case_lock(case):
+        if active(case):raise RuntimeError('이 경기의 영상 제작이 진행 중입니다. 자동 보정을 다시 시작하지 않습니다.')
+        review_flow.require_stage(case,'spatial',event)
+        return broadcast_reconstruction.save(case,event,payload)
+
+def video_stamp(case,event):
+    """Bind one video's actual inputs, excluding report prose and other scenes."""
+    data=case_store.load_case(case)
+    entry=next((e for e in data['events'] if e['id']==event),None)
+    if not entry:raise ValueError('판독 장면을 찾을 수 없습니다.')
+    scene=broadcast_reconstruction.current(case,event,strict=True)
+    scene_file=case_store.CASES[case]/'reconstructions'/event/'current.json'
+    return digest({'event':event,'frame':entry.get('selectedBroadcastFrame'),
+                   'broadcast':entry.get('broadcast'),'scene':video_jobs.sha(scene_file),
+                   'referees':video_jobs.referee_labels(case,event,scene)})
 
 def readiness(case):
     data=case_store.load_case(case);rows=[]
@@ -66,19 +97,22 @@ def submit(case,payload):
     if not isinstance(events,list) or not events or any(not isinstance(e,str) or e not in valid for e in events) or len(events)!=len(set(events)):raise ValueError('제작할 장면을 확인하세요.')
     checks=readiness(case);bad=[e for e in checks['events'] if e['eventId'] in events and (not e['ready'] or e.get('autoPrepare'))]
     if bad:raise RuntimeError('영상 제작 전 공유 자세와 공간 장면을 확인하세요: '+', '.join(str(e['number'])+'번' for e in bad))
-    fingerprint=report_jobs.stamp(case)
-    with LOCK,lease(ROOT/'submit.lock') as acquired:
+    with case_lock(case),LOCK,lease(ROOT/'submit.lock') as acquired:
         if not acquired:raise RuntimeError('다른 제작 요청을 등록 중입니다. 다시 시도하세요.')
         for p in ROOT.glob('*/status.json'):
             try:
                 saved=status(p.parent.name)
                 if saved.get('caseId')==case and saved['state'] in ('queued','running'):
-                    if saved.get('fingerprint')==fingerprint and saved.get('events')==events:return {'job':saved}
+                    if saved.get('events')==events:return {'job':saved}
                     raise RuntimeError('이 경기의 PDF·영상 제작이 진행 중입니다.')
             except (OSError,ValueError,KeyError,json.JSONDecodeError):continue
+        current=review_flow.require_report(case)
+        if payload['revision']!=current['revision']:raise RuntimeError('경기 자료가 바뀌었습니다. 새로고침하세요.')
+        fingerprint=report_jobs.stamp(case)
+        video_inputs={event:video_stamp(case,event) for event in events}
         report=report_jobs.submit(case,payload['revision'])['job']
         job=uuid.uuid4().hex[:24];data={'jobId':job,'caseId':case,'events':events,'fingerprint':fingerprint,
-            'state':'queued','stage':'PDF 생성 대기','reportJobId':report['jobId'],'videos':[], 'createdAt':now()}
+            'videoInputs':video_inputs,'state':'queued','stage':'PDF 생성 대기','reportJobId':report['jobId'],'videos':[], 'createdAt':now()}
         atomic(path(job),data);ACTIVE.add(job)
         try:POOL.submit(run,job)
         except Exception:ACTIVE.discard(job);raise
@@ -87,18 +121,23 @@ def submit(case,payload):
 def run(job):
     data=json.loads(path(job).read_text())
     def save(**changes):data.update(changes,updatedAt=now());atomic(path(job),data)
+    def refresh_report_flag():
+        try:changed=report_jobs.stamp(data['caseId'])!=data['fingerprint']
+        except (ValueError,RuntimeError,OSError,KeyError,StopIteration):changed=True
+        if changed:data['reportNeedsRefresh']=True
     try:
         save(state='running',stage='PDF 생성 중')
         report=report_jobs.status(data['reportJobId'])
         while report['state'] in ('queued','running'):
             time.sleep(2);report=report_jobs.status(data['reportJobId'])
-        if report['state']!='complete':raise RuntimeError(report.get('error') or 'PDF 생성이 중단됐습니다.')
-        save(report=report['result'])
+        if report['state']=='complete':save(report=report['result'])
+        else:save(reportIssue=report.get('error') or 'PDF 생성이 중단됐습니다. 최신 자료로 PDF를 다시 생성해 주세요.',reportNeedsRefresh=True)
         for index,event in enumerate(data['events']):
-            if report_jobs.stamp(data['caseId'])!=data['fingerprint']:
-                raise RuntimeError('경기 또는 코멘트가 바뀌어 나머지 영상 제작을 중단했습니다. 최신 자료로 다시 요청하세요.')
+            refresh_report_flag()
             save(stage=f'영상 제작 {index+1}/{len(data["events"])}')
             try:
+                if video_stamp(data['caseId'],event)!=data['videoInputs'][event]:
+                    raise RuntimeError('이 장면의 기준 화면·배치 또는 심판 매칭이 바뀌었습니다. 장면을 확인해 주세요.')
                 item=video_jobs.submit(data['caseId'],event)['job']
                 while item['state'] in ('queued','running'):
                     time.sleep(3);item=video_jobs.status(item['jobId'])
@@ -109,8 +148,16 @@ def run(job):
                 from diagnostics import safe
                 row={'eventId':event,'state':'failed','error':safe(exc)[:250]}
             data['videos'].append(row);save()
+        # A previously finished scene can be edited while a later video runs.
+        # Keep its versioned file, but do not present it as the current scene.
+        for row in data['videos']:
+            if row['state']!='complete':continue
+            try:current=video_stamp(data['caseId'],row['eventId'])==data['videoInputs'][row['eventId']]
+            except (ValueError,RuntimeError,OSError,KeyError,StopIteration):current=False
+            if not current:row.update(state='stale',error='제작 후 이 장면의 기준 화면·배치 또는 심판 매칭이 바뀌었습니다. 장면을 확인해 주세요.')
+        refresh_report_flag()
         ready_delivery=('complete','ready-for-download')
-        failed=(data.get('report',{}).get('delivery',{}).get('state') not in ready_delivery or
+        failed=(data.get('reportNeedsRefresh') or data.get('report',{}).get('delivery',{}).get('state') not in ready_delivery or
             any(v['state']!='complete' or v.get('result',{}).get('delivery',{}).get('state') not in ready_delivery for v in data['videos']))
         save(state='partial' if failed else 'complete',stage='PDF·영상 전달 확인 필요' if failed else 'PDF·영상 제작 완료',completedAt=now())
     except Exception as exc:

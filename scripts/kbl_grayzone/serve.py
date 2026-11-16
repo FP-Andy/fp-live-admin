@@ -398,7 +398,11 @@ class Handler(BaseHTTPRequestHandler):
                 size=int(self.headers.get('Content-Length',0))
                 if not 0<size<=18_000_000:return self.send_error(413)
                 import broadcast_reconstruction,review_flow
-                data=json.loads(self.rfile.read(size));review_flow.require_stage(match[1],'spatial',match[2])
+                data=json.loads(self.rfile.read(size))
+                if parse_qs(urlparse(self.path).query).get('automatic')==['1']:
+                    import report_video_batch
+                    return self.json(report_video_batch.save_automatic_scene(*match.groups(),data))
+                review_flow.require_stage(match[1],'spatial',match[2])
                 return self.json(broadcast_reconstruction.save(*match.groups(),data))
             except (ValueError,TypeError,KeyError) as e:return self.json({'error':str(e)},code=400)
             except RuntimeError as e:return self.json({'error':str(e)},code=409)
