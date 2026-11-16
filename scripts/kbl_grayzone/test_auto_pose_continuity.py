@@ -36,7 +36,39 @@ class AutoPoseContinuityTests(unittest.TestCase):
   fake=types.SimpleNamespace(scene_commentary=lambda *args:{'viewComment':'재구성에서는 R1이 잘 드러납니다. R2 방향은 P5에 가려집니다.','labels':{'p10':'P10'}})
   with patch.dict(sys.modules,{'report_editorial':fake}):self.assertTrue(auto.refresh_view_text(case,{},scene,item))
   self.assertIn('한정원 심판(R3) 방향도 P10에',item['review']['viewComment'])
- def test_cannot_safely_change_comment_still_completes_spatial_only(self):
+ def test_current_view_update_keeps_independent_omitted_object_caution(self):
+  item=copy.deepcopy(self.item);item['review']['assessment']='판독 결과 공격권이 유지됐습니다. 재구성에서는 R1 방향이 열려 있으며, 배치에서 빠진 객체도 함께 고려해야 합니다.'
+  with patch.dict(sys.modules,{'report_editorial':self.fake}):self.assertTrue(auto.refresh_view_text({}, {}, {}, item))
+  self.assertIn('배치에서 빠진 객체도 함께 고려해야 합니다.',item['review']['assessment'])
+  self.assertIn('판독 결과 공격권이 유지됐습니다.',item['review']['assessment'])
+ def test_unambiguous_nonvisual_occlusion_and_generic_guidance_do_not_block(self):
+  item=copy.deepcopy(self.item)
+  item['review']['difficultyFactors']='선수들이 겹쳐 접촉 부위가 가려집니다.'
+  item['review']['takeaway']='각 심판의 시야를 교차 확인해야 합니다.'
+  with patch.dict(sys.modules,{'report_editorial':self.fake}):self.assertTrue(auto.refresh_view_text({}, {}, {}, item))
+  self.assertEqual(item['review']['difficultyFactors'],'선수들이 겹쳐 접촉 부위가 가려집니다.')
+  self.assertEqual(item['review']['takeaway'],'각 심판의 시야를 교차 확인해야 합니다.')
+
+ def test_fallback_preserves_mixed_facts_and_marks_previous_visibility(self):
+  item=copy.deepcopy(self.item);item['review']['takeaway']='R2는 가림이 적은 각도를 확보했다.'
+  item['review']['assessment']='판독 결과 파울이 유지됐고 R2의 시야가 열려 있었다.'
+  item['review']['callerNumber']=37;item['review']['callerBasis']='중계 화면의 심판 신호입니다.'
+  with patch.dict(sys.modules,{'report_editorial':self.fake}):info=auto.fallback_view_text({}, {}, {}, item)
+  review=item['review'];self.assertIn('R2는 가림이 적은 각도를 확보했다.',review['takeaway'])
+  self.assertTrue(review['takeaway'].startswith('보정 전 시야 기준: '))
+  self.assertIn('판독 결과 파울이 유지됐고 R2의 시야가 열려 있었다.',review['assessment'])
+  self.assertIn('보정 전 시야',review['assessment']);self.assertIn('R1이 잘 드러납니다',review['viewComment'])
+  self.assertEqual(review['callerNumber'],37);self.assertEqual(review['callerBasis'],'중계 화면의 심판 신호입니다.')
+  self.assertTrue(info['previousViewNotice'])
+
+ def test_fallback_keeps_long_original_assessment_and_shows_context_note(self):
+  item=copy.deepcopy(self.item);old='판독 결과 파울 유지. R2 시야가 잘 보였습니다. '+('가'*480);item['review']['assessment']=old
+  with patch.dict(sys.modules,{'report_editorial':self.fake}):info=auto.fallback_view_text({}, {}, {}, item)
+  self.assertEqual(item['review']['assessment'],old)
+  self.assertIn('보정 전 기준',item['review']['viewComment']);self.assertTrue(info['previousViewNotice'])
+  self.assertLessEqual(len(item['review']['viewComment']),auto.report_inputs.LIMITS['viewComment'])
+
+ def test_uncertain_wording_is_preserved_and_batch_can_continue(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);case='case-a';event='review-3';old='a'*24;newid='b'*24;variant='c'*24
    base={'caseId':case,'eventId':event,'frameIndex':1,'datasetId':'data','inputSha256':'sha','selectionVersion':'v',
@@ -50,14 +82,27 @@ class AutoPoseContinuityTests(unittest.TestCase):
    stored={'events':{event:{'spatial':{'token':auto.review_flow.digest([objects,'pose',old])}}}}
    data={'events':{event:{'scene':{'captureId':old},'review':{'takeaway':'R2가 보았다.'}}}}
    case_data={'events':[{'id':event}]}
+   def partial_refresh(case_data,event_data,scene,candidate):
+    candidate['review']['takeaway']='부분 수정된 임시 문장'
+    return False
    with patch.dict(auto.case_store.CASES,{case:root},clear=True),patch.object(auto.report_inputs,'version',return_value='rev'),\
         patch.object(auto.broadcast_reconstruction,'current',return_value=after),patch.object(auto.review_flow,'status',return_value=status),\
         patch.object(auto.review_flow,'stored',return_value=stored),patch.object(auto.review_flow,'complete') as complete,\
         patch.object(auto.report_inputs,'read',return_value=data),patch.object(auto.case_store,'load_case',return_value=case_data),\
-        patch.object(auto,'visibility_signature',side_effect=lambda scene:scene['captureId']),patch.object(auto,'refresh_view_text',return_value=False),\
-        patch.object(auto,'atomic') as write:
+        patch.object(auto,'visibility_signature',side_effect=lambda scene:scene['captureId']),patch.object(auto,'refresh_view_text',side_effect=partial_refresh),\
+        patch.object(auto,'fallback_view_text',return_value={'mode':'automatic-preserving-authored-context','previousViewNotice':True}) as fallback,patch.object(auto,'atomic') as write:
     result=auto.finalize(case,event,{'previousCaptureId':old,'captureId':newid,'version':'rev'})
-   self.assertFalse(result['carried']);self.assertIn('리포트',result['reason']);write.assert_not_called()
-   complete.assert_called_once_with(case,event,{'stage':'spatial','token':token},source='automatic-pose-report-review-required')
+   self.assertTrue(result['carried']);self.assertTrue(result['viewUpdated']);fallback.assert_called_once()
+   self.assertEqual(fallback.call_args.args[-1]['review']['takeaway'],'R2가 보았다.')
+   self.assertEqual(write.call_count,2)
+   saved=write.call_args_list[-1].args[1]['events'][event]['scene'];self.assertEqual(saved['captureId'],newid)
+   self.assertEqual(saved['autoPoseViewRefresh']['mode'],'automatic-preserving-authored-context')
+   complete.assert_called_once_with(case,event,{'stage':'spatial','token':token},source='automatic-pose-recalculated')
+
+ def test_concurrent_editorial_change_is_not_silently_overwritten(self):
+  with patch.object(auto.report_inputs,'version',return_value='new-version'),patch.object(auto,'atomic') as write:
+   with self.assertRaisesRegex(RuntimeError,'코멘트가 변경'):
+    auto.finalize('case-a','review-1',{'previousCaptureId':'a'*24,'captureId':'b'*24,'version':'old-version'})
+   write.assert_not_called()
 
 if __name__=='__main__':unittest.main()
