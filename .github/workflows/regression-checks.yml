@@ -104,6 +104,10 @@ jobs:
         env:
           CHROME_PATH: /usr/bin/google-chrome
         run: node scripts/test-courtside-comment-import.cjs
+      - name: Courtside library pagination and search
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node scripts/test-courtside-library-pagination.cjs
       - name: Browser failure and recovery contracts (fixture APIs only)
         env:
           CHROME_PATH: /usr/bin/google-chrome

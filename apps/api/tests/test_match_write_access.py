@@ -107,6 +107,24 @@ class MatchWriteAccess(unittest.TestCase):
         self.assertEqual(self.clients["anonymous"].post(path, json=self.state()).status_code, 401)
         self.assertEqual(self.clients["owner"].post(path, json=self.state()).status_code, 200)
 
+    def test_basketball_match_library_search_and_pagination(self):
+        with SessionLocal() as db:
+            for n in range(25):
+                db.add(Match(id=uuid4(), name=f'원주 DB vs 팀 {n}', sport='BASKETBALL',
+                             archived=n==0, created_at=datetime(2026, 11, 1)+timedelta(minutes=n),
+                             metadata_json={'match_date':'2026-11-13' if n==0 else '2026-11-14'}))
+            db.add(Match(id=uuid4(), name='원주 DB vs 서울 삼성', sport='BASKETBALL',
+                         archived=True, created_at=datetime(2026, 10, 1), metadata_json={'match_date':'2026-11-13'}))
+            db.commit()
+        client=self.clients['owner'];url='/api/matches/page?sport=BASKETBALL&compact=true&limit=10'
+        first=client.get(url+'&offset=0').json();last=client.get(url+'&offset=20').json()
+        self.assertEqual((first['total'],len(first['items']),len(last['items'])),(26,10,6))
+        self.assertFalse({x['id'] for x in first['items']} & {x['id'] for x in last['items']})
+        found=client.get(url,params={'q':'서울삼성'}).json()
+        self.assertEqual(found['total'],1);self.assertTrue(found['items'][0]['archived'])
+        self.assertEqual(client.get(url,params={'q':'2026.11.13'}).json()['total'],2)
+        self.assertEqual(client.get(url,params={'q':'%'}).json()['total'],0)
+
     def test_shared_policy_preserves_basketball_and_manual_lineup_writes(self):
         with SessionLocal() as db:
             db.get(Match, self.other).sport = 'BASKETBALL'
