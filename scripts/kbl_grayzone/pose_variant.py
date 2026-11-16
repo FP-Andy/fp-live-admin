@@ -99,6 +99,23 @@ def pending_placed_people(scene,pose):
  entities={e['id']:e for e in scene['state']['entities']}
  return [p for p in pose['people'] if (e:=entities.get(p['id'])) and e['role']=='player' and not p.get('spatialEligible',True) and p.get('imageSource','broadcast')=='broadcast']
 
+def placed_people_camera(case,event,scene,pose):
+ """Use the validated saved-map camera when planar calibration is unstable."""
+ import broadcast_reconstruction as reconstruction
+ _,_,packet,frame=reconstruction.context(case,event,require_floor=False)
+ provenance=None
+ try:
+  anchors,camera=broadcast_pose.camera_inputs(frame,[{'spatialEligible':True}])
+ except ValueError as exc:
+  if str(exc)!='중계 코트 카메라 추정이 불안정합니다. 코트 보정을 확인하세요.':raise
+  anchors=copy.deepcopy(pose.get('anchors') or [])
+  if isinstance(pose.get('camera'),dict):camera=copy.deepcopy(pose['camera'])
+  else:
+   import video_map_camera
+   camera,provenance=video_map_camera.estimate(frame,packet,scene)
+ if isinstance(pose.get('camera'),dict):camera=copy.deepcopy(pose['camera'])
+ return anchors,camera,provenance
+
 def lift_placed_people(case,event,scene,pose,mesh,path):
  """Lift reviewed image joints for players placed after image-only inference.
 
@@ -106,7 +123,7 @@ def lift_placed_people(case,event,scene,pose,mesh,path):
  already have a position and lack a spatial pose are candidates. Camera and
  single-image depth remain inferred, and all manual 2D joints are preserved.
  """
- import broadcast_reconstruction as reconstruction,video_pose_refit as refit
+ import video_pose_refit as refit
  from fit_pose import fit
  entities={e['id']:e for e in scene['state']['entities']};missing=[]
  for person in pending_placed_people(scene,pose):
@@ -115,15 +132,14 @@ def lift_placed_people(case,event,scene,pose,mesh,path):
   p=copy.deepcopy(person);p.update(role='player',x=entity['x'],y=entity['y'],spatialEligible=True,spatialReason=None)
   missing.append(p)
  if not missing:return None
- _,_,_,frame=reconstruction.context(case,event,require_floor=False)
- anchors,camera=broadcast_pose.camera_inputs(frame,missing)
- if isinstance(pose.get('camera'),dict):camera=copy.deepcopy(pose['camera'])
+ anchors,camera,provenance=placed_people_camera(case,event,scene,pose)
  fitted=copy.deepcopy(pose);fitted.update(people=missing,anchors=anchors,cameraOverride=camera)
  fitted=fit(fitted)
  row,new_mesh=refit.build(refit.prepare(scene,fitted),path,'placed2d')
  built={p['id']:p for p in row['people'] if p.get('accepted') and p.get('meshKey') in new_mesh.get('assets',{})}
  if not built:raise RuntimeError('배치된 선수의 관절로 안전한 3D 인체를 만들지 못했습니다.')
  result=copy.deepcopy(pose);result['camera']=camera
+ if provenance:result['videoCameraProvenance']=provenance
  result['people']=[copy.deepcopy(built.get(p['id'],p)) for p in pose['people']]
  result['limitations']=[s for s in result.get('limitations',[]) if s not in ('Image keypoints only; court coordinates unresolved','No camera calibration, 3D geometry, or occlusion result')]
  result['limitations'].append('Reviewed 2D joints lifted using saved map positions and a provisional court camera; depth is inferred.')
