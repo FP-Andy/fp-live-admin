@@ -43,10 +43,13 @@ def active(case):
         except (OSError,ValueError,KeyError,TypeError):continue
     return None
 
-def save_automatic_scene(case,event,payload):
+def save_automatic_scene(case,event,payload,expected_capture):
     """Do not let a second automatic preparation replace an active video scene."""
     with case_lock(case):
         if active(case):raise RuntimeError('이 경기의 영상 제작이 진행 중입니다. 자동 보정을 다시 시작하지 않습니다.')
+        if not isinstance(expected_capture,str) or not re.fullmatch(r'[a-f0-9]{24}',expected_capture):raise ValueError('자동 보정의 원본 장면을 확인하세요.')
+        current=broadcast_reconstruction.current(case,event,strict=True)
+        if current.get('captureId')!=expected_capture:raise RuntimeError('자동 보정 중 장면이 변경됐습니다. 현재 장면을 다시 확인하세요.')
         review_flow.require_stage(case,'spatial',event)
         return broadcast_reconstruction.save(case,event,payload)
 
@@ -108,9 +111,9 @@ def submit(case,payload):
             except (OSError,ValueError,KeyError,json.JSONDecodeError):continue
         current=review_flow.require_report(case)
         if payload['revision']!=current['revision']:raise RuntimeError('경기 자료가 바뀌었습니다. 새로고침하세요.')
-        fingerprint=report_jobs.stamp(case)
         video_inputs={event:video_stamp(case,event) for event in events}
         report=report_jobs.submit(case,payload['revision'])['job']
+        fingerprint=report.get('fingerprint') or report_jobs.stamp(case)
         job=uuid.uuid4().hex[:24];data={'jobId':job,'caseId':case,'events':events,'fingerprint':fingerprint,
             'videoInputs':video_inputs,'state':'queued','stage':'PDF 생성 대기','reportJobId':report['jobId'],'videos':[], 'createdAt':now()}
         atomic(path(job),data);ACTIVE.add(job)

@@ -61,13 +61,18 @@ class VideoBatchContinuityTests(unittest.TestCase):
     def test_automatic_scene_save_is_blocked_during_active_batch(self):
         self.submit()
         with patch.object(batch.broadcast_reconstruction,'save') as save,patch.object(batch.review_flow,'require_stage'):
-            with self.assertRaisesRegex(RuntimeError,'영상 제작이 진행 중'):batch.save_automatic_scene('game-test','review-1',{})
+            with self.assertRaisesRegex(RuntimeError,'영상 제작이 진행 중'):batch.save_automatic_scene('game-test','review-1',{},'a'*24)
             save.assert_not_called()
 
     def test_automatic_scene_save_works_when_no_batch_is_active(self):
-        with patch.object(batch.broadcast_reconstruction,'save',return_value={'ok':True}) as save,patch.object(batch.review_flow,'require_stage'):
-            self.assertEqual(batch.save_automatic_scene('game-test','review-1',{}),{'ok':True})
+        with patch.object(batch.broadcast_reconstruction,'current',return_value={'captureId':'a'*24}),patch.object(batch.broadcast_reconstruction,'save',return_value={'ok':True}) as save,patch.object(batch.review_flow,'require_stage'):
+            self.assertEqual(batch.save_automatic_scene('game-test','review-1',{},'a'*24),{'ok':True})
             save.assert_called_once_with('game-test','review-1',{})
+
+    def test_outdated_automatic_preparation_cannot_overwrite_a_new_scene(self):
+        with patch.object(batch.broadcast_reconstruction,'current',return_value={'captureId':'b'*24}),patch.object(batch.broadcast_reconstruction,'save') as save:
+            with self.assertRaisesRegex(RuntimeError,'장면이 변경'):batch.save_automatic_scene('game-test','review-1',{},'a'*24)
+            save.assert_not_called()
 
     def test_automatic_preparation_lock_is_per_match(self):
         self.assertIs(batch.case_lock('game-a'),batch.case_lock('game-a'))
@@ -82,8 +87,8 @@ class VideoBatchContinuityTests(unittest.TestCase):
             except Exception as e:errors.append(str(e))
             finally:finished.set()
         batch.review_flow.require_report.side_effect=[self.current,RuntimeError('scene changed')]
-        with patch.object(batch.review_flow,'require_stage'),patch.object(batch.broadcast_reconstruction,'save',side_effect=slow_save):
-            worker=threading.Thread(target=batch.save_automatic_scene,args=('game-test','review-1',{}));worker.start();self.assertTrue(saving.wait(1))
+        with patch.object(batch.review_flow,'require_stage'),patch.object(batch.broadcast_reconstruction,'current',return_value={'captureId':'a'*24}),patch.object(batch.broadcast_reconstruction,'save',side_effect=slow_save):
+            worker=threading.Thread(target=batch.save_automatic_scene,args=('game-test','review-1',{},'a'*24));worker.start();self.assertTrue(saving.wait(1))
             creator=threading.Thread(target=submit);creator.start();self.assertFalse(finished.wait(.1));release.set();worker.join(2);creator.join(2)
         self.assertEqual(errors,['scene changed']);batch.report_jobs.submit.assert_not_called()
 
@@ -113,7 +118,7 @@ class VideoStampTests(unittest.TestCase):
             h.headers={'Host':'127.0.0.1:4350','Content-Length':str(len(payload))}
             h.rfile=io.BytesIO(payload);h.json=Mock();h.post();return h
         with patch.object(batch,'save_automatic_scene',return_value={'saved':True}) as automatic,patch.object(batch.review_flow,'require_stage'),patch.object(batch.broadcast_reconstruction,'save',return_value={'saved':True}) as manual:
-            call('?automatic=1');automatic.assert_called_once_with('game-test','review-1',{'state':{}});manual.assert_not_called()
+            call('?automatic=1&expectedCapture='+('a'*24));automatic.assert_called_once_with('game-test','review-1',{'state':{}},'a'*24);manual.assert_not_called()
             call('');manual.assert_called_once_with('game-test','review-1',{'state':{}})
 
 
