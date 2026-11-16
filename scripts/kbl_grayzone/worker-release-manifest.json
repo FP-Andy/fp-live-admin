@@ -75,6 +75,7 @@
     "report_video_batch",
     "review_flow",
     "review_intake",
+    "review_package_jobs",
     "review_videos",
     "scene_evidence",
     "sequence_import",

@@ -412,6 +412,16 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError,TypeError,KeyError,OSError) as e:return self.json({'error':str(e)},code=400)
             except RuntimeError as e:return self.json({'error':str(e)},code=409)
             except Exception:return self.report_error()
+        match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/review-package-jobs',path)
+        if match:
+            try:
+                size=int(self.headers.get('Content-Length',0))
+                if not 0<size<=2000:return self.send_error(413)
+                import review_package_jobs
+                return self.json(review_package_jobs.submit(match[1],json.loads(self.rfile.read(size))))
+            except (ValueError,TypeError,KeyError,OSError) as e:return self.json({'error':str(e)},code=400)
+            except RuntimeError as e:return self.json({'error':str(e)},code=409)
+            except Exception:return self.report_error()
         match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/review-package',path)
         if match:
             try:
@@ -515,6 +525,13 @@ class Handler(BaseHTTPRequestHandler):
             import hashlib
             info=ROOT.stat();value=hashlib.sha256(f'{info.st_dev}:{info.st_ino}'.encode()).hexdigest()
             return self.json({'storeIdentity':value},head)
+        match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/review-package-jobs(?:/([a-f0-9]{24}))?',path)
+        if match:
+            try:
+                import review_package_jobs
+                job=review_package_jobs.status(match[1],match[2]) if match[2] else review_package_jobs.latest(match[1])
+                return self.json({'job':job},head)
+            except (ValueError,KeyError,OSError,TypeError):return self.send_error(404)
         match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/delivery-package(\.zip)?',path)
         if match:
             try:
