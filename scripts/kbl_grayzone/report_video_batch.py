@@ -84,8 +84,7 @@ def readiness(case):
                 pending=pose_variant.pending_placed_people(scene,prepared['pose'])
                 if pending:
                     if any(any(len(p.get(k,[]))!=17 for k in ('keypoints','scores','depth')) for p in pending):raise ValueError('배치된 선수의 관절 자료가 부족합니다. 관절 검수를 확인하세요.')
-                    _,_,_,frame=broadcast_reconstruction.context(case,e['id'],require_floor=False)
-                    broadcast_pose.camera_inputs(frame,[{'spatialEligible':True}])
+                    pose_variant.placed_people_camera(case,e['id'],scene,prepared['pose'])
                 rows.append({'eventId':e['id'],'number':e['number'],'ready':True,'autoPrepare':bool(pending)})
         except (ValueError,RuntimeError,OSError,KeyError,StopIteration) as exc:
             from diagnostics import safe
