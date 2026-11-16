@@ -18,6 +18,18 @@ def status(job):
         data.update(state='interrupted',error='리포트 생성 연결이 중단됐습니다. 기존 PDF는 보관되어 있습니다. PDF 생성을 다시 누르세요.')
     return data
 
+def latest(key):
+    if key not in case_store.CASES:raise ValueError('등록되지 않은 경기입니다.')
+    found=[]
+    for p in ROOT.glob('*/status.json'):
+        try:
+            item=status(p.parent.name)
+            if item.get('caseId')==key:found.append(item)
+        except (OSError,ValueError,KeyError,TypeError):continue
+    # An active older request takes precedence over a newer finished request.
+    running=[x for x in found if x.get('state') in ('queued','running')]
+    return max(running or found,key=lambda x:x.get('createdAt',''),default=None)
+
 def stamp(key):
     from report_inputs import version
     from wide_reference import version as wide_version

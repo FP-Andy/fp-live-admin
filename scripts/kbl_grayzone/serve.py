@@ -572,6 +572,12 @@ class Handler(BaseHTTPRequestHandler):
                 if job.get('caseId')!=match[1]:return self.send_error(404)
                 return self.json({'job':job},head)
             except (ValueError,KeyError,OSError):return self.send_error(404)
+        match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/report-jobs',path)
+        if match:
+            try:
+                import report_jobs
+                return self.json({'job':report_jobs.latest(match[1])},head)
+            except (ValueError,KeyError,OSError):return self.send_error(404)
         match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/review-videos',path)
         if match:
             try:

@@ -94,13 +94,12 @@ def readiness(case):
 
 def submit(case,payload):
     if not isinstance(payload,dict) or set(payload)!={'revision','events'}:raise ValueError('제작할 장면을 확인하세요.')
-    current=review_flow.require_report(case)
-    if type(payload['revision']) is not int or payload['revision']!=current['revision']:raise RuntimeError('경기 자료가 바뀌었습니다. 새로고침하세요.')
-    events=payload['events'];valid=[e['id'] for e in current['events']]
-    if not isinstance(events,list) or not events or any(not isinstance(e,str) or e not in valid for e in events) or len(events)!=len(set(events)):raise ValueError('제작할 장면을 확인하세요.')
-    checks=readiness(case);bad=[e for e in checks['events'] if e['eventId'] in events and (not e['ready'] or e.get('autoPrepare'))]
-    if bad:raise RuntimeError('영상 제작 전 공유 자세와 공간 장면을 확인하세요: '+', '.join(str(e['number'])+'번' for e in bad))
-    with case_lock(case),LOCK,lease(ROOT/'submit.lock') as acquired:
+    if case not in case_store.CASES:raise ValueError('등록되지 않은 경기입니다.')
+    events=payload['events']
+    if type(payload['revision']) is not int or not isinstance(events,list) or not events or any(not isinstance(e,str) or not re.fullmatch(r'review-[0-9]+',e) for e in events) or len(events)!=len(set(events)):raise ValueError('제작할 장면을 확인하세요.')
+    # Only register the request here. Scene validation and file hashing may take
+    # longer than the public gateway timeout and must happen in the worker.
+    with LOCK,lease(ROOT/'submit.lock') as acquired:
         if not acquired:raise RuntimeError('다른 제작 요청을 등록 중입니다. 다시 시도하세요.')
         for p in ROOT.glob('*/status.json'):
             try:
@@ -109,16 +108,12 @@ def submit(case,payload):
                     if saved.get('events')==events:return {'job':saved}
                     raise RuntimeError('이 경기의 PDF·영상 제작이 진행 중입니다.')
             except (OSError,ValueError,KeyError,json.JSONDecodeError):continue
-        current=review_flow.require_report(case)
-        if payload['revision']!=current['revision']:raise RuntimeError('경기 자료가 바뀌었습니다. 새로고침하세요.')
-        video_inputs={event:video_stamp(case,event) for event in events}
-        report=report_jobs.submit(case,payload['revision'])['job']
-        fingerprint=report.get('fingerprint') or report_jobs.stamp(case)
-        job=uuid.uuid4().hex[:24];data={'jobId':job,'caseId':case,'events':events,'fingerprint':fingerprint,
-            'videoInputs':video_inputs,'state':'queued','stage':'PDF 생성 대기','reportJobId':report['jobId'],'videos':[], 'createdAt':now()}
+        job=uuid.uuid4().hex[:24];data={'jobId':job,'caseId':case,'revision':payload['revision'],'events':events,
+            'state':'queued','stage':'영상 제작 준비 확인 중','videos':[], 'createdAt':now()}
         atomic(path(job),data);ACTIVE.add(job)
         try:POOL.submit(run,job)
-        except Exception:ACTIVE.discard(job);raise
+        except Exception:
+            ACTIVE.discard(job);data.update(state='failed',stage='제작 확인 필요',error='제작 작업을 시작하지 못했습니다.',completedAt=now());atomic(path(job),data);raise
         return {'job':data}
 
 def run(job):
@@ -129,9 +124,23 @@ def run(job):
         except (ValueError,RuntimeError,OSError,KeyError,StopIteration):changed=True
         if changed:data['reportNeedsRefresh']=True
     try:
+        # Serialize with automatic scene saves and validate again after waiting.
+        with case_lock(data['caseId']):
+            save(state='running',stage='영상 제작 준비 확인 중')
+            current=review_flow.require_report(data['caseId'])
+            if data['revision']!=current['revision']:raise RuntimeError('경기 자료가 바뀌었습니다. 새로고침하세요.')
+            valid={e['id'] for e in current['events']}
+            if any(e not in valid for e in data['events']):raise ValueError('제작할 장면을 확인하세요.')
+            checks=readiness(data['caseId']);bad=[e for e in checks['events'] if e['eventId'] in data['events'] and (not e['ready'] or e.get('autoPrepare'))]
+            if bad:raise RuntimeError('영상 제작 전 공유 자세와 공간 장면을 확인하세요: '+', '.join(str(e['number'])+'번' for e in bad))
+            video_inputs={event:video_stamp(data['caseId'],event) for event in data['events']}
+            report=report_jobs.submit(data['caseId'],data['revision'])['job']
+            save(videoInputs=video_inputs,reportJobId=report['jobId'],fingerprint=report.get('fingerprint') or report_jobs.stamp(data['caseId']))
         save(state='running',stage='PDF 생성 중')
         report=report_jobs.status(data['reportJobId'])
         while report['state'] in ('queued','running'):
+            progress=report.get('progress') or {};suffix=f" · {progress['completed']}/{progress['total']}{progress.get('unit') or ''}" if progress.get('total') is not None and progress.get('completed') is not None else ''
+            save(stage='PDF · '+(report.get('stage') or '생성 중')+suffix)
             time.sleep(2);report=report_jobs.status(data['reportJobId'])
         if report['state']=='complete':save(report=report['result'])
         else:save(reportIssue=report.get('error') or 'PDF 생성이 중단됐습니다. 최신 자료로 PDF를 다시 생성해 주세요.',reportNeedsRefresh=True)
@@ -143,6 +152,8 @@ def run(job):
                     raise RuntimeError('이 장면의 기준 화면·배치 또는 심판 매칭이 바뀌었습니다. 장면을 확인해 주세요.')
                 item=video_jobs.submit(data['caseId'],event)['job']
                 while item['state'] in ('queued','running'):
+                    progress=item.get('progress') or {};suffix=f" · {progress['completed']}/{progress['total']}" if progress.get('total') is not None and progress.get('completed') is not None else ''
+                    save(stage=f'영상 제작 {index+1}/{len(data["events"])} · {item.get("stage") or "진행 중"}{suffix}')
                     time.sleep(3);item=video_jobs.status(item['jobId'])
                 row={'eventId':event,'jobId':item['jobId'],'state':item['state']}
                 if item['state']=='complete':row['result']=item.get('result',{})

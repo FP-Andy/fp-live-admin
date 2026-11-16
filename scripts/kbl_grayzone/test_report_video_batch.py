@@ -16,7 +16,7 @@ class VideoBatchContinuityTests(unittest.TestCase):
         self.report_result={'reportId':'a'*24,'pdf':'/report.pdf','delivery':delivery}
         self.video_result={'delivery':delivery}
         self.current={'revision':1,'events':[{'id':'review-1'},{'id':'review-2'}]}
-        self.patches=[patch.object(batch,'ROOT',Path(self.temp.name)),patch.object(batch.POOL,'submit'),
+        self.patches=[patch.dict(batch.case_store.CASES,{'game-test':Path(self.temp.name)}),patch.object(batch,'ROOT',Path(self.temp.name)),patch.object(batch.POOL,'submit'),
           patch.object(batch.review_flow,'require_report',return_value=self.current),
           patch.object(batch,'readiness',return_value={'events':[{'eventId':'review-1','ready':True},{'eventId':'review-2','ready':True}]}),
           patch.object(batch.report_jobs,'stamp',side_effect=lambda case:self.report_fingerprint),
@@ -30,13 +30,21 @@ class VideoBatchContinuityTests(unittest.TestCase):
     def submit(self):return batch.submit('game-test',self.payload)['job']
 
     def test_comment_change_keeps_both_videos_running_and_marks_old_pdf(self):
-        job=self.submit();self.report_fingerprint='report-after-comment-edit';batch.run(job['jobId']);result=batch.status(job['jobId'])
+        job=self.submit()
+        def finish_pdf(_):
+            self.report_fingerprint='report-after-comment-edit'
+            return {'state':'complete','result':self.report_result}
+        batch.report_jobs.status.side_effect=finish_pdf;batch.run(job['jobId']);result=batch.status(job['jobId'])
         self.assertEqual([r['state'] for r in result['videos']],['complete','complete'])
         self.assertTrue(result['reportNeedsRefresh']);self.assertEqual(result['state'],'partial')
         self.assertEqual(batch.video_jobs.submit.call_count,2)
 
     def test_changed_scene_isolated_to_that_scene_and_later_video_continues(self):
-        job=self.submit();self.scenes['review-1']='new-scene';batch.run(job['jobId']);result=batch.status(job['jobId'])
+        job=self.submit()
+        def finish_pdf(_):
+            self.scenes['review-1']='new-scene'
+            return {'state':'complete','result':self.report_result}
+        batch.report_jobs.status.side_effect=finish_pdf;batch.run(job['jobId']);result=batch.status(job['jobId'])
         self.assertEqual([r['state'] for r in result['videos']],['failed','complete'])
         self.assertEqual(batch.video_jobs.submit.call_count,1)
 
@@ -82,15 +90,28 @@ class VideoBatchContinuityTests(unittest.TestCase):
         import threading
         saving=threading.Event();release=threading.Event();finished=threading.Event();errors=[]
         def slow_save(*args):saving.set();release.wait(2);return {'ok':True}
-        def submit():
-            try:self.submit()
+        def run(job):
+            try:batch.run(job)
             except Exception as e:errors.append(str(e))
             finally:finished.set()
-        batch.review_flow.require_report.side_effect=[self.current,RuntimeError('scene changed')]
+        batch.review_flow.require_report.side_effect=RuntimeError('scene changed')
         with patch.object(batch.review_flow,'require_stage'),patch.object(batch.broadcast_reconstruction,'current',return_value={'captureId':'a'*24}),patch.object(batch.broadcast_reconstruction,'save',side_effect=slow_save):
             worker=threading.Thread(target=batch.save_automatic_scene,args=('game-test','review-1',{},'a'*24));worker.start();self.assertTrue(saving.wait(1))
-            creator=threading.Thread(target=submit);creator.start();self.assertFalse(finished.wait(.1));release.set();worker.join(2);creator.join(2)
-        self.assertEqual(errors,['scene changed']);batch.report_jobs.submit.assert_not_called()
+            job=self.submit();creator=threading.Thread(target=run,args=(job['jobId'],));creator.start();self.assertFalse(finished.wait(.1));release.set();worker.join(2);creator.join(2)
+        self.assertFalse(errors);self.assertEqual(batch.status(job['jobId'])['error'],'scene changed');batch.report_jobs.submit.assert_not_called()
+
+    def test_request_returns_before_expensive_validation_and_pdf_work(self):
+        job=self.submit()
+        self.assertEqual(job['state'],'queued')
+        batch.review_flow.require_report.assert_not_called()
+        batch.readiness.assert_not_called()
+        batch.report_jobs.submit.assert_not_called()
+
+    def test_invalid_worker_preflight_is_reported_without_starting_pdf(self):
+        job=self.submit();batch.review_flow.require_report.side_effect=RuntimeError('scene changed')
+        batch.run(job['jobId']);result=batch.status(job['jobId'])
+        self.assertEqual(result['state'],'failed');self.assertEqual(result['error'],'scene changed')
+        batch.report_jobs.submit.assert_not_called()
 
 
 class VideoStampTests(unittest.TestCase):

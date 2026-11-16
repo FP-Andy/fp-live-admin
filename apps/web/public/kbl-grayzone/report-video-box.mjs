@@ -61,7 +61,7 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared})
   });
  }
  async function restore(){try{const r=await api(path+'/report-video-batches');if(r.job){job=r.job;renderJob();if(running())poll();}}catch(e){progress.replaceChildren(p('영상 제작 상태를 확인하지 못했습니다. '+e.message));}finally{restoring=false;buttonState();}}
- return {selected:()=>check.checked,canGenerate:()=>!restoring&&!running()&&!preparing&&(!check.checked||(!checking&&!!ready?.ready)),
+ return {selected:()=>check.checked,isRunning:()=>running()||preparing,canGenerate:()=>!restoring&&!running()&&!preparing&&(!check.checked||(!checking&&!!ready?.ready)),
   async start(revision){if(!ready?.ready)throw Error('영상 제작 준비 상태를 확인하세요.');
    preparing=true;buttonState();
    try{
@@ -79,7 +79,12 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared})
     await onPrepared();
     job=(await api(path+'/report-video-batches',{revision,events:ready.events.map(e=>e.eventId)})).job;
     renderJob();clearTimeout(timer);poll();
-   }catch(error){await onPrepared();throw error;}
+   }catch(error){
+    // A gateway can drop the response after the server accepted the request.
+    // Recover the existing batch before allowing another click.
+    try{const existing=await api(path+'/report-video-batches');if(existing.job&&['queued','running'].includes(existing.job.state)){job=existing.job;renderJob();clearTimeout(timer);poll();return;}}catch{}
+    await onPrepared();throw error;
+   }
    finally{preparing=false;buttonState();}
   },restore};
 }
