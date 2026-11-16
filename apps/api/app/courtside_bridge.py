@@ -193,7 +193,7 @@ def rewrite_url(value,prefix):
     return prefix+value if isinstance(value,str) and value.startswith('/') and value[1:].startswith(URL_PREFIXES) else value
 def rewrite_json(value,prefix):
     if isinstance(value,dict):
-        url_keys={'url','src','href','pdf','json','media','poster','download','image','fileUrl'}
+        url_keys={'url','src','href','pdf','json','media','poster','download','image','map','fileUrl'}
         return {k:rewrite_url(v,prefix) if isinstance(v,str) and (k in url_keys or k.endswith('Url')) else rewrite_json(v,prefix) for k,v in value.items()}
     if isinstance(value,list):return [rewrite_json(v,prefix) for v in value]
     return value

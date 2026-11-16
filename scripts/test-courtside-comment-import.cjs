@@ -6,7 +6,7 @@ const path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_CORE_PATH || '../apps/web/node_modules/playwright-core');
 const root=path.resolve(__dirname,'../apps/web/public/kbl-grayzone');
 const baseFields={focus:'기존 지점',observation:'',difficultyFactors:'',viewComment:'기존 시야',initialCall:'',decisionBasis:'',takeaway:'',assessment:'기존 총평',callerBasis:'중계 확인',callerNumber:37};
-const events=[1,2].map(n=>({id:`review-${n}`,number:n,quarter:1,gameClock:`${n}:00`,ready:true,captureId:`capture-${n}`,recordedDecision:'유지',recordedReason:'파울 유지',fields:{...baseFields},refereeAssignments:{r1:37},referees:[{id:'r1',label:'R1',image:'/fixture.jpg'}],warnings:[],delivery:{referees:1,matchedReferees:1}}));
+const events=[1,2].map(n=>({id:`review-${n}`,number:n,quarter:1,gameClock:`${n}:00`,ready:true,captureId:`capture-${n}`,recordedDecision:'유지',recordedReason:'파울 유지',fields:{...baseFields},refereeAssignments:{r1:37},referees:[{id:'r1',label:'R1',image:'/fixture.jpg'}],map:'/fixture.jpg',warnings:[],delivery:{referees:1,matchedReferees:1}}));
 let editorial={caseId:'game-test',revision:1,recordsVersion:'rec1',version:'v1',referees:[{number:37,name:'심판'}],events,limits:{focus:130,observation:160,difficultyFactors:160,viewComment:180,initialCall:100,decisionBasis:140,takeaway:120,assessment:520,callerBasis:120}};
 let saves=[];
 const server=http.createServer((req,res)=>{
@@ -21,6 +21,7 @@ const server=http.createServer((req,res)=>{
  }
  if(u.pathname==='/api/cases/game-test/reports'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({versions:[]}));}
  if(u.pathname==='/fixture.jpg'){res.writeHead(404);return res.end();}
+ if(u.pathname==='/assets/referee-roster.jpg'){res.setHeader('Content-Type','image/jpeg');return res.end(fs.readFileSync(path.join(root,'assets/referee-roster.jpg')));}
  const name=u.pathname.slice(1);if(!/^[a-zA-Z0-9_.-]+\.(html|mjs|css)$/.test(name)){res.writeHead(404);return res.end();}
  try{const file=fs.readFileSync(path.join(root,name));res.setHeader('Content-Type',name.endsWith('.html')?'text/html':name.endsWith('.css')?'text/css':'text/javascript');return res.end(file);}catch{res.writeHead(404);return res.end();}
 });
@@ -36,6 +37,17 @@ let browser;
  await page.goto(`http://127.0.0.1:${server.address().port}/report-review.html?id=game-test`);
  await page.waitForFunction(()=>document.querySelector('#eventSelect').options.length===2);
  await page.evaluate(()=>{document.documentElement.dataset.consoleTheme='dark';});
+ assert.equal(await page.locator('.referee-reference').evaluate(e=>e.open),false);
+ await page.locator('.referee-reference summary').click();
+ await page.waitForFunction(()=>document.querySelector('.referee-reference img').naturalWidth>0);
+ assert.equal(await page.locator('#refereeCards select').inputValue(),'37');
+ assert.notEqual(await page.locator('.referee-reference').evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(255, 255, 255)');
+ if(process.env.COURTSIDE_REFEREE_SCREENSHOT)await page.locator('.report-visuals').screenshot({path:process.env.COURTSIDE_REFEREE_SCREENSHOT});
+ await page.locator('.referee-reference summary').click();
+ assert.equal(await page.locator('.referee-reference').evaluate(e=>e.open),false);
+ await page.locator('.report-map summary').click();
+ await page.waitForFunction(()=>!document.querySelector('#mapError').hidden);
+ assert.equal(await page.locator('#mapPreview').isVisible(),false);
  const select=content=>page.locator('#commentCsv').setInputFiles({name:'comments.csv',mimeType:'text/csv',buffer:Buffer.from(content)});
  await select(csv([row(1,{case_id:'game-other',focus:'잘못된 경기'})]));
  await page.waitForFunction(()=>document.querySelector('#commentImportNote').textContent.includes('다른 경기'));
