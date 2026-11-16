@@ -44,6 +44,7 @@ class BridgeTests(unittest.TestCase):
     st=self.root.stat();return httpx.Response(200,json={'storeIdentity':hashlib.sha256(f'{st.st_dev}:{st.st_ino}'.encode()).hexdigest()})
    if request.url.path=='/api/internal/fpc-intakes':return httpx.Response(200,json={'id':self.intake})
    if request.url.path.endswith('.mjs'):return httpx.Response(200,text="fetch('/api/cases/game999-synthetic');",headers={'content-type':'text/javascript'})
+   if request.url.path.endswith('/delivery-package.zip'):return httpx.Response(200,stream=MediaStream(),headers={'content-type':'application/zip','content-disposition':'attachment; filename="delivery.zip"'})
    if request.url.path.endswith('.mp4'):return httpx.Response(206,stream=MediaStream(),headers={'content-type':'video/mp4','content-range':'bytes 0-3/100','accept-ranges':'bytes','content-length':'4'})
    return httpx.Response(200,json={'url':'/pose-assets/'+'c'*24+'/frame.jpg','note':'/api/cases/is a user comment'})
   self.transport=httpx.MockTransport(upstream);self.real_client=httpx.AsyncClient
@@ -120,6 +121,9 @@ class BridgeTests(unittest.TestCase):
   for suffix in ('delivery-package','delivery-package.zip'):
    self.assertEqual(self.client.get(self.base+f'api/cases/{self.case}/{suffix}').status_code,200)
    self.assertEqual(self.client.get(self.base+f'api/cases/other/{suffix}').status_code,404)
+  archive=self.client.get(self.base+f'api/cases/{self.case}/delivery-package.zip')
+  self.assertEqual(archive.content,b'1234');self.assertEqual(archive.headers['content-type'],'application/zip')
+  self.assertIn('attachment',archive.headers['content-disposition'])
  def test_corrected_pose_mesh_is_rewritten_and_bound_to_case(self):
   self.user();asset=f'case-pose-variant/{self.case}/review-1/'+('d'*24)+'.json'
   self.assertEqual(bridge.rewrite_json({'meshUrl':'/'+asset},self.base.rstrip('/'))['meshUrl'],self.base+asset)
