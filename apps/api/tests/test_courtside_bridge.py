@@ -108,6 +108,13 @@ class BridgeTests(unittest.TestCase):
   self.user();r=self.client.get(self.base+'case-assets/'+self.case+'/broadcast/a.mp4',headers={'range':'bytes=0-3'});self.assertEqual((r.status_code,r.content),(206,b'1234'));self.assertEqual(r.headers['content-range'],'bytes 0-3/100');self.assertEqual(self.requests[-1][2]['range'],'bytes=0-3')
   r=self.client.get(self.base+'workflow.mjs');self.assertIn(self.base+'api/cases/',r.text)
   self.assertIn(self.base+'case-review-video/',bridge.rewrite_text('a.href=`/case-review-video/${caseId}`',self.base.rstrip('/')))
+ def test_report_map_url_is_scoped_to_the_match_bridge(self):
+  raw=f'/api/cases/{self.case}/events/review-3/report-map.jpg?capture=123'
+  payload={'events':[{'map':raw,'referees':[{'image':raw}],'note':raw}]}
+  result=bridge.rewrite_json(payload,self.base.rstrip('/'))['events'][0]
+  self.assertEqual(result['map'],self.base+raw.lstrip('/'))
+  self.assertEqual(result['referees'][0]['image'],self.base+raw.lstrip('/'))
+  self.assertEqual(result['note'],raw)
  def test_corrected_pose_mesh_is_rewritten_and_bound_to_case(self):
   self.user();asset=f'case-pose-variant/{self.case}/review-1/'+('d'*24)+'.json'
   self.assertEqual(bridge.rewrite_json({'meshUrl':'/'+asset},self.base.rstrip('/'))['meshUrl'],self.base+asset)

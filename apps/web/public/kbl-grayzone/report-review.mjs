@@ -17,6 +17,8 @@ function changed(key){capture();dirty.add(active);$('saveState').textContent='�
 function count(){$('assessmentCount').textContent=`${$('assessment').value.length} / 520자`;$('callerBasisWrap').hidden=!$('callerNumber').value;}
 function option(value,label){const o=document.createElement('option');o.value=value;o.textContent=label;return o;}
 function rosterSelect(select,value){select.replaceChildren(option('','미확정'),...editorial.referees.map(r=>option(r.number,`#${r.number} ${r.name}`)));select.value=value??'';}
+$('mapPreview').addEventListener('load',()=>{$('mapPreview').hidden=false;$('mapError').hidden=true;});
+$('mapPreview').addEventListener('error',()=>{$('mapPreview').hidden=true;$('mapError').hidden=false;});
 function renderEvent(id){active=id;const event=editorial.events.find(e=>e.id===id),draft=drafts.get(id);$('eventSelect').value=id;$('editor').hidden=!event?.ready;if(!event?.ready){message(event?.error||'공간 장면을 먼저 저장하세요.');buttonState();return;}
  for(const k of keys)$(k).value=draft.fields[k]||'';rosterSelect($('callerNumber'),draft.fields.callerNumber);$('recheck').checked=!!draft.reviewedCurrentScene;$('sceneChanged').hidden=!event.sceneChanged;$('recheckWrap').hidden=!event.sceneChanged;
  $('record').textContent=`${event.recordedDecision} · ${event.recordedReason}`;$('sourceContext').textContent=event.context||'상황 기록이 없습니다.';$('mapPreview').src=event.map;$('spatialLink').href=flowUrl('spatial',caseId,id);$('saveState').textContent=dirty.has(id)?'저장하지 않은 입력':event.savedAt?'입력 저장됨':'현재 분석 기반 초안';$('draftNotice').textContent='';
