@@ -115,6 +115,11 @@ class BridgeTests(unittest.TestCase):
   self.assertEqual(result['map'],self.base+raw.lstrip('/'))
   self.assertEqual(result['referees'][0]['image'],self.base+raw.lstrip('/'))
   self.assertEqual(result['note'],raw)
+ def test_delivery_zip_is_limited_to_the_selected_case(self):
+  self.user()
+  for suffix in ('delivery-package','delivery-package.zip'):
+   self.assertEqual(self.client.get(self.base+f'api/cases/{self.case}/{suffix}').status_code,200)
+   self.assertEqual(self.client.get(self.base+f'api/cases/other/{suffix}').status_code,404)
  def test_corrected_pose_mesh_is_rewritten_and_bound_to_case(self):
   self.user();asset=f'case-pose-variant/{self.case}/review-1/'+('d'*24)+'.json'
   self.assertEqual(bridge.rewrite_json({'meshUrl':'/'+asset},self.base.rstrip('/'))['meshUrl'],self.base+asset)

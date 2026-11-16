@@ -515,6 +515,27 @@ class Handler(BaseHTTPRequestHandler):
             import hashlib
             info=ROOT.stat();value=hashlib.sha256(f'{info.st_dev}:{info.st_ino}'.encode()).hexdigest()
             return self.json({'storeIdentity':value},head)
+        match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/delivery-package(\.zip)?',path)
+        if match:
+            try:
+                import delivery_archive
+                package=delivery_archive.plan(match[1])
+            except (ValueError,KeyError,OSError,RuntimeError,StopIteration) as e:
+                return self.json({'error':str(e)},head,409)
+            if not match[2]:
+                return self.json({'ready':True,'folder':package['folder'],'videoCount':package['videoCount']},head)
+            self.send_response(200)
+            self.send_header('Content-Type','application/zip')
+            self.send_header('Content-Disposition',f"attachment; filename=\"kbl-delivery.zip\"; filename*=UTF-8''{quote(package['folder']+'.zip',safe='')}")
+            self.send_header('Cache-Control','private, no-store')
+            self.send_header('X-Content-Type-Options','nosniff')
+            self.send_header('Connection','close')
+            self.end_headers();self.close_connection=True
+            if not head:
+                try:delivery_archive.write(package,self.wfile)
+                except (BrokenPipeError,ConnectionResetError):pass
+                except OSError:traceback.print_exc()
+            return
         match=re.fullmatch(r'/api/cases/([a-z0-9-]+)/report-video-(readiness|batches)',path)
         if match:
             try:

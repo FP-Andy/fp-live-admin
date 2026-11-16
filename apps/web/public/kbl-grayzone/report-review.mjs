@@ -32,6 +32,15 @@ $('eventSelect').onchange=()=>{capture();location.hash=$('eventSelect').value;re
 window.addEventListener('hashchange',()=>{const id=location.hash.slice(1);if(!busy&&editorial?.events.some(e=>e.id===id)&&id!==active){capture();renderEvent(id);}});
 for(const k of keys)$(k).addEventListener('input',()=>changed(k));$('callerNumber').onchange=()=>changed('callerNumber');$('recheck').onchange=()=>changed('recheck');
 $('saveAll').onclick=async()=>{busy=true;buttonState();try{await persist();}catch(e){message(e.message);}finally{busy=false;buttonState();}};
+$('downloadDelivery').onclick=async()=>{
+ const button=$('downloadDelivery'),note=$('deliveryDownloadNote');button.disabled=true;note.textContent='PDF와 장면별 영상을 확인하고 있습니다.';
+ try{
+  const result=await api(`/api/cases/${encodeURIComponent(caseId)}/delivery-package`);
+  const a=document.createElement('a');a.href=`/api/cases/${encodeURIComponent(caseId)}/delivery-package.zip`;a.download=`${result.folder}.zip`;document.body.append(a);a.click();a.remove();
+  note.textContent=`${result.folder} 폴더에 PDF와 영상 ${result.videoCount}개를 묶어 다운로드합니다.`;
+ }catch(e){note.textContent=e.message;}
+ finally{button.disabled=false;}
+};
 function clearCommentImport(){commentImportGeneration++;pendingImport=null;$('commentImportPreview').hidden=true;$('commentImportChanges').replaceChildren();$('commentCsv').value='';}
 $('commentCsv').onchange=async()=>{
  const file=$('commentCsv').files?.[0],generation=++commentImportGeneration;if(!file)return;

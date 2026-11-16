@@ -8,7 +8,7 @@ const root=path.resolve(__dirname,'../apps/web/public/kbl-grayzone');
 const baseFields={focus:'기존 지점',observation:'',difficultyFactors:'',viewComment:'기존 시야',initialCall:'',decisionBasis:'',takeaway:'',assessment:'기존 총평',callerBasis:'중계 확인',callerNumber:37};
 const events=[1,2].map(n=>({id:`review-${n}`,number:n,quarter:1,gameClock:`${n}:00`,ready:true,captureId:`capture-${n}`,recordedDecision:'유지',recordedReason:'파울 유지',fields:{...baseFields},refereeAssignments:{r1:37},referees:[{id:'r1',label:'R1',image:'/fixture.jpg'}],map:'/fixture.jpg',warnings:[],delivery:{referees:1,matchedReferees:1}}));
 let editorial={caseId:'game-test',revision:1,recordsVersion:'rec1',version:'v1',referees:[{number:37,name:'심판'}],events,limits:{focus:130,observation:160,difficultyFactors:160,viewComment:180,initialCall:100,decisionBasis:140,takeaway:120,assessment:520,callerBasis:120}};
-let saves=[];
+let saves=[],deliveryReady=true;
 const server=http.createServer((req,res)=>{
  const u=new URL(req.url,'http://fixture');
  if(u.pathname==='/review-flow.mjs'){res.setHeader('Content-Type','text/javascript');return res.end(`export const flowUrl=()=> '#';export function mountFlow(){return {update(){},async refresh(){return {title:'테스트 경기',revision:1,reportReady:true,events:[1,2].map(n=>({id:'review-'+n,number:n,quarter:1,gameClock:n+':00',nextStage:'report',stages:{objects:{complete:true},joints:{complete:true},spatial:{complete:true}}}))}}}}`);}
@@ -20,6 +20,13 @@ const server=http.createServer((req,res)=>{
   let body='';req.on('data',x=>body+=x);return req.on('end',()=>{const value=JSON.parse(body);saves.push(value);for(const update of value.events){const e=editorial.events.find(e=>e.id===update.id);e.fields={...update.fields};e.refereeAssignments={...update.fields.refereeAssignments};}editorial={...editorial,version:'v2'};res.end(JSON.stringify(editorial));});
  }
  if(u.pathname==='/api/cases/game-test/reports'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({versions:[]}));}
+ if(u.pathname==='/api/cases/game-test/delivery-package'){
+  res.setHeader('Content-Type','application/json');if(!deliveryReady){res.statusCode=409;return res.end(JSON.stringify({error:'현재 장면과 일치하는 영상이 없습니다: 2번'}));}
+  return res.end(JSON.stringify({ready:true,folder:'경기066-원주 DB vs 수원 KT',videoCount:2}));
+ }
+ if(u.pathname==='/api/cases/game-test/delivery-package.zip'){
+  res.setHeader('Content-Type','application/zip');res.setHeader('Content-Disposition',`attachment; filename="kbl-delivery.zip"; filename*=UTF-8''${encodeURIComponent('경기066-원주 DB vs 수원 KT.zip')}`);return res.end(Buffer.from('synthetic zip'));
+ }
  if(u.pathname==='/fixture.jpg'){res.writeHead(404);return res.end();}
  if(u.pathname==='/assets/referee-roster.jpg'){res.setHeader('Content-Type','image/jpeg');return res.end(fs.readFileSync(path.join(root,'assets/referee-roster.jpg')));}
  const name=u.pathname.slice(1);if(!/^[a-zA-Z0-9_.-]+\.(html|mjs|css)$/.test(name)){res.writeHead(404);return res.end();}
@@ -36,6 +43,11 @@ let browser;
  browser=await chromium.launch({headless:true,executablePath});const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(`http://127.0.0.1:${server.address().port}/report-review.html?id=game-test`);
  await page.waitForFunction(()=>document.querySelector('#eventSelect').options.length===2);
+ const [delivery]=await Promise.all([page.waitForEvent('download'),page.locator('#downloadDelivery').click()]);
+ assert.equal(delivery.suggestedFilename(),'경기066-원주 DB vs 수원 KT.zip');
+ assert.match(await page.locator('#deliveryDownloadNote').innerText(),/영상 2개/);
+ deliveryReady=false;await page.locator('#downloadDelivery').click();
+ await page.waitForFunction(()=>document.querySelector('#deliveryDownloadNote').textContent.includes('2번'));
  await page.evaluate(()=>{document.documentElement.dataset.consoleTheme='dark';});
  assert.equal(await page.locator('.referee-reference').evaluate(e=>e.open),false);
  await page.locator('.referee-reference summary').click();
