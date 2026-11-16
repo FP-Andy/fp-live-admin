@@ -1,4 +1,4 @@
-"""Carry review forward only when automatic pose fitting preserves its analysis."""
+"""Carry report inputs forward when automatic pose fitting updates the scene."""
 import copy,json,re
 from pathlib import Path
 import case_store,report_inputs,review_flow,broadcast_reconstruction,pose_variant
@@ -30,7 +30,13 @@ def refresh_view_text(case,event,scene,item):
         # about which referee or player was visible in the previous model.
         if field=='takeaway' and not any(name in text for name in referee_names) and not re.search(r'심판|#\d|(?<![A-Za-z0-9])(?:R|P)[1-9][0-9]*(?![0-9])',text) and re.search(r'확인(?:해야|할|이 필요)',text):
             text=re.sub(r'가림이\s*적은\s*(?:각도|시점)(?:를|에서|로)?','다른 각도',text)
-        if related.search(text):return False
+        # Generic observations such as a hand being hidden, or an instruction
+        # to compare referee views, are not assertions about the old 3D model.
+        # Only a particular labelled person/referee or a model reference makes
+        # these fields dependent on its old visibility result.
+        specific=(re.search(r'재구성|모델상|가시\s*(?:표본|비율)|#\d|(?<![A-Za-z0-9])(?:R|P)[1-9][0-9]*(?![A-Za-z0-9])',text)
+                  or any(name in text for name in referee_names))
+        if specific and related.search(text):return False
     old=review.get('assessment','') or '';sentences=re.split(r'(?<=[.!?。])\s+',old) if old else []
     indices=[]
     for index,sentence in enumerate(sentences):
@@ -64,7 +70,7 @@ def refresh_view_text(case,event,scene,item):
             if i==indices[0]:
                 # Keep an independent action point after the scene-specific
                 # clause, instead of discarding the author's conclusion.
-                parts=re.split(r'(?:므로|때문에),\s*',sentence,maxsplit=1)
+                parts=re.split(r'(?:므로|때문에|으며|지만),?\s+',sentence,maxsplit=1)
                 if len(parts)==2:
                     if related.search(parts[1]):return False
                     result.extend((view,parts[1]))
@@ -80,6 +86,76 @@ def refresh_view_text(case,event,scene,item):
     if len(updated_view)>report_inputs.LIMITS['viewComment']:return False
     review['viewComment']=updated_view
     return True
+
+def fallback_view_text(case,event,scene,item):
+    """Preserve ambiguous authored facts and clearly distinguish old views.
+
+    The original item is archived by finalize. A mixed sentence can contain a
+    decision as well as an old view claim, so it must not be silently deleted
+    or presented as a claim about the newly reconstructed scene.
+    """
+    from report_editorial import scene_commentary
+    review=item.setdefault('review',{})
+    original=copy.deepcopy(review)
+    preview=copy.deepcopy(item);preview['review']={**review,'viewComment':'','assessment':''}
+    summary=scene_commentary(case,event,scene,preview)
+    view=summary['viewComment']
+    rows=scene.get('crewAnalysis',{}).get('rows',[])
+    roster={r.get('number'):r.get('name') for r in case.get('referees',[]) if r.get('number') is not None and r.get('name')}
+    assignments=review.get('refereeAssignments') or {}
+    named=view
+    for row in rows:
+        label=row.get('label','');name=roster.get(assignments.get(row.get('id')))
+        if name and re.fullmatch(r'R[1-9][0-9]*',label):
+            named=re.sub(r'(?<![A-Za-z0-9])'+re.escape(label)+r'(?![0-9])',lambda m:f'{name} 심판({label})',named)
+    if len(named)<=report_inputs.LIMITS['viewComment']:view=named
+    if len(view)>report_inputs.LIMITS['viewComment']:
+        leaders=[row.get('label','') for row in rows if row.get('id') in scene.get('crewAnalysis',{}).get('leaders',[])]
+        view=('재구성에서는 '+'·'.join(leaders)+' 방향의 별표 주변이 상대적으로 드러납니다.') if leaders else '재구성된 심판 배치를 기준으로 별표 지점의 시야를 확인합니다.'
+    related=re.compile(r'재구성|모델상|시야|가림|가려|별표|가시|잘\s*보|보이|보였|볼\s*수|드러|열려|막혀|사각지대|유리|불리|살필|보기\s*좋|관찰하기')
+    reference=re.compile(r'재구성|모델상|가시\s*(?:표본|비율)|#\d|(?<![A-Za-z0-9])(?:R|P)[1-9][0-9]*(?![A-Za-z0-9])')
+    names=[r.get('name','') for r in case.get('referees',[]) if r.get('name')]
+    def specific(text):
+        return bool(related.search(text) and (reference.search(text) or any(name in text for name in names)))
+    # Preserve independent author-supplied advice in the view field.
+    extras=[s for s in re.split(r'(?<=[.!?。])\s+',original.get('viewComment','') or '') if s and not specific(s) and not related.search(s)]
+    for extra in extras:
+        if len(view)+1+len(extra)<=report_inputs.LIMITS['viewComment']:view+=' '+extra
+    warning=False;historical=False
+    for field in ('focus','observation','difficultyFactors','decisionBasis','takeaway','initialCall','callerBasis'):
+        text=original.get(field,'') or ''
+        if not specific(text):continue
+        # Never replace factual/attribution text: label its historical view
+        # and retain it verbatim, with the exact original also in history.
+        prefix='보정 전 시야 기준: '
+        if len(prefix)+len(text)<=report_inputs.LIMITS[field]:review[field]=prefix+text;historical=True
+        else:warning=True
+    old=original.get('assessment','') or ''
+    sentences=re.split(r'(?<=[.!?。])\s+',old) if old else []
+    replacement=[];inserted=False
+    mixed=re.compile(r'판독 결과|파울|취소|선언|터치|공격권|경기 재개')
+    for sentence in sentences:
+        if not specific(sentence):replacement.append(sentence);continue
+        if mixed.search(sentence):
+            # Keep the entire mixed factual sentence instead of guessing where
+            # its verdict ends. Its old view is explicitly time-scoped.
+            replacement.append('보정 전 시야를 포함한 기존 해설: '+sentence)
+        elif not inserted:
+            replacement.append(view);inserted=True
+    assessment=' '.join(replacement)
+    if len(assessment)<=report_inputs.LIMITS['assessment']:review['assessment']=assessment
+    else:
+        # Keep the original, never truncate it. The current view carries an
+        # explicit note that other view claims refer to the previous model.
+        review['assessment']=old;warning=True
+    if warning:
+        note='다른 문안의 시야 설명은 보정 전 기준입니다.'
+        if len(view)+1+len(note)>report_inputs.LIMITS['viewComment']:
+            leaders=[row.get('label','') for row in rows if row.get('id') in scene.get('crewAnalysis',{}).get('leaders',[])]
+            view=('재구성에서는 '+'·'.join(leaders)+' 방향이 상대적으로 드러납니다.') if leaders else '보정된 심판 배치 기준 시야입니다.'
+        view+=' '+note
+    review['viewComment']=view
+    return {'mode':'automatic-preserving-authored-context','previousViewNotice':warning or historical or any(specific(s) and mixed.search(s) for s in sentences)}
 
 def finalize(case,event,payload):
     if not isinstance(payload,dict) or set(payload)!={'previousCaptureId','captureId','version'}:raise ValueError('자동 보정 정보를 확인하세요.')
@@ -102,20 +178,20 @@ def finalize(case,event,payload):
         data=copy.deepcopy(report_inputs.read(case));item=data.get('events',{}).get(event)
         if item and item.get('scene',{}).get('captureId') not in (None,oldid):raise RuntimeError('기존 코멘트의 장면 출처가 달라 확인이 필요합니다.')
         changed=visibility_signature(old)!=visibility_signature(new)
+        refresh_info=None
         if changed and item:
             case_data=case_store.load_case(case);event_data=next(e for e in case_data['events'] if e['id']==event)
-            if not refresh_view_text(case_data,event_data,new,item):
-                # The scene check remains valid even if an authored comment
-                # cannot be changed safely. Keep the comment stale for review
-                # in the report rather than sending the user back to 2D/3D.
-                review_flow.complete(case,event,{'stage':'spatial','token':step['token']},source='automatic-pose-report-review-required')
-                return {'carried':False,'reason':'보정 후 시야가 달라졌습니다. 리포트에서 기존 코멘트를 확인해 주세요.','eventId':event}
+            candidate=copy.deepcopy(item)
+            if refresh_view_text(case_data,event_data,new,candidate):
+                item.clear();item.update(candidate);refresh_info={'mode':'targeted'}
+            else:refresh_info=fallback_view_text(case_data,event_data,new,item)
         if item:
             p=report_inputs.path(case);archive=p.parent/'report-editorial-history';archive.mkdir(exist_ok=True)
             backup=archive/(payload['version']+'.json')
             if not backup.exists():atomic(backup,report_inputs.read(case))
             item.setdefault('scene',{})
             item['scene']['captureId']=newid;item['scene']['autoPoseRebasedFrom']=oldid;item['scene']['autoPoseRebasedAt']=now();item['scene']['autoPoseViewUpdated']=changed
+            if refresh_info:item['scene']['autoPoseViewRefresh']=refresh_info
             atomic(p,data)
         review_flow.complete(case,event,{'stage':'spatial','token':step['token']},source='automatic-pose-recalculated' if changed else 'automatic-equivalent-pose')
         return {'carried':True,'eventId':event,'viewUpdated':changed,'version':report_inputs.version(case)}
