@@ -35,6 +35,7 @@ class DeliveryArchiveTests(unittest.TestCase):
             (folder/(job+'.mp4')).write_bytes(f'video-{n}'.encode())
         self.patches = [patch.object(archive.case_store,'load_case',return_value=self.case),
                         patch.object(archive.report_versions,'latest_file',return_value=self.pdf),
+                        patch.object(archive.report_jobs,'ROOT',self.root/'jobs'),
                         patch.object(archive.review_videos,'folder',side_effect=lambda c,e:self.folders[e]),
                         patch.object(archive.review_videos,'inspect',side_effect=lambda c,e,j:({'poseMode':'map'},self.folders[e]/(j+'.mp4')))]
         for p in self.patches: p.start(); self.addCleanup(p.stop)
@@ -60,6 +61,13 @@ class DeliveryArchiveTests(unittest.TestCase):
     def test_missing_pdf_is_reported(self):
         with patch.object(archive.report_versions,'latest_file',side_effect=ValueError('missing')):
             with self.assertRaisesRegex(RuntimeError,'PDF'):archive.plan('game066-test')
+
+    def test_stale_pdf_is_not_packaged_with_current_videos(self):
+        folder=archive.report_jobs.ROOT/'job';folder.mkdir(parents=True)
+        (folder/'status.json').write_text(json.dumps({'caseId':'game066-test','state':'complete','fingerprint':'old',
+                                                      'result':{'reportId':self.pdf.stem}}))
+        with patch.object(archive.report_jobs,'stamp',return_value='current'):
+            with self.assertRaisesRegex(RuntimeError,'현재 코멘트 또는 장면'):archive.plan('game066-test')
 
     def test_http_download_streams_zip_without_a_temporary_archive(self):
         import threading

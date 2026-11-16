@@ -2,10 +2,10 @@ const spatialUrl=(caseId,eventId)=>`./reconstruction.html?id=${encodeURIComponen
 
 export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared}){
  const $=id=>document.getElementById(id), check=$('includeVideos'),list=$('videoReadyList'),progress=$('reportVideoProgress');
- let ready=null,checking=false,preparing=false,job=null,timer=null;
+ let ready=null,checking=false,preparing=false,restoring=true,job=null,timer=null;
  const path=`/api/cases/${encodeURIComponent(caseId)}`;
  const running=()=>!!job&&['queued','running'].includes(job.state);
- function buttonState(){check.disabled=running()||preparing;$('checkVideoReady').disabled=checking||running()||preparing;onChange();}
+ function buttonState(){check.disabled=restoring||running()||preparing;$('checkVideoReady').disabled=restoring||checking||running()||preparing;onChange();}
  function p(text){const el=document.createElement('p');el.textContent=text;return el;}
  function readinessView(){
   list.replaceChildren();if(!ready)return;
@@ -25,7 +25,9 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared})
  function renderJob(){
   progress.replaceChildren();if(!job)return;
   progress.append(p(job.stage||'제작 상태 확인 중'));
-  if(job.report){const delivery=job.report.delivery;progress.append(p(delivery?.state==='complete'?'PDF · 전달 폴더 저장됨':`PDF · ${delivery?.message||'전달 저장 상태 확인 필요'}`));}
+  if(job.reportNeedsRefresh)progress.append(p('PDF는 이전 입력 기준이거나 생성이 완료되지 않았습니다. 최신 코멘트를 저장한 뒤 PDF를 다시 생성하세요.'));
+  else if(job.report){const delivery=job.report.delivery;progress.append(p(delivery?.state==='complete'?'PDF · 전달 폴더 저장됨':`PDF · ${delivery?.message||'전달 저장 상태 확인 필요'}`));}
+  if(job.reportIssue)progress.append(p('PDF · '+job.reportIssue));
   for(const row of job.videos||[]){
    const number=row.eventId.replace('review-','');let text=`${number}번 영상 · `;
    if(row.state==='complete'){const delivery=row.result?.delivery;text+=delivery?.state==='complete'?'전달 폴더 저장됨':delivery?.state==='ready-for-download'?'다운로드 준비됨':`제작 완료 · 전달 저장 실패: ${delivery?.message||'상태 확인 필요'}`;}
@@ -58,11 +60,13 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared})
    window.addEventListener('message',receive);document.body.append(frame);
   });
  }
- async function restore(){try{const r=await api(path+'/report-video-batches');if(r.job){job=r.job;renderJob();buttonState();if(running())poll();}}catch(e){progress.replaceChildren(p('영상 제작 상태를 확인하지 못했습니다. '+e.message));}}
- return {selected:()=>check.checked,canGenerate:()=>!running()&&!preparing&&(!check.checked||(!checking&&!!ready?.ready)),
+ async function restore(){try{const r=await api(path+'/report-video-batches');if(r.job){job=r.job;renderJob();if(running())poll();}}catch(e){progress.replaceChildren(p('영상 제작 상태를 확인하지 못했습니다. '+e.message));}finally{restoring=false;buttonState();}}
+ return {selected:()=>check.checked,canGenerate:()=>!restoring&&!running()&&!preparing&&(!check.checked||(!checking&&!!ready?.ready)),
   async start(revision){if(!ready?.ready)throw Error('영상 제작 준비 상태를 확인하세요.');
    preparing=true;buttonState();
    try{
+    const existing=await api(path+'/report-video-batches');
+    if(existing.job&&['queued','running'].includes(existing.job.state)){job=existing.job;renderJob();clearTimeout(timer);poll();return;}
     let editorial=await api(path+'/report-editorial');
     const pending=ready.events.filter(e=>e.autoPrepare);
     for(let i=0;i<pending.length;i++){
