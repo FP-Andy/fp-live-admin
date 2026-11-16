@@ -5,12 +5,12 @@ import {planCommentImport,FIELD_LABELS} from './comment-csv.mjs';
 const $=id=>document.getElementById(id),caseId=new URLSearchParams(location.search).get('id')||'';
 const keys=['focus','observation','difficultyFactors','viewComment','initialCall','callerBasis','decisionBasis','takeaway','assessment'];
 let data,editorial,active,busy=false;const drafts=new Map(),dirty=new Set();
-let videoBox,pendingImport=null,commentImportGeneration=0;
+let videoBox,pendingImport=null,commentImportGeneration=0,packageJob=null,packageTimer=null,packageGeneration=0;
 const message=s=>$('status').textContent=s;
 bindReportDownload($('download'),caseId,message);
 const flow=mountFlow({stage:'report',caseId,eventId:()=>active||location.hash.slice(1)||data?.events[0]?.id,message});
 async function api(path,payload){let r;try{r=await fetch(path,payload===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}catch{throw Error('서버 연결이 끊겼습니다. 입력을 유지한 채 연결을 확인하고 다시 시도하세요.');}let d;try{d=await r.json();}catch{throw Error(`서버 응답을 읽지 못했습니다 (${r.status}). 입력은 화면에 유지되어 있습니다.`);}if(!r.ok)throw Error(d.error||d.detail||'처리하지 못했습니다.');return d;}
-function buttonState(){const stale=editorial?.events.filter(e=>e.sceneChanged)||[],ready=!!data?.reportReady&&!!editorial&&!stale.length;if(data?.reportReady&&stale.length)$('readyNote').textContent=`판독 ${stale.map(e=>e.number).join(', ')}의 기록·장면·기준 순간이 바뀌었습니다. 코멘트를 다시 확인하고 입력을 저장하세요.`;else if(data?.reportReady&&editorial)$('readyNote').textContent='장면별 쟁점과 심판 정보를 확인한 뒤 PDF를 생성하세요.';$('generate').disabled=busy||!ready||(videoBox&&!videoBox.canGenerate());$('generate').textContent=videoBox?.selected()?'PDF와 영상 제작':'PDF 생성';$('saveAll').disabled=busy||!dirty.size;$('compose').disabled=busy||!editorial?.events.some(e=>e.id===active&&e.ready);$('eventSelect').disabled=busy;$('exportPackage').disabled=busy||!data?.reportReady||!editorial;$('editor').inert=busy;}
+function buttonState(){const stale=editorial?.events.filter(e=>e.sceneChanged)||[],ready=!!data?.reportReady&&!!editorial&&!stale.length;if(data?.reportReady&&stale.length)$('readyNote').textContent=`판독 ${stale.map(e=>e.number).join(', ')}의 기록·장면·기준 순간이 바뀌었습니다. 코멘트를 다시 확인하고 입력을 저장하세요.`;else if(data?.reportReady&&editorial)$('readyNote').textContent='장면별 쟁점과 심판 정보를 확인한 뒤 PDF를 생성하세요.';$('generate').disabled=busy||!ready||(videoBox&&!videoBox.canGenerate());$('generate').textContent=videoBox?.selected()?'PDF와 영상 제작':'PDF 생성';$('saveAll').disabled=busy||!dirty.size;$('compose').disabled=busy||!editorial?.events.some(e=>e.id===active&&e.ready);$('eventSelect').disabled=busy;$('exportPackage').disabled=busy||['queued','running'].includes(packageJob?.state)||!data?.reportReady||!editorial;$('editor').inert=busy;}
 videoBox=mountReportVideoBox({caseId,api,onChange:buttonState,onPrepared:async()=>{await refreshFlow();acceptEditorial(await api(`/api/cases/${caseId}/report-editorial`));},onComplete:async job=>{if(job.report?.pdf){$('download').href=job.report.pdf;$('download').hidden=false;await loadVersions();}}});
 function capture(){if(!active||!drafts.has(active))return;const d=drafts.get(active);for(const k of keys)d.fields[k]=$(k).value;d.fields.callerNumber=$('callerNumber').value?Number($('callerNumber').value):null;d.reviewedCurrentScene=$('recheck').checked;for(const s of $('refereeCards').querySelectorAll('select'))d.fields.refereeAssignments[s.dataset.track]=s.value?Number(s.value):null;}
 function changed(key){capture();dirty.add(active);$('saveState').textContent='저장하지 않은 입력';$('download').hidden=true;$('packageDownload').hidden=true;$('packageNote').textContent='입력이 바뀌었어요. 최신 문안으로 ZIP을 다시 만들어 주세요.';if(key!=='assessment')$('draftNotice').textContent='답변을 수정했어요. 총평에 반영하거나 직접 다듬어 주세요.';count();buttonState();}
@@ -75,9 +75,36 @@ $('commentImportApply').onclick=()=>{
 };
 $('compose').onclick=async()=>{busy=true;buttonState();capture();try{const result=await api(`/api/cases/${caseId}/report-editorial/preview`,{version:editorial.version,revision:editorial.revision,events:[drafts.get(active)]});$('assessment').value=result.previews[active].assessment;changed('assessment');$('draftNotice').textContent='입력한 관찰·근거·시사점으로 구성했어요. 내용을 확인하고 저장하세요.';}catch(e){message(e.message);}finally{busy=false;buttonState();}};
 $('generate').onclick=async()=>{busy=true;buttonState();try{await persist();await refreshFlow();if(!data.reportReady)throw Error('변경된 장면의 검수를 먼저 완료하세요.');if(videoBox.selected()){await videoBox.start(data.revision);message('PDF와 판독 영상 제작을 시작했습니다. 영상은 장면별로 순서대로 제작됩니다.');return;}message('리포트를 생성하고 있습니다.');let job=(await api(`/api/cases/${caseId}/report-jobs`,{revision:data.revision})).job;while(['queued','running'].includes(job.state)){const p=job.progress;message(`${job.stage}${p?.total?` · ${p.completed}/${p.total}${p.unit||'개'}`:''}`);await new Promise(resolve=>setTimeout(resolve,1000));job=(await api(`/api/report-jobs/${job.jobId}`)).job;}if(job.state!=='complete')throw Error(job.error||'PDF 작업이 중단됐습니다. 저장된 이전 개정은 보존되어 있습니다.');const r=job.result;$('download').href=r.pdf;$('download').hidden=false;await loadVersions();const delivery=r.delivery?.state==='complete'?'아이탑 전달 폴더 저장됨':r.delivery?.state==='ready-for-download'?'PDF 다운로드 준비됨':r.delivery?.state==='failed'?`전달 폴더 저장 실패: ${r.delivery.message}`:'전달 폴더 저장 상태 확인 필요';message(`${r.pageCount}페이지 PDF 개정 보관 완료 · ${delivery}`);}catch(e){message(e.message);}finally{busy=false;buttonState();}};
-$('exportPackage').onclick=async()=>{busy=true;buttonState();$('packageDownload').hidden=true;try{await persist();await refreshFlow();if(!data.reportReady)throw Error('변경된 장면의 검수를 먼저 완료하세요.');$('packageNote').textContent='현재 입력을 저장하고 장면별 자료를 모으고 있습니다.';const r=await api(`/api/cases/${caseId}/review-package`,{revision:editorial.revision,version:editorial.version});$('packageDownload').href=r.download;$('packageDownload').download=`KBL-${caseId}-해설자료.zip`;$('packageDownload').hidden=false;$('packageNote').textContent=`${r.sceneCount}개 장면 · ${(r.bytes/1024/1024).toFixed(1)} MB · ${r.pdfIncluded?'현재 PDF 포함':'PDF는 생성 후 다시 묶으면 포함됩니다.'}`;message('해설 자료 ZIP을 만들었습니다. 내려받은 파일과 추가 설명을 AI에 전달하세요.');}catch(e){$('packageNote').textContent=e.message;message(e.message);}finally{busy=false;buttonState();}};
+function renderPackageJob(){
+ if(!packageJob)return;
+ $('packageDownload').hidden=true;
+ if(packageJob.state==='complete'&&packageJob.result){
+  if(dirty.size||packageJob.payload?.version!==editorial?.version||packageJob.payload?.revision!==editorial?.revision||editorial?.events.some(e=>e.sceneChanged)){
+   $('packageNote').textContent='입력이나 장면이 바뀌었습니다. 확인하고 저장한 뒤 해설 자료를 다시 만들어 주세요.';
+  }else{
+   const r=packageJob.result;$('packageDownload').href=r.download;$('packageDownload').download=`KBL-${caseId}-해설자료.zip`;$('packageDownload').hidden=false;
+   $('packageNote').textContent=`${r.sceneCount}개 장면 · ${(r.bytes/1024/1024).toFixed(1)} MB · ${r.pdfIncluded?'현재 PDF 포함':'PDF는 생성 후 다시 묶으면 포함됩니다.'}`;
+  }
+ }else $('packageNote').textContent=packageJob.error||packageJob.stage||'해설 자료 상태를 확인하고 있습니다.';
+ buttonState();
+}
+async function pollPackage(){
+ if(!packageJob)return;
+ const generation=packageGeneration,jobId=packageJob.jobId;
+ try{
+  const result=await api(`/api/cases/${caseId}/review-package-jobs/${jobId}`);if(generation!==packageGeneration)return;packageJob=result.job;renderPackageJob();
+  if(['queued','running'].includes(packageJob.state))packageTimer=setTimeout(pollPackage,3000);
+  else if(packageJob.state==='complete'&&!$('packageDownload').hidden)message('해설 자료 ZIP을 만들었습니다. 내려받은 파일과 추가 설명을 AI에 전달하세요.');
+ }catch(e){if(generation!==packageGeneration)return;$('packageNote').textContent='작업 상태 연결을 확인하고 있습니다. '+e.message;packageTimer=setTimeout(pollPackage,10000);}
+}
+async function restorePackage(){
+ const generation=++packageGeneration;
+ try{const result=await api(`/api/cases/${caseId}/review-package-jobs`);if(generation===packageGeneration&&result.job){packageJob=result.job;renderPackageJob();if(['queued','running'].includes(packageJob.state))pollPackage();}}
+ catch(e){if(generation===packageGeneration)$('packageNote').textContent='해설 자료 상태를 확인하지 못했습니다. '+e.message;}
+}
+$('exportPackage').onclick=async()=>{packageGeneration++;clearTimeout(packageTimer);busy=true;buttonState();$('packageDownload').hidden=true;try{await persist();await refreshFlow();if(!data.reportReady)throw Error('변경된 장면의 검수를 먼저 완료하세요.');$('packageNote').textContent='현재 입력을 저장하고 작업을 등록하고 있습니다.';packageJob=(await api(`/api/cases/${caseId}/review-package-jobs`,{revision:editorial.revision,version:editorial.version})).job;renderPackageJob();if(['queued','running'].includes(packageJob.state))pollPackage();}catch(e){$('packageNote').textContent=e.message;message(e.message);}finally{busy=false;buttonState();}};
 window.addEventListener('beforeunload',e=>{if(dirty.size){e.preventDefault();e.returnValue='';}});
-async function init(){await refreshFlow();acceptEditorial(await api(`/api/cases/${caseId}/report-editorial`));await loadVersions();videoBox.restore();}init().catch(e=>message(e.message));
+async function init(){await refreshFlow();acceptEditorial(await api(`/api/cases/${caseId}/report-editorial`));await loadVersions();videoBox.restore();restorePackage();}init().catch(e=>message(e.message));
 
 async function loadVersions(){
  const saved=await api(`/api/cases/${caseId}/reports`);

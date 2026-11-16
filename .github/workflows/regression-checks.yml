@@ -184,7 +184,7 @@ jobs:
         env:
           PYTHONPATH: scripts/kbl_grayzone
         run: |
-          python -m unittest test_case_intake test_report_assets test_worker_release_manifest test_pose_mesh_builder test_pose_variant_async test_auto_pose_continuity test_review_flow_stale_scene test_gpu_bridge test_gpu_eic_transport test_cloud_preflight test_video_depth test_video_jobs test_delivery_archive test_private_worker_smoke -v
+          python -m unittest test_case_intake test_report_assets test_worker_release_manifest test_pose_mesh_builder test_pose_variant_async test_auto_pose_continuity test_review_flow_stale_scene test_gpu_bridge test_gpu_eic_transport test_cloud_preflight test_video_depth test_video_jobs test_delivery_archive test_review_package_jobs test_private_worker_smoke -v
 
   courtside-worker-image:
     runs-on: ubuntu-latest
@@ -199,7 +199,7 @@ jobs:
         run: |
           docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,nosuid,nodev,size=3g,mode=1777 \
             -e TMPDIR=/tmp -e PYTHONPATH=/workspace/scripts/kbl_grayzone -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
-            --entrypoint python courtside-worker-ci -m unittest test_case_intake test_case_report_pose test_comment_template test_report_assets test_worker_release_manifest test_pose_mesh_builder test_pose_variant_async test_auto_pose_continuity test_review_flow_stale_scene test_gpu_bridge test_cloud_preflight test_video_depth test_video_jobs test_delivery_archive test_private_worker_smoke -q
+            --entrypoint python courtside-worker-ci -m unittest test_case_intake test_case_report_pose test_comment_template test_report_assets test_worker_release_manifest test_pose_mesh_builder test_pose_variant_async test_auto_pose_continuity test_review_flow_stale_scene test_gpu_bridge test_cloud_preflight test_video_depth test_video_jobs test_delivery_archive test_review_package_jobs test_private_worker_smoke -q
       - name: Versioned 11-page PDF in isolated container
         run: |
           docker run --rm --network none -e COURTSIDE_ISOLATED_QA=1 -e COURTSIDE_QA_TOKEN=ci-only-not-secret \

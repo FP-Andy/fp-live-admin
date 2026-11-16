@@ -183,6 +183,8 @@
 !scripts/kbl_grayzone/report_video_batch.py
 !scripts/kbl_grayzone/review_flow.py
 !scripts/kbl_grayzone/review_intake.py
+!scripts/kbl_grayzone/review_package_jobs.py
+!scripts/kbl_grayzone/test_review_package_jobs.py
 !scripts/kbl_grayzone/review_videos.py
 !scripts/kbl_grayzone/scene_evidence.py
 !scripts/kbl_grayzone/sequence_import.py
