@@ -136,8 +136,10 @@ from .fineplay_fpa import (
     pick_primary as fineplay_pick_primary,
     rematch_action_players as fineplay_rematch_action_players,
     scene_action_rows as fineplay_scene_action_rows,
+    scrimmage_opponent_lineup as fineplay_scrimmage_opponent_lineup,
 )
 from .fineplay_models import parse_manifest as fineplay_parse_manifest
+from . import fineplay_final_score
 from .fineplay_plan import (
     plan_from_manifest as fineplay_plan_from_manifest,
     prepare_payload as fineplay_prepare_payload,
@@ -13252,6 +13254,109 @@ def resend_fineplay_callback(
     return {"callback_status": "sent"}
 
 
+def _final_score_view(metadata: dict) -> dict:
+    """화면용 — 확정값([홈, 원정]·시각·확정자), 기본값(마지막 클립 점수판), 우리 사이드, 보낸 곳."""
+    value = fineplay_final_score.stored(metadata)
+    hint = fineplay_final_score.suggested(metadata)
+    links = metadata.get("links") or {}
+    sent_sides = [side for side in ("home", "away")
+                  if str((links.get(side) or {}).get("callback_status") or "") == "sent"]
+    return {
+        "home": value["home"] if value else None,
+        "away": value["away"] if value else None,
+        "confirmedAt": value.get("confirmed_at") if value else None,
+        "confirmedBy": value.get("confirmed_by") if value else None,
+        "suggested": {"home": hint[0], "away": hint[1]} if hint else None,
+        "ourSide": None if metadata.get("standalone") else fineplay_final_score.our_side(metadata),
+        "sent": metadata.get("callback_status") == "sent" or bool(sent_sides),
+        "sentSides": sent_sides,
+        "competitionSent": str(metadata.get("competition_callback_status") or "").startswith("sent"),
+    }
+
+
+@app.get("/api/highlight/fineplay-jobs/{job_id}/final-score")
+def get_fineplay_final_score(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """분석관 최종 점수 칸 — 확정 전이면 home/away 가 null 이고 suggested 로 기본값을 채운다."""
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    return _final_score_view(dict(job.job_metadata or {}))
+
+
+@app.put("/api/highlight/fineplay-jobs/{job_id}/final-score")
+def confirm_fineplay_final_score(
+    job_id: str,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """최종 점수 확정·고치기 (FinePlay C-21 ②) — body {home, away}. 홈:원정, 자체전은 A:B.
+
+    확정 시각·확정한 사람을 잡 메타에 남기고 감사기록을 쓴다. 이미 FinePlay 에 결과를 보낸 잡이면
+    저장해 둔 결과에 점수만 바꿔 **다시 보낸다**(analysis-results 는 멱등 — 같은 값이면 FinePlay 에서 아무것도
+    안 바뀐다). 대회 인입은 큐 전송이라 자동으로 다시 보내지 않고 응답에 알려 준다(대회 전송을 다시 누르면 실린다).
+    같은 값을 다시 확정하면 아무것도 보내지 않는다.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = dict(job.job_metadata or {})
+    actor = {"id": getattr(user, "id", None), "name": getattr(user, "name", None)}
+    try:
+        value, changed = fineplay_final_score.confirm(metadata, body.get("home"), body.get("away"), actor=actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not changed:
+        return {**_final_score_view(metadata), "changed": False, "resent": {}}
+
+    metadata[fineplay_final_score.FINAL_SCORE_KEY] = value
+    _audit(db, "FINEPLAY_FINAL_SCORE_CONFIRMED", "highlight", actor=user, target_id=job_id,
+           details={"analysis_request_id": metadata.get("analysis_request_id"),
+                    "home": value["home"], "away": value["away"],
+                    "previous": value.get("previous")})
+
+    # 이미 보낸 결과만 다시 보낸다 — 안 보낸 잡은 다음 전송 때 prepare_payload 가 싣는다.
+    resent: dict[str, str] = {}
+    client = fineplay_default_client()
+    targets: list[tuple[str | None, dict, dict]] = []
+    if metadata.get("standalone"):
+        links = dict(metadata.get("links") or {})
+        for side in ("home", "away"):
+            link = dict(links.get(side) or {})
+            if link.get("callback_status") == "sent" and link.get("result_payload"):
+                targets.append((side, link, link["result_payload"]))
+    elif metadata.get("callback_status") == "sent" and metadata.get("result_payload"):
+        targets.append((None, metadata, metadata["result_payload"]))
+    if targets and not client.configured:
+        resent = {side or "request": "skipped (FINEPLAY_API_TOKEN 미설정)" for side, _, _ in targets}
+        targets = []
+    for side, holder, stored_payload in targets:
+        payload = fineplay_prepare_payload(dict(stored_payload), metadata, side=side)
+        try:
+            client.post_results(payload)
+            status = "sent"
+        except Exception as exc:  # noqa: BLE001 - 점수 저장은 유지하고 실패만 알린다
+            # 확정값은 이미 남았다. callback_status 를 실패로 바꿔 '다시 보내기' 로 이어지게 한다.
+            status = f"failed: {exc}"
+        holder["result_payload"] = payload
+        holder["callback_status"] = status
+        if side:
+            links = dict(metadata.get("links") or {})
+            links[side] = holder
+            metadata["links"] = links
+        resent[side or "request"] = status
+    update_job(db, job_id, job_metadata=metadata)
+    db.commit()
+    view = _final_score_view(metadata)
+    if view["competitionSent"]:
+        resent["competition"] = "대회 전송을 다시 눌러야 반영됩니다"
+    return {**view, "changed": True, "resent": resent}
+
+
 @app.get("/api/highlight/fineplay-jobs/{job_id}/outputs")
 def fineplay_outputs(
     job_id: str,
@@ -13554,6 +13659,15 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
             # 화면이 슬롯 id 집합에서 라인 구성을 역산한다(변형 접미사만 못 살린다).
             "formation": str(manifest.get("formation") or "").strip(),
             "players": manifest_players,
+        }
+    # 라커룸 자체전 — 반대편 명단은 매니페스트 B팀 라인업(신청 연결이 따로 있으면 그쪽이 덮는다)
+    scrimmage_b = _players(fineplay_scrimmage_opponent_lineup(manifest))
+    if scrimmage_b:
+        opposite = "away" if our_side == "home" else "home"
+        sides[opposite] = {
+            "team_name": str((manifest.get("opponent") or {}).get("name") or ""),
+            "formation": str(manifest.get("opponentFormation") or "").strip(),
+            "players": scrimmage_b,
         }
     for side, link in (metadata.get("links") or {}).items():
         if side not in ("home", "away") or not isinstance(link, dict):
@@ -14133,7 +14247,11 @@ def clip_result_put_actions(
     if body.get("rows"):
         rows = list(body["rows"])
         scene = FineplayFpaScene(index=0, rows=rows, primary_row=fineplay_pick_primary(rows))
-        actions = fineplay_scene_action_rows(scene, our_side=our_side, lineup=lineup)
+        actions = fineplay_scene_action_rows(
+            scene, our_side=our_side, lineup=lineup,
+            # 라커룸 자체전 — 반대편(B팀)도 매칭한다. 일반 경기는 None 이라 그대로
+            opponent_lineup=fineplay_scrimmage_opponent_lineup(((job.job_metadata if job else None) or {}).get("manifest")),
+        )
         # 콘솔에서 맞춘 구간은 다시 찍어 저장해도 유지한다(_carry_over_offsets).
         carried = _carry_over_offsets(db, clip_id, actions)
     else:
@@ -14372,6 +14490,7 @@ def _build_clip_result_payload(
     include_analysis: bool = True,
     render_scene_motion_mp4: bool = False,
     on_clip: Callable[[str], None] | None = None,
+    opponent_lineup: list[dict] | None = None,
 ) -> dict:
     """DB의 clip·action 으로 FinePlay 결과 페이로드를 조립한다.
 
@@ -14382,6 +14501,8 @@ def _build_clip_result_payload(
     include_analysis=False (하이라이트만 신청) 면 액션·채점·씬모션을 조립하지
     않는다 — DB 에 태깅 데이터가 남아 있어도 전송에는 싣지 않는다(나중에 유료로
     전환되면 True 로 재전송하면 그대로 나간다).
+
+    opponent_lineup(라커룸 자체전 B팀)을 주면 반대편 행도 그 라인업으로 매칭한다.
     """
     metadata = dict(job.job_metadata or {})
     fpa_match_id = (metadata.get("fpa_link") or {}).get("match_id")
@@ -14426,7 +14547,8 @@ def _build_clip_result_payload(
         for a in actions:
             a.pop("id", None)
         if lineup is not None:
-            actions = fineplay_rematch_action_players(actions, our_side=our_side, lineup=lineup)
+            actions = fineplay_rematch_action_players(
+                actions, our_side=our_side, lineup=lineup, opponent_lineup=opponent_lineup)
         # FPA 장면 좌표(sceneData)를 항상 붙인다 — 앱이 네이티브로 재렌더한다.
         # sceneMotionKey(mp4)는 render_scene_motion_mp4=True 일 때만 렌더·업로드해 단다.
         motion_prefix = (
@@ -14452,6 +14574,7 @@ def _build_clip_result_payload(
             team_labels=labels,
             fpa_match_id=fpa_match_id,
             lineup=lineup,
+            opponent_lineup=opponent_lineup,
         )
         video: dict = {}
         if c.horizontal_s3_key:
@@ -14596,6 +14719,7 @@ def clip_result_resend(
         team_id=team_id,
         include_analysis=fineplay_xfp_enabled(metadata),
         render_scene_motion_mp4=bool(metadata.get("include_scene_motion_mp4")),
+        opponent_lineup=fineplay_scrimmage_opponent_lineup(manifest),
     )
     payload = fineplay_prepare_payload(payload, metadata)
     metadata["result_payload"] = payload
@@ -14915,6 +15039,9 @@ def _run_competition_send(
         if not payload["clips"]:
             finish("failed: 보낼 클립이 없습니다 (클립 팀 사이드 태깅 확인)")
             return
+        # 분석관 확정 최종 점수 — 대회는 teams[].side 기준 home:away(확정 전이면 키 없음, C-21 ②)
+        score_job = db.get(HighlightJob, job_id)
+        payload = fineplay_final_score.attach_competition(payload, dict((score_job.job_metadata if score_job else None) or {}))
 
         client = fineplay_default_client()
         if not client.configured:

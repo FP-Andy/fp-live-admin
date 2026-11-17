@@ -140,7 +140,13 @@ def strip_analysis(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepare_payload(payload: dict[str, Any], metadata: Any, *, side: str | None = None) -> dict[str, Any]:
-    """전송 직전 관문 — basic 이면 분석 산출물을 떼고 넘긴다."""
+    """전송 직전 관문 — basic 이면 분석 산출물을 떼고 넘긴다.
+
+    분석관이 확정한 최종 점수(finalScore)도 여기서 싣는다 — 전송 경로가 produce·재전송·클립 결과
+    (사이드별)로 셋이라 한 곳에서 붙여야 빠지는 경로가 없다. 점수는 분석 산출물이 아니라 basic 에도 싣는다.
+    """
+    from .fineplay_final_score import attach as attach_final_score
+
     if not xfp_enabled(metadata, side=side):
-        return strip_analysis(payload)
-    return payload
+        payload = strip_analysis(payload)
+    return attach_final_score(payload, metadata, side=side)

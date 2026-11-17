@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .fineplay_client import default_client
-from .fineplay_fpa import clip_team_fallback_view, enrich_result_payload
+from .fineplay_fpa import clip_team_fallback_view, enrich_result_payload, scrimmage_opponent_lineup
 from .fineplay_plan import prepare_payload, resolve_plan, xfp_enabled
 from .fineplay_models import ClipSpec, parse_manifest
 from .fineplay_worker import process_job
@@ -2649,6 +2649,8 @@ def run_fineplay_produce(job_id: str) -> None:
                     lineup=lineup,
                     clip_teams=clip_teams,
                     video_order=video_order,
+                    # 라커룸 자체전이면 반대편(B팀)도 같은 팀 선수로 매칭한다 — 일반 경기는 None
+                    opponent_lineup=scrimmage_opponent_lineup(manifest.raw),
                 )
                 metadata["fpa_enrich_status"] = (
                     f"ok ({'; '.join(warnings)})" if warnings else "ok"

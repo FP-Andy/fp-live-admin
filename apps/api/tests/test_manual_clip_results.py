@@ -62,7 +62,7 @@ def route_app(storage):
                  fineplay_resolve_plan=resolve_plan, FineplayFpaScene=fpa.FpaScene,
                  delete_job_files=Mock())
     for name in ['action_label', 'canonical_action_name', 'base_action_name', 'pick_primary',
-                 'annotate_action_codes', 'equal_split_offsets', 'scene_action_rows']:
+                 'annotate_action_codes', 'equal_split_offsets', 'scene_action_rows', 'scrimmage_opponent_lineup']:
         scope['fineplay_' + name] = getattr(fpa, name)
     names = {'_require_manual_job', '_fineplay_work_done', 'upload_manual_clip', 'register_manual_clip_results', '_serialize_clip_action',
              '_clip_job_context', '_fineplay_lineup_sides', '_carry_over_offsets',
