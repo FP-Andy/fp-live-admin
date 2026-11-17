@@ -80,7 +80,7 @@ class AutoPoseContinuityTests(unittest.TestCase):
    token='new-spatial';objects='objects-token';step={'available':True,'ready':True,'token':token}
    status={'events':[{'id':event,'stages':{'objects':{'token':objects},'spatial':step}}]}
    stored={'events':{event:{'spatial':{'token':auto.review_flow.digest([objects,'pose',old])}}}}
-   data={'events':{event:{'scene':{'captureId':old},'review':{'takeaway':'R2가 보았다.'}}}}
+   data={'events':{event:{'scene':{'captureId':old},'review':{'takeaway':'R2가 보았다.','viewComment':'R1은 열려 있고 R2는 가립니다.','assessment':'파울이 유지됐습니다. R2의 시야를 확인합니다.'}}}}
    case_data={'events':[{'id':event}]}
    def partial_refresh(case_data,event_data,scene,candidate):
     candidate['review']['takeaway']='부분 수정된 임시 문장'
