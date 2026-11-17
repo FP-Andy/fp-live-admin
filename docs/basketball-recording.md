@@ -29,3 +29,7 @@ Starting a recording idempotently starts the existing media EC2 through its cont
 `PYTHONPATH=apps/api python -m unittest discover -s apps/api/tests -p test_recording.py -v`
 
 FFmpeg integration tests exercise actual segmented MP4, JPEG extraction, full MP4 muxing, upload failure preservation/retry, duplicate-start safety, restart recovery, concurrency limit and HTTP authorization/cross-match checks. Use a separate synthetic stream and remove only its test objects after live acceptance QA.
+
+## 광각 조각의 시간
+
+새 녹화는 조각별 첫 데이터가 수신 서버의 파일에 나타난 시각을 별도로 기록한다. 코트사이드 프레임 선택의 광각 조각 목록과 화면 아래에 한국 시간으로 표시한다. 서버가 짧은 간격으로 관찰한 수신 시각이므로 송출 경로 지연과 관찰 간격이 포함되며 카메라 내부 시각을 확정하지 않는다. 중계와 같은 순간은 기존처럼 화면의 동작을 비교해 직접 확정한다. 기존 녹화에는 해당 기록이 없어 미기록으로 표시하며 세션 생성·업로드 시각으로 대체하지 않는다.

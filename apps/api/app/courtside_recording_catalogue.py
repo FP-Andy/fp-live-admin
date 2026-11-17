@@ -4,6 +4,7 @@ import math
 import os
 import stat
 from uuid import UUID
+from datetime import datetime, timezone
 
 from .courtside_recording_source import recording_key
 
@@ -40,7 +41,15 @@ def parts_for_match(root,match_id):
                         except ValueError:continue
                         duration=item.get('duration')
                         if isinstance(duration,bool) or not isinstance(duration,(int,float)) or not math.isfinite(duration) or not 0<duration<=300:duration=None
-                        parts.append({'number':index+1,'duration':duration,'sourcePartName':name})
+                        received_at=item.get('first_frame_received_at')
+                        try:
+                            if not isinstance(received_at,str) or len(received_at)>64:raise ValueError()
+                            parsed=datetime.fromisoformat(received_at.replace('Z','+00:00'))
+                            if parsed.tzinfo is None:raise ValueError()
+                            received_at=parsed.astimezone(timezone.utc).isoformat()
+                        except (ValueError,OverflowError):received_at=None
+                        parts.append({'number':index+1,'duration':duration,'sourcePartName':name,
+                                      'first_frame_received_at':received_at})
                     created=state.get('created_at');created=created[:64] if isinstance(created,str) else None
                     status=state.get('status');status=status[:32] if isinstance(status,str) else None
                     rows.append({'id':sid,'created_at':created,'status':status,'parts':parts})

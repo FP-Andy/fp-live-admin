@@ -58,7 +58,7 @@ const server=http.createServer((req,res)=>{
  if(url.pathname===`/api/courtside/matches/${match}/recording-parts`){
   listings++;
   if(failList){res.writeHead(503,{'Content-Type':'application/json'});return res.end(JSON.stringify({detail:'녹화 목록을 확인하세요.'}));}
-  res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({recordings:[{id:session,created_at:'2026-11-13T09:25:46Z',parts:[{number:1,sourcePartName:file,duration:1},{number:2,sourcePartName:'take-00001-part-000001.mp4',duration:1}]}]}));
+  res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({recordings:[{id:session,created_at:'2026-11-13T09:25:46Z',parts:[{number:1,sourcePartName:file,duration:1,first_frame_received_at:'2026-11-13T09:25:46Z'},{number:2,sourcePartName:'take-00001-part-000001.mp4',duration:1}]}]}));
  }
  if([0,1].some(i=>url.pathname===`/api/recordings/matches/${match}/${session}/files/${i}`)){
   const data=fs.readFileSync(movie),range=req.headers.range;
@@ -104,6 +104,8 @@ const server=http.createServer((req,res)=>{
  directTest=true;prepared=0;
  await page.goto(`http://127.0.0.1:${server.address().port}${bridge}/frame-fixture.html`);
  await page.waitForFunction(()=>{const v=document.querySelector('[data-role="video"]');return v&&v.readyState>=2&&v.videoWidth===320;});
+ assert.match(await page.locator('[data-role="firstFrameTime"]').textContent(),/11\/13 18:25:46.*한국 시간/);
+ assert.match(await page.locator('[data-role="source"] option').nth(1).textContent(),/11\/13 18:25:46/);
  assert.equal(activeCopies,1,'preview must load before background preparation finishes');
  assert.equal(await page.locator('[data-role="scrubber"]').isDisabled(),true);
  await page.waitForFunction(()=>!document.querySelector('[data-role="scrubber"]').disabled && !document.querySelector('[data-role="video"]').seeking && document.querySelector('[data-role="video"]').readyState>=2);
@@ -114,6 +116,7 @@ const server=http.createServer((req,res)=>{
  // separate import action; frame controls wait for exact metadata.
  await page.locator('[data-role="source"]').selectOption(`remote-${session}-2`);
  await page.waitForFunction(()=>{const v=document.querySelector('[data-role="video"]');return v&&v.readyState>=2&&v.videoWidth===320;});
+ assert.match(await page.locator('[data-role="firstFrameTime"]').textContent(),/미기록/);
  assert.equal(activeCopies,1);
  await page.waitForFunction(()=>!document.querySelector('[data-role="scrubber"]').disabled && !document.querySelector('[data-role="video"]').seeking && document.querySelector('[data-role="video"]').readyState>=2);
  await page.locator('[data-role="confirmed"]').check();saved=await page.evaluate(()=>window.pair.value());
