@@ -42,6 +42,68 @@ def stop_process(proc):
             proc.wait(timeout=5)
 
 
+def observe_segment_starts(folder, seen, observed_at=None):
+    """Record when nonempty segment files first appear on the receiver.
+
+    This is receiver time, not a camera-provided capture timestamp. Persist the
+    observation before upload so a process restart can retain the evidence.
+    """
+    folder = Path(folder)
+    changed = False
+    pending = dict(seen)
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                if not entry.name.startswith('part-') or not entry.name.endswith('.mp4') or entry.name in pending:
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False) or entry.stat(follow_symlinks=False).st_size <= 0:
+                        continue
+                except OSError:
+                    continue
+                pending[entry.name] = observed_at or now()
+                changed = True
+        if changed:
+            temp = folder / 'segment-received-times.tmp'
+            with temp.open('w') as f:
+                json.dump(pending, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            temp.replace(folder / 'segment-received-times.json')
+            seen.update(pending)
+    except OSError:
+        # Keep the original observation in memory for a later successful
+        # write; never stop or delay recording on a timestamp failure.
+        seen.update(pending)
+        return False
+    return changed
+
+
+def received_segment_time(path):
+    """Read only timestamps captured for this file, never infer from upload."""
+    try:
+        data = json.loads((path.parent / 'segment-received-times.json').read_text())
+        value = data.get(path.name)
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        return None
+
+
+def watch_segment_starts(folder, proc, stop):
+    seen = {}
+    try:
+        existing = json.loads((Path(folder) / 'segment-received-times.json').read_text())
+        if isinstance(existing, dict): seen.update(existing)
+    except (OSError, ValueError):
+        pass
+    while not stop.is_set() and proc.poll() is None:
+        observe_segment_starts(folder, seen)
+        stop.wait(.25)
+
+
 class ArchiveStore:
     def __init__(self):
         import boto3
@@ -247,7 +309,8 @@ class Recorder:
                 pass
             with self.lock:
                 current = self.load(sid)
-                current['parts'].append(dict(name=name, key=key, bytes=size, duration=duration, saved_at=now()))
+                current['parts'].append(dict(name=name, key=key, bytes=size, duration=duration, saved_at=now(),
+                                             first_frame_received_at=received_segment_time(path)))
                 current['error'] = None
                 current['updated_at'] = now()
                 self.write(current)
@@ -284,6 +347,9 @@ class Recorder:
                 proc = subprocess.Popen(capture_command(self.pull_base + '/' + state['stream_key'], folder, self.segment_seconds),
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 self.processes[sid] = proc
+                segment_stop = threading.Event()
+                segment_watcher = threading.Thread(target=watch_segment_starts, args=(folder, proc, segment_stop), daemon=True)
+                segment_watcher.start()
                 progress = {'frame': 0, 'last': time.monotonic(), 'reset': False}
                 def read_progress(pipe):
                     for line in iter(pipe.readline, b''):
@@ -313,6 +379,8 @@ class Recorder:
                     if progress['reset'] or time.monotonic() - progress['last'] > (4 if received else 45):
                         break
                 stop_process(proc)
+                segment_stop.set()
+                segment_watcher.join(timeout=2)
                 for reader in readers:
                     reader.join(timeout=2)
                 proc.stdout.close()

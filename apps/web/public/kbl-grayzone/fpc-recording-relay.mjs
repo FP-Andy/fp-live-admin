@@ -4,6 +4,14 @@ export function recordingPreviewUrl(origin,mid,sid,part){
  if(!uuid.test(mid)||!uuid.test(sid)||!Number.isSafeInteger(part)||part<1)return null;
  return new URL(`api/recordings/matches/${encodeURIComponent(mid)}/${encodeURIComponent(sid)}/files/${part-1}`,origin+'/').href;
 }
+// Recorder timestamps describe when the receiver first observed the segment.
+// They are not the camera clock; never infer them from session creation/upload.
+export function formatFirstFrameReceived(value){
+ if(typeof value!=='string'||!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value))return null;
+ const date=new Date(value);if(!Number.isFinite(date.getTime()))return null;
+ const pieces=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(date).map(p=>[p.type,p.value]));
+ return `${pieces.month}/${pieces.day} ${pieces.hour}:${pieces.minute}:${pieces.second}`;
+}
 const fpcReviewPath=/^\/api\/courtside\/matches\/([0-9a-f-]+)\/(?:intakes|cases)\/[^/]+\/bridge\//i;
 export const isFpcReviewPath=path=>fpcReviewPath.test(path);
 // Remote recordings can be played immediately. Preparing a chosen segment
@@ -25,9 +33,9 @@ export function fpcFrameSources(intakeId){
      if(number!==expected)elapsed=null;expected=number+1;const start=elapsed;
      if(elapsed!==null)elapsed=Number.isFinite(duration)&&duration>0?elapsed+duration:null;
      const preview=recordingPreviewUrl(origin,mid,sid,number);if(!preview)continue;
-     const stamp=record.created_at?new Date(record.created_at).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'FPC 녹화';
+     const received=part.first_frame_received_at,stamp=formatFirstFrameReceived(received);
      const time=start===null?'시간 확인 필요':`${Math.floor(start/60)}:${String(Math.floor(start%60)).padStart(2,'0')}부터`;
-     result.push({id:`remote-${sid}-${number}`,label:`${stamp} · ${time} · 구간 ${number}`,remote:true,
+     result.push({id:`remote-${sid}-${number}`,label:`${stamp?'첫 프레임 수신 '+stamp:'첫 프레임 시각 미기록'} · ${time} · 구간 ${number}`,firstFrameReceivedAt:stamp?received:null,remote:true,
       matchId:mid,sessionId:sid,partName:name,part:number-1,startSeconds:start,duration,previewUrl:preview});
     }
    }
