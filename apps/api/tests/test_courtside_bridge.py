@@ -33,7 +33,7 @@ class BridgeTests(unittest.TestCase):
   write('outputs/kbl-report-jobs/'+'b'*24+'/status.json',{'caseId':self.case})
   write('outputs/kbl-pose-frames/'+'c'*24+'/status.json',{'clipId':self.case+'-review-1-broadcast'})
   self.env=patch.dict(os.environ,{'COURTSIDE_DATA_ROOT':str(self.root),'COURTSIDE_WORKBENCH_URL':'http://127.0.0.1:4350'});self.env.start()
-  self.match=SimpleNamespace(sport='BASKETBALL',archived=False,operator_id='owner',name='Home vs Away',metadata_json={'home_team':'Home','away_team':'Away'});db=SimpleNamespace(get=lambda cls,key:self.match if key==self.mid else None)
+  self.match=SimpleNamespace(id=self.mid,sport='BASKETBALL',archived=False,operator_id='owner',name='Home vs Away',metadata_json={'home_team':'Home','away_team':'Away'});db=SimpleNamespace(get=lambda cls,key:self.match if key==self.mid else None)
   self.app=FastAPI();self.app.include_router(bridge.router);self.app.dependency_overrides[get_db]=lambda:db
   self.client=TestClient(self.app);self.base=f'/api/courtside/matches/{self.mid}/cases/{self.case}/bridge/'
   class MediaStream(httpx.AsyncByteStream):
@@ -54,6 +54,14 @@ class BridgeTests(unittest.TestCase):
  def test_no_session_and_wrong_match_are_denied(self):
   self.assertEqual(self.client.get(self.base+'workflow.html').status_code,401);self.user()
   self.assertEqual(self.client.get(self.base.replace(self.case,'other')+'workflow.html').status_code,404)
+ def test_presence_uses_authenticated_session_after_successful_scoped_write(self):
+  self.user('owner');payload={'sessionId':'a'*32,'records':[{'stage':'spatial','eventId':'review-1','attention':'active','endedAtMs':1}]}
+  with patch.object(bridge,'record_presence') as presence:
+   response=self.client.post(self.base+'api/cases/'+self.case+'/work-sessions',json=payload,headers={'origin':'http://testserver'})
+   self.assertEqual(response.status_code,200)
+   args=presence.call_args.args;self.assertEqual(args[1],self.mid);self.assertEqual(args[2].id,'owner');self.assertEqual(args[3],payload)
+   self.user('other');self.assertEqual(self.client.post(self.base+'api/cases/'+self.case+'/work-sessions',json=payload,headers={'origin':'http://testserver'}).status_code,403)
+   presence.assert_called_once()
  def test_recording_catalogue_requires_edit_access_and_hides_secrets(self):
   self.match.archived=True
   path=f'/api/courtside/matches/{self.mid}/recording-parts';sid=str(uuid.uuid4());name='take-00001-part-000001.mp4'

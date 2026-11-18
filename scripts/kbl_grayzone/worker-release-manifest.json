@@ -109,6 +109,7 @@
     "work_session"
   ],
   "assets": [
+    "tracking-cache-compat.json",
     "render_report_maps.mjs",
     "render_auto_pose.mjs",
     "report_coverage.mjs",

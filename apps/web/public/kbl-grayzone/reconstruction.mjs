@@ -7,7 +7,7 @@ import {createSceneDraft} from './scene-draft.mjs';
 import {mountReviewVideos} from './review-videos.mjs';
 import {createPoseVariant} from './pose-variant-jobs.mjs';
 import {analyzeCrew,crewObservers} from './crew-analysis.mjs';
-import {reconcileScene,currentPoseVariant} from './scene-handoff.mjs';
+import {reconcileScene,currentPoseVariant,inheritedViewDefaults} from './scene-handoff.mjs';
 import {loadCourtAsset} from './court-asset.mjs';
 import {drawSceneMap,drawCrewMap,mapPoint,mapCourt,directionHandle} from './scene-map.mjs';
 import {EditHistory} from './edit-history.mjs';
@@ -29,7 +29,7 @@ window.addEventListener('message',async e=>{
 const roleNames={player:'선수',referee:'심판',staff:'운영',unknown:'미확정'},colors={player:'#2797ba',referee:'#ed873f',staff:'#7c5e9b',unknown:'#969ba4'};
 let poseResult=null,basePoseResult=null,poseVariantId=null,lastModel=null,mapDrag=null,aimMode=false,pointMode=false,moveMode=false,partialPick=null,groundProposal=null;const mapHistory=new EditHistory();
 let placementId='',dragPaint=null,dragPointer=null;
-let data,event,packet,frame,state,overview,eye,meshSha256,busy=false,token=0,dirtyScene=false,wideReferencePanel=null,currentCapture=null;
+let data,event,packet,frame,state,overview,eye,meshSha256,busy=false,token=0,dirtyScene=false,wideReferencePanel=null,currentCapture=null,captureVersion=null;
 let sceneDraft=null,draftTimer=null,draftTracking=false,draftPending=false,draftBaseline='';
 mountReviewVideos({caseId,getEvent:()=>event?.id,hasUnsaved:()=>dirtyScene||draftPending||!!wideReferencePanel?.dirty,isBusy:()=>busy,ensureSharedPose:()=>applySharedPose(true)});
 const draftNotice=document.createElement('section');draftNotice.hidden=true;draftNotice.setAttribute('role','status');draftNotice.className='crew-section';
@@ -116,6 +116,7 @@ function render(){
  const uncertain=m.bodies.filter(e=>['uncertain','unresolved'].includes(e.bodyDirection.status)).length;$('bodySummary').textContent=`몸 방향 ${m.bodies.length-uncertain}명 추정·설정 / ${uncertain}명 확인 필요 · 실선 화살표: 추정·수동 / 점선: 임시 방향`;$('download').hidden=true;scheduleDraft();
 }
 async function open(id){
+ const previousView=event?.id&&event.id!==id?inheritedViewDefaults(state):inheritedViewDefaults(null);
  draftTracking=false;clearTimeout(draftTimer);sceneDraft=null;draftNotice.hidden=true;clearDragPaint();mapHistory.clear();mapDrag=null;aimMode=false;pointMode=false;moveMode=false;partialPick=null;groundProposal=null;placementId='';$('acceptProposal').hidden=true;$('proposalStatus').textContent='';const current=++token,nextEvent=data.events.find(e=>e.id===id)||data.events[0];
  event=nextEvent;await flow.refresh();if(!flow.available)return;
  const nextPacket=await json(`/api/cases/${caseId}/events/${nextEvent.id}/broadcast-tracking`);if(current!==token)return;
@@ -123,7 +124,8 @@ async function open(id){
  const nextFrame=nextPacket.frames.find(f=>f.frameIndex===index);
  mountManualCourt($('manualCourt'),{caseId,event:nextEvent,packet:nextPacket,frame:nextFrame,index,required:!nextFrame?.floorPositions?.length});
  if(!nextFrame?.floorPositions?.length)throw Error('코트 기준점을 직접 확인해 보정하세요. 기존 객체·관절 검수는 보존됩니다.');
- const saved=(await json(`/api/cases/${caseId}/events/${nextEvent.id}/reconstruction`)).saved;if(current!==token)return;
+ const snapshot=await json(`/api/cases/${caseId}/events/${nextEvent.id}/reconstruction`),saved=snapshot.saved;if(current!==token)return;
+ captureVersion=snapshot.captureVersion??saved?.captureId??null;
  currentCapture=saved;
  const pose=(await json(`/api/cases/${caseId}/events/${nextEvent.id}/pose`)).pose;if(current!==token)return;
  poseResult=pose?.job.state==='complete'?pose.job.result:null;
@@ -146,7 +148,7 @@ async function open(id){
  // Unknown body orientation stays a labelled placeholder; never point everybody
  // toward the player cluster or a basket as if it were an observation.
  const target=[...players].sort((a,b)=>Math.hypot(a.x-cx,a.y-cy)-Math.hypot(b.x-cx,b.y-cy))[0]||entities[1];
- state=reconcileScene(frame,saved?.state||packet.objectReview?.sceneDraft,{observerId:(refs[0]||entities[0]).id,targetId:target?.id,headingMode:'target-assumption',heading:0,hfov:100,vfov:70,targetHeight:1.1});
+ state=reconcileScene(frame,saved?.state||packet.objectReview?.sceneDraft,{observerId:(refs[0]||entities[0]).id,targetId:target?.id,headingMode:'target-assumption',heading:0,...previousView});
  // Keep the existing broadcast referee labels stable when a new wide-view
  // observation is appended. The actual IDs and stored coordinates are intact.
  state.entities=[...state.entities.filter(e=>!e.id.startsWith('wide-ref-')),...state.entities.filter(e=>e.id.startsWith('wide-ref-'))];
@@ -158,7 +160,7 @@ async function open(id){
  const video=$('source');video.src=`/case-assets/${caseId}/broadcast/${event.broadcast.file}`;video.onloadedmetadata=()=>{if(current!==token)return;video.currentTime=(index+.1)/nextPacket.fps;video.pause();};video.load();
  dirtyScene=Boolean(saved?.targetSamplingStale||saved?.poseStale||saved?.uniformStale||saved?.rendererStale||saved?.objectStale||saved?.evidenceStale||saved?.courtStale);configureDraft();overview.setMode($('overviewMode').value);eye.setMode('eye');render();draftBaseline=JSON.stringify(state);draftTracking=true;await flow.refresh();history.replaceState(null,'',`?id=${caseId}#${event.id}`);
  await refreshCrew();
- wideReferencePanel?.dispose();widePositionMode.cancel();drawWidePreview();wideReferencePanel=mountWideReference($('wideReferencePanel'),{caseId,eventId:event.id,onDirty:()=>flow.update(),beforeChange:async()=>{if(dirtyScene)await save(true);},onChanged:async()=>{widePositionMode.cancel();drawWidePreview();dirtyScene=false;await open(event.id);dirtyScene=true;flow.update();message('광각 심판 보완을 반영했습니다. 현재 공간 이미지를 저장해 3심 화면과 리포트를 갱신하세요.');},onCancelPosition:()=>{widePositionMode.cancel();drawWidePreview();},onPickPosition:callback=>{cancelMapDrag();aimMode=false;pointMode=false;moveMode=false;partialPick=null;widePositionMode.begin(callback);render();message('새 광각 심판 위치 지정 중입니다. 코트를 누르면 주황색 임시 표식이 표시되며 다시 눌러 옮길 수 있습니다.');$('map').scrollIntoView({block:'center'});}});
+ wideReferencePanel?.dispose();widePositionMode.cancel();drawWidePreview();wideReferencePanel=mountWideReference($('wideReferencePanel'),{caseId,eventId:event.id,autoSelect:!automaticToken,onDirty:()=>flow.update(),beforeChange:async()=>{if(dirtyScene)await save(true);},onChanged:async()=>{widePositionMode.cancel();drawWidePreview();dirtyScene=false;await open(event.id);dirtyScene=true;flow.update();message('광각 심판 보완을 반영했습니다. 현재 공간 이미지를 저장해 3심 화면과 리포트를 갱신하세요.');},onCancelPosition:()=>{widePositionMode.cancel();drawWidePreview();},onPickPosition:callback=>{cancelMapDrag();aimMode=false;pointMode=false;moveMode=false;partialPick=null;widePositionMode.begin(callback);render();message('새 광각 심판 위치 지정 중입니다. 코트를 누르면 주황색 임시 표식이 표시되며 다시 눌러 옮길 수 있습니다.');$('map').scrollIntoView({block:'center'});}});
  message(!refs.length?'심판 역할이 확정된 인물이 없습니다. 객체 단계에서 심판 역할을 확인하세요. 지정 전에는 심판 시야나 PDF를 저장할 수 없습니다.':previousPoseStale?'저장 후 기준 자료가 바뀌어 이전 보정 자세는 제외했습니다. 기존 수동 위치를 불러왔으며, 배치와 시야를 확인한 뒤 현재 상태를 저장하세요.':saved?'저장된 공간 장면을 불러왔습니다.':'초기 재구성입니다. 심판·대상과 방향을 확인한 뒤 저장하세요.');
 }
 function setBusy(value){busy=value;$('refreshCrew').disabled=value;$('saveAll').hidden=!flow.current?.stages?.spatial?.complete;for(const id of ['save','saveAll','pdf'])$(id).disabled=value;document.querySelectorAll('#events button,.controls input,.controls select,.controls button,.map-tools input,.map-tools button,.map-tools select').forEach(b=>b.disabled=value);if(!value){$('angle').disabled=state?.headingMode==='target-assumption';editFields();$('mapUndo').disabled=!mapHistory.past.length;}placementControls();flow.update();}
@@ -170,8 +172,8 @@ async function save(allowWideDraft=false){
  for(const e of state.entities){const d=directionFor(e,matchingPose(e));e.bodyHeading=d.heading;if(!poseVariantId)e.bodyDirectionSource=d.status==='manual'?'manual':d.status==='estimated'?'pose-estimated':'unresolved';}
  render();await document.fonts.ready;await nextPaint();const m=model();
  const crew=await refreshCrew();eye.update(m.bodies,m.target,m.observer,m.result,{...m.config,showLabels:false},false);const eyeImage=eye.capture(2);drawEye(m);
- const saved=await json(`/api/cases/${caseId}/events/${event.id}/reconstruction${automaticToken?`?automatic=1&expectedCapture=${encodeURIComponent(currentCapture?.captureId||'')}`:''}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rendererVersion:'crew-visibility-v5-mannequin',mapLayout:'apron-v2',uniformRevision:packet.uniforms.revision,selectionRevision:data.revision,frameIndex:frame.frameIndex,courtRevision:frame.courtRevision||null,datasetId:packet.datasetId,inputSha256:packet.inputSha256,meshSha256,sceneEvidenceSha256:frame.sceneEvidence?.sha256||null,poseJobId:poseResult?.jobId||null,poseVariantId,state,crewAnalysis:crew.analysis,images:{map:$('map').toDataURL('image/jpeg',.96),overview:overview.capture(2),eye:eyeImage,...crew.images}})});
- clearTimeout(draftTimer);sceneDraft?.clear();currentCapture=saved;dirtyScene=false;configureDraft(false);flow.update();message(`판독 ${event.number}: 2D·3D·심판 눈높이 이미지 저장 완료 (${saved.captureId.slice(0,8)})`);return saved;
+ const saved=await json(`/api/cases/${caseId}/events/${event.id}/reconstruction${automaticToken?`?automatic=1&expectedCapture=${encodeURIComponent(currentCapture?.captureId||'')}`:''}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expectedCaptureId:captureVersion,rendererVersion:'crew-visibility-v5-mannequin',mapLayout:'apron-v2',uniformRevision:packet.uniforms.revision,selectionRevision:data.revision,frameIndex:frame.frameIndex,courtRevision:frame.courtRevision||null,datasetId:packet.datasetId,inputSha256:packet.inputSha256,meshSha256,sceneEvidenceSha256:frame.sceneEvidence?.sha256||null,poseJobId:poseResult?.jobId||null,poseVariantId,state,crewAnalysis:crew.analysis,images:{map:$('map').toDataURL('image/jpeg',.96),overview:overview.capture(2),eye:eyeImage,...crew.images}})});
+ clearTimeout(draftTimer);sceneDraft?.clear();currentCapture=saved;captureVersion=saved.captureId;dirtyScene=false;configureDraft(false);flow.update();message(`판독 ${event.number}: 2D·3D·심판 눈높이 이미지 저장 완료 (${saved.captureId.slice(0,8)})`);return saved;
 }
 async function applySharedPose(keepExisting=false,forceRefresh=false){
  if(busy||dirtyScene||draftPending||wideReferencePanel?.dirty)throw Error('현재 수정 사항을 저장한 뒤 보정 자세를 적용하세요.');
@@ -271,6 +273,7 @@ $('aimMap').onclick=()=>{aimMode=true;pointMode=false;moveMode=false;partialPick
 function undoMap(){if(busy||mapDrag)return;const old=mapHistory.undo(state);if(!old)return;state=old;dirtyScene=true;pointMode=false;aimMode=false;options();render();flow.update();message('위치·별표·방향·팀 설정을 되돌렸습니다.');}
 $('mapUndo').onclick=undoMap;
 window.addEventListener('keydown',e=>{if(e.key==='Escape'){if(widePositionMode.active)wideReferencePanel?.cancelPosition();aimMode=false;pointMode=false;moveMode=false;partialPick=null;cancelMapDrag();render();}if(!e.defaultPrevented&&(e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'&&!e.target.isContentEditable&&!['INPUT','TEXTAREA'].includes(e.target.tagName)){e.preventDefault();undoMap();}});
+$('map').addEventListener('keydown',e=>{if(busy||e.metaKey||e.ctrlKey||e.altKey||e.shiftKey||widePositionMode.active)return;const key=e.key.toLowerCase();if(key==='p'||key==='m'){e.preventDefault();$(key==='p'?'markPoint':'moveMap').click();}});
 function setPosition(id,p,evidence=null){const e=state.entities.find(e=>e.id===id);if(!e)return;setCourtPosition(e,{x:Math.round(p.x*100)/100,y:Math.round(p.y*100)/100},evidence);dirtyScene=true;editFields();render();flow.update();}
 function placePerson(id,p,evidence=null){
  const b=frame.boxes.find(b=>b.id===id);if(!b)throw Error('현재 영상에서 공간 배치 가능한 인물을 선택하세요.');

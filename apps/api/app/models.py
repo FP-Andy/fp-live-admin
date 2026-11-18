@@ -82,6 +82,21 @@ class Match(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class CourtsideEditor(Base):
+    __tablename__ = 'courtside_editors'
+    match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('matches.id', ondelete='CASCADE'), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+
+
+class CourtsidePresence(Base):
+    __tablename__ = 'courtside_presence'
+    match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('matches.id', ondelete='CASCADE'), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_id: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
 class ScheduleEntry(Base):
     __tablename__ = "schedule_entries"
 

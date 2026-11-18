@@ -270,7 +270,9 @@ def _execute(operation,payload,media,output,stage,job_id):
             detail=(f" · {progress['completed']}/{progress['total']}{progress.get('unit','개')}" if progress.get('total') else '')
             stage('T4 작업 순서 대기' if phase=='queued' else (progress.get('phase','T4 계산 실행 중')+detail))
             if time.monotonic()>deadline:raise TimeoutError('T4 상태 확인 제한 시간')
-            time.sleep(3)
+            # Completed pose jobs are short; check sooner without changing the
+            # single-job dispatch, source validation or inference itself.
+            time.sleep(1.5)
         metrics['pollUntilCompleteSeconds']=round(time.monotonic()-clock,3);clock=time.monotonic()
         stage('T4 결과 내려받기·원본 검증')
         archive=output/'gpu-result.tar';partial=archive.with_suffix('.downloading')

@@ -405,6 +405,7 @@ class Handler(BaseHTTPRequestHandler):
                     key=self.headers.get('X-Courtside-Auto-Key')
                     args=(*match.groups(),data,(params.get('expectedCapture') or [''])[0])
                     return self.json(report_video_batch.save_automatic_scene(*args,internal_key=key) if key else report_video_batch.save_automatic_scene(*args))
+                if not isinstance(data,dict) or 'expectedCaptureId' not in data:raise RuntimeError('공간 편집 화면이 업데이트됐습니다. 임시 수정이 저장된 것을 확인한 뒤 새로고침하세요.')
                 review_flow.require_stage(match[1],'spatial',match[2])
                 return self.json(broadcast_reconstruction.save(*match.groups(),data))
             except (ValueError,TypeError,KeyError) as e:return self.json({'error':str(e)},code=400)
@@ -775,7 +776,7 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             try:
                 import broadcast_reconstruction
-                return self.json({'saved':broadcast_reconstruction.current(*match.groups())},head)
+                return self.json(broadcast_reconstruction.snapshot(*match.groups()),head)
             except (ValueError,KeyError,StopIteration):return self.send_error(404)
             except RuntimeError as e:return self.json({'error':str(e)},head,409)
         match=re.fullmatch(r'/case-reconstruction/([a-z0-9-]+)/(review-\d+)/(map|overview|eye|crewMap|eye1|eye2|eye3)\.jpg',path)

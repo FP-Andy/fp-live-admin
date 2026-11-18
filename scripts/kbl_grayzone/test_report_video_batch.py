@@ -188,13 +188,13 @@ class VideoStampTests(unittest.TestCase):
         from unittest.mock import Mock
         from serve import Handler
         def call(query):
-            payload=json.dumps({'state':{}}).encode();h=object.__new__(Handler)
+            payload=json.dumps({'state':{},'expectedCaptureId':None}).encode();h=object.__new__(Handler)
             h.path='/api/cases/game-test/events/review-1/reconstruction'+query
             h.headers={'Host':'127.0.0.1:4350','Content-Length':str(len(payload))}
             h.rfile=io.BytesIO(payload);h.json=Mock();h.post();return h
         with patch.object(batch,'save_automatic_scene',return_value={'saved':True}) as automatic,patch.object(batch.review_flow,'require_stage'),patch.object(batch.broadcast_reconstruction,'save',return_value={'saved':True}) as manual:
-            call('?automatic=1&expectedCapture='+('a'*24));automatic.assert_called_once_with('game-test','review-1',{'state':{}},'a'*24);manual.assert_not_called()
-            call('');manual.assert_called_once_with('game-test','review-1',{'state':{}})
+            call('?automatic=1&expectedCapture='+('a'*24));automatic.assert_called_once_with('game-test','review-1',{'state':{},'expectedCaptureId':None},'a'*24);manual.assert_not_called()
+            call('');manual.assert_called_once_with('game-test','review-1',{'state':{},'expectedCaptureId':None})
 
 
 if __name__=='__main__':unittest.main()

@@ -181,7 +181,7 @@ def run(job):
         else:save(reportIssue=report.get('error') or 'PDF 생성이 중단됐습니다. 최신 자료로 PDF를 다시 생성해 주세요.',reportNeedsRefresh=True)
         for index,event in enumerate(data['events']):
             refresh_report_flag()
-            save(stage=f'영상 제작 {index+1}/{len(data["events"])}')
+            save(stage=f'영상 제작 {index+1}/{len(data["events"])}',currentEvent=event)
             try:
                 if video_stamp(data['caseId'],event)!=data['videoInputs'][event]:
                     raise RuntimeError('이 장면의 기준 화면·배치 또는 심판 매칭이 바뀌었습니다. 장면을 확인해 주세요.')
@@ -208,7 +208,7 @@ def run(job):
         ready_delivery=('complete','ready-for-download')
         failed=(data.get('reportNeedsRefresh') or data.get('report',{}).get('delivery',{}).get('state') not in ready_delivery or
             any(v['state']!='complete' or v.get('result',{}).get('delivery',{}).get('state') not in ready_delivery for v in data['videos']))
-        save(state='partial' if failed else 'complete',stage='PDF·영상 전달 확인 필요' if failed else 'PDF·영상 제작 완료',completedAt=now())
+        save(state='partial' if failed else 'complete',stage='PDF·영상 전달 확인 필요' if failed else 'PDF·영상 제작 완료',currentEvent=None,completedAt=now())
     except Exception as exc:
         from diagnostics import safe
         save(state='failed',stage='제작 확인 필요',error=safe(exc)[:250],completedAt=now())
