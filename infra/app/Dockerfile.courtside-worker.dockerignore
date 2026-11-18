@@ -11,12 +11,16 @@
 !infra/app/courtside-playwright-package-lock.json
 !scripts/kbl_grayzone/
 !scripts/kbl_grayzone/render_report_maps.mjs
+!scripts/kbl_grayzone/tracking-cache-compat.json
 !scripts/kbl_grayzone/render_auto_pose.mjs
 !scripts/kbl_grayzone/report_coverage.mjs
 !scripts/kbl_grayzone/review-package-guide.md
 !scripts/kbl_grayzone/test_report_map_runtime.py
 !scripts/kbl_grayzone/test_case_report_pose.py
 !scripts/kbl_grayzone/test_comment_csv.mjs
+!scripts/kbl_grayzone/test_match_progress.mjs
+!scripts/kbl_grayzone/test_object_cache_compat.py
+!scripts/kbl_grayzone/test_scene_handoff_view.mjs
 !scripts/kbl_grayzone/test_comment_template.py
 !apps/web/public/
 !scripts/kbl_grayzone/video-assets/
@@ -74,6 +78,7 @@
 !apps/web/public/kbl-grayzone/map-interaction.mjs
 !apps/web/public/kbl-grayzone/match.html
 !apps/web/public/kbl-grayzone/match.mjs
+!apps/web/public/kbl-grayzone/match-progress.mjs
 !apps/web/public/kbl-grayzone/mesh-human.mjs
 !apps/web/public/kbl-grayzone/pose-editor.css
 !apps/web/public/kbl-grayzone/pose-editor.mjs
@@ -190,6 +195,10 @@
 !scripts/kbl_grayzone/test_review_package_jobs.py
 !scripts/kbl_grayzone/test_report_video_batch.py
 !scripts/kbl_grayzone/test_server_auto_pose.py
+!scripts/kbl_grayzone/test_spatial_concurrency.py
+!scripts/kbl_grayzone/test_wide_reference_optional_note.py
+!scripts/kbl_grayzone/test_wide_retention_delivery.py
+!scripts/kbl_grayzone/test_video_phase_clock.py
 !scripts/kbl_grayzone/test_report_video_box.mjs
 !scripts/kbl_grayzone/review_videos.py
 !scripts/kbl_grayzone/scene_evidence.py

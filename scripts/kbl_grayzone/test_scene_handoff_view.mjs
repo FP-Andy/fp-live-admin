@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {inheritedViewDefaults,reconcileScene} from '../../apps/web/public/kbl-grayzone/scene-handoff.mjs';
+const previous={hfov:120,vfov:75,targetHeight:2.1,reviewPoint:{x:4,y:5},entities:[{id:'p1',role:'player',x:8,y:9}]};
+const defaults={observerId:'r1',...inheritedViewDefaults(previous)};
+const frame={floorPositions:[{id:'p1',role:'player',xy:[1,2]}],boxes:[{id:'p1',roleHint:'player'}]};
+const fresh=reconcileScene(frame,null,defaults);
+assert.equal(fresh.hfov,120);assert.equal(fresh.targetHeight,2.1);assert.equal(fresh.reviewPoint,undefined);assert.equal(fresh.entities[0].x,1);
+const saved=reconcileScene(frame,{hfov:80,targetHeight:0.5,entities:[]},defaults);
+assert.equal(saved.hfov,80);assert.equal(saved.targetHeight,0.5);
+assert.deepEqual(inheritedViewDefaults({hfov:900,targetHeight:-1}),{hfov:100,vfov:70,targetHeight:1.1});
+console.log('View preferences carry forward without copying scene geometry or overriding saved settings.');

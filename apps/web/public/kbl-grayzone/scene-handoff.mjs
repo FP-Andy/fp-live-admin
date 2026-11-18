@@ -4,6 +4,12 @@ export function currentPoseVariant(saved,currentJobId){
  if(!saved?.poseVariantId||saved.courtStale||saved.poseStale||saved.objectStale||saved.evidenceStale||saved.rendererStale||saved.uniformStale||saved.targetSamplingStale||!currentJobId||saved.poseJobId!==currentJobId)return null;
  return saved.poseVariantId;
 }
+// Carry only view settings to a new, unsaved scene. Coordinates, identities,
+// manual headings and the reviewed point always belong to their own scene.
+export function inheritedViewDefaults(previous){
+ const valid=(value,min,max,fallback)=>Number.isFinite(value)&&value>=min&&value<=max?value:fallback;
+ return {hfov:valid(previous?.hfov,40,160,100),vfov:valid(previous?.vfov,30,120,70),targetHeight:valid(previous?.targetHeight,.1,2.5,1.1)};
+}
 export function reconcileScene(frame,previous,defaults){
  const old=new Map((previous?.entities||[]).map(e=>[e.id,e]));
  const boxes=new Map(frame.boxes.map(b=>[b.id,b]));

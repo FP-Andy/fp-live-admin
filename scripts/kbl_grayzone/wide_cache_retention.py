@@ -104,9 +104,12 @@ def completed_cases(mid, clock):
             if activity.exists() and clock-activity.stat().st_mtime < RECENT_ACTIVITY:return []
             flow=json.loads((root/'review-flow.json').read_text()).get('events',{})
             if not all(flow.get(e['id'],{}).get('spatial',{}).get('token') for e in case['events']):return []
-            versions=report_versions.index(key).get('versions',[])
-            if not any((report_versions.folder(key)/(v['id']+'.pdf')).is_file() for v in versions):return []
-        except (OSError, ValueError, KeyError, TypeError):return []
+            # An ordinary saved PDF is not a delivery. Only confirmed versions
+            # qualify, and the retained PDF must pass its recorded SHA check.
+            versions=report_versions.index(key);published=versions.get('publishedVersion')
+            if not published or not any(v.get('id')==published for v in versions.get('versions',[])):return []
+            if not report_versions.file(key,published).is_file():return []
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):return []
     return sorted(ids)
 
 def ensure_capacity(required, current_mid, on_progress=lambda *_:None, check_cancel=lambda:None, prune_older=False):

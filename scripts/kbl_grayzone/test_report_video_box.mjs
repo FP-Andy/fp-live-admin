@@ -42,3 +42,25 @@ await next.restore();nodes.includeVideos.checked=true;await nodes.checkVideoRead
 assert.equal(created,1,'The batch is registered before any pose preparation');
 assert.equal(previewFrames,0,'The user browser never owns the pose preparation');
 console.log('New jobs are registered immediately and pose work is server-owned.');
+
+let retryPayload;
+const partial={jobId:'d'.repeat(24),state:'partial',stage:'확인 필요',events:['review-1','review-2'],videos:[{eventId:'review-1',state:'complete',jobId:'e'.repeat(24)},{eventId:'review-2',state:'failed',error:'실패'}]};
+const retryApi=async(path,payload)=>{
+ if(path.endsWith('/report-video-batches')&&payload){retryPayload=payload;return {job:{...job,state:'complete',videos:[],report:{pdf:'/report.pdf'}}};}
+ if(path.endsWith('/report-video-batches'))return {job:partial};
+ if(path.includes('/report-video-batches/'))return {job:{...job,state:'complete',videos:[],report:{pdf:'/report.pdf'}}};
+ throw Error('Unexpected request: '+path);
+};
+const retryBox=mountReportVideoBox({caseId:'game-test',api:retryApi,onChange(){},onComplete:async()=>{},getRevision:()=>3,canRetry:()=>true});
+await retryBox.restore();
+const failureLine=nodes.reportVideoProgress.children.find(el=>el.textContent.includes('2번 영상'));
+const retryButton=failureLine.children.find(el=>el.tagName==='button');assert.ok(retryButton);
+await retryButton.onclick();assert.deepEqual(retryPayload,{revision:3,events:['review-2']});
+console.log('Retry submits only the failed scene.');
+
+const queued={jobId:'f'.repeat(24),state:'running',stage:'영상 제작 2/3',events:['review-1','review-2','review-3'],currentEvent:'review-2',videos:[{eventId:'review-1',state:'complete',jobId:'e'.repeat(24)}]};
+const queueApi=async path=>path.endsWith('/report-video-batches')?{job:queued}:new Promise(()=>{});
+const queueBox=mountReportVideoBox({caseId:'game-test',api:queueApi,onChange(){},onComplete:async()=>{}});await queueBox.restore();
+const lines=nodes.reportVideoProgress.children.map(el=>el.textContent);
+assert.ok(lines.includes('2번 장면 제작 중'));assert.ok(lines.includes('제작 대기 · 3번'));
+console.log('Current and remaining scenes are displayed in queue order.');

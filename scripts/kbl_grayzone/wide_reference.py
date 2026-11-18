@@ -145,7 +145,10 @@ def save(key,eid,payload):
                 xy=person.get('xy');box=person.get('pixelBox');note=person.get('note','').strip();number=person.get('number')
                 if not isinstance(xy,list) or len(xy)!=2 or any(type(v) not in (int,float) or not math.isfinite(v) for v in xy) or not(-4<=xy[0]<=32 and -3<=xy[1]<=19):raise ValueError('2D 코트의 심판 위치를 확인하세요.')
                 if not isinstance(box,list) or len(box)!=4 or any(type(v) not in (int,float) or not math.isfinite(v) for v in box) or not(0<=box[0]<box[2]<=w and 0<=box[1]<box[3]<=h):raise ValueError('광각에서 심판 박스를 지정하세요.')
-                if not note or len(note)>300:raise ValueError('광각 대조·위치 확인 근거를 남겨 주세요.')
+                if len(note)>300:raise ValueError('광각 대조·위치 확인 근거가 너무 깁니다.')
+                # The selected reference image, box and manually placed court
+                # position are stored separately. No extra prose is required.
+                if not note:note='광각 화면에서 심판 박스와 2D 코트 위치를 지정했습니다.'
                 pid=person.get('id',f'wide-ref-{eid}-{n}')
                 if not isinstance(pid,str) or not re.fullmatch(r'wide-ref-[A-Za-z0-9_-]{1,51}',pid) or any(p['id']==pid for p in clean):raise ValueError('보완 심판 ID를 확인하세요.')
                 saved={'id':pid,'xy':xy,'pixelBox':box,'note':note,'number':number};proof_id=person.get('sequenceEvidenceId')

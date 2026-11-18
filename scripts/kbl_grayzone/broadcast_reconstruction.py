@@ -9,6 +9,17 @@ LOCK=threading.Lock()
 KINDS=('map','overview','eye','crewMap','eye1','eye2','eye3')
 RENDERER_VERSION='crew-visibility-v5-mannequin'
 READABLE_RENDERER_VERSIONS={RENDERER_VERSION,'crew-visibility-v4'}
+
+def capture_version(case_id,event_id):
+    path=CASES[case_id]/'reconstructions'/event_id/'current.json'
+    try:data=json.loads(path.read_text())
+    except FileNotFoundError:return None
+    version=data.get('captureId')
+    if not isinstance(version,str) or len(version)!=24 or any(c not in '0123456789abcdef' for c in version):raise RuntimeError('저장된 공간 장면의 버전을 확인할 수 없습니다.')
+    return version
+
+def snapshot(case_id,event_id):
+    with LOCK:return {'saved':current(case_id,event_id),'captureVersion':capture_version(case_id,event_id)}
 def scene_roles(frame,entities):
     """Floor detections plus explicitly placed, still-present image objects."""
     roles={p['id']:p['role'] for p in frame.get('floorPositions',[])}
@@ -123,6 +134,8 @@ def validate_crew(value,state,frame):
 
 def save(case_id,event_id,payload):
     with LOCK:
+        if 'expectedCaptureId' in payload and payload['expectedCaptureId']!=capture_version(case_id,event_id):
+            raise RuntimeError('다른 작업자가 공간 장면을 저장했습니다. 현재 수정은 유지되며, 최신 장면을 확인한 뒤 다시 저장하세요.')
         case,event,packet,frame=context(case_id,event_id)
         import uniforms
         palette=uniforms.load('cases',case_id)
