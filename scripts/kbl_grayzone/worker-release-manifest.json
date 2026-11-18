@@ -44,6 +44,7 @@
     "fit_pose",
     "fpc_sources",
     "gpu_bridge",
+    "gpu_retention",
     "gpu_control",
     "gpu_eic_bootstrap",
     "gpu_eic_transport",

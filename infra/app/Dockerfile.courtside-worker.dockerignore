@@ -154,6 +154,7 @@
 !scripts/kbl_grayzone/fit_pose.py
 !scripts/kbl_grayzone/fpc_sources.py
 !scripts/kbl_grayzone/gpu_bridge.py
+!scripts/kbl_grayzone/gpu_retention.py
 !scripts/kbl_grayzone/gpu_control.py
 !scripts/kbl_grayzone/gpu_worker.py
 !scripts/kbl_grayzone/image_bounds.py
@@ -200,6 +201,7 @@
 !scripts/kbl_grayzone/test_cloud_preflight.py
 !scripts/kbl_grayzone/test_frame_interaction.mjs
 !scripts/kbl_grayzone/test_gpu_bridge.py
+!scripts/kbl_grayzone/test_gpu_retention.py
 !scripts/kbl_grayzone/test_map_interaction.mjs
 !scripts/kbl_grayzone/test_phase_handoff.mjs
 !scripts/kbl_grayzone/test_pose_focus.mjs
