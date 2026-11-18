@@ -74,6 +74,7 @@
     "report_pdf",
     "report_versions",
     "report_video_batch",
+    "server_auto_pose",
     "review_flow",
     "review_intake",
     "review_package_jobs",
@@ -109,6 +110,7 @@
   ],
   "assets": [
     "render_report_maps.mjs",
+    "render_auto_pose.mjs",
     "report_coverage.mjs",
     "review-package-guide.md",
     "video_depth_raster.cpp",

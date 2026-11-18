@@ -26,3 +26,19 @@ await box.start(1);
 assert.equal(iframeCount,0,'An already running batch must not start another automatic pose preparation');
 assert.equal(otherWrites,0);
 console.log('Existing batch is restored before any new automatic preparation.');
+
+let created=0,previewFrames=0;
+const originalCreate=globalThis.document.createElement;
+globalThis.document.createElement=tag=>{if(tag==='iframe')previewFrames++;return originalCreate(tag);};
+const newApi=async(path,payload)=>{
+ if(path.endsWith('/report-video-readiness'))return {ready:true,events:[{number:1,eventId:'review-1',ready:true,autoPrepare:true}]};
+ if(path.endsWith('/report-video-batches')&&payload){created++;assert.deepEqual(payload,{revision:1,events:['review-1']});return {job:{...job,state:'complete',report:{pdf:'/report.pdf'}}};}
+ if(path.endsWith('/report-video-batches'))return {job:null};
+ if(path.includes('/report-video-batches/'))return {job:{...job,state:'complete',report:{pdf:'/report.pdf'}}};
+ throw Error('Unexpected request: '+path);
+};
+const next=mountReportVideoBox({caseId:'game-test',api:newApi,onChange(){},onComplete:async()=>{},onPrepared:async()=>{throw Error('browser must not prepare pose');}});
+await next.restore();nodes.includeVideos.checked=true;await nodes.checkVideoReady.onclick();await next.start(1);
+assert.equal(created,1,'The batch is registered before any pose preparation');
+assert.equal(previewFrames,0,'The user browser never owns the pose preparation');
+console.log('New jobs are registered immediately and pose work is server-owned.');
