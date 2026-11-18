@@ -31,7 +31,7 @@ class CourtsideAccessTests(unittest.TestCase):
   self.user('other','OPERATOR');self.assertFalse(self.client.get(self.url).json()['canEdit'])
   self.assertFalse(self.client.get(self.url).json()['canManageEditors'])
  def test_editor_update_requires_owner_origin_and_current_version(self):
-  self.match.metadata_json={'home_team':'A'};self.db.scalar=Mock(return_value=self.match);self.db.scalars=Mock(side_effect=[SimpleNamespace(all=lambda v=v:v) for v in ([],[],['teammate'],['teammate'])]);self.db.commit=Mock();self.db.execute=Mock();self.db.add_all=Mock()
+  self.match.metadata_json={'home_team':'A'};self.db.scalar=Mock(return_value=self.match);self.db.scalars=Mock(side_effect=[SimpleNamespace(all=lambda v=v:v) for v in ([],[],[SimpleNamespace(id='teammate')],['teammate'])]);self.db.commit=Mock();self.db.execute=Mock();self.db.add_all=Mock()
   url=f'/api/courtside/matches/{self.id}/editors';version=editors_version(self.match,[]);payload={'version':version,'editorIds':['teammate']}
   self.user('other','OPERATOR');self.assertEqual(self.client.post(url,json=payload,headers={'origin':'http://testserver'}).status_code,403)
   self.user('owner','OPERATOR');self.assertEqual(self.client.post(url,json=payload,headers={'origin':'http://evil.test'}).status_code,403)

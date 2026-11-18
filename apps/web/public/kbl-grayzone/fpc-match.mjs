@@ -26,21 +26,26 @@ async function loadPresence(){
  }catch{$('workProgressPeople').textContent='작업자 활동을 확인할 수 없습니다.';}
 }
 async function loadEditors(){
- $('editorPanel').hidden=false;const status=$('editorStatus'),list=$('editorList'),save=$('saveEditors');save.disabled=true;
+ $('editorPanel').hidden=false;const status=$('editorStatus'),list=$('editorList'),select=$('editorSelect'),save=$('saveEditors');save.disabled=true;select.disabled=true;
  try{
   let info=await api(`/api/courtside/matches/${encodeURIComponent(id)}/editors`);
   const selected=new Set(info.editorIds||[]);
-  const users=Array.isArray(info.users)?info.users:[],known=new Set(users.map(person=>person.id));
-  const people=[...users,...[...selected].filter(id=>!known.has(id)).map(id=>({id,name:`현재 목록에 없는 기존 작업자 (${id})`}))];
-  const counts=new Map();for(const person of people)counts.set(person.name,(counts.get(person.name)||0)+1);
-  list.replaceChildren(...people.map(person=>{const label=node('label');label.style.cssText='display:flex;align-items:center;gap:8px;margin:8px 0';const input=node('input');input.type='checkbox';input.value=person.id;input.checked=selected.has(person.id);label.append(input,document.createTextNode(person.name+(counts.get(person.name)>1?` · ${person.id.slice(-6)}`:'')));return label;}));
-  if(!info.users.length)list.append(node('p','help','선택할 작업자 계정이 없습니다.'));
-  save.disabled=false;status.textContent='';
-  save.onclick=async()=>{save.disabled=true;try{
-   const editorIds=[...list.querySelectorAll('input:checked')].map(input=>input.value);
+  const users=Array.isArray(info.users)?info.users:[],counts=new Map();let saving=false;for(const person of users)counts.set(person.name,(counts.get(person.name)||0)+1);
+  const label=person=>person.name+(counts.get(person.name)>1?` · ${person.id.slice(-6)}`:'');
+  const render=()=>{
+   const placeholder=node('option','','관리자 선택');placeholder.value='';
+   select.replaceChildren(placeholder,...users.filter(person=>!selected.has(person.id)).map(person=>{const option=node('option','',label(person));option.value=person.id;return option;}));
+   select.disabled=saving||users.length===0||selected.size===users.length;
+   list.replaceChildren(...users.filter(person=>selected.has(person.id)).map(person=>{const chip=node('span','editor-chip');chip.append(document.createTextNode(label(person)));const remove=node('button','editor-remove','×');remove.type='button';remove.disabled=saving;remove.setAttribute('aria-label',`${label(person)} 제외`);remove.onclick=()=>{selected.delete(person.id);status.textContent='';render();};chip.append(remove);return chip;}));
+   if(!selected.size)list.append(node('span','help','선택한 작업자 없음'));
+  };
+  select.onchange=()=>{if(select.value){selected.add(select.value);status.textContent='';render();}};
+  render();save.disabled=false;status.textContent='';
+  save.onclick=async()=>{save.disabled=true;saving=true;render();try{
+   const editorIds=[...selected];
    info=await api(`/api/courtside/matches/${encodeURIComponent(id)}/editors`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:info.version,editorIds})});
-   status.textContent='작업자 권한을 저장했습니다.';
-  }catch(e){status.textContent=e.message;}finally{save.disabled=false;}};
+   status.textContent='작업자를 저장했습니다.';
+  }catch(e){status.textContent=e.message;}finally{saving=false;render();save.disabled=false;}};
  }catch(e){status.textContent=e.message;}
 }
 async function loadProgress(caseId){

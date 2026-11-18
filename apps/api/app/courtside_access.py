@@ -11,7 +11,7 @@ from sqlalchemy import select,delete
 from sqlalchemy.orm import Session
 from .auth import require_session_user
 from .db import get_db
-from .models import CourtsideEditor,CourtsidePresence,Match,User
+from .models import AdminAccount,CourtsideEditor,CourtsidePresence,Match,User
 
 router=APIRouter()
 
@@ -21,6 +21,10 @@ def can_edit_courtside(match: Match,user: User,db:Session) -> bool:
 
 def editor_ids(db,match_id):
     return sorted(db.scalars(select(CourtsideEditor.user_id).where(CourtsideEditor.match_id==match_id)).all())
+
+def active_admins(db):
+    return db.scalars(select(User).join(AdminAccount,AdminAccount.user_id==User.id)
+        .where(AdminAccount.active.is_(True),User.role=='SUPERADMIN').order_by(User.name,User.id)).all()
 
 def can_manage_editors(match,user):
     return user.role=='SUPERADMIN' or bool(match.operator_id and match.operator_id==user.id)
@@ -64,10 +68,11 @@ def editors(match_id:UUID,response:Response,db:Session=Depends(get_db),user:User
     match=db.get(Match,match_id)
     if not match or match.sport!='BASKETBALL':raise HTTPException(404,'농구 경기를 찾을 수 없습니다.')
     if not can_manage_editors(match,user):raise HTTPException(403,'작업자 관리 권한이 없습니다.')
-    users=db.scalars(select(User).where(User.role=='OPERATOR').order_by(User.name,User.id).limit(500)).all()
+    users=active_admins(db)
     response.headers['Cache-Control']='private, no-store'
     ids=editor_ids(db,match_id)
-    return {'version':editors_version(match,ids),'editorIds':ids,'users':[{'id':u.id,'name':u.name} for u in users]}
+    eligible={u.id for u in users}
+    return {'version':editors_version(match,ids),'editorIds':[ident for ident in ids if ident in eligible],'users':[{'id':u.id,'name':u.name} for u in users]}
 
 @router.post('/api/courtside/matches/{match_id}/editors')
 def save_editors(match_id:UUID,request:Request,body:dict,db:Session=Depends(get_db),user:User=Depends(require_session_user)):
@@ -82,8 +87,11 @@ def save_editors(match_id:UUID,request:Request,body:dict,db:Session=Depends(get_
     if not can_manage_editors(match,user):raise HTTPException(403,'작업자 관리 권한이 없습니다.')
     current=editor_ids(db,match_id)
     if body['version']!=editors_version(match,current):raise HTTPException(409,'작업자 명단이 변경됐습니다. 다시 불러오세요.')
-    existing=set(db.scalars(select(User.id).where(User.role=='OPERATOR',User.id.in_(ids))).all()) if ids else set()
-    if existing!=set(ids):raise HTTPException(400,'등록된 작업자만 지정할 수 있습니다.')
-    db.execute(delete(CourtsideEditor).where(CourtsideEditor.match_id==match_id))
+    eligible={u.id for u in active_admins(db)}
+    if not set(ids)<=eligible:raise HTTPException(400,'활성 관리자만 지정할 수 있습니다.')
+    # Existing non-admin assignments predate this picker; changing the visible
+    # admins must not silently revoke those match-scoped permissions.
+    db.execute(delete(CourtsideEditor).where(CourtsideEditor.match_id==match_id,CourtsideEditor.user_id.in_(eligible)))
     db.add_all([CourtsideEditor(match_id=match_id,user_id=ident) for ident in ids]);db.commit()
-    return {'saved':True,'version':editors_version(match,ids),'editorIds':sorted(ids)}
+    combined=sorted((set(current)-eligible)|set(ids))
+    return {'saved':True,'version':editors_version(match,combined),'editorIds':sorted(ids)}
