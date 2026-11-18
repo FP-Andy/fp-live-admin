@@ -1,6 +1,6 @@
 const spatialUrl=(caseId,eventId)=>`./reconstruction.html?id=${encodeURIComponent(caseId)}#${encodeURIComponent(eventId)}`;
 
-export function mountReportVideoBox({caseId,api,onChange,onComplete,getRevision=()=>null,canRetry=()=>false}){
+export function mountReportVideoBox({caseId,api,onChange,onComplete,getRevision=()=>null,getTotal=()=>0,canRetry=()=>false}){
  const $=id=>document.getElementById(id), check=$('includeVideos'),list=$('videoReadyList'),progress=$('reportVideoProgress');
  let ready=null,checking=false,preparing=false,restoring=true,job=null,timer=null;
  const path=`/api/cases/${encodeURIComponent(caseId)}`;
@@ -24,7 +24,8 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,getRevision=
  }
  function renderJob(){
   progress.replaceChildren();if(!job)return;
-  progress.append(p(job.stage||'제작 상태 확인 중'));
+  const subset=Number(getTotal())>0&&Array.isArray(job.events)&&job.events.length<Number(getTotal());
+  progress.append(p(subset&&job.state==='complete'?`선택한 ${job.events.length}개 장면 제작 완료`:job.stage||'제작 상태 확인 중'));
   if(running()&&Array.isArray(job.events)){
    const finished=new Set((job.videos||[]).map(row=>row.eventId));
    const waiting=job.events.filter(event=>!finished.has(event)&&event!==job.currentEvent);
@@ -40,11 +41,15 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,getRevision=
    else text+=row.error||'제작 실패';
    const line=p(text);if(row.state==='complete'&&/^[a-f0-9]{24}$/.test(row.jobId||'')){const a=document.createElement('a');a.href=`/case-review-video/${encodeURIComponent(caseId)}/${encodeURIComponent(row.eventId)}/${row.jobId}.mp4`;a.textContent=' 영상 내려받기 ↗';line.append(a);}else if(row.state!=='complete'){
     const a=document.createElement('a');a.href=spatialUrl(caseId,row.eventId);a.textContent=' 장면 확인 →';line.append(a);
-    if(['failed','interrupted'].includes(row.state)&&/^review-\d+$/.test(row.eventId||'')){
-     const retry=document.createElement('button');retry.type='button';retry.textContent='이 영상 다시 제작';retry.disabled=running()||preparing;
-     retry.onclick=async()=>{if(running()||preparing)return;if(!canRetry()){line.append(p('저장하지 않은 입력과 현재 장면 상태를 확인하세요.'));return;}try{await startEvents(getRevision(),[row.eventId]);}catch(e){line.append(p(e.message));}};line.append(retry);
-    }
    }progress.append(line);
+  }
+  // A retry becomes the latest batch. Include all failed or unstarted scenes so
+  // retrying one cannot hide another failure; never rerun a stale or completed scene.
+  if(!running()&&Array.isArray(job.events)){
+   const rows=new Map((job.videos||[]).map(row=>[row.eventId,row]));
+   const retryEvents=job.events.filter(event=>/^review-\d+$/.test(event)&&(!rows.has(event)||['failed','interrupted'].includes(rows.get(event).state)));
+   if(retryEvents.length){const retry=document.createElement('button');retry.type='button';retry.textContent=`미완료 영상 ${retryEvents.length}개 다시 제작`;retry.disabled=preparing;
+    retry.onclick=async()=>{if(running()||preparing)return;if(!canRetry()){progress.append(p('저장하지 않은 입력과 현재 장면 상태를 확인하세요.'));return;}try{await startEvents(getRevision(),retryEvents);}catch(e){progress.append(p(e.message));}};progress.append(retry);}
   }
   if(job.error)progress.append(p(job.error));
  }

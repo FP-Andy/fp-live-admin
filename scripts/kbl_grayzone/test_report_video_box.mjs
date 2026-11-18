@@ -44,7 +44,7 @@ assert.equal(previewFrames,0,'The user browser never owns the pose preparation')
 console.log('New jobs are registered immediately and pose work is server-owned.');
 
 let retryPayload;
-const partial={jobId:'d'.repeat(24),state:'partial',stage:'확인 필요',events:['review-1','review-2'],videos:[{eventId:'review-1',state:'complete',jobId:'e'.repeat(24)},{eventId:'review-2',state:'failed',error:'실패'}]};
+const partial={jobId:'d'.repeat(24),state:'interrupted',stage:'확인 필요',events:['review-1','review-2','review-3','review-4'],videos:[{eventId:'review-1',state:'complete',jobId:'e'.repeat(24)},{eventId:'review-2',state:'failed',error:'실패'},{eventId:'review-3',state:'stale',error:'확인 필요'}]};
 const retryApi=async(path,payload)=>{
  if(path.endsWith('/report-video-batches')&&payload){retryPayload=payload;return {job:{...job,state:'complete',videos:[],report:{pdf:'/report.pdf'}}};}
  if(path.endsWith('/report-video-batches'))return {job:partial};
@@ -53,10 +53,13 @@ const retryApi=async(path,payload)=>{
 };
 const retryBox=mountReportVideoBox({caseId:'game-test',api:retryApi,onChange(){},onComplete:async()=>{},getRevision:()=>3,canRetry:()=>true});
 await retryBox.restore();
-const failureLine=nodes.reportVideoProgress.children.find(el=>el.textContent.includes('2번 영상'));
-const retryButton=failureLine.children.find(el=>el.tagName==='button');assert.ok(retryButton);
-await retryButton.onclick();assert.deepEqual(retryPayload,{revision:3,events:['review-2']});
-console.log('Retry submits only the failed scene.');
+const retryButton=nodes.reportVideoProgress.children.find(el=>el.tagName==='button');assert.ok(retryButton);
+await retryButton.onclick();assert.deepEqual(retryPayload,{revision:3,events:['review-2','review-4']});
+console.log('Retry submits all failed and unstarted scenes, preserving completed and stale scenes.');
+
+const subset={jobId:'b'.repeat(24),state:'complete',stage:'PDF·영상 제작 완료',events:['review-2'],videos:[{eventId:'review-2',state:'complete',jobId:'e'.repeat(24)}]};
+const subsetBox=mountReportVideoBox({caseId:'game-test',api:async()=>({job:subset}),onChange(){},onComplete:async()=>{},getTotal:()=>4});
+await subsetBox.restore();assert.ok(nodes.reportVideoProgress.children.some(el=>el.textContent==='선택한 1개 장면 제작 완료'));
 
 const queued={jobId:'f'.repeat(24),state:'running',stage:'영상 제작 2/3',events:['review-1','review-2','review-3'],currentEvent:'review-2',videos:[{eventId:'review-1',state:'complete',jobId:'e'.repeat(24)}]};
 const queueApi=async path=>path.endsWith('/report-video-batches')?{job:queued}:new Promise(()=>{});
