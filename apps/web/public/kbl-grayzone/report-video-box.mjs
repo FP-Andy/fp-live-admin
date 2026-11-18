@@ -44,22 +44,6 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared})
  }
  check.onchange=()=>{if(check.checked)refresh();else buttonState();};
  $('checkVideoReady').onclick=refresh;
- async function prepareScene(row){
-  const token=crypto.randomUUID(),frame=document.createElement('iframe');
-  frame.title=`판독 ${row.number} 자동 자세 보정`;frame.setAttribute('aria-hidden','true');frame.tabIndex=-1;
-  frame.style.cssText='position:fixed;left:-10000px;top:0;width:1280px;height:900px;opacity:0;pointer-events:none;border:0';
-  frame.src=`./reconstruction.html?id=${encodeURIComponent(caseId)}&autoPrepare=${encodeURIComponent(token)}#${encodeURIComponent(row.eventId)}`;
-  return new Promise((resolve,reject)=>{
-   const timeout=setTimeout(()=>finish(new Error(`${row.number}번 장면의 자동 보정 시간이 초과됐습니다.`)),30*60*1000);
-   function finish(error,value){clearTimeout(timeout);window.removeEventListener('message',receive);frame.remove();error?reject(error):resolve(value);}
-   function receive(e){if(e.origin!==location.origin||e.source!==frame.contentWindow||e.data?.token!==token||e.data?.caseId!==caseId)return;
-    if(e.data.type==='kbl-auto-pose-ready')frame.contentWindow.postMessage({type:'kbl-auto-pose-start',token},location.origin);
-    else if(e.data.type==='kbl-auto-pose-complete')finish(null,e.data);
-    else if(e.data.type==='kbl-auto-pose-error')finish(new Error(`${row.number}번 · ${e.data.error}`));
-   }
-   window.addEventListener('message',receive);document.body.append(frame);
-  });
- }
  async function restore(){try{const r=await api(path+'/report-video-batches');if(r.job){job=r.job;renderJob();if(running())poll();}}catch(e){progress.replaceChildren(p('영상 제작 상태를 확인하지 못했습니다. '+e.message));}finally{restoring=false;buttonState();}}
  return {selected:()=>check.checked,isRunning:()=>running()||preparing,canGenerate:()=>!restoring&&!running()&&!preparing&&(!check.checked||(!checking&&!!ready?.ready)),
   async start(revision){if(!ready?.ready)throw Error('영상 제작 준비 상태를 확인하세요.');
@@ -67,23 +51,13 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,onPrepared})
    try{
     const existing=await api(path+'/report-video-batches');
     if(existing.job&&['queued','running'].includes(existing.job.state)){job=existing.job;renderJob();clearTimeout(timer);poll();return;}
-    let editorial=await api(path+'/report-editorial');
-    const pending=ready.events.filter(e=>e.autoPrepare);
-    for(let i=0;i<pending.length;i++){
-     const row=pending[i];progress.replaceChildren(p(`자세 자동 보정 ${i+1}/${pending.length} · ${row.number}번 장면`),p('보정이 끝날 때까지 이 화면을 열어 두세요.'));
-     const result=await prepareScene(row);
-     const finalized=await api(path+`/events/${row.eventId}/auto-pose-finalize`,{previousCaptureId:result.previousCaptureId,captureId:result.captureId,version:editorial.version});
-     if(!finalized.carried){progress.replaceChildren(p(`${row.number}번 · ${finalized.reason}`));throw Error(finalized.reason);}
-     editorial=await api(path+'/report-editorial');
-    }
-    await onPrepared();
     job=(await api(path+'/report-video-batches',{revision,events:ready.events.map(e=>e.eventId)})).job;
     renderJob();clearTimeout(timer);poll();
    }catch(error){
     // A gateway can drop the response after the server accepted the request.
     // Recover the existing batch before allowing another click.
     try{const existing=await api(path+'/report-video-batches');if(existing.job&&['queued','running'].includes(existing.job.state)){job=existing.job;renderJob();clearTimeout(timer);poll();return;}}catch{}
-    await onPrepared();throw error;
+    throw error;
    }
    finally{preparing=false;buttonState();}
   },restore};

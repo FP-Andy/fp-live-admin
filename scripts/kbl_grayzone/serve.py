@@ -402,7 +402,9 @@ class Handler(BaseHTTPRequestHandler):
                 params=parse_qs(urlparse(self.path).query)
                 if params.get('automatic')==['1']:
                     import report_video_batch
-                    return self.json(report_video_batch.save_automatic_scene(*match.groups(),data,(params.get('expectedCapture') or [''])[0]))
+                    key=self.headers.get('X-Courtside-Auto-Key')
+                    args=(*match.groups(),data,(params.get('expectedCapture') or [''])[0])
+                    return self.json(report_video_batch.save_automatic_scene(*args,internal_key=key) if key else report_video_batch.save_automatic_scene(*args))
                 review_flow.require_stage(match[1],'spatial',match[2])
                 return self.json(broadcast_reconstruction.save(*match.groups(),data))
             except (ValueError,TypeError,KeyError) as e:return self.json({'error':str(e)},code=400)
