@@ -209,6 +209,11 @@ jobs:
           docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,nosuid,nodev,size=2g,mode=1777 \
             -e COURTSIDE_AUTO_POSE_BROWSER_TEST=1 -e PYTHONPATH=/workspace/scripts/kbl_grayzone \
             --entrypoint python courtside-worker-ci -m unittest test_server_auto_pose -v
+      - name: Real 3D reconstruction page with synthetic pose job
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,nosuid,nodev,size=2g,mode=1777 \
+            -e COURTSIDE_QA_ROOT=/workspace -v "$PWD/scripts/test-courtside-auto-pose-full.cjs:/qa/auto-pose.cjs:ro" \
+            --entrypoint node courtside-worker-ci /qa/auto-pose.cjs
       - name: Versioned 11-page PDF in isolated container
         run: |
           docker run --rm --network none -e COURTSIDE_ISOLATED_QA=1 -e COURTSIDE_QA_TOKEN=ci-only-not-secret \
