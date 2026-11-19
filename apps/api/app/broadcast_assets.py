@@ -1,8 +1,7 @@
 """HD broadcast layer rendering and public-object storage.
 
-Every graphic is supplied as two lossless PNGs: a static background and a
-transparent data layer.  The broadcast client composes them and owns the
-one-time entrance animation for the data layer.
+Every graphic is supplied as two lossless layers and a combined PNG.
+The combined image retains alpha outside the designed graphic.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import base64
 import os
 from pathlib import Path
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
@@ -313,10 +312,19 @@ def render_live_coder_asset_pairs(
     return result
 
 
+def composite_asset_pair(background_png: bytes, asset_png: bytes) -> bytes:
+    """Compose the original layers without flattening their alpha channel."""
+    with Image.open(BytesIO(background_png)) as background, Image.open(BytesIO(asset_png)) as asset:
+        if background.size != CANVAS or asset.size != CANVAS:
+            raise ValueError("Broadcast layers must both be 1920x1080")
+        return _encode_png(Image.alpha_composite(background.convert("RGBA"), asset.convert("RGBA")))
+
+
 @dataclass(frozen=True)
 class StoredAsset:
     background_url: str
     asset_url: str
+    combined_url: str
     generated_at: str
     width: int = CANVAS[0]
     height: int = CANVAS[1]
@@ -325,6 +333,7 @@ class StoredAsset:
         return {
             "background_url": self.background_url,
             "asset_url": self.asset_url,
+            "combined_url": self.combined_url,
             "generated_at": self.generated_at,
             "width": self.width,
             "height": self.height,
@@ -396,6 +405,19 @@ class BroadcastAssetStore:
             temporary.replace(path)
         return self._url(relative_path)
 
+    def read_asset_url(self, url: str, match_id: str) -> bytes:
+        """Read only an object belonging to this match from the configured store."""
+        base = self.cdn_base_url + "/" + self.prefix + "/" if self.uses_s3 else self.public_base_url + "/api/broadcast/assets/"
+        source, expected = urlsplit(url), urlsplit(base)
+        if (source.scheme, source.netloc) != (expected.scheme, expected.netloc) or not source.path.startswith(expected.path):
+            raise ValueError("Asset URL is outside the configured broadcast store")
+        relative_path = unquote(source.path[len(expected.path):])
+        if self._safe_relative_path(relative_path) != relative_path or not relative_path.startswith(f"{match_id}/"):
+            raise ValueError("Asset URL is outside the match")
+        if self.uses_s3:
+            return self._client().get_object(Bucket=self.bucket, Key=f"{self.prefix}/{relative_path}")["Body"].read()
+        return self.resolve_local(relative_path).read_bytes()
+
     def resolve_local(self, relative_path: str) -> Path:
         if self.uses_s3:
             raise FileNotFoundError("Broadcast assets are stored in S3")
@@ -411,6 +433,7 @@ def store_asset_pair(
     rendered: tuple[bytes, bytes] | None = None,
 ) -> StoredAsset:
     background_png, asset_png = rendered or render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
+    combined_png = composite_asset_pair(background_png, asset_png)
     generated_at = datetime.utcnow().isoformat()
     background_url = store.put(
         # Bump this filename only when the static template design changes;
@@ -428,9 +451,16 @@ def store_asset_pair(
         "public, max-age=31536000, immutable" if immutable else "public, max-age=55, must-revalidate",
         generated_at,
     )
+    combined_url = store.put(
+        f"{relative_base}/combined.png",
+        combined_png,
+        "image/png",
+        "public, max-age=31536000, immutable" if immutable else "public, max-age=55, must-revalidate",
+        generated_at,
+    )
     # Both layers keep immutable cache headers.  Version both URLs so a
     # template refresh (for example a new dominance background) cannot leave
     # viewers combining a fresh data asset with a stale background PNG.
     versioned_background_url = f"{background_url}?v={quote(generated_at, safe='')}"
     versioned_asset_url = f"{asset_url}?v={quote(generated_at, safe='')}"
-    return StoredAsset(background_url=versioned_background_url, asset_url=versioned_asset_url, generated_at=generated_at)
+    return StoredAsset(background_url=versioned_background_url, asset_url=versioned_asset_url, combined_url=combined_url if not immutable else f"{combined_url}?v={quote(generated_at, safe='')}", generated_at=generated_at)

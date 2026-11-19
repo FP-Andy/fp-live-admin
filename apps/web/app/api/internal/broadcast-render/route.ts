@@ -94,6 +94,9 @@ export async function POST(request: NextRequest) {
       // external logo URL as a hard failure for the whole graphic.
       await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>('img[data-broadcast-logo="true"]'))
         .every((image) => image.complete && image.naturalWidth > 0), { timeout: 4_000 }).catch(() => undefined);
+      // Never let the console's document background become part of a PNG.
+      // Keep the card's own template and shadows intact.
+      await page.addStyleTag({ content: `html, body { background: transparent !important; background-color: transparent !important; } body::before, body::after { display: none !important; }` });
       const capture = async (layer: 'background' | 'asset') => {
         await page.evaluate((nextLayer) => {
           document.querySelector('main.lc-overlay-root')?.setAttribute('data-broadcast-capture-layer', nextLayer);
