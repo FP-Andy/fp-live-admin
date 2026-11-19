@@ -3,6 +3,7 @@
 import { futsalPitchPoint } from '../../../../lib/futsal-pitch';
 import { futsalShotThreat } from '../../../../components/fla/FutsalShotPitch';
 import LineupUniforms from '../../../../components/LineupUniforms';
+import MatchdayLineupImport from '../../../../components/fla/MatchdayLineupImport';
 import ConfirmDialog from '../../../../components/ConfirmDialog';
 import {MatchPossessionCard, MatchAttackCard, MatchShotCard, MatchRecentRecords, MatchPossessionTimeline, MatchFlowCard} from '../../../../components/fla/MatchControlCards';
 import Link from 'next/link';
@@ -366,7 +367,7 @@ function MatchControlPage() {
 
   useEffect(() => {
     setXgPlayerKey('');
-  }, [xgTeam, match?.metadata?.lineup_pdf_uploaded_at, match?.metadata?.lineup_record_sheet_uploaded_at, match?.metadata?.lineup_manual_updated_at]);
+  }, [xgTeam, match?.metadata?.lineup_pdf_uploaded_at, match?.metadata?.lineup_record_sheet_uploaded_at, match?.metadata?.lineup_manual_updated_at, match?.metadata?.lineup_matchday_updated_at]);
 
   useEffect(() => {
     if (isGoalShot && !isOnTargetShot) {
@@ -1643,6 +1644,7 @@ function MatchControlPage() {
             </span>
           </div>
           <div className="match-lineup-actions">
+            {match && (match.sport || 'FOOTBALL') === 'FOOTBALL' && String(match.competition_class || '').toUpperCase() === 'UCCC' ? <MatchdayLineupImport matchId={id} match={match} canWrite={canWrite && !isArchived} onApplied={setMatch} /> : null}
             <div className="match-lineup-action-row">
               <label className="muted" htmlFor="lineup-direction">명단 방향</label>
               <select id="lineup-direction" value={lineupFirstSide} onChange={(event) => setLineupFirstSide(event.target.value as Team | 'AUTO')} disabled={!canWrite || isUploadingLineup || isUploadingRecordSheet}>

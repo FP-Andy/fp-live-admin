@@ -77,6 +77,7 @@ from .fpa import (
 )
 from .fpa_model_baselines import build_fpa_model_room_baseline_artifacts, canonicalize_xfp_weights_payload
 from . import record_sheet
+from . import matchday_client
 from .fpa_schemas import FcmAnalyzeWorkbookResponse, FpaExportLogsRequest, FpaGenerateLogRequest, FpaGenerateLogResponse, FpaImportLogsResponse, FpaPlayersResponse, FpaSavedLogsRequest, FpaSavedLogsResponse, FpaVisualizeResponse
 from . import highlight_card_store as card_store
 from . import highlight_template_editor as template_editor
@@ -8025,6 +8026,111 @@ def get_match(match_id: UUID, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Match not found")
     return _cache_set(_match_response_cache, cache_key, _serialize_match(row))
+
+
+def _matchday_match(db: Session, match_id: UUID, *, lock: bool = False) -> Match:
+    query = db.query(Match).filter(Match.id == match_id)
+    row = query.with_for_update().first() if lock else query.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if _normalize_sport(row.sport) != 'FOOTBALL' or _normalize_competition_class(row.competition_class) != 'UCCC':
+        raise HTTPException(status_code=409, detail='매치데이 연동은 UCCC 축구 경기에서 사용할 수 있습니다.')
+    return row
+
+
+def _matchday_data(matchday_id: int, refresh: bool = False):
+    try:
+        fixture = next((item for item in matchday_client.fixtures(refresh=refresh) if item['matchId'] == matchday_id), None)
+        if not fixture:
+            raise HTTPException(status_code=404, detail='UCCC 경기 목록에서 해당 경기를 찾을 수 없습니다.')
+        teams, errors = matchday_client.roster(matchday_id)
+        return fixture, teams, errors
+    except matchday_client.MatchdayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _matchday_preview(db: Session, row: Match, fixture: dict, teams: dict, errors: list) -> dict:
+    metadata = row.metadata_json or {}
+    current = ((metadata.get('lineups') or {}).get('teams') or {})
+    current = {side: current.get(side) or [] for side in ('HOME', 'AWAY')}
+    names = _team_names_from_match(row)
+    incoming_names = {'HOME': fixture.get('homeTeamName'), 'AWAY': fixture.get('awayTeamName')}
+    teams_known = all(isinstance(incoming_names[side], str) and incoming_names[side].strip() for side in ('HOME', 'AWAY'))
+    names_changed = bool(teams_known and any(names[side] != incoming_names[side].strip() for side in ('HOME', 'AWAY')))
+    has_records = any(db.query(model).filter(model.match_id == row.id).first() is not None for model in (Event, PossessionSegment, LaneSegment, MatchMarker, DominanceBin, MatchHighlight))
+    has_records = has_records or db.query(State).filter(State.match_id == row.id, or_(State.clock_ms > 0, State.running.is_(True))).first() is not None
+    linked = (metadata.get('matchday') or {}).get('match_id')
+    roster_ready = bool(teams_known and teams['HOME'] and teams['AWAY'] and not errors)
+    result = {'fixture': fixture, 'teams': teams, 'current_teams': current, 'current_names': names,
+              'teams_known': bool(teams_known), 'names_changed': names_changed, 'has_records': bool(has_records),
+              'linked_match_id': linked, 'roster_ready': roster_ready, 'errors': errors}
+    result['fingerprint'] = matchday_client.fingerprint(result)
+    return result
+
+
+@app.get('/api/matches/{match_id}/matchday/fixtures')
+def list_uccc_matchday_fixtures(match_id: UUID, refresh: bool = False, db: Session = Depends(get_db), session_user: User = Depends(_require_session_user)):
+    _matchday_match(db, match_id)
+    try:
+        return {'fixtures': matchday_client.fixtures(refresh=refresh)}
+    except matchday_client.MatchdayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get('/api/matches/{match_id}/matchday/fixtures/{matchday_id}/preview')
+def preview_uccc_matchday(match_id: UUID, matchday_id: int, db: Session = Depends(get_db), session_user: User = Depends(_require_session_user)):
+    row = _matchday_match(db, match_id)
+    fixture, teams, errors = _matchday_data(matchday_id, refresh=True)
+    return _matchday_preview(db, row, fixture, teams, errors)
+
+
+@app.post('/api/matches/{match_id}/matchday/apply')
+def apply_uccc_matchday(match_id: UUID, body: dict = Body(...), db: Session = Depends(get_db), session_user: User = Depends(_require_session_user)):
+    matchday_id, expected = body.get('match_id'), body.get('fingerprint')
+    if type(matchday_id) is not int or matchday_id <= 0 or not isinstance(expected, str):
+        raise HTTPException(status_code=400, detail='경기를 다시 선택해 주세요.')
+    row = _matchday_match(db, match_id)
+    _require_match_not_archived(row)
+    _require_write_lock(row, session_user)
+    fixture, teams, errors = _matchday_data(matchday_id, refresh=True)
+    # Reload under a row lock after the network request so the reviewed state cannot
+    # be silently overwritten by another operator while the request was in flight.
+    db.expire(row)
+    row = _matchday_match(db, match_id, lock=True)
+    _require_match_not_archived(row)
+    _require_write_lock(row, session_user)
+    preview = _matchday_preview(db, row, fixture, teams, errors)
+    if preview['fingerprint'] != expected:
+        raise HTTPException(status_code=409, detail='경기 또는 명단이 변경됐습니다. 다시 조회하고 확인해 주세요.')
+    if preview['has_records'] and (preview['names_changed'] or (preview['linked_match_id'] and preview['linked_match_id'] != matchday_id)):
+        raise HTTPException(status_code=409, detail='이미 경기 기록이 있어 다른 홈·어웨이 경기로 변경할 수 없습니다.')
+    if preview['names_changed'] and any(preview['current_teams'].values()) and not preview['roster_ready']:
+        raise HTTPException(status_code=409, detail='기존 명단이 있어 새 팀의 명단이 준비되기 전에는 팀을 변경할 수 없습니다.')
+    metadata = dict(row.metadata_json or {})
+    now = datetime.now(timezone.utc).isoformat()
+    previous_link = metadata.get('matchday') or {}
+    metadata['matchday'] = {'competition_id': matchday_client.COMPETITION_ID, 'match_id': matchday_id, 'linked_at': previous_link.get('linked_at', now) if previous_link.get('match_id') == matchday_id else now,
+                            'roster_imported_at': now if preview['roster_ready'] else (previous_link.get('roster_imported_at') if previous_link.get('match_id') == matchday_id else None)}
+    if preview['teams_known']:
+        home, away = fixture['homeTeamName'].strip(), fixture['awayTeamName'].strip()
+        metadata['home_team'], metadata['away_team'] = home, away
+        row.name = f'[{row.competition_class} | {row.round_number}R] {home} vs {away}'
+    if preview['roster_ready']:
+        lineup = dict(metadata.get('lineups') or {})
+        if preview['names_changed']:
+            lineup.pop('uniforms', None)
+        lineup.update(source='matchday', teams=teams, team_names={'HOME': fixture['homeTeamName'], 'AWAY': fixture['awayTeamName']})
+        metadata['lineups'] = lineup
+        metadata['lineup_team_info'] = {side: {'name': name} for side, name in lineup['team_names'].items()}
+        metadata['lineup_matchday_updated_at'] = now
+    row.metadata_json = metadata
+    db.commit()
+    db.refresh(row)
+    if preview['names_changed']:
+        _on_team_branding_changed([match_id])
+    else:
+        _match_response_cache.clear()
+    return {'match': _serialize_match(row), 'roster_imported': preview['roster_ready']}
 
 
 @app.post("/api/matches/{match_id}/lineup/pdf")
