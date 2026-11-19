@@ -24,6 +24,7 @@ from sqlalchemy.ext.compiler import compiles  # noqa: E402
 from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 from app import fineplay_final_score as fs  # noqa: E402
+from app import fineplay_scrimmage  # noqa: E402
 from app.auth import get_session_user, require_admin  # noqa: E402
 from app.db import Base, get_db  # noqa: E402
 from app.fineplay_plan import prepare_payload  # noqa: E402
@@ -104,7 +105,7 @@ class ScoreModuleTest(unittest.TestCase):
 def _route_app(client):
     app = FastAPI()
     scope = dict(globals(), app=app, __name__='app._final_score_test', __package__='app',
-                 _require_superuser=require_admin, fineplay_final_score=fs,
+                 _require_superuser=require_admin, fineplay_final_score=fs, fineplay_scrimmage=fineplay_scrimmage,
                  fineplay_default_client=lambda: client, fineplay_prepare_payload=prepare_payload,
                  update_job=update_job, AuditLog=AuditLog, User=User, HighlightJob=HighlightJob,
                  Session=Session, Body=Body, Depends=Depends, HTTPException=HTTPException, get_db=get_db, UUID=UUID)

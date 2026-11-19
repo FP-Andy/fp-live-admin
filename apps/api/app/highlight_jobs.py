@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from .db import SessionLocal
 from .fineplay_client import default_client
 from .fineplay_fpa import clip_team_fallback_view, enrich_result_payload, scrimmage_opponent_lineup
+from . import fineplay_scrimmage
 from .fineplay_plan import prepare_payload, resolve_plan, xfp_enabled
 from .fineplay_models import ClipSpec, parse_manifest
 from .fineplay_worker import process_job
@@ -218,6 +219,10 @@ def serialize_job(job: HighlightJob, brief: bool = False) -> dict[str, Any]:
         result_payload = metadata.get("result_payload")
         if isinstance(result_payload, dict) and isinstance(result_payload.get("clips"), list):
             public_metadata["result_clips_count"] = len(result_payload["clips"])
+        # 자체전 묶음별 상태(ADR-X-0010)도 결과 payload 는 빼고 상태만 남긴다.
+        if fineplay_scrimmage.META_KEY in public_metadata:
+            public_metadata[fineplay_scrimmage.META_KEY] = fineplay_scrimmage.light_metadata(
+                public_metadata[fineplay_scrimmage.META_KEY])
     return {
         "id": job.id,
         "owner_id": job.owner_id,
@@ -2723,6 +2728,13 @@ def run_fineplay_produce(job_id: str) -> None:
         if metadata.get("standalone"):
             # 사전 작업 — 신청이 없으므로 콜백은 연결 단계까지 보류한다. 결과는 DB·S3 에 전부 보관됨.
             metadata["callback_status"] = "held (사전 작업 — 신청 미연결)"
+        elif fineplay_scrimmage.bundle_sides(metadata) is not None:
+            # 라커룸 자체전(ADR-X-0010) — 결과는 A 묶음·B 묶음으로 나눠 따로 보내야 한다. 여기 payload 는
+            # 양 팀 합본이라 보내면 안 된다(서버가 A 경기 결과로 받는다). 묶음은 DB 클립으로 만들어야
+            # 하므로 클립 결과 화면(A팀/B팀 보내기)에서 보낸다. 이미 보낸 묶음도 다시 보내야 하는 상태로 돌린다.
+            reason = "held (자체전 — 클립 결과에서 A팀·B팀 따로 보내기)"
+            fineplay_scrimmage.hold_all(metadata, reason)
+            metadata["callback_status"] = reason
         elif not metadata.get("send_on_produce"):
             # 생성만 — FPA·검수까지 끝낸 뒤 클립 결과 탭에서 명시적으로 전송한다.
             metadata["callback_status"] = "held (생성만 — 클립 결과에서 전송)"

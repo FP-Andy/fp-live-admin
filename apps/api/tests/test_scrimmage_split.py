@@ -228,10 +228,225 @@ class NonScrimmagePayloadUnchangedTest(_Base):
         self.assertNotIn("scrimmage", view)
 
 
+IDENTITY = ("playerId", "userId", "playerName", "jersey")
+
+
+def _clip(payload, tail):
+    return next(c for c in payload["clips"] if c["clipKey"].endswith("-" + tail))
+
+
+class ScrimmageSplitTest(_Base):
+    """자체전 — A 묶음(A 클립 + B 골 표시용)·B 묶음(B 클립 + A 골 표시용)."""
+
+    def setUp(self):
+        super().setUp()
+        self.match = self.add_job("503", _meta("503", scrimmage=True))
+        self.url = f"/api/highlight/clip-results/matches/{self.match}/resend"
+
+    def send(self, **body):
+        return self.client.post(self.url, json=body)
+
+    def test_both_bundles_sent_with_own_clips_and_opponent_goals_display_only(self):
+        r = self.send()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"callback_status": {"A": "sent", "B": "sent"}, "sides": ["A", "B"],
+                                    "scrimmage": True, "clips": {"A": 3, "B": 2}})
+        a, b = self.sent()
+        for payload, letter in ((a, "A"), (b, "B")):
+            self.assertEqual(payload["scrimmageSide"], letter)
+            self.assertEqual(payload["analysisRequestId"], "503")   # 두 묶음 모두 원 신청 id
+            self.assertEqual(payload["teamId"], "T1")
+            self.assertNotIn(":", "".join(c["clipKey"] for c in payload["clips"]))  # 접미사는 서버가 붙인다
+        # A = 홈(our_side): 홈 클립 + team_side 없는 옛 클립 + 원정 골(표시용). 원정 장면(003)은 빠진다.
+        self.assertEqual([(c["clipKey"][-3:], bool(c.get("displayOnly"))) for c in a["clips"]],
+                         [("001", False), ("002", True), ("004", False), ("005", False)])
+        # B = 원정: 원정 클립 + 홈 골(표시용). 옛 클립(004)·홈 장면(005)은 빠진다.
+        self.assertEqual([(c["clipKey"][-3:], bool(c.get("displayOnly"))) for c in b["clips"]],
+                         [("001", True), ("002", False), ("003", False)])
+
+        for payload in (a, b):
+            for clip in payload["clips"]:
+                if not clip.get("displayOnly"):
+                    self.assertNotIn("displayOnly", clip)
+                    continue
+                # 표시용 — 선수 연결이 하나도 없다. 영상·구간·골·장면 좌표는 그대로.
+                self.assertTrue(clip["isGoal"])
+                self.assertNotIn("involvedPlayers", clip)
+                view = clip["teamView"]
+                self.assertEqual(view["highlightTeam"], "OPPONENT")
+                self.assertNotIn("mainPlayerName", view)
+                for action in view["actions"]:
+                    for key in IDENTITY:
+                        self.assertNotIn(key, action)
+                self.assertTrue(clip["highlightVideo"]["horizontalS3Key"])
+                self.assertIn("startTime", clip)
+        self.assertTrue(_clip(b, "001")["teamView"]["actions"][0]["sceneData"])
+
+        # 원래 클립 — 그 편 선수만 그 편 라인업으로 연결, 반대편 액션은 식별 필드(등번호 포함)가 없다.
+        a1 = _clip(a, "001")["teamView"]["actions"]
+        self.assertEqual([x.get("playerId") for x in a1[:2]], ["101", "102"])
+        self.assertEqual(a1[0]["userId"], 101)
+        for key in IDENTITY:
+            self.assertNotIn(key, a1[2])                      # 홈 공격 클립 안 원정 태클
+        self.assertEqual({p["playerId"] for p in _clip(a, "001")["involvedPlayers"]}, {"101", "102"})
+        self.assertNotIn("9", _clip(a, "001")["teamView"].get("involvedJerseys", []))
+        b2 = _clip(b, "002")["teamView"]["actions"]
+        self.assertEqual([x.get("playerId") for x in b2[:2]], ["202", "201"])  # B 라인업으로 재매칭
+        self.assertEqual(_clip(b, "002")["teamView"]["highlightTeam"], "OURS")
+        for key in IDENTITY:
+            self.assertNotIn(key, b2[2])                      # 원정 골 클립 안 홈 선방
+        self.assertEqual({p["playerId"] for p in _clip(b, "002")["involvedPlayers"]}, {"201", "202"})
+        all_a = {p["playerId"] for c in a["clips"] for p in c.get("involvedPlayers") or []}
+        all_b = {p["playerId"] for c in b["clips"] for p in c.get("involvedPlayers") or []}
+        self.assertTrue(all_a <= {"101", "102", "103"} and all_b <= {"201", "202"}, (all_a, all_b))
+
+        # 점수 — 묶음 관점(A 묶음 우리=A, B 묶음 우리=B).
+        self.assertEqual((a["finalScore"]["our"], a["finalScore"]["opponent"]), (2, 1))
+        self.assertEqual((b["finalScore"]["our"], b["finalScore"]["opponent"]), (1, 2))
+
+        meta = self.meta("503")
+        self.assertEqual(meta["callback_status"], "sent")
+        self.assertNotIn("result_payload", meta)           # 합본은 따로 쓰지 않는다
+        self.assertEqual({k: (v["side"], v["callback_status"], v["clips"], v["display_clips"], v["player_match"])
+                          for k, v in meta["scrimmage"].items()},
+                         {"A": ("home", "sent", 3, 1, "3/3"), "B": ("away", "sent", 2, 1, "3/3")})
+        self.assertEqual(_canon(meta["scrimmage"]["A"]["result_payload"]), _canon(a))
+        self.assertEqual(_canon(meta["scrimmage"]["B"]["result_payload"]), _canon(b))
+
+        rows = self.client.get("/api/highlight/clip-results/matches").json()
+        row = next(x for x in rows if x["job_id"] == "503")
+        self.assertEqual({k: v["callback_status"] for k, v in row["scrimmage"].items()}, {"A": "sent", "B": "sent"})
+        self.assertEqual(row["scrimmage"]["B"]["label"], "B팀")
+
+    def test_zero_clip_bundle_is_still_sent_and_a_follows_our_side(self):
+        # A = 원정(our_side away). 원정 장면 클립 하나뿐 — B(홈) 묶음은 클립 0개지만 보낸다.
+        match = self.add_job("504", _meta("504", scrimmage=True, our_side="away"),
+                             clips=[("001", "away", False, [(1, "Pass", "away", "7", None, None, None)])])
+        r = self.client.post(f"/api/highlight/clip-results/matches/{match}/resend", json={})
+        self.assertEqual(r.status_code, 200, r.text)
+        a, b = self.sent()
+        self.assertEqual(len(a["clips"]), 1)
+        self.assertEqual(a["clips"][0]["teamView"]["actions"][0]["playerId"], "101")  # 원정 = A 라인업
+        self.assertEqual((b["scrimmageSide"], b["clips"]), ("B", []))
+        self.assertEqual((a["finalScore"]["our"], b["finalScore"]["our"]), (1, 2))
+        self.assertEqual(self.meta("504")["scrimmage"]["B"]["callback_status"], "sent")
+
+    def test_one_bundle_at_a_time_is_idempotent(self):
+        r = self.send(side="B")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["callback_status"], {"B": "sent"})
+        self.assertEqual([p["scrimmageSide"] for p in self.sent()], ["B"])
+        self.assertEqual(self.meta("503")["callback_status"], "A: 안 보냄, B: sent")
+        self.assertNotIn("A", self.meta("503")["scrimmage"])
+        self.send(side="B")
+        first, second = self.sent()
+        self.assertEqual(_canon(first), _canon(second))      # 같은 묶음을 다시 보내면 같은 내용
+        self.send(side="a")
+        self.assertEqual(self.meta("503")["callback_status"], "sent")
+        self.assertEqual(self.send(side="C").status_code, 400)
+        normal = self.add_job("501", _meta("501"))
+        calls = self.fineplay.post_results.call_count
+        bad = self.client.post(f"/api/highlight/clip-results/matches/{normal}/resend", json={"side": "A"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(self.fineplay.post_results.call_count, calls)
+
+    def test_failed_bundle_is_recorded_and_other_still_sent(self):
+        self.fineplay.post_results.side_effect = [None, RuntimeError("HTTP 502")]
+        r = self.send()
+        self.assertEqual(r.status_code, 502)
+        meta = self.meta("503")
+        self.assertEqual(meta["scrimmage"]["A"]["callback_status"], "sent")
+        self.assertTrue(meta["scrimmage"]["B"]["callback_status"].startswith("failed"))
+        self.assertTrue(meta["callback_status"].startswith("A: sent, B: failed"))
+
+    def test_resend_callback_resends_stored_bundles_not_the_merged_payload(self):
+        with fixture.SessionLocal() as db:   # produce 가 남긴 합본 — 자체전에선 보내면 안 된다
+            job = db.get(HighlightJob, "503")
+            job.job_metadata = {**job.job_metadata, "result_payload": {"analysisRequestId": "503", "clips": []}}
+            db.commit()
+        r = self.client.post("/api/highlight/fineplay-jobs/503/resend-callback")   # 기록 없음 → DB 로 만든다
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"callback_status": {"A": "sent", "B": "sent"}, "sides": ["A", "B"],
+                                    "scrimmage": True})
+        built = self.sent()
+        self.assertEqual([p["scrimmageSide"] for p in built], ["A", "B"])
+        r = self.client.post("/api/highlight/fineplay-jobs/503/resend-callback", json={"side": "A"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(_canon(self.sent()[-1]), _canon(built[0]))
+        self.assertEqual(self.meta("503")["result_payload"], {"analysisRequestId": "503", "clips": []})
+
+    def test_final_score_change_resends_each_bundle_from_its_own_view(self):
+        self.send()
+        res = self.client.put("/api/highlight/fineplay-jobs/503/final-score", json={"home": 3, "away": 0})
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["resent"], {"A": "sent", "B": "sent"})
+        self.assertEqual(body["scrimmage"], {"A": "sent", "B": "sent"})
+        self.assertTrue(body["sent"])
+        a, b = self.sent()[-2:]
+        self.assertEqual((a["scrimmageSide"], a["finalScore"]["our"], a["finalScore"]["opponent"]), ("A", 3, 0))
+        self.assertEqual((b["scrimmageSide"], b["finalScore"]["our"], b["finalScore"]["opponent"]), ("B", 0, 3))
+        self.assertEqual(self.meta("503")["scrimmage"]["B"]["result_payload"]["finalScore"]["our"], 0)
+
+    def test_highlight_only_split_keeps_video_fields_only(self):
+        match = self.add_job("505", _meta("505", tier="basic", scrimmage=True))
+        r = self.client.post(f"/api/highlight/clip-results/matches/{match}/resend", json={})
+        self.assertEqual(r.status_code, 200, r.text)
+        a, b = self.sent()
+        allowed = {"clipKey", "fpcClipId", "sourceVideoId", "startTime", "endTime", "highlightVideo",
+                   "mainAction", "title", "isGoal", "displayOnly"}
+        self.assertEqual([(c["clipKey"][-3:], c.get("displayOnly", False)) for c in a["clips"]],
+                         [("001", False), ("002", True), ("004", False), ("005", False)])
+        self.assertEqual([(c["clipKey"][-3:], c.get("displayOnly", False)) for c in b["clips"]],
+                         [("001", True), ("002", False), ("003", False)])
+        for clip in a["clips"] + b["clips"]:
+            self.assertLessEqual(set(clip), allowed)
+        self.assertEqual(self.meta("505")["scrimmage"]["A"].get("player_match"), None)
+
+    def test_job_list_brief_drops_bundle_payloads(self):
+        from app.highlight_jobs import serialize_job
+        self.send()
+        with fixture.SessionLocal() as db:
+            brief = serialize_job(db.get(HighlightJob, "503"), brief=True)["job_metadata"]["scrimmage"]
+        self.assertEqual(set(brief), {"A", "B"})
+        self.assertNotIn("result_payload", brief["A"])
+        self.assertEqual(brief["A"]["callback_status"], "sent")
+
+
+class ScrimmageHelpersTest(unittest.TestCase):
+    def test_only_non_standalone_scrimmage_is_split(self):
+        from app import fineplay_scrimmage as fs
+        self.assertIsNone(fs.bundle_sides(_meta("1")))
+        self.assertIsNone(fs.bundle_sides({**_meta("1", scrimmage=True), "standalone": True}))
+        self.assertIsNone(fs.bundle_sides(_standalone_meta()))
+        self.assertEqual(fs.bundle_sides(_meta("1", scrimmage=True)), {"A": "home", "B": "away"})
+        self.assertEqual(fs.bundle_sides(_meta("1", scrimmage=True, our_side="away")), {"A": "away", "B": "home"})
+        self.assertEqual(fs.bundle_lineup(_meta("1", scrimmage=True), "B"), LINEUP_B)
+
+    def test_clip_roles(self):
+        from app.fineplay_scrimmage import clip_role
+        self.assertEqual(clip_role("home", False, side="home", letter="A"), "own")
+        self.assertEqual(clip_role("away", True, side="home", letter="A"), "display")
+        self.assertIsNone(clip_role("away", False, side="home", letter="A"))
+        self.assertEqual(clip_role(None, True, side="home", letter="A"), "own")   # 옛 클립은 A 에만
+        self.assertIsNone(clip_role(None, True, side="away", letter="B"))
+
+    def test_new_produce_holds_sent_bundles(self):
+        from app import fineplay_scrimmage as fs
+        meta = _meta("1", scrimmage=True)
+        fs.record(meta, "A", side="home", status="sent", payload={"clips": []})
+        fs.record(meta, "B", side="away", status="sent", payload={"clips": []})
+        self.assertEqual(meta["callback_status"], "sent")
+        fs.hold_all(meta, "held (x)")
+        self.assertEqual({k: v["callback_status"] for k, v in meta["scrimmage"].items()},
+                         {"A": "held (x)", "B": "held (x)"})
+        self.assertIn("result_payload", meta["scrimmage"]["A"])   # 기록은 남긴다
+
+
 def load_tests(loader, tests, pattern):
     """픽스처(MatchWriteAccess)에서 물려받은 테스트는 그 파일에서 돈다 — 여기 것만 모은다."""
     suite = unittest.TestSuite()
-    for case in (NonScrimmagePayloadUnchangedTest,):
+    for case in (NonScrimmagePayloadUnchangedTest, ScrimmageSplitTest, ScrimmageHelpersTest):
         for name in loader.getTestCaseNames(case):
             if name in vars(case):
                 suite.addTest(case(name))
