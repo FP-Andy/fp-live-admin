@@ -246,6 +246,11 @@ def create_packet(case_id,case,root,rows,spatial,notes,poses,inputs,output,progr
     if (root/'wide-references.json').is_file():scope+=' 광각 참고 화면은 선택한 정지 프레임이며 같은 순간 여부는 선택 근거를 확인해야 합니다.'
     supplemented=[str(e['number']) for e in case['events'] if (spatial[e['id']].get('sceneEvidence') or {}).get('supplementalReferees')]
     if supplemented:scope+=(' 모든 장면의 누락 심판은 광각에서 근사 위치를 보완했습니다.' if len(supplemented)==len(case['events']) else ' '+', '.join(supplemented)+'번 장면의 추가 심판은 광각 화면을 참고한 근사 배치입니다.')
+    import pose_variant
+    neutral={e['id']:ids for e in case['events'] if (ids:=pose_variant.approved_neutral(case_id,e['id'],spatial[e['id']]))}
+    if neutral:
+        descriptions=[f"{e['number']}번 선수 {len(neutral[e['id']])}명" for e in case['events'] if e['id'] in neutral]
+        scope+=' '+', '.join(descriptions)+'은 기본 자세이며, 가림도 해당 형상으로 계산했습니다.'
     scope+=' R번호는 장면별 라벨이며 배번·콜 담당자와 별도로 매칭합니다.'
     y=paragraph(d,70,y,scope,1100,19,26,bottom=1578)
     text(d,70,1630,'시야는 설정한 방향·시야각에 따른 재구성이며, 실제 주시 방향과 다를 수 있습니다.',19,color=ORANGE)
@@ -368,6 +373,7 @@ def create_packet(case_id,case,root,rows,spatial,notes,poses,inputs,output,progr
         'frames':rows,'notes':notes,'analysisComments':comments,'editorialSource':editorial.get('source',{}),
         'editorialSha256':editorial_sha,'wideReferenceSha256':wide_reference_sha,
         'broadcastReconstructions':spatial,'pdfSha256':hashlib.sha256(output.read_bytes()).hexdigest()}
+    if neutral:metadata['neutralPoseApprovals']=neutral
     output.with_suffix('.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2)+'\n')
     print(json.dumps({'pdf':str(output),'pages':len(pages),'status':metadata['status']},ensure_ascii=False))
     return metadata

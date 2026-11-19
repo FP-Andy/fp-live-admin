@@ -34,8 +34,13 @@ def stamp(key):
     from report_inputs import version
     from wide_reference import version as wide_version
     case=case_store.load_case(key);root=case_store.CASES[key]
-    return digest({'case':key,'revision':case['revision'],'records':case.get('recordsVersion'),'editorial':version(key),'wideReference':wide_version(root),
-        'captures':{e['id']:json.loads((root/'reconstructions'/e['id']/'current.json').read_text()).get('captureId') for e in case['events']},'layout':'summary-clips-v12'})
+    scenes={e['id']:json.loads((root/'reconstructions'/e['id']/'current.json').read_text()) for e in case['events']}
+    identity={'case':key,'revision':case['revision'],'records':case.get('recordsVersion'),'editorial':version(key),'wideReference':wide_version(root),
+        'captures':{eid:scene.get('captureId') for eid,scene in scenes.items()},'layout':'summary-clips-v12'}
+    import pose_variant
+    approvals={eid:ids for eid,scene in scenes.items() if (ids:=pose_variant.approved_neutral(key,eid,scene))}
+    if approvals:identity['neutralPoseApprovals']=approvals
+    return digest(identity)
 
 def submit(key,revision):
     case=case_store.load_case(key)
