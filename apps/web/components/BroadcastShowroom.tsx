@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
-type AssetPair = { background_url: string; asset_url: string; generated_at?: string; width?: number; height?: number };
+type AssetPair = { background_url: string; asset_url: string; combined_url?: string; overlay_url?: string; generated_at?: string; width?: number; height?: number };
 type AssetManifest = {
   live?: Record<string, AssetPair>;
   archive?: Record<string, Record<string, AssetPair>>;
@@ -63,7 +63,7 @@ function TeamMark({ name, logoUrl, color }: { name: string; logoUrl?: string; co
   );
 }
 
-function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
+function AssetCard({ title, asset, showUrls = true }: { title: string; asset?: AssetPair; showUrls?: boolean }) {
   if (!asset) {
     return (
       <article className="broadcast-asset-card broadcast-asset-pending">
@@ -76,15 +76,18 @@ function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
     <article className="broadcast-asset-card">
       <header>
         <strong>{title}</strong>
-        <span className="broadcast-png-badge">HD PNG · 2 Layers</span>
+        <span className="broadcast-png-badge">HD PNG · 투명 오버레이</span>
       </header>
-      <a href={asset.asset_url} target="_blank" rel="noreferrer" title="에셋 PNG 열기">
+      <a href={asset.combined_url || asset.asset_url} target="_blank" rel="noreferrer" title="통합 PNG 열기">
         <span className="broadcast-layer-preview">
-          <img src={asset.background_url} alt={`${title} 배경`} />
-          <img src={asset.asset_url} alt={`${title} 데이터 에셋`} />
+          {asset.combined_url ? <img src={asset.combined_url} alt={`${title} 통합 그래픽`} /> : <>
+            <img src={asset.background_url} alt={`${title} 배경`} />
+            <img src={asset.asset_url} alt={`${title} 데이터 에셋`} />
+          </>}
         </span>
       </a>
       <footer>{formatTime(asset.generated_at)}</footer>
+      {showUrls ? <AssetUrlLinks title={title} asset={asset} /> : null}
     </article>
   );
 }
@@ -92,7 +95,7 @@ function AssetCard({ title, asset }: { title: string; asset?: AssetPair }) {
 function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
   const [copied, setCopied] = useState<string | null>(null);
   if (!asset) return null;
-  const copy = async (format: '배경' | '에셋', url: string) => {
+  const copy = async (format: string, url: string) => {
     try {
       await navigator.clipboard.writeText(url);
       setCopied(format);
@@ -104,7 +107,7 @@ function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
   return (
     <div className="broadcast-asset-urls">
       <strong>{title}</strong>
-      {([['배경', asset.background_url], ['에셋', asset.asset_url]] as const).map(([format, url]) => (
+      {([...(asset.overlay_url ? [['OBS', asset.overlay_url]] : []), ...(asset.combined_url ? [['통합 PNG', asset.combined_url]] : []), ['배경', asset.background_url], ['에셋', asset.asset_url]] as string[][]).map(([format, url]) => (
         <div className="broadcast-asset-url" key={format}>
           <span>{format}</span>
           <a href={url} target="_blank" rel="noreferrer" title={url}>{url}</a>
@@ -245,7 +248,7 @@ export function BroadcastShowroomIndex() {
       <section className="broadcast-hero">
         <span>FINEPLAY BROADCAST</span>
         <h1>라이브 그래픽 쇼룸</h1>
-        <p>HD PNG 배경과 투명 에셋을 겹쳐 중계 오버레이 또는 웹에서 바로 사용합니다.</p>
+        <p>OBS 브라우저 소스에는 OBS URL을 사용하세요. 통합 PNG와 기존 배경·에셋 URL도 제공합니다.</p>
         <Link className="broadcast-demo-link" href="/demo-90m">90분 완료 데모 룸 보기 →</Link>
         <small>마지막 목록 갱신: {formatTime(data?.generated_at)}</small>
       </section>
@@ -325,9 +328,9 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
       </section>
 
       <section className="broadcast-section">
-        <div className="broadcast-section-heading"><h2>실시간 그래픽</h2><p>배경 PNG는 고정하고, 데이터 에셋 PNG만 새로 받아 방송 장비에서 3초 진입 모션을 적용합니다.</p></div>
+        <div className="broadcast-section-heading"><h2>실시간 그래픽</h2><p>OBS URL을 브라우저 소스에 넣으면 카드 바깥이 투명하게 표시됩니다. 격자무늬는 미리보기 전용입니다.</p></div>
         <div className="broadcast-assets-grid broadcast-live-assets-grid">
-          {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetCard key={type} title={label} asset={match.assets.live?.[type]} />)}
+          {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetCard key={type} title={label} asset={match.assets.live?.[type]} showUrls={false} />)}
         </div>
       </section>
 
@@ -355,8 +358,8 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
       <section className="broadcast-section">
         <div className="broadcast-section-heading"><h2>매치 도미넌스</h2><p>전반 종료와 경기 종료 시점, 총 2장을 보관하고 각각의 방송용 PNG URL을 제공합니다.</p></div>
         <div className="broadcast-assets-grid">
-          <AssetCard title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} />
-          <AssetCard title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} />
+          <AssetCard title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} showUrls={false} />
+          <AssetCard title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} showUrls={false} />
         </div>
         <div className="broadcast-live-url-list" aria-label="매치 도미넌스 에셋 URL">
           <AssetUrlLinks title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} />

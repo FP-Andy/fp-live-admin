@@ -7649,9 +7649,9 @@ html.fpa-embed .topbar {
 .broadcast-asset-card header { display: flex; justify-content: space-between; align-items: center; padding: 14px 14px 12px 18px; }
 .broadcast-asset-card header > strong { font-size: .94rem; }
 .broadcast-png-badge { padding: 5px 7px; border-radius: 6px; color: #6a737e; background: #edf0f3; font-size: .62rem; font-weight: 800; letter-spacing: .03em; }
-.broadcast-asset-card a { display: block; aspect-ratio: 16 / 9; background: #f2f4f6; }
+.broadcast-asset-card > a { display: block; aspect-ratio: 16 / 9; }
 .broadcast-asset-card img { display: block; width: 100%; height: 100%; object-fit: contain; }
-.broadcast-layer-preview { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; background: #18202a; }
+.broadcast-layer-preview { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; background-color: #e5e7eb; background-image: conic-gradient(#cbd0d6 25%, transparent 0 50%, #cbd0d6 0 75%, transparent 0); background-size: 24px 24px; }
 .broadcast-layer-preview img { position: absolute; inset: 0; width: 100%; height: 100%; }
 .broadcast-asset-card footer { padding: 10px 18px; color: #737b87; font-size: .7rem; }
 .broadcast-demo-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; max-width: 1000px; margin-top: 24px; }
@@ -7684,7 +7684,7 @@ html.fpa-embed .topbar {
 .broadcast-live-url-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 22px; }
 .broadcast-asset-urls { display: grid; gap: 6px; padding: 14px 16px; border: 1px solid #e0e4e9; border-radius: 12px; background: #fff; box-shadow: 0 8px 20px rgba(26, 34, 46, .04); }
 .broadcast-asset-urls > strong { color: #2d333b; font-size: .82rem; }
-.broadcast-asset-url { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.broadcast-asset-url { display: grid; grid-template-columns: 55px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
 .broadcast-asset-url > span { color: #d75d00; font-size: .7rem; font-weight: 800; }
 .broadcast-asset-url a { overflow: hidden; color: #59616d; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
 .broadcast-asset-url a:hover { color: #d75d00; text-decoration: underline; }
@@ -8602,3 +8602,5 @@ html.fpa-embed .topbar {
 .recording-session figcaption { color:var(--muted); font-size:13px; margin-top:8px; }
 .recording-parts { display:grid; gap:10px; max-height:320px; overflow:auto; margin-top:16px; }
 @media(max-width:600px) { .recording-session,.recording-connection { padding:14px; } }
+
+.broadcast-asset-card > .broadcast-asset-urls { margin: 0 14px 14px; }
