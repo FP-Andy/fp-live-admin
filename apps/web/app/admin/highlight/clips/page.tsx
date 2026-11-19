@@ -396,7 +396,7 @@ export default function ClipResultsPage() {
   // 아카이브 룸 '열어서 수정' 등 ?matchId= 딥링크 진입 시 해당 매치를 바로 연다 (최초 1회).
   const deepLinkDone = useRef(false);
 
-  const loadMatches = useCallback(async () => {
+  const loadMatches = useCallback(async (): Promise<MatchRow[] | undefined> => {
     // 딥링크 진입은 대상이 아카이브된 잡일 수 있으므로 항상 포함해서 받아온다 (표시는 아래에서 거른다).
     const params = new URLSearchParams(window.location.search);
     const target = deepLinkDone.current ? null : params.get('matchId');
@@ -419,8 +419,10 @@ export default function ClipResultsPage() {
           deepLinkDone.current = true;
         }
       }
+      return rows;
     } catch (err) {
       setMsg(errorMessage(err, '목록을 불러오지 못했습니다. 다시 시도해 주세요.'));
+      return undefined;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showArchived]);
@@ -1001,7 +1003,11 @@ export default function ClipResultsPage() {
       } else {
         setMsg(`FinePlay 전송 완료 — 클립 ${res.clips}개`);
       }
-      await loadMatches();
+      // 열려 있는 경기의 전송 상태(자체전 A·B, 사전 작업 홈·어웨이)도 새 목록 값으로 바꾼다 — 안 그러면
+      // 버튼 옆 글자가 목록을 다시 열 때까지 '안 보냄'으로 남는다
+      const rows = await loadMatches();
+      const fresh = rows?.find((r) => r.match_id === selectedMatch.match_id);
+      if (fresh) setSelectedMatch((prev) => (prev && prev.match_id === fresh.match_id ? { ...prev, ...fresh } : prev));
     } catch (err) {
       setMsg(errorMessage(err, 'FinePlay로 보내지 못했습니다. 다시 시도해 주세요.', { context: { '경기 ID': selectedMatch.match_id } }));
     } finally {
