@@ -137,8 +137,10 @@ from .fineplay_fpa import (
     pick_primary as fineplay_pick_primary,
     rematch_action_players as fineplay_rematch_action_players,
     scene_action_rows as fineplay_scene_action_rows,
+    scrimmage_opponent_lineup as fineplay_scrimmage_opponent_lineup,
 )
 from .fineplay_models import parse_manifest as fineplay_parse_manifest
+from . import fineplay_scrimmage
 from .fineplay_plan import (
     plan_from_manifest as fineplay_plan_from_manifest,
     prepare_payload as fineplay_prepare_payload,
@@ -545,6 +547,10 @@ def _ensure_runtime_schema() -> None:
     # dual 태깅 원본 보관 — 클립을 다시 열어 이어서 수정할 수 있게 한다.
     if "highlight_clips" in table_names and "fpa_scenes" not in clip_columns:
         statements.append("ALTER TABLE highlight_clips ADD COLUMN fpa_scenes JSONB")
+
+    # 골/장면 구분 — 하이라이트만(basic) 건도 앱이 골 여부를 알 수 있게 한다.
+    if "highlight_clips" in table_names and "is_goal" not in clip_columns:
+        statements.append("ALTER TABLE highlight_clips ADD COLUMN is_goal BOOLEAN NOT NULL DEFAULT FALSE")
 
     if "highlight_jobs" in table_names and "owner_id" not in highlight_job_columns:
         statements.append("ALTER TABLE highlight_jobs ADD COLUMN owner_id VARCHAR")
@@ -13371,12 +13377,16 @@ def refresh_fineplay_manifest(
 @app.post("/api/highlight/fineplay-jobs/{job_id}/resend-callback")
 def resend_fineplay_callback(
     job_id: str,
+    body: dict = Body(default={}),
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
     """기록해 둔 결과 payload 를 FinePlay 에 다시 보낸다(멱등이라 안전).
 
     엔드포인트 오픈 전 만든 결과나 콜백 실패 건을 나중에 밀어 넣는 용도.
+
+    자체전은 A·B 묶음을 따로 보낸다(body.side "A"|"B", 없으면 둘 다). 기록해 둔 묶음 payload 가
+    있으면 그걸, 없으면 DB 클립으로 그 묶음을 만들어 보낸다 — 합본(result_payload)은 보내지 않는다.
     """
     job = db.get(HighlightJob, job_id)
     if not job or job.mode != "fineplay":
@@ -13384,6 +13394,27 @@ def resend_fineplay_callback(
     metadata = dict(job.job_metadata or {})
     if metadata.get("standalone"):
         raise HTTPException(status_code=409, detail="사전 작업 매치입니다 — 신청 연결 후 전송할 수 있습니다.")
+    letters = _scrimmage_letters(metadata, body.get("side"))
+    if letters:
+        clips = (
+            db.query(HighlightClip)
+            .filter(HighlightClip.job_id == job.id)
+            .order_by(HighlightClip.order_index)
+            .all()
+        )
+        stored = fineplay_scrimmage.bundles(metadata)
+        if not clips and not all((stored.get(letter) or {}).get("result_payload") for letter in letters):
+            raise HTTPException(status_code=409, detail="보낼 결과가 없습니다. 먼저 클립을 생성하세요.")
+        client = fineplay_default_client()
+        if not client.configured:
+            raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+        labels = _clip_job_context(db, clips[0])[2] if clips else {}
+        statuses = _send_scrimmage_bundles(
+            db, job, metadata, letters=letters, client=client, clips=clips, labels=labels, use_stored=True)
+        update_job(db, job_id, job_metadata=metadata)
+        if any(str(st).startswith("failed") for st in statuses.values()):
+            raise HTTPException(status_code=502, detail=f"일부 전송 실패 — {metadata['callback_status']}")
+        return {"callback_status": statuses, "sides": list(letters), "scrimmage": True}
     payload = metadata.get("result_payload")
     if not payload:
         raise HTTPException(status_code=409, detail="보낼 결과가 없습니다. 먼저 클립을 생성하세요.")
@@ -13526,6 +13557,8 @@ def produce_fineplay_job(
                 "scoreAfter": _clip_score(c.get("scoreAfter")),
                 # 클립 시작에서 골까지의 초. 그 지점에서 점수가 바뀐다.
                 "goalAt": _clip_goal_at(c.get("goalAt")),
+                # 골 클립('골' Q/R) vs 주요장면('장면' W/E) — 앱 전송에 isGoal 로 실린다.
+                "isGoal": bool(c.get("isGoal")),
             })
     if not clips:
         raise HTTPException(status_code=400, detail="유효한 구간(end > start)이 없습니다.")
@@ -13706,6 +13739,15 @@ def _fineplay_lineup_sides(job: HighlightJob | None) -> dict[str, dict]:
             "formation": str(manifest.get("formation") or "").strip(),
             "players": manifest_players,
         }
+    # 라커룸 자체전 — 반대편 명단은 매니페스트 B팀 라인업(신청 연결이 따로 있으면 그쪽이 덮는다)
+    scrimmage_b = _players(fineplay_scrimmage_opponent_lineup(manifest))
+    if scrimmage_b:
+        opposite = "away" if our_side == "home" else "home"
+        sides[opposite] = {
+            "team_name": str((manifest.get("opponent") or {}).get("name") or ""),
+            "formation": str(manifest.get("opponentFormation") or "").strip(),
+            "players": scrimmage_b,
+        }
     for side, link in (metadata.get("links") or {}).items():
         if side not in ("home", "away") or not isinstance(link, dict):
             continue
@@ -13769,8 +13811,10 @@ def clip_result_matches(
             "job_id": c.job_id,
             "clip_count": 0,
             "updated_at": c.updated_at,
+            "clip_kinds": [],
         })
         g["clip_count"] += 1
+        g["clip_kinds"].append((c.team_side, c.is_goal))
         if c.updated_at and (g["updated_at"] is None or c.updated_at > g["updated_at"]):
             g["updated_at"] = c.updated_at
 
@@ -13790,6 +13834,14 @@ def clip_result_matches(
         archived = bool(metadata.get("clip_archived"))
         if archived and not include_archived:
             continue
+        scrimmage = fineplay_scrimmage.view(metadata)
+        if scrimmage is not None:
+            # 묶음별 클립 수 — 전송과 같은 규칙(bundle_roles)으로 센다. 보내기 전에도 목록에 보인다.
+            for letter, bundle in scrimmage.items():
+                roles = [(fineplay_scrimmage.bundle_roles(metadata, side, goal) or {}).get(letter)
+                         for side, goal in g["clip_kinds"]]
+                bundle["clip_count"] = roles.count("own")
+                bundle["display_count"] = roles.count("display")
         out.append({
             "match_id": g["match_id"],
             "job_id": g["job_id"],
@@ -13801,6 +13853,8 @@ def clip_result_matches(
             "away_team": away or str((metadata.get("scoreboard") or {}).get("away_name") or ""),
             "clip_count": g["clip_count"],
             "callback_status": metadata.get("callback_status"),
+            # 자체전이면 A팀·B팀 묶음별 전송 상태·클립 수(ADR-X-0010). 아니면 None.
+            "scrimmage": scrimmage,
             # 대회 인입은 뒤에서 도는 작업이라, 화면이 이 값을 보고 끝난 것을 안다.
             "competition_callback_status": metadata.get("competition_callback_status"),
             # 어디까지 갔는지. 서버에 남는 값이라 탭을 옮겼다 와도 그대로 보인다.
@@ -13909,13 +13963,43 @@ def clip_result_set_title(
     return {"clip_id": clip_id, "title": title, "auto_title": clip.main_action}
 
 
+def _clips_for_bundle(
+    db: Session, clips: list[HighlightClip], side: str | None,
+) -> list[tuple[HighlightClip, str | None]]:
+    """side("A"|"B")를 주면 자체전 그 묶음에 실제로 나가는 클립만, 역할("own"|"display")과 함께.
+
+    역할은 전송과 같은 fineplay_scrimmage.bundle_roles(clip_role) 에서 나온다 — 화면에서 따로 거르지
+    않는다. side 를 안 주면 전부(역할 None) — 일반 경기·사전 작업 응답은 그대로다.
+    자체전이 아닌데 side 를 주거나 모르는 값이면 400.
+    """
+    if side in (None, ""):
+        return [(c, None) for c in clips]
+    job = db.get(HighlightJob, clips[0].job_id) if clips else None
+    metadata = dict((job.job_metadata if job else None) or {})
+    letters = _scrimmage_letters(metadata, side)
+    if not clips:
+        return []
+    letter = (letters or ("",))[0]
+    out = []
+    for c in clips:
+        role = (fineplay_scrimmage.bundle_roles(metadata, c.team_side, c.is_goal) or {}).get(letter)
+        if role is not None:
+            out.append((c, role))
+    return out
+
+
 @app.get("/api/highlight/clip-results/matches/{match_id}/clips")
 def clip_result_clips(
     match_id: UUID,
+    side: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """매치의 클립 리스트 (순서대로, 홈/어웨이 귀속 포함)."""
+    """매치의 클립 리스트 (순서대로, 홈/어웨이 귀속 포함).
+
+    side=A|B(자체전만): 그 묶음에 나가는 클립만 — 각 클립에 scrimmage_role("own" 이 팀 클립 |
+    "display" 상대 골, 보기용)·is_goal 을 싣는다(ADR-X-0010).
+    """
     clips = (
         db.query(HighlightClip)
         .filter(HighlightClip.match_id == match_id)
@@ -13924,7 +14008,7 @@ def clip_result_clips(
     )
     storage = highlight_default_storage()
     out = []
-    for c in clips:
+    for c, role in _clips_for_bundle(db, clips, side):
         action_count = db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == c.id).count()
         item = {
             "id": c.id,
@@ -13938,6 +14022,9 @@ def clip_result_clips(
             "title": c.title,
             "action_count": action_count,
         }
+        if role is not None:
+            item["scrimmage_role"] = role
+            item["is_goal"] = bool(c.is_goal)
         if storage.configured and c.thumbnail_s3_key:
             item["thumbnail_url"] = storage.presigned_get(c.thumbnail_s3_key, expires=3600)
         out.append(item)
@@ -13947,20 +14034,25 @@ def clip_result_clips(
 @app.get("/api/highlight/clip-results/jobs/{job_id}/clips")
 def clip_result_job_clips(
     job_id: str,
+    side: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """Job-scoped results, including manual work without a live Match."""
-    if db.get(HighlightJob, job_id) is None:
+    """Job-scoped results, including manual work without a live Match. side=A|B 는 위와 같다."""
+    job = db.get(HighlightJob, job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
     clips = db.query(HighlightClip).filter_by(job_id=job_id).order_by(HighlightClip.order_index).all()
+    if side not in (None, "") and not clips:
+        _scrimmage_letters(dict(job.job_metadata or {}), side)  # 자체전이 아니면 400
     return {"clips": [{
         "id": clip.id, "order_index": clip.order_index, "team_side": clip.team_side,
         "start_sec": clip.start_sec, "end_sec": clip.end_sec,
         "duration_seconds": clip.duration_seconds, "main_action": clip.main_action,
         "title": clip.title,
         "action_count": db.query(HighlightClipAction).filter_by(clip_id=clip.id).count(),
-    } for clip in clips]}
+        **({"scrimmage_role": role, "is_goal": bool(clip.is_goal)} if role is not None else {}),
+    } for clip, role in _clips_for_bundle(db, clips, side)]}
 
 
 @app.get("/api/highlight/clip-results/clips/{clip_id}")
@@ -14284,7 +14376,11 @@ def clip_result_put_actions(
     if body.get("rows"):
         rows = list(body["rows"])
         scene = FineplayFpaScene(index=0, rows=rows, primary_row=fineplay_pick_primary(rows))
-        actions = fineplay_scene_action_rows(scene, our_side=our_side, lineup=lineup)
+        actions = fineplay_scene_action_rows(
+            scene, our_side=our_side, lineup=lineup,
+            # 라커룸 자체전 — 반대편(B팀)도 매칭한다. 일반 경기는 None 이라 그대로
+            opponent_lineup=fineplay_scrimmage_opponent_lineup(((job.job_metadata if job else None) or {}).get("manifest")),
+        )
         # 콘솔에서 맞춘 구간은 다시 찍어 저장해도 유지한다(_carry_over_offsets).
         carried = _carry_over_offsets(db, clip_id, actions)
     else:
@@ -14523,6 +14619,8 @@ def _build_clip_result_payload(
     include_analysis: bool = True,
     render_scene_motion_mp4: bool = False,
     on_clip: Callable[[str], None] | None = None,
+    opponent_lineup: list[dict] | None = None,
+    scrimmage_side: str | None = None,
 ) -> dict:
     """DB의 clip·action 으로 FinePlay 결과 페이로드를 조립한다.
 
@@ -14533,13 +14631,31 @@ def _build_clip_result_payload(
     include_analysis=False (하이라이트만 신청) 면 액션·채점·씬모션을 조립하지
     않는다 — DB 에 태깅 데이터가 남아 있어도 전송에는 싣지 않는다(나중에 유료로
     전환되면 True 로 재전송하면 그대로 나간다).
+
+    opponent_lineup(라커룸 자체전 B팀)을 주면 반대편 행도 그 라인업으로 매칭한다.
+
+    scrimmage_side("A"|"B")를 주면 자체전 묶음 하나를 만든다(ADR-X-0010) — our_side 는 그 묶음
+    사이드, lineup 은 그 편 라인업. 그 편 클립(team_side 없는 옛 클립은 A 에만)은 원래 클립으로,
+    반대편 골 클립은 표시용(displayOnly, 선수 연결 없음)으로 담고, 반대편 행은 매칭하지 않는다
+    (opponent_lineup 무시). 원래 클립 안 반대편 액션도 식별 필드(등번호 포함)를 뗀다 — 남기면
+    서버가 '확인 필요' 매칭을 만들어 이중 집계로 이어진다. 최상위에 scrimmageSide 를 싣는다.
+    주지 않으면(일반·사전 작업·대회) 출력은 이전과 같다.
     """
     metadata = dict(job.job_metadata or {})
     fpa_match_id = (metadata.get("fpa_link") or {}).get("match_id")
+    if scrimmage_side:
+        # 반대편은 이 묶음에서 아무도 매칭하지 않는다 — 그 편 기록은 그 편 묶음에서만 센다.
+        opponent_lineup = None
 
     payload_clips = []
     for c in clips:
-        if side_filter and c.team_side and c.team_side != side_filter:
+        display_only = False
+        if scrimmage_side:
+            role = fineplay_scrimmage.clip_role(c.team_side, c.is_goal, side=our_side, letter=scrimmage_side)
+            if role is None:
+                continue
+            display_only = role == "display"
+        elif side_filter and c.team_side and c.team_side != side_filter:
             continue
         if not include_analysis:
             # 하이라이트만 — 영상·구간·대표 액션명까지. 액션 조회도 하지 않는다.
@@ -14565,6 +14681,10 @@ def _build_clip_result_payload(
                 entry["mainAction"] = c.title or c.main_action
             if c.title:
                 entry["title"] = c.title
+            # 골/장면 구분 — 하이라이트만 건도 앱이 골 클립을 가릴 수 있게 항상 실어 보낸다.
+            entry["isGoal"] = bool(c.is_goal)
+            if display_only:
+                entry["displayOnly"] = True
             payload_clips.append(entry)
             continue
         actions = [
@@ -14577,7 +14697,9 @@ def _build_clip_result_payload(
         for a in actions:
             a.pop("id", None)
         if lineup is not None:
-            actions = fineplay_rematch_action_players(actions, our_side=our_side, lineup=lineup)
+            actions = fineplay_rematch_action_players(
+                actions, our_side=our_side, lineup=[] if display_only else lineup,
+                opponent_lineup=opponent_lineup)
         # FPA 장면 좌표(sceneData)를 항상 붙인다 — 앱이 네이티브로 재렌더한다.
         # sceneMotionKey(mp4)는 render_scene_motion_mp4=True 일 때만 렌더·업로드해 단다.
         motion_prefix = (
@@ -14596,13 +14718,19 @@ def _build_clip_result_payload(
         # 알려야 화면이 '몇 개 중 몇 개' 를 보여 줄 수 있다.
         if on_clip is not None:
             on_clip(c.id)
+        if scrimmage_side:
+            # 장면 좌표(sceneData)는 위에서 이미 붙었다 — 그림은 그대로 두고 선수 연결만 뗀다.
+            # 표시용은 전부, 원래 클립은 반대편 액션만. 이후 제목·관여 등번호도 이 기준을 따른다.
+            fineplay_scrimmage.strip_identity(actions, keep_side=None if display_only else our_side)
         main_action, team_view, involved = fineplay_analysis_from_actions(
             actions,
             clip_team=c.team_side,
             our_side=our_side,
             team_labels=labels,
             fpa_match_id=fpa_match_id,
-            lineup=lineup,
+            # 표시용은 압박 분배로도 선수가 생기면 안 된다.
+            lineup=None if display_only else lineup,
+            opponent_lineup=opponent_lineup,
         )
         video: dict = {}
         if c.horizontal_s3_key:
@@ -14634,15 +14762,22 @@ def _build_clip_result_payload(
             entry["teamView"] = team_view
         if involved:
             entry["involvedPlayers"] = involved
+        # 골/장면 구분 — xFP 건에도 동일 필드로 실어, 앱이 경로에 상관없이 같은 키를 읽게 한다.
+        entry["isGoal"] = bool(c.is_goal)
+        if display_only:
+            fineplay_scrimmage.mark_display_only(entry)
         payload_clips.append(entry)
 
-    return {
+    payload = {
         "analysisRequestId": rid,
         "teamId": team_id,
         "pipelineVersion": FINEPLAY_PIPELINE_VERSION,
         "status": "DONE",
         "clips": payload_clips,
     }
+    if scrimmage_side:
+        payload["scrimmageSide"] = scrimmage_side
+    return payload
 
 
 @app.post("/api/highlight/clip-results/matches/{match_id}/resend")
@@ -14656,6 +14791,9 @@ def clip_result_resend(
 
     사전 작업 잡은 연결된 신청(links.home/away)별로 그 팀 관점 페이로드를 각각
     보낸다 — 자기 팀 클립만, 자기 라인업으로 재매칭, 상대편 액션은 익명.
+
+    라커룸 자체전은 A 묶음·B 묶음으로 나눠 각각 보낸다(ADR-X-0010) — body.side "A"|"B" 면 그 묶음만,
+    없으면 둘 다. 클립이 0개인 묶음도 보낸다(서버는 두 묶음이 다 들어와야 완료로 친다).
 
     body.includeSceneMotionMp4(기본 false): 앱은 sceneData 로 씬모션을 네이티브
     재렌더하므로 mp4(sceneMotionKey)는 보통 불필요하다. 켰을 때만 전송 시점에 mp4 를
@@ -14676,9 +14814,20 @@ def clip_result_resend(
     # 이번 전송의 씬모션 mp4 포함 여부. 아래 _build_clip_result_payload 가 이 값을 읽고,
     # update_job 으로 저장돼 다음 전송 화면의 기본값('마지막 값')으로도 쓰인다.
     metadata["include_scene_motion_mp4"] = bool(body.get("includeSceneMotionMp4"))
+    letters = _scrimmage_letters(metadata, body.get("side"))
     client = fineplay_default_client()
     if not client.configured:
         raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+
+    if letters:
+        statuses = _send_scrimmage_bundles(
+            db, job, metadata, letters=letters, client=client, clips=clips, labels=labels)
+        update_job(db, job.id, job_metadata=metadata)
+        if any(str(st).startswith("failed") for st in statuses.values()):
+            raise HTTPException(status_code=502, detail=f"일부 전송 실패 — {metadata['callback_status']}")
+        bundles = fineplay_scrimmage.bundles(metadata)
+        return {"callback_status": statuses, "sides": list(letters), "scrimmage": True,
+                "clips": {letter: (bundles.get(letter) or {}).get("clips") for letter in letters}}
 
     if metadata.get("standalone"):
         links = dict(metadata.get("links") or {})
@@ -14747,6 +14896,7 @@ def clip_result_resend(
         team_id=team_id,
         include_analysis=fineplay_xfp_enabled(metadata),
         render_scene_motion_mp4=bool(metadata.get("include_scene_motion_mp4")),
+        opponent_lineup=fineplay_scrimmage_opponent_lineup(manifest),
     )
     payload = fineplay_prepare_payload(payload, metadata)
     metadata["result_payload"] = payload
@@ -14759,6 +14909,76 @@ def clip_result_resend(
         raise HTTPException(status_code=502, detail=f"콜백 전송 실패: {exc}")
     update_job(db, job.id, job_metadata=metadata)
     return {"callback_status": "sent", "clips": len(payload["clips"])}
+
+
+def _scrimmage_letters(metadata: dict, side: Any) -> tuple[str, ...] | None:
+    """자체전이면 보낼 묶음("A"·"B"), 아니면 None. side 를 줬는데 자체전이 아니거나 모르는 값이면 400.
+
+    side 를 안 준 일반 잡은 None 이 나가고 호출부는 지금 그대로 흐른다.
+    """
+    sides = fineplay_scrimmage.bundle_sides(metadata)
+    if sides is None:
+        if side not in (None, ""):
+            raise HTTPException(status_code=400, detail="자체전 경기만 A팀·B팀을 나눠 보낼 수 있습니다.")
+        return None
+    letters = fineplay_scrimmage.parse_letters(side)
+    if letters is None:
+        raise HTTPException(status_code=400, detail="side 는 A 또는 B 입니다.")
+    return letters
+
+
+def _send_scrimmage_bundles(
+    db: Session,
+    job: HighlightJob,
+    metadata: dict,
+    *,
+    letters: tuple[str, ...],
+    client: Any,
+    clips: list[HighlightClip],
+    labels: dict[str, str],
+    use_stored: bool = False,
+) -> dict[str, str]:
+    """자체전 묶음 전송(ADR-X-0010) — 묶음마다 따로 analysis-results 로 보낸다. metadata 를 제자리 갱신.
+
+    두 묶음 모두 원 신청 id·teamId 로 나가고 scrimmageSide 로 구분된다(B 경기 행은 서버가 찾거나
+    만든다 — 같은 묶음을 다시 보내면 같은 행에 덮어쓴다). 클립이 0개여도 보낸다. 최종 점수는
+    싣지 않는다 — B 경기 점수(신청 점수 뒤집기)는 FinePlay 서버가 만든다. use_stored 면 기록해 둔
+    묶음 payload 를 먼저 쓴다(관문만 다시 적용).
+    """
+    sides = fineplay_scrimmage.bundle_sides(metadata) or {}
+    manifest = metadata.get("manifest") or {}
+    rid = metadata.get("analysis_request_id")
+    team_id = (manifest.get("team") or {}).get("teamId")
+    include_analysis = fineplay_xfp_enabled(metadata)
+    stored = fineplay_scrimmage.bundles(metadata) if use_stored else {}
+    statuses: dict[str, str] = {}
+    for letter in letters:
+        side = sides[letter]
+        payload = (stored.get(letter) or {}).get("result_payload")
+        if isinstance(payload, dict):
+            payload = dict(payload)
+        else:
+            payload = _build_clip_result_payload(
+                db, clips, job,
+                our_side=side,
+                labels=labels,
+                rid=rid,
+                team_id=team_id,
+                lineup=fineplay_scrimmage.bundle_lineup(metadata, letter),
+                include_analysis=include_analysis,
+                render_scene_motion_mp4=bool(metadata.get("include_scene_motion_mp4")),
+                scrimmage_side=letter,
+            )
+        payload = fineplay_prepare_payload(payload, metadata)
+        try:
+            client.post_results(payload)
+            status = "sent"
+        except Exception as exc:  # noqa: BLE001 - 한 묶음 실패가 다른 묶음 전송을 막지 않는다
+            status = f"failed: {exc}"
+        fineplay_scrimmage.record(metadata, letter, side=side, status=status, payload=payload,
+                                  include_analysis=include_analysis)
+        statuses[letter] = status
+    return statuses
 
 
 def _competition_team_id(fpc_match_id: str, side: str) -> str:

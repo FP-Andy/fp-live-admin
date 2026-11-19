@@ -29,7 +29,9 @@ STATE = {'beforeDots': [{'id': 'h7', 'group': 'home', 'jersey': '7', 'x': 20, 'y
 # 아래 픽스처로 만든 FinePlay 페이로드(sort_keys·compact JSON)의 sha256.
 # mp4 를 다운로드 때만 만들도록 바꾸기 전 origin/main(621eb52)에서 뽑은 값이다 —
 # 이 값이 바뀌면 FinePlay 로 나가는 계약(G2)이 바뀐 것이니 의도한 변경인지 확인할 것.
-PAYLOAD_SHA256 = 'f654fc4e5944038bf5da8a7507fc6f5ae82c581bab9351e96daa4785642d88a3'
+# 2026-11-19 갱신: #263 이 clips[].isGoal 칸을 더해서 바뀌었다(의도한 변경). origin/main 1313e57 은
+# 옛 값(f654fc4e…)으로 통과하고, 거기에 #263(99db8d9)만 합친 트리에서 이 값이 나온다.
+PAYLOAD_SHA256 = '7f033d7d3b04080872203abe22b0709eeb7f75e39c088b761838928101604413'
 
 
 class SceneQueueTests(fixture.MatchWriteAccess):

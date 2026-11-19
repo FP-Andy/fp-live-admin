@@ -242,6 +242,38 @@ def _find_lineup_player(lineup: list[dict[str, Any]], jersey: str) -> dict[str, 
     return None
 
 
+def scrimmage_opponent_lineup(manifest: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    """라커룸 자체전 매니페스트의 B팀 라인업 — 아니면 None(일반 경기: 반대편 익명 처리 그대로).
+
+    백엔드 FpcJobManifest(2026-11-11 C-21): matchKind="SCRIMMAGE" 일 때만 opponentLineup 을 싣는다.
+    두 키 중 하나라도 없으면 분기를 타지 않는다.
+    """
+    if not isinstance(manifest, dict) or str(manifest.get("matchKind") or "").upper() != "SCRIMMAGE":
+        return None
+    raw = manifest.get("opponentLineup")
+    if not isinstance(raw, list):
+        return None
+    lineup = [e for e in raw if isinstance(e, dict)]
+    return lineup or None
+
+
+def _side_lineup(
+    side: str,
+    our_side: str,
+    lineup: list[dict[str, Any]],
+    opponent_lineup: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """행의 팀 사이드에 맞는 라인업 — 우리 팀은 신청 라인업, 반대편은 자체전 B팀 라인업.
+
+    반대편 라인업은 라커룸 자체전(매니페스트 matchKind=SCRIMMAGE, opponentLineup) 에서만 온다 —
+    두 팀 모두 같은 FinePlay 팀 선수라 반대편도 매칭해 결과를 돌려준다. 일반 경기는 None 이라
+    지금처럼 반대편을 익명 처리한다(상대 신청 건에 개인 식별 정보를 싣지 않는다).
+    """
+    if side == our_side:
+        return lineup
+    return opponent_lineup or None
+
+
 def _significance(action: str) -> int:
     try:
         return ACTION_SIGNIFICANCE.index(action)
@@ -345,6 +377,7 @@ def rematch_action_players(
     *,
     our_side: str,
     lineup: list[dict[str, Any]],
+    opponent_lineup: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """저장된 액션들을 전송 관점(our_side)에 맞춰 선수 매칭을 다시 한다.
 
@@ -352,12 +385,15 @@ def rematch_action_players(
     관점으로 playerId 가 붙어 있다. 전송 시점에 우리 팀 행은 그 신청의 라인업으로
     재매칭하고, 반대편 행은 개인 식별 필드를 뗀다(상대 라인업이 없고, 상대 신청
     건에 개인 식별 정보를 싣지 않는다). 등번호·팀 사이드·지표는 그대로 남는다.
+
+    opponent_lineup(라커룸 자체전 B팀)이 있으면 반대편 행도 그 라인업으로 매칭한다 — `_side_lineup`.
     """
     out: list[dict[str, Any]] = []
     for action in actions:
         a = dict(action)
         side = str(a.get("teamSide") or "").strip().lower()
-        entry = _find_lineup_player(lineup, str(a.get("jersey") or "")) if side == our_side else None
+        side_lineup = _side_lineup(side, our_side, lineup, opponent_lineup)
+        entry = _find_lineup_player(side_lineup, str(a.get("jersey") or "")) if side_lineup else None
         if entry:
             a["playerId"] = str(entry["playerId"]) if entry.get("playerId") else None
             a["playerName"] = entry.get("name")
@@ -379,11 +415,12 @@ def scene_action_rows(
     *,
     our_side: str,
     lineup: list[dict[str, Any]],
+    opponent_lineup: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """씬의 모든 행 → action 목록(DB·페이로드 공용 상세형).
 
     등번호→playerId 매칭은 우리 팀(our_side) 행에만 시도한다
-    (라인업은 신청 팀 것뿐이므로).
+    (라인업은 신청 팀 것뿐이므로). 자체전 B팀 라인업(opponent_lineup)이 있으면 반대편도 매칭한다.
     """
     actions: list[dict[str, Any]] = []
     for i, row in enumerate(scene.rows):
@@ -392,7 +429,8 @@ def scene_action_rows(
         action_name = canonical_action_name(row.get("Action"), row.get("Tags"))
         side = str(row.get("Team") or "").strip().lower()
         jersey = str(row.get("Player") or "").strip()
-        entry = _find_lineup_player(lineup, jersey) if side == our_side else None
+        side_lineup = _side_lineup(side, our_side, lineup, opponent_lineup)
+        entry = _find_lineup_player(side_lineup, jersey) if side_lineup else None
         action: dict[str, Any] = {
             "seq": i + 1,
             "sceneActionIndex": int(str(row.get("SceneActionIndex") or i + 1) or i + 1),
@@ -564,6 +602,7 @@ def analysis_from_actions(
     scene_index: int | None = None,
     primary_seq: int | None = None,
     lineup: list[dict[str, Any]] | None = None,
+    opponent_lineup: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, dict[str, Any], list[dict[str, Any]]]:
     """액션 목록 → (mainAction, teamView, involvedPlayers).
 
@@ -754,7 +793,8 @@ def analysis_from_actions(
         player["clipScore"] = max(player_scores) if player_scores else XFP_PLACEHOLDER_SCORE
         involved.append(player)
 
-    _attach_press_shares(actions, payload_actions, involved, our_side=our_side, lineup=lineup)
+    _attach_press_shares(actions, payload_actions, involved, our_side=our_side, lineup=lineup,
+                         opponent_lineup=opponent_lineup)
 
     main_action = ACTION_LABELS_KO.get(primary_action) or (primary_action or None)
     return main_action, team_view, involved
@@ -767,6 +807,7 @@ def _attach_press_shares(
     *,
     our_side: str,
     lineup: list[dict[str, Any]] | None,
+    opponent_lineup: list[dict[str, Any]] | None = None,
 ) -> None:
     """압박(S9) 점수를 프레임 이동량 비율로 압박자들에게 붙인다(제자리).
 
@@ -790,10 +831,13 @@ def _attach_press_shares(
         team_score = payload.get("xfpScore")
         if team_score is None:
             continue
-        # 압박한 팀 기준으로만 나눈다 — 상대 팀 압박은 우리 라인업에 없다.
+        # 압박한 팀 기준으로만 나눈다 — 상대 팀 압박은 우리 라인업에 없다(자체전이면 B팀 라인업으로).
         actor_side = str(action.get("teamSide") or "").strip().lower()
+        press_lineup = lineup
         if side and actor_side and actor_side != side:
-            continue
+            if not opponent_lineup:
+                continue
+            press_lineup = opponent_lineup
         state = _parse_scene_state((action.get("extra") or {}).get("sceneState"))
         shares = press_movement_shares(state, actor_side or side)
         if not shares:
@@ -802,7 +846,7 @@ def _attach_press_shares(
         # 무료(basic) 건에서 **떼어낼** 키 목록이라, 거기 없는 새 필드는 그대로 새어 나간다.
         # 분배 결과는 involvedPlayers.clipScore 로 이미 드러나고 그건 basic 에서 제거된다.
         for jersey, share in shares.items():
-            entry = _find_lineup_player(lineup or [], jersey)
+            entry = _find_lineup_player(press_lineup or [], jersey)
             player_id = str(entry["playerId"]) if entry and entry.get("playerId") else None
             score = press_share_score(int(team_score), share)
             player = by_id.get(player_id) if player_id else None
@@ -829,13 +873,14 @@ def build_clip_analysis(
     team_labels: dict[str, str],
     lineup: list[dict[str, Any]],
     fpa_match_id: str,
+    opponent_lineup: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """씬 하나 → (mainAction, teamView, involvedPlayers, actionRows).
 
     clip_team: 태깅 시점(A/D)에 확정된 클립 귀속 팀 — 있으면 팀 판정 1순위.
     our_side: FPA 로그에서 FinePlay 신청 팀이 어느 쪽인지 ('home'|'away').
     """
-    action_rows = scene_action_rows(scene, our_side=our_side, lineup=lineup)
+    action_rows = scene_action_rows(scene, our_side=our_side, lineup=lineup, opponent_lineup=opponent_lineup)
     # 태깅 ★(SceneState.primary)는 클립 대표 선정에서 제외 — 자동 규칙 + 클립 결과 탭 지정만 쓴다.
     main_action, team_view, involved = analysis_from_actions(
         action_rows,
@@ -844,6 +889,7 @@ def build_clip_analysis(
         team_labels=team_labels,
         fpa_match_id=fpa_match_id,
         lineup=lineup,
+        opponent_lineup=opponent_lineup,
         scene_index=scene.index,
     )
     return main_action, team_view, involved, action_rows
@@ -1043,6 +1089,7 @@ def enrich_result_payload(
     lineup: list[dict[str, Any]],
     clip_teams: dict[str, str | None] | None = None,
     video_order: dict[str, int] | None = None,
+    opponent_lineup: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """결과 콜백 payload 의 clips[] 에 FPA 분석 필드를 채운다(제자리 수정).
 
@@ -1086,6 +1133,7 @@ def enrich_result_payload(
             team_labels=team_labels,
             lineup=lineup,
             fpa_match_id=str(saved_log.match_id),
+            opponent_lineup=opponent_lineup,
         )
         if main_action and not clip.get("mainAction"):
             clip["mainAction"] = main_action

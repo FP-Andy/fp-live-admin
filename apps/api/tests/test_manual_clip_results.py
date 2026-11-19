@@ -34,6 +34,7 @@ from app import manual_clip_results as publisher
 from app.auth import get_session_user, require_admin, require_session_user
 from app.db import Base, get_db
 from app import fineplay_fpa as fpa
+from app import fineplay_scrimmage
 from app.fineplay_plan import resolve_plan
 from app.highlight_storage import S3Storage
 from app.models import HighlightClip, HighlightClipAction, HighlightJob, Match, User, FpaSavedLog
@@ -60,13 +61,14 @@ def route_app(storage):
                  highlight_default_storage=lambda: storage,
                  highlight_output_prefix=lambda: 'highlights/output/',
                  fineplay_resolve_plan=resolve_plan, FineplayFpaScene=fpa.FpaScene,
+                 fineplay_scrimmage=fineplay_scrimmage,
                  delete_job_files=Mock())
     for name in ['action_label', 'canonical_action_name', 'base_action_name', 'pick_primary',
-                 'annotate_action_codes', 'equal_split_offsets', 'scene_action_rows']:
+                 'annotate_action_codes', 'equal_split_offsets', 'scene_action_rows', 'scrimmage_opponent_lineup']:
         scope['fineplay_' + name] = getattr(fpa, name)
     names = {'_require_manual_job', '_fineplay_work_done', 'upload_manual_clip', 'register_manual_clip_results', '_serialize_clip_action',
              '_clip_job_context', '_fineplay_lineup_sides', '_carry_over_offsets',
-             'clip_result_matches', 'clip_result_job_clips', 'clip_result_detail',
+             'clip_result_matches', 'clip_result_job_clips', '_clips_for_bundle', '_scrimmage_letters', 'clip_result_detail',
              'clip_result_put_actions', 'download_clip_scene_motion', 'clip_result_delete_clip',
              '_clip_scene_motion_prefix', '_clip_scene_actions',
              'delete_highlight_job'}
