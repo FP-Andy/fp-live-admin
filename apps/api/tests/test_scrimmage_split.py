@@ -3,12 +3,17 @@
 두 가지를 고정한다.
 
 1. 운영 호환성 — 자체전이 아닌 잡(일반·사전 작업·하이라이트만)의 FinePlay 전송 payload 가
-   분할 코드 전후로 **한 바이트도 안 바뀐다.** 기대 해시는 분할 코드를 넣기 전 커밋(68661d0 =
-   09d84a1 + origin/main 833be83 + #263)에서 같은 픽스처로 뽑은 값이다. 이 해시가 바뀌면
-   운영 FinePlay 로 나가는 계약이 바뀐 것이다 — 의도한 변경인지 먼저 확인할 것.
+   **배포 중인 코드(origin/main)와 한 바이트도 다르지 않다 — isGoal 칸(#263)만 더해진다.**
+   기대 해시는 origin/main 1313e57 + #263(99db8d9)을 합친 임시 트리에서 같은 픽스처로 뽑은 값이다
+   (2026-11-19). 이 해시가 바뀌면 운영 FinePlay 로 나가는 계약이 바뀐 것이다 — 의도한 변경인지
+   먼저 확인할 것. scrimmage_merged_builder 만 예외로, #265(B팀 매칭) 인자가 main 에 없어 분할 직전
+   커밋(68661d0)에서 뽑은 값이다.
 2. 자체전 분할 — A 묶음(A 클립 + B 골 표시용)·B 묶음(B 클립 + A 골 표시용), 표시용 클립은
-   선수 연결 없음, 원래 클립 안 반대편 액션은 식별 필드 없음, 점수는 묶음 관점, 0클립 묶음도 전송,
+   선수 연결 없음, 원래 클립 안 반대편 액션은 식별 필드 없음, 0클립 묶음도 전송,
    재전송 멱등, 잡 메타 묶음별 상태.
+3. 최종 점수(finalScore)는 어떤 전송에도 없다 — 분석관 점수 확정(#266)은 빠졌다(2026-11-19 승준
+   결정, 점수는 FinePlay 어드민에서 고친다). 픽스처 잡 메타에 그때 저장했을 수 있는 final_score 를
+   일부러 남겨 두고, 그래도 안 나가는지 본다.
 
 Run (실제 앱 라우트, 임시 SQLite, 네트워크 차단 — test_match_write_access 픽스처):
   PYTHONPATH=apps/api:apps/api/tests python -m unittest test_scrimmage_split -v
@@ -37,6 +42,7 @@ LINEUP_B = [
 ]
 STATE = {"beforeDots": [{"id": "h7", "group": "home", "jersey": "7", "x": 20, "y": 30}],
          "afterDots": [{"id": "h7", "group": "home", "jersey": "7", "x": 60, "y": 40}]}
+# #266(빠짐) 시절 잡 메타에 남았을 수 있는 확정값 — 있어도 전송에 실리면 안 된다.
 FINAL = {"home": 2, "away": 1, "confirmed_at": "2026-11-11T03:00:00Z"}
 
 # (clip id 꼬리, team_side, is_goal, [(seq, action, side, jersey, player_id, user_id, extra)])
@@ -60,18 +66,19 @@ CLIPS = [
     ]),
     ("005", "home", False, []),
 ]
-# 분할 코드 이전(68661d0)에서 뽑은 해시. 아래 _canon 으로 직렬화한 값.
+# origin/main 1313e57 + #263 에서 뽑은 해시(scrimmage_merged_builder 만 68661d0). 아래 _canon 으로 직렬화한 값.
+# resend_* 가 builder 값과 같은 건 prepare_payload 가 xfp 잡은 그대로 넘기기 때문(무료 원정 링크만 분석을 뗀다).
 EXPECTED_SHA256 = {
     "normal": "072004943f8729e3c6eec249f1d1701669e8d7b5994e448538bb3a7f428acf09",
     "normal_basic": "6684777abf840d7743ec07419f755f8a245e5bd50c5dbec1e14bb43c0f6e1052",
     "standalone_home": "72969c3e2c6d8311ae465b1d6a0da4a46556fa348fd24681eda56d4051f5f624",
     "standalone_away": "fd570b4f6fd32f5177b13e1d221b2410e26beebff13bb8a252e369bf456e3ecf",
     "scrimmage_merged_builder": "3d6507d9ef6c0084ef2baa27c42536dc80ba87d58e36d33eaa981fb546af0bfc",
-    "resend_normal": "daa79b4e35f24663b1d9fe9ea45a743d68ba81896ea6d341811aedd90cc16e0d",
-    "resend_basic": "3a139622d3f0c0585f3ab2d1b13cf5dc48a21693cf855155def7c36358d76c45",
-    "resend_standalone_home": "d69f0b96efab2eb270caba80dd9c11c297f16c523d238fb754c0122f10594095",
-    "resend_standalone_away": "7b71207fb1e567dab2cda5d6b18e96b4e6b3e4f25961c591f25f7caa4dee6957",
-    "callback_normal": "daa79b4e35f24663b1d9fe9ea45a743d68ba81896ea6d341811aedd90cc16e0d",
+    "resend_normal": "072004943f8729e3c6eec249f1d1701669e8d7b5994e448538bb3a7f428acf09",
+    "resend_basic": "6684777abf840d7743ec07419f755f8a245e5bd50c5dbec1e14bb43c0f6e1052",
+    "resend_standalone_home": "72969c3e2c6d8311ae465b1d6a0da4a46556fa348fd24681eda56d4051f5f624",
+    "resend_standalone_away": "2d9c23bba9f90956223543d39cb1b17194c2e1360e49ec9eebc52a016f6ba608",
+    "callback_normal": "072004943f8729e3c6eec249f1d1701669e8d7b5994e448538bb3a7f428acf09",
 }
 
 
@@ -177,6 +184,7 @@ class NonScrimmagePayloadUnchangedTest(_Base):
         text = _canon(payload)
         self.assertNotIn("scrimmageSide", text)
         self.assertNotIn("displayOnly", text)
+        self.assertNotIn("finalScore", text)
         self.assertEqual(_sha(payload), EXPECTED_SHA256[name], f"{name} payload changed:\n{text}")
 
     def test_builder_output_is_byte_identical(self):
@@ -223,9 +231,40 @@ class NonScrimmagePayloadUnchangedTest(_Base):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json(), {"callback_status": "sent"})
         self.check("callback_normal", self.sent()[-1])
-        view = self.client.get("/api/highlight/fineplay-jobs/501/final-score").json()
-        self.assertTrue(view["sent"])
-        self.assertNotIn("scrimmage", view)
+
+    def test_no_final_score_by_any_path(self):
+        """finalScore 는 어느 경로로도 안 나간다 — 잡 메타에 final_score 가 남아 있어도,
+        #266 때 저장해 둔 payload 에 finalScore 가 박혀 있어도(재전송이 그걸 그대로 보낸다)."""
+        normal = self.add_job("501", _meta("501"))
+        pre = self.add_job("pre-7", _standalone_meta())
+        # 점수 확정 API 는 없다.
+        self.assertEqual(self.client.get("/api/highlight/fineplay-jobs/501/final-score").status_code, 404)
+        self.assertIn(self.client.put("/api/highlight/fineplay-jobs/501/final-score",
+                                      json={"home": 3, "away": 0}).status_code, (404, 405))
+        self.client.post(f"/api/highlight/clip-results/matches/{normal}/resend", json={})
+        self.client.post(f"/api/highlight/clip-results/matches/{pre}/resend", json={})
+        with fixture.SessionLocal() as db:   # #266 때 저장된 결과 흉내
+            job = db.get(HighlightJob, "501")
+            stale = {**job.job_metadata["result_payload"],
+                     "finalScore": {"our": 2, "opponent": 1, "confirmedAt": FINAL["confirmed_at"]}}
+            job.job_metadata = {**job.job_metadata, "result_payload": stale}
+            db.commit()
+        r = self.client.post("/api/highlight/fineplay-jobs/501/resend-callback")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.check("callback_normal", self.sent()[-1])      # 떼고 나면 배포 중인 코드와 같은 바이트
+        self.assertEqual(len(self.sent()), 4)
+        for payload in self.sent():
+            self.assertNotIn("finalScore", _canon(payload))
+
+        # 대회 인입(competition-results) — 사전 작업 매치를 대회로 보낼 때도 없다.
+        self.fineplay.post_competition_results = Mock(return_value={"ok": True})
+        fixture.main._run_competition_send(pre, "pre-7", {"competitionId": "C1", "name": "대회"},
+                                           {"fpcMatchId": "M1", "matchDate": "2026-11-11"}, None)
+        status = self.meta("pre-7").get("competition_callback_status")
+        self.assertEqual(self.fineplay.post_competition_results.call_count, 1, status)
+        competition_payload = self.fineplay.post_competition_results.call_args.args[0]
+        self.assertTrue(competition_payload["clips"])
+        self.assertNotIn("finalScore", _canon(competition_payload))
 
 
 IDENTITY = ("playerId", "userId", "playerName", "jersey")
@@ -300,9 +339,9 @@ class ScrimmageSplitTest(_Base):
         all_b = {p["playerId"] for c in b["clips"] for p in c.get("involvedPlayers") or []}
         self.assertTrue(all_a <= {"101", "102", "103"} and all_b <= {"201", "202"}, (all_a, all_b))
 
-        # 점수 — 묶음 관점(A 묶음 우리=A, B 묶음 우리=B).
-        self.assertEqual((a["finalScore"]["our"], a["finalScore"]["opponent"]), (2, 1))
-        self.assertEqual((b["finalScore"]["our"], b["finalScore"]["opponent"]), (1, 2))
+        # 점수는 싣지 않는다 — B 경기 점수(신청 점수 뒤집기)는 FinePlay 서버가 만든다.
+        self.assertNotIn("finalScore", a)
+        self.assertNotIn("finalScore", b)
 
         meta = self.meta("503")
         self.assertEqual(meta["callback_status"], "sent")
@@ -328,7 +367,7 @@ class ScrimmageSplitTest(_Base):
         self.assertEqual(len(a["clips"]), 1)
         self.assertEqual(a["clips"][0]["teamView"]["actions"][0]["playerId"], "101")  # 원정 = A 라인업
         self.assertEqual((b["scrimmageSide"], b["clips"]), ("B", []))
-        self.assertEqual((a["finalScore"]["our"], b["finalScore"]["our"]), (1, 2))
+        self.assertFalse("finalScore" in a or "finalScore" in b)
         self.assertEqual(self.meta("504")["scrimmage"]["B"]["callback_status"], "sent")
 
     def test_one_bundle_at_a_time_is_idempotent(self):
@@ -375,18 +414,25 @@ class ScrimmageSplitTest(_Base):
         self.assertEqual(_canon(self.sent()[-1]), _canon(built[0]))
         self.assertEqual(self.meta("503")["result_payload"], {"analysisRequestId": "503", "clips": []})
 
-    def test_final_score_change_resends_each_bundle_from_its_own_view(self):
+    def test_stale_final_score_in_stored_bundle_is_not_resent(self):
+        """#266 때 저장해 둔 묶음 payload 에 finalScore 가 있어도 재전송에선 뗀다."""
         self.send()
-        res = self.client.put("/api/highlight/fineplay-jobs/503/final-score", json={"home": 3, "away": 0})
-        self.assertEqual(res.status_code, 200, res.text)
-        body = res.json()
-        self.assertEqual(body["resent"], {"A": "sent", "B": "sent"})
-        self.assertEqual(body["scrimmage"], {"A": "sent", "B": "sent"})
-        self.assertTrue(body["sent"])
-        a, b = self.sent()[-2:]
-        self.assertEqual((a["scrimmageSide"], a["finalScore"]["our"], a["finalScore"]["opponent"]), ("A", 3, 0))
-        self.assertEqual((b["scrimmageSide"], b["finalScore"]["our"], b["finalScore"]["opponent"]), ("B", 0, 3))
-        self.assertEqual(self.meta("503")["scrimmage"]["B"]["result_payload"]["finalScore"]["our"], 0)
+        with fixture.SessionLocal() as db:
+            job = db.get(HighlightJob, "503")
+            meta = dict(job.job_metadata)
+            bundles = {k: dict(v) for k, v in meta["scrimmage"].items()}
+            for letter in bundles:
+                bundles[letter]["result_payload"] = {**bundles[letter]["result_payload"],
+                                                     "finalScore": {"our": 2, "opponent": 1}}
+            job.job_metadata = {**meta, "scrimmage": bundles}
+            db.commit()
+        first = self.sent()
+        r = self.client.post("/api/highlight/fineplay-jobs/503/resend-callback")
+        self.assertEqual(r.status_code, 200, r.text)
+        again = self.sent()[-2:]
+        self.assertEqual([_canon(p) for p in again], [_canon(p) for p in first])
+        for letter in ("A", "B"):
+            self.assertNotIn("finalScore", self.meta("503")["scrimmage"][letter]["result_payload"])
 
     def test_highlight_only_split_keeps_video_fields_only(self):
         match = self.add_job("505", _meta("505", tier="basic", scrimmage=True))

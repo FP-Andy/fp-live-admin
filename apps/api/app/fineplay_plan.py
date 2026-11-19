@@ -142,11 +142,12 @@ def strip_analysis(payload: dict[str, Any]) -> dict[str, Any]:
 def prepare_payload(payload: dict[str, Any], metadata: Any, *, side: str | None = None) -> dict[str, Any]:
     """전송 직전 관문 — basic 이면 분석 산출물을 떼고 넘긴다.
 
-    분석관이 확정한 최종 점수(finalScore)도 여기서 싣는다 — 전송 경로가 produce·재전송·클립 결과
-    (사이드별)로 셋이라 한 곳에서 붙여야 빠지는 경로가 없다. 점수는 분석 산출물이 아니라 basic 에도 싣는다.
+    최종 점수(finalScore)는 FPC 가 보내지 않는다(2026-11-19 승준 결정 — 점수는 FinePlay 어드민에서 고친다).
+    예전 분석관 점수 확정 기능(#266, 미배포)으로 저장해 둔 payload 를 다시 보낼 때 남아 있을 수 있어
+    여기서 뗀다 — 전송 경로가 여럿이라 이 한 곳만 지나면 어느 경로로도 안 나간다.
     """
-    from .fineplay_final_score import attach as attach_final_score
-
+    if isinstance(payload, dict):
+        payload.pop("finalScore", None)
     if not xfp_enabled(metadata, side=side):
-        payload = strip_analysis(payload)
-    return attach_final_score(payload, metadata, side=side)
+        return strip_analysis(payload)
+    return payload
