@@ -43,6 +43,19 @@ type RecordSheetMeta = {
   venue?: string;
 };
 
+/** 라커룸 자체전 묶음 하나의 전송 상태(ADR-X-0010). A팀 = 신청 라인업, B팀 = 반대편. */
+type ScrimmageBundle = {
+  side: 'home' | 'away';
+  label: string;
+  callback_status?: string | null;
+  /** 이 팀 클립 수 / 표시용으로 같이 나간 상대 골 수. 아직 안 보냈으면 없다. */
+  clips?: number | null;
+  display_clips?: number | null;
+  player_match?: string | null;
+};
+
+const SCRIMMAGE_LETTERS = ['A', 'B'] as const;
+
 type MatchRow = {
   match_id: string | null;
   job_id: string;
@@ -54,6 +67,8 @@ type MatchRow = {
   away_team: string;
   clip_count: number;
   callback_status?: string | null;
+  /** 자체전이면 A팀·B팀 묶음별 상태. 자체전이 아니면 null — 전송 버튼이 하나다. */
+  scrimmage?: Partial<Record<'A' | 'B', ScrimmageBundle>> | null;
   /** 대회 인입 전송 상태. 'queued'·'sending' 이면 아직 안 끝난 것이다.
    *  그 밖의 값(sent·contract-ok·rejected…·failed…·canceled…)은 전부 끝난 상태라,
    *  다시 보낼 수 있어야 한다. */
@@ -960,17 +975,26 @@ export default function ClipResultsPage() {
       </button>
     ));
 
-  const resend = async () => {
+  // side: 자체전 묶음 하나만 보낼 때 'A'|'B'. 일반 경기는 주지 않는다(서버가 400).
+  const resend = async (side?: 'A' | 'B') => {
     if (!selectedMatch?.match_id) return;
     setBusy(true);
     setMsg('');
     try {
-      const res = await apiJson<{ clips?: number; callback_status?: string | Record<string, string> }>(
+      const res = await apiJson<{
+        clips?: number | Record<string, number | null>;
+        callback_status?: string | Record<string, string>;
+        scrimmage?: boolean;
+      }>(
         `/highlight/clip-results/matches/${selectedMatch.match_id}/resend`,
-        { method: 'POST', body: JSON.stringify({ includeSceneMotionMp4 }) },
+        { method: 'POST', body: JSON.stringify(side ? { includeSceneMotionMp4, side } : { includeSceneMotionMp4 }) },
       );
-      // 사전 작업 매치는 연결된 신청(홈/어웨이)별로 나가고 사이드별 상태가 온다.
-      if (res.callback_status && typeof res.callback_status === 'object') {
+      // 자체전은 A팀·B팀 묶음별 상태가 온다.
+      if (res.scrimmage && res.callback_status && typeof res.callback_status === 'object') {
+        const parts = Object.entries(res.callback_status).map(([letter, st]) => `${letter}팀: ${st}`);
+        setMsg(`FinePlay 전송 — ${parts.join(' · ')}`);
+      } else if (res.callback_status && typeof res.callback_status === 'object') {
+        // 사전 작업 매치는 연결된 신청(홈/어웨이)별로 나가고 사이드별 상태가 온다.
         const parts = Object.entries(res.callback_status)
           .map(([side, st]) => `${side === 'home' ? '홈' : '어웨이'}: ${st}`);
         setMsg(`FinePlay 팀별 전송 — ${parts.join(' · ')}`);
@@ -1171,18 +1195,50 @@ export default function ClipResultsPage() {
                   >
                     {selectedMatch.archived ? '↩ 보관 해제' : '📦 보관'}
                   </button>
-                  <button
-                    style={primaryBtn}
-                    onClick={resend}
-                    disabled={busy}
-                    title={selectedMatch.plan?.source === 'standalone'
-                      ? '사전 작업 — 연결된 신청(홈/어웨이)마다 그 신청의 옵션대로 전송됩니다'
-                      : selectedMatch.plan?.tier === 'basic'
-                        ? '하이라이트만 신청 — 클립 영상·썸네일만 전송됩니다(액션·채점 미포함)'
-                        : '클립 영상 + 액션·채점·씬모션을 전송합니다'}
-                  >
-                    ⬆ FinePlay로 전송{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
-                  </button>
+                  {selectedMatch.scrimmage ? (
+                    // 자체전 — 결과가 A팀 경기·B팀 경기 두 개로 나간다. 둘 다 보내야 앱에 분석 완료로 뜬다.
+                    SCRIMMAGE_LETTERS.map((letter) => {
+                      const bundle = selectedMatch.scrimmage?.[letter];
+                      const status = bundle?.callback_status || '';
+                      const other = letter === 'A' ? 'B' : 'A';
+                      const sideName = bundle?.side === 'away' ? selectedMatch.away_team : selectedMatch.home_team;
+                      return (
+                        <span key={letter} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <button
+                            style={primaryBtn}
+                            onClick={() => void resend(letter)}
+                            disabled={busy}
+                            title={`${letter}팀 클립과 ${other}팀 골(보기용)을 ${letter}팀 경기로 보냅니다`
+                              + (selectedMatch.plan?.tier === 'basic' ? ' — 영상만' : '')
+                              + ' · 두 팀 다 보내야 앱에 분석 완료로 뜹니다'}
+                          >
+                            ⬆ {letter}팀 보내기{sideName ? ` (${sideName})` : ''}
+                          </button>
+                          <span
+                            style={{ fontSize: 12, color: status === 'sent' ? '#22c55e' : status ? '#f59e0b' : 'var(--muted, #999)' }}
+                            title={bundle?.player_match ? `선수 연결 ${bundle.player_match}` : undefined}
+                          >
+                            {status === 'sent'
+                              ? `보냄 · 클립 ${bundle?.clips ?? 0}개${bundle?.display_clips ? ` + ${other}팀 골 ${bundle.display_clips}개` : ''}`
+                              : status || '안 보냄'}
+                          </span>
+                        </span>
+                      );
+                    })
+                  ) : (
+                    <button
+                      style={primaryBtn}
+                      onClick={() => void resend()}
+                      disabled={busy}
+                      title={selectedMatch.plan?.source === 'standalone'
+                        ? '사전 작업 — 연결된 신청(홈/어웨이)마다 그 신청의 옵션대로 전송됩니다'
+                        : selectedMatch.plan?.tier === 'basic'
+                          ? '하이라이트만 신청 — 클립 영상·썸네일만 전송됩니다(액션·채점 미포함)'
+                          : '클립 영상 + 액션·채점·씬모션을 전송합니다'}
+                    >
+                      ⬆ FinePlay로 전송{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
+                    </button>
+                  )}
                   {selectedMatch.plan?.tier !== 'basic' ? (
                     <label
                       style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}
@@ -1391,7 +1447,16 @@ export default function ClipResultsPage() {
                           : m.competition_callback_status}
                     </span>
                   ) : null}
-                  {m.callback_status ? (
+                  {m.scrimmage ? (
+                    SCRIMMAGE_LETTERS.map((letter) => {
+                      const st = m.scrimmage?.[letter]?.callback_status || '';
+                      return (
+                        <span key={letter} style={{ fontSize: 12, color: st === 'sent' ? '#22c55e' : st ? '#f59e0b' : 'var(--muted, #999)' }}>
+                          {letter}팀 {st === 'sent' ? '보냄' : st || '안 보냄'}
+                        </span>
+                      );
+                    })
+                  ) : m.callback_status ? (
                     <span style={{ fontSize: 12, color: m.callback_status === 'sent' ? '#22c55e' : '#f59e0b' }}>
                       콜백 {m.callback_status}
                     </span>

@@ -160,6 +160,8 @@ type FpJob = {
     progress?: { detail?: string } | null;
     result_payload?: { clips?: unknown[] } | null;
     callback_status?: string;
+    // 라커룸 자체전 — 결과를 A팀·B팀 묶음으로 나눠 보낸 상태(ADR-X-0010). 보낸 적 없으면 없다.
+    scrimmage?: Partial<Record<'A' | 'B', { side?: 'home' | 'away'; callback_status?: string | null }>> | null;
     standalone?: boolean;
     source_deleted?: boolean;
     clip_archived?: boolean;
@@ -1810,7 +1812,16 @@ export default function FineplayJobsPage() {
                   }}>
                     {STATUS_LABEL[job.status] || job.status}
                   </span>
-                  {meta.callback_status ? (
+                  {meta.scrimmage && Object.keys(meta.scrimmage).length ? (
+                    <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                      · {(['A', 'B'] as const)
+                        .map((letter) => {
+                          const st = meta.scrimmage?.[letter]?.callback_status || '';
+                          return `${letter}팀 ${st === 'sent' ? '보냄' : st || '안 보냄'}`;
+                        })
+                        .join(' · ')}
+                    </span>
+                  ) : meta.callback_status ? (
                     <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>· 콜백 {meta.callback_status}</span>
                   ) : null}
                   {meta.source_deleted ? (

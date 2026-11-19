@@ -14,6 +14,8 @@ type FinalScoreView = {
   ourSide: 'home' | 'away' | null;
   sent: boolean;
   sentSides: string[];
+  /** 자체전이면 A팀·B팀 묶음별 전송 상태. 자체전이 아니면 키가 없다. */
+  scrimmage?: Partial<Record<'A' | 'B', string | null>>;
   competitionSent: boolean;
   changed?: boolean;
   resent?: Record<string, string>;
@@ -93,7 +95,7 @@ export default function FinalScorePanel({
       const resent = Object.entries(v.resent || {});
       if (!v.changed) setMsg('같은 점수라 바뀐 것이 없습니다.');
       else if (!resent.length) setMsg('확정했습니다. 다음 전송 때 같이 나갑니다.');
-      else setMsg(`확정했습니다 · 다시 보냄: ${resent.map(([k, s]) => `${k === 'request' ? '신청' : k} ${s}`).join(', ')}`);
+      else setMsg(`확정했습니다 · 다시 보냄: ${resent.map(([k, s]) => `${k === 'request' ? '신청' : k === 'A' || k === 'B' ? `${k}팀` : k} ${s}`).join(', ')}`);
     } catch (err) {
       setError(errorMessage(err, '최종 점수를 저장하지 못했습니다.', { context: { '작업 ID': jobId } }));
     } finally {
@@ -129,7 +131,9 @@ export default function FinalScorePanel({
       </span>
       {!standalone && view?.ourSide ? (
         <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
-          · 신청팀 = {view.ourSide === 'home' ? labels.home : labels.away}
+          {view.scrimmage
+            ? `· A팀 = ${view.ourSide === 'home' ? labels.home : labels.away}`
+            : `· 신청팀 = ${view.ourSide === 'home' ? labels.home : labels.away}`}
         </span>
       ) : null}
       {tagDiffers ? (
