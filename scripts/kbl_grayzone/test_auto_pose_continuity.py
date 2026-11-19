@@ -68,7 +68,7 @@ class AutoPoseContinuityTests(unittest.TestCase):
   self.assertIn('보정 전 기준',item['review']['viewComment']);self.assertTrue(info['previousViewNotice'])
   self.assertLessEqual(len(item['review']['viewComment']),auto.report_inputs.LIMITS['viewComment'])
 
- def test_uncertain_wording_is_preserved_and_batch_can_continue(self):
+ def test_authored_commentary_is_preserved_when_visibility_changes(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);case='case-a';event='review-3';old='a'*24;newid='b'*24;variant='c'*24
    base={'caseId':case,'eventId':event,'frameIndex':1,'datasetId':'data','inputSha256':'sha','selectionVersion':'v',
@@ -80,7 +80,7 @@ class AutoPoseContinuityTests(unittest.TestCase):
    token='new-spatial';objects='objects-token';step={'available':True,'ready':True,'token':token}
    status={'events':[{'id':event,'stages':{'objects':{'token':objects},'spatial':step}}]}
    stored={'events':{event:{'spatial':{'token':auto.review_flow.digest([objects,'pose',old])}}}}
-   data={'events':{event:{'scene':{'captureId':old},'review':{'takeaway':'R2가 보았다.'}}}}
+   data={'events':{event:{'scene':{'captureId':old},'review':{'takeaway':'R2가 보았다.','viewComment':'R1은 열려 있고 R2는 가립니다.','assessment':'파울이 유지됐습니다. R2의 시야를 확인합니다.'}}}}
    case_data={'events':[{'id':event}]}
    def partial_refresh(case_data,event_data,scene,candidate):
     candidate['review']['takeaway']='부분 수정된 임시 문장'
@@ -92,11 +92,11 @@ class AutoPoseContinuityTests(unittest.TestCase):
         patch.object(auto,'visibility_signature',side_effect=lambda scene:scene['captureId']),patch.object(auto,'refresh_view_text',side_effect=partial_refresh),\
         patch.object(auto,'fallback_view_text',return_value={'mode':'automatic-preserving-authored-context','previousViewNotice':True}) as fallback,patch.object(auto,'atomic') as write:
     result=auto.finalize(case,event,{'previousCaptureId':old,'captureId':newid,'version':'rev'})
-   self.assertTrue(result['carried']);self.assertTrue(result['viewUpdated']);fallback.assert_called_once()
-   self.assertEqual(fallback.call_args.args[-1]['review']['takeaway'],'R2가 보았다.')
+   self.assertTrue(result['carried']);self.assertFalse(result['viewUpdated']);self.assertTrue(result['visibilityChanged']);fallback.assert_not_called()
    self.assertEqual(write.call_count,2)
    saved=write.call_args_list[-1].args[1]['events'][event]['scene'];self.assertEqual(saved['captureId'],newid)
-   self.assertEqual(saved['autoPoseViewRefresh']['mode'],'automatic-preserving-authored-context')
+   self.assertTrue(saved['autoPoseVisibilityChanged']);self.assertFalse(saved['autoPoseViewUpdated'])
+   self.assertEqual(write.call_args_list[-1].args[1]['events'][event]['review'],data['events'][event]['review'])
    complete.assert_called_once_with(case,event,{'stage':'spatial','token':token},source='automatic-pose-recalculated')
 
  def test_concurrent_editorial_change_is_not_silently_overwritten(self):

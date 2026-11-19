@@ -43,10 +43,14 @@ def active(case):
         except (OSError,ValueError,KeyError,TypeError):continue
     return None
 
-def save_automatic_scene(case,event,payload,expected_capture):
+def save_automatic_scene(case,event,payload,expected_capture,internal_key=None):
     """Do not let a second automatic preparation replace an active video scene."""
     with case_lock(case):
-        if active(case):raise RuntimeError('이 경기의 영상 제작이 진행 중입니다. 자동 보정을 다시 시작하지 않습니다.')
+        running=active(case)
+        if running:
+            import server_auto_pose
+            if not server_auto_pose.permitted(case,event,running['jobId'],internal_key):
+                raise RuntimeError('이 경기의 영상 제작이 진행 중입니다. 자동 보정을 다시 시작하지 않습니다.')
         if not isinstance(expected_capture,str) or not re.fullmatch(r'[a-f0-9]{24}',expected_capture):raise ValueError('자동 보정의 원본 장면을 확인하세요.')
         current=broadcast_reconstruction.current(case,event,strict=True)
         if current.get('captureId')!=expected_capture:raise RuntimeError('자동 보정 중 장면이 변경됐습니다. 현재 장면을 다시 확인하세요.')
@@ -123,15 +127,47 @@ def run(job):
         except (ValueError,RuntimeError,OSError,KeyError,StopIteration):changed=True
         if changed:data['reportNeedsRefresh']=True
     try:
-        # Serialize with automatic scene saves and validate again after waiting.
+        # Register first, then run pose preparation in a server-owned browser.
+        # No user tab needs to remain open once the batch is acknowledged.
         with case_lock(data['caseId']):
             save(state='running',stage='영상 제작 준비 확인 중')
             current=review_flow.require_report(data['caseId'])
             if data['revision']!=current['revision']:raise RuntimeError('경기 자료가 바뀌었습니다. 새로고침하세요.')
             valid={e['id'] for e in current['events']}
             if any(e not in valid for e in data['events']):raise ValueError('제작할 장면을 확인하세요.')
+            checks=readiness(data['caseId']);bad=[e for e in checks['events'] if e['eventId'] in data['events'] and not e['ready']]
+            if bad:raise RuntimeError('영상 제작을 준비할 수 없는 장면이 있습니다: '+', '.join(str(e['number'])+'번' for e in bad))
+            pending=[e for e in checks['events'] if e['eventId'] in data['events'] and e.get('autoPrepare')]
+        import server_auto_pose,auto_pose_review,report_inputs
+        for index,row in enumerate(pending):
+            event=row['eventId']
+            save(stage=f'자세 자동 보정 {index+1}/{len(pending)} · {row["number"]}번 장면')
+            # Snapshot the exact source; manual edits and comment changes still
+            # fail closed instead of silently overwriting another operator.
+            source=broadcast_reconstruction.current(data['caseId'],event,strict=True)['captureId']
+            version=report_inputs.version(data['caseId'])
+            try:
+                with server_auto_pose.authorize(data['caseId'],event,job) as key:
+                    result=server_auto_pose.render(data['caseId'],event,key)
+            except Exception as exc:
+                # The save may have succeeded before the browser lost its
+                # response. Reconcile only an exact pose-derived scene from
+                # this source; finalize checks geometry and editorial version.
+                candidate=broadcast_reconstruction.current(data['caseId'],event,strict=True)
+                if candidate.get('captureId')==source or not candidate.get('poseVariantId'):raise
+                try:
+                    auto_pose_review.finalize(data['caseId'],event,{'previousCaptureId':source,
+                        'captureId':candidate['captureId'],'version':version})
+                except Exception:
+                    raise exc
+                continue
+            if result['previousCaptureId']!=source:raise RuntimeError('자동 보정 중 기준 장면이 변경됐습니다.')
+            auto_pose_review.finalize(data['caseId'],event,{**result,'version':version})
+        with case_lock(data['caseId']):
+            current=review_flow.require_report(data['caseId'])
+            if data['revision']!=current['revision']:raise RuntimeError('경기 자료가 바뀌었습니다. 새로고침하세요.')
             checks=readiness(data['caseId']);bad=[e for e in checks['events'] if e['eventId'] in data['events'] and (not e['ready'] or e.get('autoPrepare'))]
-            if bad:raise RuntimeError('영상 제작 전 공유 자세와 공간 장면을 확인하세요: '+', '.join(str(e['number'])+'번' for e in bad))
+            if bad:raise RuntimeError('자동 자세 준비를 완료하지 못했습니다: '+', '.join(str(e['number'])+'번' for e in bad))
             video_inputs={event:video_stamp(data['caseId'],event) for event in data['events']}
             report=report_jobs.submit(data['caseId'],data['revision'])['job']
             save(videoInputs=video_inputs,reportJobId=report['jobId'],fingerprint=report.get('fingerprint') or report_jobs.stamp(data['caseId']))
@@ -145,7 +181,7 @@ def run(job):
         else:save(reportIssue=report.get('error') or 'PDF 생성이 중단됐습니다. 최신 자료로 PDF를 다시 생성해 주세요.',reportNeedsRefresh=True)
         for index,event in enumerate(data['events']):
             refresh_report_flag()
-            save(stage=f'영상 제작 {index+1}/{len(data["events"])}')
+            save(stage=f'영상 제작 {index+1}/{len(data["events"])}',currentEvent=event)
             try:
                 if video_stamp(data['caseId'],event)!=data['videoInputs'][event]:
                     raise RuntimeError('이 장면의 기준 화면·배치 또는 심판 매칭이 바뀌었습니다. 장면을 확인해 주세요.')
@@ -172,7 +208,7 @@ def run(job):
         ready_delivery=('complete','ready-for-download')
         failed=(data.get('reportNeedsRefresh') or data.get('report',{}).get('delivery',{}).get('state') not in ready_delivery or
             any(v['state']!='complete' or v.get('result',{}).get('delivery',{}).get('state') not in ready_delivery for v in data['videos']))
-        save(state='partial' if failed else 'complete',stage='PDF·영상 전달 확인 필요' if failed else 'PDF·영상 제작 완료',completedAt=now())
+        save(state='partial' if failed else 'complete',stage='PDF·영상 전달 확인 필요' if failed else 'PDF·영상 제작 완료',currentEvent=None,completedAt=now())
     except Exception as exc:
         from diagnostics import safe
         save(state='failed',stage='제작 확인 필요',error=safe(exc)[:250],completedAt=now())

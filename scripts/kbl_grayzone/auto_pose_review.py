@@ -178,20 +178,16 @@ def finalize(case,event,payload):
         data=copy.deepcopy(report_inputs.read(case));item=data.get('events',{}).get(event)
         if item and item.get('scene',{}).get('captureId') not in (None,oldid):raise RuntimeError('기존 코멘트의 장면 출처가 달라 확인이 필요합니다.')
         changed=visibility_signature(old)!=visibility_signature(new)
-        refresh_info=None
-        if changed and item:
-            case_data=case_store.load_case(case);event_data=next(e for e in case_data['events'] if e['id']==event)
-            candidate=copy.deepcopy(item)
-            if refresh_view_text(case_data,event_data,new,candidate):
-                item.clear();item.update(candidate);refresh_info={'mode':'targeted'}
-            else:refresh_info=fallback_view_text(case_data,event_data,new,item)
+        # The editor wrote the commentary against their reviewed scene. A
+        # pose-only correction must not silently rewrite that authored text.
+        # Keep both capture IDs and the visibility change for provenance.
         if item:
             p=report_inputs.path(case);archive=p.parent/'report-editorial-history';archive.mkdir(exist_ok=True)
             backup=archive/(payload['version']+'.json')
             if not backup.exists():atomic(backup,report_inputs.read(case))
             item.setdefault('scene',{})
-            item['scene']['captureId']=newid;item['scene']['autoPoseRebasedFrom']=oldid;item['scene']['autoPoseRebasedAt']=now();item['scene']['autoPoseViewUpdated']=changed
-            if refresh_info:item['scene']['autoPoseViewRefresh']=refresh_info
+            item['scene']['captureId']=newid;item['scene']['autoPoseRebasedFrom']=oldid;item['scene']['autoPoseRebasedAt']=now();item['scene']['autoPoseViewUpdated']=False;item['scene']['autoPoseVisibilityChanged']=changed
+            item['scene'].pop('autoPoseViewRefresh',None)
             atomic(p,data)
         review_flow.complete(case,event,{'stage':'spatial','token':step['token']},source='automatic-pose-recalculated' if changed else 'automatic-equivalent-pose')
-        return {'carried':True,'eventId':event,'viewUpdated':changed,'version':report_inputs.version(case)}
+        return {'carried':True,'eventId':event,'viewUpdated':False,'visibilityChanged':changed,'version':report_inputs.version(case)}

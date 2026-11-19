@@ -222,6 +222,14 @@ def _execute(operation,payload,media,output,stage,job_id):
     try:
         clock=time.monotonic()
         ensure_running(c,stage)
+        # Schedule before dispatch as well, so low disk does not require a
+        # successful new inference before old verified duplicates are removed.
+        try:
+            import gpu_retention
+            gpu_retention.request_cleanup(c)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('T4 duplicate cleanup scheduling skipped')
         metrics['readySeconds']=round(time.monotonic()-clock,3)
         if not ticket.get('dispatchedAt'):
             stage('T4로 원본 연결 · 기존 업로드 재사용')
@@ -262,7 +270,9 @@ def _execute(operation,payload,media,output,stage,job_id):
             detail=(f" · {progress['completed']}/{progress['total']}{progress.get('unit','개')}" if progress.get('total') else '')
             stage('T4 작업 순서 대기' if phase=='queued' else (progress.get('phase','T4 계산 실행 중')+detail))
             if time.monotonic()>deadline:raise TimeoutError('T4 상태 확인 제한 시간')
-            time.sleep(3)
+            # Completed pose jobs are short; check sooner without changing the
+            # single-job dispatch, source validation or inference itself.
+            time.sleep(1.5)
         metrics['pollUntilCompleteSeconds']=round(time.monotonic()-clock,3);clock=time.monotonic()
         stage('T4 결과 내려받기·원본 검증')
         archive=output/'gpu-result.tar';partial=archive.with_suffix('.downloading')
@@ -284,6 +294,13 @@ def _execute(operation,payload,media,output,stage,job_id):
     ticket.update(state='complete',completedAt=now(),result=result,attemptTimings=metrics,
                   artifacts={'gpu-result.tar':hashlib.sha256(archive.read_bytes()).hexdigest()})
     atomic(ticket_path,ticket)
+    # Reclaim only older T4 duplicates asynchronously after durable transfer.
+    try:
+        import gpu_retention
+        gpu_retention.request_cleanup(c)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('T4 duplicate cleanup scheduling skipped')
     return result
 
 def stage_pose_cache(operation,payload,c,remote,output):

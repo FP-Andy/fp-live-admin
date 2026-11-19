@@ -4,11 +4,27 @@ Legacy results remain readable. Strict checks only control whether a tracking
 result is used as current input for a new processing handoff; they never erase
 or rewrite reviewed objects or reports.
 """
-import hashlib,re
+import hashlib,json,re
 from pathlib import Path
 from job_store import digest
 
 HEX=re.compile(r'^[a-f0-9]{64}$')
+COMPATIBILITY=Path(__file__).with_name('tracking-cache-compat.json')
+
+def compatible_previous(old,expected):
+    """Accept only an explicitly audited pair of complete worker bundles.
+
+    The fingerprint still binds every input, model, frame, image and setting.
+    A subsequent source change changes the target digest and fails closed.
+    """
+    previous=old.get('workerCodeSha256');current=expected.get('workerCodeSha256')
+    if not isinstance(previous,str) or not isinstance(current,str):return False
+    try:
+        pairs=json.loads(COMPATIBILITY.read_text()).get('pairs',[])
+        if not any(p.get('from')==previous and p.get('to')==current for p in pairs if isinstance(p,dict)):return False
+        prior_spec={k:v for k,v in expected.items() if k!='fingerprint'};prior_spec['workerCodeSha256']=previous
+        return old.get('fingerprint')==digest(prior_spec)
+    except (OSError,ValueError,TypeError):return False
 
 def code_sha(root):
     code=hashlib.sha256()
@@ -48,7 +64,7 @@ def status(packet,expected):
     if expected is None:return 'legacy-unverified'
     old=packet.get('trackingProvenance')
     if not isinstance(old,dict) or old.get('verified') is not True:return 'unverified'
-    if old.get('fingerprint')!=expected['fingerprint']:return 'changed'
+    if old.get('fingerprint')!=expected['fingerprint'] and not compatible_previous(old,expected):return 'changed'
     if (packet.get('inputSha256')!=expected['sourceSha256']
         or packet.get('detector',{}).get('modelSha256')!=expected['detectorSha256']
         or packet.get('roleClassifier',{}).get('modelSha256')!=expected['roleSha256']

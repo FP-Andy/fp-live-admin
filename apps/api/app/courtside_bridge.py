@@ -15,7 +15,7 @@ from fastapi import APIRouter,Depends,HTTPException,Request
 from fastapi.responses import JSONResponse,Response,StreamingResponse
 from sqlalchemy.orm import Session
 from .auth import require_session_user
-from .courtside_access import can_edit_courtside
+from .courtside_access import can_edit_courtside,record_presence
 from .db import get_db
 from .models import Match,User
 
@@ -67,7 +67,7 @@ def safe_read(root,relative):
 def authorized_match(match_id,db,user,write=False):
     m=db.get(Match,match_id)
     if not m or m.sport!='BASKETBALL':raise HTTPException(404,'농구 경기를 찾을 수 없습니다.')
-    if write and not can_edit_courtside(m,user):
+    if write and not can_edit_courtside(m,user,db):
         raise HTTPException(403,'이 경기의 작업 권한이 없습니다.')
     return m
 
@@ -269,15 +269,15 @@ def intakes(match_id:UUID,db:Session=Depends(get_db),user:User=Depends(require_s
 async def bridge(match_id:UUID,case_id:str,path:str,request:Request,db:Session=Depends(get_db),user:User=Depends(require_session_user)):
     write=request.method=='POST';authorized_match(match_id,db,user,write);root,base=config();scope=context(root,match_id,case_id)
     prefix=f'/api/courtside/matches/{match_id}/cases/{case_id}/bridge'
-    return await proxy(request,root,base,scope,path,prefix,user)
+    return await proxy(request,root,base,scope,path,prefix,user,db)
 
 @router.api_route('/api/courtside/matches/{match_id}/intakes/{intake_id}/bridge/{path:path}',methods=['GET','HEAD','POST'])
 async def intake_bridge(match_id:UUID,intake_id:str,path:str,request:Request,db:Session=Depends(get_db),user:User=Depends(require_session_user)):
     write=request.method=='POST';authorized_match(match_id,db,user,write);root,base=config();scope=intake_context(root,match_id,intake_id)
     prefix=f'/api/courtside/matches/{match_id}/intakes/{intake_id}/bridge'
-    return await proxy(request,root,base,scope,path,prefix,user)
+    return await proxy(request,root,base,scope,path,prefix,user,db)
 
-async def proxy(request,root,base,scope,path,prefix,user):
+async def proxy(request,root,base,scope,path,prefix,user,db):
     write=request.method=='POST'
     if write:require_origin(request)
     if not in_scope(root,scope,path,request.method,user):raise HTTPException(404,'자료를 찾을 수 없습니다.')
@@ -292,15 +292,27 @@ async def proxy(request,root,base,scope,path,prefix,user):
     for key in ('range','content-type','content-length'):
         if key in request.headers:headers[key]=request.headers[key]
     if write:headers['Origin']=base
+    activity=write and scope.get('case') and path==f"api/cases/{scope['case']}/work-sessions"
+    # Only tiny telemetry requests are buffered; media transfers remain streams.
+    if activity:
+        try:size=int(request.headers.get('content-length',''))
+        except ValueError:raise HTTPException(411,'작업 상태 크기를 확인하세요.') from None
+        if not 0<size<=64000:raise HTTPException(413,'작업 상태 크기를 확인하세요.')
+        body=await request.body()
+        if len(body)!=size:raise HTTPException(400,'작업 상태 크기가 일치하지 않습니다.')
+    else:body=None
     client=httpx.AsyncClient(timeout=httpx.Timeout(120.0,connect=5.0),follow_redirects=False,trust_env=False,**client_options(root))
     try:
         await check_store(client,root,base)
-        outgoing=client.build_request(request.method,url,headers=headers,content=request.stream() if write else None)
+        outgoing=client.build_request(request.method,url,headers=headers,content=(body if activity else request.stream()) if write else None)
         response=await client.send(outgoing,stream=True)
     except HTTPException:
         await client.aclose();raise
     except (httpx.HTTPError,ValueError,OSError):
         await client.aclose();raise HTTPException(503,'코트사이드 작업 서버에 연결할 수 없습니다.') from None
+    if activity and response.status_code==200:
+        try:record_presence(db,UUID(scope['match']),user,json.loads(body))
+        except Exception:db.rollback()  # Presence must never block saved work.
     if response.is_redirect:
         await response.aclose();await client.aclose();raise HTTPException(502,'예상하지 못한 작업 서버 응답입니다.')
     ctype=response.headers.get('content-type','')

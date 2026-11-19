@@ -44,6 +44,7 @@
     "fit_pose",
     "fpc_sources",
     "gpu_bridge",
+    "gpu_retention",
     "gpu_control",
     "gpu_eic_bootstrap",
     "gpu_eic_transport",
@@ -73,6 +74,7 @@
     "report_pdf",
     "report_versions",
     "report_video_batch",
+    "server_auto_pose",
     "review_flow",
     "review_intake",
     "review_package_jobs",
@@ -107,7 +109,9 @@
     "work_session"
   ],
   "assets": [
+    "tracking-cache-compat.json",
     "render_report_maps.mjs",
+    "render_auto_pose.mjs",
     "report_coverage.mjs",
     "review-package-guide.md",
     "video_depth_raster.cpp",

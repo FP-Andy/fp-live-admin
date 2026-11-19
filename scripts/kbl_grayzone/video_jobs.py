@@ -9,6 +9,21 @@ from video_safety import has_position_only
 ROOT=case_store.ROOT/'outputs/kbl-video-jobs'
 HERE=Path(__file__).resolve().parent
 VERSION='courtside-cpu-video-v5-mannequin'
+
+class PhaseClock:
+ """Keep bounded, content-free wall timings for actual render phases."""
+ def __init__(self,clock=time.monotonic):self.clock=clock;self.current=None;self.started=clock();self.totals={}
+ def move(self,phase):
+  if not isinstance(phase,str) or not phase or len(phase)>80:return
+  if phase==self.current:return
+  now=self.clock()
+  if self.current:self.totals[self.current]=self.totals.get(self.current,0)+max(0,now-self.started)
+  self.current=phase;self.started=now
+ def snapshot(self):
+  result=dict(self.totals)
+  if self.current:result[self.current]=result.get(self.current,0)+max(0,self.clock()-self.started)
+  return {key:round(value,3) for key,value in result.items()}
+
 def enabled():return os.environ.get('KBL_VIDEO_RENDER_ENABLED','1')=='1'
 def folder(job):
  if not re.fullmatch(r'[a-f0-9]{24}',str(job)):raise ValueError('영상 작업 ID를 확인하세요.')
@@ -153,20 +168,20 @@ def submit(case,event,player_orientation='map',allow_incomplete_crew=False):
   except OSError as exc:data.update(state='failed',stage='영상 작업을 시작하지 못했습니다.',error=str(exc));atomic(path/'status.json',data);raise RuntimeError('영상 작업을 시작하지 못했습니다.') from exc
   return {'job':status(job)}
 def run(job):
- path=folder(job);data=read(path/'status.json');spec=read(path/'inputs.json')
+ path=folder(job);data=read(path/'status.json');spec=read(path/'inputs.json');phases=PhaseClock()
  with lease(path/'process.lock') as mine:
   if not mine:return
   try:
    with lease(ROOT/'worker.lock') as worker:
     if not worker:raise RuntimeError('다른 영상 제작이 진행 중입니다. 완료 후 다시 시도하세요.')
-    data.update(state='running',stage='영상 입력 확인',updatedAt=now());atomic(path/'status.json',data)
+    phases.move('영상 입력 확인');data.update(state='running',stage='영상 입력 확인',updatedAt=now());atomic(path/'status.json',data)
     mode=spec.get('poseMode',spec.get('playerOrientation','map'))
     prepare=lambda: inputs(data['caseId'],data['eventId'],mode,True) if spec.get('allowIncompleteCrew') else inputs(data['caseId'],data['eventId'],mode)
     if prepare()['fingerprint']!=spec['fingerprint']:raise RuntimeError('제작 전 판독 자료가 변경됐습니다. 다시 시도하세요.')
     if spec.get('experimentalPose'):
      import video_pose_refit as refit
      scene=read(path/'scene.json');pose=read(path/'pose.json');base=read(path/'meshes.json');fitted=refit.prepare(scene,pose)
-     data.update(stage='2D 방향 유지 · 자세 보정 중',updatedAt=now());atomic(path/'status.json',data)
+     phases.move('2D 방향 유지 · 자세 보정 중');data.update(stage='2D 방향 유지 · 자세 보정 중',updatedAt=now());atomic(path/'status.json',data)
      first,mesh1=refit.build(fitted,path/'refit-first','refit1')
      optimized,count=refit.optimize(fitted,first,scene)
      candidates=[(first,mesh1)]
@@ -185,12 +200,12 @@ def run(job):
      try:
       for line in proc.stdout:
        try:
-        progress=json.loads(line);data.update(state='running',stage=progress['stage'],progress={'completed':progress['done'],'total':progress['total']},updatedAt=now());atomic(path/'status.json',data)
+        progress=json.loads(line);phases.move(progress['stage']);data.update(state='running',stage=progress['stage'],phaseDurationsSeconds=phases.snapshot(),progress={'completed':progress['done'],'total':progress['total']},updatedAt=now());atomic(path/'status.json',data)
        except (ValueError,KeyError,TypeError):pass
       code=proc.wait()
      finally:watchdog.cancel()
     if code:raise RuntimeError('영상 생성에 실패했습니다. 입력·카메라 경로를 확인한 뒤 다시 시도하세요.')
-    result=read(path/'result.json');output=path/'output.tmp.mp4'
+    phases.move('결과 검증 및 저장');result=read(path/'result.json');output=path/'output.tmp.mp4'
     if not output.is_file() or sha(output)!=result.get('videoSha256'):raise RuntimeError('완성 영상 검증에 실패했습니다.')
     if result.get('playerOrientation','map')!=spec.get('playerOrientation','map'):raise RuntimeError('선수 자세 적용 방식이 요청과 다릅니다.')
     if result.get('modelStyle')!='uniform-mannequin-v1':raise RuntimeError('마네킹 인체 모델 검증에 실패했습니다.')
@@ -219,11 +234,11 @@ def run(job):
     snapshot=read(path/'scene.json');camera_provenance=read(path/'pose.json').get('videoCameraProvenance')
     atomic(meta,{'schema':'courtside-review-video/v3','caseId':data['caseId'],'eventId':data['eventId'],'videoId':job,'captureId':spec['captureId'],'frameIndex':spec['frameIndex'],'sceneSha256':spec['sceneSha256'],'sourceSha256':spec['inputHashes']['source'],'videoSha256':result['videoSha256'],'caveat':result['caveat'],'fallbackPeople':result['fallbackPeople'],'positionOnlyPeople':expected,'positionOnlyRepresentation':'neutral-standing-assumption','playerOrientation':spec.get('playerOrientation','map'),'poseMode':spec.get('poseMode','map'),'modelStyle':result['modelStyle'],'refereeDigest':digest(spec.get('referees',{})),**({'videoCameraProvenance':camera_provenance} if camera_provenance else {}),**({'poseVariantId':snapshot['poseVariantId'],'poseMeshSha256':snapshot['poseMeshSha256']} if snapshot.get('poseVariantId') and not spec.get('experimentalPose') else {})})
     delivery=delivery_result(data['caseId'],data['eventId'],job)
-    data.update(state='complete',stage='영상 제작 완료',completedAt=now(),result={'fallbackPeople':result['fallbackPeople'],'positionOnlyPeople':expected,'caveat':result['caveat'],'delivery':delivery});atomic(path/'status.json',data)
+    data.update(state='complete',stage='영상 제작 완료',phaseDurationsSeconds=phases.snapshot(),completedAt=now(),result={'fallbackPeople':result['fallbackPeople'],'positionOnlyPeople':expected,'caveat':result['caveat'],'delivery':delivery});atomic(path/'status.json',data)
   except Exception as exc:
    from diagnostics import safe
    message=safe(exc)[:300] if isinstance(exc,(ValueError,RuntimeError)) else '영상 제작을 마치지 못했습니다. 입력과 서버 상태를 확인해 주세요.'
-   data.update(state='failed',stage='영상 제작 확인 필요',error=message,completedAt=now());atomic(path/'status.json',data)
+   data.update(state='failed',stage='영상 제작 확인 필요',phaseDurationsSeconds=phases.snapshot(),error=message,completedAt=now());atomic(path/'status.json',data)
   finally:
    # Keep the published video and compact audit inputs, not duplicate encodes.
    for name in ('insert.tmp.mp4','output.tmp.mp4'):

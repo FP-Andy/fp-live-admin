@@ -114,6 +114,60 @@ class VideoBatchContinuityTests(unittest.TestCase):
         batch.report_jobs.submit.assert_not_called()
 
 
+    def test_server_prepares_pose_then_creates_pdf_and_videos(self):
+        import report_inputs,server_auto_pose,auto_pose_review
+        job=self.submit();old='a'*24;new='b'*24
+        pending={'events':[{'eventId':'review-1','number':1,'ready':True,'autoPrepare':True},
+                           {'eventId':'review-2','number':2,'ready':True,'autoPrepare':False}]}
+        prepared={'events':[{'eventId':'review-1','number':1,'ready':True,'autoPrepare':False},
+                            {'eventId':'review-2','number':2,'ready':True,'autoPrepare':False}]}
+        batch.readiness.side_effect=[pending,prepared]
+        def render(case,event,key):
+            self.assertTrue(server_auto_pose.permitted(case,event,job['jobId'],key))
+            self.assertFalse(server_auto_pose.permitted(case,event,job['jobId'],'invalid'))
+            return {'previousCaptureId':old,'captureId':new}
+        with patch.object(batch.broadcast_reconstruction,'current',return_value={'captureId':old}),\
+             patch.object(server_auto_pose,'render',side_effect=render),patch.object(report_inputs,'version',return_value='version'),\
+             patch.object(auto_pose_review,'finalize',return_value={'carried':True}) as finalize:
+            batch.run(job['jobId'])
+        self.assertEqual(batch.status(job['jobId'])['state'],'complete')
+        finalize.assert_called_once_with('game-test','review-1',{'previousCaptureId':old,'captureId':new,'version':'version'})
+        batch.report_jobs.submit.assert_called_once();self.assertEqual(batch.video_jobs.submit.call_count,2)
+
+    def test_only_authorized_batch_can_save_automatic_scene(self):
+        import server_auto_pose
+        job=self.submit()
+        with server_auto_pose.authorize('game-test','review-1',job['jobId']) as key,\
+             patch.object(batch.broadcast_reconstruction,'current',return_value={'captureId':'a'*24}),\
+             patch.object(batch.broadcast_reconstruction,'save',return_value={'ok':True}) as save,patch.object(batch.review_flow,'require_stage'):
+            with self.assertRaisesRegex(RuntimeError,'제작이 진행 중'):
+                batch.save_automatic_scene('game-test','review-1',{},'a'*24,internal_key='wrong')
+            self.assertEqual(batch.save_automatic_scene('game-test','review-1',{},'a'*24,internal_key=key),{'ok':True})
+            save.assert_called_once()
+
+    def test_auto_preparation_failure_never_starts_partial_report(self):
+        import server_auto_pose,report_inputs
+        job=self.submit();batch.readiness.return_value={'events':[{'eventId':'review-1','number':1,'ready':True,'autoPrepare':True}]}
+        with patch.object(batch.broadcast_reconstruction,'current',return_value={'captureId':'a'*24}),\
+             patch.object(report_inputs,'version',return_value='version'),\
+             patch.object(server_auto_pose,'render',side_effect=RuntimeError('자동 보정 실패')):
+            batch.run(job['jobId'])
+        self.assertEqual(batch.status(job['jobId'])['state'],'failed');batch.report_jobs.submit.assert_not_called();batch.video_jobs.submit.assert_not_called()
+
+    def test_lost_browser_response_reconciles_only_verified_saved_pose(self):
+        import server_auto_pose,report_inputs,auto_pose_review
+        job=self.submit();old='a'*24;new='b'*24
+        batch.readiness.side_effect=[{'events':[{'eventId':'review-1','number':1,'ready':True,'autoPrepare':True}]},
+                                     {'events':[{'eventId':'review-1','number':1,'ready':True,'autoPrepare':False}]}]
+        with patch.object(batch.broadcast_reconstruction,'current',side_effect=[{'captureId':old},{'captureId':new,'poseVariantId':'c'*24}]),\
+             patch.object(report_inputs,'version',return_value='version'),\
+             patch.object(server_auto_pose,'render',side_effect=RuntimeError('응답 끊김')),\
+             patch.object(auto_pose_review,'finalize',return_value={'carried':True}) as finalize:
+            batch.run(job['jobId'])
+        self.assertEqual(batch.status(job['jobId'])['state'],'complete')
+        finalize.assert_called_once_with('game-test','review-1',{'previousCaptureId':old,'captureId':new,'version':'version'})
+
+
 class VideoStampTests(unittest.TestCase):
     def test_stamp_tracks_only_video_inputs_and_referee_matching(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -134,13 +188,13 @@ class VideoStampTests(unittest.TestCase):
         from unittest.mock import Mock
         from serve import Handler
         def call(query):
-            payload=json.dumps({'state':{}}).encode();h=object.__new__(Handler)
+            payload=json.dumps({'state':{},'expectedCaptureId':None}).encode();h=object.__new__(Handler)
             h.path='/api/cases/game-test/events/review-1/reconstruction'+query
             h.headers={'Host':'127.0.0.1:4350','Content-Length':str(len(payload))}
             h.rfile=io.BytesIO(payload);h.json=Mock();h.post();return h
         with patch.object(batch,'save_automatic_scene',return_value={'saved':True}) as automatic,patch.object(batch.review_flow,'require_stage'),patch.object(batch.broadcast_reconstruction,'save',return_value={'saved':True}) as manual:
-            call('?automatic=1&expectedCapture='+('a'*24));automatic.assert_called_once_with('game-test','review-1',{'state':{}},'a'*24);manual.assert_not_called()
-            call('');manual.assert_called_once_with('game-test','review-1',{'state':{}})
+            call('?automatic=1&expectedCapture='+('a'*24));automatic.assert_called_once_with('game-test','review-1',{'state':{},'expectedCaptureId':None},'a'*24);manual.assert_not_called()
+            call('');manual.assert_called_once_with('game-test','review-1',{'state':{},'expectedCaptureId':None})
 
 
 if __name__=='__main__':unittest.main()

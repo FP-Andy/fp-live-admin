@@ -14,7 +14,7 @@ export function mountWorkSession({host,caseId,stage,eventId}){
  const usageNote=document.createElement('span');panel.querySelector('small').append(usageNote);
  // A browser can receive updated static files before the server is restarted.
  // Only send the extended format after that server explicitly advertises it.
- fetch(endpoint).then(r=>r.ok?r.json():null).then(data=>{if(data?.buttonCounts){usageReady=true;usageNote.textContent=' 주요 버튼의 누름 횟수도 기록합니다. 입력 내용과 작업자 신원은 기록하지 않습니다.';}}).catch(()=>{});
+ fetch(endpoint).then(r=>r.ok?r.json():null).then(data=>{if(data?.buttonCounts){usageReady=true;usageNote.textContent=' 주요 버튼의 누름 횟수도 기록합니다. 입력 내용은 기록하지 않으며, FPC에서는 최근 활동한 작업자가 경기 상세에 잠시 표시됩니다.';}}).catch(()=>{});
  if(!document.getElementById('work-session-style')){const style=document.createElement('style');style.id='work-session-style';style.textContent='.work-session{font-size:12px;color:#536073;margin:10px 0;border-top:1px solid #e2e5eb;padding-top:9px}.work-session summary{cursor:pointer}.work-session div{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0}.work-session button{font-size:12px;padding:6px 10px}.work-session small{display:block;line-height:1.6;max-width:900px}.work-session b{color:#132747}';document.head.append(style);}
  const snapshot=()=>({stage,eventId:eventId()||null,attention:attentionState({paused,visible:!document.hidden,focused:document.hasFocus(),lastInput,now:Date.now()}),taskBusy:running.has(currentTaskState())});
  let previous=snapshot();
