@@ -9,8 +9,9 @@ const stage={available:true,complete:true,ready:true,token:'test'};
 const flow={caseId,title:'Test',activeStage:'report',reportReady:true,revision:1,events:[{id:eid,number:1,quarter:1,gameClock:'5:22',frameIndex:0,stages:{objects:stage,joints:stage,spatial:stage}}],stages:{objects:stage,joints:stage,spatial:stage}};
 const pose={jobId:job,revision:1,people:[],meshUrl:'/fake-mesh.json'};let captured;
 const send=(r,d)=>{const b=Buffer.from(JSON.stringify(d));r.writeHead(200,{'content-type':'application/json','content-length':b.length});r.end(b);};
+// Exceed Playwright's 30-second default: the server must wait for the actual result.
 const server=http.createServer((q,r)=>{const u=new URL(q.url,'http://127.0.0.1');const p=u.pathname;
- if(q.method==='POST'){let s='';q.on('data',d=>s+=d);q.on('end',()=>{if(p.endsWith('/pose-variant-jobs'))return send(r,{job:{jobId:job,captureId:old,state:'complete',result:{variantId:variant,pose,selectedCount:0}}});if(p.endsWith('/reconstruction')){if(q.headers['x-courtside-auto-key']!==key){r.writeHead(403);return r.end();}captured=JSON.parse(s);return send(r,{captureId:newId});}return send(r,{});});return;}
+ if(q.method==='POST'){let s='';q.on('data',d=>s+=d);q.on('end',()=>{if(p.endsWith('/pose-variant-jobs'))return setTimeout(()=>send(r,{job:{jobId:job,captureId:old,state:'complete',result:{variantId:variant,pose,selectedCount:0}}}),32000);if(p.endsWith('/reconstruction')){if(q.headers['x-courtside-auto-key']!==key){r.writeHead(403);return r.end();}captured=JSON.parse(s);return send(r,{captureId:newId});}return send(r,{});});return;}
  if(p===`/api/cases/${caseId}`)return send(r,{id:caseId,title:'Test',home:'A',away:'B',revision:1,events:[event],referees:[]});
  if(p.endsWith('/review-flow'))return send(r,flow);
  if(p.endsWith('/broadcast-tracking'))return send(r,{datasetId:'ds',inputSha256:'x'.repeat(64),fps:30,frames:[frame],uniforms:{home:'#fff',away:'#000',revision:0}});
