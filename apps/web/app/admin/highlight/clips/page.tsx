@@ -52,9 +52,54 @@ type ScrimmageBundle = {
   clips?: number | null;
   display_clips?: number | null;
   player_match?: string | null;
+  /** 지금 클립 기준 이 묶음에 나갈 클립 수(이 팀 클립 / 상대 골 보기용). 서버가 전송과 같은 규칙으로 센다. */
+  clip_count?: number | null;
+  display_count?: number | null;
 };
 
 const SCRIMMAGE_LETTERS = ['A', 'B'] as const;
+type ScrimmageLetter = (typeof SCRIMMAGE_LETTERS)[number];
+const otherLetter = (letter: ScrimmageLetter): ScrimmageLetter => (letter === 'A' ? 'B' : 'A');
+
+/** 자체전 묶음 이름 — "A팀(홈)". */
+function bundleTitle(m: MatchRow, letter: ScrimmageLetter): string {
+  return `${letter}팀(${m.scrimmage?.[letter]?.side === 'away' ? '어웨이' : '홈'})`;
+}
+
+/** 그 묶음 편의 팀 이름(경기 홈/원정 이름). 없으면 빈 문자열. */
+function bundleTeamName(m: MatchRow, letter: ScrimmageLetter): string {
+  return (m.scrimmage?.[letter]?.side === 'away' ? m.away_team : m.home_team) || '';
+}
+
+/** 묶음 전송 상태 한 단어. 원문은 title 로 본다. */
+function bundleStatusText(status?: string | null): string {
+  if (!status) return '안 보냄';
+  if (status === 'sent') return '보냄';
+  if (status.startsWith('failed')) return '실패';
+  return status;
+}
+
+function bundleStatusColor(status?: string | null): string {
+  if (!status) return 'var(--muted, #999)';
+  if (status === 'sent') return '#22c55e';
+  return status.startsWith('failed') ? '#f87171' : '#f59e0b';
+}
+
+/** "클립 3개 + B팀 골 1개" — 이 묶음에 나가는 것. */
+function bundleClipText(letter: ScrimmageLetter, own: number, display: number): string {
+  return `클립 ${own}개${display ? ` + ${otherLetter(letter)}팀 골 ${display}개` : ''}`;
+}
+
+function ScrimmageTag() {
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5, whiteSpace: 'nowrap',
+      background: 'rgba(245,158,11,.16)', color: '#f59e0b',
+    }}>
+      자체전
+    </span>
+  );
+}
 
 type MatchRow = {
   match_id: string | null;
@@ -100,6 +145,9 @@ type ClipRow = {
   title?: string | null;
   action_count: number;
   thumbnail_url?: string;
+  /** 자체전 묶음으로 불렀을 때만(?side=A|B) — own = 이 팀 클립, display = 상대 골(보기용). */
+  scrimmage_role?: 'own' | 'display';
+  is_goal?: boolean;
 };
 
 type ActionRow = {
@@ -143,6 +191,7 @@ const card: React.CSSProperties = {
 };
 const btn: React.CSSProperties = {
   fontSize: 13,
+  whiteSpace: 'nowrap',
   padding: '8px 16px',
   background: 'var(--button-dark, #2a2a30)',
   border: '1px solid var(--border-ghost, #3a3a42)',
@@ -305,6 +354,8 @@ function PlanBadge({ plan }: { plan?: MatchRow['plan'] }) {
 export default function ClipResultsPage() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<MatchRow | null>(null);
+  // 자체전은 A팀·B팀 묶음을 따로 연다(ADR-X-0010). 일반 경기는 null.
+  const [selectedLetter, setSelectedLetter] = useState<ScrimmageLetter | null>(null);
   // 방금 상세로 열어 본 클립. 상세는 목록을 덮으므로, 돌아왔을 때 어디까지 봤는지
   // 표시해 둔다 — 같은 줄을 또 열거나 엉뚱한 줄을 지우는 걸 줄인다.
   const [lastOpenedId, setLastOpenedId] = useState<string>('');
@@ -412,7 +463,8 @@ export default function ClipResultsPage() {
           : target ? rows.find((r) => r.match_id === target) : null;
         if (m) {
           deepLinkDone.current = true;
-          void openMatch(m);
+          const side = String(params.get('side') || '').toUpperCase();
+          void openMatch(m, side === 'B' ? 'B' : 'A');
         } else if (targetJob) {
           setMsg('아직 등록된 클립이 없습니다. 수동 결과물에서 연결 상태를 확인한 뒤 새로고침하세요.');
         } else {
@@ -429,19 +481,30 @@ export default function ClipResultsPage() {
 
   useEffect(() => { void loadMatches(); }, [loadMatches]);
 
-  const openMatch = async (m: MatchRow) => {
+  // 클립 목록. 자체전 묶음이면 서버가 그 묶음에 실제로 나가는 클립만 역할과 함께 준다 —
+  // 화면에서 따로 거르지 않는다(전송과 같은 규칙).
+  const fetchClips = (m: MatchRow, letter: ScrimmageLetter | null) => {
+    const path = m.match_id ? `matches/${m.match_id}` : `jobs/${m.job_id}`;
+    return apiJson<{ clips: ClipRow[] }>(`/highlight/clip-results/${path}/clips${letter ? `?side=${letter}` : ''}`);
+  };
+
+  // letter: 자체전이면 열 묶음(기본 A). 일반 경기는 무시된다.
+  const openMatch = async (m: MatchRow, letter?: ScrimmageLetter | null) => {
     const request = ++matchRequest.current;
+    const bundle = m.scrimmage ? (letter || 'A') : null;
     setSelectedMatch(m);
+    setSelectedLetter(bundle);
     closeDetail();
     setClips([]);
     setMsg('');
     try {
-      const path = m.match_id ? `matches/${m.match_id}` : `jobs/${m.job_id}`;
-      const res = await apiJson<{ clips: ClipRow[] }>(`/highlight/clip-results/${path}/clips`);
-      if (request !== matchRequest.current) return;
+      const res = await fetchClips(m, bundle);
+      if (request !== matchRequest.current) return false;
       setClips(res.clips);
+      return true;
     } catch (err) {
       if (request === matchRequest.current) setMsg(errorMessage(err, '클립 목록을 불러오지 못했습니다. 다시 시도해 주세요.'));
+      return false;
     }
   };
 
@@ -744,7 +807,10 @@ export default function ClipResultsPage() {
   // 서버가 둘 다 갱신하므로 여기선 잡 기준으로만 보내면 된다.
   const renameMatch = async () => {
     if (!selectedMatch) return;
-    const next = window.prompt('클립 결과 제목', selectedMatch.name || '');
+    const next = window.prompt(
+      selectedMatch.scrimmage ? '클립 결과 제목 — A팀·B팀 버전 둘 다 바뀝니다' : '클립 결과 제목',
+      selectedMatch.name || '',
+    );
     if (next === null) return;
     const name = next.trim();
     if (!name || name === selectedMatch.name) return;
@@ -814,7 +880,9 @@ export default function ClipResultsPage() {
       `${clip.order_index + 1}번 클립을 지울까요?\n\n`
       + `  ${clip.title || '(제목 없음)'}\n`
       + `  ${fmt(clip.start_sec)} ~ ${fmt(clip.end_sec)}\n\n`
-      + `태깅한 액션 ${clip.action_count}개도 같이 지워집니다. 되돌릴 수 없습니다.`,
+      + `태깅한 액션 ${clip.action_count}개도 같이 지워집니다. 되돌릴 수 없습니다.`
+      // 자체전 골 클립은 상대 팀 버전에도 보기용으로 나간다 — 같이 빠진다.
+      + (selectedLetter && clip.is_goal ? `\n\n골 클립이라 ${otherLetter(selectedLetter)}팀 버전의 보기용 골도 같이 빠집니다.` : ''),
     )) return;
     setBusy(true);
     setMsg('');
@@ -824,7 +892,7 @@ export default function ClipResultsPage() {
         ? `클립 ${clip.order_index + 1}번과 해당 분석을 클립 검수·전송에서 지웠습니다. 수동 결과물의 합본과 원본 클립은 유지됩니다.`
         : `클립 ${clip.order_index + 1}번을 지웠습니다 — 다시 만들려면 신청·태깅 탭에서 태깅 후 클립 생성하세요.`);
       closeDetail();
-      if (selectedMatch) await openMatch(selectedMatch);
+      if (selectedMatch) await openMatch(selectedMatch, selectedLetter);
       await loadMatches();
     } catch (err) {
       setMsg(errorMessage(err, '클립을 지우지 못했습니다. 다시 시도해 주세요.', { context: { '클립 ID': clip.id } }));
@@ -837,7 +905,9 @@ export default function ClipResultsPage() {
   const deleteAllClips = async () => {
     if (!selectedMatch) return;
     if (!window.confirm(
-      `이 매치의 클립 ${clips.length}개를 전부 지울까요?\n`
+      (selectedMatch.scrimmage
+        ? '이 자체전의 클립을 A팀·B팀 버전 둘 다 전부 지울까요?\n'
+        : `이 매치의 클립 ${clips.length}개를 전부 지울까요?\n`)
       + '태깅한 액션도 같이 지워집니다. 되돌릴 수 없습니다.\n\n'
       + '원본 영상과 작업은 남으므로 신청·태깅 탭에서 다시 태깅할 수 있습니다.',
     )) return;
@@ -851,6 +921,7 @@ export default function ClipResultsPage() {
       setMsg(`클립 ${res.deleted}개를 지웠습니다 — 신청·태깅 탭에서 다시 태깅하세요.`);
       setDetail(null);
       setSelectedMatch(null);
+      setSelectedLetter(null);
       await loadMatches();
     } catch (err) {
       setMsg(errorMessage(err, '클립을 지우지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': selectedMatch.job_id } }));
@@ -897,9 +968,21 @@ export default function ClipResultsPage() {
       setClips((prev) => prev.map((c) => (c.id === res.clip_id ? { ...c, team_side: res.team_side } : c)));
       setDetail((prev) => (prev && prev.id === res.clip_id ? { ...prev, team_side: res.team_side } : prev));
       setTeamEdit(null);
+      // 자체전은 팀이 바뀌면 어느 버전에 나가는지도 바뀐다 — 이 버전 목록을 서버에서 다시 받는다.
+      let moved = '';
+      if (selectedMatch && selectedLetter) {
+        const fresh = await fetchClips(selectedMatch, selectedLetter);
+        setClips(fresh.clips);
+        const still = fresh.clips.find((c) => c.id === res.clip_id);
+        if (!still || still.scrimmage_role === 'display') {
+          moved = ` · 이제 ${otherLetter(selectedLetter)}팀 클립입니다`;
+          if (detail?.id === res.clip_id) closeDetail();
+        }
+      }
       setMsg(
         `클립 팀 변경 — ${res.team_side === 'home' ? '홈' : res.team_side === 'away' ? '어웨이' : '팀 미지정'}`
         + (res.metadata_synced ? '' : ' (⚠ 작업 메타데이터에서 이 클립을 못 찾아, 클립을 다시 만들면 되돌아갑니다)')
+        + moved
         + ' · 앱에 반영하려면 전송하세요.',
       );
     } catch (err) {
@@ -993,7 +1076,8 @@ export default function ClipResultsPage() {
       );
       // 자체전은 A팀·B팀 묶음별 상태가 온다.
       if (res.scrimmage && res.callback_status && typeof res.callback_status === 'object') {
-        const parts = Object.entries(res.callback_status).map(([letter, st]) => `${letter}팀: ${st}`);
+        const parts = Object.entries(res.callback_status).map(([letter, st]) => (
+          `${selectedMatch.scrimmage && (letter === 'A' || letter === 'B') ? bundleTitle(selectedMatch, letter) : `${letter}팀`} ${bundleStatusText(st)}`));
         setMsg(`FinePlay 전송 — ${parts.join(' · ')}`);
       } else if (res.callback_status && typeof res.callback_status === 'object') {
         // 사전 작업 매치는 연결된 신청(홈/어웨이)별로 나가고 사이드별 상태가 온다.
@@ -1136,6 +1220,8 @@ export default function ClipResultsPage() {
   // 오른쪽 버튼 묶음(전체삭제·작업완료·아카이브)에서 'marginLeft: auto'(묶음을 오른쪽으로
   // 밀기)는 **맨 앞 하나만** 가져야 한다. 전체삭제가 보이면 그쪽이, 아니면 작업완료가 가진다.
   const showDeleteAll = Boolean(clips.length) && Boolean(selectedMatch?.match_id) && !selectedMatch?.archived;
+  // 자체전은 'A·B 둘 다' 표시가 오른쪽 묶음 맨 앞에 서서 그쪽이 밀기를 가진다.
+  const pushRight = !selectedMatch?.scrimmage;
   // 수동 결과물에서 넘어왔으면(?jobId=) 또는 연 매치가 수동 출처면 탭 줄 옆에 '← 수동 결과물' 을 보인다.
   // 매치를 열고 나면 그 매치의 출처로 판단한다. 수동 결과물은 SUPERADMIN 화면이다.
   const backToResults = role === 'SUPERADMIN'
@@ -1151,11 +1237,31 @@ export default function ClipResultsPage() {
           {selectedMatch ? (
             <>
               <span style={{ fontSize: 13, color: 'var(--muted, #999)' }}>›</span>
-              <button style={smallBtn} onClick={() => { matchRequest.current += 1; setSelectedMatch(null); closeDetail(); }}>매치 목록</button>
+              <button style={smallBtn} onClick={() => { matchRequest.current += 1; setSelectedMatch(null); setSelectedLetter(null); closeDetail(); }}>매치 목록</button>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{selectedMatch.name}</span>
+              {selectedLetter ? (
+                <>
+                  <ScrimmageTag />
+                  <span style={{ fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {bundleTitle(selectedMatch, selectedLetter)}
+                    {bundleTeamName(selectedMatch, selectedLetter) ? (
+                      <span style={{ fontWeight: 400, color: 'var(--muted, #999)' }}> · {bundleTeamName(selectedMatch, selectedLetter)}</span>
+                    ) : null}
+                  </span>
+                </>
+              ) : null}
               {selectedMatch.archived ? <ArchivedBadge /> : null}
               {role === 'SUPERADMIN' ? (
                 <>
+                  {selectedMatch.scrimmage ? (
+                    // 여기서부터 오른쪽은 경기 단위 — A팀·B팀 버전에 같이 걸린다.
+                    <span
+                      style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted, #999)', whiteSpace: 'nowrap' }}
+                      title="이름 수정·클립 전체 삭제·작업 완료·보관은 A팀·B팀 버전에 같이 적용됩니다"
+                    >
+                      A·B 둘 다
+                    </span>
+                  ) : null}
                   <button style={smallBtn} onClick={renameMatch} disabled={busy} title="클립 결과 제목 바꾸기">
                     ✎ 이름 수정
                   </button>
@@ -1163,7 +1269,7 @@ export default function ClipResultsPage() {
                   {/* 처음부터 다시 만들 때 — 클립만 비우고 원본·작업은 남는다. */}
                   {showDeleteAll ? (
                     <button
-                      style={{ ...smallBtn, marginLeft: 'auto', color: '#f87171', borderColor: '#f87171' }}
+                      style={{ ...smallBtn, marginLeft: pushRight ? 'auto' : undefined, color: '#f87171', borderColor: '#f87171' }}
                       onClick={() => void deleteAllClips()}
                       disabled={busy}
                       title="이 매치의 클립을 전부 지웁니다 — 원본과 작업은 남으므로 다시 태깅할 수 있습니다"
@@ -1177,8 +1283,8 @@ export default function ClipResultsPage() {
                         ? { ...smallBtn, borderColor: '#22c55e', color: '#22c55e' }
                         : smallBtn)
                       : (selectedMatch.work_done
-                        ? { ...smallBtn, marginLeft: 'auto', borderColor: '#22c55e', color: '#22c55e' }
-                        : { ...smallBtn, marginLeft: 'auto' })}
+                        ? { ...smallBtn, marginLeft: pushRight ? 'auto' : undefined, borderColor: '#22c55e', color: '#22c55e' }
+                        : { ...smallBtn, marginLeft: pushRight ? 'auto' : undefined })}
                     onClick={() => void toggleWorkDone(!selectedMatch.work_done)}
                     disabled={busy || selectedMatch.archived}
                     title={selectedMatch.archived
@@ -1201,37 +1307,7 @@ export default function ClipResultsPage() {
                   >
                     {selectedMatch.archived ? '↩ 보관 해제' : '📦 보관'}
                   </button>
-                  {selectedMatch.scrimmage ? (
-                    // 자체전 — 결과가 A팀 경기·B팀 경기 두 개로 나간다. 둘 다 보내야 앱에 분석 완료로 뜬다.
-                    SCRIMMAGE_LETTERS.map((letter) => {
-                      const bundle = selectedMatch.scrimmage?.[letter];
-                      const status = bundle?.callback_status || '';
-                      const other = letter === 'A' ? 'B' : 'A';
-                      const sideName = bundle?.side === 'away' ? selectedMatch.away_team : selectedMatch.home_team;
-                      return (
-                        <span key={letter} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <button
-                            style={primaryBtn}
-                            onClick={() => void resend(letter)}
-                            disabled={busy}
-                            title={`${letter}팀 클립과 ${other}팀 골(보기용)을 ${letter}팀 경기로 보냅니다`
-                              + (selectedMatch.plan?.tier === 'basic' ? ' — 영상만' : '')
-                              + ' · 두 팀 다 보내야 앱에 분석 완료로 뜹니다'}
-                          >
-                            ⬆ {letter}팀 보내기{sideName ? ` (${sideName})` : ''}
-                          </button>
-                          <span
-                            style={{ fontSize: 12, color: status === 'sent' ? '#22c55e' : status ? '#f59e0b' : 'var(--muted, #999)' }}
-                            title={bundle?.player_match ? `선수 연결 ${bundle.player_match}` : undefined}
-                          >
-                            {status === 'sent'
-                              ? `보냄 · 클립 ${bundle?.clips ?? 0}개${bundle?.display_clips ? ` + ${other}팀 골 ${bundle.display_clips}개` : ''}`
-                              : status || '안 보냄'}
-                          </span>
-                        </span>
-                      );
-                    })
-                  ) : (
+                  {selectedMatch.scrimmage ? null : (
                     <button
                       style={primaryBtn}
                       onClick={() => void resend()}
@@ -1245,7 +1321,7 @@ export default function ClipResultsPage() {
                       ⬆ FinePlay로 전송{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
                     </button>
                   )}
-                  {selectedMatch.plan?.tier !== 'basic' ? (
+                  {selectedMatch.plan?.tier !== 'basic' && !selectedMatch.scrimmage ? (
                     <label
                       style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}
                       title="앱은 좌표(sceneData)로 씬모션을 네이티브 재렌더하므로 mp4 는 보통 불필요합니다. 켜면 전송 시 씬모션 mp4 도 렌더·업로드해 함께 보냅니다(sceneData 는 항상 전송)."
@@ -1311,6 +1387,69 @@ export default function ClipResultsPage() {
             </>
           )}
         </div>
+        {selectedMatch?.scrimmage && selectedLetter ? (() => {
+          // 자체전 묶음 하나 — 이 화면 클립 목록이 그대로 이 팀 경기로 나간다.
+          const letter = selectedLetter;
+          const other = otherLetter(letter);
+          const status = selectedMatch.scrimmage[letter]?.callback_status;
+          const otherStatus = selectedMatch.scrimmage[other]?.callback_status;
+          const own = clips.filter((c) => c.scrimmage_role === 'own').length;
+          const display = clips.filter((c) => c.scrimmage_role === 'display').length;
+          const team = bundleTeamName(selectedMatch, letter);
+          const canSend = role === 'SUPERADMIN' && selectedMatch.source_mode !== 'manual';
+          return (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, paddingTop: 12,
+              borderTop: '1px solid var(--border-ghost, #2c2c32)',
+            }}>
+              {canSend ? (
+                <button
+                  style={primaryBtn}
+                  onClick={() => void resend(letter)}
+                  disabled={busy}
+                  title={`${letter}팀 클립과 ${other}팀 골(보기용)을 ${letter}팀 경기로 보냅니다`
+                    + (selectedMatch.plan?.tier === 'basic' ? ' — 영상만' : '')
+                    + ' · 두 팀 다 보내야 앱에 분석 완료로 뜹니다'}
+                >
+                  ⬆ FinePlay로 보내기{team ? ` · ${team}` : ''}{selectedMatch.plan?.tier === 'basic' ? ' (영상만)' : ''}
+                </button>
+              ) : null}
+              <span
+                style={{ fontSize: 13, color: bundleStatusColor(status), whiteSpace: 'nowrap' }}
+                title={[status, selectedMatch.scrimmage[letter]?.player_match
+                  ? `선수 연결 ${selectedMatch.scrimmage[letter]?.player_match}` : ''].filter(Boolean).join(' · ') || undefined}
+              >
+                {bundleStatusText(status)}
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--muted, #999)', whiteSpace: 'nowrap' }}>
+                {bundleClipText(letter, own, display)}
+              </span>
+              {canSend && selectedMatch.plan?.tier !== 'basic' ? (
+                <label
+                  style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}
+                  title="앱은 좌표(sceneData)로 씬모션을 네이티브 재렌더하므로 mp4 는 보통 불필요합니다. 켜면 전송 시 씬모션 mp4 도 렌더·업로드해 함께 보냅니다(sceneData 는 항상 전송). 마지막 값이 경기에 남아 A팀·B팀 버전이 같이 씁니다."
+                >
+                  <input
+                    type="checkbox"
+                    checked={includeSceneMotionMp4}
+                    onChange={(e) => setIncludeSceneMotionMp4(e.target.checked)}
+                    disabled={busy}
+                  />
+                  씬모션 mp4 포함(A·B 둘 다)
+                </label>
+              ) : null}
+              <button
+                style={{ ...smallBtn, marginLeft: 'auto' }}
+                onClick={() => void openMatch(selectedMatch, other)}
+                disabled={busy}
+                title={`${other}팀 클립과 ${letter}팀 골(보기용)이 나가는 ${other}팀 버전으로 바꿉니다`}
+              >
+                {bundleTitle(selectedMatch, other)} 버전 보기
+                <span style={{ color: bundleStatusColor(otherStatus), marginLeft: 6 }}>{bundleStatusText(otherStatus)}</span>
+              </button>
+            </div>
+          );
+        })() : null}
         {msg ? <div style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '8px 0 0' }}>{msg}<ErrorFold message={msg} /></div> : null}
       </div>
 
@@ -1423,53 +1562,86 @@ export default function ClipResultsPage() {
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {visibleMatches.map((m) => (
-                <div key={m.job_id} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
-                  padding: '8px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
-                }}>
-                  <span style={{ fontWeight: 600 }}>{m.name}</span>
-                  {m.source_mode === 'manual'
-                    ? <span style={{ fontSize: 12, color: '#93c5fd' }}>수동 태깅</span>
-                    : <PlanBadge plan={m.plan} />}
-                  {m.archived ? <ArchivedBadge /> : null}
-                  {/* 아카이브 안 해도 어디까지 했는지 목록에서 보인다 — 여럿이 나눠 맡을 때 쓴다. */}
-                  {m.work_done && !m.archived ? (
-                    <span
-                      title={m.work_done_at ? `작업 완료 ${new Date(m.work_done_at).toLocaleString()}` : '작업 완료'}
-                      style={{
-                        fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 999,
-                        color: '#22c55e', border: '1px solid #22c55e',
-                      }}
-                    >✓ 완료</span>
-                  ) : null}
-                  {m.analysis_request_id != null ? <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span> : null}
-                  <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>클립 {m.clip_count}개</span>
-                  {m.competition_callback_status ? (
-                    <span style={{ fontSize: 12, color: '#f59e0b' }}>
-                      대회 전송 {m.competition_callback_status === 'queued' ? '대기 중'
-                        : m.competition_callback_status === 'sending'
-                          ? (compProgressText(m) || '처리 중')
-                          : m.competition_callback_status}
-                    </span>
-                  ) : null}
-                  {m.scrimmage ? (
-                    SCRIMMAGE_LETTERS.map((letter) => {
-                      const st = m.scrimmage?.[letter]?.callback_status || '';
-                      return (
-                        <span key={letter} style={{ fontSize: 12, color: st === 'sent' ? '#22c55e' : st ? '#f59e0b' : 'var(--muted, #999)' }}>
-                          {letter}팀 {st === 'sent' ? '보냄' : st || '안 보냄'}
+              {visibleMatches.map((m) => {
+                // 한 줄. 자체전은 letter 를 받아 그 묶음(A팀·B팀) 줄이 된다 — 묶음마다 상태·클립 수가 따로다.
+                const row = (letter: ScrimmageLetter | null) => {
+                  const bundle = letter ? m.scrimmage?.[letter] : null;
+                  const team = letter ? bundleTeamName(m, letter) : '';
+                  return (
+                    <div key={letter ? `${m.job_id}:${letter}` : m.job_id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
+                      padding: '8px 10px', borderRadius: 6, background: 'var(--surface-input, #16161a)',
+                    }}>
+                      {letter ? (
+                        <>
+                          <ScrimmageTag />
+                          <span style={{ fontWeight: 600 }}>
+                            {team || m.name} · {bundleTitle(m, letter)}
+                          </span>
+                          {team && team !== m.name ? (
+                            <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>{m.name}</span>
+                          ) : null}
+                        </>
+                      ) : <span style={{ fontWeight: 600 }}>{m.name}</span>}
+                      {m.source_mode === 'manual'
+                        ? <span style={{ fontSize: 12, color: '#93c5fd' }}>수동 태깅</span>
+                        : <PlanBadge plan={m.plan} />}
+                      {m.archived ? <ArchivedBadge /> : null}
+                      {/* 아카이브 안 해도 어디까지 했는지 목록에서 보인다 — 여럿이 나눠 맡을 때 쓴다. */}
+                      {m.work_done && !m.archived ? (
+                        <span
+                          title={m.work_done_at ? `작업 완료 ${new Date(m.work_done_at).toLocaleString()}` : '작업 완료'}
+                          style={{
+                            fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 999,
+                            color: '#22c55e', border: '1px solid #22c55e',
+                          }}
+                        >✓ 완료</span>
+                      ) : null}
+                      {m.analysis_request_id != null ? <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>#{m.analysis_request_id}</span> : null}
+                      <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
+                        {letter
+                          ? bundleClipText(letter, bundle?.clip_count ?? 0, bundle?.display_count ?? 0)
+                          : `클립 ${m.clip_count}개`}
+                      </span>
+                      {m.competition_callback_status ? (
+                        <span style={{ fontSize: 12, color: '#f59e0b' }}>
+                          대회 전송 {m.competition_callback_status === 'queued' ? '대기 중'
+                            : m.competition_callback_status === 'sending'
+                              ? (compProgressText(m) || '처리 중')
+                              : m.competition_callback_status}
                         </span>
-                      );
-                    })
-                  ) : m.callback_status ? (
-                    <span style={{ fontSize: 12, color: m.callback_status === 'sent' ? '#22c55e' : '#f59e0b' }}>
-                      콜백 {m.callback_status}
-                    </span>
-                  ) : null}
-                  <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => void openMatch(m)}>열기</button>
-                </div>
-              ))}
+                      ) : null}
+                      {letter ? (
+                        <span
+                          style={{ fontSize: 12, color: bundleStatusColor(bundle?.callback_status) }}
+                          title={bundle?.callback_status || undefined}
+                        >
+                          {bundleStatusText(bundle?.callback_status)}
+                        </span>
+                      ) : m.callback_status ? (
+                        <span style={{ fontSize: 12, color: m.callback_status === 'sent' ? '#22c55e' : '#f59e0b' }}>
+                          콜백 {m.callback_status}
+                        </span>
+                      ) : null}
+                      <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={() => void openMatch(m, letter)}>열기</button>
+                    </div>
+                  );
+                };
+                if (!m.scrimmage) return row(null);
+                // 자체전 — 같은 경기 두 버전을 붙여 두고 왼쪽 띠로 묶는다.
+                return (
+                  <div
+                    key={m.job_id}
+                    title="자체전 한 경기 — A팀·B팀 버전을 따로 보냅니다"
+                    style={{
+                      display: 'flex', flexDirection: 'column', gap: 2,
+                      borderLeft: '3px solid rgba(245,158,11,.55)', paddingLeft: 4, borderRadius: 4,
+                    }}
+                  >
+                    {SCRIMMAGE_LETTERS.map((letter) => row(letter))}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1483,9 +1655,59 @@ export default function ClipResultsPage() {
             {selectedMatch.source_mode === 'manual'
               ? ' 상세에서 각 클립을 열어 FPA dual로 분석하세요.'
               : <> 고친 뒤 <strong>FinePlay로 전송</strong>해야 앱에 반영됩니다.</>}
+            {selectedLetter ? (
+              <>
+                <br />
+                이 목록이 그대로 <strong>{bundleTitle(selectedMatch, selectedLetter)}</strong> 경기로 나갑니다.
+                {' '}{otherLetter(selectedLetter)}팀 골은 보기용으로 같이 나가고, 고치는 건 {otherLetter(selectedLetter)}팀 버전에서 합니다.
+                {' '}골 클립을 고치면 {otherLetter(selectedLetter)}팀 버전의 보기용 골에도 같이 반영돼요.
+              </>
+            ) : null}
           </p>
+          {selectedLetter && clips.length === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--muted, #999)', margin: 0 }}>
+              이 버전에 나갈 클립이 없습니다. 그래도 보내야 앱에 분석 완료로 뜹니다.
+            </p>
+          ) : null}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {clips.map((c) => (
+            {clips.map((c) => (c.scrimmage_role === 'display' && selectedLetter ? (
+              // 상대 팀 골 — 보기용으로 같이 나간다. 원본은 상대 팀 버전의 클립이라 여기서는 고치지 않는다.
+              <div
+                key={c.id}
+                className={`hl-clip-row${c.id === lastOpenedId ? ' is-opened' : ''}`}
+                style={{ opacity: 0.78 }}
+              >
+                <span style={{ color: 'var(--muted, #999)', width: 24 }}>{c.order_index + 1}</span>
+                {c.thumbnail_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={c.thumbnail_url} alt="" style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4 }} />
+                ) : null}
+                <span style={{
+                  fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 6, whiteSpace: 'nowrap',
+                  border: '1px dashed var(--border-ghost, #4a4a52)', color: 'var(--muted, #bbb)',
+                }}>
+                  {otherLetter(selectedLetter)}팀 골 · 보기용
+                </span>
+                <span style={{ fontSize: 13, color: 'var(--muted, #bbb)' }}>{c.title || c.main_action || '제목 없음'}</span>
+                <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>
+                  {fmt(c.start_sec)}~{fmt(c.end_sec)}
+                </span>
+                <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>선수 연결 없이 나감</span>
+                <button
+                  style={{ ...smallBtn, marginLeft: 'auto' }}
+                  title={`이 골은 ${otherLetter(selectedLetter)}팀 클립입니다 — ${otherLetter(selectedLetter)}팀 버전에서 열어 고칩니다`}
+                  onClick={() => {
+                    const other = otherLetter(selectedLetter);
+                    void openMatch(selectedMatch, other).then((ok) => {
+                      if (!ok) return;
+                      setLastOpenedId(c.id);
+                      void openClip(c.id);
+                      void loadMotions(c.id);
+                    });
+                  }}
+                >{otherLetter(selectedLetter)}팀 버전에서 열기</button>
+              </div>
+            ) : (
               <div
                 key={c.id}
                 className={`hl-clip-row${c.id === lastOpenedId ? ' is-opened' : ''}`}
@@ -1526,7 +1748,7 @@ export default function ClipResultsPage() {
                   >삭제</button>
                 ) : null}
               </div>
-            ))}
+            )))}
           </div>
         </div>
       ) : null}
@@ -1555,9 +1777,11 @@ export default function ClipResultsPage() {
                 순서는 목록과 같다(order_index). 목록 클릭과 같은 동작이라 액션·모션을
                 함께 다시 불러온다 — 모션은 detail 변경만으로는 안 갱신된다. */}
             {(() => {
-              const index = clips.findIndex((c) => c.id === detail.id);
-              const prev = index > 0 ? clips[index - 1] : null;
-              const next = index >= 0 && index < clips.length - 1 ? clips[index + 1] : null;
+              // 자체전은 이 팀 클립 사이만 오간다 — 보기용 상대 골은 상대 팀 버전에서 연다.
+              const navClips = selectedLetter ? clips.filter((c) => c.scrimmage_role !== 'display') : clips;
+              const index = navClips.findIndex((c) => c.id === detail.id);
+              const prev = index > 0 ? navClips[index - 1] : null;
+              const next = index >= 0 && index < navClips.length - 1 ? navClips[index + 1] : null;
               const go = (target: ClipRow | null) => {
                 if (!target) return;
                 void openClip(target.id);
@@ -1572,7 +1796,7 @@ export default function ClipResultsPage() {
                 <>
                   {index >= 0 ? (
                     <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted, #999)' }}>
-                      {index + 1} / {clips.length}
+                      {index + 1} / {navClips.length}
                     </span>
                   ) : null}
                   <button
