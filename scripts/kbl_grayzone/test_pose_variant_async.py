@@ -30,6 +30,17 @@ class PoseVariantAsyncTests(unittest.TestCase):
   mesh=json.loads((p/'meshes.json').read_text());mesh['assets']['body']['positions'][0]=99;atomic(p/'meshes.json',mesh)
   self.assertIsNone(variant.reusable(self.case,self.event,self.scene,self.base))
 
+ def test_neutral_approval_is_scoped_to_exact_scene_variant_and_people(self):
+  scene={**self.scene,'poseVariantId':'c'*24};pending=[{'id':'p1'}]
+  path=self.root/'reconstructions'/self.event/'neutral-pose-approvals'/(self.capture+'.json')
+  approval={'schema':'courtside-neutral-pose-approval/v1','caseId':self.case,'eventId':self.event,'captureId':self.capture,'poseVariantId':'c'*24,'personIds':['p1']}
+  self.assertEqual(variant.approved_neutral(self.case,self.event,scene,pending),[])
+  atomic(path,approval);self.assertEqual(variant.approved_neutral(self.case,self.event,scene,pending),['p1'])
+  self.assertEqual(variant.approved_neutral(self.case,self.event,{**scene,'captureId':'f'*24},pending),[])
+  self.assertEqual(variant.approved_neutral(self.case,self.event,{**scene,'poseVariantId':'d'*24},pending),[])
+  self.assertEqual(variant.approved_neutral(self.case,self.event,scene,[{'id':'p1'},{'id':'p2'}]),[])
+  atomic(path,{**approval,'personIds':['p2']});self.assertEqual(variant.approved_neutral(self.case,self.event,scene,pending),[])
+
  def test_duplicate_submission_reuses_inflight_job_and_completes(self):
   started=threading.Event();release=threading.Event()
   def fake_create(case,event,capture):

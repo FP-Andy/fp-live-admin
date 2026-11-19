@@ -5,6 +5,25 @@ from unittest.mock import patch
 
 import report_video_batch as batch
 
+class NeutralApprovalReadinessTests(unittest.TestCase):
+    def test_only_explicitly_approved_unresolved_player_is_ready(self):
+        import pose_variant
+        from job_store import atomic
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);case='game-test';event='review-5';capture='a'*24;variant='b'*24
+            scene={'captureId':capture,'poseVariantId':variant,'state':{'entities':[{'id':'player-1','role':'player'}]}}
+            player={'id':'player-1','spatialEligible':False,'keypoints':[0]*17,'scores':[0]*17,'depth':[0]*17}
+            case_data={'events':[{'id':event,'number':5}]}
+            with patch.dict(batch.case_store.CASES,{case:root}),patch.object(batch.case_store,'load_case',return_value=case_data),\
+                 patch.object(batch.broadcast_reconstruction,'current',return_value=scene),patch.object(batch.video_jobs,'enabled',return_value=True),\
+                 patch.object(batch.video_jobs,'executable'),patch.object(batch.video_jobs,'inputs',return_value={'pose':{'people':[player]}}),\
+                 patch.object(pose_variant,'placed_people_camera'):
+                self.assertTrue(batch.readiness(case)['events'][0]['autoPrepare'])
+                approval={'schema':'courtside-neutral-pose-approval/v1','caseId':case,'eventId':event,'captureId':capture,'poseVariantId':variant,'personIds':['player-1']}
+                atomic(root/'reconstructions'/event/'neutral-pose-approvals'/(capture+'.json'),approval)
+                row=batch.readiness(case)['events'][0];self.assertTrue(row['ready']);self.assertFalse(row['autoPrepare']);self.assertEqual(row['neutralFallback'],['player-1'])
+                scene['captureId']='c'*24;self.assertTrue(batch.readiness(case)['events'][0]['autoPrepare'])
+
 
 class VideoBatchContinuityTests(unittest.TestCase):
     def setUp(self):

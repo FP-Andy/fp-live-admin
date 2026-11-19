@@ -64,9 +64,13 @@ def video_stamp(case,event):
     if not entry:raise ValueError('판독 장면을 찾을 수 없습니다.')
     scene=broadcast_reconstruction.current(case,event,strict=True)
     scene_file=case_store.CASES[case]/'reconstructions'/event/'current.json'
-    return digest({'event':event,'frame':entry.get('selectedBroadcastFrame'),
+    identity={'event':event,'frame':entry.get('selectedBroadcastFrame'),
                    'broadcast':entry.get('broadcast'),'scene':video_jobs.sha(scene_file),
-                   'referees':video_jobs.referee_labels(case,event,scene)})
+                   'referees':video_jobs.referee_labels(case,event,scene)}
+    import pose_variant
+    neutral=pose_variant.approved_neutral(case,event,scene)
+    if neutral:identity['neutralPoseApproval']=neutral
+    return digest(identity)
 
 def readiness(case):
     data=case_store.load_case(case);rows=[]
@@ -86,10 +90,11 @@ def readiness(case):
                 import pose_variant,broadcast_pose
                 prepared=video_jobs.inputs(case,e['id'])
                 pending=pose_variant.pending_placed_people(scene,prepared['pose'])
-                if pending:
+                neutral=pose_variant.approved_neutral(case,e['id'],scene,pending) if pending else []
+                if pending and not neutral:
                     if any(any(len(p.get(k,[]))!=17 for k in ('keypoints','scores','depth')) for p in pending):raise ValueError('배치된 선수의 관절 자료가 부족합니다. 관절 검수를 확인하세요.')
                     pose_variant.placed_people_camera(case,e['id'],scene,prepared['pose'])
-                rows.append({'eventId':e['id'],'number':e['number'],'ready':True,'autoPrepare':bool(pending)})
+                rows.append({'eventId':e['id'],'number':e['number'],'ready':True,'autoPrepare':bool(pending and not neutral),**({'neutralFallback':neutral} if neutral else {})})
         except (ValueError,RuntimeError,OSError,KeyError,StopIteration) as exc:
             from diagnostics import safe
             rows.append({'eventId':e['id'],'number':e['number'],'ready':False,'message':safe(exc)[:250]})

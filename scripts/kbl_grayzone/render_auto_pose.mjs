@@ -52,7 +52,7 @@ try{
  const page=await browser.newPage({viewport:{width:1280,height:900},deviceScaleFactor:1});
  await page.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
  await page.goto(base+'/__auto_pose_driver',{waitUntil:'domcontentloaded',timeout:30000});
- await page.waitForFunction(()=>window.autoPoseResult,{timeout:30*60*1000});
+ await page.waitForFunction(()=>window.autoPoseResult,null,{timeout:30*60*1000});
  const result=await page.evaluate(()=>window.autoPoseResult);
  if(result.type!=='kbl-auto-pose-complete')throw Error(result.error||'자동 자세 보정에 실패했습니다.');
  if(result.caseId!==caseId||result.eventId!==eventId||! /^[a-f0-9]{24}$/.test(result.previousCaptureId||'')||! /^[a-f0-9]{24}$/.test(result.captureId||''))throw Error('자동 보정 결과를 확인할 수 없습니다.');

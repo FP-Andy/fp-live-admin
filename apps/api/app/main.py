@@ -151,6 +151,7 @@ from .highlight_storage import output_prefix as highlight_output_prefix
 from .scene_motion import attach_scene_motions, scene_motion_key
 from .broadcast_assets import (
     BroadcastAssetStore,
+    composite_asset_pair,
     GOAL_ASSET_TYPE,
     LIVE_ASSET_TYPES,
     render_live_coder_asset_pairs,
@@ -2878,12 +2879,34 @@ def _on_team_branding_changed(match_ids: list[UUID]) -> None:
 app.include_router(create_team_logo_router(BROADCAST_LOGO_DIR, _on_team_branding_changed))
 
 
+def _broadcast_manifest_with_combined_urls(manifest: dict, match_id: str) -> dict:
+    """Expose a lazy composite for previously saved two-layer archives."""
+    def add_url(asset: Any, locator: str) -> Any:
+        if not isinstance(asset, dict) or not asset.get("background_url") or not asset.get("asset_url"):
+            return asset
+        version = quote(str(asset.get("generated_at") or ""), safe="")
+        public_base = BroadcastAssetStore().public_base_url
+        return {
+            **asset,
+            "combined_url": asset.get("combined_url") or f"{public_base}/api/broadcast/v1/matches/{match_id}/combined/{locator}?v={version}",
+            "overlay_url": f"{public_base}/overlay/{match_id}/{locator}",
+        }
+
+    return {
+        **manifest,
+        "live": {key: add_url(value, f"live/{quote(str(key), safe='')}") for key, value in manifest["live"].items()},
+        "archive": {minute: {key: add_url(value, f"archive/{quote(str(minute), safe='')}/{quote(str(key), safe='')}") for key, value in rows.items()} if isinstance(rows, dict) else rows for minute, rows in manifest["archive"].items()},
+        "xg_goals": {key: add_url(value, f"xg_goals/{quote(str(key), safe='')}") for key, value in manifest["xg_goals"].items()},
+        "dominance": {key: add_url(value, f"dominance/{quote(str(key), safe='')}") for key, value in manifest["dominance"].items()},
+    }
+
+
 def _broadcast_public_match(match_obj: Match, db: Session) -> dict:
     metadata = match_obj.metadata_json if isinstance(match_obj.metadata_json, dict) else {}
     teams = _team_names_from_match(match_obj)
     latest_state = _latest_state(match_obj.id, db)
     running = _broadcast_is_running(match_obj, db)
-    manifest = _broadcast_assets_manifest(match_obj)
+    manifest = _broadcast_manifest_with_combined_urls(_broadcast_assets_manifest(match_obj), str(match_obj.id))
     broadcast_state = _broadcast_state(match_obj)
     return {
         "match_id": str(match_obj.id),
@@ -7363,6 +7386,28 @@ def get_broadcast_showroom_match(match_id: UUID, db: Session = Depends(get_db)):
     return _broadcast_public_match(row, db)
 
 
+@app.get("/api/broadcast/v1/matches/{match_id}/combined/{locator:path}")
+def get_legacy_broadcast_combined(match_id: UUID, locator: str, db: Session = Depends(get_db)):
+    """Combine the saved layers for cards created before combined PNGs existed."""
+    match = _require_football_match_for_partner(match_id, db)
+    if not _broadcast_graphics_enabled(match):
+        raise HTTPException(status_code=404, detail="Broadcast graphics are disabled for this match")
+    parts = locator.split("/")
+    if not (len(parts) == 2 and parts[0] in ("live", "xg_goals", "dominance") or len(parts) == 3 and parts[0] == "archive"):
+        raise HTTPException(status_code=404, detail="Broadcast graphic not found")
+    asset: Any = _broadcast_assets_manifest(match)
+    for part in parts:
+        asset = asset.get(part) if isinstance(asset, dict) else None
+    if not isinstance(asset, dict) or not asset.get("background_url") or not asset.get("asset_url"):
+        raise HTTPException(status_code=404, detail="Broadcast graphic not found")
+    store = BroadcastAssetStore()
+    try:
+        png = composite_asset_pair(store.read_asset_url(asset["background_url"], str(match_id)), store.read_asset_url(asset["asset_url"], str(match_id)))
+    except (ValueError, OSError, KeyError) as exc:
+        raise HTTPException(status_code=404, detail="Saved broadcast layers are unavailable") from exc
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "public, max-age=55, must-revalidate" if parts[0] == "live" else "public, max-age=31536000, immutable"})
+
+
 @app.post("/api/broadcast/v1/matches/{match_id}/refresh")
 def refresh_broadcast_assets(
     match_id: UUID,
@@ -7394,7 +7439,7 @@ def get_broadcast_asset(asset_path: str):
         raise HTTPException(status_code=404, detail="Broadcast asset not found")
     suffix = path.suffix.lower()
     media_type = "image/webp" if suffix == ".webp" else "image/png"
-    is_latest = "/live/" in f"/{asset_path}" and path.stem == "latest"
+    is_latest = "/live/" in f"/{asset_path}" and "/latest/" in f"/{asset_path}" and path.name in ("asset.png", "combined.png")
     cache_control = "public, max-age=55, must-revalidate" if is_latest else "public, max-age=31536000, immutable"
     return FileResponse(str(path), media_type=media_type, headers={"Cache-Control": cache_control})
 

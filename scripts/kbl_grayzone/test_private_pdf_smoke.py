@@ -31,15 +31,20 @@ class PrivatePdfSmoke(unittest.TestCase):
   image=inputs/'synthetic.jpg';Image.new('RGB',(1280,720),'white').save(image)
   image_sha=hashlib.sha256(image.read_bytes()).hexdigest()
   for event in events:
-   eid=event['id'];snapshots[eid]={'captureId':'test','frameIndex':169,'state':{'entities':[],'targetId':'p','targetHeight':1.1,'hfov':100},
+   eid=event['id'];capture='b'*24 if eid=='review-5' else 'test';entities=[{'id':'player-1','role':'player','x':10,'y':7}] if eid=='review-5' else []
+   snapshots[eid]={'captureId':capture,'frameIndex':169,'state':{'entities':entities,'targetId':'p','targetHeight':1.1,'hfov':100},
     'crewAnalysis':{'rows':refs,'leaders':['r1'],'crewComplete':True,'sceneComplete':True}}
-   folder=case_root/'reconstructions'/eid/'test';folder.mkdir(parents=True)
+   if eid=='review-5':
+    snapshots[eid]['poseVariantId']='c'*24
+    approval=case_root/'reconstructions'/eid/'neutral-pose-approvals'/(capture+'.json');approval.parent.mkdir(parents=True)
+    approval.write_text(json.dumps({'schema':'courtside-neutral-pose-approval/v1','caseId':case_id,'eventId':eid,'captureId':capture,'poseVariantId':'c'*24,'personIds':['player-1']}))
+   folder=case_root/'reconstructions'/eid/capture;folder.mkdir(parents=True)
    Image.new('RGB',(1280,800),'white').save(folder/'crewMap.jpg')
    for name in ('eye1','eye2','eye3'):Image.new('RGB',(64,40),'white').save(folder/(name+'.jpg'))
    rows.append({'eventId':eid,'clipId':eid,'frameIndex':169,'inputSha256':'a'*64,'datasetId':'synthetic-tracks',
                 'image':'synthetic.jpg','imageSha256':image_sha,'runtime':{'totalSeconds':1}})
   (inputs/'inputs.json').write_text(json.dumps(rows))
-  editorial={'csvSha256':'synthetic-csv','events':{e['id']:{'scene':{'captureId':'test'},
+  editorial={'csvSha256':'synthetic-csv','events':{e['id']:{'scene':{'captureId':snapshots[e['id']]['captureId']},
     'review':{'initialCall':'원심 보류 후 영상 판독으로 일반 파울을 인정했습니다.'}} for e in events}}
   editorial['events']['review-10']['review']['assessment']=(
    '선수의 접촉 위치와 동작 순서를 검토하고 심판 시점에서 가려진 장면을 함께 비교했습니다. '*12)[:500]
@@ -51,6 +56,7 @@ class PrivatePdfSmoke(unittest.TestCase):
        patch.object(case_report_layout,'scene_images',return_value=(image_stub,None,{'broadcast':{'poseCount':0}})):
    metadata=case_report.create(case_id,inputs,pdf)
   self.assertEqual(metadata['pageCount'],11)
+  self.assertEqual(metadata['neutralPoseApprovals'],{'review-5':['player-1']})
   stored=report_versions.store(case_id,pdf,metadata);self.assertEqual(stored['pageCount'],11)
   self.assertEqual(report_delivery.deliver(case_id,stored['reportId'])['state'],'ready-for-download')
   listing=report_versions.listing(case_id);self.assertEqual(listing['versions'][0]['id'],stored['reportId'])

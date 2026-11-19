@@ -9,27 +9,31 @@ the operator's OBS graphic are the same visual source.
 
 ## Asset contract
 
-The API creates the same graphic in two formats:
+Each 1920×1080 graphic has three PNG URLs and an OBS browser-source URL in its manifest:
 
-- PNG: conservative, lossless source for any broadcast system that accepts an
-  image URL.
-- Animated WebP: a short, looping entrance animation for OBS/browser-source
-  overlays and the showroom.
+- `background_url`: the graphic's designed background layer.
+- `asset_url`: the transparent data layer, for workflows that animate or
+  control the layers separately.
+- `combined_url`: both layers alpha-composited into one PNG. Pixels outside the
+  graphic remain transparent; no checkerboard is baked into the PNG. Use this
+  URL in an image source that supports alpha.
+- `overlay_url`: a transparent HTML page containing that PNG, for OBS Browser
+  Source. Set the source to 1920×1080. The page checks for updated data every
+  15 seconds and retains the last graphic if the API is temporarily unavailable.
+  Use the eye icon or scene controls to show or hide it.
 
-During a live match, the following fixed URLs are replaced every minute:
+Live graphics use a stable `combined.png` URL with a 55-second cache policy;
+refreshing the image source picks up new data as it is generated. Archives
+retain versioned URLs. For existing two-layer archives, the API serves a
+combined PNG from their saved layers on request, without changing their source
+images. The match-dominance graphic is a full-screen design, so its designed
+background fills the frame.
 
-```text
-broadcast/{match_id}/live/attack-direction-home/latest.{png,webp}
-broadcast/{match_id}/live/attack-direction-away/latest.{png,webp}
-broadcast/{match_id}/live/possession/latest.{png,webp}
-broadcast/{match_id}/live/xg-shot-map/latest.{png,webp}
-```
-
-At 15, 30, 45, 60, 75 and 90 minutes the four live graphics are written to
-immutable archive keys. At 45 and 90 minutes a separate match-dominance asset
-is written as well. A completed 90-minute match therefore has 26 images in
-each format: 24 live-graphic archive images plus half-time and full-time
-dominance images.
+The showroom preview uses a checkerboard to identify transparent areas. The
+checkerboard is a UI background only. The image must be used as a PNG/image
+source that supports transparency. Do not put a raw PNG URL into an OBS Browser
+Source: the browser image viewer can paint its own gray background. Use the OBS
+URL instead.
 
 ## Public APIs
 
@@ -40,7 +44,7 @@ POST /api/broadcast/v1/matches/{match_id}/refresh?finalize=false
 ```
 
 The first two routes are public and provide the gallery with match metadata,
-PNG URLs, WebP URLs and archive availability.  `refresh` requires
+the three PNG URLs and archive availability.  `refresh` requires
 `X-Broadcast-Key`; FPC can call it right after a source-data update instead of
 waiting for the minute worker.  Set `finalize=true` only after final match data
 has been written, to ensure the 90-minute archive is captured.
