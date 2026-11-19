@@ -76,6 +76,77 @@ class MatchWriteAccess(unittest.TestCase):
         for client in self.clients.values():
             client.close()
 
+    def test_matchday_preview_apply_preserves_empty_and_checks_stale_and_permissions(self):
+        fixture = {'matchId': 827, 'matchName': '경기 1', 'homeTeamName': '홈팀', 'awayTeamName': '원정팀', 'stage': 'qualifying'}
+        old = {'HOME': [{'number': '7', 'name': '기존 선수'}], 'AWAY': []}
+        empty = {'HOME': [], 'AWAY': []}
+        with SessionLocal() as db:
+            row = db.get(Match, self.mid)
+            row.competition_class = 'UCCC'
+            row.name = '[UCCC | 1R] 홈팀 vs 원정팀'
+            row.metadata_json = {'lineups': {'teams': old}}
+            db.commit()
+        path = self.url + '/matchday'
+        with patch.object(main.matchday_client, 'fixtures', return_value=[fixture]), patch.object(main.matchday_client, 'roster', return_value=(empty, [])):
+            self.assertEqual(self.clients['anonymous'].get(path + '/fixtures').status_code, 401)
+            self.assertEqual(len(self.clients['owner'].get(path + '/fixtures').json()['fixtures']), 1)
+            preview = self.clients['owner'].get(path + '/fixtures/827/preview').json()
+            body = {'match_id': 827, 'fingerprint': preview['fingerprint']}
+            self.assertEqual(self.clients['other'].post(path + '/apply', json=body).status_code, 403)
+            self.assertEqual(self.clients['owner'].post(path + '/apply', json={**body, 'fingerprint': 'stale'}).status_code, 409)
+            result = self.clients['owner'].post(path + '/apply', json=body)
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertFalse(result.json()['roster_imported'])
+            self.assertEqual(result.json()['match']['metadata']['lineups']['teams'], old)
+            self.assertEqual(result.json()['match']['metadata']['matchday']['match_id'], 827)
+            with SessionLocal() as db:
+                db.get(Match, self.mid).archived = True
+                db.commit()
+            self.assertEqual(self.clients['owner'].post(path + '/apply', json=body).status_code, 409)
+
+    def test_matchday_roster_apply_and_recorded_team_change_guard(self):
+        fixture = {'matchId': 827, 'matchName': '경기 1', 'homeTeamName': '새홈', 'awayTeamName': '새원정', 'stage': 'qualifying'}
+        teams = {'HOME': [{'number': '1', 'name': '선수A', 'isSubstitute': False}], 'AWAY': [{'number': '2', 'name': '선수B', 'isSubstitute': True}]}
+        with SessionLocal() as db:
+            row = db.get(Match, self.mid)
+            row.competition_class = 'UCCC'
+            row.name = '[UCCC | 1R] 옛홈 vs 옛원정'
+            db.commit()
+        path = self.url + '/matchday'
+        with patch.object(main.matchday_client, 'fixtures', return_value=[fixture]), patch.object(main.matchday_client, 'roster', return_value=(teams, [])), patch.object(main, '_queue_broadcast_branding_refresh'):
+            preview = self.clients['owner'].get(path + '/fixtures/827/preview').json()
+            result = self.clients['owner'].post(path + '/apply', json={'match_id': 827, 'fingerprint': preview['fingerprint']})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()['match']['metadata']['lineups']['teams'], teams)
+            self.assertEqual(result.json()['match']['metadata']['home_team'], '새홈')
+            with SessionLocal() as db:
+                db.add(Event(id=uuid4(), match_id=self.mid, type='ATTACK_LANE', clock_ms=5, team='HOME'))
+                db.commit()
+            changed = {**fixture, 'homeTeamName': '다른팀'}
+            with patch.object(main.matchday_client, 'fixtures', return_value=[changed]):
+                preview = self.clients['owner'].get(path + '/fixtures/827/preview').json()
+                self.assertTrue(preview['has_records'])
+                self.assertEqual(self.clients['owner'].post(path + '/apply', json={'match_id': 827, 'fingerprint': preview['fingerprint']}).status_code, 409)
+
+    def test_matchday_partial_or_invalid_roster_never_replaces_existing_players(self):
+        fixture = {'matchId': 827, 'homeTeamName': '홈팀', 'awayTeamName': '원정팀', 'stage': 'qualifying'}
+        old = {'HOME': [{'number': '7', 'name': '기존 홈'}], 'AWAY': [{'number': '8', 'name': '기존 원정'}]}
+        with SessionLocal() as db:
+            row = db.get(Match, self.mid)
+            row.competition_class = 'UCCC'
+            row.name = '[UCCC | 1R] 홈팀 vs 원정팀'
+            row.metadata_json = {'lineups': {'teams': old}}
+            db.commit()
+        path = self.url + '/matchday'
+        for teams, errors in [({'HOME': [{'number': '1', 'name': '새 홈'}], 'AWAY': []}, []),
+                              ({'HOME': [{'number': '', 'name': '새 홈'}], 'AWAY': [{'number': '2', 'name': '새 원정'}]}, ['등번호 누락'])]:
+            with self.subTest(errors=errors), patch.object(main.matchday_client, 'fixtures', return_value=[fixture]), patch.object(main.matchday_client, 'roster', return_value=(teams, errors)):
+                preview = self.clients['owner'].get(path + '/fixtures/827/preview').json()
+                self.assertFalse(preview['roster_ready'])
+                result = self.clients['owner'].post(path + '/apply', json={'match_id': 827, 'fingerprint': preview['fingerprint']})
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(result.json()['match']['metadata']['lineups']['teams'], old)
+
     def state(self):
         return {"state_id": str(uuid4()), "clock_ms": 1200, "running": True,
                 "possession_team": "HOME", "selected_team": "HOME", "attack_lr": "L2R"}
