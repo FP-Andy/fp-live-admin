@@ -403,6 +403,43 @@ class ScrimmageSplitTest(_Base):
             self.assertLessEqual(set(clip), allowed)
         self.assertEqual(self.meta("505")["scrimmage"]["A"].get("player_match"), None)
 
+    def test_bundle_clip_list_matches_what_is_sent(self):
+        """클립 검수·전송 화면의 묶음별 목록(side=A|B) = 실제로 나가는 묶음 — 순서·보기용 표시까지."""
+        self.send()
+        sent = {p["scrimmageSide"]: p for p in self.sent()}
+        for letter in ("A", "B"):
+            for url in (f"/api/highlight/clip-results/matches/{self.match}/clips?side={letter}",
+                        f"/api/highlight/clip-results/jobs/503/clips?side={letter}"):
+                r = self.client.get(url)
+                self.assertEqual(r.status_code, 200, r.text)
+                listed = [(c["id"], c["scrimmage_role"] == "display") for c in r.json()["clips"]]
+                self.assertEqual(listed, [(c["clipKey"], bool(c.get("displayOnly"))) for c in sent[letter]["clips"]])
+                for c in r.json()["clips"]:
+                    self.assertIn(c["scrimmage_role"], ("own", "display"))
+                    if c["scrimmage_role"] == "display":
+                        self.assertTrue(c["is_goal"])
+        # side 없이 부르면 전부, 역할 필드 없음(지금 응답 그대로).
+        whole = self.client.get(f"/api/highlight/clip-results/matches/{self.match}/clips").json()["clips"]
+        self.assertEqual(len(whole), 5)
+        self.assertFalse(any("scrimmage_role" in c or "is_goal" in c for c in whole))
+        self.assertEqual(self.client.get(
+            f"/api/highlight/clip-results/matches/{self.match}/clips?side=C").status_code, 400)
+        # 목록 줄의 묶음별 클립 수도 같은 규칙.
+        row = next(x for x in self.client.get("/api/highlight/clip-results/matches").json() if x["job_id"] == "503")
+        self.assertEqual({k: (v["clip_count"], v["display_count"]) for k, v in row["scrimmage"].items()},
+                         {"A": (3, 1), "B": (2, 1)})
+
+    def test_bundle_clip_list_rejects_normal_match(self):
+        normal = self.add_job("501", _meta("501"))
+        r = self.client.get(f"/api/highlight/clip-results/matches/{normal}/clips?side=A")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.client.get("/api/highlight/clip-results/jobs/501/clips?side=B").status_code, 400)
+        plain = self.client.get(f"/api/highlight/clip-results/matches/{normal}/clips").json()["clips"]
+        self.assertEqual(len(plain), 5)
+        self.assertFalse(any("scrimmage_role" in c for c in plain))
+        row = next(x for x in self.client.get("/api/highlight/clip-results/matches").json() if x["job_id"] == "501")
+        self.assertIsNone(row["scrimmage"])
+
     def test_job_list_brief_drops_bundle_payloads(self):
         from app.highlight_jobs import serialize_job
         self.send()
@@ -430,6 +467,11 @@ class ScrimmageHelpersTest(unittest.TestCase):
         self.assertIsNone(clip_role("away", False, side="home", letter="A"))
         self.assertEqual(clip_role(None, True, side="home", letter="A"), "own")   # 옛 클립은 A 에만
         self.assertIsNone(clip_role(None, True, side="away", letter="B"))
+        from app.fineplay_scrimmage import bundle_roles
+        self.assertIsNone(bundle_roles(_meta("1"), "home", True))
+        self.assertEqual(bundle_roles(_meta("1", scrimmage=True), "away", True), {"A": "display", "B": "own"})
+        self.assertEqual(bundle_roles(_meta("1", scrimmage=True, our_side="away"), "away", False),
+                         {"A": "own", "B": None})
 
     def test_new_produce_holds_sent_bundles(self):
         from app import fineplay_scrimmage as fs

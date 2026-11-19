@@ -84,6 +84,18 @@ def clip_role(team_side: Any, is_goal: Any, *, side: str, letter: str) -> str | 
     return "display" if bool(is_goal) else None
 
 
+def bundle_roles(metadata: Any, team_side: Any, is_goal: Any) -> dict[str, str | None] | None:
+    """클립 하나가 묶음마다 맡는 역할 — {"A": "own"|"display"|None, "B": ...}. 자체전이 아니면 None.
+
+    클립 검수·전송 화면이 묶음별 클립 목록을 이 값으로 만든다. 전송(_build_clip_result_payload)도
+    같은 clip_role·bundle_sides 를 쓰므로, 화면에 보이는 묶음 = 실제로 나가는 묶음이다.
+    """
+    sides = bundle_sides(metadata)
+    if sides is None:
+        return None
+    return {letter: clip_role(team_side, is_goal, side=sides[letter], letter=letter) for letter in LETTERS}
+
+
 def strip_identity(actions: list[dict[str, Any]], *, keep_side: str | None) -> list[dict[str, Any]]:
     """keep_side 가 아닌 액션에서 선수 식별 필드를 뗀다(제자리). keep_side=None 이면 전부."""
     for action in actions:

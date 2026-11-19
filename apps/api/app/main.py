@@ -13782,8 +13782,10 @@ def clip_result_matches(
             "job_id": c.job_id,
             "clip_count": 0,
             "updated_at": c.updated_at,
+            "clip_kinds": [],
         })
         g["clip_count"] += 1
+        g["clip_kinds"].append((c.team_side, c.is_goal))
         if c.updated_at and (g["updated_at"] is None or c.updated_at > g["updated_at"]):
             g["updated_at"] = c.updated_at
 
@@ -13803,6 +13805,14 @@ def clip_result_matches(
         archived = bool(metadata.get("clip_archived"))
         if archived and not include_archived:
             continue
+        scrimmage = fineplay_scrimmage.view(metadata)
+        if scrimmage is not None:
+            # 묶음별 클립 수 — 전송과 같은 규칙(bundle_roles)으로 센다. 보내기 전에도 목록에 보인다.
+            for letter, bundle in scrimmage.items():
+                roles = [(fineplay_scrimmage.bundle_roles(metadata, side, goal) or {}).get(letter)
+                         for side, goal in g["clip_kinds"]]
+                bundle["clip_count"] = roles.count("own")
+                bundle["display_count"] = roles.count("display")
         out.append({
             "match_id": g["match_id"],
             "job_id": g["job_id"],
@@ -13814,8 +13824,8 @@ def clip_result_matches(
             "away_team": away or str((metadata.get("scoreboard") or {}).get("away_name") or ""),
             "clip_count": g["clip_count"],
             "callback_status": metadata.get("callback_status"),
-            # 자체전이면 A팀·B팀 묶음별 전송 상태(ADR-X-0010). 아니면 None.
-            "scrimmage": fineplay_scrimmage.view(metadata),
+            # 자체전이면 A팀·B팀 묶음별 전송 상태·클립 수(ADR-X-0010). 아니면 None.
+            "scrimmage": scrimmage,
             # 대회 인입은 뒤에서 도는 작업이라, 화면이 이 값을 보고 끝난 것을 안다.
             "competition_callback_status": metadata.get("competition_callback_status"),
             # 어디까지 갔는지. 서버에 남는 값이라 탭을 옮겼다 와도 그대로 보인다.
@@ -13924,13 +13934,43 @@ def clip_result_set_title(
     return {"clip_id": clip_id, "title": title, "auto_title": clip.main_action}
 
 
+def _clips_for_bundle(
+    db: Session, clips: list[HighlightClip], side: str | None,
+) -> list[tuple[HighlightClip, str | None]]:
+    """side("A"|"B")를 주면 자체전 그 묶음에 실제로 나가는 클립만, 역할("own"|"display")과 함께.
+
+    역할은 전송과 같은 fineplay_scrimmage.bundle_roles(clip_role) 에서 나온다 — 화면에서 따로 거르지
+    않는다. side 를 안 주면 전부(역할 None) — 일반 경기·사전 작업 응답은 그대로다.
+    자체전이 아닌데 side 를 주거나 모르는 값이면 400.
+    """
+    if side in (None, ""):
+        return [(c, None) for c in clips]
+    job = db.get(HighlightJob, clips[0].job_id) if clips else None
+    metadata = dict((job.job_metadata if job else None) or {})
+    letters = _scrimmage_letters(metadata, side)
+    if not clips:
+        return []
+    letter = (letters or ("",))[0]
+    out = []
+    for c in clips:
+        role = (fineplay_scrimmage.bundle_roles(metadata, c.team_side, c.is_goal) or {}).get(letter)
+        if role is not None:
+            out.append((c, role))
+    return out
+
+
 @app.get("/api/highlight/clip-results/matches/{match_id}/clips")
 def clip_result_clips(
     match_id: UUID,
+    side: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """매치의 클립 리스트 (순서대로, 홈/어웨이 귀속 포함)."""
+    """매치의 클립 리스트 (순서대로, 홈/어웨이 귀속 포함).
+
+    side=A|B(자체전만): 그 묶음에 나가는 클립만 — 각 클립에 scrimmage_role("own" 이 팀 클립 |
+    "display" 상대 골, 보기용)·is_goal 을 싣는다(ADR-X-0010).
+    """
     clips = (
         db.query(HighlightClip)
         .filter(HighlightClip.match_id == match_id)
@@ -13939,7 +13979,7 @@ def clip_result_clips(
     )
     storage = highlight_default_storage()
     out = []
-    for c in clips:
+    for c, role in _clips_for_bundle(db, clips, side):
         action_count = db.query(HighlightClipAction).filter(HighlightClipAction.clip_id == c.id).count()
         item = {
             "id": c.id,
@@ -13953,6 +13993,9 @@ def clip_result_clips(
             "title": c.title,
             "action_count": action_count,
         }
+        if role is not None:
+            item["scrimmage_role"] = role
+            item["is_goal"] = bool(c.is_goal)
         if storage.configured and c.thumbnail_s3_key:
             item["thumbnail_url"] = storage.presigned_get(c.thumbnail_s3_key, expires=3600)
         out.append(item)
@@ -13962,20 +14005,25 @@ def clip_result_clips(
 @app.get("/api/highlight/clip-results/jobs/{job_id}/clips")
 def clip_result_job_clips(
     job_id: str,
+    side: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(_require_session_user),
 ):
-    """Job-scoped results, including manual work without a live Match."""
-    if db.get(HighlightJob, job_id) is None:
+    """Job-scoped results, including manual work without a live Match. side=A|B 는 위와 같다."""
+    job = db.get(HighlightJob, job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
     clips = db.query(HighlightClip).filter_by(job_id=job_id).order_by(HighlightClip.order_index).all()
+    if side not in (None, "") and not clips:
+        _scrimmage_letters(dict(job.job_metadata or {}), side)  # 자체전이 아니면 400
     return {"clips": [{
         "id": clip.id, "order_index": clip.order_index, "team_side": clip.team_side,
         "start_sec": clip.start_sec, "end_sec": clip.end_sec,
         "duration_seconds": clip.duration_seconds, "main_action": clip.main_action,
         "title": clip.title,
         "action_count": db.query(HighlightClipAction).filter_by(clip_id=clip.id).count(),
-    } for clip in clips]}
+        **({"scrimmage_role": role, "is_goal": bool(clip.is_goal)} if role is not None else {}),
+    } for clip, role in _clips_for_bundle(db, clips, side)]}
 
 
 @app.get("/api/highlight/clip-results/clips/{clip_id}")

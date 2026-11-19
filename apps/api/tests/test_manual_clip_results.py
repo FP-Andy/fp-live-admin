@@ -68,7 +68,7 @@ def route_app(storage):
         scope['fineplay_' + name] = getattr(fpa, name)
     names = {'_require_manual_job', '_fineplay_work_done', 'upload_manual_clip', 'register_manual_clip_results', '_serialize_clip_action',
              '_clip_job_context', '_fineplay_lineup_sides', '_carry_over_offsets',
-             'clip_result_matches', 'clip_result_job_clips', 'clip_result_detail',
+             'clip_result_matches', 'clip_result_job_clips', '_clips_for_bundle', '_scrimmage_letters', 'clip_result_detail',
              'clip_result_put_actions', 'download_clip_scene_motion', 'clip_result_delete_clip',
              '_clip_scene_motion_prefix', '_clip_scene_actions',
              'delete_highlight_job'}
