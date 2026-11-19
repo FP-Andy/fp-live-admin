@@ -3,8 +3,13 @@
   "pairs": [
     {
       "from": "d942245b853793cd6b4042fbe51201da725201c96506f80c7f24ddbfb0bdb8de",
-      "to": "1d0b4ddb78291f264e3b54070de407659d765c44f14859d7d4bd14447ed054e6",
-      "basis": "Compared the inference entry point, tracking, detection, classification, court and proxy modules against deployed main; unchanged. Other edits concern UI, video orchestration, retention, pose finalization, scene-save concurrency and polling."
+      "to": "d5b9c515036bb7d7393fb53450486fbe31c11ab1f8df5d307c7984f62e64e297",
+      "basis": "Detection, tracking, classification, court and inference code unchanged; edits only add scene-scoped approved neutral-pose handling, report disclosure and production readiness."
+    },
+    {
+      "from": "1d0b4ddb78291f264e3b54070de407659d765c44f14859d7d4bd14447ed054e6",
+      "to": "d5b9c515036bb7d7393fb53450486fbe31c11ab1f8df5d307c7984f62e64e297",
+      "basis": "Detection, tracking, classification, court and inference code unchanged; edits only add scene-scoped approved neutral-pose handling, report disclosure and production readiness."
     }
   ]
 }

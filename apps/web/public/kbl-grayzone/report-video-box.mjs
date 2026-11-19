@@ -11,6 +11,7 @@ export function mountReportVideoBox({caseId,api,onChange,onComplete,getRevision=
   list.replaceChildren();if(!ready)return;
   const automatic=ready.events.filter(x=>x.autoPrepare).length;
   list.append(p(ready.ready?(automatic?`${automatic}개 장면은 제작 시 자동으로 자세를 보정합니다.`:'모든 장면의 영상 제작 준비가 됐습니다.'):`영상 준비 ${ready.events.filter(x=>x.ready).length}/${ready.events.length}장면`));
+  for(const row of ready.events.filter(x=>x.neutralFallback?.length))list.append(p(`${row.number}번 · 선수 ${row.neutralFallback.length}명은 기본 자세로 표현합니다.`));
   for(const row of ready.events.filter(x=>!x.ready)){
    const line=p(`${row.number}번 · ${row.message} `),a=document.createElement('a');
    a.href=spatialUrl(caseId,row.eventId);a.textContent='공간 검수에서 확인 →';line.append(a);list.append(line);

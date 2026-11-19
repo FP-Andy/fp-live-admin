@@ -99,6 +99,21 @@ def pending_placed_people(scene,pose):
  entities={e['id']:e for e in scene['state']['entities']}
  return [p for p in pose['people'] if (e:=entities.get(p['id'])) and e['role']=='player' and not p.get('spatialEligible',True) and p.get('imageSource','broadcast')=='broadcast']
 
+def approved_neutral(case,event,scene,pending=None):
+ """Return a reviewer-approved exception only for this exact saved scene."""
+ capture=scene.get('captureId');variant=scene.get('poseVariantId')
+ if case not in case_store.CASES or not re.fullmatch(r'review-\d+',str(event)) or not all(isinstance(x,str) and re.fullmatch(r'[a-f0-9]{24}',x) for x in (capture,variant)):return []
+ path=case_store.CASES[case]/'reconstructions'/event/'neutral-pose-approvals'/(capture+'.json')
+ try:
+  if path.is_symlink() or not path.is_file():return []
+  data=json.loads(path.read_text());ids=data.get('personIds')
+  players={e['id'] for e in scene.get('state',{}).get('entities',[]) if e.get('role')=='player'}
+  if data.get('schema')!='courtside-neutral-pose-approval/v1' or data.get('caseId')!=case or data.get('eventId')!=event or data.get('captureId')!=capture or data.get('poseVariantId')!=variant:return []
+  if not isinstance(ids,list) or not ids or any(not isinstance(x,str) for x in ids) or len(ids)!=len(set(ids)) or not set(ids)<=players:return []
+  if pending is not None and set(ids)!={p.get('id') for p in pending}:return []
+  return sorted(ids)
+ except (OSError,ValueError,TypeError,KeyError):return []
+
 def placed_people_camera(case,event,scene,pose):
  """Use the validated saved-map camera when planar calibration is unstable."""
  import broadcast_reconstruction as reconstruction

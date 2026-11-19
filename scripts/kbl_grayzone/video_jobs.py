@@ -124,6 +124,9 @@ def inputs(case,event,player_orientation='map',allow_incomplete_crew=False):
   if not video_pose_refit.BLENDER.is_file():raise RuntimeError('자세 보정에 필요한 로컬 Blender를 찾을 수 없습니다.')
  labels=referee_labels(case,event,scene)
  identity={'case':case,'event':event,'capture':scene['captureId'],'frame':entry.get('selectedBroadcastFrame'),'scene':sha(scene_file),'source':sha(source),'mesh':sha(mesh),'pose':digest(pose),'library':sha(library),'font':sha(font),'referees':labels,'playerOrientation':player_orientation,'renderer':sha(HERE/'video_renderer_cpu.py'),'depth':sha(HERE/'video_depth.py'),'depthRaster':sha(HERE/'video_depth_raster.cpp'),'worker':sha(HERE/'video_cpu_worker.py'),'safety':sha(HERE/'video_safety.py'),'texture':sha(HERE/'video-assets/procedural-court.png'),'version':VERSION}
+ import pose_variant
+ neutral=pose_variant.approved_neutral(case,event,scene)
+ if neutral:identity['neutralPoseApproval']=neutral
  if allow_incomplete_crew:identity['allowIncompleteCrew']=True
  if player_orientation=='refit':identity.update(refit=sha(HERE/'video_pose_refit.py'),rig=sha(HERE/'build_pose_assets.py'),rigAssets=sha(HERE/'build_mpfb_assets.py'),armIK=sha(HERE/'arm_ik.py'))
  if type(identity['frame']) is not int:raise ValueError('중계 판독 프레임을 먼저 선택하세요.')
@@ -162,6 +165,7 @@ def submit(case,event,player_orientation='map',allow_incomplete_crew=False):
   hashes={name:sha(path/name) for name in ('scene.json','pose.json','meshes.json','human-library.json')};hashes['source']=prepared['identity']['source']
   spec={'sourcePath':str(prepared['source']),'frameIndex':prepared['identity']['frame'],'ffmpegPath':ffmpeg,'fontPath':str(prepared['font']),'inputHashes':hashes,'fingerprint':fingerprint,'caseId':case,'eventId':event,'captureId':prepared['identity']['capture'],'sceneSha256':prepared['identity']['scene'],'referees':prepared['identity']['referees'],'playerOrientation':'map' if player_orientation=='refit' else player_orientation,'poseMode':player_orientation,'experimentalPose':player_orientation=='refit'}
   if allow_incomplete_crew:spec['allowIncompleteCrew']=True
+  if prepared['identity'].get('neutralPoseApproval'):spec['neutralPoseApproval']=prepared['identity']['neutralPoseApproval']
   atomic(path/'inputs.json',spec);data={'jobId':job,'caseId':case,'eventId':event,'fingerprint':fingerprint,'state':'queued','stage':'영상 제작 대기','createdAt':now(),'_createdEpoch':time.time()};atomic(path/'status.json',data)
   try:
    with (path/'runner.log').open('ab') as log:subprocess.Popen([sys.executable,str(HERE/'video_jobs.py'),'--run',job],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,env={**os.environ,'OPENBLAS_NUM_THREADS':'2'})
@@ -210,6 +214,10 @@ def run(job):
     if result.get('playerOrientation','map')!=spec.get('playerOrientation','map'):raise RuntimeError('선수 자세 적용 방식이 요청과 다릅니다.')
     if result.get('modelStyle')!='uniform-mannequin-v1':raise RuntimeError('마네킹 인체 모델 검증에 실패했습니다.')
     if prepare()['fingerprint']!=spec['fingerprint']:raise RuntimeError('제작 중 판독 자료 또는 영상 코드가 변경돼 결과를 보관하지 않았습니다.')
+    neutral=spec.get('neutralPoseApproval',[])
+    if neutral:
+     if not set(neutral)<=set(result.get('fallbackPeople',[])):raise RuntimeError('승인된 기본 자세 인물을 확인할 수 없습니다.')
+     result['caveat']+=f" 선수 {len(neutral)}명은 기본 자세이며, 가림도 해당 형상으로 계산했습니다."
     dest=review_videos.folder(data['caseId'],data['eventId']);dest.mkdir(parents=True,exist_ok=True);video=dest/(job+'.mp4');meta=dest/(job+'.json')
     if video.exists() or meta.exists():raise RuntimeError('같은 영상 ID가 이미 있습니다.')
     # The metadata is published last: an incomplete copy is never downloadable.
