@@ -22,6 +22,21 @@ Each 1920×1080 graphic has three PNG URLs and an OBS browser-source URL in its 
   15 seconds and retains the last graphic if the API is temporarily unavailable.
   Use the eye icon or scene controls to show or hide it.
 
+The five live OBS URLs and both dominance URLs can be copied before a match
+starts. They remain transparent until the corresponding graphic is generated;
+the halftime and fulltime dominance graphics become available at their
+respective checkpoints.
+
+For consecutive UCCC games, `/overlay/uccc/<locator>` is a fixed set of seven
+browser-source URLs. An authenticated operator selects the current match on
+that match's FLA page or showroom page; the server verifies the operator's
+write access and rejects a stale selection. A match handoff is explicit, not
+based on clock or match creation order. OBS checks the selected match every 15
+seconds, clearing the old image if the new match has not generated its image.
+During network outages it retains the last successful image, so hide the source
+until the current match can be confirmed. Dominance remains a full-screen
+graphic when available.
+
 Live graphics use a stable `combined.png` URL with a 55-second cache policy;
 refreshing the image source picks up new data as it is generated. Archives
 retain versioned URLs. For existing two-layer archives, the API serves a

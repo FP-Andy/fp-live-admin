@@ -2,6 +2,8 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import BroadcastChannelControl from './fla/BroadcastChannelControl';
+import { obsList, obsUrl } from '../lib/broadcast-obs';
 
 type AssetPair = { background_url: string; asset_url: string; combined_url?: string; overlay_url?: string; generated_at?: string; width?: number; height?: number };
 type AssetManifest = {
@@ -20,6 +22,7 @@ type BroadcastMatch = {
   competition_class: string;
   round_number: number;
   status: 'LIVE' | 'OPEN' | 'ARCHIVED';
+  archived?: boolean;
   clock_ms: number;
   assets: AssetManifest;
   generated_at?: string | null;
@@ -92,9 +95,9 @@ function AssetCard({ title, asset, showUrls = true }: { title: string; asset?: A
   );
 }
 
-function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
+function AssetUrlLinks({ title, asset, overlayUrl }: { title: string; asset?: AssetPair; overlayUrl?: string }) {
   const [copied, setCopied] = useState<string | null>(null);
-  if (!asset) return null;
+  if (!asset && !overlayUrl) return null;
   const copy = async (format: string, url: string) => {
     try {
       await navigator.clipboard.writeText(url);
@@ -107,7 +110,7 @@ function AssetUrlLinks({ title, asset }: { title: string; asset?: AssetPair }) {
   return (
     <div className="broadcast-asset-urls">
       <strong>{title}</strong>
-      {([...(asset.overlay_url ? [['OBS', asset.overlay_url]] : []), ...(asset.combined_url ? [['통합 PNG', asset.combined_url]] : []), ['배경', asset.background_url], ['에셋', asset.asset_url]] as string[][]).map(([format, url]) => (
+      {([...(overlayUrl || asset?.overlay_url ? [['OBS', overlayUrl || asset?.overlay_url]] : []), ...(asset?.combined_url ? [['통합 PNG', asset.combined_url]] : []), ...(asset ? [['배경', asset.background_url], ['에셋', asset.asset_url]] : [])] as string[][]).map(([format, url]) => (
         <div className="broadcast-asset-url" key={format}>
           <span>{format}</span>
           <a href={url} target="_blank" rel="noreferrer" title={url}>{url}</a>
@@ -300,6 +303,14 @@ export function BroadcastShowroomIndex() {
 
 export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
   const { data: match, error, reload } = useBroadcastResource<BroadcastMatch>(`/api/broadcast/v1/matches/${matchId}`);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState('');
+  const [origin, setOrigin] = useState('https://broadcast.fineludens.kr');
+  useEffect(() => setOrigin(window.location.origin), []);
+  const copyAll = async () => {
+    try { await navigator.clipboard.writeText(obsList(matchId, origin)); setCopied(true); setCopyError(''); window.setTimeout(() => setCopied(false), 2000); }
+    catch { setCopyError('복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.'); }
+  };
   const archiveMinutes = useMemo(() => Object.keys(match?.assets.archive || {}).sort((a, b) => Number(a) - Number(b)), [match]);
   const goalXgAssets = useMemo(() => Object.values(match?.assets.xg_goals || {}).sort((a, b) => Number(a.event_clock_ms || 0) - Number(b.event_clock_ms || 0)), [match]);
   if (error) return <main className="broadcast-showroom"><p className="broadcast-error">경기를 불러오지 못했습니다: {error}</p></main>;
@@ -322,8 +333,14 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
           </div>
         </div>
         <TeamBrandingEditor match={match} onUpdated={reload} />
+        {match.competition_class === 'UCCC' ? <BroadcastChannelControl matchId={matchId} canWrite={!match.archived} /> : null}
+        <div className="broadcast-obs-copy">
+          <button type="button" onClick={copyAll}>{copied ? '복사됨' : '이 경기 OBS 링크 전체 복사'}</button>
+          <p>경기 시작 전에도 주소를 OBS에 등록할 수 있습니다. 그래픽이 생성되기 전에는 투명하게 표시됩니다.</p>
+          {copyError ? <p role="alert">{copyError}</p> : null}
+        </div>
         <div className="broadcast-live-url-list" aria-label="실시간 에셋 URL">
-          {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetUrlLinks key={type} title={label} asset={match.assets.live?.[type]} />)}
+          {Object.entries(LIVE_LABELS).map(([type, label]) => <AssetUrlLinks key={type} title={label} asset={match.assets.live?.[type]} overlayUrl={obsUrl(matchId, `live/${type}`, origin)} />)}
         </div>
       </section>
 
@@ -362,8 +379,8 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
           <AssetCard title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} showUrls={false} />
         </div>
         <div className="broadcast-live-url-list" aria-label="매치 도미넌스 에셋 URL">
-          <AssetUrlLinks title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} />
-          <AssetUrlLinks title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} />
+          <AssetUrlLinks title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} overlayUrl={obsUrl(matchId, 'dominance/halftime', origin)} />
+          <AssetUrlLinks title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} overlayUrl={obsUrl(matchId, 'dominance/fulltime', origin)} />
         </div>
       </section>
     </main>

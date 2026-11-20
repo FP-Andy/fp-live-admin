@@ -82,6 +82,15 @@ class Match(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class BroadcastChannel(Base):
+    """A stable broadcast destination whose selected match can change."""
+    __tablename__ = 'broadcast_channels'
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    match_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey('matches.id', ondelete='SET NULL'), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class CourtsideEditor(Base):
     __tablename__ = 'courtside_editors'
     match_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('matches.id', ondelete='CASCADE'), primary_key=True)
