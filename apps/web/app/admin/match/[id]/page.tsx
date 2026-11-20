@@ -4,6 +4,7 @@ import { futsalPitchPoint } from '../../../../lib/futsal-pitch';
 import { futsalShotThreat } from '../../../../components/fla/FutsalShotPitch';
 import LineupUniforms from '../../../../components/LineupUniforms';
 import MatchdayLineupImport from '../../../../components/fla/MatchdayLineupImport';
+import BroadcastChannelControl from '../../../../components/fla/BroadcastChannelControl';
 import ConfirmDialog from '../../../../components/ConfirmDialog';
 import {MatchPossessionCard, MatchAttackCard, MatchShotCard, MatchRecentRecords, MatchPossessionTimeline, MatchFlowCard} from '../../../../components/fla/MatchControlCards';
 import Link from 'next/link';
@@ -1856,6 +1857,7 @@ function MatchControlPage() {
 
         </section>
         <section className="fla-settings grid" aria-label="경기 설정">
+          {match && (match.sport || 'FOOTBALL') === 'FOOTBALL' && String(match.competition_class || '').toUpperCase() === 'UCCC' && match.metadata?.broadcast_enabled !== false ? <BroadcastChannelControl matchId={id} canWrite={canWrite && !isArchived} /> : null}
           {/* 중계 데이터 미리보기 — 축구만(중계 그래픽은 축구 경기에서만 만든다). 접혀 있으면 요청 0건. */}
           {match && (match.sport || 'FOOTBALL') === 'FOOTBALL' ? <BroadcastPreviewPanel matchId={id} match={match} /> : null}
 

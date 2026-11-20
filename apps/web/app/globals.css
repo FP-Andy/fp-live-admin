@@ -7682,6 +7682,13 @@ html.fpa-embed .topbar {
 .broadcast-error { color: #b42318; border-color: #f2c7c3; }
 
 .broadcast-live-url-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 22px; }
+.broadcast-channel-control { padding: 16px; margin: 16px 0; border: 1px solid #a7aeb8; border-radius: 12px; }
+.broadcast-channel-control p { margin: 8px 0; font-size: .88rem; }
+.broadcast-channel-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.broadcast-channel-actions button, .broadcast-obs-copy button { border: 1px solid #d75d00; border-radius: 8px; padding: 9px 12px; background: #fff; color: #9a4000; font-weight: 700; cursor: pointer; }
+.broadcast-channel-actions button:disabled { opacity: .55; cursor: default; }
+.broadcast-obs-copy { margin-top: 18px; }
+.broadcast-obs-copy p { margin: 8px 0; font-size: .88rem; }
 .broadcast-asset-urls { display: grid; gap: 6px; padding: 14px 16px; border: 1px solid #e0e4e9; border-radius: 12px; background: #fff; box-shadow: 0 8px 20px rgba(26, 34, 46, .04); }
 .broadcast-asset-urls > strong { color: #2d333b; font-size: .82rem; }
 .broadcast-asset-url { display: grid; grid-template-columns: 55px minmax(0, 1fr) auto; gap: 8px; align-items: center; }

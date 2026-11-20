@@ -158,7 +158,7 @@ from .broadcast_assets import (
     render_live_coder_asset_pairs,
     store_asset_pair,
 )
-from .models import Match, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, MatchHighlight, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject, HighlightCardTemplate
+from .models import Match, BroadcastChannel, ScheduleEntry, ScheduleNotificationLog, State, PossessionSegment, LaneSegment, Event, DominanceBin, MatchMarker, MatchHighlight, Outbox, User, WebhookSubscription, AuditLog, FcmSubmission, CompetitionClass, FcmTemplate, FpaSavedLog, HighlightClip, HighlightClipAction, HighlightJob, BroadcastOverlayProject, HighlightCardTemplate
 from .schemas import (
     ArchiveMatchRequest,
     AcquireLockRequest,
@@ -7377,6 +7377,53 @@ def get_completed_broadcast_demo(db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Completed broadcast demo has not been rendered yet")
     return _broadcast_public_match(row, db)
+
+
+@app.get('/api/broadcast/v1/channels/uccc')
+def get_uccc_broadcast_channel(response: Response, db: Session = Depends(get_db)):
+    """Public OBS readers see only the currently selected broadcast match."""
+    response.headers['Cache-Control'] = 'no-store'
+    channel = db.get(BroadcastChannel, 'uccc')
+    match = db.get(Match, channel.match_id) if channel and channel.match_id else None
+    if match and not _broadcast_graphics_enabled(match):
+        match = None
+    return {'match': _broadcast_public_match(match, db) if match else None}
+
+
+@app.post('/api/broadcast/v1/channels/uccc/select')
+def select_uccc_broadcast_match(body: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(_require_session_user)):
+    """Explicit compare-and-swap prevents a stale page switching the wrong match."""
+    if 'expected_match_id' not in body:
+        raise HTTPException(status_code=400, detail='현재 연결 경기를 다시 확인해 주세요.')
+    try:
+        match_id = UUID(str(body.get('match_id')))
+        expected = UUID(str(body['expected_match_id'])) if body['expected_match_id'] is not None else None
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail='경기 정보가 올바르지 않습니다.')
+    match = db.get(Match, match_id)
+    if not match:
+        raise HTTPException(status_code=404, detail='경기를 찾을 수 없습니다.')
+    _require_match_not_archived(match)
+    _require_write_lock(match, user)
+    if _normalize_sport(match.sport) != 'FOOTBALL' or _normalize_competition_class(match.competition_class) != 'UCCC' or not _broadcast_graphics_enabled(match):
+        raise HTTPException(status_code=409, detail='방송 그래픽을 사용하는 UCCC 축구 경기만 연결할 수 있습니다.')
+    channel = db.query(BroadcastChannel).filter_by(id='uccc').with_for_update().first()
+    previous = channel.match_id if channel else None
+    if previous != expected:
+        raise HTTPException(status_code=409, detail='다른 운영자가 연결 경기를 변경했습니다. 현재 연결을 다시 확인해 주세요.')
+    if not channel:
+        channel = BroadcastChannel(id='uccc')
+        db.add(channel)
+    channel.match_id = match_id
+    channel.updated_at = datetime.utcnow()
+    channel.updated_by = user.id
+    db.add(AuditLog(actor_id=user.id, actor_name=user.name, actor_role=user.role, action='BROADCAST_CHANNEL_SELECT', target_type='broadcast_channel', target_id='uccc', match_id=str(match_id), details={'previous_match_id': str(previous) if previous else None}))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail='다른 운영자가 연결 경기를 변경했습니다. 현재 연결을 다시 확인해 주세요.') from exc
+    return {'match': _broadcast_public_match(match, db)}
 
 
 @app.get("/api/broadcast/v1/matches/{match_id}")

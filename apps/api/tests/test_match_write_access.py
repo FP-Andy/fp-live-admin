@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 from app import main, auth
 from app.auth_security import fingerprint, hash_secret
 from app.db import Base, SessionLocal, engine
-from app.models import AdminAccount, AuthSession, User, OperatorAccessPolicy, Match, State, Event, MatchMarker, MatchHighlight, Outbox, AuditLog, PossessionSegment
+from app.models import AdminAccount, AuthSession, User, OperatorAccessPolicy, Match, BroadcastChannel, State, Event, MatchMarker, MatchHighlight, Outbox, AuditLog, PossessionSegment
 
 
 @compiles(JSONB, "sqlite")
@@ -75,6 +75,45 @@ class MatchWriteAccess(unittest.TestCase):
     def tearDown(self):
         for client in self.clients.values():
             client.close()
+
+    def test_uccc_broadcast_channel_requires_auth_and_switches_with_compare_and_swap(self):
+        with SessionLocal() as db:
+            db.get(Match, self.mid).competition_class = 'UCCC'
+            db.get(Match, self.other).competition_class = 'UCCC'
+            db.commit()
+        url = '/api/broadcast/v1/channels/uccc'
+        public = self.clients['anonymous']
+        self.assertIsNone(public.get(url).json()['match'])
+        body = {'match_id': str(self.mid), 'expected_match_id': None}
+        self.assertEqual(public.post(url + '/select', json=body).status_code, 401)
+        self.assertEqual(self.clients['other'].post(url + '/select', json=body).status_code, 403)
+        self.assertEqual(self.clients['owner'].post(url + '/select', json=body).status_code, 200)
+        self.assertEqual(public.get(url).json()['match']['match_id'], str(self.mid))
+        second = {'match_id': str(self.other), 'expected_match_id': str(self.mid)}
+        self.assertEqual(self.clients['owner'].post(url + '/select', json={**second, 'expected_match_id': None}).status_code, 409)
+        # The next match may be handled by another operator; the previous
+        # match's lock must not prevent an explicit, checked handoff.
+        self.assertEqual(self.clients['other'].post(url + '/select', json=second).status_code, 200)
+        self.assertEqual(public.get(url).json()['match']['match_id'], str(self.other))
+        with SessionLocal() as db:
+            self.assertEqual(db.get(BroadcastChannel, 'uccc').match_id, self.other)
+            self.assertEqual(db.query(AuditLog).filter_by(action='BROADCAST_CHANNEL_SELECT').count(), 2)
+            db.get(Match, self.mid).archived = True
+            db.commit()
+        self.assertEqual(self.clients['owner'].post(url + '/select', json={'match_id': str(self.mid), 'expected_match_id': str(self.other)}).status_code, 409)
+        self.assertEqual(public.get(url).json()['match']['match_id'], str(self.other))
+
+    def test_uccc_channel_rejects_other_competitions_and_disabled_graphics(self):
+        url = '/api/broadcast/v1/channels/uccc/select'
+        body = {'match_id': str(self.mid), 'expected_match_id': None}
+        self.assertEqual(self.clients['owner'].post(url, json=body).status_code, 409)
+        with SessionLocal() as db:
+            row = db.get(Match, self.mid)
+            row.competition_class = 'UCCC'
+            row.metadata_json = {'broadcast_enabled': False}
+            db.commit()
+        self.assertEqual(self.clients['owner'].post(url, json=body).status_code, 409)
+        self.assertIsNone(self.clients['anonymous'].get('/api/broadcast/v1/channels/uccc').json()['match'])
 
     def test_matchday_preview_apply_preserves_empty_and_checks_stale_and_permissions(self):
         fixture = {'matchId': 827, 'matchName': '경기 1', 'homeTeamName': '홈팀', 'awayTeamName': '원정팀', 'stage': 'qualifying'}
