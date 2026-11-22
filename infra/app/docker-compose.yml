@@ -270,6 +270,9 @@ services:
       context: ../../apps/web
     container_name: app-web
     restart: unless-stopped
+    # Chromium's helper processes can outlive the capture parent.  Run an init
+    # as PID 1 so orphaned children are reaped instead of exhausting pids.max.
+    init: true
     environment:
       NEXT_PUBLIC_API_BASE: /api
       NEXT_PUBLIC_DEFAULT_HLS_URL: ${NEXT_PUBLIC_DEFAULT_HLS_URL:-}
