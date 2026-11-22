@@ -273,14 +273,15 @@ jobs:
     runs-on: [self-hosted, live-admin-app, production]
     timeout-minutes: 3
     steps:
-      - name: Inspect processes from host
+      - name: Restore broadcast capture web service
         run: |
-          echo 'PROCESS SUMMARY'
-          docker top app-web -eo pid,ppid,nlwp,stat,comm | head -35 || true
-          P=$(docker inspect app-web --format '{{.State.Pid}}'); C=$(awk -F: '$1=="0" {print $3}' /proc/$P/cgroup); echo cgroup=$C; cat /sys/fs/cgroup$C/pids.current /sys/fs/cgroup$C/pids.max 2>/dev/null || true
-          echo 'HOST ZOMBIES'; ps -e -o stat= | awk '/^Z/{z++} END{print z+0}'
-          echo 'CONTAINER PID LIMIT'
-          docker inspect app-web --format 'pid={{.State.Pid}} pidslimit={{.HostConfig.PidsLimit}} oom={{.State.OOMKilled}}' || true
-          echo 'HOST LOAD AND MEMORY'
-          cat /proc/loadavg
-          free -m
+          set -eu
+          before=$(docker inspect app-web --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+          docker restart --time 10 app-web
+          after=$(docker inspect app-web --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+          if [ "$before" != "$after" ]; then docker exec app-nginx nginx -s reload; fi
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 3 https://broadcast.fineludens.kr/ >/dev/null; then echo "web is responding"; exit 0; fi
+            sleep 2
+          done
+          echo 'web did not become ready'; exit 1
