@@ -273,10 +273,12 @@ jobs:
     runs-on: [self-hosted, live-admin-app, production]
     timeout-minutes: 3
     steps:
-      - name: Inspect broadcast worker without restarting services
+      - name: Inspect process limits without restarting services
         run: |
-          docker ps --format '{{.Names}} {{.Status}}'
-          echo 'RECENT BROADCAST ERRORS'
-          docker logs --since 90m app-api 2>&1 | grep -E -A 18 'broadcast asset (refresh failed|worker iteration failed)' | tail -120 || true
-          echo 'RECENT CAPTURE ERRORS'
-          docker logs --since 90m app-web 2>&1 | grep -E -A 5 'broadcast-render|TimeoutError|Executable.*doesn.t exist|Error:.*(chromium|browser)' | tail -100 || true
+          echo 'WEB PROCESS LIMITS'
+          docker exec app-web sh -c 'for f in /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max; do printf "%s " "$f"; cat "$f" 2>/dev/null || true; done'
+          echo 'WEB PROCESS SUMMARY'
+          docker top app-web -eo stat,comm | awk 'NR>1 {a[$1 " " $2]++} END {for(x in a) print a[x],x}' | sort -rn | head -20
+          echo 'HOST PROCESS LIMITS'
+          cat /proc/loadavg
+          free -m
