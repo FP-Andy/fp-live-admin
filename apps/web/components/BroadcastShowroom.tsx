@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import BroadcastChannelControl from './fla/BroadcastChannelControl';
+import FulltimeDominanceRefresh from './FulltimeDominanceRefresh';
 import { obsList, obsUrl } from '../lib/broadcast-obs';
 
 type AssetPair = { background_url: string; asset_url: string; combined_url?: string; overlay_url?: string; generated_at?: string; width?: number; height?: number };
@@ -374,6 +375,7 @@ export function BroadcastShowroomMatch({ matchId }: { matchId: string }) {
 
       <section className="broadcast-section">
         <div className="broadcast-section-heading"><h2>매치 도미넌스</h2><p>전반 종료와 경기 종료 시점, 총 2장을 보관하고 각각의 방송용 PNG URL을 제공합니다.</p></div>
+        {match.assets.dominance?.fulltime ? <FulltimeDominanceRefresh matchId={matchId} onUpdated={reload} /> : null}
         <div className="broadcast-assets-grid">
           <AssetCard title="전반전 매치 도미넌스" asset={match.assets.dominance?.halftime} showUrls={false} />
           <AssetCard title="경기 매치 도미넌스" asset={match.assets.dominance?.fulltime} showUrls={false} />

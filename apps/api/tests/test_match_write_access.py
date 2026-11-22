@@ -76,6 +76,39 @@ class MatchWriteAccess(unittest.TestCase):
         for client in self.clients.values():
             client.close()
 
+    def test_fulltime_dominance_refresh_changes_only_one_asset_and_requires_admin(self):
+        from types import SimpleNamespace
+        original = {'version': 2, 'live': {'possession': {'combined_url': 'old-live'}},
+                    'archive': {'15': {'possession': {'combined_url': 'old-archive'}}},
+                    'dominance': {'halftime': {'combined_url': 'old-half'},
+                                  'fulltime': {'combined_url': 'old-full'}}, 'last_generated_at': 'old'}
+        with SessionLocal() as db:
+            row = db.get(Match, self.mid)
+            row.first_half_minutes = row.second_half_minutes = 25
+            row.metadata_json = {'broadcast_assets': original, 'unrelated': 'preserved'}
+            db.commit()
+        path = self.url + '/dominance/fulltime/refresh'
+        path = path.replace('/api/matches/', '/api/broadcast/matches/')
+        body = {'home_score': 2, 'away_score': 2}
+        self.assertEqual(self.clients['anonymous'].post(path, json=body).status_code, 401)
+        self.assertEqual(self.clients['owner'].post(path, json=body).status_code, 403)
+        snap = {'match': {'home': {'score': 2}, 'away': {'score': 2}}}
+        replacement = {'background_url': 'new-background', 'asset_url': 'new-asset', 'combined_url': 'new-full', 'generated_at': 'new'}
+        with patch.object(main, '_build_broadcast_snapshot', return_value=snap), \
+             patch.object(main, '_football_score_from_events', return_value={'HOME': 2, 'AWAY': 2}), \
+             patch.object(main, 'render_live_coder_asset_pairs', return_value={'match-dominance-fulltime': (b'a', b'b')}), \
+             patch.object(main, 'store_asset_pair', return_value=SimpleNamespace(as_dict=lambda: replacement)) as store:
+            self.assertEqual(self.clients['admin'].post(path, json={'home_score': 1, 'away_score': 2}).status_code, 409)
+            result = self.clients['admin'].post(path, json=body)
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertIn('/corrections/fulltime/', store.call_args.args[1])
+        with SessionLocal() as db:
+            metadata = db.get(Match, self.mid).metadata_json
+            self.assertEqual(metadata['unrelated'], 'preserved')
+            expected = {**original, 'dominance': {**original['dominance'], 'fulltime': replacement}}
+            self.assertEqual(metadata['broadcast_assets'], expected)
+            self.assertEqual(db.query(AuditLog).filter_by(action='BROADCAST_FULLTIME_REFRESH').count(), 1)
+
     def test_uccc_broadcast_channel_requires_auth_and_switches_with_compare_and_swap(self):
         with SessionLocal() as db:
             db.get(Match, self.mid).competition_class = 'UCCC'

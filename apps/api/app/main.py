@@ -7434,6 +7434,58 @@ def get_broadcast_showroom_match(match_id: UUID, db: Session = Depends(get_db)):
     return _broadcast_public_match(row, db)
 
 
+@app.post('/api/broadcast/matches/{match_id}/dominance/fulltime/refresh')
+def refresh_fulltime_dominance_only(
+    match_id: UUID,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """Regenerate one final graphic without changing any other saved assets."""
+    home, away = body.get('home_score'), body.get('away_score')
+    if type(home) is not int or type(away) is not int or home < 0 or away < 0:
+        raise HTTPException(status_code=400, detail='확인한 최종 점수를 입력하세요.')
+    with _broadcast_asset_render_lock:
+        row = _require_football_match_for_partner(match_id, db)
+        if not _broadcast_graphics_enabled(row):
+            raise HTTPException(status_code=409, detail='방송 그래픽이 비활성화된 경기입니다.')
+        if _broadcast_is_running(row, db):
+            raise HTTPException(status_code=409, detail='진행 중인 경기는 시계를 멈춘 뒤 다시 확인하세요.')
+        raw = (row.metadata_json or {}).get('broadcast_assets') or {}
+        current = (raw.get('dominance') or {}).get('fulltime')
+        if not isinstance(current, dict) or not current.get('combined_url'):
+            raise HTTPException(status_code=409, detail='기존 풀경기 그래픽이 없습니다.')
+        cutoff = _broadcast_dominance_checkpoints(row)[1][0] * 60_000
+        snapshot = _build_broadcast_snapshot(row, db, as_of_clock_ms=cutoff)
+        if (snapshot['match']['home']['score'], snapshot['match']['away']['score']) != (home, away):
+            raise HTTPException(status_code=409, detail='현재 경기 기록의 최종 점수가 확인한 점수와 다릅니다.')
+        previous_url = current['combined_url']
+        asset_type = 'match-dominance-fulltime'
+        rendered = render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
+        # A new immutable path preserves the original image and its caches.
+        asset = store_asset_pair(BroadcastAssetStore(), f'{match_id}/corrections/fulltime/{uuid.uuid4().hex}', asset_type, snapshot, immutable=True, rendered=rendered).as_dict()
+        # Another operator may have edited an event while rendering; refresh
+        # SQLAlchemy's identity map before comparing the score and clock.
+        db.expire_all()
+        db.refresh(row, attribute_names=['metadata_json'])
+        metadata = dict(row.metadata_json or {})
+        raw = dict(metadata.get('broadcast_assets') or {})
+        dominance = dict(raw.get('dominance') or {})
+        if (dominance.get('fulltime') or {}).get('combined_url') != previous_url:
+            raise HTTPException(status_code=409, detail='그래픽이 변경되어 다시 확인해야 합니다.')
+        fresh_score = _football_score_from_events(match_id, db, as_of_clock_ms=cutoff)
+        if (fresh_score['HOME'], fresh_score['AWAY']) != (home, away) or _broadcast_is_running(row, db):
+            raise HTTPException(status_code=409, detail='경기 기록이 바뀌어 다시 확인해야 합니다.')
+        dominance['fulltime'] = asset
+        raw['dominance'] = dominance
+        metadata['broadcast_assets'] = raw
+        row.metadata_json = metadata
+        _audit(db, 'BROADCAST_FULLTIME_REFRESH', 'match', actor=user, target_id=str(match_id), match_id=match_id,
+               details={'home_score': home, 'away_score': away, 'previous_url': previous_url})
+        db.commit()
+        return {'ok': True, 'home_score': home, 'away_score': away, 'asset': asset}
+
+
 @app.get("/api/broadcast/v1/matches/{match_id}/combined/{locator:path}")
 def get_legacy_broadcast_combined(match_id: UUID, locator: str, db: Session = Depends(get_db)):
     """Combine the saved layers for cards created before combined PNGs existed."""
