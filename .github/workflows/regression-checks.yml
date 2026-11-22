@@ -273,15 +273,18 @@ jobs:
     runs-on: [self-hosted, live-admin-app, production]
     timeout-minutes: 3
     steps:
-      - name: Restore broadcast capture web service
+      - name: Refresh only the affected broadcast match
+        timeout-minutes: 6
         run: |
-          set -eu
-          before=$(docker inspect app-web --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-          docker restart --time 10 app-web
-          after=$(docker inspect app-web --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-          if [ "$before" != "$after" ]; then docker exec app-nginx nginx -s reload; fi
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 3 https://broadcast.fineludens.kr/ >/dev/null; then echo "web is responding"; exit 0; fi
-            sleep 2
-          done
-          echo 'web did not become ready'; exit 1
+          docker exec -i app-api python - <<'PYREFRESH'
+          import os, httpx
+          url='http://127.0.0.1:8000/api/broadcast/v1/matches/8099fe6f-ea0e-477f-b39a-6275c1057caa/refresh'
+          key=os.environ.get('BROADCAST_INGEST_KEY','')
+          if not key:
+              raise SystemExit('Broadcast refresh key unavailable')
+          response=httpx.post(url,headers={'X-Broadcast-Key':key},timeout=300)
+          print('Refresh HTTP',response.status_code)
+          if response.status_code != 200:
+              print('Refresh unsuccessful'); raise SystemExit(1)
+          print('Live graphic count',len(response.json().get('assets',{}).get('live',{})))
+          PYREFRESH
