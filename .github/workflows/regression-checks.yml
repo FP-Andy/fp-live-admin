@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   api-and-restore:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -52,6 +53,7 @@ jobs:
           python apps/api/tests/test_scene_motion_queue.py -v
 
   web:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -156,6 +158,7 @@ jobs:
           retention-days: 7
 
   courtside-enabled-web:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -173,6 +176,7 @@ jobs:
         run: npm --prefix apps/web run build
 
   courtside-worker-contracts:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -192,6 +196,7 @@ jobs:
           python -m unittest test_case_intake test_report_assets test_worker_release_manifest test_pose_mesh_builder test_pose_variant_async test_placed_pose_camera test_auto_pose_continuity test_review_flow_stale_scene test_gpu_bridge test_gpu_retention test_gpu_eic_transport test_cloud_preflight test_video_depth test_video_jobs test_delivery_archive test_review_package_jobs test_report_video_batch test_server_auto_pose test_spatial_concurrency test_object_cache_compat test_wide_reference_optional_note test_wide_retention_delivery test_video_phase_clock test_private_worker_smoke -v
 
   courtside-worker-image:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -233,6 +238,7 @@ jobs:
             --entrypoint /bin/sh courtside-worker-ci -c 'mkdir /tmp/app && cp /qa/source.py /tmp/app/courtside_recording_source.py && touch /tmp/app/__init__.py && PYTHONPATH=/tmp python /qa/test.py -v'
 
   postgres-contracts:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -261,3 +267,16 @@ jobs:
           python apps/api/tests/test_agent_fla.py -v
           python apps/api/tests/test_highlight_render_queue.py
           python apps/api/tests/test_scene_motion_queue.py -v
+
+  broadcast-diagnostics:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, live-admin-app, production]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect broadcast worker without restarting services
+        run: |
+          docker ps --format '{{.Names}} {{.Status}}'
+          echo 'RECENT BROADCAST ERRORS'
+          docker logs --since 90m app-api 2>&1 | grep -E -A 18 'broadcast asset (refresh failed|worker iteration failed)' | tail -120 || true
+          echo 'RECENT CAPTURE ERRORS'
+          docker logs --since 90m app-web 2>&1 | grep -E -A 5 'broadcast-render|TimeoutError|Executable.*doesn.t exist|Error:.*(chromium|browser)' | tail -100 || true
