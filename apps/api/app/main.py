@@ -7464,6 +7464,9 @@ def refresh_fulltime_dominance_only(
         rendered = render_live_coder_asset_pairs(snapshot, [asset_type])[asset_type]
         # A new immutable path preserves the original image and its caches.
         asset = store_asset_pair(BroadcastAssetStore(), f'{match_id}/corrections/fulltime/{uuid.uuid4().hex}', asset_type, snapshot, immutable=True, rendered=rendered).as_dict()
+        # Another operator may have edited an event while rendering; refresh
+        # SQLAlchemy's identity map before comparing the score and clock.
+        db.expire_all()
         db.refresh(row, attribute_names=['metadata_json'])
         metadata = dict(row.metadata_json or {})
         raw = dict(metadata.get('broadcast_assets') or {})
