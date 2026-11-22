@@ -273,12 +273,12 @@ jobs:
     runs-on: [self-hosted, live-admin-app, production]
     timeout-minutes: 3
     steps:
-      - name: Inspect process limits without restarting services
+      - name: Inspect processes from host
         run: |
-          echo 'WEB PROCESS LIMITS'
-          docker exec app-web sh -c 'for f in /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max; do printf "%s " "$f"; cat "$f" 2>/dev/null || true; done'
-          echo 'WEB PROCESS SUMMARY'
-          docker top app-web -eo stat,comm | awk 'NR>1 {a[$1 " " $2]++} END {for(x in a) print a[x],x}' | sort -rn | head -20
-          echo 'HOST PROCESS LIMITS'
+          echo 'PROCESS SUMMARY'
+          docker top app-web -eo stat,comm | awk 'NR>1 {a[$1 " " $2]++} END {for(x in a) print a[x],x}' | sort -rn | head -20 || true
+          echo 'CONTAINER PID LIMIT'
+          docker inspect app-web --format 'pid={{.State.Pid}} pidslimit={{.HostConfig.PidsLimit}} oom={{.State.OOMKilled}}' || true
+          echo 'HOST LOAD AND MEMORY'
           cat /proc/loadavg
           free -m
