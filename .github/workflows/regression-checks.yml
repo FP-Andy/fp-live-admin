@@ -276,7 +276,9 @@ jobs:
       - name: Inspect processes from host
         run: |
           echo 'PROCESS SUMMARY'
-          docker top app-web -eo pid,ppid,stat,comm | awk 'NR>1 {a[$3 " " $4]++} END {for(x in a) print a[x],x}' | sort -rn | head -20 || true
+          docker top app-web -eo pid,ppid,nlwp,stat,comm | head -35 || true
+          P=$(docker inspect app-web --format '{{.State.Pid}}'); C=$(awk -F: '$1=="0" {print $3}' /proc/$P/cgroup); echo cgroup=$C; cat /sys/fs/cgroup$C/pids.current /sys/fs/cgroup$C/pids.max 2>/dev/null || true
+          echo 'HOST ZOMBIES'; ps -e -o stat= | awk '/^Z/{z++} END{print z+0}'
           echo 'CONTAINER PID LIMIT'
           docker inspect app-web --format 'pid={{.State.Pid}} pidslimit={{.HostConfig.PidsLimit}} oom={{.State.OOMKilled}}' || true
           echo 'HOST LOAD AND MEMORY'
