@@ -144,6 +144,8 @@ type ClipRow = {
   // 운영자가 지정한 제목(오버라이드). null 이면 FPA 대표 액션 자동 제목이 나간다.
   title?: string | null;
   action_count: number;
+  /** 신청 태깅 '클립 추가' 로 나중에 넣은 클립. 액션 없이 만들어지므로 여기서 찍어야 한다. */
+  appended?: boolean;
   thumbnail_url?: string;
   /** 자체전 묶음으로 불렀을 때만(?side=A|B) — own = 이 팀 클립, display = 상대 골(보기용). */
   scrimmage_role?: 'own' | 'display';
@@ -1063,6 +1065,9 @@ export default function ClipResultsPage() {
   // side: 자체전 묶음 하나만 보낼 때 'A'|'B'. 일반 경기는 주지 않는다(서버가 400).
   const resend = async (side?: 'A' | 'B') => {
     if (!selectedMatch?.match_id) return;
+    // 추가한 클립에 아직 액션이 없으면 빈 채로 나간다 — 막지는 않고 한 번 묻는다.
+    const empty = clips.filter((c) => c.appended && !c.action_count).length;
+    if (empty && !window.confirm(`액션을 아직 안 찍은 추가 클립이 ${empty}개 있습니다. 액션 없이 보낼까요?`)) return;
     setBusy(true);
     setMsg('');
     try {
@@ -1734,6 +1739,17 @@ export default function ClipResultsPage() {
                   {fmt(c.start_sec)}~{fmt(c.end_sec)}
                 </span>
                 <span style={{ color: 'var(--muted, #999)', fontSize: 12 }}>액션 {c.action_count}개</span>
+                {c.appended ? (
+                  <span
+                    title="신청 태깅에서 나중에 추가한 클립입니다. 기존 클립의 액션은 그대로이고, 이 클립만 액션을 찍으면 됩니다."
+                    style={{
+                      fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 5, whiteSpace: 'nowrap',
+                      ...(c.action_count
+                        ? { color: '#22c55e', border: '1px solid rgba(34,197,94,0.5)' }
+                        : { color: '#111', background: '#f59e0b' }),
+                    }}
+                  >{c.action_count ? '추가됨' : '추가됨 · 액션 입력 필요'}</span>
+                ) : null}
                 <button
                   style={{ ...smallBtn, marginLeft: 'auto' }}
                   onClick={() => { setLastOpenedId(c.id); void openClip(c.id); void loadMotions(c.id); }}

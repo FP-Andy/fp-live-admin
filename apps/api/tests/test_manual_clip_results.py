@@ -35,6 +35,7 @@ from app.auth import get_session_user, require_admin, require_session_user
 from app.db import Base, get_db
 from app import fineplay_fpa as fpa
 from app import fineplay_scrimmage
+from app import fineplay_append
 from app.fineplay_plan import resolve_plan
 from app.highlight_storage import S3Storage
 from app.models import HighlightClip, HighlightClipAction, HighlightJob, Match, User, FpaSavedLog
@@ -61,7 +62,7 @@ def route_app(storage):
                  highlight_default_storage=lambda: storage,
                  highlight_output_prefix=lambda: 'highlights/output/',
                  fineplay_resolve_plan=resolve_plan, FineplayFpaScene=fpa.FpaScene,
-                 fineplay_scrimmage=fineplay_scrimmage,
+                 fineplay_scrimmage=fineplay_scrimmage, fineplay_append=fineplay_append,
                  delete_job_files=Mock())
     for name in ['action_label', 'canonical_action_name', 'base_action_name', 'pick_primary',
                  'annotate_action_codes', 'equal_split_offsets', 'scene_action_rows', 'scrimmage_opponent_lineup']:

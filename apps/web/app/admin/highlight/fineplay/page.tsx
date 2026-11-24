@@ -158,6 +158,8 @@ type FpJob = {
     clips?: { start: number; end: number }[];
     progress?: { detail?: string } | null;
     result_payload?: { clips?: unknown[] } | null;
+    /** 마지막 '클립 추가' 결과 — 새로 만든 키와 전체 클립 수. */
+    append_last?: { keys?: string[]; count?: number; total_clips?: number } | null;
     callback_status?: string;
     // 라커룸 자체전 — 결과를 A팀·B팀 묶음으로 나눠 보낸 상태(ADR-X-0010). 보낸 적 없으면 없다.
     scrimmage?: Partial<Record<'A' | 'B', { side?: 'home' | 'away'; callback_status?: string | null }>> | null;
@@ -238,6 +240,28 @@ type Tag = {
   scoreOnly?: boolean;
   padBefore?: number; padAfter?: number;
   videoIdx: number; videoId?: string; clampEnd?: number;
+  /** 이미 만든 클립(클립 추가 모드). 구간·팀·종류를 바꿀 수 없고 다시 만들지 않는다. */
+  locked?: boolean;
+  /** 잠긴 클립의 키(fpc-{신청}-NNN)와 저장된 구간·액션 수 — 화면 표시용. */
+  clipKey?: string; fixedStart?: number; fixedEnd?: number; actionCount?: number;
+  /** 잠긴 클립이 만들어질 때의 점수(클립 끝). 뒤에 넣는 새 클립의 점수판이 여기서 이어진다. */
+  lockedScoreAfter?: [number, number];
+};
+
+/** 클립 추가 모드 — 이 신청에 이미 만든 클립과 지운 클립 구간(서버 existing-clips). */
+type ExistingClip = {
+  key: string; orderIndex: number; sourceVideoId?: string | null;
+  start: number; end: number; team?: string | null; isGoal: boolean;
+  actionCount: number; appended?: boolean;
+  scoreBefore?: [number, number] | null; scoreAfter?: [number, number] | null;
+};
+type DeletedSegment = {
+  sourceVideoId?: string | null; start: number; end: number;
+  team?: string | null; isGoal: boolean; formerKey?: string | null;
+};
+type ExistingClips = {
+  clips: ExistingClip[]; deletedSegments: DeletedSegment[]; nextKey?: string | null;
+  overlay?: { scoreboard: boolean; watermark: boolean };
 };
 
 // 신청 원본 영상 하나 — 앱이 보낸 순서(videos[] index)가 곧 경기 순서(전반/후반 등).
@@ -525,6 +549,11 @@ export default function FineplayJobsPage() {
   const [speed, setSpeed] = useState(1);
 
   const [tags, setTags] = useState<Tag[]>([]);
+  // 클립 추가 모드 — 이미 만든 클립이 있는 신청은 그 클립을 잠긴 태그로 깔고 새 태그만 만든다.
+  // existing 이 null 이면 아직 못 불러왔거나 클립이 없는 신청(=일반 생성).
+  const [existing, setExisting] = useState<ExistingClips | null>(null);
+  const [appendMode, setAppendMode] = useState(false);
+  const [existingError, setExistingError] = useState('');
   // 기본 앞/뒤 패딩 — 태깅 화면 공통값(2026-09-16, 수동 하이라이트와 통일).
   const [padBefore, setPadBefore] = useState(10);
   const [padAfter, setPadAfter] = useState(3);
@@ -1046,12 +1075,86 @@ export default function FineplayJobsPage() {
     }
   };
 
+  /** 이미 만든 클립을 잠긴 태그로 깐다. 클립이 하나라도 있으면 클립 추가 모드로 연다. */
+  const loadExistingClips = async (jobId: string, videos: SourceVideo[]) => {
+    try {
+      const res = await apiJson<ExistingClips>(`/highlight/fineplay-jobs/${jobId}/existing-clips`);
+      setExisting(res);
+      if (!res.clips.length) return;
+      const idxOf = (vid?: string | null) => Math.max(0, videos.findIndex((v) => v.videoId === vid));
+      const locked: Tag[] = res.clips.map((c) => {
+        const videoIdx = idxOf(c.sourceVideoId);
+        return {
+          id: `locked-${c.key}`,
+          t: c.start + (c.end - c.start) * 0.8,
+          team: c.team === 'away' ? 'away' : 'home',
+          goal: c.isGoal || undefined,
+          videoIdx,
+          videoId: c.sourceVideoId || videos[videoIdx]?.videoId,
+          locked: true,
+          clipKey: c.key,
+          fixedStart: c.start,
+          fixedEnd: c.end,
+          actionCount: c.actionCount,
+          lockedScoreAfter: c.scoreAfter || undefined,
+        };
+      });
+      setTags(locked.sort((a, b) => (a.videoIdx - b.videoIdx) || (a.t - b.t)));
+      setAppendMode(true);
+    } catch (err) {
+      // 못 불러오면 잠그지 못한다 — 그 상태로 일반 생성을 누르면 기존 액션이 지워지므로 막는다.
+      setExistingError(errorMessage(err, '이미 만든 클립을 불러오지 못했습니다. 새로고침 후 다시 열어 주세요.', { fixed: true, context: { '작업 ID': jobId } }));
+    }
+  };
+
+  /** 지운 클립 구간을 새 태그로 다시 넣는다 — 새 키를 받는다(옛 번호는 다시 쓰지 않는다). */
+  const readdDeleted = (seg: DeletedSegment) => {
+    const videoIdx = Math.max(0, sourceVideos.findIndex((v) => v.videoId === seg.sourceVideoId));
+    const video = sourceVideos[videoIdx];
+    const cap = video?.durationSeconds || seg.end;
+    const fit = fitTagRange(seg.start, seg.end, { srcStart: 0, srcEnd: Math.max(cap, seg.end) });
+    if (!fit) return;
+    const tag: Tag = {
+      id: `readd-${seg.formerKey || seg.start}-${Date.now()}`,
+      t: fit.t, padBefore: fit.before, padAfter: fit.after,
+      team: seg.team === 'away' ? 'away' : 'home',
+      goal: seg.isGoal || undefined,
+      videoIdx, videoId: seg.sourceVideoId || video?.videoId,
+      clampEnd: video?.durationSeconds || undefined,
+    };
+    setTags((prev) => [...prev, tag].sort((a, b) => (a.videoIdx - b.videoIdx) || (a.t - b.t)));
+  };
+
+  /** 처음부터 다시 태깅 — 잠긴 태그를 풀어 고칠 수 있게 하고 일반 생성으로 돌아간다.
+   *  일반 생성은 클립 전체를 다시 만든다(번호 재부여·액션 삭제) — 예전 동작 그대로다. */
+  const leaveAppendMode = () => {
+    const ok = window.confirm(
+      '잠긴 클립을 풀어 처음부터 다시 만듭니다.\n'
+      + '이 상태로 생성하면 클립 번호가 다시 매겨지고 찍어 둔 액션(씬모션)이 모두 지워집니다. 계속할까요?');
+    if (!ok) return;
+    setAppendMode(false);
+    setTags((prev) => prev.map((t) => {
+      if (!t.locked) return t;
+      const start = t.fixedStart ?? t.t;
+      const end = t.fixedEnd ?? t.t;
+      return {
+        id: t.id, t: t.t, team: t.team, goal: t.goal,
+        padBefore: Math.max(0, t.t - start), padAfter: Math.max(0, end - t.t),
+        videoIdx: t.videoIdx, videoId: t.videoId,
+        clampEnd: sourceVideos[t.videoIdx]?.durationSeconds || undefined,
+      };
+    }));
+  };
+
   const selectJob = async (job: FpJob) => {
     setSelected(job);
     setSourceVideos([]);
     setActiveVideoIdx(0);
     setSourceError('');
     setTags([]);
+    setExisting(null);
+    setAppendMode(false);
+    setExistingError('');
     setDuration(0);
     setCurrent(0);
     setPlaying(false);
@@ -1075,7 +1178,9 @@ export default function FineplayJobsPage() {
       }>(
         `/highlight/fineplay-jobs/${job.id}/source-url`,
       );
-      setSourceVideos(res.videos?.length ? res.videos : [{ videoId: res.videoId, url: res.url }]);
+      const videos = res.videos?.length ? res.videos : [{ videoId: res.videoId, url: res.url }];
+      setSourceVideos(videos);
+      void loadExistingClips(job.id, videos);
       if (res.maxHeight) setYtMaxHeight(res.maxHeight);
       if (res.heightChoices?.length) setYtHeightChoices(res.heightChoices);
       setYtCookieHealth(res.cookieHealth || '');
@@ -1176,6 +1281,9 @@ export default function FineplayJobsPage() {
   const [previewTagId, setPreviewTagId] = useState<string | null>(null);
 
   const clipRangeOf = useCallback((tag: Tag) => {
+    if (tag.locked && tag.fixedStart !== undefined && tag.fixedEnd !== undefined) {
+      return { start: tag.fixedStart, end: tag.fixedEnd };
+    }
     const before = tag.padBefore ?? padBefore;
     const after = tag.padAfter ?? padAfter;
     const cap = tag.clampEnd || (tag.videoIdx === activeVideoIdx ? duration : 0);
@@ -1191,7 +1299,7 @@ export default function FineplayJobsPage() {
   const setTagRange = (id: string, rawStart: number, rawEnd: number) => {
     setTags((prev) => {
       const tag = prev.find((x) => x.id === id);
-      if (!tag) return prev;
+      if (!tag || tag.locked) return prev;
       // 구간은 그 태그가 속한 원본 영상 안을 벗어날 수 없다.
       const cap = tag.clampEnd || (tag.videoIdx === activeVideoIdx ? duration : 0);
       const fit = fitTagRange(
@@ -1252,14 +1360,61 @@ export default function FineplayJobsPage() {
       .sort((a, b) => (a.videoIdx - b.videoIdx) || (a.t - b.t)));
   }, [sourceUrl, activeVideoIdx, sourceVideos]);
 
-  /** 장면으로 만들 태그. '점수만' 은 빠진다. */
-  const clipTags = tags.filter((t) => !t.scoreOnly);
+  /** 이미 만든 클립 줄 — 보기·재생만 된다. 고치거나 지우려면 클립 검수에서 한다. */
+  const renderLockedTag = (tag: Tag, i: number) => {
+    const range = clipRangeOf(tag);
+    const needsAction = !tag.actionCount;
+    return (
+      <div key={tag.id} style={{
+        display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
+        padding: '6px 10px', borderRadius: 6, opacity: 0.8,
+        background: tag.id === previewTagId ? 'rgba(59,130,246,0.14)' : 'var(--surface, #101014)',
+        border: '1px dashed var(--border-ghost, #2c2c32)',
+        boxShadow: tag.id === previewTagId ? 'inset 3px 0 0 var(--accent, #3b82f6)' : undefined,
+      }}>
+        <span style={{ color: 'var(--muted, #999)', width: 24 }}>{i + 1}</span>
+        {sourceVideos.length > 1 ? (
+          <span style={{ fontSize: 12, color: 'var(--muted, #999)', width: 40 }}>영상{(tag.videoIdx ?? 0) + 1}</span>
+        ) : null}
+        <span title="이미 만든 클립 — 여기서는 바꿀 수 없습니다" style={{ fontSize: 12 }}>🔒</span>
+        <span style={{ ...badgeStyle, background: tag.team === 'home' ? 'var(--accent, #3b82f6)' : '#7c3aed' }}>
+          {tag.team === 'home' ? '홈' : '어웨이'}
+        </span>
+        <span style={{ ...badgeStyle, border: '1px solid var(--border-ghost, #2c2c32)' }}>{tag.goal ? '골' : '장면'}</span>
+        <button
+          style={tag.id === previewTagId
+            ? { ...smallBtn, color: 'var(--accent, #3b82f6)', borderColor: 'var(--accent, #3b82f6)' }
+            : smallBtn}
+          title="클립 시작으로 이동해 끝까지 재생"
+          onClick={() => previewClip(tag)}
+        >
+          {fmt(range.start)} → {fmt(range.end)}
+        </button>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted, #999)', fontVariantNumeric: 'tabular-nums' }}>
+          {fmt(Math.max(0, range.end - range.start))}
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--muted, #999)', fontFamily: 'monospace' }}>{tag.clipKey}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: needsAction ? '#f59e0b' : 'var(--muted, #999)' }}>
+          {needsAction ? '액션 입력 필요' : `액션 ${tag.actionCount}개 유지`}
+        </span>
+      </div>
+    );
+  };
+
+  /** 장면으로 만들 태그. '점수만' 은 빠진다. 클립 추가 모드면 잠긴(이미 만든) 태그도 빠진다. */
+  const clipTags = tags.filter((t) => !t.scoreOnly && !(appendMode && t.locked));
 
   /** 태그마다 그 시점의 점수(그 태그까지 반영). 점수만 반영하는 골도 여기서 센다. */
   const runningScores = (() => {
     let home = scoreboard.startHome;
     let away = scoreboard.startAway;
     return tags.map((tag) => {
+      // 이미 만든 클립은 그때 그린 점수가 있다 — 그 뒤 새 클립은 거기서 잇는다
+      // (그 사이 '점수만' 골도 이미 반영된 숫자다).
+      if (tag.locked && tag.lockedScoreAfter) {
+        [home, away] = tag.lockedScoreAfter;
+        return [home, away] as [number, number];
+      }
       if (tag.goal) {
         if (tag.team === 'home') home += 1;
         else away += 1;
@@ -1285,7 +1440,7 @@ export default function FineplayJobsPage() {
     && (requestedScore[0] !== finalScore[0] || requestedScore[1] !== finalScore[1]);
 
   const toggleTagGoal = (id: string) => {
-    setTags((prev) => prev.map((tag) => (tag.id === id
+    setTags((prev) => prev.map((tag) => (tag.id === id && !tag.locked
       // 일반 → 골 → 골(점수만) → 일반 으로 돌아간다.
       ? (!tag.goal
         ? { ...tag, goal: true, scoreOnly: undefined }
@@ -1297,7 +1452,7 @@ export default function FineplayJobsPage() {
 
   const toggleTagTeam = (id: string) => {
     setTags((prev) => prev.map((tag) =>
-      tag.id === id ? { ...tag, team: tag.team === 'home' ? 'away' : 'home' } : tag));
+      tag.id === id && !tag.locked ? { ...tag, team: tag.team === 'home' ? 'away' : 'home' } : tag));
   };
 
   useEffect(() => {
@@ -1377,7 +1532,9 @@ export default function FineplayJobsPage() {
   // 켤 일이 없어 아예 상수로 굳힌다(전송 창구는 한 곳이어야 한다).
   const produce = async () => {
     const sendCallback = false;
-    if (!selected || !tags.length || producing) return;
+    if (!selected || !clipTags.length || producing) return;
+    // 이미 만든 클립을 못 불러온 채로 일반 생성을 하면 기존 액션이 지워진다 — 막는다.
+    if (existingError) return;
     setProducing(true);
     setProduceError('');
     setProducedLink(null);
@@ -1385,6 +1542,8 @@ export default function FineplayJobsPage() {
       // '점수만' 태그는 장면을 만들지 않는다 — 점수판에만 반영된다(위 runningScores).
       const clips = tags.flatMap((tag, ti) => {
         if (tag.scoreOnly) return [];
+        // 클립 추가 모드 — 이미 만든 클립은 보내지 않는다(서버도 같은 구간을 거절한다).
+        if (appendMode && tag.locked) return [];
         // 화면에서 미리보기로 확인한 구간과 정확히 같은 값을 보낸다.
         const { start, end } = clipRangeOf(tag);
         const after = runningScores[ti] ?? [scoreboard.startHome, scoreboard.startAway];
@@ -1411,6 +1570,8 @@ export default function FineplayJobsPage() {
         // fpaMatchId: '' 는 연결 해제 — 서버는 키가 있을 때만 링크를 갱신한다.
         body: JSON.stringify({
           clips, fpaMatchId, fpaOurSide, sendCallback,
+          // 클립 추가 모드: 새 구간만 새 키로. 서버는 FPA 연결·점수판 설정을 기존 그대로 둔다.
+          ...(appendMode ? { append: true } : {}),
           // 클립에 새길 오버레이. 수동 태깅과 같은 모양이라 서버도 같은 코드로 그린다.
           scoreboard: scoreboard.enabled ? {
             enabled: true,
@@ -1443,9 +1604,15 @@ export default function FineplayJobsPage() {
         const job = await apiJson<FpJob>(`/highlight/jobs/${selected.id}`);
         if (job.status === 'done') {
           const meta = job.job_metadata || {};
-          const n = meta.result_payload?.clips?.length ?? tags.length;
-          const fpaNote = meta.fpa_enrich_status ? `, FPA: ${meta.fpa_enrich_status}` : '';
-          setProduceMsg(`완료 — 클립 ${n}개 업로드, 콜백: ${meta.callback_status || '-'}${fpaNote}`);
+          if (appendMode) {
+            const last = meta.append_last;
+            setProduceMsg(`완료 — 새 클립 ${last?.count ?? clips.length}개 추가 (전체 ${last?.total_clips ?? '-'}개). `
+              + '클립 검수에서 새 클립에 액션을 찍은 뒤 전송하세요.');
+          } else {
+            const n = meta.result_payload?.clips?.length ?? tags.length;
+            const fpaNote = meta.fpa_enrich_status ? `, FPA: ${meta.fpa_enrich_status}` : '';
+            setProduceMsg(`완료 — 클립 ${n}개 업로드, 콜백: ${meta.callback_status || '-'}${fpaNote}`);
+          }
           // 클립 검수 화면은 ?matchId=(매치로 묶인 클립) 또는 ?jobId=(매치 없는 클립)로 그 경기를 바로 연다.
           const matchId = meta.match_id || selected.job_metadata?.match_id;
           setProducedLink({
@@ -1460,6 +1627,10 @@ export default function FineplayJobsPage() {
         setProduceMsg(job.job_metadata?.progress?.detail || '처리 중...');
       }
       await loadJobs();
+      // 방금 만든 클립까지 잠긴 태그로 다시 깐다 — 같은 태그로 또 누르면 중복이 되므로.
+      setTags([]);
+      setAppendMode(false);
+      await loadExistingClips(selected.id, sourceVideos);
     } catch (err) {
       setProduceError(errorMessage(err, '클립을 만들지 못했습니다. 다시 시도해 주세요.', { context: { '작업 ID': selected.id } }));
       setProduceMsg('');
@@ -2535,9 +2706,64 @@ export default function FineplayJobsPage() {
                 );
               })() : null}
 
+              {existingError ? (
+                <div style={{ marginTop: 10, fontSize: 13, color: '#f87171' }}>
+                  {existingError}<ErrorFold message={existingError} />
+                </div>
+              ) : null}
+              {appendMode && existing ? (
+                <div style={{
+                  marginTop: 10, padding: '8px 10px', borderRadius: 6, fontSize: 13,
+                  border: '1px solid rgba(34,197,94,0.4)', background: 'rgba(34,197,94,0.06)',
+                  display: 'flex', flexDirection: 'column', gap: 6,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <strong>클립 추가</strong>
+                    <span>
+                      이미 만든 클립 {existing.clips.length}개는 잠겨 있습니다(번호·영상·액션 그대로).
+                      새로 찍은 태그만 만들고, 번호는 {existing.nextKey || '다음 번호'}부터 붙습니다.
+                    </span>
+                    <button style={{ ...smallBtn, marginLeft: 'auto' }} onClick={leaveAppendMode}
+                      title="잠긴 클립을 풀어 전체를 다시 만듭니다 — 찍어 둔 액션이 지워집니다">
+                      처음부터 다시 태깅
+                    </button>
+                  </div>
+                  <span style={{ fontSize: 12, color: 'var(--muted, #999)' }}>
+                    시간 순서는 자동으로 맞춰집니다. 점수판·로고는 기존 클립과 같은 설정으로 그립니다
+                    {existing.overlay ? ` (점수판 ${existing.overlay.scoreboard ? '켬' : '끔'} · 로고 ${existing.overlay.watermark ? '켬' : '끔'})` : ''}.
+                    새 클립은 액션 없이 만들어지니 클립 검수에서 액션을 찍은 뒤 전송하세요.
+                  </span>
+                  {existing.deletedSegments.length ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 12 }}>
+                      <span style={{ color: 'var(--muted, #999)' }}>지운 클립 구간:</span>
+                      {existing.deletedSegments.map((seg) => {
+                        const vIdx = Math.max(0, sourceVideos.findIndex((v) => v.videoId === seg.sourceVideoId));
+                        const added = tags.some((t) => !t.locked && t.videoIdx === vIdx
+                          && Math.abs(clipRangeOf(t).start - seg.start) < 0.05
+                          && Math.abs(clipRangeOf(t).end - seg.end) < 0.05);
+                        return (
+                          <button
+                            key={`${seg.sourceVideoId}-${seg.start}`}
+                            style={smallBtn}
+                            disabled={added}
+                            title={`${seg.formerKey ? `예전 ${seg.formerKey} · ` : ''}다시 넣으면 새 번호를 받습니다`}
+                            onClick={() => readdDeleted(seg)}
+                          >
+                            {added ? '✓ ' : '+ '}
+                            {sourceVideos.length > 1 ? `영상${vIdx + 1} ` : ''}
+                            {fmt(seg.start)}~{fmt(seg.end)}
+                            {seg.formerKey ? ` (${seg.formerKey.split('-').pop()})` : ''}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               {tags.length ? (
                 <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {tags.map((tag, i) => (
+                  {tags.map((tag, i) => (tag.locked ? renderLockedTag(tag, i) : (
                     <div key={tag.id} style={{
                       display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
                       padding: '6px 10px', borderRadius: 6,
@@ -2664,8 +2890,11 @@ export default function FineplayJobsPage() {
                       >
                         삭제
                       </button>
+                      {appendMode ? (
+                        <span style={{ ...badgeStyle, background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>새 클립</span>
+                      ) : null}
                     </div>
-                  ))}
+                  )))}
                 </div>
               ) : (
                 <p style={{ fontSize: 12, color: 'var(--muted, #999)', margin: '10px 0 0' }}>
@@ -2703,7 +2932,7 @@ export default function FineplayJobsPage() {
                     <button style={smallBtn} onClick={() => void openFpaPicker()}>FPA 매치 연결</button>
                   )}
                 </div>
-                {fpaMatchId && fpaSceneCount !== null && tags.length > 0 && fpaSceneCount !== tags.length ? (
+                {!appendMode && fpaMatchId && fpaSceneCount !== null && tags.length > 0 && fpaSceneCount !== tags.length ? (
                   <p style={{ fontSize: 12, color: '#f59e0b', margin: '0 0 8px' }}>
                     클립 {tags.length}개 ↔ 씬 {fpaSceneCount}개 — 개수가 다르면 앞에서부터 순서대로만 매칭됩니다.
                   </p>
@@ -2918,8 +3147,10 @@ export default function FineplayJobsPage() {
                   {/* 전송 버튼은 두지 않는다 — FinePlay 전송은 클립 결과 탭 한 곳에서만
                       한다. 여기서 바로 보내면 구간을 다듬기 전에 나가고, 전송 창구가
                       둘로 갈려 무엇이 언제 나갔는지 한 곳에서 안 보인다. */}
-                  <button style={primaryBtn} onClick={() => void produce()} disabled={producing || !clipTags.length}>
-                    {producing ? '처리 중...' : `🎬 클립 ${clipTags.length}개 생성 (클립 검수·전송에 보관)`}
+                  <button style={primaryBtn} onClick={() => void produce()} disabled={producing || !clipTags.length || !!existingError}>
+                    {producing ? '처리 중...' : appendMode
+                      ? `➕ 새 클립 ${clipTags.length}개만 추가 생성 (기존 ${tags.filter((t) => t.locked).length}개는 그대로)`
+                      : `🎬 클립 ${clipTags.length}개 생성 (클립 검수·전송에 보관)`}
                   </button>
                   <label style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input type="checkbox" checked={makeVertical} onChange={(e) => setMakeVertical(e.target.checked)} />
