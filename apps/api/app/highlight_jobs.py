@@ -25,6 +25,7 @@ from .db import SessionLocal
 from .fineplay_client import default_client
 from .fineplay_fpa import clip_team_fallback_view, enrich_result_payload, scrimmage_opponent_lineup
 from . import fineplay_scrimmage
+from . import fineplay_append
 from .fineplay_plan import prepare_payload, resolve_plan, xfp_enabled
 from .fineplay_models import ClipSpec, parse_manifest
 from .fineplay_worker import process_job
@@ -2526,6 +2527,205 @@ def _persist_clip_records(
     db.commit()
 
 
+def _fineplay_clip_specs(
+    clips_raw: list[dict], rid: Any, default_video: str,
+) -> tuple[list[ClipSpec], dict[str, str | None]]:
+    """잡 메타 clips 항목 → 렌더 스펙 + {clipKey: 태깅 팀}. clipId 가 없으면 자리 번호(i+1)가 키다.
+
+    clips_raw 는 이미 (영상 순서, 시작) 으로 정렬돼 있어야 한다 — 자리 번호가 그 순서를 따른다.
+    """
+    specs: list[ClipSpec] = []
+    clip_teams: dict[str, str | None] = {}  # clipKey → 태깅 팀(A/D). match–clip–action 기록·페이로드 공용.
+    for i, c in enumerate(clips_raw):
+        try:
+            start = float(c["start"])
+            end = float(c["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        def _pair(raw) -> tuple[int, int] | None:
+            """화면이 보낸 [홈, 원정]. 모양이 아니면 None(점수판을 그리지 않는다)."""
+            if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                return None
+            try:
+                return max(0, int(raw[0])), max(0, int(raw[1]))
+            except (TypeError, ValueError):
+                return None
+
+        try:
+            goal_at = float(c.get("goalAt"))
+        except (TypeError, ValueError):
+            goal_at = None
+
+        specs.append(ClipSpec(
+            source_video_id=str(c.get("sourceVideoId") or default_video),
+            start=start,
+            end=end,
+            clip_id=str(c.get("clipId") or f"fpc-{rid}-{i + 1:03d}"),
+            main_action=c.get("mainAction"),
+            make_vertical=bool(c.get("makeVertical")),
+            # 점수판용 — 클립을 만들지 않은 골까지 화면에서 이미 반영해 보낸다.
+            score_before=_pair(c.get("scoreBefore")),
+            score_after=_pair(c.get("scoreAfter")),
+            goal_at=goal_at,
+            is_goal=bool(c.get("isGoal")),
+        ))
+        team = str(c.get("team") or "").strip().lower()
+        clip_teams[specs[-1].clip_id] = team if team in ("home", "away") else None
+    return specs, clip_teams
+
+
+def _persist_appended_clip_records(
+    db: Session,
+    job_id: str,
+    metadata: dict,
+    payload: dict,
+    clip_teams: dict[str, str | None],
+    video_order: dict[str, int],
+) -> list[str]:
+    """클립 추가 모드 기록 — 새 클립 행만 넣고, 전체 order_index 만 다시 매긴다.
+
+    _persist_clip_records 와 다른 점(일부러):
+    - 옛 클립을 지우지 않는다. 액션은 아무 클립 것도 지우거나 넣지 않는다(새 클립은 액션 0개).
+    - 기존 행은 order_index 외에 한 칸도 바꾸지 않는다 — 전송 payload 는 행·액션에서 만들어지므로
+      기존 클립의 전송 내용(teamView·sceneData)이 그대로 남는다.
+    - 새 키가 이미 행으로 있으면 아무것도 쓰지 않고 실패한다(덮어쓰기 금지).
+    반환: 새 순서대로의 전체 키 목록.
+    """
+    existing = db.query(HighlightClip).filter(HighlightClip.job_id == job_id).all()
+    # 새 행은 기존 클립과 같은 경기(match)에 묶는다 — 클립 결과·전송이 match_id 로 모은다.
+    existing_matches = {r.match_id for r in existing if r.match_id is not None}
+    if len(existing_matches) == 1:
+        match_uuid = next(iter(existing_matches))
+    else:
+        match_id = metadata.get("match_id")
+        match_uuid = uuid.UUID(str(match_id)) if match_id else None
+
+    new_rows: list[HighlightClip] = []
+    for clip in payload.get("clips") or []:
+        key = str(clip.get("clipKey") or clip.get("fpcClipId") or "").strip()
+        if not key:
+            continue
+        if db.get(HighlightClip, key) is not None:
+            raise RuntimeError(f"이미 있는 클립 키입니다: {key} — 기존 클립은 덮어쓰지 않습니다.")
+        hv = clip.get("highlightVideo") or {}
+        row = HighlightClip(
+            id=key,
+            job_id=job_id,
+            match_id=match_uuid,
+            order_index=0,
+            team_side=clip_teams.get(key),
+            source_video_id=str(clip.get("sourceVideoId") or ""),
+            start_sec=float(clip.get("startTime") or 0),
+            end_sec=float(clip.get("endTime") or 0),
+            duration_seconds=hv.get("durationSeconds"),
+            main_action=clip.get("mainAction"),
+            is_goal=bool(clip.get("isGoal")),
+            horizontal_s3_key=hv.get("horizontalS3Key"),
+            vertical_s3_key=hv.get("verticalS3Key"),
+            thumbnail_s3_key=hv.get("thumbnailS3Key"),
+        )
+        db.add(row)
+        new_rows.append(row)
+
+    rows = [{"key": r.id, "source_video_id": r.source_video_id, "start": r.start_sec,
+             "prev_order": r.order_index, "new": False} for r in existing]
+    rows += [{"key": r.id, "source_video_id": r.source_video_id, "start": r.start_sec,
+              "prev_order": 0, "new": True} for r in new_rows]
+    ordered = fineplay_append.order_rows(rows, video_order)
+    by_id = {r.id: r for r in existing + new_rows}
+    for i, key in enumerate(ordered):
+        if by_id[key].order_index != i:
+            by_id[key].order_index = i
+    db.commit()
+    return ordered
+
+
+def _run_fineplay_append(db: Session, job_id: str, metadata: dict, manifest: Any) -> None:
+    """클립 추가 모드 렌더 — 대기 키(APPEND_PENDING_META)의 구간만 렌더·업로드·기록한다.
+
+    FPA 매칭·씬모션은 하지 않는다(새 클립은 액션 빈 채로 — 클립 검수에서 찍는다).
+    result_payload 도 건드리지 않는다: 새 클립만 든 payload 를 남기면 '기록된 payload 재전송'
+    이 그걸 보내고, FinePlay 는 신청 단위 전체 교체라 기존 클립이 지워진다.
+    전송은 클립 결과 화면에서 DB 기준으로 전체를 보낸다.
+    """
+    rid = manifest.analysis_request_id
+    default_video = manifest.primary_video.video_id if manifest.primary_video else ""
+    video_order = {v.video_id: i for i, v in enumerate(manifest.videos)}
+    pending = [str(k) for k in (metadata.get(fineplay_append.APPEND_PENDING_META) or [])]
+    entries = [
+        c for c in (metadata.get("clips") or [])
+        if isinstance(c, dict) and str(c.get("clipId") or "") in pending
+    ]
+    if not pending or not entries:
+        update_job(db, job_id, status="error", error_message="추가할 클립이 없습니다(대기 키 없음).")
+        return
+    taken = [k for k in pending if db.get(HighlightClip, k) is not None]
+    if taken:
+        update_job(db, job_id, status="error",
+                   error_message=f"이미 있는 클립 키라 추가하지 않습니다: {', '.join(taken)}")
+        return
+
+    def _sort_key(c: dict) -> tuple[int, float]:
+        vid = str(c.get("sourceVideoId") or default_video)
+        try:
+            start = float(c.get("start") or 0)
+        except (TypeError, ValueError):
+            start = 0.0
+        return (video_order.get(vid, 0), start)
+
+    specs, clip_teams = _fineplay_clip_specs(sorted(entries, key=_sort_key), rid, default_video)
+    if not specs:
+        update_job(db, job_id, status="error", error_message="유효한 추가 구간이 없습니다.")
+        return
+
+    metadata["progress"] = _progress_payload("merging", 30, f"추가 클립 {len(specs)}개 만드는 중")
+    update_job(db, job_id, status="merging", job_metadata=_json_safe(metadata))
+
+    try:
+        payload = process_job(
+            manifest, specs, default_storage(),
+            pipeline_version=FINEPLAY_PIPELINE_VERSION,
+            youtube_path=lambda vid: fineplay_youtube_path(job_id, vid),
+            # 점수판·로고는 기존 클립을 만들 때 저장된 설정 그대로 — 같은 모양으로 붙는다.
+            overlay={
+                "scoreboard": metadata.get("scoreboard"),
+                "watermark": metadata.get("watermark"),
+            } if (metadata.get("scoreboard") or metadata.get("watermark")) else None,
+        )
+    except Exception as exc:
+        update_job(db, job_id, status="error", error_message=f"추가 클립 렌더/업로드 실패: {exc}")
+        return
+
+    metadata = dict((db.get(HighlightJob, job_id).job_metadata) or {})
+    try:
+        ordered = _persist_appended_clip_records(db, job_id, metadata, payload, clip_teams, video_order)
+        metadata["clip_db_status"] = "ok"
+    except Exception as exc:
+        db.rollback()
+        logger.exception("추가 클립 기록 실패 (job=%s)", job_id)
+        update_job(db, job_id, status="error", error_message=f"추가 클립 기록 실패: {exc}")
+        return
+
+    made = [str(c.get("clipKey") or "") for c in payload.get("clips") or []]
+    appended = [k for k in (metadata.get(fineplay_append.APPENDED_KEYS_META) or []) if k not in made]
+    metadata[fineplay_append.APPENDED_KEYS_META] = appended + made
+    metadata.pop(fineplay_append.APPEND_PENDING_META, None)
+    metadata.pop("produce_mode", None)
+    history = list(metadata.get("append_history") or [])
+    history.append({"keys": made, "at": datetime.utcnow().isoformat(), "total_clips": len(ordered)})
+    metadata["append_history"] = history[-20:]
+    metadata["append_last"] = {"keys": made, "count": len(made), "total_clips": len(ordered)}
+    metadata["fpa_enrich_status"] = "skipped (클립 추가 — 새 클립은 클립 검수에서 액션 입력)"
+    reason = "held (클립 추가 — 클립 결과에서 전체 전송)"
+    if fineplay_scrimmage.bundle_sides(metadata) is not None:
+        fineplay_scrimmage.hold_all(metadata, reason)
+    metadata["callback_status"] = reason
+    metadata["progress"] = _progress_payload("done", 100, f"추가 클립 {len(made)}개 완료 (전체 {len(ordered)}개)")
+    update_job(db, job_id, status="done", job_metadata=_json_safe(metadata))
+
+
 def run_fineplay_produce(job_id: str) -> None:
     """FinePlay 작업(mode=fineplay) 렌더: 태깅된 구간으로 클립별 영상+썸네일을 만들어
     S3(highlights/)에 올리고, 토큰이 설정돼 있으면 결과 콜백까지 보낸다.
@@ -2548,6 +2748,10 @@ def run_fineplay_produce(job_id: str) -> None:
         manifest = parse_manifest(manifest_raw)
         rid = manifest.analysis_request_id
         default_video = manifest.primary_video.video_id if manifest.primary_video else ""
+        if metadata.get("produce_mode") == "append":
+            # 클립 추가 모드 — 새 구간만. 기존 클립·액션·S3 는 건드리지 않는다(fineplay_append).
+            _run_fineplay_append(db, job_id, metadata, manifest)
+            return
         # 영상별 타임라인이 각자 0부터 시작하므로 전역 순서는 (영상 순서, 시작시간).
         # 매니페스트 videos[] 순서 = 앱이 보낸 경기 순서. 클립 번호·씬 매칭·order_index 가
         # 전부 이 정렬을 따른다 (영상 1개면 기존과 동일).
@@ -2563,45 +2767,7 @@ def run_fineplay_produce(job_id: str) -> None:
 
         clips_raw = sorted(clips_raw, key=_clip_sort_key)
 
-        specs: list[ClipSpec] = []
-        clip_teams: dict[str, str | None] = {}  # clipKey → 태깅 팀(A/D). match–clip–action 기록·페이로드 공용.
-        for i, c in enumerate(clips_raw):
-            try:
-                start = float(c["start"])
-                end = float(c["end"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if end <= start:
-                continue
-            def _pair(raw) -> tuple[int, int] | None:
-                """화면이 보낸 [홈, 원정]. 모양이 아니면 None(점수판을 그리지 않는다)."""
-                if not isinstance(raw, (list, tuple)) or len(raw) != 2:
-                    return None
-                try:
-                    return max(0, int(raw[0])), max(0, int(raw[1]))
-                except (TypeError, ValueError):
-                    return None
-
-            try:
-                goal_at = float(c.get("goalAt"))
-            except (TypeError, ValueError):
-                goal_at = None
-
-            specs.append(ClipSpec(
-                source_video_id=str(c.get("sourceVideoId") or default_video),
-                start=start,
-                end=end,
-                clip_id=str(c.get("clipId") or f"fpc-{rid}-{i + 1:03d}"),
-                main_action=c.get("mainAction"),
-                make_vertical=bool(c.get("makeVertical")),
-                # 점수판용 — 클립을 만들지 않은 골까지 화면에서 이미 반영해 보낸다.
-                score_before=_pair(c.get("scoreBefore")),
-                score_after=_pair(c.get("scoreAfter")),
-                goal_at=goal_at,
-                is_goal=bool(c.get("isGoal")),
-            ))
-            team = str(c.get("team") or "").strip().lower()
-            clip_teams[specs[-1].clip_id] = team if team in ("home", "away") else None
+        specs, clip_teams = _fineplay_clip_specs(clips_raw, rid, default_video)
         if not specs:
             update_job(db, job_id, status="error", error_message="유효한 클립 구간이 없습니다.")
             return
