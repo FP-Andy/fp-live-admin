@@ -48,6 +48,7 @@ jobs:
         run: |
           python apps/api/tests/test_manual_clip_results.py -v
           PYTHONPATH=apps/api:apps/api/tests python -m unittest test_fineplay_append_clips -v
+          PYTHONPATH=apps/api:apps/api/tests python -m unittest test_fineplay_import_select -v
           python apps/api/tests/test_highlight_render_queue.py
           python apps/api/tests/test_scene_motion_renderer.py -v
           python apps/api/tests/test_scene_motion_queue.py -v
