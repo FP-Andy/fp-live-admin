@@ -8,6 +8,8 @@ name: Sync Server Env
 #   FINEPLAY_S3_ACCESS_KEY_ID      pc-pipeline IAM 액세스키
 #   FINEPLAY_S3_SECRET_ACCESS_KEY  pc-pipeline IAM 시크릿
 #   FINEPLAY_API_TOKEN             (선택) FinePlay 서비스 토큰 — 오면 추가
+#   FPC_XFP_MCP_TOKEN              (선택) xFP 검증 조회 MCP 읽기 토큰(AI 도구용)
+#   FPC_XFP_MCP_TOKEN_NEXT         (선택) 위 토큰 교체 기간에 같이 받을 새 토큰
 #   YTDLP_COOKIES_TXT              (선택) 유튜브 쿠키 파일 내용(Netscape 형식)
 #                                  통째로 붙여넣으면 서버 runtime/ 에 파일로 떨군다.
 #                                  유튜브가 데이터센터 IP 를 봇으로 보고 막을 때 이걸로 푼다.
@@ -41,6 +43,8 @@ jobs:
           S3_KEY_ID: ${{ secrets.FINEPLAY_S3_ACCESS_KEY_ID }}
           S3_SECRET: ${{ secrets.FINEPLAY_S3_SECRET_ACCESS_KEY }}
           FP_TOKEN: ${{ secrets.FINEPLAY_API_TOKEN }}
+          XFP_MCP_TOKEN: ${{ secrets.FPC_XFP_MCP_TOKEN }}
+          XFP_MCP_TOKEN_NEXT: ${{ secrets.FPC_XFP_MCP_TOKEN_NEXT }}
           YT_COOKIES_TXT: ${{ secrets.YTDLP_COOKIES_TXT }}
         run: |
           set -Eeuo pipefail
@@ -63,6 +67,8 @@ jobs:
           upsert AWS_ACCESS_KEY_ID "$S3_KEY_ID"
           upsert AWS_SECRET_ACCESS_KEY "$S3_SECRET"
           upsert FINEPLAY_API_TOKEN "$FP_TOKEN"
+          upsert FPC_XFP_MCP_TOKEN "$XFP_MCP_TOKEN"
+          upsert FPC_XFP_MCP_TOKEN_NEXT "$XFP_MCP_TOKEN_NEXT"
 
           # 유튜브 쿠키는 여러 줄짜리 파일이라 .env 에 못 담는다. 파일로 떨구고
           # 경로만 .env 에 넣는다. runtime/ 은 컨테이너에 마운트돼 있고 git 에서도 빠져 있다.
