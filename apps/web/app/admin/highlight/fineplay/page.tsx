@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HighlightSubTabs from '../HighlightSubTabs';
+import { ImportQueuePanel, ManifestRefreshDialog } from './ImportQueuePanel';
 import { API_BASE, apiJson } from '../../../../lib/api';
 import { errorDetail, errorFromBody, errorFromResponse, errorMessage, foldRaw, FpcError, jobErrorMessage, responseMessage, warnRaw } from '../../../../lib/error-messages';
 import { ErrorFold } from '../../../../components/ErrorNotice';
@@ -142,7 +143,8 @@ type FpJob = {
     // 이 작업이 만든 클립이 묶이는 매치 — 클립 검수 화면 딥링크(?matchId=)에 쓴다.
     match_id?: string | null;
     manifest?: {
-      videos?: { durationSeconds?: number }[];
+      // fhlJob = FHL 합본의 클립 기록(FinePlay 가 job.json 을 정리해 실어 줌, T4 2026-11-25)
+      videos?: { durationSeconds?: number; fhlJob?: { clips?: unknown[]; exportDuration?: number | null; ourSide?: string | null } | null }[];
       // 신청한 팀. 홈/어웨이 중 어느 쪽인지는 claim 때 정해진다(컨벤션: 홈 = 신청팀).
       team?: { teamName?: string; jerseyColorArgb?: number; score?: number | null; uniform?: FpUniform | null } | null;
       opponent?: { name?: string; score?: number | null; jerseyColorArgb?: number | null; uniform?: FpUniform | null } | null;
@@ -157,6 +159,8 @@ type FpJob = {
     } | null;
     clips?: { start: number; end: number }[];
     progress?: { detail?: string } | null;
+    // FHL 구간 자동 클립 — 대기열에 넣은 기록
+    fhl_import?: { status?: string; clips?: number; trimmed?: number } | null;
     result_payload?: { clips?: unknown[] } | null;
     /** 마지막 '클립 추가' 결과 — 새로 만든 키와 전체 클립 수. */
     append_last?: { keys?: string[]; count?: number; total_clips?: number } | null;
@@ -498,7 +502,10 @@ export default function FineplayJobsPage() {
   // 잡별 아카이브 준비상태 — 모든 클립에 FPA 데이터가 있어야 버튼 활성화.
   const [readiness, setReadiness] = useState<Record<string, { clip_count: number; clips_with_actions: number; ready: boolean; needs_fpa?: boolean; work_done?: boolean }>>({});
   const [listError, setListError] = useState('');
-  const [polling, setPolling] = useState(false);
+  // 골라 가져오기(T4) — 미리보기 패널과 [원본 교체 반영] 전 비교 창
+  const [importOpen, setImportOpen] = useState(false);
+  const [diffJobId, setDiffJobId] = useState<string | null>(null);
+  const [fhlBusy, setFhlBusy] = useState(false);
   const [pollMsg, setPollMsg] = useState('');
 
   // 사전 작업(신청 없이) 생성 — 런칭 전 풀영상을 직접 올려 보관용 잡·매치를 만든다.
@@ -774,33 +781,34 @@ export default function FineplayJobsPage() {
   // 렌더러가 무슨 원본을 읽을지는 잡에 박힌 매니페스트가 정한다. 저쪽이 유튜브
   // 링크를 S3 업로드본으로 교체해도 이걸 갱신하지 않으면 영영 옛 원본으로 렌더된다.
   // 잡을 지우면 반영되지만 태깅이 통째로 날아가므로, 매니페스트만 바꾼다.
-  const refreshManifest = async (job: FpJob, force = false) => {
-    if (!window.confirm(
-      '원본이 교체됐다면 새 정보를 받아 옵니다.\n\n'
-      + '태깅(클립)은 그대로 보존되고, 원본만 바뀝니다.\n'
-      + '신청자에게 알림은 가지 않습니다. 계속할까요?')) return;
+  const refreshManifest = async (job: FpJob) => {
+    // 바꾸기 전에 라인업·경기 정보·영상이 무엇이 바뀌는지 먼저 보여 준다(T4). 적용은 비교 창에서.
+    setDiffJobId(job.id);
+  };
+
+  // FHL 합본 기록(job.json) 구간으로 클립 만들기 — 신청 태깅을 건너뛴다. 액션·검수는 클립 결과에서 사람이 한다.
+  const produceFromFhl = async (job: FpJob, force = false) => {
+    const n = (job.job_metadata?.manifest?.videos || []).reduce((a, v) => a + (v.fhlJob?.clips?.length || 0), 0);
+    if (!force && !window.confirm(`FHL 기록의 클립 ${n}개를 그대로 만듭니다.\n점수판·워터마크는 FHL 합본에 이미 있어 얹지 않습니다. 보내기는 클립 결과에서 검수 후 하세요.`)) return;
+    setFhlBusy(true);
     try {
-      const res = await apiJson<{
-        changes?: { videoId: string; sourceBefore?: string | null; sourceAfter?: string;
-                    s3KeyAfter?: string | null }[];
-        clipsKept?: number; freedBytes?: number;
-      }>(
-        `/highlight/fineplay-jobs/${job.id}/refresh-manifest${force ? '?force=true' : ''}`,
-        { method: 'POST' },
-      );
-      const moved = (res.changes || [])
-        .map((c) => `${c.videoId}: ${c.sourceBefore || '?'} → ${c.sourceAfter}`)
-        .join(', ');
-      const freed = res.freedBytes
-        ? ` · 유튜브 캐시 ${(res.freedBytes / 1024 / 1024 / 1024).toFixed(2)}GB 정리`
-        : '';
-      setPollMsg(`매니페스트 갱신 완료 — ${moved || '변화 없음'} · 태깅 ${res.clipsKept ?? 0}건 보존${freed}`);
+      const res = await apiJson<{ clips?: number; trimmed?: number }>(
+        `/highlight/fineplay-jobs/${job.id}/fhl-clips${force ? '?force=true' : ''}`, { method: 'POST' });
+      setPollMsg(`FHL 구간으로 클립 ${res.clips ?? 0}개 만드는 중 (전환 구간 다듬음 ${res.trimmed ?? 0}개)`);
       await loadJobs();
-      if (selected?.id === job.id) await selectJob(job);
     } catch (err) {
-      setPollMsg(failMessage(err, '원본 정보를 새로 받지 못했습니다', { '작업 ID': job.id }));
+      const text = failMessage(err, 'FHL 구간으로 클립을 만들지 못했습니다', { '작업 ID': job.id });
+      if (!force && /이미 만든 클립/.test(text)
+          && window.confirm(`${text}\n\n지금 클립을 FHL 구간으로 다시 만들까요? (지금 클립의 액션은 다시 입력해야 합니다)`)) {
+        await produceFromFhl(job, true);
+        return;
+      }
+      setPollMsg(text);
+    } finally {
+      setFhlBusy(false);
     }
   };
+
 
   // 사전 작업 원본 삭제 — 보관비 정리. 클립·데이터는 그대로, 재제작만 불가.
   const deleteSource = async (job: FpJob) => {
@@ -974,61 +982,6 @@ export default function FineplayJobsPage() {
       await loadJobs();
     } catch (err) {
       setLinkMsg(failMessage(err, '연결을 해제하지 못했습니다', { '작업 ID': job.id, '팀': side.toUpperCase() }));
-    }
-  };
-
-  const pollNew = async () => {
-    setPolling(true);
-    setPollMsg('');
-    try {
-      const res = await apiJson<{
-        claimed: string[]; skipped: number;
-        queued?: number; existing?: number; taken?: number;
-        rejected?: number; failed?: number; invalid?: number; reasons?: string[];
-        existing_visible?: number; existing_hidden?: number; existing_detail?: string[];
-      }>('/highlight/fineplay-jobs/poll', { method: 'POST' });
-
-      // '새 작업 없음' 이 네 가지 상황에서 똑같이 떴다 — 대기열이 빈 것 · 이미 가져온 것뿐 ·
-      // 남이 선점 · claim 이 터진 것. 그래서 원인을 가리려면 서버에 들어가 대기열을 직접
-      // 찍어야 했다. 이제 서버가 내역을 주므로 그대로 펼친다.
-      const parts: string[] = [];
-      if (res.claimed.length) parts.push(`새로 가져옴 ${res.claimed.length}`);
-      if (res.existing) {
-        // '이미 있음' 만으로는 화면에 왜 없는지 알 수 없다 — 목록에 보이는지까지 붙인다.
-        const seen = res.existing_visible ?? 0;
-        const hidden = res.existing_hidden ?? 0;
-        parts.push(
-          seen || hidden
-            ? `이미 있음 ${res.existing}(목록에 보임 ${seen} · 보관함 ${hidden})`
-            : `이미 있음 ${res.existing}`,
-        );
-      }
-      if (res.taken) parts.push(`다른 워커 선점 ${res.taken}`);
-      if (res.rejected) parts.push(`거절 ${res.rejected}`);
-      if (res.failed) parts.push(`claim 실패 ${res.failed}`);
-      if (res.invalid) parts.push(`형식 이상 ${res.invalid}`);
-
-      const queued = res.queued ?? 0;
-      const head = res.claimed.length
-        ? `새 작업 ${res.claimed.length}건 가져옴`
-        : queued
-          // 대기열에는 있는데 하나도 못 가져왔다 — 여기가 예전에 '새 작업 없음' 으로
-          // 뭉개지던 자리다.
-          ? `대기열 ${queued}건이 있지만 새로 가져온 것은 없습니다`
-          : 'FinePlay 대기열이 비어 있습니다 (신청이 아직 안 올라왔을 수 있습니다)';
-
-      setPollMsg(
-        head
-        + (parts.length ? ` — ${parts.join(' · ')}` : '')
-        + (res.reasons?.length ? `\n${res.reasons.join('\n')}` : '')
-        // 이미 있는 잡은 어디에 있는지 한 줄씩 — 이름·상태·분류·목록 노출 여부.
-        + (res.existing_detail?.length ? `\n${res.existing_detail.join('\n')}` : ''),
-      );
-      await loadJobs();
-    } catch (err) {
-      setPollMsg(failMessage(err, '새 신청을 가져오지 못했습니다'));
-    } finally {
-      setPolling(false);
     }
   };
 
@@ -1695,11 +1648,28 @@ export default function FineplayJobsPage() {
           <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => setPreOpen((v) => !v)}>
             {preOpen ? '－ 사전 작업 닫기' : '＋ 사전 작업 (신청 없이)'}
           </button>
-          <button style={btn} onClick={pollNew} disabled={polling}>
-            {polling ? '가져오는 중...' : '↺ 새 작업 가져오기'}
+          <button style={btn} onClick={() => setImportOpen((v) => !v)}>
+            {importOpen ? '－ 대기열 닫기' : '↺ 새 작업 가져오기'}
           </button>
           <button style={btn} onClick={() => void loadJobs()}>새로고침</button>
         </div>
+        {importOpen ? (
+          <ImportQueuePanel
+            onClose={() => setImportOpen(false)}
+            onImported={async (msg) => { setPollMsg(msg); await loadJobs(); }}
+          />
+        ) : null}
+        {diffJobId ? (
+          <ManifestRefreshDialog
+            jobId={diffJobId}
+            onClose={() => setDiffJobId(null)}
+            onApplied={async (msg) => {
+              setPollMsg(msg);
+              await loadJobs();
+              if (selected?.id === diffJobId) await selectJob(selected);
+            }}
+          />
+        ) : null}
         <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: '1px dashed var(--border-ghost, #2c2c32)', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 600 }}>📋 기록지 일괄 등록</span>
@@ -2435,6 +2405,18 @@ export default function FineplayJobsPage() {
           {/* FinePlay 가 원본을 바꿨을 때 — 태깅을 살린 채 원본만 갈아끼운다.
               클레임 잡은 지울 수 없고(저쪽 신청이 짝을 잃는다), 지울 수 있어도
               태깅이 통째로 날아간다. 그래서 매니페스트만 새로 받아 덮는다. */}
+          {selected && (selected.job_metadata?.manifest?.videos || []).some((v) => v.fhlJob?.clips?.length) ? (
+            <p style={{ margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: '#22c55e' }}>
+                FHL 기록 있음 — 클립 {(selected.job_metadata?.manifest?.videos || []).reduce((a, v) => a + (v.fhlJob?.clips?.length || 0), 0)}개
+                {selected.job_metadata?.fhl_import?.status === 'queued' ? ' · 그 구간으로 만들었음' : ''}
+              </span>
+              <button style={smallBtn} disabled={fhlBusy} onClick={() => void produceFromFhl(selected)}>
+                {fhlBusy ? '만드는 중…' : 'FHL 구간으로 클립 만들기'}
+              </button>
+            </p>
+          ) : null}
+
           {selected && !selected.job_metadata?.standalone ? (
             <p style={{
               margin: '0 0 10px', display: 'flex', alignItems: 'center',

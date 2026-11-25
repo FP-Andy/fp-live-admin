@@ -143,6 +143,7 @@ from .fineplay_fpa import (
 from .fineplay_models import parse_manifest as fineplay_parse_manifest
 from . import fineplay_scrimmage
 from . import fineplay_append
+from . import fineplay_import
 from .fineplay_plan import (
     plan_from_manifest as fineplay_plan_from_manifest,
     prepare_payload as fineplay_prepare_payload,
@@ -12907,6 +12908,323 @@ def _needs_youtube_fetch(job: HighlightJob) -> bool:
     return False
 
 
+def _claim_fineplay_into_job(db: Session, client, user: User, rid, m: dict,
+                             background_tasks: BackgroundTasks) -> tuple[str, str]:
+    """신청 1건을 claim 해 로컬 잡(mode=fineplay)으로 만든다 → (claimed|taken|rejected|failed, 사유).
+
+    [새 작업 가져오기](전부)와 골라 가져오기(T4, 2026-11-25)가 같이 쓴다. 커밋은 부르는 쪽이 한다.
+    매니페스트에 FHL 기록(videos[].fhlJob)이 있으면 그 구간으로 클립을 바로 만든다 — 커밋 뒤에
+    _queue_fhl_produce 를 불러야 하므로 잡 메타에 'fhl_auto_pending' 표시만 남긴다.
+    """
+    job_id = f"fp-{rid}"
+    try:
+        cr = client.claim(rid, pipeline_version=FINEPLAY_PIPELINE_VERSION)
+    except Exception as exc:
+        # 타임아웃·네트워크·응답 파싱 실패. 삼키면 '새 작업 없음' 과 구분이 안 된다.
+        return "failed", f"{rid}: claim 호출 실패 ({type(exc).__name__})"
+    if not cr.granted:
+        if cr.taken:
+            return "taken", f"{rid}: 다른 워커가 잡고 있음 (HTTP 409)"
+        return "rejected", f"{rid}: claim 거절 (HTTP {cr.status_code})"
+    manifest = cr.manifest or m
+    team = manifest.get("team") or {}
+    opponent = manifest.get("opponent") or {}
+    videos = manifest.get("videos") or []
+    first = videos[0] if videos else {}
+
+    # match–clip–action 동기화: 클레임 즉시 콘솔 Match 를 만들어 하이라이트와
+    # FPA dual 이 같은 매치를 바라보게 한다. 컨벤션: 홈 슬롯 = FinePlay 신청팀.
+    # 잡을 지우고 재폴링해도 같은 신청 건이면 기존 매치를 재사용한다(중복 방지).
+    team_name = str(team.get("teamName") or "").strip() or "Home"
+    opp_name = str(opponent.get("name") or "").strip() or "Away"
+    match_obj = (
+        db.query(Match)
+        .filter(
+            Match.metadata_json["source"].astext == "fineplay_claim",
+            Match.metadata_json["analysis_request_id"].astext == str(rid),
+        )
+        .first()
+    )
+    if match_obj is None:
+        match_obj = Match(
+            id=uuid.uuid4(),
+            name=f"[FPA | 1R] {team_name} vs {opp_name}",
+            sport="FOOTBALL",
+            competition_class="FPA",
+            round_number=1,
+            archived=True,
+            archived_at=datetime.utcnow(),
+            metadata_json={
+                "sport": "FOOTBALL",
+                "home_team": team_name,
+                "away_team": opp_name,
+                "first_half_minutes": 45,
+                "second_half_minutes": 45,
+                "source": "fineplay_claim",
+                "analysis_request_id": rid,
+            },
+            operator_id=user.id,
+        )
+        db.add(match_obj)
+
+    job = HighlightJob(
+        id=job_id,
+        owner_id=user.id,
+        status="tagging",
+        mode="fineplay",
+        # 유튜브 신청은 s3Key 가 없다. 이름이라도 남게 링크에서 끌어온다.
+        original_filename=(
+            str(first.get("s3Key") or "").rsplit("/", 1)[-1]
+            or (str(first.get("youtubeUrl") or "").rstrip("/").rsplit("/", 1)[-1].split("?")[0])
+            or "fineplay.mp4"
+        ),
+        job_metadata={
+            "display_name": team.get("teamName"),
+            "analysis_request_id": rid,
+            "manifest": manifest,
+            # 산출 지시 — 이 신청이 하이라이트만인지 xFP 분석까지인지.
+            # claim 스냅샷으로 굳힌다(노션 §5): 이후 신청 옵션이 바뀌어도
+            # 이미 받은 작업의 범위는 흔들리지 않는다.
+            "plan": fineplay_plan_from_manifest(manifest),
+            "clips": [],
+            "match_id": str(match_obj.id),
+            # 홈=신청팀 컨벤션이라 our_side 기본 home. FPA dual 도 이 매치에 찍으면 된다.
+            "fpa_link": {"match_id": str(match_obj.id), "our_side": "home"},
+            "progress": {
+                "phase": "tagging",
+                "percent": 0,
+                "detail": "태깅 대기 중",
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        },
+    )
+    db.add(job)
+    # 유튜브 원본은 우리가 직접 받아야 한다(2026-07-27 계약 변경). 클레임하자마자
+    # 받기 시작해 두면, 담당자가 작업을 열 때쯤엔 이미 재생할 수 있다.
+    if any(
+        str((v or {}).get("source") or "").upper() == "YOUTUBE" or (v or {}).get("youtubeUrl")
+        for v in (manifest.get("videos") or [])
+        if isinstance(v, dict)
+    ):
+        background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
+    if fineplay_import.fhl_video(manifest) and FINEPLAY_FHL_AUTO_PRODUCE:
+        meta = dict(job.job_metadata or {})
+        meta["fhl_auto_pending"] = True
+        job.job_metadata = meta
+    return "claimed", ""
+
+
+
+# ── 골라 가져오기 · FHL 구간 자동 클립 (T4, 2026-11-25) ──────────────────────────
+# 예전 [새 작업 가져오기]는 대기열을 받자마자 전부 claim 했다(= FinePlay 에서 '분석 중' + 팀 알림).
+# 이제는 claim 없는 대기열(GET /jobs)로 미리보기를 먼저 보여 주고, 고른 것만 claim 한다.
+FINEPLAY_FHL_AUTO_PRODUCE = os.getenv("FINEPLAY_FHL_AUTO_PRODUCE", "1").strip() != "0"
+
+
+def _fineplay_existing_state(db: Session, rid) -> dict | None:
+    job = db.get(HighlightJob, f"fp-{rid}")
+    if not job:
+        return None
+    md = job.job_metadata or {}
+    return {"job_id": job.id, "status": job.status, "archived": bool(md.get("clip_archived")),
+            "name": md.get("display_name")}
+
+
+def _fineplay_queue(client) -> tuple[list[dict], bool]:
+    return fineplay_import.walk_queue(lambda limit, cursor: client.poll_jobs(limit=limit, cursor=cursor))
+
+
+@app.get("/api/highlight/fineplay-jobs/queue-preview")
+def fineplay_queue_preview(
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """FinePlay 대기열 미리보기 — **claim 하지 않는다**(FinePlay 상태·알림 그대로).
+
+    20건씩 cursor 로 끝까지 읽어 한 줄씩: 신청·팀·분석 종류·날짜·장소·상대·스코어·유니폼·포메이션·라인업·대회,
+    영상은 개수·길이 한 줄, FHL 기록이 붙었으면 클립 수. 이미 가져온 건·다른 워커가 잡았던 건은 표시만 한다.
+    """
+    client = fineplay_default_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+    try:
+        manifests, truncated = _fineplay_queue(client)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FinePlay 대기열 조회 실패: {exc}")
+    rows = []
+    for m in manifests:
+        rid = m.get("analysisRequestId")
+        if rid is None:
+            continue
+        rows.append(fineplay_import.preview_row(m, _fineplay_existing_state(db, rid), client.worker_id))
+    return {
+        "items": rows,
+        "count": len(rows),
+        "selectable": sum(1 for r in rows if r["state"] == "new"),
+        "truncated": truncated,
+        "workerId": client.worker_id,
+    }
+
+
+@app.post("/api/highlight/fineplay-jobs/import")
+def fineplay_import_selected(
+    background_tasks: BackgroundTasks,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """고른 신청만 claim 해 가져온다. body: {ids: [신청 번호…]} 또는 {all: true}(미리보기의 '새' 건 전부).
+
+    안 고른 신청은 FinePlay 에서 SUBMITTED 그대로다. 이미 가져온 건·다른 워커가 잡았던 건은 고르더라도
+    건너뛴다(미리보기와 같은 규칙) — 대기열을 다시 읽어 지금 상태로 판정한다.
+    """
+    client = fineplay_default_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+    want_all = bool(body.get("all"))
+    raw_ids = body.get("ids") or []
+    if not want_all and (not isinstance(raw_ids, list) or not raw_ids):
+        raise HTTPException(status_code=400, detail="가져올 신청을 하나 이상 고르세요.")
+    wanted = {str(i).strip() for i in raw_ids if str(i).strip()}
+    try:
+        manifests, _ = _fineplay_queue(client)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FinePlay 대기열 조회 실패: {exc}")
+    by_id = {str(m.get("analysisRequestId")): m for m in manifests if m.get("analysisRequestId") is not None}
+
+    claimed: list[str] = []
+    skipped: list[dict] = []
+    targets = [rid for rid in by_id if want_all or rid in wanted]
+    for rid in sorted(wanted - set(by_id)):
+        skipped.append({"analysisRequestId": rid, "reason": "대기열에 없음(이미 누가 가져갔거나 취소됨)"})
+    for rid in targets:
+        m = by_id[rid]
+        row = fineplay_import.preview_row(m, _fineplay_existing_state(db, rid), client.worker_id)
+        if row["state"] == "imported":
+            skipped.append({"analysisRequestId": rid, "reason": "이미 가져온 작업"})
+            continue
+        if row["state"] == "taken":
+            skipped.append({"analysisRequestId": rid, "reason": f"다른 워커({row['claimedBy']})가 잡았던 건"})
+            continue
+        outcome, reason = _claim_fineplay_into_job(db, client, user, m["analysisRequestId"], m, background_tasks)
+        if outcome == "claimed":
+            claimed.append(f"fp-{m['analysisRequestId']}")
+        else:
+            skipped.append({"analysisRequestId": rid, "reason": reason})
+    _audit(db, "FINEPLAY_IMPORT_SELECTED", "highlight", actor=user, target_id=None, severity="INFO",
+           details={"all": want_all, "requested": sorted(wanted), "claimed": claimed,
+                    "skipped": skipped[:20]})
+    db.commit()
+    if claimed:
+        _match_response_cache.clear()
+    fhl_queued = _kick_fhl_auto(db, claimed)
+    return {"claimed": claimed, "skipped": skipped, "fhl_queued": fhl_queued}
+
+
+def _queue_fhl_produce(db: Session, job_id: str, *, force: bool = False) -> dict:
+    """매니페스트 FHL 기록(videos[].fhlJob) 구간으로 클립 생성을 대기열에 넣는다 — 신청 태깅을 건너뛴다.
+
+    - 이미 만든 클립(DB 행)이 있으면 force 없이는 하지 않는다(사람이 손본 것을 덮지 않게).
+    - FHL 합본에는 점수판·워터마크가 이미 구워져 있다 → 이 생성은 오버레이를 끈다(두 번 그려지지 않게).
+    - 전송은 하지 않는다(send_on_produce=False) — 클립 결과에서 사람이 검수하고 보낸다.
+    """
+    from .highlight_render_queue import active_task, describe, enqueue, lock_job
+    job = lock_job(db, job_id)
+    metadata = dict(job.job_metadata or {})
+    metadata.pop("fhl_auto_pending", None)
+    existing = active_task(db, job_id)
+    if existing:
+        job.job_metadata = metadata
+        db.commit()
+        return {"queued": False, "reason": "이미 생성 중", "render_queue": describe(db, existing)}
+    kept = db.query(HighlightClip).filter(HighlightClip.job_id == job_id).count()
+    if kept and not force:
+        job.job_metadata = metadata
+        db.commit()
+        return {"queued": False, "reason": f"이미 만든 클립 {kept}개가 있어 건너뜀"}
+    our_side = str((metadata.get("fpa_link") or {}).get("our_side") or "home")
+    built = fineplay_import.fhl_clip_entries(metadata.get("manifest") or {}, our_side)
+    if not built["clips"]:
+        metadata["fhl_import"] = {"status": "no-clips", "skipped": built["skipped"],
+                                  "at": datetime.utcnow().isoformat()}
+        job.job_metadata = metadata
+        db.commit()
+        return {"queued": False, "reason": "FHL 기록에 만들 클립이 없음", "skipped": built["skipped"]}
+    metadata["clips"] = built["clips"]
+    metadata.pop("produce_mode", None)
+    metadata.pop(fineplay_append.APPEND_PENDING_META, None)
+    metadata.pop(fineplay_append.APPENDED_KEYS_META, None)
+    metadata.pop("scoreboard", None)
+    metadata.pop("watermark", None)
+    metadata["send_on_produce"] = False
+    metadata["fhl_import"] = {
+        "status": "queued", "videoId": built["videoId"], "clips": len(built["clips"]),
+        "skipped": built["skipped"], "trimmed": built["trimmed"], "ourSide": built["ourSide"],
+        "at": datetime.utcnow().isoformat(),
+    }
+    job.job_metadata = metadata
+    queued = enqueue(db, job_id, "fineplay")
+    return {"queued": True, "clips": len(built["clips"]), "skipped": built["skipped"],
+            "trimmed": built["trimmed"], "render_queue": queued}
+
+
+def _kick_fhl_auto(db: Session, job_ids: list[str]) -> list[str]:
+    """방금 가져온 잡 중 FHL 기록이 있는 것을 바로 생성 대기열에 넣는다. 실패해도 가져오기는 그대로 둔다."""
+    out = []
+    for job_id in job_ids:
+        job = db.get(HighlightJob, job_id)
+        if not job or not (job.job_metadata or {}).get("fhl_auto_pending"):
+            continue
+        try:
+            if _queue_fhl_produce(db, job_id).get("queued"):
+                out.append(job_id)
+        except Exception:  # noqa: BLE001 - 가져오기를 되돌리지 않는다. 화면의 [FHL 구간으로 클립 만들기]로 다시 한다
+            db.rollback()
+            logging.getLogger(__name__).exception("FHL 자동 생성 대기열 실패 %s", job_id)
+    return out
+
+
+@app.get("/api/highlight/fineplay-jobs/{job_id}/fhl-clips")
+def fineplay_fhl_clips_preview(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """이 잡 매니페스트의 FHL 기록을 어떤 클립으로 바꾸는지 미리 본다(만들지 않는다)."""
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    md = job.job_metadata or {}
+    built = fineplay_import.fhl_clip_entries(md.get("manifest") or {},
+                                             str((md.get("fpa_link") or {}).get("our_side") or "home"))
+    return {**built, "existingClips": db.query(HighlightClip).filter(HighlightClip.job_id == job_id).count(),
+            "fhlImport": md.get("fhl_import")}
+
+
+@app.post("/api/highlight/fineplay-jobs/{job_id}/fhl-clips")
+def fineplay_fhl_clips_produce(
+    job_id: str,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """FHL 구간으로 클립 만들기(대기열). 이미 만든 클립이 있으면 force=true 일 때만 다시 만든다."""
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    if (job.job_metadata or {}).get("source_deleted"):
+        raise HTTPException(status_code=409, detail="원본이 삭제된 작업이라 클립을 만들 수 없습니다.")
+    if not fineplay_import.fhl_video((job.job_metadata or {}).get("manifest") or {}):
+        raise HTTPException(status_code=409, detail="이 작업에는 FHL 기록이 없습니다. 어드민에서 job.json 을 붙인 뒤 매니페스트를 다시 받으세요.")
+    result = _queue_fhl_produce(db, job_id, force=force)
+    _audit(db, "FINEPLAY_FHL_PRODUCE", "highlight", actor=user, target_id=job_id, severity="INFO",
+           details={k: v for k, v in result.items() if k != "render_queue"} | {"force": bool(force)})
+    db.commit()
+    if not result.get("queued"):
+        raise HTTPException(status_code=409, detail=result.get("reason") or "만들지 못했습니다.")
+    return result
+
+
 @app.post("/api/highlight/fineplay-jobs/poll")
 def poll_fineplay_jobs(
     background_tasks: BackgroundTasks,
@@ -12988,110 +13306,29 @@ def poll_fineplay_jobs(
                 background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
                 refetched.append(job_id)
             continue
-        try:
-            cr = client.claim(rid, pipeline_version=FINEPLAY_PIPELINE_VERSION)
-        except Exception as exc:
-            # 타임아웃·네트워크·응답 파싱 실패. 삼키면 '새 작업 없음' 과 구분이 안 된다.
+        outcome, reason = _claim_fineplay_into_job(db, client, user, rid, m, background_tasks)
+        if outcome == "failed":
             failed += 1
             if len(reasons) < 5:
-                reasons.append(f"{rid}: claim 호출 실패 ({type(exc).__name__})")
+                reasons.append(reason)
             continue
-        if not cr.granted:
-            if cr.taken:
+        if outcome in ("taken", "rejected"):
+            if outcome == "taken":
                 taken += 1
             else:
                 rejected += 1
                 if len(reasons) < 5:
-                    reasons.append(f"{rid}: claim 거절 (HTTP {cr.status_code})")
+                    reasons.append(reason)
             skipped += 1
             continue
-        manifest = cr.manifest or m
-        team = manifest.get("team") or {}
-        opponent = manifest.get("opponent") or {}
-        videos = manifest.get("videos") or []
-        first = videos[0] if videos else {}
-
-        # match–clip–action 동기화: 클레임 즉시 콘솔 Match 를 만들어 하이라이트와
-        # FPA dual 이 같은 매치를 바라보게 한다. 컨벤션: 홈 슬롯 = FinePlay 신청팀.
-        # 잡을 지우고 재폴링해도 같은 신청 건이면 기존 매치를 재사용한다(중복 방지).
-        team_name = str(team.get("teamName") or "").strip() or "Home"
-        opp_name = str(opponent.get("name") or "").strip() or "Away"
-        match_obj = (
-            db.query(Match)
-            .filter(
-                Match.metadata_json["source"].astext == "fineplay_claim",
-                Match.metadata_json["analysis_request_id"].astext == str(rid),
-            )
-            .first()
-        )
-        if match_obj is None:
-            match_obj = Match(
-                id=uuid.uuid4(),
-                name=f"[FPA | 1R] {team_name} vs {opp_name}",
-                sport="FOOTBALL",
-                competition_class="FPA",
-                round_number=1,
-                archived=True,
-                archived_at=datetime.utcnow(),
-                metadata_json={
-                    "sport": "FOOTBALL",
-                    "home_team": team_name,
-                    "away_team": opp_name,
-                    "first_half_minutes": 45,
-                    "second_half_minutes": 45,
-                    "source": "fineplay_claim",
-                    "analysis_request_id": rid,
-                },
-                operator_id=user.id,
-            )
-            db.add(match_obj)
-
-        job = HighlightJob(
-            id=job_id,
-            owner_id=user.id,
-            status="tagging",
-            mode="fineplay",
-            # 유튜브 신청은 s3Key 가 없다. 이름이라도 남게 링크에서 끌어온다.
-            original_filename=(
-                str(first.get("s3Key") or "").rsplit("/", 1)[-1]
-                or (str(first.get("youtubeUrl") or "").rstrip("/").rsplit("/", 1)[-1].split("?")[0])
-                or "fineplay.mp4"
-            ),
-            job_metadata={
-                "display_name": team.get("teamName"),
-                "analysis_request_id": rid,
-                "manifest": manifest,
-                # 산출 지시 — 이 신청이 하이라이트만인지 xFP 분석까지인지.
-                # claim 스냅샷으로 굳힌다(노션 §5): 이후 신청 옵션이 바뀌어도
-                # 이미 받은 작업의 범위는 흔들리지 않는다.
-                "plan": fineplay_plan_from_manifest(manifest),
-                "clips": [],
-                "match_id": str(match_obj.id),
-                # 홈=신청팀 컨벤션이라 our_side 기본 home. FPA dual 도 이 매치에 찍으면 된다.
-                "fpa_link": {"match_id": str(match_obj.id), "our_side": "home"},
-                "progress": {
-                    "phase": "tagging",
-                    "percent": 0,
-                    "detail": "태깅 대기 중",
-                    "updated_at": datetime.utcnow().isoformat(),
-                },
-            },
-        )
-        db.add(job)
         claimed.append(job_id)
-        # 유튜브 원본은 우리가 직접 받아야 한다(2026-07-27 계약 변경). 클레임하자마자
-        # 받기 시작해 두면, 담당자가 작업을 열 때쯤엔 이미 재생할 수 있다.
-        if any(
-            str((v or {}).get("source") or "").upper() == "YOUTUBE" or (v or {}).get("youtubeUrl")
-            for v in (manifest.get("videos") or [])
-            if isinstance(v, dict)
-        ):
-            background_tasks.add_task(fetch_youtube_sources_for_job, job_id)
     db.commit()
     if claimed:
         _match_response_cache.clear()
+    fhl_queued = _kick_fhl_auto(db, claimed)
     return {
         "claimed": claimed,
+        "fhl_queued": fhl_queued,
         "skipped": skipped,
         "refetched": refetched,
         # 화면이 '왜 0건인지' 를 그대로 보여줄 수 있게 내역을 함께 준다.
@@ -13300,11 +13537,64 @@ def fineplay_fetch_youtube(
             "force": bool(force), "removed": removed, "maxHeight": height}
 
 
+def _fineplay_job_rid(job_id: str, metadata: dict) -> str:
+    rid = str(metadata.get("analysis_request_id") or "").strip()
+    if not rid and job_id.startswith("fp-"):
+        rid = job_id[3:]
+    if not rid:
+        raise HTTPException(status_code=400, detail="이 잡에 FinePlay 신청 번호가 없습니다.")
+    return rid
+
+
+@app.get("/api/highlight/fineplay-jobs/{job_id}/refresh-manifest/preview")
+def preview_fineplay_manifest_refresh(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_require_superuser),
+):
+    """[매니페스트 다시 받기] 전에 무엇이 바뀌는지 본다 — **아무것도 바꾸지 않는다.**
+
+    새 매니페스트는 claim 재호출로 받는다(같은 워커면 lease 만 갱신, 상태·알림 없음 — refresh 와 같은 경로).
+    지금 잡의 매니페스트(FPC 에서 직접 넣은 선수 포함)와 라인업·포메이션·상대·스코어·날짜·영상·FHL 을 비교한다.
+    """
+    job = db.get(HighlightJob, job_id)
+    if not job or job.mode != "fineplay":
+        raise HTTPException(status_code=404, detail="FinePlay 작업이 아닙니다.")
+    metadata = dict(job.job_metadata or {})
+    rid = _fineplay_job_rid(job_id, metadata)
+    client = fineplay_default_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="FINEPLAY_API_TOKEN 이 설정되지 않았습니다.")
+    try:
+        cr = client.claim(rid, pipeline_version=FINEPLAY_PIPELINE_VERSION)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FinePlay claim 실패: {exc}")
+    if not cr.granted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"claim 이 거부됐습니다 (HTTP {cr.status_code}). 다른 워커가 잡고 있을 수 있습니다.")
+    old = metadata.get("manifest") or {}
+    new = cr.manifest or {}
+    diff = fineplay_import.manifest_diff(old, new)
+    _, kept = fineplay_import.keep_manual_players(old.get("lineup"), new.get("lineup"))
+    new_ids = {str((v or {}).get("videoId") or "") for v in (new.get("videos") or []) if isinstance(v, dict)}
+    used_ids = {str((c or {}).get("sourceVideoId") or "").strip()
+                for c in (metadata.get("clips") or []) if isinstance(c, dict)} - {""}
+    return {
+        **diff,
+        "keepManual": kept,
+        "missingVideos": sorted(used_ids - new_ids),
+        "clipsKept": db.query(HighlightClip).filter(HighlightClip.job_id == job_id).count(),
+        "fhlAfter": bool(fineplay_import.fhl_video(new)),
+    }
+
+
 @app.post("/api/highlight/fineplay-jobs/{job_id}/refresh-manifest")
 def refresh_fineplay_manifest(
     job_id: str,
     background_tasks: BackgroundTasks,
     force: bool = False,
+    keep_manual: bool = True,
     db: Session = Depends(get_db),
     user: User = Depends(_require_superuser),
 ):
@@ -13384,6 +13674,15 @@ def refresh_fineplay_manifest(
             "durationAfter": v.duration_seconds,
         })
 
+    # 라인업 비교 기록 — 무엇이 바뀌었는지 감사기록에 같이 남긴다(T4, 2026-11-25).
+    old_raw = metadata.get("manifest") or {}
+    lineup_change = fineplay_import.lineup_diff(old_raw.get("lineup"), new_raw.get("lineup"))
+    kept_manual: list = []
+    if keep_manual:
+        # FPC 에서 직접 넣은 선수(manualAdded) 중 새 라인업에 없는 등번호는 남긴다 — 통째로 갈면 사라졌다.
+        merged, kept_manual = fineplay_import.keep_manual_players(old_raw.get("lineup"), new_raw.get("lineup"))
+        if kept_manual:
+            new_raw = {**new_raw, "lineup": merged}
     metadata["manifest"] = new_raw
     # plan(산출 지시)은 claim 스냅샷으로 굳히는 값이라 건드리지 않는다 — 원본만 바꾸는 작업이다.
 
@@ -13406,7 +13705,9 @@ def refresh_fineplay_manifest(
     _audit(db, "FINEPLAY_MANIFEST_REFRESH", "highlight", actor=user, target_id=job_id,
            severity="INFO",
            details={"analysis_request_id": rid, "changes": changes,
-                    "freed_bytes": freed, "forced": bool(force)})
+                    "freed_bytes": freed, "forced": bool(force),
+                    "lineup": {k: (v if k == "same" else len(v)) for k, v in lineup_change.items()},
+                    "kept_manual": [p.get("jerseyNumber") for p in kept_manual]})
     db.commit()
 
     # 새 매니페스트가 여전히 유튜브라면 받아 둔 게 없을 수 있다 — 그때만 받기를 건다.
@@ -13420,8 +13721,17 @@ def refresh_fineplay_manifest(
     kept = db.query(HighlightClip).filter(HighlightClip.job_id == job_id).count()
     if not kept:
         kept = len(metadata.get("clips") or [])
+    # FHL 기록이 새로 붙었고 아직 태깅·클립이 하나도 없으면 그 구간으로 바로 만든다(가져올 때와 같은 규칙).
+    fhl_queued = False
+    if FINEPLAY_FHL_AUTO_PRODUCE and not kept and fineplay_import.fhl_video(new_raw):
+        try:
+            fhl_queued = bool(_queue_fhl_produce(db, job_id).get("queued"))
+        except Exception:  # noqa: BLE001 - 매니페스트 갱신은 끝났다. 화면 버튼으로 다시 한다
+            db.rollback()
+            logging.getLogger(__name__).exception("FHL 자동 생성 대기열 실패 %s", job_id)
     return {"ok": True, "analysisRequestId": rid, "changes": changes,
-            "freedBytes": freed, "clipsKept": kept}
+            "freedBytes": freed, "clipsKept": kept,
+            "keptManual": kept_manual, "lineup": lineup_change, "fhlQueued": fhl_queued}
 
 
 @app.post("/api/highlight/fineplay-jobs/{job_id}/resend-callback")
