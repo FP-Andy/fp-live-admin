@@ -82,7 +82,7 @@ export function MatchAttackCard({attackLR, selectedTeam, pendingLane, matchTeams
             </div>);
 }
 
-export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPlayerKey, xgPlayerOptions, isOnTargetShot, setIsOnTargetShot, isGoalShot, setIsGoalShot, isHeaderShot, setIsHeaderShot, isOwnGoal, setIsOwnGoal, shotPoint, goalmouthPoint, canWrite, canRecord=canWrite, xgValue, setXgValue, xgotValue, estimateXgFromPitch, estimateXgotFromGoalmouth, submitXg, isSavingShot, onGoalmouthClick, onPitchClick, xgEstimateMeta, xgotEstimateMeta}:{isFutsal:boolean; xgTeam:Team; setXgTeam:(team:Team)=>void; xgPlayerKey:string; setXgPlayerKey:(value:string)=>void; xgPlayerOptions:LineupPlayer[]; isOnTargetShot:boolean; setIsOnTargetShot:Dispatch<SetStateAction<boolean>>; isGoalShot:boolean; setIsGoalShot:Dispatch<SetStateAction<boolean>>; isHeaderShot:boolean; setIsHeaderShot:Dispatch<SetStateAction<boolean>>; isOwnGoal:boolean; setIsOwnGoal:Dispatch<SetStateAction<boolean>>; shotPoint:Point|null; goalmouthPoint:Point|null; canWrite:boolean; canRecord?:boolean; xgValue:string; setXgValue:(value:string)=>void; xgotValue:string; estimateXgFromPitch:()=>void; estimateXgotFromGoalmouth:()=>void; submitXg:()=>void; isSavingShot:boolean; onGoalmouthClick:(event:MouseEvent<HTMLDivElement>)=>void; onPitchClick:(event:MouseEvent<HTMLDivElement>)=>void; xgEstimateMeta:string; xgotEstimateMeta:string;}){
+export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPlayerKey, xgPlayerOptions, isOnTargetShot, setIsOnTargetShot, isGoalShot, setIsGoalShot, isHeaderShot, setIsHeaderShot, isOwnGoal, setIsOwnGoal, isPenaltyShot=false, togglePenaltyShot, shotPoint, goalmouthPoint, canWrite, canRecord=canWrite, xgValue, setXgValue, xgotValue, estimateXgFromPitch, estimateXgotFromGoalmouth, submitXg, isSavingShot, onGoalmouthClick, onPitchClick, xgEstimateMeta, xgotEstimateMeta}:{isFutsal:boolean; xgTeam:Team; setXgTeam:(team:Team)=>void; xgPlayerKey:string; setXgPlayerKey:(value:string)=>void; xgPlayerOptions:LineupPlayer[]; isOnTargetShot:boolean; setIsOnTargetShot:Dispatch<SetStateAction<boolean>>; isGoalShot:boolean; setIsGoalShot:Dispatch<SetStateAction<boolean>>; isHeaderShot:boolean; setIsHeaderShot:Dispatch<SetStateAction<boolean>>; isOwnGoal:boolean; setIsOwnGoal:Dispatch<SetStateAction<boolean>>; isPenaltyShot?:boolean; togglePenaltyShot?:()=>void; shotPoint:Point|null; goalmouthPoint:Point|null; canWrite:boolean; canRecord?:boolean; xgValue:string; setXgValue:(value:string)=>void; xgotValue:string; estimateXgFromPitch:()=>void; estimateXgotFromGoalmouth:()=>void; submitXg:()=>void; isSavingShot:boolean; onGoalmouthClick:(event:MouseEvent<HTMLDivElement>)=>void; onPitchClick:(event:MouseEvent<HTMLDivElement>)=>void; xgEstimateMeta:string; xgotEstimateMeta:string;}){
  const cardRef=useRef<HTMLDivElement|null>(null);
  // 반쪽 창(736px)에서 xGOT 칸이 잘리지 않게 도구 줄을 720 이하에서 접는다(이사71, 전에는 660)
  useWidthFlags(cardRef,{mid:720,narrow:460});
@@ -114,6 +114,7 @@ export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPl
                 if (isFutsal) setIsOnTargetShot(next);
               }} disabled={!canWrite}>골</button>
               {!isFutsal ? <button className={isHeaderShot ? 'btn-active' : ''} onClick={() => setIsHeaderShot((prev) => !prev)} disabled={!canWrite}>헤더</button> : null}
+              {!isFutsal && togglePenaltyShot ? <button className={isPenaltyShot ? 'btn-active' : ''} aria-pressed={isPenaltyShot} onClick={togglePenaltyShot} disabled={!canWrite} title="PK 지점과 xG 0.75 를 같이 넣습니다">PK</button> : null}
               <button
                 className={isOwnGoal ? 'btn-active' : ''}
                 onClick={() => setIsOwnGoal((prev) => !prev)}
@@ -125,6 +126,8 @@ export function MatchShotCard({isFutsal, xgTeam, setXgTeam, xgPlayerKey, setXgPl
               <span className="muted">
                 {isOwnGoal
                   ? `자책골 — ${xgTeam} 득점으로 올라갑니다. 피치를 찍고 "슈팅 기록"을 누르세요.`
+                  : isPenaltyShot
+                  ? 'PK — PK 지점과 xG 0.75 가 들어갔어요'
                   : shotPoint
                   ? `슈팅 위치 (${shotPoint.x}, ${shotPoint.y})`
                   : '피치에서 슈팅 위치를 선택하세요'}
