@@ -78,6 +78,10 @@ def fhl_clip_entries(manifest: dict, fpc_our_side: str = "home") -> dict:
     swap_scores = fhl_home_slot != "home"
     export_duration = _num(job.get("exportDuration"))
 
+    def gap(a: float, b: float) -> float:
+        # 소수 반올림 차이로 0.05 경계가 흔들리지 않게(17.25-17.2=0.0500000001) ms 단위로 잰다
+        return round(a - b, 3)
+
     raw = []
     for c in job.get("clips") or []:
         if not isinstance(c, dict):
@@ -99,17 +103,17 @@ def fhl_clip_entries(manifest: dict, fpc_our_side: str = "home") -> dict:
         prev_end = raw[i - 1][1] if i > 0 else None
         next_start = raw[i + 1][0] if i + 1 < len(raw) else None
         # 머리: 앞 클립과 겹치면 겹친 만큼, 앞에 틈(카드·인트로)이 있으면 카드 전환만큼
-        if prev_end is not None and prev_end > s + FHL_GAP_EPS:
+        if prev_end is not None and gap(prev_end, s) > FHL_GAP_EPS:
             head = prev_end - s
-        elif (prev_end is not None and s - prev_end > FHL_GAP_EPS) or (prev_end is None and s > FHL_GAP_EPS):
+        elif (prev_end is not None and gap(s, prev_end) > FHL_GAP_EPS) or (prev_end is None and gap(s, 0) > FHL_GAP_EPS):
             head = FHL_CARD_JOIN_SEC
         else:
             head = 0.0
         # 꼬리: 뒤 클립과 겹치면 겹친 만큼, 뒤에 틈(카드)이나 합본 끝까지 남은 게 있으면 카드 전환만큼
-        if next_start is not None and next_start < e - FHL_GAP_EPS:
+        if next_start is not None and gap(e, next_start) > FHL_GAP_EPS:
             tail = e - next_start
-        elif (next_start is not None and next_start - e > FHL_GAP_EPS) or (
-                next_start is None and export_duration is not None and export_duration - e > FHL_GAP_EPS):
+        elif (next_start is not None and gap(next_start, e) > FHL_GAP_EPS) or (
+                next_start is None and export_duration is not None and gap(export_duration, e) > FHL_GAP_EPS):
             tail = FHL_CARD_JOIN_SEC
         else:
             tail = 0.0

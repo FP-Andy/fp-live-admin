@@ -124,6 +124,13 @@ class FhlClipTests(unittest.TestCase):
         self.assertEqual(out["skipped"], {"section": 1, "home_goal_only": 1})
         self.assertEqual([(c["start"], c["end"]) for c in out["clips"]], [(2.0, 3.0)])   # 깎으면 0.2초 → 원래대로
 
+    def test_end_within_rounding_of_export_end_is_not_trimmed(self):
+        # dev #38 시연에서 나온 경우: 합본 17.25초, 마지막 클립 끝 17.2 → 남은 0.05초는 아웃트로가 아니다
+        job = {**FHL_JOB, "exportDuration": 17.25, "clips": [
+            {"order": 1, "kind": "home", "exportStart": 12.4, "exportEnd": 17.2}]}
+        c = fineplay_import.fhl_clip_entries(manifest(1, fhl=job), "home")["clips"][0]
+        self.assertEqual((c["start"], c["end"]), (12.8, 17.2))
+
     def test_no_fhl_job(self):
         self.assertEqual(fineplay_import.fhl_clip_entries(manifest(1), "home")["clips"], [])
 
