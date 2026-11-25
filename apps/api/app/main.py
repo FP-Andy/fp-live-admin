@@ -14400,6 +14400,9 @@ def clip_result_detail(
     }
     if storage.configured and clip.horizontal_s3_key:
         out["video_url"] = storage.presigned_get(clip.horizontal_s3_key, expires=21600)
+    else:
+        # 화면이 '왜 재생이 안 되는지' 를 말할 수 있게 — xFP 검증 링크(T6)로 들어온 검수자용.
+        out["video_unavailable_reason"] = "NO_RENDERED_CLIP" if not clip.horizontal_s3_key else "STORAGE_NOT_CONFIGURED"
     if storage.configured and clip.thumbnail_s3_key:
         out["thumbnail_url"] = storage.presigned_get(clip.thumbnail_s3_key, expires=3600)
     return out

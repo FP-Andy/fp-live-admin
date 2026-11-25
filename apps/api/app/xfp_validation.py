@@ -532,7 +532,8 @@ def _parse_time(value: Any) -> float | None:
 # ── 행 ───────────────────────────────────────────────────────────────────────
 
 def _console_base() -> str:
-    return (os.getenv("FPC_CONSOLE_BASE_URL") or "").rstrip("/")
+    # MCP 응답은 콘솔 밖(AI 도구)에서 읽히므로 절대 주소로 준다. 로컬 시연은 env 로 바꾼다.
+    return (os.getenv("FPC_CONSOLE_BASE_URL") or "https://console.fineludens.kr").rstrip("/")
 
 
 def console_url(job_id: str, side: str | None, clip_id: str | None, t: float | None, time_source: str) -> str:

@@ -181,7 +181,23 @@ type ClipDetail = ClipRow & {
   our_side: string;
   team_labels: { home?: string; away?: string };
   video_url?: string;
+  // 영상이 없을 때 이유 — NO_RENDERED_CLIP(렌더 클립 없음) | STORAGE_NOT_CONFIGURED(저장소 설정 없음)
+  video_unavailable_reason?: string | null;
   actions: ActionRow[];
+};
+
+// xFP 검증 링크(?clipId=&t=&ts=) — 그 클립을 열고 t초(클립 시작 기준)부터 재생한다.
+// ts: recorded(듀얼 기록 시각) | manual | inferred(추정) | unknown(출처 미상)
+type LinkSeek = { clipId: string; t: number; ts: string };
+const SEEK_SOURCE_LABEL: Record<string, string> = {
+  recorded: '기록된 시각',
+  manual: '직접 맞춘 시각',
+  inferred: '추정 시각',
+  unknown: '출처를 모르는 시각',
+};
+const VIDEO_REASON_LABEL: Record<string, string> = {
+  NO_RENDERED_CLIP: '이 클립은 렌더된 영상이 없어 재생할 수 없습니다.',
+  STORAGE_NOT_CONFIGURED: '영상 저장소가 설정되지 않아 재생할 수 없습니다.',
 };
 
 const card: React.CSSProperties = {
@@ -437,6 +453,9 @@ export default function ClipResultsPage() {
   // 드래그 중인 액션의 seq. 구간 칸에 떨어뜨리면 그 칸의 start/end 가 액션에 들어간다.
   const [dragSeq, setDragSeq] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  // 링크로 들어온 재생 시점 — 영상이 뜨면 한 번 옮기고 비운다. 안내 문구는 그 클립을 보는 동안 남긴다.
+  const linkSeekRef = useRef<LinkSeek | null>(null);
+  const [linkSeek, setLinkSeek] = useState<LinkSeek | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -466,7 +485,16 @@ export default function ClipResultsPage() {
         if (m) {
           deepLinkDone.current = true;
           const side = String(params.get('side') || '').toUpperCase();
-          void openMatch(m, side === 'B' ? 'B' : 'A');
+          const linkClip = params.get('clipId');
+          if (linkClip) {
+            const t = Number(params.get('t') || 0);
+            const seek = { clipId: linkClip, t: Number.isFinite(t) && t > 0 ? t : 0, ts: params.get('ts') || 'unknown' };
+            linkSeekRef.current = seek;
+            setLinkSeek(seek);
+          }
+          void openMatch(m, side === 'B' ? 'B' : 'A').then((ok) => {
+            if (ok && linkClip) void openClip(linkClip);
+          });
         } else if (targetJob) {
           setMsg('아직 등록된 클립이 없습니다. 수동 결과물에서 연결 상태를 확인한 뒤 새로고침하세요.');
         } else {
@@ -1849,6 +1877,14 @@ export default function ClipResultsPage() {
             </button>
           </div>
 
+          {linkSeek && linkSeek.clipId === detail.id ? (
+            <p style={{ fontSize: 13, margin: '0 0 6px', color: linkSeek.ts === 'recorded' || linkSeek.ts === 'manual' ? 'var(--text, #ddd)' : '#e0b050' }}
+               title={`링크 값: t=${linkSeek.t}초(클립 시작 기준), ts=${linkSeek.ts}`}>
+              {linkSeek.t > 0
+                ? `${linkSeek.t.toFixed(1)}초부터 재생 · ${SEEK_SOURCE_LABEL[linkSeek.ts] || SEEK_SOURCE_LABEL.unknown}${linkSeek.ts === 'inferred' ? ' (추정)' : ''}`
+                : '액션 시각을 몰라 클립 처음부터 재생합니다.'}
+            </p>
+          ) : null}
           {detail.video_url ? (
             <video
               ref={videoRef}
@@ -1864,14 +1900,23 @@ export default function ClipResultsPage() {
                 // 다른 클립으로 넘어간 경우엔 0 부터 — 재발급 때만 위치를 복원한다.
                 const at = restoreAtRef.current;
                 restoreAtRef.current = null;
-                if (at !== null && at > 0) e.currentTarget.currentTime = at;
+                if (at !== null && at > 0) { e.currentTarget.currentTime = at; return; }
+                const seek = linkSeekRef.current;
+                if (seek && seek.clipId === detail.id) {
+                  linkSeekRef.current = null;
+                  const end = Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : seek.t;
+                  if (seek.t > 0) e.currentTarget.currentTime = Math.min(seek.t, Math.max(0, end - 0.05));
+                }
               }}
               // 고정 px 대신 화면 높이 비례 — 큰 모니터에서 그만큼 크게 보인다.
               // 아래 액션 목록이 바로 이어지므로 태깅 화면(68vh)보다 조금 낮게 잡는다.
               style={{ width: '100%', maxHeight: '62vh', minHeight: 320, background: '#000', borderRadius: 8 }}
             />
           ) : (
-            <p style={{ fontSize: 13, color: 'var(--muted, #999)' }} title="영상 주소(video_url)가 비어 있습니다 — S3 설정 확인">영상을 불러오지 못했습니다. 새로고침해 보고, 계속되면 관리자에게 알려 주세요.</p>
+            <p style={{ fontSize: 13, color: 'var(--muted, #999)' }} title={`영상 주소(video_url)가 비어 있습니다${detail.video_unavailable_reason ? ` — ${detail.video_unavailable_reason}` : ' — S3 설정 확인'}`}>
+              {(detail.video_unavailable_reason && VIDEO_REASON_LABEL[detail.video_unavailable_reason])
+                || '영상을 불러오지 못했습니다. 새로고침해 보고, 계속되면 관리자에게 알려 주세요.'}
+            </p>
           )}
 
           <div style={{ marginTop: 14 }}>
