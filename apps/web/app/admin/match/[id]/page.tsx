@@ -29,6 +29,9 @@ const XG_VISIBLE_LENGTH = 40;
 const XG_VISIBLE_OFFSET = HALF_PITCH_LENGTH - XG_VISIBLE_LENGTH;
 const PITCH_WIDTH = 68;
 const FUTSAL_HALF_PITCH_LENGTH = 20;
+// PK 지점: 골라인에서 11m 정면(보이는 영역 좌표, 서버 좌표로는 x=94, y=34). xG 는 0.75 로 고정한다.
+const PK_SPOT = { x: XG_VISIBLE_LENGTH - 11, y: 34 };
+const PK_XG = '0.75';
 const FUTSAL_PITCH_WIDTH = 20;
 
 function regulationHalfMinutes(competitionClass?: string | null, firstHalfMinutes?: number | null) {
@@ -127,6 +130,7 @@ function MatchControlPage() {
   const [isHeaderShot, setIsHeaderShot] = useState(false);
   const [isGoalShot, setIsGoalShot] = useState(false);
   const [isOwnGoal, setIsOwnGoal] = useState(false);
+  const [isPenaltyShot, setIsPenaltyShot] = useState(false);
   const [isUnderPressureShot, setIsUnderPressureShot] = useState(false);
   const [isOneOnOneShot, setIsOneOnOneShot] = useState(false);
   const [xgEstimateMeta, setXgEstimateMeta] = useState('');
@@ -1197,7 +1201,7 @@ function MatchControlPage() {
     // 보관함에 들어간 것은 누른 순간의 사본이다. 바로 비워 다음 슈팅을 이어서 입력하게 한다.
     setXgValue('0.10');setXgPlayerKey('');setXgotValue('0.000');setShotPoint(null);
     setIsOnTargetShot(false);setGoalmouthPoint(null);setIsHeaderShot(false);setIsGoalShot(false);
-    setIsOwnGoal(false);setIsUnderPressureShot(false);setIsOneOnOneShot(false);
+    setIsOwnGoal(false);setIsPenaltyShot(false);setIsUnderPressureShot(false);setIsOneOnOneShot(false);
     setXgEstimateMeta('');setXgotEstimateMeta('');setControlNotice('');
   };
 
@@ -1270,7 +1274,20 @@ function MatchControlPage() {
       const x = (1 - py / rect.height) * XG_VISIBLE_LENGTH;
       setShotPoint({ x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) });
     }
+    // 피치를 다시 찍으면 PK 가 아니다 — 0.75 가 남지 않게 기본값으로 돌린다.
+    if (isPenaltyShot) { setIsPenaltyShot(false); setXgValue('0.10'); }
     setXgEstimateMeta('');
+  };
+
+  // PK: 위치로 계산하면 PK 지점이 약 0.18 로 나오는데, 0.75 로 바꾸지 않고 그대로 기록하는 일이 잦았다(2026-11-25 요청).
+  // 버튼 하나로 지점과 xG 0.75 를 같이 넣는다. 다시 누르면 해제.
+  const togglePenaltyShot = () => {
+    if (isPenaltyShot) {
+      setIsPenaltyShot(false); setShotPoint(null); setXgValue('0.10'); setXgEstimateMeta('');
+      return;
+    }
+    setIsPenaltyShot(true); setIsOwnGoal(false); setIsHeaderShot(false);
+    setShotPoint({ ...PK_SPOT }); setXgValue(PK_XG); setXgEstimateMeta('PK — xG 0.75');
   };
 
   const onGoalmouthClick = (e: { currentTarget: HTMLDivElement; clientX: number; clientY: number }) => {
@@ -1284,6 +1301,7 @@ function MatchControlPage() {
   };
 
   const estimateXgFromPitch = async () => {
+    if (isPenaltyShot) { setXgValue(PK_XG); setXgEstimateMeta('PK 는 xG 0.75 로 고정돼요.'); return; }
     const shotCoordinates = getShotCoordinates();
     if (!shotPoint || !shotCoordinates) {
       setXgEstimateMeta('피치에서 슈팅 위치를 먼저 선택하세요.');
@@ -1776,7 +1794,7 @@ function MatchControlPage() {
           <MatchAttackCard attackLR={attackLR} selectedTeam={selectedTeam} pendingLane={pendingLane} matchTeams={matchTeams} summary={summary} canWrite={canWrite} changeAttackDirection={changeAttackDirection} selectEventTeam={selectEventTeam} setPendingLane={setPendingLane} sendLane={sendLane} />
         </section>
         <section className="fla-shots" aria-label="슈팅 입력">
-          <MatchShotCard isFutsal={isFutsal} xgTeam={xgTeam} setXgTeam={setXgTeam} xgPlayerKey={xgPlayerKey} setXgPlayerKey={setXgPlayerKey} xgPlayerOptions={xgPlayerOptions} isOnTargetShot={isOnTargetShot} setIsOnTargetShot={setIsOnTargetShot} isGoalShot={isGoalShot} setIsGoalShot={setIsGoalShot} isHeaderShot={isHeaderShot} setIsHeaderShot={setIsHeaderShot} isOwnGoal={isOwnGoal} setIsOwnGoal={setIsOwnGoal} shotPoint={shotPoint} goalmouthPoint={goalmouthPoint} canWrite={canWrite} canRecord={canWrite && !!shotPoint && (isOwnGoal || !isOnTargetShot || !!goalmouthPoint)} xgValue={xgValue} setXgValue={setXgValue} xgotValue={xgotValue} estimateXgFromPitch={estimateXgFromPitch} estimateXgotFromGoalmouth={estimateXgotFromGoalmouth} submitXg={submitXg} isSavingShot={false} onGoalmouthClick={onGoalmouthClick} onPitchClick={onPitchClick} xgEstimateMeta={xgEstimateMeta} xgotEstimateMeta={xgotEstimateMeta} />
+          <MatchShotCard isFutsal={isFutsal} xgTeam={xgTeam} setXgTeam={setXgTeam} xgPlayerKey={xgPlayerKey} setXgPlayerKey={setXgPlayerKey} xgPlayerOptions={xgPlayerOptions} isOnTargetShot={isOnTargetShot} setIsOnTargetShot={setIsOnTargetShot} isGoalShot={isGoalShot} setIsGoalShot={setIsGoalShot} isHeaderShot={isHeaderShot} setIsHeaderShot={setIsHeaderShot} isOwnGoal={isOwnGoal} setIsOwnGoal={setIsOwnGoal} isPenaltyShot={isPenaltyShot} togglePenaltyShot={togglePenaltyShot} shotPoint={shotPoint} goalmouthPoint={goalmouthPoint} canWrite={canWrite} canRecord={canWrite && !!shotPoint && (isOwnGoal || !isOnTargetShot || !!goalmouthPoint)} xgValue={xgValue} setXgValue={setXgValue} xgotValue={xgotValue} estimateXgFromPitch={estimateXgFromPitch} estimateXgotFromGoalmouth={estimateXgotFromGoalmouth} submitXg={submitXg} isSavingShot={false} onGoalmouthClick={onGoalmouthClick} onPitchClick={onPitchClick} xgEstimateMeta={xgEstimateMeta} xgotEstimateMeta={xgotEstimateMeta} />
 
 
         </section>
