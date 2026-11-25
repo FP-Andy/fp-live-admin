@@ -1877,7 +1877,7 @@ export default function ClipResultsPage() {
             </button>
           </div>
 
-          {linkSeek && linkSeek.clipId === detail.id ? (
+          {linkSeek && linkSeek.clipId === detail.id && detail.video_url ? (
             <p style={{ fontSize: 13, margin: '0 0 6px', color: linkSeek.ts === 'recorded' || linkSeek.ts === 'manual' ? 'var(--text, #ddd)' : '#e0b050' }}
                title={`링크 값: t=${linkSeek.t}초(클립 시작 기준), ts=${linkSeek.ts}`}>
               {linkSeek.t > 0
