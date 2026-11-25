@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import base64
 import copy
+import csv
+import io
+import zipfile
 import hashlib
 import json
 import logging
@@ -921,3 +924,53 @@ def audit_read(db: Session, *, principal: str, principal_name: str | None, tool:
     except Exception:  # 감사 적재 실패가 조회를 막지는 않는다 — 위 로그 한 줄은 남았다
         db.rollback()
         log.exception("[xfp-validation] 감사 적재 실패")
+
+
+# ── 내려받기(보관함 버튼) — 같은 행·같은 집계를 파일로 ─────────────────────────────
+
+CSV_COLUMNS = [
+    "rowKey", "jobId", "matchId", "matchName", "side", "requestId", "resolvedRequestId", "clipKey", "seq",
+    "action", "baseAction", "tags", "teamSide", "jersey", "join", "issues",
+    "published.actionCode", "published.xfpScore", "published.xfpPercentile", "published.pc", "published.epv",
+    "published.xg", "published.xgot", "published.xrc", "published.clipPrimary", "published.pipelineVersion",
+    "fpcCurrent.actionCode", "fpcCurrent.xfpScore", "fpcCurrent.pc", "fpcCurrent.epv", "fpcCurrent.xg",
+    "fpcCurrent.xgot", "fpcCurrent.xrc",
+    "video.clipStartSec", "video.clipEndSec", "video.actionStartSec", "video.actionEndSec", "video.timeSource",
+    "video.playable", "video.unplayableReason", "video.consoleUrl",
+    "dual.source", "dual.sceneIndex", "dual.before.home", "dual.before.away", "dual.before.unknownSide",
+    "dual.after.home", "dual.after.away", "dual.after.unknownSide",
+]
+
+
+def _cell(row: dict, column: str) -> Any:
+    value: Any = row
+    for part in column.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    if isinstance(value, list):
+        return ";".join(str(v) for v in value)
+    if value is None:
+        return ""  # CSV 빈 칸 = null. 관측된 0 은 "0" 으로 남는다(dual.json·summary.json 은 null 그대로)
+    return value
+
+
+def export_zip(db: Session, raw: dict | None, fetcher: PublishedFetcher) -> tuple[bytes, dict]:
+    """actions.csv(행) + dual.json(같은 rowKey 의 듀얼, 좌표 포함) + summary.json(같은 필터 집계). 0건이어도 구조는 같다."""
+    f = parse_filters(raw)
+    c = collect(db, f, fetcher, with_coords=True)
+    rows = sorted((r for r in c.rows if _row_matches(r, f)), key=lambda r: r["_sort"])
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(CSV_COLUMNS)
+    for r in rows:
+        w.writerow([_cell(r, col) for col in CSV_COLUMNS])
+    dual = [{"rowKey": r["rowKey"], **r["dual"]} for r in rows]
+    summary = summarize(db, raw, fetcher)
+    meta = {"schemaVersion": SCHEMA_VERSION, "filters": f.echo(), "rows": len(rows),
+            "note": "CSV 빈 칸 = null(미계산), 0 = 관측된 0. xrc = 패스 receptionXg. published = FinePlay 운영 저장본, "
+                    "fpcCurrent = 내려받은 시점 FPC 값."}
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("actions.csv", "\ufeff" + buf.getvalue())  # 엑셀 한글 깨짐 방지 BOM
+        z.writestr("dual.json", json.dumps({**meta, "actions": dual}, ensure_ascii=False, indent=1, default=str))
+        z.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=1, default=str))
+    return out.getvalue(), {"rows": len(rows)}

@@ -459,6 +459,31 @@ class XfpValidationTest(unittest.TestCase):
         self.assertFalse(nr["video"]["playable"])
         self.assertEqual(nr["video"]["unplayableReason"], "NO_RENDERED_CLIP")
 
+    # ── 내려받기 ──
+    def test_export_zip_matches_search_and_keeps_structure_when_empty(self):
+        import csv as _csv
+        import io as _io
+        import zipfile as _zip
+        r = self.rest("export", jobIds="fpc-460")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["content-type"], "application/zip")
+        z = _zip.ZipFile(_io.BytesIO(r.content))
+        self.assertEqual(sorted(z.namelist()), ["actions.csv", "dual.json", "summary.json"])
+        rows = list(_csv.DictReader(_io.StringIO(z.read("actions.csv").decode("utf-8-sig"))))
+        self.assertEqual(len(rows), len(self.all_rows(jobIds=["fpc-460"])))
+        first = next(x for x in rows if x["rowKey"] == "fpc-460|-|fpc-460-001|1")
+        self.assertEqual(first["published.epv"], "0.0")  # 0 은 0
+        self.assertEqual(first["published.xg"], "")      # null 은 빈 칸
+        dual = json.loads(z.read("dual.json"))
+        self.assertIn("coordinates", next(d for d in dual["actions"] if d["rowKey"] == first["rowKey"]))
+        body = r.content + z.read("actions.csv") + z.read("dual.json")
+        for banned in ("김에이".encode(), b"highlights/secret", b"src-video-secret", b"playerId"):
+            self.assertNotIn(banned, body)
+        empty = _zip.ZipFile(_io.BytesIO(self.rest("export", jobIds="no-such-job").content))
+        self.assertEqual(sorted(empty.namelist()), ["actions.csv", "dual.json", "summary.json"])
+        self.assertEqual(empty.read("actions.csv").decode("utf-8-sig").strip().count("\n"), 0)  # 머리줄만
+        self.assertIn(self.rest("export", client="op").status_code, (401, 403))
+
 
 if __name__ == "__main__":
     unittest.main()

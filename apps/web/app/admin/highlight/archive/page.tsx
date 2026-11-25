@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import HighlightSubTabs from '../HighlightSubTabs';
-import { apiJson } from '../../../../lib/api';
+import { API_BASE, apiJson } from '../../../../lib/api';
 import { errorMessage } from '../../../../lib/error-messages';
 import { ErrorFold } from '../../../../components/ErrorNotice';
 
@@ -166,6 +166,13 @@ export default function ClipArchivePage() {
                   >
                     열어서 수정
                   </button>
+                  <a
+                    style={{ ...smallBtn, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+                    href={`${API_BASE}/highlight/xfp-validation/export?jobIds=${encodeURIComponent(row.job_id)}`}
+                    title="앱에 저장된 점수와 FPC 태깅을 액션별로 맞춘 자료(actions.csv · dual.json · summary.json)"
+                  >
+                    검증 자료
+                  </a>
                   <button style={smallBtn} onClick={() => void unarchive(row)}>보관 해제</button>
                 </span>
               </div>

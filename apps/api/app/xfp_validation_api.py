@@ -107,6 +107,25 @@ def rest_summary(request: Request, db: Session = Depends(get_db), user: User = D
     return _rest(db, user, "summarize_xfp", lambda: svc.summarize(db, raw, fetcher), raw)
 
 
+@router.get("/api/highlight/xfp-validation/export")
+def rest_export(request: Request, db: Session = Depends(get_db), user: User = Depends(require_admin),
+                fetcher: svc.PublishedFetcher = Depends(get_fetcher)):
+    """보관함 '검증 자료' 버튼 — 같은 필터의 actions.csv + dual.json + summary.json ZIP."""
+    raw = _query_filters(request)
+    principal = f"admin:{user.id}"
+    try:
+        data, brief = svc.export_zip(db, raw, fetcher)
+    except svc.ValidationInputError as exc:
+        svc.audit_read(db, principal=principal, principal_name=user.name, tool="export_zip", scope=raw,
+                       result={"status": "rejected", "reason": str(exc)})
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    svc.audit_read(db, principal=principal, principal_name=user.name, tool="export_zip", scope=raw,
+                   result={"status": "ok", **brief})
+    name = "xfp-validation-" + ("-".join(svc._as_list(raw.get("jobIds")))[:60] or "all") + ".zip"
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 def _result_brief(out: dict) -> dict:
     """감사 로그용 결과 요약 — 숫자만(행 내용은 남기지 않는다)."""
     brief: dict[str, Any] = {"status": "ok"}
