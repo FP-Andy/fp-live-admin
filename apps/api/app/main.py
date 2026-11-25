@@ -53,6 +53,7 @@ from .auth import (
     session_user_id as _get_authenticated_user_id,
 )
 from .courtside_access import router as courtside_access_router
+from .xfp_validation_api import router as xfp_validation_router
 from .courtside_bridge import router as courtside_bridge_router
 from .db import Base, SessionLocal, engine, get_db
 from .fcm_cards import (
@@ -215,6 +216,7 @@ from . import futsal_substitution_redetection  # register private review evidenc
 from . import futsal_recovery_jobs  # persistent, bounded RF-DETR jobs
 app.include_router(analysis_snapshots_router)
 app.include_router(agent_fla_router)  # /api/agent/fla/** — 직원 에이전트 토큰 전용(이사68)
+app.include_router(xfp_validation_router)  # xFP 검증 조회 — 콘솔 REST(관리자) + MCP(읽기 전용 토큰), T6
 
 origins = [v.strip() for v in os.getenv("CORS_ORIGINS", "*").split(",") if v.strip()]
 app.add_middleware(

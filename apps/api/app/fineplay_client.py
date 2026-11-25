@@ -129,6 +129,23 @@ class FinePlayClient:
                 body = {"raw": resp.text}
             return {"status_code": resp.status_code, "body": body}
 
+    def get_validation_published(self, targets: list[str]) -> dict[str, Any]:
+        """GET /validation/published — xFP 검증용 운영 저장본 읽기(T6). 읽기 전용, 대상 최대 50개.
+
+        targets: "460"(일반·사전 작업 링크) · "470:A"/"470:B"(자체전 분할 묶음). B 짝 행이 없으면 서버가 만들지 않고
+        PAIR_NOT_CREATED 로 돌려준다. 응답은 허용 목록(등번호만, userId·이름·S3 키 없음).
+        """
+        import httpx
+
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.get(
+                self._url("/validation/published"),
+                headers=self._headers(),
+                params={"targets": ",".join(targets)},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     def heartbeat(
         self, analysis_request_id: int | str, *, lease_seconds: int | None = None
     ) -> dict[str, Any]:
