@@ -22,11 +22,25 @@ from .fineplay_plan import plan_from_manifest
 # ── FHL 구간 → 클립 ──────────────────────────────────────────────────────────
 
 FHL_SCHEMA = "fhl-job/v2"
-# FHL 이 카드·인트로와 클립 사이에 넣는 전환 길이. job.json 에 이음매 길이가 따로 없어 이 값으로 추정한다
-# (FHL 0.19.1: 클립↔클립 0.2초, 카드↔클립 0.4초). 클립끼리 겹친 구간은 실제 겹친 만큼 깎는다.
+# 이음매(경계) 처리 — 11-26 수정(#496 실측).
+#
+# FHL 0.19.2 부터 클립마다 joinBefore/joinAfter {type: cut|xfade|card|edge, sec} 를 적는다. 있으면 그 값대로:
+#   cut(바로 이어 붙임) → HARDCUT_TRIM_SEC, xfade → 그 길이, card → 그 페이드 길이, edge(합본 처음·끝) → 0.
+# 없으면(0.19.1) 틈으로 추정한다:
+#   겹침 → 겹친 만큼(크로스페이드), 틈 < CARD_MIN_GAP_SEC → 바로 이어 붙임 → HARDCUT_TRIM_SEC,
+#   틈 ≥ CARD_MIN_GAP_SEC → 사이에 카드 → FHL_CARD_JOIN_SEC. 첫 클립 앞·마지막 클립 뒤는 1초 이상 남을 때만 카드로 본다.
+# 왜: 전환을 끈 합본(#496)은 클립 사이 틈이 0.013~0.03초다. 예전 규칙(틈 > 0.05 면 카드 0.4, 이하면 0)은
+# 경계를 하나도 안 깎아 앞뒤 1프레임이 딸려왔고, 손으로 0.1초씩 줄인 job.json(틈 0.2)은 카드로 오판해 0.5초 깎았다.
+# FHL 카드는 1초보다 짧지 않으므로 1초 미만의 틈은 카드가 아니다.
 FHL_CARD_JOIN_SEC = 0.4
-# 이보다 작은 틈은 하드컷으로 본다(프레임·반올림 차이)
+# 하드컷 경계에서 양쪽을 깎는 길이 — 1프레임(59.94p 0.017초)보다 넉넉히
+HARDCUT_TRIM_SEC = 0.1
+# 이보다 긴 틈만 카드(또는 인트로·아웃트로)로 본다
+CARD_MIN_GAP_SEC = 1.0
+# 이보다 작은 겹침은 겹침이 아니라 반올림 차이로 본다
 FHL_GAP_EPS = 0.05
+# join 필드로 받는 이음매 길이 상한(초)
+FHL_JOIN_MAX_SEC = 3.0
 # 깎은 뒤 이보다 짧아지면 깎지 않은 구간을 쓴다
 FHL_MIN_CLIP_SEC = 1.0
 # 장면 클립이 아닌 종류 — 점수판만 올리는 골, 구간 카드 자리. 합본에 장면이 없거나 카드다
@@ -64,7 +78,7 @@ def fhl_clip_entries(manifest: dict, fpc_our_side: str = "home") -> dict:
     돌려주는 것: {videoId, clips:[...], skipped:{kind: n}, trimmed: n, ourSide}
     - 종류: home*/away* = FHL 의 홈/원정. FHL 홈이 신청팀(ourSide=home)이면 그 쪽이 FPC 의 우리 사이드다.
     - 점수 [홈, 원정] 도 FPC 슬롯(홈/원정) 기준으로 뒤집는다.
-    - 전환 구간: 이웃 클립과 겹치면 겹친 만큼, 카드·인트로(틈)와 닿으면 FHL_CARD_JOIN_SEC 만큼 안쪽으로 깎는다.
+    - 이음매: joinBefore/joinAfter 가 있으면 그대로, 없으면 틈으로 추정해 안쪽으로 깎는다(위 상수 주석).
     """
     found = fhl_video(manifest)
     if not found:
@@ -79,8 +93,36 @@ def fhl_clip_entries(manifest: dict, fpc_our_side: str = "home") -> dict:
     export_duration = _num(job.get("exportDuration"))
 
     def gap(a: float, b: float) -> float:
-        # 소수 반올림 차이로 0.05 경계가 흔들리지 않게(17.25-17.2=0.0500000001) ms 단위로 잰다
+        # 소수 반올림 차이로 경계가 흔들리지 않게(17.25-17.2=0.0500000001) ms 단위로 잰다
         return round(a - b, 3)
+
+    def estimate(neighbor_gap: float | None, edge_room: float | None) -> float:
+        """join 필드가 없을 때. neighbor_gap = 이웃 클립까지 틈(음수면 겹침), edge_room = 합본 처음/끝까지 남은 길이."""
+        if neighbor_gap is None:
+            # 첫 클립 앞·마지막 클립 뒤 — 1초 이상 남으면 인트로·아웃트로 카드, 아니면 합본 가장자리
+            return FHL_CARD_JOIN_SEC if edge_room is not None and edge_room >= CARD_MIN_GAP_SEC else 0.0
+        if neighbor_gap < -FHL_GAP_EPS:
+            return -neighbor_gap                     # 크로스페이드 — 겹친 만큼
+        if neighbor_gap < CARD_MIN_GAP_SEC:
+            return HARDCUT_TRIM_SEC                  # 바로 이어 붙임
+        return FHL_CARD_JOIN_SEC                     # 사이에 카드
+
+    def declared(join: Any) -> float | None:
+        """FHL 0.19.2 joinBefore/joinAfter — 렌더가 실제로 쓴 이음매. 못 읽으면 None(추정으로)."""
+        if not isinstance(join, dict):
+            return None
+        kind = str(join.get("type") or "").lower()
+        if kind == "cut":
+            return HARDCUT_TRIM_SEC
+        if kind == "edge":
+            return 0.0
+        if kind in ("xfade", "card"):
+            sec = _num(join.get("sec"))
+            if sec is None or sec < 0 or sec > FHL_JOIN_MAX_SEC:
+                return None
+            # 0초 크로스페이드·카드 페이드는 하드컷과 같다
+            return sec if sec > 0 else HARDCUT_TRIM_SEC
+        return None
 
     raw = []
     for c in job.get("clips") or []:
@@ -102,21 +144,13 @@ def fhl_clip_entries(manifest: dict, fpc_our_side: str = "home") -> dict:
             continue
         prev_end = raw[i - 1][1] if i > 0 else None
         next_start = raw[i + 1][0] if i + 1 < len(raw) else None
-        # 머리: 앞 클립과 겹치면 겹친 만큼, 앞에 틈(카드·인트로)이 있으면 카드 전환만큼
-        if prev_end is not None and gap(prev_end, s) > FHL_GAP_EPS:
-            head = prev_end - s
-        elif (prev_end is not None and gap(s, prev_end) > FHL_GAP_EPS) or (prev_end is None and gap(s, 0) > FHL_GAP_EPS):
-            head = FHL_CARD_JOIN_SEC
-        else:
-            head = 0.0
-        # 꼬리: 뒤 클립과 겹치면 겹친 만큼, 뒤에 틈(카드)이나 합본 끝까지 남은 게 있으면 카드 전환만큼
-        if next_start is not None and gap(e, next_start) > FHL_GAP_EPS:
-            tail = e - next_start
-        elif (next_start is not None and gap(next_start, e) > FHL_GAP_EPS) or (
-                next_start is None and export_duration is not None and gap(export_duration, e) > FHL_GAP_EPS):
-            tail = FHL_CARD_JOIN_SEC
-        else:
-            tail = 0.0
+        head = declared(c.get("joinBefore"))
+        if head is None:
+            head = estimate(gap(s, prev_end) if prev_end is not None else None, gap(s, 0))
+        tail = declared(c.get("joinAfter"))
+        if tail is None:
+            tail = estimate(gap(next_start, e) if next_start is not None else None,
+                            gap(export_duration, e) if export_duration is not None else None)
         start, end = s + head, e - tail
         if end - start < FHL_MIN_CLIP_SEC:
             start, end = s, e

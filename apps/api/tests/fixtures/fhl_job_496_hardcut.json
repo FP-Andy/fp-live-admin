@@ -1,0 +1,247 @@
+{
+ "schema": "fhl-job/v2",
+ "exportDuration": 222.328,
+ "ourSide": "home",
+ "clips": [
+  {
+   "order": 1,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 0,
+   "exportEnd": 13,
+   "tagExport": 10,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 2,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 13.013,
+   "exportEnd": 26.013,
+   "tagExport": 23.013,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 3,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 26.026,
+   "exportEnd": 38.026,
+   "tagExport": 36.026,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 4,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 38.055,
+   "exportEnd": 57.055,
+   "tagExport": 48.055,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 5,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 57.057,
+   "exportEnd": 70.057,
+   "tagExport": 67.057,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 6,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 70.087,
+   "exportEnd": 89.087,
+   "tagExport": 86.087,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 7,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 89.089,
+   "exportEnd": 99.089,
+   "tagExport": 96.089,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 8,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 99.116,
+   "exportEnd": 112.116,
+   "tagExport": 109.116,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 9,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 112.145,
+   "exportEnd": 131.145,
+   "tagExport": 122.145,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 10,
+   "kind": "home",
+   "sourceIndex": 0,
+   "exportStart": 131.164,
+   "exportEnd": 144.164,
+   "tagExport": 141.164,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 11,
+   "kind": "home",
+   "sourceIndex": 1,
+   "exportStart": 144.194,
+   "exportEnd": 162.194,
+   "tagExport": 159.194,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 12,
+   "kind": "home",
+   "sourceIndex": 1,
+   "exportStart": 162.195,
+   "exportEnd": 175.195,
+   "tagExport": 172.195,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 13,
+   "kind": "home",
+   "sourceIndex": 1,
+   "exportStart": 175.225,
+   "exportEnd": 188.225,
+   "tagExport": 185.225,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 14,
+   "kind": "home",
+   "sourceIndex": 1,
+   "exportStart": 188.255,
+   "exportEnd": 201.255,
+   "tagExport": 198.255,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    0,
+    0
+   ]
+  },
+  {
+   "order": 15,
+   "kind": "home_goal",
+   "sourceIndex": 1,
+   "exportStart": 201.284,
+   "exportEnd": 222.284,
+   "tagExport": 214.284,
+   "scoreBefore": [
+    0,
+    0
+   ],
+   "scoreAfter": [
+    1,
+    0
+   ]
+  }
+ ]
+}

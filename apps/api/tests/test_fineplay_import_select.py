@@ -131,6 +131,43 @@ class FhlClipTests(unittest.TestCase):
         c = fineplay_import.fhl_clip_entries(manifest(1, fhl=job), "home")["clips"][0]
         self.assertEqual((c["start"], c["end"]), (12.8, 17.2))
 
+    def test_496_hardcut_job_matches_hand_trimmed_ranges(self):
+        """#496 전환 끈 합본(틈 0.013~0.03초) → 안쪽 경계마다 0.1초, 처음·끝은 그대로 = 운영에서 손으로 맞춘 구간."""
+        fx = Path(__file__).resolve().parent / "fixtures"
+        job = json.loads((fx / "fhl_job_496_hardcut.json").read_text())
+        want = [tuple(r) for r in json.loads((fx / "fhl_job_496_hand_trimmed_ranges.json").read_text())]
+        out = fineplay_import.fhl_clip_entries(manifest(496, fhl=job), "home")
+        self.assertEqual(len(out["clips"]), 15)
+        self.assertEqual([(c["start"], c["end"]) for c in out["clips"]], want)
+
+    def test_declared_joins_override_estimate(self):
+        """FHL 0.19.2 joinBefore/joinAfter — cut 0.1, xfade 그 길이, card 그 페이드, edge 0. 틀린 값은 추정으로."""
+        job = {**FHL_JOB, "exportDuration": 40.0, "clips": [
+            {"order": 1, "kind": "home", "exportStart": 2.0, "exportEnd": 10.0,
+             "joinBefore": {"type": "card", "sec": 0.6}, "joinAfter": {"type": "xfade", "sec": 0.3}},
+            {"order": 2, "kind": "away", "exportStart": 9.7, "exportEnd": 20.0,
+             "joinBefore": {"type": "xfade", "sec": 0.3}, "joinAfter": {"type": "cut"}},
+            {"order": 3, "kind": "home", "exportStart": 20.0, "exportEnd": 30.0,
+             "joinBefore": {"type": "cut"}, "joinAfter": {"type": "edge"}},
+            {"order": 4, "kind": "home", "exportStart": 33.0, "exportEnd": 39.0,
+             "joinBefore": {"type": "xfade", "sec": 9}, "joinAfter": {"type": "nope"}},
+        ]}
+        out = fineplay_import.fhl_clip_entries(manifest(1, fhl=job), "home")
+        self.assertEqual([(c["start"], c["end"]) for c in out["clips"]],
+                         [(2.6, 9.7), (10.0, 19.9), (20.1, 30.0), (33.4, 38.6)])   # 4번: 틀린 값 → 추정(카드 0.4)
+
+    def test_estimate_gap_rules(self):
+        """join 없을 때: 틈 < 1초 = 바로 이어 붙임 0.1, 틈 ≥ 1초 = 카드 0.4, 겹침 = 겹친 만큼, 가장자리는 1초 이상일 때만 0.4."""
+        job = {**FHL_JOB, "exportDuration": 30.5, "clips": [
+            {"order": 1, "kind": "home", "exportStart": 0.5, "exportEnd": 8.0},      # 앞 0.5 < 1 → 0
+            {"order": 2, "kind": "home", "exportStart": 8.2, "exportEnd": 15.0},     # 틈 0.2 → 0.1씩
+            {"order": 3, "kind": "home", "exportStart": 14.8, "exportEnd": 22.0},    # 겹침 0.2
+            {"order": 4, "kind": "home", "exportStart": 23.0, "exportEnd": 30.0},    # 틈 1.0 → 카드, 뒤 0.5 → 0
+        ]}
+        out = fineplay_import.fhl_clip_entries(manifest(1, fhl=job), "home")
+        self.assertEqual([(c["start"], c["end"]) for c in out["clips"]],
+                         [(0.5, 7.9), (8.3, 14.8), (15.0, 21.6), (23.4, 30.0)])
+
     def test_no_fhl_job(self):
         self.assertEqual(fineplay_import.fhl_clip_entries(manifest(1), "home")["clips"], [])
 
